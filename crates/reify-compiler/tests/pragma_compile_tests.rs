@@ -2252,135 +2252,77 @@ fn kernel_pragma_with_occt_sets_kernel_pragma() {
         module.kernel_pragma
     );
 
-    // No malformed-shape, deferred-to-v0.2, or unknown-kernel warnings about #kernel.
+    // No malformed-shape or unknown-kernel warnings about #kernel.
+    // (`deferred` was a v0.1-era wording for the not-yet-recognised kernel
+    // case; production code no longer emits it on the happy path so it is
+    // dropped from the substring filter.)
     let bad_warns: Vec<_> = warnings_only(&module)
         .into_iter()
         .filter(|d| {
             let m = d.message.to_lowercase();
             m.contains("#kernel")
-                && (m.contains("expected")
-                    || m.contains("ignored")
-                    || m.contains("unknown")
-                    || m.contains("deferred"))
+                && (m.contains("expected") || m.contains("ignored") || m.contains("unknown"))
         })
         .collect();
     assert!(
         bad_warns.is_empty(),
-        "expected no #kernel expected/ignored/unknown/deferred warnings for #kernel(occt), got: {:?}",
+        "expected no #kernel expected/ignored/unknown warnings for #kernel(occt), got: {:?}",
         bad_warns
     );
 }
 
-/// `#kernel(manifold)` (a v0.2 known kernel ident per PRD §10.8) sets
-/// `kernel_pragma = Some("manifold")`, emits no errors, and emits no warnings
-/// about expected/ignored/unknown/deferred forms. Locks the v0.2 expansion of
-/// the known-kernel allow-list beyond v0.1's occt-only acceptance. Mirrors
-/// `kernel_pragma_with_occt_sets_kernel_pragma` exactly.
+/// `#kernel(<ident>)` for each of the v0.2 known kernel idents per PRD §10.8
+/// (`manifold`, `fidget`, `openvdb`) sets `kernel_pragma = Some(ident)`,
+/// emits no errors, and emits no `expected/ignored/unknown` warnings about
+/// `#kernel`. Locks the v0.2 expansion of the known-kernel allow-list beyond
+/// v0.1's occt-only acceptance.
+///
+/// Table-driven via a single `#[test]` to avoid byte-for-byte duplication
+/// across kernel idents — adding a 5th kernel is a one-line change to the
+/// `idents` array. Mirrors the shape of
+/// `kernel_pragma_with_occt_sets_kernel_pragma` (kept separate because occt
+/// also serves as the v0.1 acceptance fixture).
 #[test]
-fn kernel_pragma_with_manifold_sets_kernel_pragma() {
-    let module = compile_source("#kernel(manifold)\nstructure S { param x : Real }");
-    assert!(
-        errors_only(&module).is_empty(),
-        "unexpected errors: {:?}",
-        errors_only(&module)
-    );
-    assert_eq!(
-        module.kernel_pragma,
-        Some("manifold".to_string()),
-        "expected kernel_pragma Some(\"manifold\") for #kernel(manifold), got {:?}",
-        module.kernel_pragma
-    );
+fn kernel_pragma_with_v02_known_idents_set_kernel_pragma() {
+    fn assert_v02_kernel_accepted(ident: &str) {
+        let source = format!("#kernel({ident})\nstructure S {{ param x : Real }}");
+        let module = compile_source(&source);
+        assert!(
+            errors_only(&module).is_empty(),
+            "[#kernel({ident})] unexpected errors: {:?}",
+            errors_only(&module)
+        );
+        assert_eq!(
+            module.kernel_pragma,
+            Some(ident.to_string()),
+            "[#kernel({ident})] expected kernel_pragma Some({ident:?}), got {:?}",
+            module.kernel_pragma
+        );
 
-    let bad_warns: Vec<_> = warnings_only(&module)
-        .into_iter()
-        .filter(|d| {
-            let m = d.message.to_lowercase();
-            m.contains("#kernel")
-                && (m.contains("expected")
-                    || m.contains("ignored")
-                    || m.contains("unknown")
-                    || m.contains("deferred"))
-        })
-        .collect();
-    assert!(
-        bad_warns.is_empty(),
-        "expected no #kernel expected/ignored/unknown/deferred warnings for #kernel(manifold), got: {:?}",
-        bad_warns
-    );
-}
+        // Filter the diagnostic substring set used to spot bad-shape /
+        // unknown-ident warnings on `#kernel`. `deferred` was a v0.1-era
+        // wording (the production code no longer emits it on the happy
+        // path) — dropped from the filter so this set tracks current
+        // diagnostics only.
+        let bad_warns: Vec<_> = warnings_only(&module)
+            .into_iter()
+            .filter(|d| {
+                let m = d.message.to_lowercase();
+                m.contains("#kernel")
+                    && (m.contains("expected")
+                        || m.contains("ignored")
+                        || m.contains("unknown"))
+            })
+            .collect();
+        assert!(
+            bad_warns.is_empty(),
+            "[#kernel({ident})] expected no #kernel expected/ignored/unknown warnings, got: {bad_warns:?}",
+        );
+    }
 
-/// `#kernel(fidget)` (a v0.2 known kernel ident per PRD §10.8) sets
-/// `kernel_pragma = Some("fidget")`, emits no errors, and emits no warnings
-/// about expected/ignored/unknown/deferred forms. Mirrors
-/// `kernel_pragma_with_occt_sets_kernel_pragma`.
-#[test]
-fn kernel_pragma_with_fidget_sets_kernel_pragma() {
-    let module = compile_source("#kernel(fidget)\nstructure S { param x : Real }");
-    assert!(
-        errors_only(&module).is_empty(),
-        "unexpected errors: {:?}",
-        errors_only(&module)
-    );
-    assert_eq!(
-        module.kernel_pragma,
-        Some("fidget".to_string()),
-        "expected kernel_pragma Some(\"fidget\") for #kernel(fidget), got {:?}",
-        module.kernel_pragma
-    );
-
-    let bad_warns: Vec<_> = warnings_only(&module)
-        .into_iter()
-        .filter(|d| {
-            let m = d.message.to_lowercase();
-            m.contains("#kernel")
-                && (m.contains("expected")
-                    || m.contains("ignored")
-                    || m.contains("unknown")
-                    || m.contains("deferred"))
-        })
-        .collect();
-    assert!(
-        bad_warns.is_empty(),
-        "expected no #kernel expected/ignored/unknown/deferred warnings for #kernel(fidget), got: {:?}",
-        bad_warns
-    );
-}
-
-/// `#kernel(openvdb)` (a v0.2 known kernel ident per PRD §10.8) sets
-/// `kernel_pragma = Some("openvdb")`, emits no errors, and emits no warnings
-/// about expected/ignored/unknown/deferred forms. Mirrors
-/// `kernel_pragma_with_occt_sets_kernel_pragma`.
-#[test]
-fn kernel_pragma_with_openvdb_sets_kernel_pragma() {
-    let module = compile_source("#kernel(openvdb)\nstructure S { param x : Real }");
-    assert!(
-        errors_only(&module).is_empty(),
-        "unexpected errors: {:?}",
-        errors_only(&module)
-    );
-    assert_eq!(
-        module.kernel_pragma,
-        Some("openvdb".to_string()),
-        "expected kernel_pragma Some(\"openvdb\") for #kernel(openvdb), got {:?}",
-        module.kernel_pragma
-    );
-
-    let bad_warns: Vec<_> = warnings_only(&module)
-        .into_iter()
-        .filter(|d| {
-            let m = d.message.to_lowercase();
-            m.contains("#kernel")
-                && (m.contains("expected")
-                    || m.contains("ignored")
-                    || m.contains("unknown")
-                    || m.contains("deferred"))
-        })
-        .collect();
-    assert!(
-        bad_warns.is_empty(),
-        "expected no #kernel expected/ignored/unknown/deferred warnings for #kernel(openvdb), got: {:?}",
-        bad_warns
-    );
+    for ident in ["manifold", "fidget", "openvdb"] {
+        assert_v02_kernel_accepted(ident);
+    }
 }
 
 /// `#kernel(brep_xyz)` (an unknown kernel ident — not in the v0.2 known set
