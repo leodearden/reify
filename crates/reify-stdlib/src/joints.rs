@@ -306,8 +306,9 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     }
                 }
                 // 2-DOF cylindrical joint: motion variable is a 2-element
-                // `Value::List` or `Value::Vector` of `[Length, Angle]`
-                // (translation distance, rotation angle).
+                // `Value::List` of `[Length, Angle]` (translation distance,
+                // rotation angle). List-only mirrors the planar arm — Reify
+                // `[a, b]` literals lower to `Value::List`.
                 //
                 // Composition rationale (single-step construction): translation
                 // along axis n and rotation about the same axis n commute in
@@ -909,22 +910,27 @@ fn length_input(v: &Value) -> Option<f64> {
 
 /// Extract `(dist, theta)` from a cylindrical motion-variable argument.
 ///
-/// Accepts a 2-element `Value::List` or `Value::Vector` whose elements are:
+/// Accepts a 2-element `Value::List` whose elements are:
 /// - `items[0]`: a length scalar (LENGTH-dim Scalar, or bare Real/Int as metres)
 /// - `items[1]`: an angle scalar (ANGLE-dim Scalar, or bare Real/Int as radians)
 ///
 /// Returns `None` if:
-/// - the container is not a 2-element `List` or `Vector`,
+/// - the container is not a 2-element `List`,
 /// - either element fails its dimension/finiteness contract
 ///   (`length_input` / `trig_input`, which also reject NaN/Inf and the
 ///   wrong-dimension Scalar).
 ///
 /// The dim-swap case `[angle, length]` is rejected for free: `length_input`
 /// rejects an angle Scalar (wrong dim) and `trig_input` rejects a length Scalar.
+///
+/// Container shape: List-only, mirroring the planar arm (joints.rs ~200).
+/// Reify list literals `[a, b]` lower to `Value::List`, so accepting a
+/// `Value::Vector` here would be reachable only from internal callers and
+/// would create an asymmetry with planar that future readers would have to
+/// re-derive. Keeping the surface narrow keeps the joint-zoo consistent.
 fn cylindrical_motion_vars(value: &Value) -> Option<(f64, f64)> {
     let items = match value {
         Value::List(items) if items.len() == 2 => items,
-        Value::Vector(items) if items.len() == 2 => items,
         _ => return None,
     };
     let dist = length_input(&items[0])?;
@@ -4562,9 +4568,14 @@ mod tests {
 
     /// Table-driven validation surface for the cylindrical transform_at second
     /// argument. All listed shapes return Undef. Also includes one positive
-    /// polarity case (a 2-element `Value::Vector` with the right dims) that
+    /// polarity case (a 2-element `Value::List` with the right dims) that
     /// MUST return a Transform — guards against accidental over-rejection
-    /// of the Vector container shape.
+    /// of the canonical List container shape.
+    ///
+    /// Container shape is List-only (mirrors the planar arm); a 2-element
+    /// `Value::Vector` is rejected as a negative case to keep the joint-zoo
+    /// surface consistent. Reify `[a, b]` literals lower to `Value::List`,
+    /// so List-only is the canonical motion-var shape.
     #[test]
     fn cylindrical_transform_at_invalid_value_returns_undef() {
         let cyl = cylindrical_z_joint();
@@ -4582,8 +4593,15 @@ mod tests {
              Value::List(vec![Value::angle(0.5), Value::length(0.5)])),
             ("NaN translation, valid angle",
              Value::List(vec![Value::Real(f64::NAN), Value::angle(0.0)])),
+            ("Inf translation, valid angle",
+             Value::List(vec![Value::Real(f64::INFINITY), Value::angle(0.0)])),
+            ("valid translation, NaN rotation",
+             Value::List(vec![Value::length(0.0), Value::Real(f64::NAN)])),
             ("zero translation, Inf rotation",
              Value::List(vec![Value::length(0.0), Value::Real(f64::INFINITY)])),
+            // Vector container is rejected (List-only contract, mirrors planar).
+            ("Vector container (wrong shape — List required)",
+             Value::Vector(vec![Value::length(0.5), Value::angle(0.0)])),
         ];
 
         for (label, motion) in undef_cases {
@@ -4593,12 +4611,12 @@ mod tests {
             );
         }
 
-        // Positive polarity: 2-element Vector container is valid.
-        let vec_motion = Value::Vector(vec![Value::length(0.5), Value::angle(0.0)]);
-        let result = eval_builtin("transform_at", &[cyl.clone(), vec_motion]);
+        // Positive polarity: 2-element List container is valid.
+        let list_motion = Value::List(vec![Value::length(0.5), Value::angle(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl.clone(), list_motion]);
         assert!(
             matches!(&result, Value::Transform { .. }),
-            "transform_at(cyl, Vector[length, angle]) must return Transform, got {:?}",
+            "transform_at(cyl, List[length, angle]) must return Transform, got {:?}",
             result
         );
     }
