@@ -393,19 +393,150 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
 /// **Pure value-side helper** — performs no FK walk and no solver invocation.
 /// Built so it can be tested in isolation before snapshot.rs consumes it.
 pub fn extract_loop_closure_chains(
-    _record: &Value,
-    _bindings: &[Value],
+    record: &Value,
+    bindings: &[Value],
 ) -> Option<(Vec<Value>, Vec<f64>, Vec<Value>, Vec<f64>, Vec<usize>)> {
-    // Skeleton — implemented in step-2.
+    let map = match record {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let path_a = match map.get(&Value::String("path_a".to_string())) {
+        Some(Value::List(p)) => p.as_slice(),
+        _ => return None,
+    };
+    let path_b = match map.get(&Value::String("path_b".to_string())) {
+        Some(Value::List(p)) => p.as_slice(),
+        _ => return None,
+    };
+
+    let chain_a = strip_world_sentinel(path_a)?;
+    let chain_b = strip_world_sentinel(path_b)?;
+
+    // chain_a is the spanning-tree (already-resolved) side: every joint must
+    // resolve to an SI f64 via direct binding, coupling-tracks-parent
+    // recursion, fixed-joint sentinel, or range-midpoint fallback.  Any
+    // joint that fails all four short-circuits the whole call to None.
+    let mut vals_a = Vec::with_capacity(chain_a.len());
+    for joint in &chain_a {
+        let v_si = resolve_joint_value_si(joint, bindings)?;
+        vals_a.push(v_si);
+    }
+
+    // chain_b is the closing side: a joint with a *direct* binding entry
+    // is a fixed initial value; any joint without a direct binding becomes
+    // a free index, seeded from its range midpoint.  Coupling and fixed
+    // arms intentionally fall through the direct-lookup branch — multi-loop
+    // coupling is out of v0.2 scope (see plan design-decisions §4).
+    let mut vals_b_initial = Vec::with_capacity(chain_b.len());
+    let mut free_b: Vec<usize> = Vec::new();
+    for (i, joint) in chain_b.iter().enumerate() {
+        if let Some(v_si) = direct_binding_value_si(joint, bindings) {
+            vals_b_initial.push(v_si);
+        } else {
+            let mid_si = joint_range_midpoint(joint)?;
+            vals_b_initial.push(mid_si);
+            free_b.push(i);
+        }
+    }
+
+    Some((chain_a, vals_a, chain_b, vals_b_initial, free_b))
+}
+
+/// Strip the leading world sentinel from a path (`[world, j_1, ..., j_k]` →
+/// `[j_1, ..., j_k]`).  Returns None if the path is shorter than 2 elements
+/// (the stripped tail would terminate before the closing joint) or if the
+/// first element is not a `kind = "world"` Map.
+///
+/// Mirrors `reify_constraints::loop_closure::strip_world_sentinel` (which
+/// is private to that module); duplicated here so the stdlib helper is
+/// self-contained without crossing the constraints crate boundary.
+fn strip_world_sentinel(path: &[Value]) -> Option<Vec<Value>> {
+    if path.len() < 2 {
+        return None;
+    }
+    let first = path.first()?;
+    let is_world = match first {
+        Value::Map(m) => {
+            m.get(&Value::String("kind".to_string()))
+                == Some(&Value::String("world".to_string()))
+        }
+        _ => false,
+    };
+    if !is_world {
+        return None;
+    }
+    Some(path[1..].to_vec())
+}
+
+/// Look up a joint's SI value via a *direct* binding entry (no coupling
+/// recursion, no midpoint fallback).
+///
+/// Linear scan — same shape as snapshot.rs's `value_for` direct-binding
+/// arm, but returns the bound value's SI f64 rather than a dimensioned
+/// `Value`.  Returns None when no binding entry's `joint` field is
+/// structurally equal to `joint`, or when the bound `value` is not a
+/// numeric type the dimension extractor recognises.
+///
+/// Used in the closing-side `chain_b` walk to distinguish "user-pinned
+/// joint with explicit binding" (fixed initial value) from "free joint
+/// the solver should iterate" (no direct binding, falls through to
+/// midpoint seed + free_b membership).
+fn direct_binding_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
+    for entry in bindings {
+        let map = match entry {
+            Value::Map(m) => m,
+            _ => continue,
+        };
+        if map.get(&Value::String("joint".to_string())) == Some(joint)
+            && let Some(v) = map.get(&Value::String("value".to_string()))
+        {
+            return v.as_f64();
+        }
+    }
     None
+}
+
+/// Resolve a joint's motion value to an SI f64 via the same fallback
+/// chain `snapshot::value_for` uses, then extract the underlying SI scalar.
+///
+/// Resolution order:
+/// 1. Direct binding by structural `Value::Eq` on the joint Map.
+/// 2. Coupling-tracks-parent: when `joint` is a coupling and isn't directly
+///    bound, recurse on the coupling's `parent` joint.
+/// 3. Fixed joint sentinel: `Value::Real(0.0)` (snapshot.rs's `transform_at`
+///    arm ignores the second argument for fixed joints).
+/// 4. Range-midpoint fallback via [`joint_range_midpoint`].
+///
+/// Returns None for malformed joint Maps, multi-DOF kinds the f64-per-joint
+/// signature cannot represent (planar / spherical / cylindrical), or
+/// joints with no resolvable value (no binding AND no midpoint).
+fn resolve_joint_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
+    if let Some(v) = direct_binding_value_si(joint, bindings) {
+        return Some(v);
+    }
+    if let Value::Map(map) = joint {
+        let kind = match map.get(&Value::String("kind".to_string())) {
+            Some(Value::String(s)) => s.as_str(),
+            _ => return None,
+        };
+        if kind == "coupling"
+            && let Some(parent) = map.get(&Value::String("parent".to_string()))
+        {
+            return resolve_joint_value_si(parent, bindings);
+        }
+        if kind == "fixed" {
+            return Some(0.0);
+        }
+    }
+    joint_range_midpoint(joint)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{
-        angle_range_0_to_pi, axis_x_unit, axis_z_unit, cylindrical_z_joint, length_range_0_to_1m,
-        planar_xy_joint, spherical_joint,
+        angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
+        length_range_0_to_1m, planar_xy_joint, spherical_joint,
     };
     use reify_types::Value;
 
@@ -1430,8 +1561,13 @@ mod tests {
     ///   * free_b indices: `[0]` (the only joint in chain_b is unbound).
     #[test]
     fn extract_loop_closure_chains_returns_chains_vals_and_free_indices() {
-        let j_a = prismatic_x();
-        let j_b = prismatic_x();
+        // jA and jB must be structurally distinct Maps so the binding for
+        // jA does not also match jB by `Value::Eq` — same-axis prismatic
+        // joints would collapse to the same Map and falsely satisfy the
+        // direct-binding lookup for jB.  Use jA on +X and jB on +Y so the
+        // closing-side joint is unambiguously "free".
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
         let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
         let bindings = vec![bind_a];
         let record = loop_closure_record(
