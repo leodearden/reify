@@ -495,16 +495,17 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             );
             // Inverse rotation = conjugate (for unit quaternion).
             let r_inv = quat_conj(r_n);
-            // Direct construction is safe: r_n is already unit-norm (normalized
-            // above) and quat_conj only negates the imaginary parts, preserving
-            // both unit norm and finiteness. decompose_transform has already
-            // verified all components are finite, so no re-check is needed.
-            let r_inv_val = Value::Orientation {
-                w: r_inv.0,
-                x: r_inv.1,
-                y: r_inv.2,
-                z: r_inv.3,
-            };
+            // We renormalize r_inv as a release-build safety net. quat_conj only
+            // negates imaginary parts so the unit-norm guarantee holds tightly
+            // here, but to keep the invariant uniform across the transform_*
+            // family — and to catch the overflow-corner case where r_n collapses
+            // to (0,0,0,0) before conjugation — we route through
+            // normalize_quaternion.
+            let r_inv_val =
+                match normalize_quaternion(r_inv.0, r_inv.1, r_inv.2, r_inv.3) {
+                    Some(v) => v,
+                    None => return Some(Value::Undef),
+                };
             // Inverse translation: t_inv = -R^-1 * t.
             let (rtx, rty, rtz) = quat_rotate(r_inv, t[0], t[1], t[2]);
             Value::Transform {
