@@ -179,8 +179,14 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 // otherwise irrelevant — a 0-DOF joint has no motion variable.
                 // Mirrors the type-checking discipline of every other transform_at arm
                 // (task 2687).
+                //
+                // NaN/Inf values are intentionally accepted (unlike sibling arms which
+                // enforce is_finite() on the motion variable) because the motion
+                // variable is unused for a 0-DOF joint — NaN/Inf never propagates
+                // into the identity Transform output. A finiteness guard would be a
+                // no-op here and is left out for clarity.
                 "fixed" => {
-                    if matches!(&args[1], Value::Undef) {
+                    if args[1].is_undef() {
                         return Some(Value::Undef);
                     }
                     // Tightened contract (task 2687): a 0-DOF joint has no motion
@@ -3635,6 +3641,7 @@ mod tests {
         // Numeric/dimensioned scalar args — all should yield the identity Transform.
         // (Dimension is not validated; a 0-DOF joint has no motion variable.)
         for (label, second_arg) in [
+            ("Real(1.5)",   Value::Real(1.5)),
             ("length(2.5)", Value::length(2.5)),
             ("angle(1.0)",  Value::angle(1.0)),
             ("Int(5)",      Value::Int(5)),
@@ -3671,11 +3678,12 @@ mod tests {
         let fj = eval_builtin("fixed", &[]);
 
         for (label, second_arg) in [
-            ("String(\"foo\")", Value::String("foo".to_string())),
-            ("List(empty)",     Value::List(vec![])),
-            ("Map(empty)",      Value::Map(BTreeMap::new())),
-            ("Vector([0.0])",   Value::Vector(vec![Value::Real(0.0)])),
-            ("Bool(true)",      Value::Bool(true)),
+            ("String(\"foo\")",        Value::String("foo".to_string())),
+            ("List(empty)",            Value::List(vec![])),
+            ("Map(empty)",             Value::Map(BTreeMap::new())),
+            ("Vector([0.0])",          Value::Vector(vec![Value::Real(0.0)])),
+            ("Bool(true)",             Value::Bool(true)),
+            ("Orientation(identity)",  Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
         ] {
             assert!(
                 eval_builtin("transform_at", &[fj.clone(), second_arg]).is_undef(),
