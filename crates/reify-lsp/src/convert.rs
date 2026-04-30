@@ -133,37 +133,6 @@ pub fn convert_severity(severity: Severity) -> DiagnosticSeverity {
     }
 }
 
-/// Emit a debug log line for the four `AutoTypeParam` diagnostic codes.
-///
-/// Called from [`convert_diagnostic`] immediately after the `code` value is
-/// computed.  Under `#[cfg(debug_assertions)]` the log line surfaces the code
-/// variant, severity, and candidate count to stderr so protocol-level debugging
-/// (e.g. `reify gui --debug`) can trace the four codes through the LSP
-/// conversion path without parsing the message body.
-///
-/// Follows the existing `[reify-lsp] …` `eprintln!` convention used in
-/// `diagnostics.rs` (e.g. the `WARNING: check_snapshot returned None` line).
-/// Non-`AutoTypeParam` codes are a silent no-op; the function never mutates
-/// any state.
-fn log_auto_type_param_diagnostic(diag: &Diagnostic) {
-    #[cfg(debug_assertions)]
-    if let Some(
-        DiagnosticCode::AutoTypeParamPoolOverflow
-        | DiagnosticCode::AutoTypeParamNoCandidate
-        | DiagnosticCode::AutoTypeParamAmbiguous
-        | DiagnosticCode::AutoTypeParamNonUnique,
-    ) = diag.code
-    {
-        eprintln!(
-            "[reify-lsp] auto-type-param diagnostic: code={:?} severity={:?} candidates={} message={:?}",
-            diag.code,
-            diag.severity,
-            diag.candidates.len(),
-            diag.message,
-        );
-    }
-}
-
 /// Convert a Reify Diagnostic to an LSP Diagnostic. The `code` field, when
 /// present, is rendered as a PascalCase string identifier matching the serde
 /// wire form of `DiagnosticCode`.
@@ -223,7 +192,22 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
     // Emit a debug log line for the four AutoTypeParam diagnostic codes so
     // that protocol-level debugging can see the candidate count and code name
     // without parsing the message body.
-    log_auto_type_param_diagnostic(diag);
+    #[cfg(debug_assertions)]
+    if let Some(
+        DiagnosticCode::AutoTypeParamPoolOverflow
+        | DiagnosticCode::AutoTypeParamNoCandidate
+        | DiagnosticCode::AutoTypeParamAmbiguous
+        | DiagnosticCode::AutoTypeParamNonUnique,
+    ) = diag.code
+    {
+        eprintln!(
+            "[reify-lsp] auto-type-param diagnostic: code={:?} severity={:?} candidates={} message={:?}",
+            diag.code,
+            diag.severity,
+            diag.candidates.len(),
+            diag.message,
+        );
+    }
 
     // Populate the LSP `data` field with the structured candidate list when
     // one is present.  Only non-empty lists produce a payload; empty lists
@@ -686,6 +670,35 @@ mod tests {
             lsp.data,
             None,
             "convert_diagnostic must leave data as None when no candidates are attached"
+        );
+    }
+
+    /// Locks the joint contract that LSP consumers (code-action providers,
+    /// IDE quick-fixes) rely on for `AutoTypeParamAmbiguous`: when the
+    /// converted LSP diagnostic carries `code = "AutoTypeParamAmbiguous"`,
+    /// `data.candidates` is the FQN list that enables explicit-substitution
+    /// quick-fixes without parsing the human-readable `message` body.
+    ///
+    /// A future refactor that, say, only populates `data` for certain codes
+    /// or changes the PascalCase wire form of this variant would be caught
+    /// here before reaching LSP consumers.
+    #[test]
+    fn convert_diagnostic_auto_type_param_ambiguous_code_and_data_contract() {
+        let source = "auto";
+        let diag = Diagnostic::error("auto type parameter has multiple feasible candidates")
+            .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
+            .with_candidates(vec!["foo::A".to_string(), "foo::B".to_string()])
+            .with_label(DiagnosticLabel::new(SourceSpan::new(0, 4), "auto type-param here"));
+        let lsp = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp.code,
+            Some(NumberOrString::String("AutoTypeParamAmbiguous".to_string())),
+            "code field must be the PascalCase wire form of AutoTypeParamAmbiguous"
+        );
+        assert_eq!(
+            lsp.data,
+            Some(serde_json::json!({"candidates": ["foo::A", "foo::B"]})),
+            "data field must contain the FQN candidate list for AutoTypeParamAmbiguous diagnostics"
         );
     }
 }
