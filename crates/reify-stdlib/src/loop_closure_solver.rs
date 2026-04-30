@@ -136,9 +136,9 @@ pub enum NewtonOutcome {
     ///
     /// The diagnostic-emitting wrapper [`solve_loop_closure_with_diagnostics`]
     /// translates this variant into a [`DiagnosticCode::KinematicSingularity`]
-    /// Warning and sets `LoopClosureReport.is_singular = true`; the `x`
-    /// payload is preserved verbatim as the last-converged config the PRD
-    /// requires.
+    /// Warning; [`LoopClosureReport::is_singular()`] returns `true` when this
+    /// variant is present.  The `x` payload is preserved verbatim as the
+    /// last-converged config the PRD requires.
     ///
     /// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
     Singular {
@@ -158,13 +158,13 @@ pub enum NewtonOutcome {
 }
 
 /// Outcome of a [`solve_loop_closure_with_diagnostics`] call: the underlying
-/// Newton outcome, a flag indicating whether a rank-deficient Jacobian was
-/// detected, and any [`Diagnostic`]s the wrapper emitted.
+/// Newton outcome and any [`Diagnostic`]s the wrapper emitted.
 ///
 /// The `outcome` field carries the canonical "what happened" enum from
-/// [`solve_loop_closure`]; `is_singular` mirrors
-/// `matches!(outcome, NewtonOutcome::Singular { .. })` for readability at
-/// call sites that consume the report; `diagnostics` collects the typed
+/// [`solve_loop_closure`].  Use [`is_singular()`] to test whether the solver
+/// detected a rank-deficient Jacobian — the accessor derives directly from
+/// `outcome`, so the two cannot drift out of agreement by construction.
+/// `diagnostics` collects the typed
 /// [`DiagnosticCode::KinematicSingularity`] / `KinematicOverconstrained` /
 /// `KinematicUnderconstrained` entries the PRD task 9 prose requires
 /// (`docs/prds/v0_2/kinematic-constraints.md` §"Singularity, over/under-constraint
@@ -174,6 +174,7 @@ pub enum NewtonOutcome {
 /// rules.  Future task 10 (sweep API integration) will be the first consumer
 /// that surfaces these diagnostics through the snapshot-call path.
 ///
+/// [`is_singular()`]: LoopClosureReport::is_singular
 /// [`Diagnostic`]: reify_types::Diagnostic
 /// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
 #[derive(Debug, Clone)]
@@ -184,21 +185,22 @@ pub struct LoopClosureReport {
     /// (the solver was not run; see
     /// [`solve_loop_closure_with_diagnostics`] for the contract).
     pub outcome: NewtonOutcome,
-    /// `true` iff the wrapper detected a rank-deficient Jacobian during the
-    /// Newton solve (i.e. `outcome` is `NewtonOutcome::Singular`).  This
-    /// mirrors the PRD's `is_singular: true` flag and pairs with the
-    /// `KinematicSingularity` warning entry in `diagnostics`.
-    ///
-    /// Structurally redundant with `matches!(outcome, NewtonOutcome::Singular { .. })`;
-    /// the wrapper's internal construction (`build_report`) always derives
-    /// this field from `outcome` so the two cannot drift out of agreement.
-    /// The field is retained in the public API to match the PRD's
-    /// `is_singular: true` shape (consumers may pattern-match either way).
-    pub is_singular: bool,
     /// Typed diagnostic entries the wrapper emitted (over-/under-constrained
     /// pre-checks and singular post-process).  Empty for a balanced,
     /// non-singular solve.
     pub diagnostics: Vec<reify_types::Diagnostic>,
+}
+
+impl LoopClosureReport {
+    /// Returns `true` iff the Newton solver detected a rank-deficient Jacobian
+    /// (i.e. `outcome` is [`NewtonOutcome::Singular`]).
+    ///
+    /// This is the single source of truth for singularity: the result is
+    /// derived from `outcome` on demand, so `is_singular()` and `outcome`
+    /// cannot drift out of agreement by construction.
+    pub fn is_singular(&self) -> bool {
+        matches!(self.outcome, NewtonOutcome::Singular { .. })
+    }
 }
 
 /// Default pivot threshold below which the LDLᵀ factor is treated as
@@ -481,9 +483,11 @@ where
 /// [`solve_loop_closure_with_diagnostics`] — diagnostic-emitting wrapper that
 /// adds over/under-constrained pre-checks and a singularity post-process,
 /// returning a [`LoopClosureReport`] (the canonical "what happened" outcome
-/// plus an `is_singular` flag and any
+/// plus an [`is_singular()`] accessor and any
 /// [`DiagnosticCode::KinematicSingularity`] / `KinematicOverconstrained` /
 /// `KinematicUnderconstrained` entries the PRD task 9 prose requires).
+///
+/// [`is_singular()`]: LoopClosureReport::is_singular
 ///
 /// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
 pub fn solve_loop_closure(
@@ -715,10 +719,11 @@ const SINGLE_LOOP_RESIDUAL_COUNT: usize = 6;
 ///    [`StartStrategy::WarmStart`].
 ///    *(Wired in step-8 of task 2677.)*
 /// 3. **Singular post-process** — if the delegated Newton outcome is
-///    [`NewtonOutcome::Singular`], the wrapper sets `is_singular = true` and
-///    appends a [`DiagnosticCode::KinematicSingularity`] Warning.  The
-///    `Singular` variant's `x` payload carries the last-converged config the
-///    PRD requires.
+///    [`NewtonOutcome::Singular`], the wrapper appends a
+///    [`DiagnosticCode::KinematicSingularity`] Warning.  The `Singular`
+///    variant's `x` payload carries the last-converged config the PRD
+///    requires; [`LoopClosureReport::is_singular()`] returns `true`
+///    automatically because the accessor derives from the `outcome` tag.
 ///    *(Wired in step-10 of task 2677.)*
 ///
 /// **Single-loop assumption** — `solve_loop_closure` builds a 6-component
@@ -845,9 +850,8 @@ pub fn solve_loop_closure_with_diagnostics(
     // `x` payload already carries the last-converged config the PRD
     // requires; the wrapper's only job is to surface the typed diagnostic
     // alongside the outcome.  Other outcomes (Converged / NotConverged /
-    // InvalidInput) add no singularity entry; `is_singular` is derived
-    // from `outcome` inside `build_report`, so there is one source of
-    // truth (the `outcome` enum).
+    // InvalidInput) add no singularity entry; `is_singular()` derives from
+    // the `outcome` tag at the type level — one source of truth.
     if matches!(outcome, NewtonOutcome::Singular { .. }) {
         let diag = reify_types::Diagnostic::warning(
             "kinematic singularity detected: rank-deficient Jacobian; last-converged config returned",
@@ -916,29 +920,18 @@ fn validate_loop_closure_inputs(
     None
 }
 
-/// Smart constructor for [`LoopClosureReport`] that derives `is_singular`
-/// from `outcome` so the two cannot drift out of agreement.
+/// Bundles `outcome` and `diagnostics` into a [`LoopClosureReport`].
 ///
-/// `LoopClosureReport.is_singular` is structurally redundant with
-/// `matches!(outcome, NewtonOutcome::Singular { .. })`, but the field is
-/// preserved in the public API to match the PRD's `is_singular: true`
-/// shape.  Routing every wrapper-internal construction through this
-/// helper means we have a single source of truth (`outcome`) and a
-/// debug-build assertion catches any future caller that forgets the
-/// invariant.
+/// Every wrapper-internal construction goes through this helper for
+/// consistency.  Singularity is not tracked as a separate field — callers
+/// use [`LoopClosureReport::is_singular()`], which derives from the
+/// `outcome` tag and cannot drift by construction.
 fn build_report(
     outcome: NewtonOutcome,
     diagnostics: Vec<reify_types::Diagnostic>,
 ) -> LoopClosureReport {
-    let is_singular = matches!(outcome, NewtonOutcome::Singular { .. });
-    debug_assert_eq!(
-        is_singular,
-        matches!(outcome, NewtonOutcome::Singular { .. }),
-        "LoopClosureReport.is_singular must mirror matches!(outcome, NewtonOutcome::Singular {{ .. }})"
-    );
     LoopClosureReport {
         outcome,
-        is_singular,
         diagnostics,
     }
 }

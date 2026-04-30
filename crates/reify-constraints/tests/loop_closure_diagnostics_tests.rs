@@ -5,7 +5,9 @@
 //! Tests pin the public surface introduced by this task:
 //!   * three new `DiagnosticCode` variants (`KinematicSingularity`,
 //!     `KinematicOverconstrained`, `KinematicUnderconstrained`);
-//!   * the `LoopClosureReport { outcome, is_singular, diagnostics }` struct;
+//!   * the `LoopClosureReport { outcome, diagnostics }` struct, with an
+//!     `is_singular()` accessor that derives from `outcome` (single source of
+//!     truth; cannot drift by construction);
 //!   * the `solve_loop_closure_with_diagnostics(...)` wrapper, which adds
 //!     pre-/post-processing on top of the existing `solve_loop_closure`
 //!     Newton solver.
@@ -134,28 +136,81 @@ fn kinematic_underconstrained_round_trips_via_warning_with_code() {
     assert_eq!(d.code, Some(DiagnosticCode::KinematicUnderconstrained));
 }
 
-// ── Step-3: LoopClosureReport public-struct shape ───────────────────────
+// ── Step-3: LoopClosureReport public-struct shape and is_singular accessor ─
 
-/// Pins the public shape of `LoopClosureReport`: three publicly accessible
-/// fields (`outcome`, `is_singular`, `diagnostics`) that the
-/// `solve_loop_closure_with_diagnostics` wrapper populates.  Constructing
-/// the struct via a literal and reading every field confirms each one is
-/// `pub` — a future change that demotes any field to private would fail
-/// here.
+/// Pins the public contract of `LoopClosureReport`:
+/// - Two public fields: `outcome` and `diagnostics` (no `is_singular` field).
+/// - A derived accessor `is_singular()` that returns `true` iff `outcome` is
+///   `NewtonOutcome::Singular`; `outcome` is the single source of truth and the
+///   accessor cannot drift by construction.
+///
+/// Constructing the struct via a literal with only `outcome` and `diagnostics`
+/// proves that `is_singular` is NOT a public field (including it would now be
+/// an error, and omitting it here would fail to compile if the field were still
+/// required). Calling `report.is_singular()` (parens form) on each of the four
+/// `NewtonOutcome` variants pins the accessor semantics across the full variant
+/// set.
 #[test]
-fn loop_closure_report_struct_literal_exposes_three_pub_fields() {
-    let report = LoopClosureReport {
+fn loop_closure_report_is_singular_accessor_derives_from_outcome() {
+    // ── Converged: is_singular() must return false ──────────────────────
+    let report_converged = LoopClosureReport {
         outcome: NewtonOutcome::Converged {
             x: vec![0.0],
             iters: 0,
             residual_norm: 0.0,
         },
-        is_singular: false,
         diagnostics: vec![],
     };
-    assert!(matches!(report.outcome, NewtonOutcome::Converged { .. }));
-    assert!(!report.is_singular);
-    assert!(report.diagnostics.is_empty());
+    assert!(matches!(report_converged.outcome, NewtonOutcome::Converged { .. }));
+    assert!(report_converged.diagnostics.is_empty());
+    assert!(
+        !report_converged.is_singular(),
+        "Converged outcome must yield is_singular()=false"
+    );
+
+    // ── NotConverged: is_singular() must return false ───────────────────
+    let report_not_converged = LoopClosureReport {
+        outcome: NewtonOutcome::NotConverged {
+            x: vec![0.0],
+            residual_norm: 1.0,
+        },
+        diagnostics: vec![],
+    };
+    assert!(matches!(report_not_converged.outcome, NewtonOutcome::NotConverged { .. }));
+    assert!(report_not_converged.diagnostics.is_empty());
+    assert!(
+        !report_not_converged.is_singular(),
+        "NotConverged outcome must yield is_singular()=false"
+    );
+
+    // ── Singular: is_singular() must return true ────────────────────────
+    let report_singular = LoopClosureReport {
+        outcome: NewtonOutcome::Singular {
+            x: vec![0.0],
+            iters: 0,
+        },
+        diagnostics: vec![],
+    };
+    assert!(matches!(report_singular.outcome, NewtonOutcome::Singular { .. }));
+    assert!(report_singular.diagnostics.is_empty());
+    assert!(
+        report_singular.is_singular(),
+        "Singular outcome must yield is_singular()=true"
+    );
+
+    // ── InvalidInput: is_singular() must return false ───────────────────
+    let report_invalid = LoopClosureReport {
+        outcome: NewtonOutcome::InvalidInput {
+            reason: "test".to_string(),
+        },
+        diagnostics: vec![],
+    };
+    assert!(matches!(report_invalid.outcome, NewtonOutcome::InvalidInput { .. }));
+    assert!(report_invalid.diagnostics.is_empty());
+    assert!(
+        !report_invalid.is_singular(),
+        "InvalidInput outcome must yield is_singular()=false"
+    );
 }
 
 // ── Step-5: over-constrained pre-check (free_b.len() < 6) ───────────────
@@ -202,7 +257,7 @@ fn solve_loop_closure_with_diagnostics_emits_overconstrained_for_one_dof() {
         "over-constrained short-circuit must return NotConverged, got {:?}",
         report.outcome
     );
-    assert!(!report.is_singular, "no Newton run → is_singular must stay false");
+    assert!(!report.is_singular(), "no Newton run → is_singular must stay false");
 }
 
 // ── Step-7: under-constrained pre-check (free_b.len() > 6) ──────────────
@@ -317,10 +372,10 @@ fn solve_loop_closure_with_diagnostics_emits_singularity_for_rank_one_chain() {
     );
 
     assert!(
-        report.is_singular,
+        report.is_singular(),
         "expected is_singular=true on rank-deficient Jacobian, got is_singular={} \
          (outcome={:?})",
-        report.is_singular,
+        report.is_singular(),
         report.outcome,
     );
     match &report.outcome {
@@ -398,7 +453,7 @@ fn solve_loop_closure_with_diagnostics_overconstrained_midpoint_uses_joint_midpo
     let d = &report.diagnostics[0];
     assert_eq!(d.severity, Severity::Error);
     assert_eq!(d.code, Some(DiagnosticCode::KinematicOverconstrained));
-    assert!(!report.is_singular, "no Newton run → is_singular must stay false");
+    assert!(!report.is_singular(), "no Newton run → is_singular must stay false");
     match &report.outcome {
         NewtonOutcome::NotConverged { x, residual_norm } => {
             assert_eq!(x.len(), 1, "x must align positionally with free_b");
@@ -466,9 +521,9 @@ fn solve_loop_closure_with_diagnostics_balanced_full_rank_emits_no_diagnostics()
         report.diagnostics
     );
     assert!(
-        !report.is_singular,
+        !report.is_singular(),
         "balanced non-singular path must NOT lift is_singular, got is_singular={} (outcome={:?})",
-        report.is_singular,
+        report.is_singular(),
         report.outcome,
     );
     // Outcome must be Converged (zero initial residual) — anything else
@@ -586,9 +641,9 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
 
     // is_singular must stay false — the LDLᵀ path was never taken.
     assert!(
-        !report.is_singular,
+        !report.is_singular(),
         "full-rank construction must NOT lift is_singular, got is_singular={} (outcome={:?})",
-        report.is_singular,
+        report.is_singular(),
         report.outcome,
     );
 
@@ -681,8 +736,8 @@ fn solve_loop_closure_with_diagnostics_invalid_input_precedes_overconstrained() 
     );
 
     assert!(
-        !report.is_singular,
+        !report.is_singular(),
         "InvalidInput short-circuit must leave is_singular=false, got is_singular={}",
-        report.is_singular
+        report.is_singular()
     );
 }
