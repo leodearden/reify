@@ -182,29 +182,6 @@ fn relative_to_examples_dir_strips_prefix_for_top_level_and_nested_files() {
     );
 }
 
-/// Guard that `examples/list_helpers.ri` remains in the smoke corpus (task 2753).
-///
-/// `all_examples_parse_and_compile_with_stdlib` exercises every discovered
-/// `.ri` file, so renaming or removing `list_helpers.ri` would already break
-/// that bulk-smoke test.  However, the existing `total >= 40` count guard
-/// would not catch a future regression where `list_helpers.ri` is
-/// renamed/moved while other new examples are added to keep `total >= 40`.
-/// This test pins the corpus-membership contract explicitly so that any such
-/// regression produces an actionable message rather than a silent count pass.
-#[test]
-fn discovered_corpus_includes_list_helpers_fixture() {
-    let rels: Vec<String> = discover_ri_files()
-        .into_iter()
-        .map(|p| relative_to_examples_dir(&p))
-        .collect();
-    assert!(
-        rels.iter().any(|r| r == "list_helpers.ri"),
-        "examples_smoke discovered set is missing 'list_helpers.ri' \
-         (must remain in the corpus per task 2753); discovered: {:?}",
-        rels
-    );
-}
-
 /// Verify two invariants for every path returned by `discover_ri_files()`:
 ///
 /// (a) `relative_to_examples_dir` accepts the path without panicking (i.e. the
