@@ -190,6 +190,22 @@ impl DimensionVector {
     /// Dynamic viscosity: kg·m⁻¹·s⁻¹
     pub const DYNAMIC_VISCOSITY: DimensionVector =
         DimensionVector::from_exps(&[(0, -1), (1, 1), (2, -1)]);
+    /// Moment of inertia (mass-distribution): kg·m²
+    ///
+    /// Dimensionally distinct from `ENERGY` (kg·m²·s⁻²) — pin the s-slot
+    /// distinction in tests to prevent silent collisions if either constant
+    /// is edited.
+    pub const MOMENT_OF_INERTIA: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1)]);
+    /// Mass density: kg·m⁻³
+    ///
+    /// Named at the Rust level as `MASS_DENSITY` to disambiguate from the
+    /// pre-existing `MAGNETIC_FLUX_DENSITY` constant (a magnetic-flux base
+    /// quantity, not mass density). The user-facing canonical name is
+    /// `"Density"` — the natural spelling at call sites like
+    /// `density: Density`.
+    pub const MASS_DENSITY: DimensionVector =
+        DimensionVector::from_exps(&[(0, -3), (1, 1)]);
 
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
@@ -340,8 +356,8 @@ pub const FORCE: DimensionVector = {
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
 /// special-cases `"Dimensionless" => DimensionVector::DIMENSIONLESS` as a separate fallback arm.
 ///
-/// The slice contains exactly 30 entries, one per named singleton, in the same order as the
-/// original `canonical_name` match arms (LENGTH .. DYNAMIC_VISCOSITY).
+/// The slice contains 32 entries, one per named singleton, in the same order as the
+/// original `canonical_name` match arms (LENGTH .. MASS_DENSITY).
 pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::LENGTH, "Length"),
     (DimensionVector::MASS, "Mass"),
@@ -373,6 +389,8 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::ABSORBED_DOSE, "AbsorbedDose"),
     (DimensionVector::ANGULAR_VELOCITY, "AngularVelocity"),
     (DimensionVector::DYNAMIC_VISCOSITY, "DynamicViscosity"),
+    (DimensionVector::MOMENT_OF_INERTIA, "MomentOfInertia"),
+    (DimensionVector::MASS_DENSITY, "Density"),
 ];
 
 impl fmt::Display for DimensionVector {
@@ -884,6 +902,42 @@ mod tests {
         let cost_per_length = DimensionVector::MONEY.div(&DimensionVector::LENGTH);
         let (_, unit) = cost_per_length.to_display_units(1.0);
         assert_ne!(unit, "USD", "bare 'USD' label must not appear for a composed Money/Length dimension");
+    }
+
+    #[test]
+    fn moment_of_inertia_has_kg_m_squared_exponents() {
+        let mi = DimensionVector::MOMENT_OF_INERTIA;
+        assert_eq!(mi, DimensionVector::from_exps(&[(0, 2), (1, 1)]));
+        assert_eq!(mi.canonical_name(), Some("MomentOfInertia"));
+    }
+
+    #[test]
+    fn mass_density_has_kg_per_m_cubed_exponents() {
+        let d = DimensionVector::MASS_DENSITY;
+        assert_eq!(d, DimensionVector::from_exps(&[(0, -3), (1, 1)]));
+        assert_eq!(d.canonical_name(), Some("Density"));
+    }
+
+    #[test]
+    fn mass_density_is_distinct_from_magnetic_flux_density() {
+        // MASS_DENSITY is kg·m⁻³ (mechanics); MAGNETIC_FLUX_DENSITY is kg·s⁻²·A⁻¹
+        // (electromagnetism). They share the word "Density" colloquially but are
+        // dimensionally unrelated; pin the distinction so future edits cannot
+        // silently collapse them.
+        assert_ne!(
+            DimensionVector::MASS_DENSITY,
+            DimensionVector::MAGNETIC_FLUX_DENSITY
+        );
+    }
+
+    #[test]
+    fn moment_of_inertia_is_distinct_from_energy() {
+        // ENERGY is kg·m²·s⁻²; MOMENT_OF_INERTIA is kg·m². The s-slot distinction
+        // is the whole reason MOMENT_OF_INERTIA needs its own constant.
+        assert_ne!(
+            DimensionVector::MOMENT_OF_INERTIA,
+            DimensionVector::ENERGY
+        );
     }
 
     #[test]

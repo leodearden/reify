@@ -454,6 +454,12 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "DynamicViscosity" => Some(Type::Scalar {
             dimension: DimensionVector::DYNAMIC_VISCOSITY,
         }),
+        "MomentOfInertia" => Some(Type::Scalar {
+            dimension: DimensionVector::MOMENT_OF_INERTIA,
+        }),
+        "Density" => Some(Type::Scalar {
+            dimension: DimensionVector::MASS_DENSITY,
+        }),
         "Dimensionless" => Some(Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         }),
@@ -1294,6 +1300,35 @@ mod tests {
             resolve_type_name("Money"),
             Some(Type::Scalar {
                 dimension: DimensionVector::MONEY
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_type_name_recognises_moment_of_inertia() {
+        assert_eq!(
+            resolve_type_name("MomentOfInertia"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::MOMENT_OF_INERTIA
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_type_name_recognises_density_as_mass_density() {
+        // User-facing "Density" resolves to the kg·m⁻³ mass-density singleton,
+        // NOT to MAGNETIC_FLUX_DENSITY. The Rust constant is renamed to
+        // MASS_DENSITY to make this distinction unambiguous at the source level.
+        assert_eq!(
+            resolve_type_name("Density"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY
+            })
+        );
+        assert_ne!(
+            resolve_type_name("Density"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::MAGNETIC_FLUX_DENSITY
             })
         );
     }
