@@ -776,6 +776,7 @@ mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
     use reify_types::Value;
+    use std::collections::BTreeMap;
 
     // ── bind(joint, value): happy path ────────────────────────────────────
 
@@ -1427,6 +1428,43 @@ mod tests {
     fn transform_of_unknown_id_returns_undef() {
         let (s, _, _) = make_two_body_snapshot();
         assert!(eval_builtin("transform_of", &[s, Value::Int(99)]).is_undef());
+    }
+
+    /// Characterization test: `transform_of` returns `Value::Undef` when the
+    /// matched body record is missing the `world_transform` key.
+    ///
+    /// `eval_builtin("snapshot", ...)` always populates `world_transform` via
+    /// `make_snapshot_body_record`, so the defensive arm is unreachable from
+    /// well-formed snapshots.  This test pins the arm's behaviour by
+    /// hand-constructing a malformed Snapshot Map whose body record deliberately
+    /// omits the key.  The assertion must hold against both the old
+    /// `unwrap_or(Value::Undef)` idiom and the refactored explicit-reject
+    /// pattern introduced in the next step, so any accidental semantics change
+    /// (e.g., `?`-propagation that exits the loop early) would surface here.
+    #[test]
+    fn transform_of_body_record_missing_world_transform_returns_undef() {
+        // Build a minimal body record that has an `id` but no `world_transform`.
+        let mut body_record = BTreeMap::new();
+        body_record.insert(Value::String("id".to_string()), Value::Int(0));
+
+        // Wrap it in a Snapshot Map: kind="snapshot", bodies=[body_record].
+        let mut snap_map = BTreeMap::new();
+        snap_map.insert(
+            Value::String("kind".to_string()),
+            Value::String("snapshot".to_string()),
+        );
+        snap_map.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![Value::Map(body_record)]),
+        );
+        let malformed_snapshot = Value::Map(snap_map);
+
+        let result = eval_builtin("transform_of", &[malformed_snapshot, Value::Int(0)]);
+        assert!(
+            result.is_undef(),
+            "transform_of with missing world_transform should return Undef, got {:?}",
+            result
+        );
     }
 
     /// `transform_of()` validation surface: arity, non-snapshot
