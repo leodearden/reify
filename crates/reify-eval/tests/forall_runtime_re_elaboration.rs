@@ -878,6 +878,12 @@ fn edit_param_count_undef_to_known_emits_per_element_forall_connections() {
             i,
             c.frame_constraint
         );
+        assert!(
+            c.port_mappings.is_empty(),
+            "forall-Connect[{}] port_mappings must be empty for the simple-form fixture (got {:?})",
+            i,
+            c.port_mappings
+        );
 
         // (4) Compatibility constraint exists with the expected label and
         //     a `Bool::True` literal expression.
