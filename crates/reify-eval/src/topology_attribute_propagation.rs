@@ -505,6 +505,73 @@ pub fn populate_revolve_attributes(
     Ok(())
 }
 
+/// Originate topology attributes for a `BRepOffsetAPI_MakePipe` (sweep)
+/// result, given the per-op history records returned by
+/// `OcctKernel::sweep_with_history`.
+///
+/// Mirrors [`populate_extrude_attributes`] but emits sweep-specific roles:
+///   - `start_cap_face_indices` → `Role::Cap(CapKind::Start)` (parametric
+///     Start/End semantics matching the spine's parameter direction; NOT
+///     extrude's gravitational Top/Bottom).
+///   - `end_cap_face_indices` → `Role::Cap(CapKind::End)`.
+///   - `face_generated` → `Role::SweptFace` (NOT `Role::Side` — this is
+///     the per-op distinguisher between extrude lateral faces and sweep
+///     lateral faces, per task-5b design decisions in geometry.rs).
+///
+/// Sweep is single-parent like extrude / revolve (the profile is the
+/// operand whose sub-shapes propagate to the result; the path / spine is
+/// not itself a parent), so this helper reuses `SweepOpHistoryRecords`
+/// verbatim — `parent_index` in every record is `0`.
+///
+/// Edge attributes (e.g. `Role::NewEdge` for cap-to-side seam edges) are
+/// **not** written by this helper, mirroring [`populate_extrude_attributes`]:
+/// edge-level attribution is deferred until the cap-edge / seam-edge
+/// classification rules are finalised.
+///
+/// Local-index assignment, parameter semantics, and out-of-range error
+/// behaviour are identical to [`populate_extrude_attributes`]; see that
+/// helper's doc-comment for the parameter contract.
+pub fn populate_sweep_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    profile_face_handles: &[GeometryHandleId],
+    profile_edge_handles: &[GeometryHandleId],
+    result_face_handles: &[GeometryHandleId],
+    result_edge_handles: &[GeometryHandleId],
+    history: &SweepOpHistoryRecords,
+) -> Result<(), QueryError> {
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.start_cap_face_indices,
+        Role::Cap(CapKind::Start),
+        "sweep start cap",
+    )?;
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.end_cap_face_indices,
+        Role::Cap(CapKind::End),
+        "sweep end cap",
+    )?;
+
+    write_face_generated_attributes(
+        table,
+        feature_id,
+        profile_face_handles,
+        profile_edge_handles,
+        result_face_handles,
+        result_edge_handles,
+        &history.face_generated,
+        Role::SweptFace,
+        "sweep swept face",
+    )?;
+
+    Ok(())
+}
+
 /// Shared helper: write `(feature_id, role, local_index = 0)` to each
 /// cap face index in `cap_indices`, validating that each index is in
 /// range for `result_face_handles`.
