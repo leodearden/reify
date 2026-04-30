@@ -68,6 +68,48 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn combine_panics_in_debug_on_nan_output_bound() {
+        combine_demanded_tolerance(Some(f64::NAN), Some(1e-6));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn combine_panics_in_debug_on_nan_purpose_bound() {
+        combine_demanded_tolerance(Some(1e-6), Some(f64::NAN));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn combine_panics_in_debug_on_infinite_output_bound() {
+        combine_demanded_tolerance(Some(f64::INFINITY), Some(1e-6));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn combine_panics_in_debug_on_infinite_purpose_bound() {
+        combine_demanded_tolerance(Some(1e-6), Some(f64::INFINITY));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn combine_panics_in_debug_on_negative_output_bound() {
+        combine_demanded_tolerance(Some(-1.0e-3), Some(1e-6));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn combine_panics_in_debug_on_negative_purpose_bound() {
+        combine_demanded_tolerance(Some(1e-6), Some(-1.0e-3));
+    }
+
     #[test]
     fn combine_passes_through_lone_some_or_returns_none_when_both_none() {
         assert_eq!(
