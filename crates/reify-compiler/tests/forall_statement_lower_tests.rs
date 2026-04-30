@@ -82,20 +82,7 @@ fn find_forall_constraint_span(
     source: &str,
     structure_name: &str,
 ) -> reify_types::SourceSpan {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl
-            && s.name == structure_name
-        {
-            for m in &s.members {
-                if let reify_syntax::MemberDecl::ForallConstraint(f) = m {
-                    return f.span;
-                }
-            }
-        }
-    }
-    panic!("no ForallConstraint found in structure {}", structure_name);
+    with_first_forall_constraint(source, structure_name, |f| f.span)
 }
 
 /// Recover the `MemberDecl::ForallConnect` span by re-parsing `source`,
@@ -105,20 +92,7 @@ fn find_forall_connect_span(
     source: &str,
     structure_name: &str,
 ) -> reify_types::SourceSpan {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl
-            && s.name == structure_name
-        {
-            for m in &s.members {
-                if let reify_syntax::MemberDecl::ForallConnect(f) = m {
-                    return f.span;
-                }
-            }
-        }
-    }
-    panic!("no ForallConnect found in structure {}", structure_name);
+    with_first_forall_connect(source, structure_name, |f| f.span)
 }
 
 /// Assert that `template` has zero connections and zero `forall@`-prefixed
@@ -164,23 +138,10 @@ fn find_forall_connect_body_spans(
     source: &str,
     structure_name: &str,
 ) -> (reify_types::SourceSpan, reify_types::SourceSpan) {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl
-            && s.name == structure_name
-        {
-            for m in &s.members {
-                if let reify_syntax::MemberDecl::ForallConnect(f) = m {
-                    if let reify_syntax::ForallConnectBody::Connect(cd) = &f.body {
-                        return (cd.left.expr.span, cd.right.expr.span);
-                    }
-                    panic!("ForallConnect body is not a Connect variant in {}", structure_name);
-                }
-            }
-        }
-    }
-    panic!("no ForallConnect found in structure {}", structure_name);
+    with_first_forall_connect(source, structure_name, |f| match &f.body {
+        reify_syntax::ForallConnectBody::Connect(cd) => (cd.left.expr.span, cd.right.expr.span),
+        _ => panic!("ForallConnect body is not a Connect variant in {}", structure_name),
+    })
 }
 
 /// Build the boilerplate source fixture for the three unsupported-port-shape
