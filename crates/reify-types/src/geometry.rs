@@ -3309,4 +3309,136 @@ mod tests {
             ReprKind::Voxel => {}
         }
     }
+
+    /// Verify that the v0.2 multi-kernel `Operation` enum (Booleans, Primitives,
+    /// Modify, Transform, Pattern, Sweep, Curve, Convert) has `Hash + Eq + Copy +
+    /// Debug` and that all variants are pairwise distinct.
+    ///
+    /// Mirrors the shape of `repr_kind_kernel_family_variants_round_trip_through_hashmap_key`:
+    /// pairwise-distinct + `HashMap<Operation, _>` round-trip + a final compile-time
+    /// exhaustive `match` arm. Any future variant addition will cause a compile
+    /// error here, prompting the developer to update the test, the dispatcher's
+    /// BFS expansion logic, and any kernel adapters' descriptors.
+    #[test]
+    fn operation_variants_round_trip_through_hashmap_key() {
+        use std::collections::HashMap;
+        let variants = [
+            // Booleans (3)
+            Operation::BooleanUnion,
+            Operation::BooleanDifference,
+            Operation::BooleanIntersection,
+            // Primitives (4)
+            Operation::PrimitiveBox,
+            Operation::PrimitiveCylinder,
+            Operation::PrimitiveSphere,
+            Operation::PrimitiveTube,
+            // Modify (5)
+            Operation::ModifyFillet,
+            Operation::ModifyChamfer,
+            Operation::ModifyShell,
+            Operation::ModifyDraft,
+            Operation::ModifyThicken,
+            // Transform (4)
+            Operation::TransformTranslate,
+            Operation::TransformRotate,
+            Operation::TransformScale,
+            Operation::TransformRotateAround,
+            // Pattern (5)
+            Operation::PatternLinear,
+            Operation::PatternCircular,
+            Operation::PatternMirror,
+            Operation::PatternLinear2D,
+            Operation::PatternArbitrary,
+            // Sweep (8)
+            Operation::SweepLoft,
+            Operation::SweepExtrude,
+            Operation::SweepRevolve,
+            Operation::SweepSweep,
+            Operation::SweepExtrudeSymmetric,
+            Operation::SweepSweepGuided,
+            Operation::SweepLoftGuided,
+            Operation::SweepPipe,
+            // Curve (6)
+            Operation::CurveLineSegment,
+            Operation::CurveArc,
+            Operation::CurveHelix,
+            Operation::CurveInterpCurve,
+            Operation::CurveBezierCurve,
+            Operation::CurveNurbsCurve,
+            // Convert (4 — one per ReprKind)
+            Operation::Convert { from: ReprKind::BRep },
+            Operation::Convert { from: ReprKind::Mesh },
+            Operation::Convert { from: ReprKind::Sdf },
+            Operation::Convert { from: ReprKind::Voxel },
+        ];
+
+        // 39 variants total: 3 + 4 + 5 + 4 + 5 + 8 + 6 + 4.
+        assert_eq!(variants.len(), 39, "expected 39 Operation variants total");
+
+        // All variants are pairwise distinct.
+        for i in 0..variants.len() {
+            for j in 0..variants.len() {
+                if i != j {
+                    assert_ne!(variants[i], variants[j], "expected distinct variants at {i} and {j}");
+                }
+            }
+        }
+
+        // All variants survive a HashMap round-trip (requires Hash + Eq + Copy).
+        let mut map: HashMap<Operation, u32> = HashMap::new();
+        for (idx, v) in variants.iter().enumerate() {
+            map.insert(*v, idx as u32); // *v requires Copy
+        }
+        assert_eq!(
+            map.len(),
+            variants.len(),
+            "all {} Operation variants must be stored as distinct keys",
+            variants.len()
+        );
+        for (idx, v) in variants.iter().enumerate() {
+            assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
+        }
+
+        // Compile-time exhaustiveness check: this match must cover all variants.
+        // If a new variant is added, this will fail to compile.
+        let v = Operation::BooleanUnion;
+        match v {
+            Operation::BooleanUnion => {}
+            Operation::BooleanDifference => {}
+            Operation::BooleanIntersection => {}
+            Operation::PrimitiveBox => {}
+            Operation::PrimitiveCylinder => {}
+            Operation::PrimitiveSphere => {}
+            Operation::PrimitiveTube => {}
+            Operation::ModifyFillet => {}
+            Operation::ModifyChamfer => {}
+            Operation::ModifyShell => {}
+            Operation::ModifyDraft => {}
+            Operation::ModifyThicken => {}
+            Operation::TransformTranslate => {}
+            Operation::TransformRotate => {}
+            Operation::TransformScale => {}
+            Operation::TransformRotateAround => {}
+            Operation::PatternLinear => {}
+            Operation::PatternCircular => {}
+            Operation::PatternMirror => {}
+            Operation::PatternLinear2D => {}
+            Operation::PatternArbitrary => {}
+            Operation::SweepLoft => {}
+            Operation::SweepExtrude => {}
+            Operation::SweepRevolve => {}
+            Operation::SweepSweep => {}
+            Operation::SweepExtrudeSymmetric => {}
+            Operation::SweepSweepGuided => {}
+            Operation::SweepLoftGuided => {}
+            Operation::SweepPipe => {}
+            Operation::CurveLineSegment => {}
+            Operation::CurveArc => {}
+            Operation::CurveHelix => {}
+            Operation::CurveInterpCurve => {}
+            Operation::CurveBezierCurve => {}
+            Operation::CurveNurbsCurve => {}
+            Operation::Convert { from: _ } => {}
+        }
+    }
 }
