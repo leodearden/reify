@@ -510,13 +510,11 @@ impl CacheStore {
     /// that bumped the version* rather than any specific upstream NodeId.
     /// Audit of in-tree callers (task #2330 amendment review):
     ///
-    /// - `cache.rs::incremental_eval` — top-level dirty walk, no upstream
-    ///   node is the cause (the trigger is the bumped `VersionId`).
     /// - `concurrent.rs::concurrent_eval` and `engine_edit.rs::edit_param` /
     ///   `engine_edit.rs::edit_source` — same shape: bulk-mark every member
     ///   of the eval-set Pending before the per-node evaluator runs.
     ///
-    /// All four of these intentionally drop the chain because none of them
+    /// All three of these intentionally drop the chain because none of them
     /// has Failed or Pending in their input set at the moment they call
     /// `mark_pending`. The §9.2 chain is laid down inside the per-node
     /// evaluator itself (e.g. `evaluate_let_bindings` →
@@ -1121,77 +1119,6 @@ pub fn dirty_set(
         }
 
         // Mark as changed (needs re-evaluation)
-        result.push(cell.clone());
-
-        // Propagate to dependents
-        let dependents = dep_map.dependents_of(cell);
-        for dependent in dependents {
-            if !dirty.contains(dependent) {
-                dirty.push(dependent.clone());
-            }
-        }
-    }
-
-    result
-}
-
-/// Incremental evaluation: re-evaluate only the cells that changed.
-///
-/// Returns the list of cells that actually changed value (for reporting).
-/// This is the main entry point for incremental evaluation.
-pub fn incremental_eval(
-    cache: &mut CacheStore,
-    _graph: &crate::graph::EvaluationGraph,
-    dep_map: &crate::deps::DependencyMap,
-    _values: &mut ValueMap,
-    changed: &[ValueCellId],
-) -> Vec<ValueCellId> {
-    // 1. Bump version to invalidate stale entries
-    cache.bump_version();
-
-    // 2. Mark all dependents as dirty based on changed cells
-    cache.invalidate_dependents(changed);
-
-    // 3. Compute dirty set using topological order
-    let mut dirty = Vec::new();
-    let topo_order = dep_map.topological_order();
-
-    // Start with directly changed cells
-    for cell in changed {
-        if !dirty.contains(cell) {
-            dirty.push(cell.clone());
-        }
-    }
-
-    // Walk through topological order, checking freshness
-    let mut result: Vec<ValueCellId> = Vec::new();
-
-    for cell in &topo_order {
-        // Skip cells that aren't affected
-        if !dirty.contains(cell) {
-            continue;
-        }
-
-        // Check if fresh (same version)
-        if cache.is_fresh(cell) {
-            // Clear dirty flag and skip
-            let node = NodeId::Value(cell.clone());
-            cache.clear_dirty(&node);
-            continue;
-        }
-
-        // Mark as pending before evaluation. Bulk dirty-pass: the "cause"
-        // is the user-driven version bump that produced `changed`, not any
-        // upstream Failed/Pending NodeId, so the no-cause helper is correct
-        // here. The arch §9.2 diagnostic chain is laid down by the per-node
-        // evaluator (e.g. `evaluate_let_bindings`'s pre-eval Pending gate)
-        // when it actually observes a Failed/Pending input.
-        let node = NodeId::Value(cell.clone());
-        cache.mark_pending(&node);
-
-        // Re-evaluate this cell
-        // For now, we'll use a placeholder - actual evaluation happens in Engine
-        // The function returns cells that need re-evaluation
         result.push(cell.clone());
 
         // Propagate to dependents
