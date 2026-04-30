@@ -393,7 +393,25 @@ fn build_snapshot_list(mechanism: &Value, metas: &[DimMeta]) -> Value {
     for d in (0..n.saturating_sub(1)).rev() {
         strides[d] = strides[d + 1] * metas[d + 1].steps;
     }
+    // Warm-start threading across sweep steps (task 2678 step-10).
+    //
+    // `prev_free_values` carries the previous step's converged solver
+    // state — None for the first iteration (cold-start from Midpoint),
+    // Some(_) for every subsequent iteration (warm-start from the prior
+    // snapshot's `free_values` key).  The `snapshot()` builtin's 3-arg
+    // form (task 2678 step-8) consumes this directly.
+    //
+    // Open-chain mechanisms produce `free_values == Value::List(vec![])`
+    // every step; threading an empty outer-List into a closed-chain-less
+    // snapshot is a no-op fast path (the warm-start parser sees
+    // `outer.len() == loop_closures.len() == 0`, validates, and the
+    // closed-chain block doesn't run).  So this single code path
+    // handles both shapes without branching on mechanism kind.
+    //
+    // The change is purely internal — `sweep` and `sweep_grid` user-
+    // facing arities are unchanged.
     let mut snapshots: Vec<Value> = Vec::with_capacity(total as usize);
+    let mut prev_free_values: Option<Value> = None;
     for idx in 0..total {
         let mut bindings: Vec<Value> = Vec::with_capacity(n);
         for d in 0..n {
@@ -409,10 +427,30 @@ fn build_snapshot_list(mechanism: &Value, metas: &[DimMeta]) -> Value {
             }
             bindings.push(binding);
         }
-        let snap = eval_builtin("snapshot", &[mechanism.clone(), Value::List(bindings)]);
+        // 2-arg cold call on the first iteration; 3-arg warm call after.
+        let snap = match prev_free_values.take() {
+            Some(prev) => eval_builtin(
+                "snapshot",
+                &[mechanism.clone(), Value::List(bindings), prev],
+            ),
+            None => eval_builtin("snapshot", &[mechanism.clone(), Value::List(bindings)]),
+        };
         if snap.is_undef() {
             return Value::Undef;
         }
+        // Capture this step's `free_values` for the next iteration.  A
+        // missing key would be a structural bug in `make_snapshot` (step-6
+        // emits it for every snapshot) — `is_undef()` already short-
+        // circuits the failure cases above, so anything still here is a
+        // well-formed Snapshot Map.  Defensive None-fallthrough leaves
+        // the next step on a cold call rather than dropping the sweep,
+        // matching the "best-effort warm-start" stance of the design.
+        prev_free_values = match &snap {
+            Value::Map(m) => m
+                .get(&Value::String("free_values".to_string()))
+                .cloned(),
+            _ => None,
+        };
         snapshots.push(snap);
     }
     Value::List(snapshots)
