@@ -99,15 +99,19 @@ pub enum ReprKind {
 ///
 /// Names every operation a geometry kernel might claim to support. The pair
 /// `(Operation, ReprKind)` in [`CapabilityDescriptor::supports`] reads as
-/// "this kernel can perform `Operation` and produce `ReprKind`". For every
-/// variant except [`Operation::Convert`], the `ReprKind` in the pair is
+/// "this kernel can perform `Operation` and produce `ReprKind`". For ops
+/// that consume a geometric input — Booleans, Modify, Transform, Pattern,
+/// and Sweep variants when the input is a 3D body — the `ReprKind` is
 /// **both** the input repr the kernel consumes and the output repr it
-/// produces — i.e. the kernel receives a `repr`-typed input and returns a
-/// `repr`-typed result. This mirrors the dispatcher's `current_repr ==
-/// demanded` final-stage probe in `crates/reify-eval/src/dispatcher.rs`:
-/// the gate fires only when the currently-realised repr already equals
-/// `demanded`, which by this invariant is also the repr the kernel expects
-/// on input. For [`Operation::Convert { from }`] entries, `from` is the
+/// produces. This mirrors the dispatcher's `current_repr == demanded`
+/// final-stage probe in `crates/reify-eval/src/dispatcher.rs`: the gate
+/// fires only when the currently-realised repr already equals `demanded`,
+/// which by this invariant is also the repr the kernel expects on input.
+/// For ops with no geometric input (Primitives, Curves), the `ReprKind`
+/// names only the produced output repr; callers signal this by passing
+/// `available = {demanded}` so the BFS treats the demanded repr as
+/// trivially in scope without a conversion step. For
+/// [`Operation::Convert { from }`] entries, `from` is the
 /// input repr and the second tuple element is the output repr — the only
 /// shape where the two diverge. Conversions
 /// across representation families are modelled here as
@@ -242,16 +246,23 @@ pub enum Operation {
 pub struct CapabilityDescriptor {
     /// The pairs `(op, repr)` this kernel claims to support.
     ///
-    /// For every non-[`Operation::Convert`] entry, `repr` is **both** the
-    /// input repr the kernel consumes and the output repr it produces. The
+    /// For ops that consume a geometric input (Booleans, Modify, Transform,
+    /// Pattern, Sweep variants with a 3D body), `repr` is **both** the input
+    /// repr the kernel consumes and the output repr it produces. The
     /// dispatcher's `current_repr == demanded` gate
     /// (in `crates/reify-eval/src/dispatcher.rs`) confirms both
     /// simultaneously: the popped repr must equal `demanded`, and by this
     /// invariant that same equality also confirms the kernel's expected input
-    /// repr. A kernel that takes `Mesh` input to produce `BRep` for
-    /// [`Operation::SweepLoft`] MUST NOT declare `(SweepLoft, BRep)` — that
-    /// entry reads as BRep→BRep. Model the mesh→brep step as a
-    /// `(Convert { from: Mesh }, BRep)` entry instead.
+    /// repr. A kernel that converts `Mesh` input to a `BRep` result for
+    /// [`Operation::BooleanUnion`] MUST NOT declare `(BooleanUnion, BRep)` —
+    /// that entry reads as BRep→BRep. Declare
+    /// `(Convert { from: Mesh }, BRep)` instead and let the dispatcher chain
+    /// the conversion before a BRep-native union kernel.
+    ///
+    /// For ops with no geometric input (Primitives, Curves), `repr` names
+    /// only the produced output repr; callers signal this by passing
+    /// `available = {demanded}` so the BFS treats the demanded repr as
+    /// trivially in scope.
     ///
     /// For [`Operation::Convert { from }`] entries, `from` is the input repr
     /// and the second tuple element is the output repr — the only shape where
