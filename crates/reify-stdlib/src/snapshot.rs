@@ -173,6 +173,16 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 // as open-chain.
                 _ => &[],
             };
+            // Per-loop converged free-variable values, threaded into the
+            // Snapshot Map's `free_values` key (task 2678 step-6).  Outer
+            // List length == loop_closures.len(); inner List length ==
+            // per-loop free var count; leaves are `Value::Real` carrying
+            // SI-unit values (matches the warm-start arg shape in step-8).
+            // Open-chain mechanisms emit an empty outer List for shape
+            // stability (the BTreeMap key invariant {bodies, free_values,
+            // kind} stays alphabetically consistent across mechanism
+            // shapes).
+            let mut free_values: Vec<Value> = Vec::with_capacity(loop_closures.len());
             let snapshot_bodies = if loop_closures.is_empty() {
                 snapshot_bodies
             } else {
@@ -234,6 +244,17 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                         return Some(Value::Undef);
                     }
 
+                    // Collect this loop's converged free values as
+                    // bare `Value::Real` leaves (SI units).  The dimensioned
+                    // wrapping that follows for synth_bindings rehydrates
+                    // these into `Value::length` / `Value::angle` for the
+                    // FK re-walk; the Snapshot Map carrier stays bare-Real
+                    // so warm-start round-trips through pure f64 vectors
+                    // (matches `StartStrategy::WarmStart(Vec<f64>)`).
+                    let per_loop_reals: Vec<Value> =
+                        x.iter().map(|&v| Value::Real(v)).collect();
+                    free_values.push(Value::List(per_loop_reals));
+
                     for (k, &i) in free_b.iter().enumerate() {
                         let joint = chain_b[i].clone();
                         let wrapped = match wrap_midpoint_for_joint(&joint, x[k]) {
@@ -260,7 +281,7 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 }
             };
 
-            make_snapshot(snapshot_bodies)
+            make_snapshot(snapshot_bodies, free_values)
         }
         "bodies" => {
             // Validation surface (each guard short-circuits to Undef):
@@ -654,16 +675,29 @@ fn snapshot_bodies(snap: &Value) -> Option<&[Value]> {
 ///
 /// Shape (alphabetical key order, matching `BTreeMap` iteration):
 /// - `bodies` → `Value::List(vec![])`
+/// - `free_values` → `Value::List(vec![])`
 /// - `kind` → `Value::String("snapshot")`
 fn make_empty_snapshot() -> Value {
-    make_snapshot(Vec::new())
+    make_snapshot(Vec::new(), Vec::new())
 }
 
 /// Build a Snapshot `Value::Map` carrying the supplied list of
-/// per-body world-transform records.
-fn make_snapshot(bodies: Vec<Value>) -> Value {
+/// per-body world-transform records and the per-loop converged
+/// free-variable values from the loop-closure solver.
+///
+/// `free_values` is the carrier that lets sweep's warm-start path
+/// round-trip the previous step's solver state into the next step
+/// via the optional 3rd arg to `snapshot()` (task 2678 step-8).
+/// Open-chain callers pass `Vec::new()` for shape stability — the
+/// `free_values` key is always present, just with an empty outer
+/// List for mechanisms that have no `loop_closures` records.
+fn make_snapshot(bodies: Vec<Value>, free_values: Vec<Value>) -> Value {
     let mut m = BTreeMap::new();
     m.insert(Value::String("bodies".to_string()), Value::List(bodies));
+    m.insert(
+        Value::String("free_values".to_string()),
+        Value::List(free_values),
+    );
     m.insert(
         Value::String("kind".to_string()),
         Value::String("snapshot".to_string()),
@@ -2303,8 +2337,18 @@ mod tests {
             &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
         );
 
+        // Bind jA = 0.5m (driver) AND jX = 0 rad (pin the shared revolute
+        // so it isn't a free var on path_b).  Without binding jX,
+        // `extract_loop_closure_chains` flags BOTH jB and jX-on-path-b as
+        // free indices because chain_b carries every joint that lacks a
+        // direct binding entry — multi-loop coupling that would dedupe
+        // joints shared with path_a is out of v0.2 scope (see plan
+        // design-decisions §4).  Pinning jX gives us a single-free-var
+        // shape that step-9 / step-11 assume, and keeps this test focused
+        // on the carrier shape rather than multi-DOF solver behaviour.
         let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
-        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a])]);
+        let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(0.0)]);
+        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a, bind_x])]);
 
         let smap = match s {
             Value::Map(m) => m,
@@ -2326,7 +2370,8 @@ mod tests {
             "free_values outer-List length must equal loop_closures.len() == 1"
         );
 
-        // Inner-List shape: one Real per free var (here, jB only).
+        // Inner-List shape: one Real per free var (here, jB only — jX is
+        // pinned via bind_x above so it doesn't enter `free_b`).
         let inner = match &loops[0] {
             Value::List(l) => l,
             other => panic!("free_values[0] must be a List, got {:?}", other),
