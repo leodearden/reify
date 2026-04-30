@@ -505,8 +505,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // Compute the dimensionless ratio: lead / (2π).
             let ratio = lead_si / (2.0 * std::f64::consts::PI);
             // Invariant: length_input rejects non-finite leads, so ratio is finite by
-            // construction. debug_assert! catches regressions if length_input's contract changes.
-            debug_assert!(ratio.is_finite(), "screw: ratio must be finite — length_input rejects non-finite leads");
+            // construction. assert! preserves this defense-in-depth in release builds.
+            assert!(ratio.is_finite(), "screw: ratio must be finite — length_input rejects non-finite leads");
             // Delegate to couple() — parent validation and Map layout come from there.
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
@@ -542,7 +542,7 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             let ratio = -(teeth_b as f64) / (teeth_a as f64);
             // Both teeth counts are strictly positive finite integers, so ratio is always finite
             // (i64-to-f64 is exact up to 2^53; division of two finite non-zero f64s is finite).
-            debug_assert!(ratio.is_finite(), "gear: ratio must be finite — teeth_a and teeth_b are validated positive Ints");
+            assert!(ratio.is_finite(), "gear: ratio must be finite — teeth_a and teeth_b are validated positive Ints");
             // Delegate to couple() — parent validation and Map layout come from there.
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
@@ -572,8 +572,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // ratio = pitch_radius (dimensionless scaling factor for the coupling).
             let ratio = pitch_radius_si;
             // Invariant: length_input rejects non-finite pitch radii, so ratio is finite by
-            // construction. debug_assert! catches regressions if length_input's contract changes.
-            debug_assert!(ratio.is_finite(), "rack_and_pinion: ratio must be finite — length_input rejects non-finite pitch_radius");
+            // construction. assert! preserves this defense-in-depth in release builds.
+            assert!(ratio.is_finite(), "rack_and_pinion: ratio must be finite — length_input rejects non-finite pitch_radius");
             // Delegate to couple() — parent validation and Map layout come from there.
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
@@ -3153,6 +3153,7 @@ mod tests {
             Some(&Value::length(0.0)),
             "screw: default offset for prismatic parent should be Value::length(0.0)"
         );
+        assert_eq!(map.len(), 4, "screw coupling Map should have exactly 4 keys: kind, parent, ratio, offset");
         // Verify end-to-end kinematics: transform_at(result, length(2π)) → translation [1e-3, 0, 0]
         // Math: coupled = (1e-3/(2π)) * 2π + 0 = 1e-3 m, translated along prismatic-X axis.
         let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
@@ -3223,6 +3224,7 @@ mod tests {
             Some(&Value::angle(0.0)),
             "gear: default offset for revolute parent should be Value::angle(0.0)"
         );
+        assert_eq!(map.len(), 4, "gear coupling Map should have exactly 4 keys: kind, parent, ratio, offset");
         // Verify end-to-end kinematics: transform_at(result, angle(π/3))
         // Math: coupled = -1.5 * (π/3) = -π/2 rad about Z-axis
         //   → rotation quaternion for -π/2 about Z = (cos(-π/4), 0, 0, sin(-π/4))
@@ -3299,6 +3301,7 @@ mod tests {
             Some(&Value::length(0.0)),
             "rack_and_pinion: default offset for prismatic parent should be Value::length(0.0)"
         );
+        assert_eq!(map.len(), 4, "rack_and_pinion coupling Map should have exactly 4 keys: kind, parent, ratio, offset");
         // Verify end-to-end kinematics: transform_at(result, length(2π))
         // Math: coupled = 0.01 * 2π + 0 = 0.02π m, translated along prismatic-X axis.
         let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
