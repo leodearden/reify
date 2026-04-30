@@ -79,7 +79,7 @@
 //!   param is enumerated, feasibility-checked, or selected, and no additional
 //!   diagnostics are emitted. This is the v0.1 "no cross-param backtracking" rule.
 //! - **Substitution Vec** — `resolve_auto_type_params` returns a
-//!   `Vec<(String, String)>` (`param_name → resolved_fqn`) in declared order.
+//!   `Vec<(String, String)>` (`param_name → template_name`) in declared order.
 //!   For v0.1 this Vec is recorded but NOT yet consumed by Phase A's `bounds`
 //!   slice or Phase B's `ValueMap` (deferred substitution work; see Phase B
 //!   scope cut 2). The wiring is in place so a future task can read the map
@@ -155,7 +155,7 @@ pub struct AutoTypeParam {
 ///   the first failure are recorded here; params *after* the first failure are
 ///   NOT recorded (halt-on-first-failure rule).
 /// - `substitution` — only the *successfully resolved* params, in declared
-///   order. Each entry is `(param_name, resolved_fqn)`. A param appears here
+///   order. Each entry is `(param_name, template_name)`. A param appears here
 ///   iff its `SelectionResult` was `Selected`.
 ///
 /// The asymmetry between `per_param` and `substitution` is intentional and
@@ -166,7 +166,7 @@ pub struct AutoTypeParam {
 pub struct MultiParamResolutionOutcome {
     /// Per-param outcomes in declared order, stopping at the first failure.
     pub per_param: Vec<(String, SelectionResult)>,
-    /// Successfully resolved substitutions `(param_name, resolved_fqn)`, in
+    /// Successfully resolved substitutions `(param_name, template_name)`, in
     /// declared order.
     pub substitution: Vec<(String, String)>,
 }
@@ -805,13 +805,32 @@ pub fn resolve_auto_type_params(
             diagnostics,
         );
 
-        let candidates = match enumeration {
+        // Phases A → B → C: dispatch on the enumeration outcome.
+        // `CandidateEnumeration::Empty` is handled directly here, removing the
+        // need for a synthetic `FeasibilityResult::Empty` and the downstream
+        // `matches!` heuristic that re-discovered the empty-pool condition by
+        // inspecting the synthetic value's `rejected.is_empty()`.
+        let selection = match enumeration {
             CandidateEnumeration::Empty => {
-                // No candidates found — flow through to Phase C which will
-                // emit the no-candidate error and produce NoCandidate.
-                vec![]
+                // Phase A found zero in-scope structures satisfying the bound.
+                // Emit NoCandidate directly — no Phase B or C call needed.
+                //
+                // Message matches Phase C's zero-rejection-summary phrasing so
+                // both `AutoTypeParamNoCandidate` paths (empty pool from Phase A;
+                // all-rejected pool from Phase B) produce a consistent base string.
+                let (joined_bounds, label_message) = render_auto_type_param_label(&param.bounds);
+                let message = format!(
+                    "auto type parameter has no feasible candidates for bound '{bounds_str}'",
+                    bounds_str = joined_bounds,
+                );
+                diagnostics.push(
+                    Diagnostic::error(message)
+                        .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
+                        .with_label(DiagnosticLabel::new(param.use_site_span, label_message))
+                        .with_candidates(Vec::<String>::new()),
+                );
+                SelectionResult::NoCandidate
             }
-            CandidateEnumeration::Found(candidates) => candidates,
             CandidateEnumeration::Overflow(overflow_vec) => {
                 // Phase A already pushed the overflow diagnostic.
                 // Model overflow as Ambiguous (same "≥2 candidates, can't
@@ -821,61 +840,23 @@ pub fn resolve_auto_type_params(
                 per_param.push((param.name.clone(), result));
                 break;
             }
-        };
-
-        // Phase B: feasibility filter.
-        let feasibility = if candidates.is_empty() {
-            // Phase A returned Empty — construct a synthetic FeasibilityResult::Empty
-            // with no rejected candidates so Phase C emits NoCandidate.
-            // This path should not happen under normal Phase A/B wiring (Phase A
-            // Empty goes straight to Phase C via the EmptyPool path), but we
-            // handle it defensively here by building a zero-rejected Empty.
-            // Phase C's debug_assert on non-empty rejected is intentionally NOT
-            // triggered here because we short-circuit below instead.
-            //
-            // Actually, we need to avoid calling filter_feasible_candidates with
-            // an empty slice (debug_assert there), so handle the empty case
-            // directly in Phase C via a synthetic FeasibilityResult::Empty.
-            FeasibilityResult::Empty { rejected: vec![] }
-        } else {
-            filter_feasible_candidates(
-                &candidates,
-                parameterized_template,
-                constraint_checker,
-                functions,
-            )
-        };
-
-        // Phase C: selection. Phase C handles both empty-pool (via
-        // FeasibilityResult::Empty) and feasibility filter output.
-        // For the Phase A Empty case, we need special handling since Phase C's
-        // debug_assert requires non-empty rejected in FeasibilityResult::Empty.
-        // We instead emit NoCandidate manually for the zero-candidate path.
-        let selection = if matches!(feasibility, FeasibilityResult::Empty { rejected: ref r } if r.is_empty())
-        {
-            // Phase A found zero candidates (CandidateEnumeration::Empty). Emit
-            // the no-candidate error directly (mirrors what Phase C would do but
-            // without triggering the debug_assert on empty rejected vec).
-            let (joined_bounds, label_message) = render_auto_type_param_label(&param.bounds);
-            let message = format!(
-                "auto type parameter has no candidates satisfying bound '{bounds_str}': no in-scope structure declares conformance",
-                bounds_str = joined_bounds,
-            );
-            diagnostics.push(
-                Diagnostic::error(message)
-                    .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
-                    .with_label(DiagnosticLabel::new(param.use_site_span, label_message))
-                    .with_candidates(Vec::<String>::new()),
-            );
-            SelectionResult::NoCandidate
-        } else {
-            select_candidate(
-                feasibility,
-                &param.bounds,
-                param.free,
-                param.use_site_span,
-                diagnostics,
-            )
+            CandidateEnumeration::Found(candidates) => {
+                // Phase B: feasibility filter.
+                let feasibility = filter_feasible_candidates(
+                    &candidates,
+                    parameterized_template,
+                    constraint_checker,
+                    functions,
+                );
+                // Phase C: selection.
+                select_candidate(
+                    feasibility,
+                    &param.bounds,
+                    param.free,
+                    param.use_site_span,
+                    diagnostics,
+                )
+            }
         };
 
         // Asymmetry contract (step-14): `per_param` accumulates EVERY
