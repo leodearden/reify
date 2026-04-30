@@ -262,3 +262,37 @@ fn vector3_two_type_args_in_default_stdlib_produces_error() {
 fn point3_two_type_args_in_default_stdlib_produces_error() {
     assert_produces_error("structure def Bad { param p : Point3<Force, Length> }");
 }
+
+// ---------------------------------------------------------------------------
+// Arity-mismatch — silent fallthrough when same-named structure declared
+// ---------------------------------------------------------------------------
+
+/// Fixture: user-declared Vector3 and Point3 structures plus a use-site structure
+/// that references them with two type args (arity mismatch for the new arms).
+const ARITY_MISMATCH_USER_STRUCTURE_SOURCE: &str = r#"
+structure def Vector3 {}
+structure def Point3 {}
+
+structure def UseArity {
+    param v : Vector3<Force, Length>
+    param p : Point3<Force, Length>
+}
+"#;
+
+/// When a `structure def Vector3 {}` is declared in the same module,
+/// `Vector3<Force, Length>` fails the new arm's `type_args.len() == 1` guard and
+/// silently falls through to `resolve_type_with_aliases`, which returns
+/// `Type::StructureRef("Vector3")` — type args are dropped without a diagnostic.
+/// This silent-fallthrough behavior is consistent with all other parameterized
+/// builtins (List, Set, Map, Option, Scalar, Tensor, Matrix); emitting an explicit
+/// arity-mismatch diagnostic only for Vector3/Point3 was rejected in favor of
+/// cross-builtin consistency. See the design decision in plan.json.
+#[test]
+fn vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists() {
+    assert_param_type(
+        ARITY_MISMATCH_USER_STRUCTURE_SOURCE,
+        "UseArity",
+        "v",
+        &Type::StructureRef("Vector3".into()),
+    );
+}
