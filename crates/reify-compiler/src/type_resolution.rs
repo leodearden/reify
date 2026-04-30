@@ -998,12 +998,13 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 }
 
 /// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
-/// Tensor, Matrix, Scalar) within a type alias RHS expression.
+/// Tensor, Matrix, Scalar, Vector3) within a type alias RHS expression.
 ///
 /// Each type argument is resolved recursively via `resolve_type_expr_with_aliases`,
 /// which allows inner type args to be trait names (e.g. `Option<MyTrait>`).
 /// `Tensor<rank, n, q>` and `Matrix<m, n, q>` consume two integer-literal args
-/// followed by a quantity type; `Scalar<Q>` consumes one quantity type-expression.
+/// followed by a quantity type; `Scalar<Q>` and `Vector3<Q>` each consume one
+/// quantity type-expression.
 ///
 /// `structure_names` and `trait_names` are threaded through so that inner args
 /// can be resolved to `Type::StructureRef` / `Type::TraitObject` respectively.
@@ -1079,6 +1080,15 @@ pub(crate) fn resolve_parameterized_builtin_type(
                 diagnostics,
             )?;
             Some(Type::Scalar { dimension: dim })
+        }
+        "Vector3" if type_args.len() == 1 => {
+            // Vector3<Q>: resolve Q to a DimensionVector and wrap as a 3D vector.
+            let dim = resolve_type_alias_expr_to_dimension(
+                &type_args[0],
+                alias_registry,
+                diagnostics,
+            )?;
+            Some(Type::vec3(Type::Scalar { dimension: dim }))
         }
         "Tensor" if type_args.len() == 3 => {
             // Tensor<rank, n, Q>: two integer literals + a quantity type.
