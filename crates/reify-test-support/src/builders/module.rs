@@ -1,5 +1,6 @@
 use reify_compiler::{
-    CompiledField, CompiledImport, CompiledModule, CompiledPurpose, CompiledTrait, TopologyTemplate,
+    CompiledField, CompiledImport, CompiledModule, CompiledPurpose, CompiledTrait,
+    CompiledTypeAlias, TopologyTemplate,
 };
 use reify_types::{ContentHash, SourceSpan};
 
@@ -14,6 +15,7 @@ pub struct CompiledModuleBuilder {
     fields: Vec<CompiledField>,
     enum_defs: Vec<reify_types::EnumDef>,
     compiled_purposes: Vec<CompiledPurpose>,
+    type_aliases: Vec<CompiledTypeAlias>,
 }
 
 impl CompiledModuleBuilder {
@@ -28,6 +30,7 @@ impl CompiledModuleBuilder {
             fields: Vec::new(),
             enum_defs: Vec::new(),
             compiled_purposes: Vec::new(),
+            type_aliases: Vec::new(),
         }
     }
 
@@ -91,6 +94,11 @@ impl CompiledModuleBuilder {
         self
     }
 
+    pub fn type_alias(mut self, a: CompiledTypeAlias) -> Self {
+        self.type_aliases.push(a);
+        self
+    }
+
     pub fn build(self) -> CompiledModule {
         // Build a content-sensitive hash matching compile() logic.
         let content_hash = {
@@ -110,6 +118,8 @@ impl CompiledModuleBuilder {
 
             let enum_hashes = self.enum_defs.iter().map(|e| ContentHash::of_str(&e.name));
 
+            let type_alias_hashes = self.type_aliases.iter().map(|a| a.content_hash);
+
             let all_hashes = std::iter::once(path_hash)
                 .chain(template_hashes)
                 .chain(import_hashes)
@@ -117,7 +127,8 @@ impl CompiledModuleBuilder {
                 .chain(trait_def_hashes)
                 .chain(field_hashes)
                 .chain(purpose_hashes)
-                .chain(enum_hashes);
+                .chain(enum_hashes)
+                .chain(type_alias_hashes);
 
             ContentHash::combine_all(all_hashes)
         };
@@ -132,7 +143,7 @@ impl CompiledModuleBuilder {
             compiled_purposes: self.compiled_purposes,
             templates: self.templates,
             units: Vec::new(),
-            type_aliases: Vec::new(),
+            type_aliases: self.type_aliases,
             constraint_defs: Vec::new(),
             pragmas: Vec::new(),
             default_tolerance: None,
@@ -206,6 +217,47 @@ mod tests {
         assert_eq!(module.enum_defs.len(), 1);
         assert_eq!(module.enum_defs[0].name, "Color");
         assert_eq!(module.enum_defs[0].variants.len(), 2);
+    }
+
+    #[test]
+    fn module_builder_with_type_alias() {
+        use reify_compiler::CompiledTypeAlias;
+        use reify_types::{ContentHash, SourceSpan, Type};
+        let alias = CompiledTypeAlias {
+            name: "Stress".to_string(),
+            resolved_type: Some(Type::length()),
+            type_params: vec![],
+            is_pub: true,
+            span: SourceSpan::new(0, 0),
+            content_hash: ContentHash::of_str("Stress"),
+        };
+        let module = CompiledModuleBuilder::new(module_path())
+            .type_alias(alias)
+            .build();
+        assert_eq!(module.type_aliases.len(), 1);
+        assert_eq!(module.type_aliases[0].name, "Stress");
+    }
+
+    #[test]
+    fn module_builder_type_aliases_affect_content_hash() {
+        use reify_compiler::CompiledTypeAlias;
+        use reify_types::{ContentHash, SourceSpan, Type};
+        let module_no_aliases = CompiledModuleBuilder::new(module_path()).build();
+        let alias = CompiledTypeAlias {
+            name: "Foo".to_string(),
+            resolved_type: Some(Type::length()),
+            type_params: vec![],
+            is_pub: true,
+            span: SourceSpan::new(0, 0),
+            content_hash: ContentHash::of_str("Foo"),
+        };
+        let module_with_alias = CompiledModuleBuilder::new(module_path())
+            .type_alias(alias)
+            .build();
+        assert_ne!(
+            module_no_aliases.content_hash, module_with_alias.content_hash,
+            "modules differing only in type_aliases must produce distinct content_hashes"
+        );
     }
 
     #[test]
