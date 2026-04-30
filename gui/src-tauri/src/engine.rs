@@ -568,8 +568,20 @@ impl EngineSession {
         // populate it alongside `compiled`) is surfaced immediately rather than
         // silently re-emitting intermediate mechanism cells to the UI.
         //
+        // Note: the WARN fires on the broken-invariant state (compiled Some, both
+        // caches None) unconditionally — even for a zero-template compiled module —
+        // because the guard precedes the per-template loop.  This is intentional:
+        // the signal indicates a broken load path, independent of template count.
+        //
         // Errored mechanisms (closed-chain etc.) are suppressed via the `error` key
         // check below.
+
+        // Defensive: after the lazy-populate block above, `consumed_idents_cache.is_none()`
+        // already implies `parsed_cache.is_none()` (the block transitions None→Some only
+        // when parsed_cache is Some).  The `&& self.parsed_cache.is_none()` clause is
+        // therefore logically redundant, but it is kept as belt-and-braces: if a future
+        // change to the populate block introduces a case where the cache stays None despite
+        // parsed_cache being Some, omitting the clause would suppress the warning silently.
         if self.consumed_idents_cache.is_none() && self.parsed_cache.is_none() {
             tracing::warn!(
                 target: "reify_gui::engine",

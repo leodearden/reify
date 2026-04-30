@@ -4443,12 +4443,13 @@ fn get_mechanism_descriptors_does_not_reinvoke_collect_on_cache_hit() {
     );
 }
 
-/// Follow-up #3 RED: when parsed_cache is None and a CompiledModule has N templates,
-/// get_mechanism_descriptors currently emits N WARN events (once per template
-/// iteration).  After the hoist in follow-up #3 impl (step 4), exactly 1 WARN
-/// fires per call regardless of template count.
+/// Asserts that `get_mechanism_descriptors` emits exactly 1 WARN per call when
+/// `parsed_cache` is `None` and the compiled module has multiple templates.
 ///
-/// RED because the current implementation emits 3 WARNs for a 3-template module.
+/// The WARN guard is hoisted before the per-template loop, so it fires once
+/// regardless of template count.  This test uses 3 templates to make the
+/// "once-per-call, not once-per-template" invariant concrete: a regression that
+/// moves the WARN back inside the loop would emit 3, not 1, and fail here.
 #[test]
 fn get_mechanism_descriptors_warns_once_when_parsed_cache_missing_with_multiple_templates() {
     use reify_types::ModulePath;
