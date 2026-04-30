@@ -28,6 +28,8 @@ pub mod journal;
 pub mod primitive_attribute_seed;
 pub mod snapshot;
 pub mod test_runner;
+pub mod realization_cache;
+pub use realization_cache::RealizationCache;
 pub mod tolerance_bucket;
 pub mod tolerance_budget;
 pub mod tolerance_combine;
