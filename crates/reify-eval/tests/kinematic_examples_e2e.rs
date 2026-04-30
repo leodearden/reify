@@ -15,7 +15,8 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
-use reify_test_support::{collect_errors, parse_and_compile_with_stdlib};
+use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_types::{Value, ValueCellId};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
@@ -62,10 +63,94 @@ fn counter_mass_balance_compiles_clean() {
     );
 }
 
-// Note: the `cmb_compiled()` helper is defined above but not yet used in this
-// initial step.  It will be exercised by later eval/check tests added in
-// subsequent steps (step-3, step-5).
-#[allow(dead_code)]
-fn _use_cmb_compiled() -> &'static CompiledModule {
-    cmb_compiled()
+/// Read a numeric component (Real, Scalar, or Int) as f64 SI value.
+fn read_f64(v: &Value, label: &str) -> f64 {
+    match v {
+        Value::Real(r) => *r,
+        Value::Scalar { si_value, .. } => *si_value,
+        Value::Int(i) => *i as f64,
+        other => panic!("{label}: expected numeric component, got {other:?}"),
+    }
+}
+
+/// Decompose a `Value::Point` of three numeric components into `[f64; 3]` (SI).
+///
+/// Mirrors `decompose_point3` in `forward_kinematics_e2e.rs`.
+fn decompose_point3(v: &Value, label: &str) -> [f64; 3] {
+    let comps = match v {
+        Value::Point(c) if c.len() == 3 => c,
+        other => panic!("{label}: expected Value::Point len=3, got {other:?}"),
+    };
+    [
+        read_f64(&comps[0], &format!("{label}.p[0]")),
+        read_f64(&comps[1], &format!("{label}.p[1]")),
+        read_f64(&comps[2], &format!("{label}.p[2]")),
+    ]
+}
+
+/// `engine.eval()` on `counter_mass_balance.ri` produces:
+///   - `snap_count == Value::Int(11)`
+///   - `coms` is a `Value::List` of 11 `Value::Point` values whose three SI
+///     components are each within 1e-9 m of zero (COM stationarity invariant).
+///
+/// Mirrors `snapshot.rs::tests::center_of_mass_counter_mass_balance_stationarity`
+/// but drives the full surface-syntax → eval pipeline.
+#[test]
+fn counter_mass_balance_eval_produces_eleven_stationary_coms() {
+    let compiled = cmb_compiled();
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    // snap_count must be Int(11).
+    let snap_count_id = ValueCellId::new("CounterMassBalance", "snap_count");
+    let snap_count = result
+        .values
+        .get(&snap_count_id)
+        .expect("CounterMassBalance.snap_count not found");
+    assert_eq!(
+        snap_count,
+        &Value::Int(11),
+        "snap_count should be Int(11), got {snap_count:?}"
+    );
+
+    // coms must be a List of 11 Point values, each near-zero.
+    let coms_id = ValueCellId::new("CounterMassBalance", "coms");
+    let coms = result
+        .values
+        .get(&coms_id)
+        .expect("CounterMassBalance.coms not found");
+
+    let items = match coms {
+        Value::List(v) => v,
+        other => panic!("coms should be Value::List, got {other:?}"),
+    };
+    assert_eq!(
+        items.len(),
+        11,
+        "coms should have 11 entries (one per sweep step), got {}",
+        items.len()
+    );
+
+    for (i, item) in items.iter().enumerate() {
+        let [x, y, z] = decompose_point3(item, &format!("coms[{i}]"));
+        assert!(
+            x.abs() < 1e-9,
+            "coms[{i}].x should be ~0 m, got {x} m (COM stationarity violated)"
+        );
+        assert!(
+            y.abs() < 1e-9,
+            "coms[{i}].y should be ~0 m, got {y} m (COM stationarity violated)"
+        );
+        assert!(
+            z.abs() < 1e-9,
+            "coms[{i}].z should be ~0 m, got {z} m (COM stationarity violated)"
+        );
+    }
 }
