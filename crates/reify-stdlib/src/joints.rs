@@ -3692,6 +3692,64 @@ mod tests {
         }
     }
 
+    // ── transform_at for fixed: 1-arg ergonomic form ─────────────────────────
+
+    /// `transform_at(fixed_joint)` (1-arg form) returns the identity Transform
+    /// for a fixed joint, without requiring a redundant motion-variable argument.
+    ///
+    /// Also guards:
+    /// - 0-arg call → Undef (arity guard preserved)
+    /// - 3-arg call → Undef (arity guard preserved)
+    /// - 1-arg call with prismatic joint → Undef (1-arg only valid for fixed)
+    /// - 1-arg call with revolute joint → Undef (1-arg only valid for fixed)
+    #[test]
+    fn transform_at_fixed_with_one_arg_returns_identity_transform() {
+        let fj = eval_builtin("fixed", &[]);
+
+        // (a) Primary case: 1-arg fixed joint → identity Transform
+        let result = eval_builtin("transform_at", &[fj.clone()]);
+        let (rot, trans) = match &result {
+            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!("transform_at(fixed): expected Transform, got {:?}", other),
+        };
+        assert_eq!(
+            rot,
+            &Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            "1-arg fixed: identity rotation"
+        );
+        assert_eq!(
+            trans,
+            &Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]),
+            "1-arg fixed: zero translation"
+        );
+
+        // (b) 0-arg call → Undef (arity guard preserved)
+        assert!(
+            eval_builtin("transform_at", &[]).is_undef(),
+            "transform_at(): expected Undef (0-arg arity guard)"
+        );
+
+        // (c) 3-arg call → Undef (arity guard preserved)
+        assert!(
+            eval_builtin("transform_at", &[fj.clone(), Value::Real(0.0), Value::Real(0.0)]).is_undef(),
+            "transform_at(fixed, 0.0, 0.0): expected Undef (3-arg arity guard)"
+        );
+
+        // (d) 1-arg prismatic joint → Undef (1-arg only valid for fixed)
+        let pj = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        assert!(
+            eval_builtin("transform_at", &[pj]).is_undef(),
+            "transform_at(prismatic): expected Undef (1-arg form is fixed-only)"
+        );
+
+        // (e) 1-arg revolute joint → Undef (1-arg only valid for fixed)
+        let rj = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        assert!(
+            eval_builtin("transform_at", &[rj]).is_undef(),
+            "transform_at(revolute): expected Undef (1-arg form is fixed-only)"
+        );
+    }
+
     // ── planar constructor: happy path (step-1) ───────────────────────────────
 
     #[test]
