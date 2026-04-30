@@ -8,7 +8,7 @@
 
 use reify_compiler::{CompiledTypeAlias, compile_with_prelude};
 use reify_test_support::CompiledModuleBuilder;
-use reify_types::{ContentHash, DimensionVector, ModulePath, Severity, SourceSpan, Type};
+use reify_types::{ContentHash, DimensionVector, ModulePath, Severity, SourceSpan, Type, TypeParam};
 
 fn make_pub_alias(name: &str, resolved_type: Type) -> CompiledTypeAlias {
     CompiledTypeAlias {
@@ -253,4 +253,104 @@ fn prelude_alias_visible_when_user_does_not_shadow() {
         Type::Scalar { dimension: DimensionVector::LENGTH },
         "param `p : Foo` must resolve to LENGTH from prelude alias"
     );
+}
+
+// ─── step-7: exclusion tests ───────────────────────────────────────────────
+
+/// A non-pub (`is_pub: false`) prelude alias must NOT be visible in user modules.
+/// The user-module param annotation referencing it must produce an unresolved-type Error.
+#[test]
+fn non_pub_prelude_alias_invisible_in_user_module() {
+    // Prelude has a non-pub alias: type Bar = Length (is_pub: false)
+    let non_pub_alias = CompiledTypeAlias {
+        name: "Bar".to_string(),
+        resolved_type: Some(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        type_params: vec![],
+        is_pub: false, // NOT exported
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("Bar"),
+    };
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("nonpub_prelude"))
+        .type_alias(non_pub_alias)
+        .build();
+
+    let source = "structure def S { param p : Bar }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("nonpub_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "non-pub prelude alias 'Bar' must NOT be visible; expected ≥1 Error diagnostic"
+    );
+}
+
+/// The `#no_prelude` pragma must suppress prelude-alias seeding, just as it
+/// suppresses units, enums, traits, and functions.
+#[test]
+fn no_prelude_pragma_suppresses_alias_seeding() {
+    let pub_alias = make_pub_alias("Foo", Type::Scalar { dimension: DimensionVector::LENGTH });
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("nop_prelude"))
+        .type_alias(pub_alias)
+        .build();
+
+    // #no_prelude + reference to prelude alias → must be unresolved
+    let source = "#no_prelude\nstructure def S { param p : Foo }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("nop_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "#no_prelude must suppress alias seeding; expected ≥1 Error diagnostic for 'Foo'"
+    );
+}
+
+/// A parametric pub prelude alias (type_params non-empty) must be silently
+/// skipped — the compile must NOT panic — and the user-module reference to
+/// the alias must produce an unresolved-type Error (pinning the documented
+/// limitation that parametric prelude aliases are not propagated cross-module).
+#[test]
+fn parametric_pub_prelude_alias_skipped_with_no_panic() {
+    let parametric_alias = CompiledTypeAlias {
+        name: "Vec".to_string(),
+        resolved_type: None,
+        type_params: vec![TypeParam { name: "T".to_string(), bounds: vec![], default: None }],
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("Vec_T"),
+    };
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("param_prelude"))
+        .type_alias(parametric_alias)
+        .build();
+
+    // User tries to use the parametric alias (will not resolve — skip is intentional)
+    let source = "structure def S { param p : Vec<Length> }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("param_user"));
+    // Parse may or may not produce errors depending on parser context; we only
+    // check that compile does not panic and produces ≥1 Error for 'Vec'.
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "parametric prelude alias 'Vec' must be skipped and produce ≥1 Error diagnostic"
+    );
+    // Smoke test: if we reach here, no panic occurred.
 }
