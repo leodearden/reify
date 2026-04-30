@@ -14,8 +14,31 @@
 //! is exercised in `crates/reify-types/src/diagnostics.rs`'s inline test
 //! module — these tests focus on producer-side semantics.
 
-use reify_constraints::{LoopClosureReport, NewtonOutcome};
-use reify_types::{Diagnostic, DiagnosticCode, Severity};
+use reify_constraints::{
+    LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
+    solve_loop_closure_with_diagnostics,
+};
+use reify_stdlib::eval_builtin;
+use reify_types::{Diagnostic, DiagnosticCode, Severity, Value};
+
+// ── Test fixtures (mirrors the inline helpers in loop_closure.rs) ──────
+
+fn axis_x() -> Value {
+    Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+}
+
+fn length_range(lo: f64, up: f64) -> Value {
+    Value::Range {
+        lower: Some(Box::new(Value::length(lo))),
+        upper: Some(Box::new(Value::length(up))),
+        lower_inclusive: true,
+        upper_inclusive: true,
+    }
+}
+
+fn prismatic_x_0_to_1() -> Value {
+    eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)])
+}
 
 // ── Step-1: DiagnosticCode variants exist and are distinct ──────────────
 
@@ -87,4 +110,51 @@ fn loop_closure_report_struct_literal_exposes_three_pub_fields() {
     assert!(matches!(report.outcome, NewtonOutcome::Converged { .. }));
     assert!(!report.is_singular);
     assert!(report.diagnostics.is_empty());
+}
+
+// ── Step-5: over-constrained pre-check (free_b.len() < 6) ───────────────
+
+/// 1 free DOF against a 6-component twist residual is over-constrained
+/// (free_b.len() = 1 < 6).  The wrapper must:
+///   * short-circuit the Newton solve (NotConverged outcome, no plausible
+///     config — the diagnostic IS the user-facing signal of structural
+///     infeasibility per PRD prose);
+///   * emit exactly one Error-severity diagnostic with code
+///     `KinematicOverconstrained`;
+///   * keep `is_singular` false (no Newton run → no singularity check).
+#[test]
+fn solve_loop_closure_with_diagnostics_emits_overconstrained_for_one_dof() {
+    let chain_a = vec![prismatic_x_0_to_1()];
+    let vals_a = vec![0.5];
+    let chain_b = vec![prismatic_x_0_to_1()];
+    let vals_b_initial = vec![0.0];
+    let free_b = vec![0]; // 1 < 6 → over-constrained
+    let strategy = StartStrategy::WarmStart(vec![0.0]);
+    let cfg = NewtonConfig::default();
+
+    let report = solve_loop_closure_with_diagnostics(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b_initial,
+        &free_b,
+        &strategy,
+        &cfg,
+    );
+
+    assert_eq!(
+        report.diagnostics.len(),
+        1,
+        "expected exactly one over-constrained diagnostic, got {:?}",
+        report.diagnostics
+    );
+    let d = &report.diagnostics[0];
+    assert_eq!(d.severity, Severity::Error);
+    assert_eq!(d.code, Some(DiagnosticCode::KinematicOverconstrained));
+    assert!(
+        matches!(report.outcome, NewtonOutcome::NotConverged { .. }),
+        "over-constrained short-circuit must return NotConverged, got {:?}",
+        report.outcome
+    );
+    assert!(!report.is_singular, "no Newton run → is_singular must stay false");
 }
