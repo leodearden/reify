@@ -966,7 +966,7 @@ mod tests {
                     "error message should mention the offending parent_index, got {msg:?}",
                 );
                 assert!(
-                    msg.contains("face"),
+                    msg.contains("face record"),
                     "error message should identify face record, got {msg:?}",
                 );
             }
@@ -1002,7 +1002,7 @@ mod tests {
         match err {
             QueryError::QueryFailed(msg) => {
                 assert!(
-                    msg.contains("face"),
+                    msg.contains("face record"),
                     "face-record error message should identify face kind, got {msg:?}",
                 );
                 assert!(
@@ -1042,7 +1042,7 @@ mod tests {
         match err {
             QueryError::QueryFailed(msg) => {
                 assert!(
-                    msg.contains("face"),
+                    msg.contains("face record"),
                     "face-record error message should identify face kind, got {msg:?}",
                 );
                 assert!(
