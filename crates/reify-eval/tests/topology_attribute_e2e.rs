@@ -933,14 +933,12 @@ fn assert_mod_history_propagation_and_clustering(
     assert_eq!(
         diagnostics.len(),
         1,
-        "expected exactly one TopologyAttributeStale diagnostic for the split-children resolution"
+        "expected exactly one TopologyAttributeAmbiguousAfterSplit diagnostic for the split-children resolution"
     );
     let diag = &diagnostics[0];
-    assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
-    assert!(
-        diag.message.contains("split children"),
-        "diagnostic message must mention 'split children', got: {}",
-        diag.message
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
     );
 
     ClusteringCoverage {

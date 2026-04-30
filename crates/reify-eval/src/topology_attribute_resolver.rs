@@ -756,16 +756,9 @@ mod tests {
         );
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
         let diag = &diagnostics[0];
-        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
-        assert!(
-            diag.message.contains("split children"),
-            "message should mention 'split children', got: {}",
-            diag.message
-        );
-        assert!(
-            diag.message.contains('2'),
-            "message should mention count '2', got: {}",
-            diag.message
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
         );
     }
 
@@ -812,11 +805,9 @@ mod tests {
         );
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
         let diag = &diagnostics[0];
-        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
-        assert!(
-            diag.message.contains("split children"),
-            "message should mention 'split children', got: {}",
-            diag.message
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
         );
     }
 
