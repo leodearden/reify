@@ -15,8 +15,9 @@
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
+use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{Satisfaction, Value, ValueCellId};
+use reify_types::{ExportFormat, Satisfaction, Value, ValueCellId};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
@@ -235,5 +236,128 @@ fn dock_pickup_compiles_clean() {
     assert!(
         errors.is_empty(),
         "dock_pickup.ri should compile with stdlib without errors, got: {errors:#?}"
+    );
+}
+
+/// Pure-eval (no OCCT): asserts structural cells produced by `engine.eval()`.
+///
+/// Checks:
+///   - No Error-severity diagnostics from eval.
+///   - `DockPickup.snap_count == Value::Int(5)` (5-step sweep over j_x).
+///   - `DockPickup.id_head == Value::Int(0)` — "head_solid" is the first body.
+///   - `DockPickup.id_park == Value::Int(1)` — "parked_tool_solid" is the second.
+#[test]
+fn dock_pickup_eval_produces_expected_structural_cells() {
+    let compiled = dp_compiled();
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    // snap_count must be Int(5).
+    let snap_count_id = ValueCellId::new("DockPickup", "snap_count");
+    let snap_count = result
+        .values
+        .get(&snap_count_id)
+        .expect("DockPickup.snap_count not found");
+    assert_eq!(
+        snap_count,
+        &Value::Int(5),
+        "snap_count should be Int(5), got {snap_count:?}"
+    );
+
+    // id_head must be Int(0) — insertion order: "head_solid" is first.
+    let id_head_id = ValueCellId::new("DockPickup", "id_head");
+    let id_head = result
+        .values
+        .get(&id_head_id)
+        .expect("DockPickup.id_head not found");
+    assert_eq!(
+        id_head,
+        &Value::Int(0),
+        "id_head should be Int(0), got {id_head:?}"
+    );
+
+    // id_park must be Int(1) — insertion order: "parked_tool_solid" is second.
+    let id_park_id = ValueCellId::new("DockPickup", "id_park");
+    let id_park = result
+        .values
+        .get(&id_park_id)
+        .expect("DockPickup.id_park not found");
+    assert_eq!(
+        id_park,
+        &Value::Int(1),
+        "id_park should be Int(1), got {id_park:?}"
+    );
+}
+
+/// OCCT-gated: asserts kinematic-query cells after `engine.build()` with the
+/// real OCCT kernel.
+///
+/// Mirrors `mechanism_interference_smoke::disjoint_cubes_no_pairs_and_positive_clearance`
+/// but drives dock_pickup.ri instead of an inline source string.
+///
+/// Expected results (head [0,20]mm³ vs. parked tool [600,620]mm³, gap = 580mm):
+///   - `pairs`     → `Value::List([])` (no colliding pairs)
+///   - `collide`   → `Value::Bool(false)`
+///   - `clearance` → length Scalar ≈ 0.580 m (within 1e-6 m tolerance)
+#[test]
+fn dock_pickup_build_with_occt_resolves_clearance() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping dock_pickup_build_with_occt_resolves_clearance: OCCT not available");
+        return;
+    }
+
+    let compiled = dp_compiled();
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine =
+        reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())));
+    let result = engine.build(compiled, ExportFormat::Step);
+
+    // pairs must be an empty list (no collisions).
+    let pairs_id = ValueCellId::new("DockPickup", "pairs");
+    let pairs = result
+        .values
+        .get(&pairs_id)
+        .expect("DockPickup.pairs not found");
+    match pairs {
+        Value::List(items) => {
+            assert!(
+                items.is_empty(),
+                "interferes(s) must be empty for head vs. parked_tool (580mm gap), got {items:?}"
+            );
+        }
+        other => panic!("interferes(s) must be Value::List, got {other:?}"),
+    }
+
+    // collide must be false.
+    let collide_id = ValueCellId::new("DockPickup", "collide");
+    let collide = result
+        .values
+        .get(&collide_id)
+        .expect("DockPickup.collide not found");
+    assert_eq!(
+        collide,
+        &Value::Bool(false),
+        "interferes_with(s, id_head, id_park) must be false (580mm gap), got {collide:?}"
+    );
+
+    // clearance must be ≈ 0.580 m.
+    let clearance_id = ValueCellId::new("DockPickup", "clearance");
+    let clearance = result
+        .values
+        .get(&clearance_id)
+        .expect("DockPickup.clearance not found");
+    let clearance_m = read_f64(clearance, "DockPickup.clearance");
+    let expected_m = 0.580_f64;
+    assert!(
+        (clearance_m - expected_m).abs() < 1e-6,
+        "min_clearance must be ≈{expected_m} m (580mm gap), got {clearance_m} m"
     );
 }
