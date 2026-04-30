@@ -412,3 +412,71 @@ fn compile_flat_map_infers_lambda_return_type_real() {
         expr.result_type
     );
 }
+
+// ─── task 2698 amendment: anti-cascade fallback regression guards ────────────
+//
+// The name-driven branches for `single` and `flat_map` (in
+// `compile_expr_guarded`'s `OverloadResolution::NoUserFunctions` arm) are
+// guarded by structural patterns (Type::List for single's first arg,
+// Type::Function with a list return for flat_map's second arg). When a
+// caller misuses the helper — e.g. `single(42)`, `flat_map(list, 7)`, or
+// `flat_map(list, |x| x)` — the structural pattern does NOT match, and the
+// branch falls through to the generic "first arg's result_type" fallback at
+// line ~835. The lock-in below documents that contract: the misuses must
+// compile without panicking and the cell type must be the first arg's type
+// (NOT the would-be unwrapped form). Runtime evaluation yields Value::Undef
+// for these cases (see flat_map runtime tests in reify-expr/src/lib.rs and
+// the silent-Undef convention in task 2698 design decisions).
+
+/// `single(non_list)` — structural pattern (`Type::List`) doesn't match the
+/// first arg, so the branch falls through to the generic first-arg fallback.
+/// The cell type becomes the arg's type (Int here), matching the documented
+/// anti-cascade contract.
+#[test]
+fn compile_single_non_list_arg_falls_back_to_first_arg_type() {
+    let compiled = parse_and_compile("structure S { let bad = single(42) }");
+    let expr = get_cell_expr(&compiled, "bad");
+    assert_eq!(
+        expr.result_type,
+        Type::Int,
+        "single(non_list) should fall back to first-arg type Int, got {:?}",
+        expr.result_type
+    );
+}
+
+/// `flat_map(list, non_lambda)` — second arg is not `Type::Function`, so the
+/// branch falls through to the generic first-arg fallback. The cell type
+/// becomes the input list's type (List<Int> here).
+#[test]
+fn compile_flat_map_non_function_second_arg_falls_back_to_first_arg_type() {
+    let compiled = parse_and_compile("structure S { let bad = flat_map([1, 2], 7) }");
+    let expr = get_cell_expr(&compiled, "bad");
+    assert_eq!(
+        expr.result_type,
+        Type::List(Box::new(Type::Int)),
+        "flat_map(list, non_lambda) should fall back to first-arg type \
+         List<Int>, got {:?}",
+        expr.result_type
+    );
+}
+
+/// `flat_map(list, |x| x)` — second arg is a `Type::Function`, but its
+/// return_type is `Real` (not `Type::List(_)`), so the tightened pattern
+/// rejects this match and falls through to the first-arg fallback. Without
+/// the `matches!(**return_type, Type::List(_))` guard, the cell would
+/// (misleadingly) infer as `Real` while runtime returns Undef. With the
+/// guard, the cell stays as `List<Int>` — the input list's type — so
+/// downstream checks see a list-typed cell consistent with the runtime
+/// silent-Undef convention.
+#[test]
+fn compile_flat_map_non_list_lambda_body_falls_back_to_first_arg_type() {
+    let compiled = parse_and_compile("structure S { let bad = flat_map([1, 2], |x| x) }");
+    let expr = get_cell_expr(&compiled, "bad");
+    assert_eq!(
+        expr.result_type,
+        Type::List(Box::new(Type::Int)),
+        "flat_map(list, |x| x) should fall back to first-arg type \
+         List<Int>, got {:?}",
+        expr.result_type
+    );
+}

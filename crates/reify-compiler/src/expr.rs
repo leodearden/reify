@@ -814,16 +814,23 @@ pub(crate) fn compile_expr_guarded(
                         && compiled_args.len() == 2
                         && let Type::Function { return_type, .. } =
                             &compiled_args[1].result_type
+                        && matches!(**return_type, Type::List(_))
                     {
                         // flat_map(List<A>, (A) -> List<B>) -> List<B>
                         // (task 2698). Read the lambda's return_type,
                         // populated by the Lambda compilation arm at
-                        // expr.rs:~1741. The return_type is List<B>, which
-                        // is exactly what flat_map yields. Falls through to
-                        // the first-arg fallback when the structural
-                        // pattern doesn't match (poisoned types, no second
-                        // arg, second arg not a Function), preserving
-                        // anti-cascade.
+                        // expr.rs:~1741. The return_type must itself be
+                        // `List<_>` for this branch to fire — a non-list
+                        // lambda body (e.g. `flat_map([1, 2], |x| x)`) is
+                        // a runtime type error (silently propagates as
+                        // Value::Undef per the task 2698 convention) and
+                        // would yield a misleading non-list cell type if
+                        // we unwrapped it here. Falls through to the
+                        // first-arg fallback below when the structural
+                        // pattern doesn't match (poisoned types, no
+                        // second arg, second arg not a Function, or
+                        // lambda body not a list), preserving anti-cascade
+                        // and ensuring the cell type stays `List<_>`.
                         (**return_type).clone()
                     } else {
                         compiled_args
