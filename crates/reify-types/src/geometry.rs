@@ -75,7 +75,15 @@ pub enum BRepKind {
 ///
 /// See also [`BRepKind`] for the finer-grained B-rep sub-shape classifier
 /// (Solid / Shell / Wire / Compound / Edge / Face) used by the OCCT kernel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `Ord` / `PartialOrd` are derived (in declaration order: BRep < Mesh < Sdf
+/// < Voxel) so the dispatcher can seed its BFS frontier in a deterministic
+/// order via `BTreeSet<ReprKind>` even when the caller passes
+/// `&HashSet<ReprKind>` of `available` reprs. Without this, the seeding loop
+/// would inherit HashMap salt order and selection across multi-seed cases
+/// would depend on hashing rather than the registered kernel set, breaking
+/// the PRD's "Selection deterministic" contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReprKind {
     /// Boundary-representation solid (OCCT / OpenCASCADE B-rep kernel).
     BRep,
@@ -3526,8 +3534,12 @@ mod tests {
             Operation::Convert { from: ReprKind::Voxel },
         ];
 
-        // 39 variants total: 3 + 4 + 5 + 4 + 5 + 8 + 6 + 4.
-        assert_eq!(variants.len(), 39, "expected 39 Operation variants total");
+        // (No count-pinning assertion: the compile-time exhaustive `match`
+        // below already enforces that every variant is covered, while a
+        // hard-coded count would force every kernel-adapter task that
+        // adds/renames a variant to also touch this number — pure lock-in
+        // friction without checking anything the match doesn't already
+        // catch.)
 
         // All variants are pairwise distinct.
         for i in 0..variants.len() {

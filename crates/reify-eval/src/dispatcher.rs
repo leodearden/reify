@@ -40,7 +40,7 @@
 //! type defined alongside [`reify_types::Operation`] in the
 //! `reify-types` crate.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
@@ -110,9 +110,17 @@ pub fn dispatch(
     let mut frontier: VecDeque<(ReprKind, ConversionChain)> = VecDeque::new();
     let mut visited: HashSet<ReprKind> = HashSet::new();
 
-    // Seed with every available repr in arbitrary HashSet order. BFS by
-    // stage-count is preserved because all available reprs sit at distance 0.
-    for &r in available {
+    // Seed in deterministic [`ReprKind`] order. The caller hands us a
+    // `&HashSet<ReprKind>` whose iteration order is salted by the process's
+    // hashing key — iterating it directly would let the multi-seed final-stage
+    // probe pick a different kernel across runs even when the registered set
+    // is identical, breaking the PRD's "Selection deterministic given pinned
+    // runtime configuration" contract. `BTreeSet` traversal is ordered by
+    // `Ord` (BRep < Mesh < Sdf < Voxel per the enum declaration order); BFS
+    // by stage-count is preserved because all available reprs sit at distance
+    // 0 regardless of seed order.
+    let seeds: BTreeSet<ReprKind> = available.iter().copied().collect();
+    for r in seeds {
         frontier.push_back((r, vec![]));
         visited.insert(r);
     }
@@ -135,6 +143,13 @@ pub fn dispatch(
 
         // Expansion step: for every kernel-declared conversion
         // (Convert{from: current_repr}, to), enqueue (to, chain + entry).
+        //
+        // TODO(perf): O(K · S) per popped state where K=#kernels, S=avg
+        // supports size. v0.2 has ~50 entries × 4 kernels so this is fine,
+        // but if a future kernel grows a large supports table, pre-index
+        // conversion edges into a `BTreeMap<ReprKind, Vec<(kernel_name,
+        // ReprKind)>>` keyed by `from` to avoid re-scanning the full
+        // supports vec at each pop.
         for (kernel_name, descriptor) in registry.iter() {
             for &(decl_op, decl_to) in descriptor.supports.iter() {
                 if let Operation::Convert { from } = decl_op
@@ -265,6 +280,24 @@ mod tests {
             plan.conversions.len(),
             1,
             "BFS must pick the 1-stage chain, not the 2-stage chain via Sdf — got {plan:?}",
+        );
+        // Pin the final-stage kernel and the conversion-stage content so a
+        // regression that flips the chosen kernel (e.g. by reversing the
+        // BTreeMap probe direction) breaks loudly instead of slipping past
+        // the length-only assertion. With both kernels listing
+        // `(BooleanUnion, Mesh)`, lexicographic tie-break selects "alpha";
+        // with both listing `(Convert{BRep}→Mesh)` reachable in one step,
+        // "alpha" is also the BTreeMap-first kernel that names the
+        // conversion edge.
+        assert_eq!(
+            plan.kernel, "alpha",
+            "lexicographic tie-break must pick 'alpha' over 'beta', got {plan:?}",
+        );
+        assert_eq!(
+            plan.conversions[0],
+            ("alpha".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            "the 1-stage conversion must be (alpha, BRep, Mesh), got {:?}",
+            plan.conversions[0],
         );
     }
 
