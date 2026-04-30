@@ -244,8 +244,19 @@ fn assert_unsupported_port_shape_diagnostic(
         .find(|d| d.severity == Severity::Info)
         .expect("info diagnostic not found");
 
+    // Recover all three spans in a single parse for sections (e) and (f).
+    let (forall_span, left_expr_span, right_expr_span) =
+        with_first_forall_connect(source, structure_name, |f| match &f.body {
+            reify_syntax::ForallConnectBody::Connect(cd) => {
+                (f.span, cd.left.expr.span, cd.right.expr.span)
+            }
+            _ => panic!(
+                "ForallConnect body is not a Connect variant in {}",
+                structure_name
+            ),
+        });
+
     // (e) Primary label with stable construct-kind token and matching span.
-    let forall_span = find_forall_connect_span(source, structure_name);
     assert!(
         diag.labels
             .iter()
@@ -257,8 +268,6 @@ fn assert_unsupported_port_shape_diagnostic(
     );
 
     // (f) Per-side label presence/absence with span pinning.
-    let (left_expr_span, right_expr_span) =
-        find_forall_connect_body_spans(source, structure_name);
 
     let left_labels: Vec<_> = diag
         .labels
