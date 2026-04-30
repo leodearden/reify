@@ -35,7 +35,8 @@ use std::collections::HashMap;
 
 use reify_types::{
     BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord,
-    ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
+    LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute,
+    TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -572,6 +573,89 @@ pub fn populate_sweep_attributes(
     Ok(())
 }
 
+/// Originate topology attributes for a `BRepOffsetAPI_ThruSections` (loft)
+/// result, given the per-op history records returned by
+/// `OcctKernel::loft_with_history`.
+///
+/// Loft is the **multi-parent** variant: `parent_index` in each
+/// `face_generated` record denotes a section index in
+/// `[0, profiles.len())`, and `parent_subshape_index` denotes the edge
+/// index within that section's edge map. This helper validates both
+/// indices against the per-section profile face/edge slices the caller
+/// supplies.
+///
+/// Role assignments:
+///   - `start_cap_face_indices` → `Role::Cap(CapKind::Start)` (first
+///     profile section's cap under `is_solid=true`).
+///   - `end_cap_face_indices` → `Role::Cap(CapKind::End)` (last
+///     profile section's cap under `is_solid=true`).
+///   - `face_generated` → `Role::LoftedFace` (NOT `Role::Side` /
+///     `SweptFace` / `RevolvedFace` — per-op distinguisher per the
+///     task-5a/5b design decisions in geometry.rs).
+///
+/// `local_index` increments **sequentially across all sections** in the
+/// order the records appear in `face_generated` — sections are not
+/// re-numbered per-section. The C++ wrapper emits records in section
+/// order (section 0's edges first, then section 1's, ...), so the
+/// resulting `local_index` is naturally stable for selector portability
+/// when sections are added/removed at the end (head insertion
+/// invalidates indices, matching the documented v0.2 caveat).
+///
+/// Edge attributes (e.g. `Role::NewEdge` for rail edges between
+/// sections) are **not** written by this helper, mirroring
+/// [`populate_extrude_attributes`]: edge-level attribution is deferred
+/// until the cap-edge / seam-edge / rail-edge classification rules are
+/// finalised in a follow-up task.
+///
+/// # Errors
+///
+/// Returns `QueryError::QueryFailed` if any `face_generated` record's
+/// `parent_index` is `>= section_edge_handles_per_section.len()`, if its
+/// `parent_subshape_index` is out of range for the addressed section's
+/// edge slice, or if its `result_subshape_index` is out of range for
+/// `result_face_handles`. Also returns `QueryError::QueryFailed` if any
+/// cap-face index is out of range. The FFI primitive guarantees in-range
+/// indices on success, so these are defense-in-depth paths pinned by the
+/// step-9 unit tests.
+pub fn populate_loft_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    section_face_handles_per_section: &[Vec<GeometryHandleId>],
+    section_edge_handles_per_section: &[Vec<GeometryHandleId>],
+    result_face_handles: &[GeometryHandleId],
+    result_edge_handles: &[GeometryHandleId],
+    history: &LoftOpHistoryRecords,
+) -> Result<(), QueryError> {
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.start_cap_face_indices,
+        Role::Cap(CapKind::Start),
+        "loft start cap",
+    )?;
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.end_cap_face_indices,
+        Role::Cap(CapKind::End),
+        "loft end cap",
+    )?;
+
+    write_loft_face_generated_attributes(
+        table,
+        feature_id,
+        section_face_handles_per_section,
+        section_edge_handles_per_section,
+        result_face_handles,
+        result_edge_handles,
+        &history.face_generated,
+    )?;
+
+    Ok(())
+}
+
 /// Shared helper: write `(feature_id, role, local_index = 0)` to each
 /// cap face index in `cap_indices`, validating that each index is in
 /// range for `result_face_handles`.
@@ -656,6 +740,87 @@ fn write_face_generated_attributes(
             TopologyAttribute {
                 feature_id: feature_id.clone(),
                 role,
+                local_index: sequential_idx as u32,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Multi-parent variant of [`write_face_generated_attributes`] for loft
+/// (`BRepOffsetAPI_ThruSections`).  For each `face_generated` record:
+///
+///   1. Validate `parent_index` is in range for
+///      `section_edge_handles_per_section` (the per-section profile-edge
+///      slice family).  Returns `QueryFailed` mentioning "section" on
+///      out-of-range.
+///   2. Validate `parent_subshape_index` is in range for the addressed
+///      section's edge slice.
+///   3. Validate `result_subshape_index` is in range for
+///      `result_face_handles`.
+///   4. Write `(feature_id, Role::LoftedFace, local_index =
+///      sequential_idx)` keyed by the result face handle.
+///
+/// `local_index` increments sequentially across all sections in the
+/// order records appear in `face_generated` (section 0's edges first,
+/// then section 1's, ...).
+#[allow(clippy::too_many_arguments)] // multi-parent loft fans out per-section parent slices for both faces and edges
+fn write_loft_face_generated_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    section_face_handles_per_section: &[Vec<GeometryHandleId>],
+    section_edge_handles_per_section: &[Vec<GeometryHandleId>],
+    result_face_handles: &[GeometryHandleId],
+    _result_edge_handles: &[GeometryHandleId],
+    face_generated: &[HistoryRecord],
+) -> Result<(), QueryError> {
+    let _ = section_face_handles_per_section; // reserved for future face-level Modified checks
+    for (sequential_idx, record) in face_generated.iter().enumerate() {
+        // Step 1: parent_index in range over section count.
+        let parent_idx = record.parent_index as usize;
+        if parent_idx >= section_edge_handles_per_section.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "loft face_generated record has parent_index {} \
+                 but loft has only {} section(s)",
+                parent_idx,
+                section_edge_handles_per_section.len()
+            )));
+        }
+
+        // Step 2: parent_subshape_index in range over the addressed
+        // section's edge slice.
+        let parent_subshape_idx = record.parent_subshape_index as usize;
+        let section_edges = &section_edge_handles_per_section[parent_idx];
+        if parent_subshape_idx >= section_edges.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "loft face_generated record has parent_subshape_index {} \
+                 but section {} has only {} edges",
+                parent_subshape_idx,
+                parent_idx,
+                section_edges.len()
+            )));
+        }
+
+        // Step 3: result_subshape_index in range over result faces.
+        let result_subshape_idx = record.result_subshape_index as usize;
+        if result_subshape_idx >= result_face_handles.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "loft face_generated record has result_subshape_index {} \
+                 but result has only {} faces",
+                result_subshape_idx,
+                result_face_handles.len()
+            )));
+        }
+
+        // Step 4: write the attribute, keyed by the result face handle.
+        let handle = result_face_handles[result_subshape_idx];
+        table.record(
+            handle,
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role: Role::LoftedFace,
                 local_index: sequential_idx as u32,
                 user_label: None,
                 mod_history: Vec::new(),
