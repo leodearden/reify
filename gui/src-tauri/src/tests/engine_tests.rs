@@ -1,9 +1,10 @@
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_violating,
-    bracket_source_with_width, warn_source_with_unknown_port_type,
+    CountingSubscriberBuilder, FailingMockGeometryKernel, MockGeometryKernel, bracket_source,
+    bracket_source_violating, bracket_source_with_width, warn_source_with_unknown_port_type,
     warn_source_with_unknown_port_type_with_width,
 };
 use reify_compiler::find_template;
@@ -264,15 +265,18 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
         "revolute lower bound should be 0.0 rad"
     );
     let upper_rev = revolute.range_upper_si.expect("revolute upper_si should be Some");
+    // Test fixture's .ri source uses the literal 3.14, not std::f64::consts::PI.
+    #[allow(clippy::approx_constant)]
+    let expected_upper = 3.14_f64;
     assert!(
-        (upper_rev - 3.14).abs() < 1e-6,
-        "revolute upper bound should be 3.14 rad, got {upper_rev}"
+        (upper_rev - expected_upper).abs() < 1e-6,
+        "revolute upper bound should be 3.14 rad (per fixture), got {upper_rev}"
     );
 }
 
 #[test]
 fn get_mechanism_descriptors_returns_empty_when_no_module_loaded() {
-    let session = make_session();
+    let mut session = make_session();
     let descriptors = session.get_mechanism_descriptors();
     assert!(
         descriptors.is_empty(),
@@ -410,6 +414,67 @@ fn get_mechanism_descriptors_handles_coupling_and_fixed_joints() {
         fixed.range_upper_si.is_none(),
         "fixed range_upper_si should be None, got {:?}",
         fixed.range_upper_si
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_snapshot_consumption_does_not_filter() {
+    // Step 3: MULTI_SNAPSHOT_SOURCE has m0/m1/m2 body chain plus s1/s2 snapshot
+    // lets that read from m2.  snapshot() consumption must NOT make m2 an
+    // intermediate mechanism — it should still appear as the one terminal
+    // descriptor.  Pins the design decision: body()-only filter.
+    let mut session = make_session();
+    session
+        .load_from_source(MULTI_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load multi-snapshot source");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    assert_eq!(
+        descriptors.len(),
+        1,
+        "snapshot consumption must not filter the mechanism; expected 1 descriptor, got {:?}",
+        descriptors.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        descriptors[0].name, "m2",
+        "the terminal mechanism should be m2; got {:?}",
+        descriptors[0].name
+    );
+    assert_eq!(
+        descriptors[0].bodies_count, 2,
+        "m2 should have bodies_count=2; got {}",
+        descriptors[0].bodies_count
+    );
+}
+
+#[test]
+fn get_mechanism_descriptors_filters_intermediate_body_chain_cells() {
+    // Step 1 RED: HAPPY_MECHANISM_SOURCE has m0/m1/m2 where m0 is consumed by
+    // body(m0,...) → m1, and m1 is consumed by body(m1,...) → m2.  Only the
+    // terminal mechanism (m2) should appear in the returned descriptors.
+    let mut session = make_session();
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load kinematic");
+
+    let descriptors = session.get_mechanism_descriptors();
+
+    assert_eq!(
+        descriptors.len(),
+        1,
+        "only the terminal mechanism should be returned; got {:?}",
+        descriptors.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        descriptors[0].name, "m2",
+        "the terminal mechanism should be m2; got {:?}",
+        descriptors[0].name
+    );
+    assert_eq!(
+        descriptors[0].bodies_count, 2,
+        "m2 should have bodies_count=2; got {}",
+        descriptors[0].bodies_count
     );
 }
 
@@ -732,6 +797,102 @@ fn get_mechanism_descriptors_multiple_snapshot_lets_resolve_both_params() {
         j2_desc.is_some(),
         "j2 should be driven by p2; joint descriptors: {:?}",
         m2_desc.joints
+    );
+}
+
+// ---- snapshot/bind telemetry tests (steps 4-5, 6-7) --------------------------
+
+/// Source for step-4/5: snapshot with an empty bind list.
+/// `snapshot(m1, [])` is a textual snapshot() match but contributes zero bind
+/// pairs — the no-pairs debug event should fire once.
+const EMPTY_BIND_SNAPSHOT_SOURCE: &str = r#"
+structure Kinematic {
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j1)
+    let snap = snapshot(m1, [])
+}
+"#;
+
+#[test]
+fn collect_snapshot_bind_pairs_emits_debug_when_no_bind_matched() {
+    // Step 4 RED: snapshot(m1, []) is a textual match for snapshot() but the
+    // bind list is empty, so zero pairs are contributed.  After step-5's impl,
+    // collect_snapshot_bind_pairs must emit exactly one DEBUG event (the
+    // "zero bind pairs" telemetry hook).  Currently emits none → RED.
+    let mut session = make_session();
+    session
+        .load_from_source(EMPTY_BIND_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load empty-bind-list source");
+
+    // Filter on the specific submodule target so this assertion remains valid
+    // even if other debug! calls are added elsewhere in reify_gui::engine.
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine::snapshot_bind_pairs")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event at target reify_gui::engine::snapshot_bind_pairs \
+         for the zero-pair snapshot; got {}",
+        debug_count
+    );
+    assert_eq!(
+        warn_count, 0,
+        "expected 0 WARN events at target reify_gui::engine::snapshot_bind_pairs; got {}",
+        warn_count
+    );
+}
+
+#[test]
+fn resolve_driving_params_emits_debug_for_param_checked_match() {
+    // Step 6 RED: SNAPSHOT_PARAM_BIND_SOURCE has bind(y_axis, y_pos) where
+    // y_pos is a Param.  After step-7's impl, resolve_driving_params_from_ast
+    // must emit exactly one DEBUG event when a Param-checked match resolves.
+    // Currently emits none → RED.
+    let mut session = make_session();
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    // Filter on the specific submodule target so this assertion remains valid
+    // even if other debug! calls are added elsewhere in reify_gui::engine.
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_gui::engine::param_resolution")
+        .build();
+
+    let descriptors = tracing::subscriber::with_default(subscriber, || {
+        session.get_mechanism_descriptors()
+    });
+
+    // Sanity: the match path must have actually executed.
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+    assert_eq!(
+        m1_desc.joints[0].driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "driving param should be resolved; got {:?}",
+        m1_desc.joints[0].driving_param_cell_id
+    );
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event at target reify_gui::engine::param_resolution \
+         for the resolved param match; got {}",
+        debug_count
     );
 }
 
@@ -4119,6 +4280,234 @@ fn get_containing_definition_reads_from_line_offsets_cache() {
     );
 }
 
+/// Lifecycle test for `consumed_idents_cache`:
+/// - starts as `None` on a fresh session,
+/// - remains `None` after load (lazy — populated only on first `get_mechanism_descriptors` call),
+/// - becomes `Some` after the first `get_mechanism_descriptors` call following a load,
+/// - is reset to `None` after `update_source` (invalidated by `commit_state`),
+/// - becomes `Some` again after a second `get_mechanism_descriptors` call on the new module.
+#[test]
+fn consumed_idents_cache_lifecycle() {
+    let mut session = make_session();
+
+    // 1. Fresh session → None.
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "fresh session: consumed_idents_cache should be None"
+    );
+
+    // 2. After load_from_source, still None (lazy — not populated until
+    //    get_mechanism_descriptors is called for the first time).
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load should succeed");
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "after load but before get_mechanism_descriptors: consumed_idents_cache should still be None"
+    );
+
+    // 3. After get_mechanism_descriptors, Some with an entry for the 'Kinematic' structure.
+    //    m0 and m1 are consumed by body() calls; m2 is the terminal cell (not consumed).
+    let _ = session.get_mechanism_descriptors();
+    let cache = session
+        .consumed_idents_cache_for_test()
+        .expect("after get_mechanism_descriptors: consumed_idents_cache should be Some");
+    let kinematic_consumed = cache
+        .get("Kinematic")
+        .expect("cache should contain an entry for the 'Kinematic' structure");
+    let expected_consumed: std::collections::HashSet<String> =
+        ["m0", "m1"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        *kinematic_consumed,
+        expected_consumed,
+        "Kinematic's consumed set should be {{m0, m1}}"
+    );
+
+    // 4. After update_source, the cache is invalidated by commit_state → None again.
+    session
+        .update_source("kinematic.ri", bracket_source())
+        .expect("update_source should succeed");
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "after update_source: consumed_idents_cache should be None (invalidated by commit_state)"
+    );
+
+    // 5. After another get_mechanism_descriptors call, Some again — now reflecting the
+    //    new module (bracket_source has no body() calls, so consumed sets are empty).
+    let _ = session.get_mechanism_descriptors();
+    assert!(
+        session.consumed_idents_cache_for_test().is_some(),
+        "after second get_mechanism_descriptors call: consumed_idents_cache should be Some again"
+    );
+    let cache = session.consumed_idents_cache_for_test().unwrap();
+    assert!(
+        cache.values().all(|s| s.is_empty()),
+        "bracket_source has no body() calls — every cache entry must be an empty set, got {:?}",
+        cache
+    );
+}
+
+/// Proves that `get_mechanism_descriptors` reads from `consumed_idents_cache` rather
+/// than re-walking the AST.  Mirrors the `get_containing_definition_reads_from_parsed_cache`
+/// pattern: load → baseline → inject poisoned cache → second call → verify readback.
+///
+/// Poison: replace the cache for "Kinematic" with an empty set (zero consumed mechanisms).
+/// With no consumed idents, the terminal-mechanism filter lets every mechanism cell through.
+/// If the method re-walked the AST it would rebuild {"m0", "m1"} and filter them out,
+/// returning only m2.  The presence of m0 and m1 in the result proves cache use.
+#[test]
+fn get_mechanism_descriptors_reads_from_consumed_idents_cache() {
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+
+    let mut session = make_session();
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load should succeed");
+
+    // Baseline: with the real cache ({m0, m1} consumed), only m2 (the terminal cell)
+    // should appear.
+    let baseline = session.get_mechanism_descriptors();
+    let baseline_names: Vec<&str> = baseline.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        baseline_names,
+        vec!["m2"],
+        "baseline: only m2 (the terminal cell) should appear; got {:?}",
+        baseline_names
+    );
+
+    // Inject a poisoned cache: "Kinematic" maps to an empty consumed set, so the
+    // filter treats every mechanism cell as terminal.
+    let poisoned: HashMap<String, HashSet<String>> =
+        HashMap::from([("Kinematic".to_string(), HashSet::new())]);
+    session.override_consumed_idents_cache_for_test(poisoned);
+
+    // After poisoning, all three mechanism cells should appear.
+    let all = session.get_mechanism_descriptors();
+    let all_names: Vec<&str> = all.iter().map(|d| d.name.as_str()).collect();
+    assert!(
+        all_names.contains(&"m0"),
+        "m0 (0 bodies) should appear when consumed cache is empty; got {:?}",
+        all_names
+    );
+    assert!(
+        all_names.contains(&"m1"),
+        "m1 (1 body) should appear when consumed cache is empty; got {:?}",
+        all_names
+    );
+    assert!(
+        all_names.contains(&"m2"),
+        "m2 (2 bodies) should appear when consumed cache is empty; got {:?}",
+        all_names
+    );
+
+    // Verify bodies_count to confirm the right cells came through.
+    let m0_desc = all.iter().find(|d| d.name == "m0").unwrap();
+    let m1_desc = all.iter().find(|d| d.name == "m1").unwrap();
+    assert_eq!(m0_desc.bodies_count, 0, "m0 should have 0 bodies");
+    assert_eq!(m1_desc.bodies_count, 1, "m1 should have 1 body");
+}
+
+/// Proves that `get_mechanism_descriptors` does NOT re-invoke
+/// `collect_consumed_mechanism_idents` on a cache hit.
+///
+/// Strategy: load HAPPY_MECHANISM_SOURCE, confirm the baseline result is ["m2"]
+/// (cache is populated as a side effect), then inject a stripped ParsedModule
+/// with zero declarations.  A second call must still return ["m2"] — if the
+/// implementation re-walked parsed_cache, the empty declarations would yield an
+/// empty consumed set and m0/m1 would appear in the result (3 cells instead of 1).
+/// Mirrors the `get_containing_definition_reads_from_parsed_cache` pattern.
+#[test]
+fn get_mechanism_descriptors_does_not_reinvoke_collect_on_cache_hit() {
+    let mut session = make_session();
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load should succeed");
+
+    // Baseline: with the real cache ({m0, m1} consumed), only m2 (the terminal cell)
+    // should appear.
+    let baseline = session.get_mechanism_descriptors();
+    let baseline_names: Vec<&str> = baseline.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        baseline_names,
+        vec!["m2"],
+        "baseline: only m2 (the terminal cell) should appear; got {:?}",
+        baseline_names
+    );
+
+    // Strip the parsed_cache: inject a ParsedModule with no declarations.
+    // If the implementation re-walked parsed_cache, the empty declarations would
+    // yield an empty consumed set → all three mechanism cells (m0, m1, m2) would
+    // pass the terminal filter → 3 cells instead of 1.
+    let stripped = {
+        let mut p = session
+            .parsed_cache_for_test()
+            .expect("parsed_cache should be Some after load")
+            .clone();
+        p.declarations = Vec::new();
+        p
+    };
+    session.override_parsed_cache_for_test(stripped);
+
+    // Second call must still return only ["m2"] — proves the cache-hit path does
+    // not consult parsed_cache.
+    let second = session.get_mechanism_descriptors();
+    let second_names: Vec<&str> = second.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        second_names,
+        vec!["m2"],
+        "after stripping parsed_cache, get_mechanism_descriptors should still return [\"m2\"] \
+         (proves collect_consumed_mechanism_idents is not re-invoked on cache hits); got {:?}",
+        second_names
+    );
+}
+
+/// Asserts that `get_mechanism_descriptors` emits exactly 1 WARN per call when
+/// `parsed_cache` is `None` and the compiled module has multiple templates.
+///
+/// The WARN guard is hoisted before the per-template loop, so it fires once
+/// regardless of template count.  This test uses 3 templates to make the
+/// "once-per-call, not once-per-template" invariant concrete: a regression that
+/// moves the WARN back inside the loop would emit 3, not 1, and fail here.
+#[test]
+fn get_mechanism_descriptors_warns_once_when_parsed_cache_missing_with_multiple_templates() {
+    use reify_types::ModulePath;
+
+    // Build a 3-template CompiledModule and inject it (no load → parsed_cache=None).
+    // Call recheck_for_test to initialise last_check (required by get_mechanism_descriptors).
+    let t1 = TopologyTemplateBuilder::new("t1").build();
+    let t2 = TopologyTemplateBuilder::new("t2").build();
+    let t3 = TopologyTemplateBuilder::new("t3").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
+        .template(t1)
+        .template(t2)
+        .template(t3)
+        .build();
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session.inject_compiled_for_test(compiled);
+    session.recheck_for_test();
+    // parsed_cache remains None — broken-invariant state.
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+    assert_eq!(
+        warn_count,
+        1,
+        "expected exactly 1 WARN per get_mechanism_descriptors call when parsed_cache is None; \
+         got {} (should fire once per call, not once per template)",
+        warn_count
+    );
+}
+
 #[test]
 fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
     let checker = SimpleConstraintChecker;
@@ -4549,4 +4938,97 @@ structure Parent {
             node.entity_path, node.kind, node.freshness
         );
     }
+}
+
+// ---- malformed mechanism Map shape contract tests ----------------------------
+
+#[test]
+fn extract_joints_from_mechanism_skips_non_map_at_value() {
+    // Step 8 RED: hand-construct a mechanism Map whose single body has a
+    // non-Map "at" value (Value::String("not-a-map")).  extract_joints_from_mechanism
+    // must return empty (joints, seen_joints) — no phantom row, no panic.
+    use std::collections::BTreeMap;
+    use reify_types::Value;
+    use crate::engine::extract_joints_from_mechanism;
+
+    let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+    body_map.insert(
+        Value::String("at".to_string()),
+        Value::String("not-a-map".to_string()),
+    );
+
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(
+        Value::String("bodies".to_string()),
+        Value::List(vec![Value::Map(body_map)]),
+    );
+
+    let (joints, seen_joints) = extract_joints_from_mechanism(&mech_map);
+
+    assert!(
+        joints.is_empty(),
+        "non-Map 'at' value must produce no joint descriptors; got {:?}",
+        joints
+    );
+    assert!(
+        seen_joints.is_empty(),
+        "non-Map 'at' value must produce no seen_joints entries; got {:?}",
+        seen_joints
+    );
+}
+
+#[test]
+fn extract_joints_from_mechanism_handles_malformed_axis_length() {
+    // Step 8 RED: hand-construct a mechanism with a prismatic joint whose
+    // "axis" Vector has length 2 (malformed — extract_axis requires length 3).
+    // The descriptor must still be produced (kind=="prismatic", dimension=="length")
+    // but axis must be None.
+    use std::collections::BTreeMap;
+    use reify_types::Value;
+    use crate::engine::extract_joints_from_mechanism;
+
+    // Build the joint map with a 2-element axis vector.
+    let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
+    joint_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("prismatic".to_string()),
+    );
+    joint_map.insert(
+        Value::String("axis".to_string()),
+        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]), // length 2 — malformed
+    );
+
+    // Build the body map referencing the joint.
+    let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+    body_map.insert(
+        Value::String("at".to_string()),
+        Value::Map(joint_map),
+    );
+
+    // Build the mechanism map.
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(
+        Value::String("bodies".to_string()),
+        Value::List(vec![Value::Map(body_map)]),
+    );
+
+    let (joints, _seen_joints) = extract_joints_from_mechanism(&mech_map);
+
+    assert_eq!(joints.len(), 1, "expected 1 joint descriptor; got {:?}", joints);
+    let jd = &joints[0];
+    assert_eq!(jd.kind, "prismatic", "kind should be prismatic; got {}", jd.kind);
+    assert_eq!(jd.dimension, "length", "dimension should be length; got {}", jd.dimension);
+    assert!(
+        jd.axis.is_none(),
+        "malformed axis (length!=3) must produce axis==None; got {:?}",
+        jd.axis
+    );
 }

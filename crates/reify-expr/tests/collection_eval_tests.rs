@@ -1,5 +1,9 @@
 //! Collection evaluation tests (list, set, map literals, index access, methods).
 
+// Value::Set/Map use BTreeSet<Value> / BTreeMap<Value, Value>; Value's interior-mutable
+// SampledField (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
+#![allow(clippy::mutable_key_type)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use reify_expr::{EvalContext, eval_expr};

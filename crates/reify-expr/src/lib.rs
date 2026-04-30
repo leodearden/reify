@@ -1,16 +1,24 @@
+// See `reify-types::value::SampledField` for the rationale behind this allow:
+// `Value::SampledField` carries an `AtomicBool` (excluded from
+// `PartialEq`/`Ord`/`Hash`/`content_hash`) that nonetheless triggers
+// `mutable_key_type` on every `BTreeMap<Value, _>` site.
+#![allow(clippy::mutable_key_type)]
+
 mod analysis;
 mod calculus;
 mod complex;
 pub mod interp;
 pub mod kleene;
+pub mod sampled;
 mod sanitize;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
-    DeterminacyState, DimensionVector, FIELD_ENTITY_PREFIX, FieldSourceKind, PersistentMap,
-    QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap, quaternion_is_finite,
+    DeterminacyState, Diagnostic, DimensionVector, FIELD_ENTITY_PREFIX, FieldSourceKind,
+    PersistentMap, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap, quaternion_is_finite,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -31,6 +39,15 @@ pub struct EvalContext<'a> {
     /// When `Some`, DeterminacyPredicate nodes resolve to `Bool(true/false)`.
     /// When `None`, they return `Undef` (no engine context available).
     pub determinacy: Option<&'a PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+    /// Optional sink for runtime diagnostics emitted during evaluation
+    /// (e.g. `W_FIELD_OUT_OF_BOUNDS` from `sampled::sample_at_point`,
+    /// `W_INTERPOLATION_DEFERRED` from `interp::resolve_method`).
+    /// When `Some`, callers can push warnings into the `RefCell` and the
+    /// surrounding `Engine::eval`/`edit_*` flow drains them into
+    /// `EvalResult.diagnostics`. When `None`, runtime warnings are
+    /// silently dropped — preserving the legacy `EvalContext::simple`
+    /// semantics used by ad-hoc unit tests.
+    pub diagnostics: Option<&'a RefCell<Vec<Diagnostic>>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -42,6 +59,7 @@ impl<'a> EvalContext<'a> {
             recursion_depth: 0,
             meta: None,
             determinacy: None,
+            diagnostics: None,
         }
     }
 
@@ -53,6 +71,7 @@ impl<'a> EvalContext<'a> {
             recursion_depth: 0,
             meta: None,
             determinacy: None,
+            diagnostics: None,
         }
     }
 
@@ -65,6 +84,7 @@ impl<'a> EvalContext<'a> {
             recursion_depth: depth,
             meta: None,
             determinacy: None,
+            diagnostics: None,
         }
     }
 
@@ -83,6 +103,17 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Attach a runtime diagnostics sink. Warnings emitted during
+    /// `eval_expr` (e.g. `W_FIELD_OUT_OF_BOUNDS` from sampled-field OOB
+    /// queries) are pushed into the `RefCell` for the caller to drain.
+    pub fn with_runtime_diagnostics(
+        mut self,
+        sink: &'a RefCell<Vec<Diagnostic>>,
+    ) -> Self {
+        self.diagnostics = Some(sink);
+        self
+    }
+
     /// Create a child context with a new scope (for function body evaluation).
     fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
     where
@@ -94,6 +125,7 @@ impl<'a> EvalContext<'a> {
             recursion_depth: self.recursion_depth + 1,
             meta: self.meta,
             determinacy: self.determinacy,
+            diagnostics: self.diagnostics,
         }
     }
 }
@@ -138,6 +170,17 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 apply_lambda_with_point_unpacking(
                                     lambda,
                                     &evaluated_args[1],
+                                    ctx,
+                                )
+                            }
+                            // Sampled-field dispatch (task 2341): runtime
+                            // helper extracts query coords, detects OOB,
+                            // and dispatches to interp::interpolate_Nd.
+                            (Value::SampledField(sf), FieldSourceKind::Sampled) => {
+                                sampled::sample_at_point(
+                                    sf,
+                                    &evaluated_args[1],
+                                    codomain_type,
                                     ctx,
                                 )
                             }

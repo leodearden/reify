@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use reify_types::{DimensionVector, Value};
+use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 use crate::helpers::{tensor_components_f64, trig_input};
 use crate::orientation::normalize_quaternion;
@@ -93,6 +93,55 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 args[3].clone(),
                 args[4].clone(),
             )
+        }
+        // 3-DOF spherical joint: free rotation in SO(3), no translation.
+        // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 4.
+        //
+        // Signature: spherical(range_angle: Range<Angle>) — single Range<Angle>
+        // bounding the swing magnitude (axis-angle / cone half-angle). The joint
+        // is axis-isotropic — there is no preferred direction — so no axis is
+        // stored. The motion variable for `transform_at` is a unit quaternion
+        // (`Value::Orientation`); Euler / axis-angle exposure is the user's
+        // responsibility via composition of `orient_euler` / `orient_axis_angle`
+        // and `orient_to_euler` / `orient_to_axis_angle`.
+        "spherical" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            // Validate range_angle: bounded, ANGLE-dimensioned. Mirrors the
+            // prismatic / revolute / planar precedent.
+            if validate_range(&args[0], DimensionVector::ANGLE).is_none() {
+                return Some(Value::Undef);
+            }
+            make_spherical(args[0].clone())
+        }
+        // 2-DOF cylindrical joint: composite of prismatic ⊕ revolute on a single
+        // shared axis. Per PRD v0_2/kinematic-constraints.md §"Decomposition plan"
+        // task 5.
+        //
+        // Signature: cylindrical(axis, translation_range, rotation_range)
+        // where axis is a dimensionless Vector3 (finite, non-zero), translation_range
+        // is a LENGTH range (bounded), and rotation_range is an ANGLE range (bounded).
+        // The raw (unnormalised) axis is stored; normalisation happens at
+        // `transform_at` and `joint_jacobian` time — matching the prismatic /
+        // revolute / planar precedent.
+        "cylindrical" => {
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            // Validate axis: dimensionless Vector3, finite, non-zero.
+            if validate_axis(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            // Validate translation_range: bounded, LENGTH-dimensioned.
+            if validate_range(&args[1], DimensionVector::LENGTH).is_none() {
+                return Some(Value::Undef);
+            }
+            // Validate rotation_range: bounded, ANGLE-dimensioned.
+            if validate_range(&args[2], DimensionVector::ANGLE).is_none() {
+                return Some(Value::Undef);
+            }
+            make_cylindrical_joint(args[0].clone(), args[1].clone(), args[2].clone())
         }
         // 0-DOF group-only joint (sub-assembly grouping, clearance-pair filtering).
         // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 7.
@@ -221,6 +270,81 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     }
                     t_planar
                 }
+                // 3-DOF spherical joint: motion variable is `Value::Orientation`
+                // (a unit quaternion). Per PRD task 4 design decision, the user
+                // constructs the quaternion via `orient_axis_angle` /
+                // `orient_euler` / `orient_quaternion` before calling
+                // `transform_at`; the spherical arm renormalises via
+                // `normalize_quaternion` as defence-in-depth against hand-built
+                // `Value::Orientation` carrying non-unit components. The result
+                // is `Value::Transform { rotation = normalised_q, translation = 0 }`.
+                //
+                // Non-`Value::Orientation` inputs (Undef, Real, Vector, List,
+                // bare Map, etc.) fall through to Undef. The same Undef applies
+                // when `quaternion_is_finite` rejects NaN/Inf components or
+                // `normalize_quaternion` rejects a zero-norm quaternion (the
+                // latter is documented at orientation.rs:560).
+                "spherical" => {
+                    let (w, x, y, z) = match &args[1] {
+                        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                        _ => return Some(Value::Undef),
+                    };
+                    if !quaternion_is_finite(w, x, y, z) {
+                        return Some(Value::Undef);
+                    }
+                    let rotation = match normalize_quaternion(w, x, y, z) {
+                        Some(q) => q,
+                        None => return Some(Value::Undef),
+                    };
+                    Value::Transform {
+                        rotation: Box::new(rotation),
+                        translation: Box::new(Value::Vector(vec![
+                            Value::length(0.0),
+                            Value::length(0.0),
+                            Value::length(0.0),
+                        ])),
+                    }
+                }
+                // 2-DOF cylindrical joint: motion variable is a 2-element
+                // `Value::List` of `[Length, Angle]` (translation distance,
+                // rotation angle). List-only mirrors the planar arm — Reify
+                // `[a, b]` literals lower to `Value::List`.
+                //
+                // Composition rationale (single-step construction): translation
+                // along axis n and rotation about the same axis n commute in
+                // SE(3) — for any d, θ, R(n, θ)·(d·n) = d·n (rotation about an
+                // axis preserves vectors along that axis). So `T_p` (translation
+                // d·n, identity rotation) and `T_r` (rotation R(n, θ), zero
+                // translation) compose to the same result regardless of order:
+                // {rotation = R(n, θ), translation = d·n}. We build that result
+                // directly, avoiding the round-trip through `transform_compose`
+                // and the floating-point drift it would introduce.
+                "cylindrical" => {
+                    let [nax, nay, naz] = match unit_axis_from_map(map) {
+                        Some(a) => a,
+                        None => return Some(Value::Undef),
+                    };
+                    let (dist, theta) = match cylindrical_motion_vars(&args[1]) {
+                        Some(pair) => pair,
+                        None => return Some(Value::Undef),
+                    };
+                    // Defense-in-depth: cylindrical_motion_vars uses
+                    // length_input/trig_input which already reject non-finite,
+                    // but mirror the prismatic/revolute arms for symmetry.
+                    if !dist.is_finite() || !theta.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    let rotation = axis_angle_quaternion(nax, nay, naz, theta);
+                    let translation = Value::Vector(vec![
+                        Value::length(dist * nax),
+                        Value::length(dist * nay),
+                        Value::length(dist * naz),
+                    ]);
+                    Value::Transform {
+                        rotation: Box::new(rotation),
+                        translation: Box::new(translation),
+                    }
+                }
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
                     // above) with explicit guards. A Map built by a trusted `couple`
@@ -346,6 +470,118 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             };
             make_coupling(args[0].clone(), Value::Real(ratio_f64), offset)
         }
+        // ── Coupling specialisations (PRD task 8) ──────────────────────────────
+        //
+        // `screw`, `gear`, and `rack_and_pinion` are thin parameterised wrappers
+        // around `couple()`.  Each computes a dimensionless f64 ratio from its
+        // domain parameters and delegates to `couple(parent, Value::Real(ratio))`.
+        // Parent-kind validation (must be prismatic/revolute, no nested coupling,
+        // etc.) is intentionally delegated to `couple()` — if `couple` returns
+        // `Value::Undef`, the wrapper propagates that Undef unchanged.
+        // See design decisions in the task-2676 plan.json.
+        //
+        // End-to-end coverage lives in crates/reify-eval/tests/kinematic_stdlib_smoke.rs.
+
+        // `screw(parent, lead)` — wrap a prismatic driving joint as a screw.
+        //
+        // `lead` (metres per 2π coupling-input units) is converted to a
+        // dimensionless ratio via `lead_si / (2π)` and delegated to `couple()`.
+        // The canonical use passes a prismatic parent (linear input → scaled linear
+        // output per turn).  Like all coupling specialisations, this wrapper is
+        // dimension-agnostic — `couple()` also accepts a revolute parent, but
+        // angular→angular is not a screw.  Parent-kind validation is intentionally
+        // delegated to `couple()`.
+        // PRD task 8: `Coupling(rotation, translation, ratio = lead / 2π)`.
+        "screw" => {
+            // Arity: exactly 2 args (parent, lead).
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            // Parse lead as a LENGTH value (SI metres).
+            let lead_si = match length_input(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // Compute the dimensionless ratio: lead / (2π).
+            let ratio = lead_si / (2.0 * std::f64::consts::PI);
+            // Defense-in-depth: length_input already rejects non-finite inputs,
+            // so this guard should never trigger, but we include it for safety.
+            if !ratio.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Delegate to couple() — parent validation and Map layout come from there.
+            crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
+        }
+
+        // `gear(parent, teeth_a, teeth_b)` — wrap a revolute driving joint as a gear pair.
+        //
+        // Both tooth counts must be `Value::Int` with strictly positive values.
+        // `ratio = -(teeth_b as f64) / (teeth_a as f64)` (negative for external mesh).
+        // f64 precision: integers are represented exactly up to 2^53 ≈ 9×10^15;
+        // all real gear tooth counts are far below this limit.
+        // The canonical use passes a revolute parent (angular input → scaled angular
+        // output).  Like all coupling specialisations, this wrapper is
+        // dimension-agnostic — `couple()` also accepts a prismatic parent, but
+        // linear→linear is not a gear.  Parent-kind validation is intentionally
+        // delegated to `couple()`.
+        // PRD task 8: `Coupling(rotation_a, rotation_b, ratio = -teeth_b / teeth_a)`.
+        "gear" => {
+            // Arity: exactly 3 args (parent, teeth_a, teeth_b).
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            // Require teeth_a: strictly positive Int (prevents division by zero).
+            let teeth_a = match &args[1] {
+                Value::Int(i) if *i > 0 => *i,
+                _ => return Some(Value::Undef),
+            };
+            // Require teeth_b: strictly positive Int (symmetry + non-physical 0-tooth rejected).
+            let teeth_b = match &args[2] {
+                Value::Int(i) if *i > 0 => *i,
+                _ => return Some(Value::Undef),
+            };
+            // Compute ratio: negative for external mesh (reverses direction).
+            let ratio = -(teeth_b as f64) / (teeth_a as f64);
+            // Both teeth counts are strictly positive finite integers, so ratio is always finite.
+            if !ratio.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Delegate to couple() — parent validation and Map layout come from there.
+            crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
+        }
+
+        // `rack_and_pinion(parent, pitch_radius)` — wrap a prismatic driving joint as a rack-and-pinion.
+        //
+        // `pitch_radius` (metres) becomes the dimensionless coupling ratio directly:
+        // `ratio = pitch_radius_si`.  The canonical use passes a prismatic parent
+        // (linear input → `pitch_radius * linear` output).  Like all coupling
+        // specialisations, this wrapper is dimension-agnostic — `couple()` also accepts
+        // a revolute parent (angular→scaled angular), but that is not a rack-and-pinion.
+        // Note: the coupling motion variable is interpreted as a length under the
+        // current `couple` semantics.  Parent-kind validation is intentionally
+        // delegated to `couple()`.
+        // PRD task 8: `Coupling(rotation, translation, ratio = pitch_radius)`.
+        // Identifier uses underscores because Reify identifiers do not allow hyphens.
+        "rack_and_pinion" => {
+            // Arity: exactly 2 args (parent, pitch_radius).
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            // Parse pitch_radius as a LENGTH value (SI metres).
+            let pitch_radius_si = match length_input(&args[1]) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
+            };
+            // ratio = pitch_radius (dimensionless scaling factor for the coupling).
+            let ratio = pitch_radius_si;
+            // Defense-in-depth: length_input already rejects non-finite inputs.
+            if !ratio.is_finite() {
+                return Some(Value::Undef);
+            }
+            // Delegate to couple() — parent validation and Map layout come from there.
+            crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
+        }
+
         "joint_axis" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
@@ -417,16 +653,18 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             //   revolute  → angular=axis_unit, linear=[0,0,0]
             //   coupling  → ratio * parent_jacobian (component-wise).
             //   fixed     → zero column placeholder (0-DOF joint).
-            //   planar    → zero column placeholder (3-DOF FD-fallback); the
-            //               actual per-DOF wrench contributions are computed by
-            //               `chain_jacobian_fd`, which perturbs motion variables
-            //               directly and does NOT consult this function.
+            //   planar    → zero column placeholder (3-DOF deferred); the
+            //               per-DOF wrench contributions are NOT yet computed
+            //               by `chain_jacobian_fd` either: `value_for_joint`
+            //               returns None for planar, so chain Jacobians for
+            //               planar chains currently return None too. Deferred
+            //               to PRD v0.2 kinematic task 2 (taskmaster #2670 —
+            //               "FD fallback for multi-DOF kinds").
             //
             // For multi-DOF joints (fixed, planar) the returned column is zero
             // rather than Undef: callers expecting a { angular, linear } Map get a
-            // well-formed result, and `chain_jacobian_fd` bypasses this path
-            // entirely.  Do NOT assume a non-zero result for planar joints; consume
-            // `chain_jacobian_fd` instead for multi-DOF chain Jacobians.
+            // well-formed result. Do NOT assume a non-zero result for planar joints
+            // or that chain_jacobian_fd succeeds for chains containing planar.
             //
             // Validation mirrors `transform_at`'s coupling arm: parent kind must
             // be prismatic/revolute (no nested couplings), ratio must be a
@@ -479,12 +717,13 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // is semantically valid (no motion variable contributes any twist), and keeps
         // the existing drift-guard tests simple.
         "fixed" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
-        // 3-DOF planar joint: zero-twist placeholder column — FD-fallback design decision.
+        // 3-DOF planar joint: zero-twist placeholder column — deferred design decision.
         // A planar joint has a 6×3 Jacobian (three columns: two prismatic + one revolute),
-        // but the v0.1 single-column convention returns one Map per joint. The actual
-        // per-DOF wrench contributions are computed correctly via `chain_jacobian_fd`
-        // (which perturbs each motion variable independently and does not consult this
-        // function). Returning a zero-magnitude column preserves the uniform
+        // but the v0.1 single-column convention returns one Map per joint. Note that
+        // `chain_jacobian_fd` also returns None for chains containing a planar joint
+        // (because `value_for_joint` has no planar arm yet); this zero placeholder is
+        // NOT equivalent to "FD chain Jacobians work for planar" — they do not yet.
+        // Returning a zero-magnitude column preserves the uniform
         // `{ angular, linear }` shape across all kinds and satisfies the
         // `joint_jacobian_dispatches_for_every_joint_kind` coverage test.
         // The analytic 3-DOF Jacobian is deferred per PRD task 2 ("finite-difference
@@ -497,6 +736,44 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // `if unit_axes_xy_from_planar_map(map).is_none() { return Value::Undef; }`
         // if you need stricter defence-in-depth for malformed fixtures.
         "planar" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        // 3-DOF spherical joint: zero-twist placeholder column — deferred design
+        // decision matching the planar/fixed pattern. A spherical joint has a
+        // 6×3 Jacobian (three angular columns spanning so(3); zero linear), but
+        // the v0.1 single-column convention returns one Map per joint. The
+        // analytic 3-column form is deferred per PRD task 2 / #2670 ("FD fallback
+        // for multi-DOF kinds"). Note: chain_jacobian_fd also returns None for
+        // chains containing a spherical joint because `value_for_joint` returns
+        // None for spherical (the f64-per-joint chain machinery cannot represent
+        // a quaternion motion variable); this zero placeholder is NOT equivalent
+        // to "FD chain Jacobians work for spherical" — they do not yet.
+        //
+        // Field validation is deliberately skipped (matching the planar/fixed
+        // arms): the result is zero regardless of the stored range_angle, so a
+        // hand-built Map with a missing field returns the same correct placeholder.
+        "spherical" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        // 2-DOF cylindrical joint: returns a `Value::List` of two analytic twist
+        // columns (one per DOF) — element [0] is the prismatic-DOF column
+        // (angular=0, linear=unit_axis) and element [1] is the revolute-DOF
+        // column (angular=unit_axis, linear=0). The per-DOF ordering invariant
+        // ([0]=prismatic, [1]=revolute) is documented so future analytic-Jacobian
+        // composition can rely on it (PRD task 5).
+        //
+        // The List-of-Maps shape (vs. a single Map) is non-Undef — passes the
+        // `joint_jacobian_dispatches_for_every_joint_kind` coverage test — and
+        // also naturally signals to `loop_closure::per_joint_jacobian_local`
+        // (which calls `twist_map_to_array` expecting a single Map) to return
+        // None, triggering the documented FD-fallback path. This contrasts with
+        // the planar/spherical zero-twist Map placeholder pattern: cylindrical's
+        // analytic per-DOF columns are simple enough to emit cleanly.
+        "cylindrical" => {
+            let [nax, nay, naz] = match unit_axis_from_map(map) {
+                Some(a) => a,
+                None => return Value::Undef,
+            };
+            let prismatic_col = make_jacobian([0.0, 0.0, 0.0], [nax, nay, naz]);
+            let revolute_col = make_jacobian([nax, nay, naz], [0.0, 0.0, 0.0]);
+            Value::List(vec![prismatic_col, revolute_col])
+        }
         "coupling" => {
             let parent_map = match map.get(&Value::String("parent".to_string())) {
                 Some(Value::Map(pm)) => pm,
@@ -631,6 +908,36 @@ fn length_input(v: &Value) -> Option<f64> {
     }
 }
 
+/// Extract `(dist, theta)` from a cylindrical motion-variable argument.
+///
+/// Accepts a 2-element `Value::List` whose elements are:
+/// - `items[0]`: a length scalar (LENGTH-dim Scalar, or bare Real/Int as metres)
+/// - `items[1]`: an angle scalar (ANGLE-dim Scalar, or bare Real/Int as radians)
+///
+/// Returns `None` if:
+/// - the container is not a 2-element `List`,
+/// - either element fails its dimension/finiteness contract
+///   (`length_input` / `trig_input`, which also reject NaN/Inf and the
+///   wrong-dimension Scalar).
+///
+/// The dim-swap case `[angle, length]` is rejected for free: `length_input`
+/// rejects an angle Scalar (wrong dim) and `trig_input` rejects a length Scalar.
+///
+/// Container shape: List-only, mirroring the planar arm (joints.rs ~200).
+/// Reify list literals `[a, b]` lower to `Value::List`, so accepting a
+/// `Value::Vector` here would be reachable only from internal callers and
+/// would create an asymmetry with planar that future readers would have to
+/// re-derive. Keeping the surface narrow keeps the joint-zoo consistent.
+fn cylindrical_motion_vars(value: &Value) -> Option<(f64, f64)> {
+    let items = match value {
+        Value::List(items) if items.len() == 2 => items,
+        _ => return None,
+    };
+    let dist = length_input(&items[0])?;
+    let theta = trig_input(&items[1])?;
+    Some((dist, theta))
+}
+
 /// Unit-normalise a 3-component array.
 ///
 /// The caller must have already validated the input via [`validate_axis`],
@@ -646,14 +953,32 @@ fn unit_normalize(comps: [f64; 3]) -> [f64; 3] {
 /// Extract and unit-normalise both `"axis_x"` and `"axis_y"` from a planar joint Map.
 ///
 /// Returns `Some((unit_x, unit_y))` on success, `None` if either field is
-/// missing or fails [`validate_axis`] validation.  Used by the `"planar"` arm
-/// of `transform_at` to avoid duplicating the axis lookup and normalisation logic.
+/// missing, fails [`validate_axis`] validation, or the two axes are not
+/// perpendicular (`|dot(unit_x, unit_y)| >= 1e-9`).
+///
+/// The perpendicularity predicate uses the same tolerance (1e-9) and formula as
+/// the `"planar"` constructor arm of `eval_joints` (joints.rs:67-76), so any Map
+/// the constructor accepts is also accepted here, and any Map this helper rejects
+/// would have been rejected by the constructor.  The check is defence-in-depth:
+/// the constructor rejects non-perpendicular axes before storing a Map, but
+/// hand-built Maps can bypass the constructor and reach `transform_at` directly.
 fn unit_axes_xy_from_planar_map(map: &BTreeMap<Value, Value>) -> Option<([f64; 3], [f64; 3])> {
     let axis_x_val = map.get(&Value::String("axis_x".to_string()))?;
     let axis_y_val = map.get(&Value::String("axis_y".to_string()))?;
     let cx = validate_axis(axis_x_val)?;
     let cy = validate_axis(axis_y_val)?;
-    Some((unit_normalize(cx), unit_normalize(cy)))
+    let unit_x = unit_normalize(cx);
+    let unit_y = unit_normalize(cy);
+    // Perpendicularity guard — mirrors the constructor check at joints.rs:67-76.
+    // Parallel or anti-parallel axes produce a zero cross product, which would
+    // yield a degenerate (all-zero) rotation axis in the `transform_at` planar
+    // arm; return None so the caller propagates Undef instead of silently
+    // producing an identity rotation.
+    let dot = unit_x[0] * unit_y[0] + unit_x[1] * unit_y[1] + unit_x[2] * unit_y[2];
+    if dot.abs() >= 1e-9 {
+        return None;
+    }
+    Some((unit_x, unit_y))
 }
 
 /// Look up the `"axis"` field in a joint map, validate it via [`validate_axis`],
@@ -722,7 +1047,14 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
 /// runtime slice membership, so those arms **must be kept in sync with
 /// this constant** when a new kind is added.
 /// `mechanism::body()` validates joint-kind membership via `is_joint_value`.
-pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar"];
+///
+/// Multi-DOF kinds: `"planar"` (3-DOF), `"spherical"` (3-DOF), and
+/// `"cylindrical"` (2-DOF). These have explicit `None` arms in
+/// `loop_closure::value_for_joint` and `loop_closure::joint_range_midpoint`
+/// because the f64-per-joint signature of `chain_transform` /
+/// `chain_jacobian_fd` cannot represent multi-DOF motion variables; see
+/// `loop_closure::MULTI_DOF_KINDS`.
+pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar", "spherical", "cylindrical"];
 
 /// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
 /// the strings in [`JOINT_KINDS`]. Used by `mechanism::body()` for
@@ -770,6 +1102,42 @@ fn make_planar(axis_x: Value, axis_y: Value, range_x: Value, range_y: Value, ran
     m.insert(Value::String("range_x".to_string()), range_x);
     m.insert(Value::String("range_y".to_string()), range_y);
     m.insert(Value::String("range_theta".to_string()), range_theta);
+    Value::Map(m)
+}
+
+/// Build a spherical joint `Value::Map` with the two-key layout:
+/// `"kind"`, `"range_angle"`.
+///
+/// Keys are in BTreeMap alphabetical order. The spherical joint is axis-isotropic
+/// (no preferred direction), so no axis is stored. The `range_angle` value is
+/// a `Value::Range` of `Angle`-dimensioned bounds — see PRD task 4 design
+/// decision: the range bounds the rotation magnitude (axis-angle / cone
+/// half-angle) regardless of the axis direction.
+fn make_spherical(range_angle: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("kind".to_string()), Value::String("spherical".to_string()));
+    m.insert(Value::String("range_angle".to_string()), range_angle);
+    Value::Map(m)
+}
+
+/// Build a cylindrical joint `Value::Map` with the four-key layout:
+/// `"axis"`, `"kind"`, `"rotation_range"`, `"translation_range"`.
+///
+/// Keys are in `BTreeMap` alphabetical order, mirroring `make_joint` /
+/// `make_planar` / `make_spherical`.  The raw (unnormalised) axis is
+/// stored; normalisation happens at `transform_at` / `joint_jacobian`
+/// time, matching the prismatic / revolute precedent.
+///
+/// Design intent (PRD task 5): the cylindrical joint is the flat composite
+/// of prismatic ⊕ revolute on a single shared axis.  Storing translation_range
+/// and rotation_range at the top level (rather than nesting prismatic/revolute
+/// children) avoids axis duplication and keeps `joint_axis` working unchanged.
+fn make_cylindrical_joint(axis: Value, translation_range: Value, rotation_range: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("kind".to_string()), Value::String("cylindrical".to_string()));
+    m.insert(Value::String("axis".to_string()), axis);
+    m.insert(Value::String("translation_range".to_string()), translation_range);
+    m.insert(Value::String("rotation_range".to_string()), rotation_range);
     Value::Map(m)
 }
 
@@ -885,21 +1253,9 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint, spherical_joint};
     use reify_types::{DimensionVector, Value};
     use super::{is_joint_value, JOINT_KINDS};
-
-    fn axis_x_unit() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
-    }
-
-    fn length_range_0_to_1m() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::length(0.0))),
-            upper: Some(Box::new(Value::length(1.0))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     // ── prismatic constructor: happy path ────────────────────────────────────
 
@@ -950,19 +1306,6 @@ mod tests {
     }
 
     // ── revolute constructor helpers ─────────────────────────────────────────
-
-    fn axis_z_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
-    }
-
-    fn angle_range_0_to_pi() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::angle(0.0))),
-            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     // ── revolute constructor: happy path ─────────────────────────────────────
 
@@ -2764,6 +3107,238 @@ mod tests {
         );
     }
 
+    // ── coupling specialisations: shared test helper ─────────────────────────
+
+    /// Assert that `eval_builtin(name, args)` returns `Value::Undef`.
+    ///
+    /// Use this in table-driven validation tests (see `screw_validation_rejections`,
+    /// `gear_validation_rejections`, `rack_and_pinion_validation_rejections`) rather
+    /// than writing one `#[test]` fn per rejection case.
+    fn assert_builtin_undef(name: &str, args: &[Value], label: &str) {
+        assert!(
+            eval_builtin(name, args).is_undef(),
+            "{name}({args:?}) — {label} — should return Undef"
+        );
+    }
+
+    // ── screw constructor: happy path ────────────────────────────────────────
+
+    #[test]
+    fn screw_returns_correct_coupling_and_transform_at_works() {
+        // screw(prismatic-X, lead=1mm) → coupling Map with:
+        //   kind="coupling", parent=prismatic-X, ratio=1e-3/(2π), offset=length(0)
+        // transform_at(result, length(2π)) → translation [1e-3, 0, 0] (one lead per 2π input)
+        let pi = std::f64::consts::PI;
+        let parent = prismatic_x_joint();
+        let lead = Value::length(1e-3); // 1 mm
+        let result = eval_builtin("screw", &[parent.clone(), lead]);
+        let map = match &result {
+            Value::Map(m) => m.clone(),
+            other => panic!("screw: expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "screw: kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "screw: parent should match the prismatic joint"
+        );
+        let expected_ratio = 1e-3 / (2.0 * pi);
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(expected_ratio)),
+            "screw: ratio should be Value::Real(lead/(2π))"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::length(0.0)),
+            "screw: default offset for prismatic parent should be Value::length(0.0)"
+        );
+        // Verify end-to-end kinematics: transform_at(result, length(2π)) → translation [1e-3, 0, 0]
+        // Math: coupled = (1e-3/(2π)) * 2π + 0 = 1e-3 m, translated along prismatic-X axis.
+        let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
+        assert_transform_approx(&xform, (1.0, 0.0, 0.0, 0.0), [1e-3, 0.0, 0.0], 1e-12,
+            "screw transform_at: 1mm lead, 2π input → [1e-3, 0, 0]");
+    }
+
+    // ── screw constructor: validation rejections ─────────────────────────────
+
+    #[test]
+    fn screw_validation_rejections() {
+        use std::collections::BTreeMap;
+        use reify_types::DimensionVector;
+        let parent = prismatic_x_joint();
+        let lead = Value::length(1e-3);
+        let coupling_parent = eval_builtin("screw", &[parent.clone(), lead.clone()]);
+        let mut no_kind = BTreeMap::new();
+        no_kind.insert(Value::String("axis".to_string()), axis_x_unit());
+        let cases: Vec<(Vec<Value>, &str)> = vec![
+            (vec![], "0 args"),
+            (vec![parent.clone()], "1 arg"),
+            (vec![parent.clone(), lead.clone(), Value::Real(0.0)], "3 args"),
+            (vec![Value::Real(1.0), lead.clone()], "non-Map parent"),
+            (vec![coupling_parent, lead.clone()], "coupling parent (delegated to couple())"),
+            (vec![Value::Map(no_kind), lead.clone()], "Map parent missing 'kind'"),
+            (vec![parent.clone(), Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }], "MASS-dimensioned lead"),
+            (vec![parent.clone(), Value::Real(f64::NAN)], "NaN lead"),
+            (vec![parent.clone(), Value::Real(f64::INFINITY)], "Inf lead"),
+            (vec![parent, Value::String("bad".to_string())], "String lead"),
+        ];
+        for (args, label) in &cases {
+            assert_builtin_undef("screw", args, label);
+        }
+    }
+
+    // ── gear constructor: happy path ─────────────────────────────────────────
+
+    #[test]
+    fn gear_returns_correct_coupling_and_transform_at_works() {
+        // gear(revolute-Z, teeth_a=20, teeth_b=30) → coupling Map with:
+        //   kind="coupling", parent=revolute-Z, ratio=-(30/20)=-1.5, offset=angle(0)
+        // transform_at(result, angle(π/3)) → coupled angle = -1.5 * π/3 = -π/2
+        //   → rotation = (cos(-π/4), 0, 0, sin(-π/4))
+        let pi = std::f64::consts::PI;
+        let parent = revolute_z_joint();
+        let result = eval_builtin("gear", &[parent.clone(), Value::Int(20), Value::Int(30)]);
+        let map = match &result {
+            Value::Map(m) => m.clone(),
+            other => panic!("gear: expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "gear: kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "gear: parent should match the revolute joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(-30.0 / 20.0)),
+            "gear: ratio should be Value::Real(-teeth_b/teeth_a) = -1.5"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::angle(0.0)),
+            "gear: default offset for revolute parent should be Value::angle(0.0)"
+        );
+        // Verify end-to-end kinematics: transform_at(result, angle(π/3))
+        // Math: coupled = -1.5 * (π/3) = -π/2 rad about Z-axis
+        //   → rotation quaternion for -π/2 about Z = (cos(-π/4), 0, 0, sin(-π/4))
+        let xform = eval_builtin("transform_at", &[result, Value::angle(pi / 3.0)]);
+        let cos_q = (-pi / 4.0).cos();
+        let sin_q = (-pi / 4.0).sin();
+        assert_transform_approx(&xform, (cos_q, 0.0, 0.0, sin_q), [0.0, 0.0, 0.0], 1e-12,
+            "gear transform_at: 20:30 ratio, π/3 input → -π/2 rotation about Z");
+    }
+
+    // ── gear constructor: validation rejections ──────────────────────────────
+
+    #[test]
+    fn gear_validation_rejections() {
+        use reify_types::DimensionVector;
+        let parent = revolute_z_joint();
+        let ta = Value::Int(20);
+        let tb = Value::Int(30);
+        let coupling_parent = eval_builtin("gear", &[parent.clone(), ta.clone(), tb.clone()]);
+        let cases: Vec<(Vec<Value>, &str)> = vec![
+            (vec![], "0 args"),
+            (vec![parent.clone()], "1 arg"),
+            (vec![parent.clone(), ta.clone()], "2 args"),
+            (vec![parent.clone(), ta.clone(), tb.clone(), Value::Real(0.0)], "4 args"),
+            (vec![Value::Real(1.0), ta.clone(), tb.clone()], "non-Map parent"),
+            (vec![coupling_parent, ta.clone(), tb.clone()], "coupling parent (delegated to couple())"),
+            (vec![parent.clone(), Value::Int(0), tb.clone()], "teeth_a=0 (division by zero)"),
+            (vec![parent.clone(), Value::Int(-5), tb.clone()], "negative teeth_a"),
+            (vec![parent.clone(), ta.clone(), Value::Int(0)], "teeth_b=0 (degenerate)"),
+            (vec![parent.clone(), ta.clone(), Value::Int(-3)], "negative teeth_b"),
+            (vec![parent.clone(), Value::Real(20.0), tb.clone()], "Real teeth_a (Int-only contract)"),
+            (vec![parent.clone(), ta.clone(), Value::Real(30.0)], "Real teeth_b (Int-only contract)"),
+            (vec![parent.clone(), Value::Scalar { si_value: 20.0, dimension: DimensionVector::DIMENSIONLESS }, tb.clone()], "Scalar teeth_a (Int-only contract)"),
+            (vec![parent, Value::String("bad".to_string()), tb], "String teeth_a"),
+        ];
+        for (args, label) in &cases {
+            assert_builtin_undef("gear", args, label);
+        }
+    }
+
+    // ── rack_and_pinion constructor: happy path ───────────────────────────────
+
+    #[test]
+    fn rack_and_pinion_returns_correct_coupling_and_transform_at_works() {
+        // rack_and_pinion(prismatic-X, pitch_radius=10mm) → coupling Map with:
+        //   kind="coupling", parent=prismatic-X, ratio=0.01, offset=length(0)
+        // transform_at(result, length(2π)) → coupled length = 0.01 * 2π = 0.02π m
+        //   → translation [0.02π, 0, 0], identity rotation
+        let pi = std::f64::consts::PI;
+        let parent = prismatic_x_joint();
+        let pitch_radius = Value::length(0.01); // 10 mm
+        let result = eval_builtin("rack_and_pinion", &[parent.clone(), pitch_radius]);
+        let map = match &result {
+            Value::Map(m) => m.clone(),
+            other => panic!("rack_and_pinion: expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("coupling".to_string())),
+            "rack_and_pinion: kind should be 'coupling'"
+        );
+        assert_eq!(
+            map.get(&Value::String("parent".to_string())),
+            Some(&parent),
+            "rack_and_pinion: parent should match the prismatic joint"
+        );
+        assert_eq!(
+            map.get(&Value::String("ratio".to_string())),
+            Some(&Value::Real(0.01)),
+            "rack_and_pinion: ratio should be Value::Real(pitch_radius_si)"
+        );
+        assert_eq!(
+            map.get(&Value::String("offset".to_string())),
+            Some(&Value::length(0.0)),
+            "rack_and_pinion: default offset for prismatic parent should be Value::length(0.0)"
+        );
+        // Verify end-to-end kinematics: transform_at(result, length(2π))
+        // Math: coupled = 0.01 * 2π + 0 = 0.02π m, translated along prismatic-X axis.
+        let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
+        let expected_x = 0.01 * 2.0 * pi;
+        assert_transform_approx(&xform, (1.0, 0.0, 0.0, 0.0), [expected_x, 0.0, 0.0], 1e-12,
+            "rack_and_pinion transform_at: 10mm pitch, 2π input → 0.02π translation");
+    }
+
+    // ── rack_and_pinion constructor: validation rejections ───────────────────
+
+    #[test]
+    fn rack_and_pinion_validation_rejections() {
+        use std::collections::BTreeMap;
+        use reify_types::DimensionVector;
+        let parent = prismatic_x_joint();
+        let pr = Value::length(0.01);
+        let coupling_parent = eval_builtin("rack_and_pinion", &[parent.clone(), pr.clone()]);
+        let mut no_kind = BTreeMap::new();
+        no_kind.insert(Value::String("axis".to_string()), axis_x_unit());
+        let cases: Vec<(Vec<Value>, &str)> = vec![
+            (vec![], "0 args"),
+            (vec![parent.clone()], "1 arg"),
+            (vec![parent.clone(), pr.clone(), Value::Real(0.0)], "3 args"),
+            (vec![Value::Real(1.0), pr.clone()], "non-Map parent"),
+            (vec![coupling_parent, pr.clone()], "coupling parent (delegated to couple())"),
+            (vec![Value::Map(no_kind), pr.clone()], "Map parent missing 'kind'"),
+            (vec![parent.clone(), Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }], "MASS-dimensioned pitch_radius"),
+            (vec![parent.clone(), Value::Real(f64::NAN)], "NaN pitch_radius"),
+            (vec![parent.clone(), Value::Real(f64::INFINITY)], "Inf pitch_radius"),
+            (vec![parent, Value::String("bad".to_string())], "String pitch_radius"),
+        ];
+        for (args, label) in &cases {
+            assert_builtin_undef("rack_and_pinion", args, label);
+        }
+    }
+
     // ── JOINT_KINDS / is_joint_value direct unit tests ───────────────────────
 
     /// All negative-case inputs for `is_joint_value` in one table-driven test.
@@ -2871,6 +3446,22 @@ mod tests {
             "planar" => vec![(
                 planar_xy_joint(),
                 Value::List(vec![Value::length(0.0), Value::length(0.0), Value::angle(0.0)]),
+            )],
+            // 3-DOF spherical joint: motion variable is a unit-quaternion `Value::Orientation`.
+            // The identity quaternion is the minimal-rotation fixture, exercising the
+            // `transform_at` and `joint_jacobian_value` spherical arms via the dispatch tests.
+            "spherical" => vec![(
+                spherical_joint(),
+                Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            )],
+            // 2-DOF cylindrical joint: motion variable is a 2-element
+            // `Value::List` of `[length, angle]` (translation distance,
+            // rotation angle). The (0, 0) pair is the minimal fixture and
+            // exercises both the `transform_at` and `joint_jacobian_value`
+            // cylindrical arms via the dispatch coverage tests.
+            "cylindrical" => vec![(
+                cylindrical_z_joint(),
+                Value::List(vec![Value::length(0.0), Value::angle(0.0)]),
             )],
             _ => panic!(
                 "JOINT_KINDS contains '{kind}' but the dispatch tests have no fixture; \
@@ -3057,22 +3648,6 @@ mod tests {
                 "zero translation for {label}"
             );
         }
-    }
-
-    // ── planar constructor helpers ────────────────────────────────────────────
-
-    fn axis_y_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
-
-    fn planar_xy_joint() -> Value {
-        eval_builtin("planar", &[
-            axis_x_unit(),
-            axis_y_unit(),
-            length_range_0_to_1m(),
-            length_range_0_to_1m(),
-            angle_range_0_to_pi(),
-        ])
     }
 
     // ── planar constructor: happy path (step-1) ───────────────────────────────
@@ -3371,6 +3946,60 @@ mod tests {
         }
     }
 
+    // ── transform_at on planar: degenerate (parallel) axes returns Undef ─────
+
+    /// Regression test: a hand-built planar `Value::Map` with parallel or
+    /// anti-parallel axes must cause `transform_at` to return Undef.
+    ///
+    /// The `planar(...)` constructor rejects parallel axes at construction time
+    /// (joints.rs:67-76), but `transform_at` accepts hand-built `Value::Map`
+    /// fixtures.  Without the guard in `unit_axes_xy_from_planar_map`, a parallel
+    /// axis pair (`axis_x = axis_y = [1,0,0]`) produces a zero cross product
+    /// `(0,0,0)`, which `axis_angle_quaternion` silently promotes to an identity
+    /// quaternion — a well-formed Transform that drops the requested rotation
+    /// entirely.  After the fix, `unit_axes_xy_from_planar_map` rejects the pair
+    /// via the perpendicularity guard and the planar arm propagates Undef.
+    #[test]
+    fn transform_at_planar_parallel_axes_returns_undef() {
+        use std::collections::BTreeMap;
+
+        // Build a hand-crafted planar Map that bypasses the constructor's
+        // perpendicularity check.  Mirrors the 6-key layout of `make_planar`
+        // (joints.rs:1079-1088): kind, axis_x, axis_y, range_x, range_y, range_theta.
+        let make_map = |axis_y: Value| -> Value {
+            let mut m = BTreeMap::new();
+            m.insert(Value::String("kind".to_string()),        Value::String("planar".to_string()));
+            m.insert(Value::String("axis_x".to_string()),      Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]));
+            m.insert(Value::String("axis_y".to_string()),      axis_y);
+            m.insert(Value::String("range_x".to_string()),     length_range_0_to_1m());
+            m.insert(Value::String("range_y".to_string()),     length_range_0_to_1m());
+            m.insert(Value::String("range_theta".to_string()), angle_range_0_to_pi());
+            Value::Map(m)
+        };
+
+        // Non-zero theta forces the cross-product / quaternion path.
+        let motion = Value::List(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::angle(std::f64::consts::PI / 2.0),
+        ]);
+
+        let cases: &[(&str, Value)] = &[
+            // axis_x = axis_y = [1,0,0]  →  dot = +1  →  zero cross product
+            ("parallel",      Value::Vector(vec![Value::Real( 1.0), Value::Real(0.0), Value::Real(0.0)])),
+            // axis_x = [1,0,0], axis_y = [-1,0,0]  →  dot = -1  →  zero cross product
+            ("anti-parallel", Value::Vector(vec![Value::Real(-1.0), Value::Real(0.0), Value::Real(0.0)])),
+        ];
+
+        for (label, axis_y) in cases {
+            let joint = make_map(axis_y.clone());
+            assert!(
+                eval_builtin("transform_at", &[joint, motion.clone()]).is_undef(),
+                "transform_at(planar with {label} axes) should return Undef but didn't",
+            );
+        }
+    }
+
     // ── joint_jacobian for planar (step-13) ──────────────────────────────────
 
     /// `joint_jacobian(planar_joint)` returns a zero-twist Map placeholder.
@@ -3442,7 +4071,7 @@ mod tests {
         let cases: &[(&str, &[Value])] = &[
             // (a) wrong arg counts
             ("0 args",  &[]),
-            ("1 arg",   &[ax.clone()]),
+            ("1 arg",   std::slice::from_ref(&ax)),
             ("4 args",  &[ax.clone(), ay.clone(), rx.clone(), ry.clone()]),
             ("6 args",  &[ax.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone(), Value::Real(0.0)]),
             // (b) axis_x invalid variants
@@ -3479,6 +4108,226 @@ mod tests {
         }
     }
 
+    // ── transform_at on spherical: invalid motion-var (step-9) ───────────────
+
+    /// `transform_at(spherical, motion)` returns Undef whenever `motion` is
+    /// not a finite, non-zero `Value::Orientation`. Covers:
+    ///   (a) bare Real
+    ///   (b) Vector(4) (the wrong "quaternion-ish" shape)
+    ///   (c) List of three angles (Euler-tuple shape, deliberately rejected)
+    ///   (d) Orientation with NaN in any component
+    ///   (e) Orientation with Inf in any component
+    ///   (f) Orientation with all-zero components (zero-norm quaternion)
+    #[test]
+    fn transform_at_spherical_invalid_motion_var_returns_undef() {
+        let sj = spherical_joint();
+
+        let cases: Vec<(&str, Value)> = vec![
+            // (a) bare Real
+            ("bare Real(0.5)", Value::Real(0.5)),
+            // (b) Vector(4) — wrong container even though component count matches
+            ("Vector(4)", Value::Vector(vec![
+                Value::Real(0.0), Value::Real(0.0), Value::Real(0.0), Value::Real(1.0),
+            ])),
+            // (c) Euler-tuple shape (List of three angles) — deliberately rejected
+            ("List(3 angles)", Value::List(vec![
+                Value::angle(0.1), Value::angle(0.2), Value::angle(0.3),
+            ])),
+            // (d) NaN components
+            ("Orientation w=NaN", Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
+            ("Orientation x=NaN", Value::Orientation { w: 1.0, x: f64::NAN, y: 0.0, z: 0.0 }),
+            ("Orientation y=NaN", Value::Orientation { w: 1.0, x: 0.0, y: f64::NAN, z: 0.0 }),
+            ("Orientation z=NaN", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NAN }),
+            // (e) Inf components — one Inf per axis covers the symmetric
+            // `quaternion_is_finite` arms; +Inf and -Inf are mixed across
+            // axes to exercise both signs.
+            ("Orientation w=Inf", Value::Orientation { w: f64::INFINITY, x: 0.0, y: 0.0, z: 0.0 }),
+            ("Orientation x=Inf", Value::Orientation { w: 1.0, x: f64::INFINITY, y: 0.0, z: 0.0 }),
+            ("Orientation y=Inf", Value::Orientation { w: 1.0, x: 0.0, y: f64::INFINITY, z: 0.0 }),
+            ("Orientation z=-Inf", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NEG_INFINITY }),
+            // (f) zero-norm quaternion (normalize_quaternion returns None)
+            ("Orientation all-zero", Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 }),
+        ];
+
+        for (label, motion) in &cases {
+            assert!(
+                eval_builtin("transform_at", &[sj.clone(), motion.clone()]).is_undef(),
+                "transform_at(spherical, {label}) should return Undef but didn't"
+            );
+        }
+    }
+
+    // ── transform_at on spherical: identity quaternion (step-5) ──────────────
+
+    #[test]
+    fn transform_at_spherical_identity_quaternion_returns_identity() {
+        let sj = spherical_joint();
+        let identity_q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let result = eval_builtin("transform_at", &[sj, identity_q]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical identity quaternion → identity Transform",
+        );
+    }
+
+    // ── transform_at on spherical: general quaternions (step-7) ──────────────
+
+    /// `transform_at(spherical, q)` returns a Transform whose rotation matches
+    /// `q` (component-wise) and whose translation is the LENGTH zero vector.
+    /// Covers three non-identity cases: 90° about +Z, 180° about +X, and a
+    /// general rotation built via `orient_axis_angle([1,1,0], π/3)`.
+    #[test]
+    fn transform_at_spherical_general_quaternion_preserves_rotation() {
+        let pi = std::f64::consts::PI;
+
+        // (a) 90° about +Z: q = (cos(π/4), 0, 0, sin(π/4))
+        let cos_q4 = (pi / 4.0).cos();
+        let sin_q4 = (pi / 4.0).sin();
+        let q_z90 = Value::Orientation { w: cos_q4, x: 0.0, y: 0.0, z: sin_q4 };
+        let result = eval_builtin("transform_at", &[spherical_joint(), q_z90]);
+        assert_transform_approx(
+            &result,
+            (cos_q4, 0.0, 0.0, sin_q4),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical, 90° about +Z",
+        );
+
+        // (b) 180° about +X: q = (0, 1, 0, 0)
+        let q_x180 = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let result = eval_builtin("transform_at", &[spherical_joint(), q_x180]);
+        assert_transform_approx(
+            &result,
+            (0.0, 1.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical, 180° about +X",
+        );
+
+        // (c) Build a general quaternion via orient_axis_angle([1,1,0], π/3).
+        // The rotation sits on a non-axis-aligned axis, so all four quaternion
+        // components are non-zero.
+        let axis_xy = Value::Vector(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(0.0)]);
+        let q_general = eval_builtin("orient_axis_angle", &[axis_xy, Value::Real(pi / 3.0)]);
+        let (gw, gx, gy, gz) = match &q_general {
+            Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            other => panic!("orient_axis_angle did not produce an Orientation: {:?}", other),
+        };
+        let result = eval_builtin("transform_at", &[spherical_joint(), q_general.clone()]);
+        assert_transform_approx(
+            &result,
+            (gw, gx, gy, gz),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "spherical, general axis-angle [1,1,0]/√2 by π/3",
+        );
+    }
+
+    // ── spherical constructor: validation surface (step-3) ───────────────────
+
+    #[test]
+    fn spherical_invalid_args_returns_undef() {
+        let unbounded_upper = Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+        let unbounded_lower = Value::Range {
+            lower: None,
+            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
+            lower_inclusive: false,
+            upper_inclusive: true,
+        };
+
+        let cases: Vec<(&str, Vec<Value>)> = vec![
+            // (a) wrong arg counts
+            ("0 args",  vec![]),
+            ("2 args",  vec![angle_range_0_to_pi(), angle_range_0_to_pi()]),
+            ("3 args",  vec![angle_range_0_to_pi(), angle_range_0_to_pi(), angle_range_0_to_pi()]),
+            // (b) range_angle wrong dimension (LENGTH-typed range)
+            ("LENGTH-typed range", vec![length_range_0_to_1m()]),
+            // (c) range_angle unbounded
+            ("unbounded upper", vec![unbounded_upper]),
+            ("unbounded lower", vec![unbounded_lower]),
+            // (d) range_angle non-Range types
+            ("bare Real",   vec![Value::Real(0.0)]),
+            ("bare Vector", vec![Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])]),
+            ("bare Map",    vec![Value::Map(Default::default())]),
+        ];
+
+        for (label, args) in &cases {
+            assert!(
+                eval_builtin("spherical", args).is_undef(),
+                "spherical({label}) should return Undef but didn't"
+            );
+        }
+    }
+
+    // ── spherical constructor: happy path (step-1) ────────────────────────────
+
+    #[test]
+    fn spherical_returns_map_with_correct_fields() {
+        let range_angle = angle_range_0_to_pi();
+        let result = eval_builtin("spherical", std::slice::from_ref(&range_angle));
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("spherical".to_string())),
+            "kind field should be 'spherical'"
+        );
+        assert_eq!(
+            map.get(&Value::String("range_angle".to_string())),
+            Some(&range_angle),
+            "range_angle field should match input"
+        );
+        assert_eq!(
+            map.len(),
+            2,
+            "spherical joint Map should have exactly 2 keys (kind, range_angle), got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+    }
+
+    // ── joint_jacobian for spherical (step-11) ───────────────────────────────
+
+    /// `joint_jacobian(spherical_joint)` returns a zero-twist Map placeholder.
+    ///
+    /// Design decision: spherical is a 3-DOF joint with a 6×3 angular Jacobian
+    /// (three rotational columns), but the v0.1 single-column convention returns
+    /// one Map per joint. A zero column preserves the uniform `{ angular, linear }`
+    /// shape across all kinds (matching the fixed-joint and planar-joint pattern),
+    /// so `joint_jacobian_dispatches_for_every_joint_kind` can assert non-Undef
+    /// for every kind in JOINT_KINDS. The analytic 3-column form is deferred to
+    /// PRD task 2 / #2670 ("FD fallback for multi-DOF kinds").
+    #[test]
+    fn joint_jacobian_spherical_returns_zero_column_placeholder() {
+        let sj = spherical_joint();
+        let result = eval_builtin("joint_jacobian", &[sj]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("joint_jacobian(spherical): expected Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("angular".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "angular twist column should be [0, 0, 0]"
+        );
+        assert_eq!(
+            map.get(&Value::String("linear".to_string())),
+            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            "linear twist column should be [0, 0, 0]"
+        );
+    }
+
     // ── JOINT_KINDS membership regression pin (step-15) ──────────────────────
     //
     // Asserts that `"planar"` is a member of `JOINT_KINDS` so that:
@@ -3494,6 +4343,487 @@ mod tests {
             "\"planar\" must be in JOINT_KINDS so that is_joint_value accepts planar joints \
              and the dispatch-coverage tests exercise the planar arms in transform_at and \
              joint_jacobian_value. Add \"planar\" to the JOINT_KINDS const."
+        );
+    }
+
+    // ── JOINT_KINDS membership regression pin for spherical (step-13) ────────
+    //
+    // Asserts that `"spherical"` is a member of `JOINT_KINDS` so that:
+    //  1. `is_joint_value` accepts spherical joints as valid mechanism joints, and
+    //  2. the existing dispatch-coverage tests
+    //     (`transform_at_dispatches_for_every_joint_kind` and
+    //     `joint_jacobian_dispatches_for_every_joint_kind`) iterate over spherical.
+    //
+    // This test fails until step-14 appends `"spherical"` to `JOINT_KINDS` and
+    // adds the spherical arm to `joint_kind_minimal_fixture`.
+    #[test]
+    fn joint_kinds_includes_spherical() {
+        assert!(
+            JOINT_KINDS.contains(&"spherical"),
+            "\"spherical\" must be in JOINT_KINDS so that is_joint_value accepts spherical \
+             joints and the dispatch-coverage tests exercise the spherical arms in \
+             transform_at and joint_jacobian_value. Add \"spherical\" to the JOINT_KINDS const."
+        );
+    }
+
+    // ── is_joint_value recognises cylindrical (step-15) ──────────────────────
+
+    /// `is_joint_value(map)` returns true for both a hand-built
+    /// `{ "kind" → "cylindrical" }` Map and the well-formed Map produced by
+    /// the `cylindrical` constructor. Pins the contract that adding
+    /// `"cylindrical"` to `JOINT_KINDS` (step-16) makes the predicate accept
+    /// cylindrical joints.
+    #[test]
+    fn is_joint_value_recognizes_cylindrical() {
+        use std::collections::BTreeMap;
+
+        // (a) hand-built Map with kind="cylindrical"
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("cylindrical".to_string()));
+        assert!(
+            is_joint_value(&Value::Map(m)),
+            "Map with kind='cylindrical' should be a joint value once step-16 adds the kind to JOINT_KINDS"
+        );
+
+        // (b) constructor output → Map shape that is_joint_value accepts
+        let cyl = eval_builtin(
+            "cylindrical",
+            &[axis_z_unit(), length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        assert!(
+            is_joint_value(&cyl),
+            "cylindrical(...) constructor output should be recognised as a joint value"
+        );
+    }
+
+    // ── JOINT_KINDS membership regression pin for cylindrical (step-15) ──────
+    //
+    // Asserts that `"cylindrical"` is a member of `JOINT_KINDS` so that:
+    //  1. `is_joint_value` accepts cylindrical joints as valid mechanism joints, and
+    //  2. the existing dispatch-coverage tests
+    //     (`transform_at_dispatches_for_every_joint_kind` and
+    //     `joint_jacobian_dispatches_for_every_joint_kind`) iterate over cylindrical.
+    //
+    // This test fails until step-16 appends `"cylindrical"` to `JOINT_KINDS` and
+    // adds the cylindrical arm to `joint_kind_minimal_fixture`.
+    #[test]
+    fn joint_kinds_includes_cylindrical() {
+        assert!(
+            JOINT_KINDS.contains(&"cylindrical"),
+            "\"cylindrical\" must be in JOINT_KINDS so that is_joint_value accepts cylindrical \
+             joints and the dispatch-coverage tests exercise the cylindrical arms in \
+             transform_at and joint_jacobian_value. Add \"cylindrical\" to the JOINT_KINDS const."
+        );
+    }
+
+    // ── cylindrical transform_at: translation-only (step-5) ──────────────────
+
+    /// `transform_at(cyl, [length(0.5), angle(0.0)])` returns a Transform with
+    /// identity rotation and translation 0.5m along the cylindrical joint's
+    /// axis (here, +Z). Verifies the translation arm of the cylindrical
+    /// transform_at dispatch in isolation (rotation = identity).
+    #[test]
+    fn cylindrical_transform_at_translation_only() {
+        let cyl = cylindrical_z_joint();
+        let motion = Value::List(vec![Value::length(0.5), Value::angle(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl, motion]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.5],
+            1e-12,
+            "cyl Z, d=0.5m θ=0",
+        );
+    }
+
+    // ── cylindrical transform_at: rotation-only (step-7) ─────────────────────
+
+    /// `transform_at(cyl, [length(0.0), angle(π/2)])` returns a Transform whose
+    /// rotation is the analytical revolute-Z quaternion (cos(π/4), 0, 0, sin(π/4))
+    /// and zero translation. Verifies the rotation arm of the cylindrical
+    /// transform_at dispatch in isolation.
+    #[test]
+    fn cylindrical_transform_at_rotation_only() {
+        let cyl = cylindrical_z_joint();
+        let pi = std::f64::consts::PI;
+        let motion = Value::List(vec![Value::length(0.0), Value::angle(pi / 2.0)]);
+        let result = eval_builtin("transform_at", &[cyl, motion]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, 0.0, sin),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "cyl Z, d=0 θ=π/2",
+        );
+    }
+
+    // ── cylindrical transform_at: combined motion + unnormalised axis (step-9) ──
+
+    /// Three sub-scenarios for `transform_at(cylindrical, [d, θ])`:
+    /// (a) unit Z axis, combined translation+rotation,
+    /// (b) unnormalised axis (magnitude 2 along +X) — verifies axis is
+    ///     normalised before being used in both the rotation quaternion and
+    ///     the translation scaling,
+    /// (c) diagonal axis [1,1,0]/√2 — verifies translation along a non-axis-
+    ///     aligned direction.
+    #[test]
+    fn cylindrical_transform_at_combined_and_unnormalized_axis() {
+        let pi = std::f64::consts::PI;
+
+        // (a) unit Z axis, [d=0.3m, θ=π/4]
+        let cyl_z = cylindrical_z_joint();
+        let motion_a = Value::List(vec![Value::length(0.3), Value::angle(pi / 4.0)]);
+        let result_a = eval_builtin("transform_at", &[cyl_z, motion_a]);
+        let cos_a = (pi / 8.0).cos();
+        let sin_a = (pi / 8.0).sin();
+        assert_transform_approx(
+            &result_a,
+            (cos_a, 0.0, 0.0, sin_a),
+            [0.0, 0.0, 0.3],
+            1e-12,
+            "cyl Z, d=0.3m θ=π/4",
+        );
+
+        // (b) unnormalised axis [2, 0, 0] → unit X; [d=1.0m, θ=π/2] → translation [1,0,0],
+        //     rotation about +X by π/2 = (cos(π/4), sin(π/4), 0, 0).
+        let axis_2x = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let cyl_2x = eval_builtin(
+            "cylindrical",
+            &[axis_2x, length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let motion_b = Value::List(vec![Value::length(1.0), Value::angle(pi / 2.0)]);
+        let result_b = eval_builtin("transform_at", &[cyl_2x, motion_b]);
+        let cos_b = (pi / 4.0).cos();
+        let sin_b = (pi / 4.0).sin();
+        assert_transform_approx(
+            &result_b,
+            (cos_b, sin_b, 0.0, 0.0),
+            [1.0, 0.0, 0.0],
+            1e-12,
+            "cyl unnormalised [2,0,0], d=1m θ=π/2",
+        );
+
+        // (c) diagonal axis [1,1,0]/√2 unit; [d=√2 m, θ=0] → translation [1,1,0], identity rotation.
+        let s2 = std::f64::consts::FRAC_1_SQRT_2;
+        let axis_diag = Value::Vector(vec![Value::Real(s2), Value::Real(s2), Value::Real(0.0)]);
+        let cyl_diag = eval_builtin(
+            "cylindrical",
+            &[axis_diag, length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let motion_c = Value::List(vec![
+            Value::length(std::f64::consts::SQRT_2),
+            Value::angle(0.0),
+        ]);
+        let result_c = eval_builtin("transform_at", &[cyl_diag, motion_c]);
+        assert_transform_approx(
+            &result_c,
+            (1.0, 0.0, 0.0, 0.0),
+            [1.0, 1.0, 0.0],
+            1e-12,
+            "cyl diag [1,1,0]/√2, d=√2 m θ=0",
+        );
+    }
+
+    // ── cylindrical joint_jacobian: two-column List (step-13) ────────────────
+
+    /// `joint_jacobian(cyl)` returns a `Value::List` of length 2 with one twist
+    /// Map per DOF:
+    ///   [0] prismatic DOF: { angular: [0,0,0], linear: unit_axis }
+    ///   [1] revolute  DOF: { angular: unit_axis, linear: [0,0,0] }
+    ///
+    /// Three sub-scenarios cover unit-Z, unit-X, and an unnormalised axis
+    /// `[3, 4, 0]` (magnitude 5) that must normalise to `[0.6, 0.8, 0]` in
+    /// both columns.  The List shape (vs. a single Map) is essential: it
+    /// preserves analytic per-DOF information and naturally signals to
+    /// `loop_closure::per_joint_jacobian_local` (which expects a single Map)
+    /// to fall back to FD via its `twist_map_to_array` failure path.
+    #[test]
+    fn cylindrical_joint_jacobian_returns_two_columns() {
+        // (a) unit Z
+        let cyl_z = cylindrical_z_joint();
+        let result_z = eval_builtin("joint_jacobian", &[cyl_z]);
+        assert_jacobian_list_two_columns(&result_z, [0.0, 0.0, 1.0], "cyl Z unit");
+
+        // (b) unit X
+        let cyl_x = eval_builtin(
+            "cylindrical",
+            &[axis_x_unit(), length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let result_x = eval_builtin("joint_jacobian", &[cyl_x]);
+        assert_jacobian_list_two_columns(&result_x, [1.0, 0.0, 0.0], "cyl X unit");
+
+        // (c) unnormalised axis [3, 4, 0] (magnitude 5) → unit [0.6, 0.8, 0]
+        let axis_345 = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let cyl_345 = eval_builtin(
+            "cylindrical",
+            &[axis_345, length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let result_345 = eval_builtin("joint_jacobian", &[cyl_345]);
+        assert_jacobian_list_two_columns(&result_345, [0.6, 0.8, 0.0], "cyl unnormalised [3,4,0]");
+    }
+
+    /// Helper: assert that `result` is a `Value::List` of length 2 whose
+    /// elements are `Map { angular, linear }` columns matching the cylindrical
+    /// joint_jacobian contract — element [0] is the prismatic-DOF column
+    /// (linear = `unit_axis`, angular = zero) and element [1] is the
+    /// revolute-DOF column (angular = `unit_axis`, linear = zero).
+    fn assert_jacobian_list_two_columns(result: &Value, unit_axis: [f64; 3], label: &str) {
+        let items = match result {
+            Value::List(v) => v,
+            other => panic!("{label}: expected List, got {:?}", other),
+        };
+        assert_eq!(items.len(), 2, "{label}: List should have exactly 2 columns");
+
+        // column [0]: prismatic DOF
+        assert_jacobian_map_components(
+            &items[0],
+            [0.0, 0.0, 0.0],
+            unit_axis,
+            &format!("{label} col[0] (prismatic DOF)"),
+        );
+        // column [1]: revolute DOF
+        assert_jacobian_map_components(
+            &items[1],
+            unit_axis,
+            [0.0, 0.0, 0.0],
+            &format!("{label} col[1] (revolute DOF)"),
+        );
+    }
+
+    /// Helper: assert a Jacobian Map has the expected angular and linear
+    /// Vector3 components (component-wise within 1e-12).
+    fn assert_jacobian_map_components(
+        map_val: &Value,
+        exp_ang: [f64; 3],
+        exp_lin: [f64; 3],
+        label: &str,
+    ) {
+        let map = match map_val {
+            Value::Map(m) => m,
+            other => panic!("{label}: expected Map, got {:?}", other),
+        };
+        let read_vec3 = |key: &str| -> [f64; 3] {
+            let v = map
+                .get(&Value::String(key.to_string()))
+                .unwrap_or_else(|| panic!("{label}: missing key {key:?}"));
+            let items = match v {
+                Value::Vector(items) if items.len() == 3 => items,
+                other => panic!("{label}: {key} expected Vector3, got {:?}", other),
+            };
+            [
+                items[0].as_f64().unwrap(),
+                items[1].as_f64().unwrap(),
+                items[2].as_f64().unwrap(),
+            ]
+        };
+        let ang = read_vec3("angular");
+        let lin = read_vec3("linear");
+        for i in 0..3 {
+            assert!(
+                (ang[i] - exp_ang[i]).abs() < 1e-12,
+                "{label}: angular[{i}] expected {} got {}",
+                exp_ang[i],
+                ang[i]
+            );
+            assert!(
+                (lin[i] - exp_lin[i]).abs() < 1e-12,
+                "{label}: linear[{i}] expected {} got {}",
+                exp_lin[i],
+                lin[i]
+            );
+        }
+    }
+
+    // ── cylindrical transform_at: invalid motion-var (step-11) ──────────────
+
+    /// Table-driven validation surface for the cylindrical transform_at second
+    /// argument. All listed shapes return Undef. Also includes two positive
+    /// polarity cases: (1) a 2-element `Value::List` with the right dims that
+    /// MUST return a Transform — guards against accidental over-rejection of
+    /// the canonical List container shape; (2) a bare `Value::Real` pair that
+    /// pins the `length_input`/`trig_input` bare-Real contract — without this,
+    /// a future tightening to require dimensioned Scalars could silently shrink
+    /// cylindrical's accepted input set.
+    ///
+    /// Container shape is List-only (mirrors the planar arm); a 2-element
+    /// `Value::Vector` is rejected as a negative case to keep the joint-zoo
+    /// surface consistent. Reify `[a, b]` literals lower to `Value::List`,
+    /// so List-only is the canonical motion-var shape.
+    #[test]
+    fn cylindrical_transform_at_invalid_value_returns_undef() {
+        let cyl = cylindrical_z_joint();
+
+        let undef_cases: &[(&str, Value)] = &[
+            ("bare scalar Length",
+             Value::length(0.5)),
+            ("List of 0",
+             Value::List(vec![])),
+            ("List of 1 element",
+             Value::List(vec![Value::length(0.5)])),
+            ("List of 3 elements",
+             Value::List(vec![Value::length(0.5), Value::angle(0.0), Value::angle(0.0)])),
+            ("dim-swapped: [angle, length]",
+             Value::List(vec![Value::angle(0.5), Value::length(0.5)])),
+            ("NaN translation, valid angle",
+             Value::List(vec![Value::Real(f64::NAN), Value::angle(0.0)])),
+            ("Inf translation, valid angle",
+             Value::List(vec![Value::Real(f64::INFINITY), Value::angle(0.0)])),
+            ("valid translation, NaN rotation",
+             Value::List(vec![Value::length(0.0), Value::Real(f64::NAN)])),
+            ("zero translation, Inf rotation",
+             Value::List(vec![Value::length(0.0), Value::Real(f64::INFINITY)])),
+            // Vector container is rejected (List-only contract, mirrors planar).
+            ("Vector container (wrong shape — List required)",
+             Value::Vector(vec![Value::length(0.5), Value::angle(0.0)])),
+        ];
+
+        for (label, motion) in undef_cases {
+            assert!(
+                eval_builtin("transform_at", &[cyl.clone(), motion.clone()]).is_undef(),
+                "transform_at(cyl, {label}) should return Undef but didn't"
+            );
+        }
+
+        // Positive polarity: 2-element List container is valid.
+        let list_motion = Value::List(vec![Value::length(0.5), Value::angle(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl.clone(), list_motion]);
+        assert!(
+            matches!(&result, Value::Transform { .. }),
+            "transform_at(cyl, List[length, angle]) must return Transform, got {:?}",
+            result
+        );
+
+        // Positive polarity: bare-Real motion vars (interpreted as metres/radians).
+        // Locks in that length_input/trig_input accept Value::Real, mirroring the
+        // planar arm. Without this, a future tightening to require dimensioned
+        // Scalars could silently shrink cylindrical's accepted input set.
+        let bare_real_motion = Value::List(vec![Value::Real(0.5), Value::Real(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl.clone(), bare_real_motion]);
+        assert!(
+            matches!(&result, Value::Transform { .. }),
+            "transform_at(cyl, List[Real, Real]) must return Transform, got {:?}",
+            result
+        );
+    }
+
+    // ── cylindrical constructor: validation surface (step-3) ─────────────────
+
+    /// Table-driven validation surface for the cylindrical constructor.
+    ///
+    /// Every row should produce `Value::Undef`. Covers wrong arg counts, axis
+    /// validation failures (reuses `validate_axis`'s contracts), translation_range
+    /// validation failures (LENGTH-typed bounded `Range`), and rotation_range
+    /// validation failures (ANGLE-typed bounded `Range`). Mirrors the structure
+    /// of `planar_invalid_args_returns_undef` and `spherical_invalid_args_returns_undef`.
+    #[test]
+    fn cylindrical_constructor_validation_table() {
+        let ax = axis_z_unit();
+        let tr = length_range_0_to_1m();
+        let rr = angle_range_0_to_pi();
+
+        // Wrong-dimensioned axis (LENGTH-typed Vector3)
+        let length_axis = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        // 2-component axis
+        let axis2 = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)]);
+        // Non-vector axis
+        let non_vec = Value::Real(1.0);
+        // Zero axis
+        let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        // NaN axis
+        let nan_axis = Value::Vector(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        // Unbounded range (lower=Some, upper=None)
+        let unbounded = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+        let unbounded_angle = Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+
+        let cases: Vec<(&str, Vec<Value>)> = vec![
+            // (a) wrong arg counts
+            ("0 args",  vec![]),
+            ("1 arg",   vec![ax.clone()]),
+            ("2 args",  vec![ax.clone(), tr.clone()]),
+            ("4 args",  vec![ax.clone(), tr.clone(), rr.clone(), Value::Real(0.0)]),
+            // (b) axis invalid variants
+            ("axis: bare Real",          vec![non_vec.clone(), tr.clone(), rr.clone()]),
+            ("axis: 2-component",        vec![axis2.clone(), tr.clone(), rr.clone()]),
+            ("axis: LENGTH-dimensioned", vec![length_axis.clone(), tr.clone(), rr.clone()]),
+            ("axis: zero",               vec![zero_axis.clone(), tr.clone(), rr.clone()]),
+            ("axis: NaN",                vec![nan_axis.clone(), tr.clone(), rr.clone()]),
+            // (c) translation_range invalid
+            ("translation_range: bare Real",  vec![ax.clone(), Value::Real(1.0), rr.clone()]),
+            ("translation_range: unbounded",  vec![ax.clone(), unbounded.clone(), rr.clone()]),
+            ("translation_range: ANGLE-dim",  vec![ax.clone(), angle_range_0_to_pi(), rr.clone()]),
+            // (d) rotation_range invalid
+            ("rotation_range: bare Real",     vec![ax.clone(), tr.clone(), Value::Real(1.0)]),
+            ("rotation_range: unbounded",     vec![ax.clone(), tr.clone(), unbounded_angle.clone()]),
+            ("rotation_range: LENGTH-dim",    vec![ax.clone(), tr.clone(), length_range_0_to_1m()]),
+        ];
+
+        for (label, args) in &cases {
+            assert_builtin_undef("cylindrical", args, label);
+        }
+    }
+
+    // ── cylindrical constructor: happy path (step-1) ─────────────────────────
+
+    /// `cylindrical(axis, translation_range, rotation_range)` returns a 4-key Map
+    /// with `kind="cylindrical"` and the three input fields stored verbatim.
+    ///
+    /// PRD task 5: 2-DOF composite of prismatic ⊕ revolute on a single shared
+    /// axis. The Map shape is flat (mirrors prismatic/revolute/planar/spherical):
+    ///   { "axis", "kind", "rotation_range", "translation_range" }
+    /// (alphabetically ordered via `BTreeMap`).
+    #[test]
+    fn cylindrical_returns_map_with_correct_fields() {
+        let axis = axis_z_unit();
+        let translation_range = length_range_0_to_1m();
+        let rotation_range = angle_range_0_to_pi();
+        let result = eval_builtin(
+            "cylindrical",
+            &[axis.clone(), translation_range.clone(), rotation_range.clone()],
+        );
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("cylindrical".to_string())),
+            "kind field should be 'cylindrical'"
+        );
+        assert_eq!(
+            map.get(&Value::String("axis".to_string())),
+            Some(&axis),
+            "axis field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("translation_range".to_string())),
+            Some(&translation_range),
+            "translation_range field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("rotation_range".to_string())),
+            Some(&rotation_range),
+            "rotation_range field should match input"
+        );
+        assert_eq!(
+            map.len(),
+            4,
+            "cylindrical joint Map should have exactly 4 keys \
+             (kind, axis, translation_range, rotation_range), got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
         );
     }
 

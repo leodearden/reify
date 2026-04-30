@@ -147,6 +147,8 @@ impl Engine {
             functions: Vec::<CompiledFunction>::new().into(),
             compiled_purposes: Vec::new(),
             active_purposes: HashMap::new(),
+            active_purpose_bindings: HashMap::new(),
+            active_tolerance_scope: HashMap::new(),
             active_objective_map: HashMap::new(),
             objectives: HashMap::new(),
             compiled_fields: Arc::new(Vec::new()),

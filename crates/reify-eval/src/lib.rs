@@ -1,3 +1,9 @@
+// See `reify-types::value::SampledField` for the rationale behind this allow:
+// `Value::SampledField` carries an `AtomicBool` (excluded from
+// `PartialEq`/`Ord`/`Hash`/`content_hash`) that nonetheless triggers
+// `mutable_key_type` on every `BTreeMap<Value, _>` site.
+#![allow(clippy::mutable_key_type)]
+
 pub mod cache;
 mod concurrent;
 pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
@@ -23,6 +29,9 @@ pub mod primitive_attribute_seed;
 pub mod snapshot;
 pub mod test_runner;
 pub mod tolerance_bucket;
+pub mod tolerance_budget;
+pub mod tolerance_combine;
+pub mod tolerance_scope;
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
@@ -31,8 +40,8 @@ pub mod warm_pool;
 pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 pub use topology_attribute_propagation::{
-    populate_extrude_attributes, populate_revolve_attributes,
-    propagate_attributes_via_brepalgoapi_history,
+    populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
+    populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
 };
 pub use topology_attribute_resolver::{
     AttributeQuery, AttributeResolution, resolve_unique_by_attribute,
@@ -174,6 +183,11 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         Value::Axis { .. } => matches!(ty, Type::Axis),
         Value::BoundingBox { .. } => matches!(ty, Type::BoundingBox),
         Value::Range { .. } => matches!(ty, Type::Range(_)),
+        // SampledField is a runtime payload stored under Value::Field.lambda;
+        // it is never a top-level value-cell value, so it has no corresponding
+        // surface Type. Rejecting here is correct (the default-reject case
+        // would also reject) but the explicit arm makes the intent obvious.
+        Value::SampledField(_) => false,
         // Note: `Type::Geometry` and `Type::TypeParam` have no corresponding
         // `Value` variant, so any non-Undef value supplied to a cell of those
         // types falls through this `match` and returns `false`, triggering
@@ -345,6 +359,23 @@ pub struct Engine {
     /// Currently active purposes: maps purpose name → injected constraint IDs.
     /// Used by deactivate_purpose to remove the injected constraints.
     active_purposes: HashMap<String, Vec<ConstraintNodeId>>,
+    /// Per-purpose entity bindings: maps purpose name → bound entity_ref.
+    /// Populated/cleared in lockstep with `active_purposes`. Required for
+    /// `recompute_tolerance_scope` (task 2647) — `active_purposes` only
+    /// records injected ConstraintNodeIds, but the tolerance-scope rebuild
+    /// needs the original `(purpose_name → entity_ref)` mapping. See
+    /// `crates/reify-eval/src/tolerance_scope.rs` and the design decision
+    /// "Track per-purpose bound entity_ref via a new sibling HashMap" in
+    /// `.task/plan.json`.
+    active_purpose_bindings: HashMap<String, String>,
+    /// Active tolerance scope: maps entity_ref → SI tolerance (metres).
+    /// Rebuilt from scratch on every `activate_purpose` / `deactivate_purpose`
+    /// call. The map's value at `entity_ref` is the *minimum* tolerance
+    /// across all currently-active purposes whose subject prefix-scan
+    /// covers `entity_ref` (tighter wins; same partial-order semantics as
+    /// the cache-side `ToleranceBucket`). See task 2647 / PRD
+    /// `docs/prds/v0_2/per-purpose-tolerance.md`.
+    active_tolerance_scope: HashMap<String, f64>,
     /// Active optimization objectives injected by purposes.
     /// Maps purpose name → optimization objective.
     active_objective_map: HashMap<String, OptimizationObjective>,

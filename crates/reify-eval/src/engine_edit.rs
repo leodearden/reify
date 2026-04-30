@@ -23,6 +23,7 @@
 //! diverge from `eval(guard=¬T) → edit_param(guard, T)` for the same final
 //! configuration.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
@@ -79,17 +80,30 @@ pub(crate) fn deactivate_if_not_auto(
 ///
 /// The captured templates come from `connect.rs::resolve_port_name`, which
 /// returns a flat string with at most one bracketed index per side and bails
-/// on nested `IndexAccess`. The placeholder substitution is therefore expected
-/// to occur exactly once on each side. We use `replacen(.., 1)` rather than
-/// `replace(..)` so that pathological-but-legal port names — for example a
-/// user-written explicit `vents[0]` reference appearing alongside the
-/// `[0]` placeholder, or a name that incidentally repeats `<sub_name>[0]` —
-/// do NOT have additional occurrences silently rewritten. This tightens the
-/// contract to "rewrite the placeholder once" and prevents surprises where
-/// the bound variable was substituted into both sides of a literal-bearing
-/// port name.
+/// on nested `IndexAccess`. We use `replacen(.., 1)` rather than `replace(..)`
+/// to bound the rewrite to exactly one occurrence, so that unrelated incidental
+/// repetitions of `<sub_name>[0]` elsewhere in the same template string are
+/// not silently rewritten.
 ///
 /// # Substring-rewrite divergence
+///
+/// `resolve_port_name` flattens user-written `Ident[NumberLiteral].member`
+/// shapes into a plain dotted-bracket string before the template is captured.
+/// This means that a port expression such as `vents[0].foo` on the LEFT side
+/// of a forall-Connect body
+///
+/// ```text
+/// forall v in vents: connect vents[0].foo -> v.bar
+/// ```
+///
+/// produces the captured template `"vents[0].foo"`, where the `[0]` is a
+/// *user-written* literal — not the placeholder substituted at runtime.
+/// For `i > 0`, `replacen(.., 1)` rewrites that literal to `vents[i].foo`,
+/// diverging from the resolved (non-deferred) Connect path, where
+/// `compile_connection` runs independently per element and the LEFT-side
+/// literal stays `vents[0].foo` for every `i`. This is a known, vanishingly
+/// rare edge case; it is documented here rather than guarded against at
+/// runtime.
 ///
 /// The compile-time placeholder element shape is `<sub>[0]` for the deferred
 /// capture path, mirroring the Constraint-arm's
@@ -920,6 +934,17 @@ impl Engine {
         // Overwrite with the new param value
         values.insert(cell.clone(), new_value);
 
+        // Runtime diagnostics sink (task 2341 step-16): collects warnings
+        // emitted by `reify_expr::eval_expr` during incremental
+        // re-evaluation — primarily `W_FIELD_OUT_OF_BOUNDS` from
+        // sampled-field OOB queries (after a param edit moves a sample
+        // call's argument out of bounds) and `W_INTERPOLATION_DEFERRED`
+        // from RBF/Kriging fallback. Wired into every `EvalContext`
+        // constructed inside this function via
+        // `.with_runtime_diagnostics(&runtime_sink)`. Drained into
+        // the local `diagnostics` vec immediately before the return.
+        let runtime_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+
         // Mark all nodes in the eval set as Pending before re-evaluation.
         // This transitions Final → Pending{last_substantive: hash}.
         self.cache.reset_pending_transition_count();
@@ -953,7 +978,8 @@ impl Engine {
 
                 let val = reify_expr::eval_expr(
                     expr,
-                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                        .with_runtime_diagnostics(&runtime_sink),
                 );
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
@@ -1054,8 +1080,13 @@ impl Engine {
             if !dirty_cone.contains(&field_node) {
                 continue;
             }
-            let new_field_value =
-                crate::engine_eval::elaborate_field(field, &values, &functions, &self.meta_map);
+            let new_field_value = crate::engine_eval::elaborate_field(
+                field,
+                &values,
+                &functions,
+                &self.meta_map,
+                Some(&runtime_sink),
+            );
             values.insert(field_cell.clone(), new_field_value.clone());
             new_snapshot.values.insert(
                 field_cell,
@@ -1110,7 +1141,8 @@ impl Engine {
                             reify_expr::eval_expr(
                                 expr,
                                 &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_determinacy(&new_snapshot.values),
+                                    .with_determinacy(&new_snapshot.values)
+                                    .with_runtime_diagnostics(&runtime_sink),
                             )
                         } else {
                             Value::Undef
@@ -1329,7 +1361,8 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                .with_runtime_diagnostics(&runtime_sink),
                         );
                         values.insert(vcid.clone(), val.clone());
                         new_snapshot
@@ -1552,7 +1585,8 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_runtime_diagnostics(&runtime_sink),
                             )
                         } else {
                             Value::Undef
@@ -1850,6 +1884,12 @@ impl Engine {
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
         self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
+
+        // Drain runtime diagnostics (task 2341 step-16) into the result
+        // diagnostics vec. The sink was populated by `eval_expr` calls
+        // above whenever sampled-field OOB queries or RBF/Kriging
+        // fallbacks emitted warnings via `EvalContext::diagnostics`.
+        diagnostics.append(&mut runtime_sink.borrow_mut());
 
         Ok(EvalResult {
             values,
@@ -2241,6 +2281,16 @@ impl Engine {
         // checker the same way as edit_param() above.
         let functions = Arc::clone(&self.functions);
 
+        // Runtime diagnostics sink (task 2341 step-16): collects warnings
+        // emitted by `reify_expr::eval_expr` during incremental
+        // re-evaluation in this edit_source pass — primarily
+        // `W_FIELD_OUT_OF_BOUNDS` from sampled-field OOB queries and
+        // `W_INTERPOLATION_DEFERRED` from RBF/Kriging fallback. Wired
+        // into every `EvalContext` constructed below via
+        // `.with_runtime_diagnostics(&runtime_sink)`. Drained into
+        // the local `diagnostics` vec immediately before the return.
+        let runtime_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+
         // (12) Per-cell eval loop (shape mirrors edit_param's). Transitions
         //      cache entries in the eval set through Pending, iterates in
         //      topological order, evaluates each Value node's default_expr,
@@ -2285,7 +2335,8 @@ impl Engine {
 
                 let val = reify_expr::eval_expr(
                     expr,
-                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                        .with_runtime_diagnostics(&runtime_sink),
                 );
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot
@@ -2470,7 +2521,8 @@ impl Engine {
                             reify_expr::eval_expr(
                                 expr,
                                 &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_determinacy(&new_snapshot.values),
+                                    .with_determinacy(&new_snapshot.values)
+                                    .with_runtime_diagnostics(&runtime_sink),
                             )
                         } else {
                             Value::Undef
@@ -2551,7 +2603,8 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_runtime_diagnostics(&runtime_sink),
                                 );
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot
@@ -2575,7 +2628,8 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_runtime_diagnostics(&runtime_sink),
                                 );
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot
@@ -2753,7 +2807,8 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                .with_runtime_diagnostics(&runtime_sink),
                         );
                         values.insert(vcid.clone(), val.clone());
                         new_snapshot
@@ -2840,7 +2895,8 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_runtime_diagnostics(&runtime_sink),
                                 );
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot
@@ -2864,7 +2920,8 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                        .with_runtime_diagnostics(&runtime_sink),
                                 );
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot
@@ -2999,7 +3056,8 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                                    .with_runtime_diagnostics(&runtime_sink),
                             )
                         } else {
                             Value::Undef
@@ -3100,6 +3158,12 @@ impl Engine {
         });
         self.demand = new_demand;
         self.last_eval_set = actual_eval_set;
+
+        // Drain runtime diagnostics (task 2341 step-16) into the result
+        // diagnostics vec. The sink was populated by `eval_expr` calls
+        // above whenever sampled-field OOB queries or RBF/Kriging
+        // fallbacks emitted warnings via `EvalContext::diagnostics`.
+        diagnostics.append(&mut runtime_sink.borrow_mut());
 
         Ok(EvalResult {
             values,

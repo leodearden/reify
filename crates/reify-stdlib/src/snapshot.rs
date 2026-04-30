@@ -684,6 +684,15 @@ fn wrap_midpoint_for_joint(joint: &Value, mid_si: f64) -> Option<Value> {
             let parent = map.get(&Value::String("parent".to_string()))?;
             wrap_midpoint_for_joint(parent, mid_si)
         }
+        // 3-DOF planar joint: defense-in-depth explicit deferral arm.
+        // Today this arm is unreachable from a planar joint: joint_range_midpoint
+        // returns None for planar (step-2's change), and value_for only calls
+        // wrap_midpoint_for_joint after joint_range_midpoint returns Some.
+        // The explicit arm keeps the dispatch table symmetric across all kinds
+        // in JOINT_KINDS, mirroring step-2's change in joint_range_midpoint,
+        // and is the documented breadcrumb when PRD v0.2 task 2 (#2670) extends
+        // joint_range_midpoint to return per-DOF defaults for planar.
+        "planar" => None,
         _ => None,
     }
 }
@@ -706,22 +715,8 @@ fn make_binding(joint: Value, value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
     use reify_types::Value;
-
-    // ── Joint fixtures (mirror the joints.rs test fixtures) ───────────────
-
-    fn axis_x_unit() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
-    }
-
-    fn length_range_0_to_1m() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::length(0.0))),
-            upper: Some(Box::new(Value::length(1.0))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     // ── bind(joint, value): happy path ────────────────────────────────────
 
@@ -905,19 +900,6 @@ mod tests {
     }
 
     // ── Analytic two-link chain (multi-level parent walk) ─────────────────
-
-    fn axis_z_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
-    }
-
-    fn angle_range_0_to_pi() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::angle(0.0))),
-            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     fn length_range_0_to_2m() -> Value {
         Value::Range {
@@ -1201,10 +1183,6 @@ mod tests {
     }
 
     // ── Errored-mechanism short-circuit ────────────────────────────────────
-
-    fn axis_y_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
 
     /// `snapshot()` on an errored Mechanism returns `Value::Undef` —
     /// not a partial Snapshot of the pre-error bodies list.  Mirrors
@@ -1845,5 +1823,29 @@ mod tests {
             assert!(cy.abs() < 1e-9, "COM.y should be 0 at v={}, got {}", v, cy);
             assert!(cz.abs() < 1e-9, "COM.z should be 0 at v={}, got {}", v, cz);
         }
+    }
+
+    // ── planar joint pin tests ────────────────────────────────────────────
+
+    /// `snapshot(mech_with_unbound_planar, [])` returns Undef.
+    ///
+    /// Pins the contract that an unbound planar joint can't fall back to a
+    /// range midpoint (because `joint_range_midpoint` returns None for
+    /// planar). The FK walk's `value_for` resolution returns None at the
+    /// midpoint fallback step, which the FK walk maps to Value::Undef for
+    /// the body's world_transform, propagating Undef to the snapshot result.
+    /// Deferred to PRD v0.2 kinematic task 2 (taskmaster #2670).
+    #[test]
+    fn snapshot_with_unbound_planar_returns_undef() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let solid = Value::String("solidA".to_string());
+        let m1 = eval_builtin("body", &[m0, solid, planar_xy_joint()]);
+
+        let s = eval_builtin("snapshot", &[m1, Value::List(vec![])]);
+        assert!(
+            s.is_undef(),
+            "snapshot with unbound planar joint must return Undef, got {:?}",
+            s
+        );
     }
 }

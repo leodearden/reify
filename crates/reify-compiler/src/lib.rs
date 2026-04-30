@@ -1,3 +1,9 @@
+// See `reify-types::value::SampledField` for the rationale behind this allow:
+// `Value::SampledField` carries an `AtomicBool` (excluded from
+// `PartialEq`/`Ord`/`Hash`/`content_hash`) that nonetheless triggers
+// `mutable_key_type` on every `BTreeMap<Value, _>` site.
+#![allow(clippy::mutable_key_type)]
+
 mod annotations;
 mod arg_check;
 pub mod auto_type_param;

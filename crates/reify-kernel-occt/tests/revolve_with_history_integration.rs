@@ -20,7 +20,7 @@
 
 #![cfg(has_occt)]
 
-use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
+use reify_kernel_occt::{revolve_synthesis_post_sort_for_test, OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{GeometryHandleId, GeometryQuery, Value};
 
 /// 5×10mm rectangular face profile, expressed in SI metres. Centered at
@@ -398,6 +398,29 @@ fn full_revolve_with_history_reports_no_caps() {
             rec
         );
     }
+
+    // (f) Diagnostic counter: for a well-formed rect profile every profile
+    //     edge must produce a face_generated record — no unsynthesized profile
+    //     edges expected.
+    assert_eq!(
+        history.unsynthesized_profile_edge_count,
+        0,
+        "full revolve of rect profile must report 0 unsynthesized profile edges, \
+         got {} (face_generated = {:?})",
+        history.unsynthesized_profile_edge_count,
+        history.face_generated
+    );
+
+    // (g) No duplicate parent_subshape_index values after the post-sort/dedup
+    //     pass — expected 0 for a well-formed rect profile.
+    assert_eq!(
+        history.duplicate_parent_subshape_index_count,
+        0,
+        "full revolve of rect profile must report 0 duplicate parent_subshape_index, \
+         got {} (face_generated = {:?})",
+        history.duplicate_parent_subshape_index_count,
+        history.face_generated
+    );
 }
 
 /// `BRepPrimAPI_MakeRevol` (FULL — 360°, triangular profile): exercises the
@@ -426,7 +449,7 @@ fn full_revolve_triangle_profile_synthesis_regression() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
 
     // Triangle in XZ plane: (15mm,0mm), (25mm,0mm), (20mm,10mm).
     // Bottom edge (e0) is radial; the two slanted edges (e1, e2) are covered
@@ -570,6 +593,28 @@ fn full_revolve_triangle_profile_synthesis_regression() {
             rec
         );
     }
+
+    // (vii) Diagnostic counter: for a well-formed triangle profile every
+    //       profile edge must produce a face_generated record — no unsynthesized
+    //       profile edges expected.
+    assert_eq!(
+        history.unsynthesized_profile_edge_count,
+        0,
+        "full revolve of triangle profile must report 0 unsynthesized profile edges, \
+         got {} (face_generated = {:?})",
+        history.unsynthesized_profile_edge_count,
+        history.face_generated
+    );
+
+    // (viii) No duplicate parent_subshape_index values after post-sort/dedup.
+    assert_eq!(
+        history.duplicate_parent_subshape_index_count,
+        0,
+        "full revolve of triangle profile must report 0 duplicate parent_subshape_index, \
+         got {} (face_generated = {:?})",
+        history.duplicate_parent_subshape_index_count,
+        history.face_generated
+    );
 }
 
 /// Selector-stability: the stable-sort in `make_revolve_with_history` guarantees
@@ -647,5 +692,186 @@ fn full_revolve_synthesis_keeps_per_edge_record_ordering_stable_across_dimension
     assert_eq!(
         ordering_5x10, ordering_8x6,
         "per-edge record ordering must be identical across dimension changes"
+    );
+}
+
+/// Misclassified-radial-edge counter test: a triangle profile where the
+/// bottom edge has a tiny axial component (Δz ≈ 2nm over 10mm run) that
+/// makes `|dot(edge_dir, +Z)| ≈ 2e-6` — just over `DIR_TOL = 1e-6`.
+///
+/// Profile vertices:
+///   p1 = (15mm, 0, 0)      — origin of bottom edge
+///   p2 = (25mm, 0, 2e-8m)  — bottom edge end; Δz = 2e-8, Δx = 10mm
+///   p3 = (20mm, 0, 10mm)   — apex
+///
+/// The bottom edge p1→p2 has `dot(edge_dir, +Z) ≈ 2e-6 / 0.01 = 2e-6`
+/// — just above `DIR_TOL = 1e-6`, so the synthesis post-pass classifies
+/// it as "slanted" (path 5) and won't synthesise a record.
+///
+/// Assertion: `unsynthesized_profile_edge_count == 3 - face_generated.len()`
+/// (every profile edge without a synthesised record must bump the counter).
+/// This is OCCT-version-agnostic: if OCCT covers the edge via Generated()
+/// both sides are 0; if it doesn't, both sides equal the gap. Either way
+/// the constraint holds once the increment logic is in place (step-4).
+///
+/// Before step-4, counter stays 0; if OCCT doesn't cover the edge the
+/// assertion fires (`0 != 1`), confirming the failing state. After step-4
+/// the assertion is fully meaningful.
+#[test]
+fn full_revolve_misclassified_radial_edge_counter_best_effort() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let kernel = OcctKernelHandle::spawn();
+
+    // Bottom edge: p1=(15mm,0,0) → p2=(25mm,0,2e-8). Δx=10mm, Δz=2e-8m.
+    // |dot(edge_dir, +Z)| ≈ 2e-8 / 0.01 = 2e-6 (just over DIR_TOL=1e-6).
+    let profile_id = kernel
+        .make_triangle_profile_at_for_test(
+            0.015, 0.0,    // p1: x=15mm, z=0mm
+            0.025, 2e-8,   // p2: x=25mm, z=2nm
+            0.020, 0.010,  // p3: x=20mm, z=10mm
+            0.0,           // cy=0 (XZ plane)
+        )
+        .expect("slightly-slanted triangle profile should build");
+
+    let (_result_handle, history) = kernel
+        .revolve_with_history(
+            profile_id,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            2.0 * std::f64::consts::PI,
+        )
+        .expect("revolve_with_history should succeed for slightly-slanted triangle");
+
+    eprintln!(
+        "misclassified-radial-edge test: unsynthesized_profile_edge_count={}, \
+         face_generated.len()={}, face_generated={:?}",
+        history.unsynthesized_profile_edge_count,
+        history.face_generated.len(),
+        history.face_generated
+    );
+
+    // Sanity: profile has 3 edges, result can have at most 3 face_generated records.
+    assert!(
+        history.face_generated.len() <= 3,
+        "triangle profile has 3 edges, cannot produce more than 3 face_generated records, \
+         got {}",
+        history.face_generated.len()
+    );
+
+    // Self-consistency: every edge without a synthesised record must have
+    // bumped the counter.
+    //
+    // Two possible OCCT behaviours — both handled by the assertion:
+    //
+    //  A. OCCT 7.5.x does NOT track the nearly-radial edge in Generated()
+    //     (the expected behaviour given the full-2π silent-gap; this is the
+    //     regime the synthesis helper was written for).  The edge is not in
+    //     `tracked_parent_edges`, hits path 5 (slanted: dot ≈ 2e-6 > DIR_TOL),
+    //     increments the counter, and no record is synthesised.
+    //     → face_generated.len()==2, counter==1 → 1 == 3−2 = 1  ✓ (meaningful)
+    //
+    //  B. A future OCCT version *does* track the nearly-radial edge. The edge
+    //     lands in `tracked_parent_edges` before the synthesis loop, so the
+    //     loop skips it without touching the counter, and face_generated.len()
+    //     remains 3 (OCCT covered all three edges).
+    //     → face_generated.len()==3, counter==0 → 0 == 3−3 = 0  ✓ (tautological
+    //       but still a valid regression guard: any incorrect increment would
+    //       make both sides non-zero and unequal, catching a double-count bug).
+    //
+    // If OCCT's behaviour changes and the test degrades to case B, the
+    // eprintln! above will show counter=0 in CI output, signalling that the
+    // increment path is no longer exercised here.  A dedicated synthesis-loop
+    // fixture (not yet implemented) would provide a fully deterministic path.
+    // Pin the formula's precondition: `3 - face_generated.len()` only equals
+    // the unsynthesized count when no records were dropped by the post-sort
+    // dedup pass. Any non-zero duplicate count would silently drag
+    // `face_generated.len()` below the OCCT-reported edge total and make the
+    // self-consistency assertion drift.
+    assert_eq!(
+        history.duplicate_parent_subshape_index_count, 0,
+        "duplicate_parent_subshape_index_count must be 0 for this fixture so \
+         the (3 - face_generated.len()) self-consistency formula below holds; \
+         got {}",
+        history.duplicate_parent_subshape_index_count
+    );
+    assert_eq!(
+        history.unsynthesized_profile_edge_count as usize,
+        3 - history.face_generated.len(),
+        "every profile edge without a synthesised face_generated record must \
+         increment unsynthesized_profile_edge_count; counter={}, face_generated.len()={}",
+        history.unsynthesized_profile_edge_count,
+        history.face_generated.len()
+    );
+}
+
+/// Post-sort dedup fixture test: verifies that `revolve_synthesis_post_sort_for_test`
+/// (a) drops duplicate `parent_subshape_index` records (keeping the first under
+/// stable sort), (b) increments `duplicate_count` for each drop, and (c) leaves
+/// well-formed (no-duplicate) input unchanged.
+///
+/// The fixture exercises the dedup logic extracted into
+/// `revolve_synthesis_post_sort_and_dedup` (step-6) without needing real OCCT
+/// geometry — input is a synthetic flat `Vec<u32>` in the same
+/// `(parent_index, parent_subshape_index, result_subshape_index)` layout used
+/// by `face_generated`.
+///
+/// Two sub-tests:
+///  1. Input with one deliberate duplicate: sorted, dedup'd, count == 1.
+///  2. Unsorted no-duplicate input: stable-sorted by parent_subshape_index,
+///     count == 0.
+#[test]
+fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    // --- Sub-test 1: one deliberate duplicate ---
+    // Input: three records, two of which share parent_subshape_index=1.
+    // After stable-sort by parent_subshape_index the order is already correct
+    // (0, 1, 100), (0, 1, 200), (0, 2, 300). The dedup pass drops the second
+    // parent_subshape_index=1 record (result=200, the later one under stable
+    // sort) and keeps (result=100, the earlier one).
+    let input_dup: Vec<u32> = vec![
+        /* rec0: parent=0, subshape=1, result=100 */ 0, 1, 100,
+        /* rec1: parent=0, subshape=1, result=200 */ 0, 1, 200, // duplicate
+        /* rec2: parent=0, subshape=2, result=300 */ 0, 2, 300,
+    ];
+    let result_dup = revolve_synthesis_post_sort_for_test(&input_dup);
+    assert_eq!(
+        result_dup.duplicate_count,
+        1,
+        "exactly one duplicate must be dropped; got duplicate_count={}",
+        result_dup.duplicate_count
+    );
+    assert_eq!(
+        result_dup.output.as_slice(),
+        &[0_u32, 1, 100, 0, 2, 300],
+        "dedup must keep the first occurrence (result=100), drop the second (result=200), \
+         and preserve the non-duplicate (parent_subshape_index=2, result=300)"
+    );
+
+    // --- Sub-test 2: well-formed (no-duplicate) unsorted input ---
+    // Input: three records in reverse parent_subshape_index order.
+    // After stable-sort: order becomes parent_subshape_index 0 < 1 < 2.
+    // No duplicates → dedup drops nothing, count == 0.
+    let input_ok: Vec<u32> = vec![
+        /* rec0: parent=0, subshape=2, result=300 */ 0, 2, 300,
+        /* rec1: parent=0, subshape=0, result=100 */ 0, 0, 100,
+        /* rec2: parent=0, subshape=1, result=200 */ 0, 1, 200,
+    ];
+    let result_ok = revolve_synthesis_post_sort_for_test(&input_ok);
+    assert_eq!(
+        result_ok.duplicate_count,
+        0,
+        "no-duplicate input must report duplicate_count=0; got {}",
+        result_ok.duplicate_count
+    );
+    assert_eq!(
+        result_ok.output.as_slice(),
+        &[0_u32, 0, 100, 0, 1, 200, 0, 2, 300],
+        "stable-sort must reorder by parent_subshape_index (0 < 1 < 2)"
     );
 }

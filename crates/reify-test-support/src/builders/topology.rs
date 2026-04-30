@@ -316,7 +316,7 @@ impl TopologyTemplateBuilder {
             type_args: Vec::new(),
             is_collection: false,
             count_cell: None,
-            guard_state: reify_compiler::GuardState::Compiled(guard_expr),
+            guard_state: reify_compiler::GuardState::Compiled(Box::new(guard_expr)),
             span: SourceSpan::new(0, 0),
         });
         self

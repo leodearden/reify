@@ -19,15 +19,24 @@
 //! integration test, hand-seeded) and copies the parent attribute onto
 //! each Modified/Generated result handle. Deleted records are skipped.
 //!
-//! Per task-1 design decision: the parent's attribute is cloned
-//! **unchanged** — `role`, `local_index`, `mod_history`, `user_label`
-//! are all preserved. Per-op transformation rules (e.g. "boolean cut's
-//! generated faces always carry Role::NewEdge") are deferred to tasks
-//! 5-8, which will add per-op variants of this helper.
+//! Per v0.2 task-3: the parent's attribute is cloned and the parent-key
+//! fields (`feature_id`, `role`, `local_index`, `user_label`) are
+//! propagated unchanged. The `mod_history` postfix is augmented on
+//! splits: when a parent has more than one same-kind result child
+//! (Modified ∪ Generated, face vs edge counted independently), each
+//! child is given a fresh `ModEntry { splitting_feature_id, split_index }`
+//! appended to its inherited `mod_history`. Single-result parents
+//! remain pure pass-through (mod_history unchanged). Per-op
+//! transformation rules (e.g. "boolean cut's generated faces always
+//! carry Role::NewEdge") are deferred to tasks 5-8, which will add
+//! per-op variants of this helper.
+
+use std::collections::HashMap;
 
 use reify_types::{
     BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord,
-    QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
+    LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute,
+    TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -51,6 +60,10 @@ use reify_types::{
 /// - `result_edge_handles`: as above, but for edges.
 /// - `history`: the records emitted by the FFI primitive
 ///   (`OcctKernelHandle::boolean_fuse_with_history`).
+/// - `splitting_feature_id`: the FeatureId of the boolean op whose history
+///   is being propagated. Stamped onto each `ModEntry` appended on splits;
+///   single-result parents remain pure pass-through and never see this
+///   value land in their `mod_history`.
 ///
 /// Why pre-extracted vectors?
 ///
@@ -67,12 +80,19 @@ use reify_types::{
 /// Behaviour:
 /// - For every Modified or Generated record (faces and edges), if the
 ///   parent sub-shape has an entry in `table`, clone it onto the
-///   corresponding result sub-shape's handle. The clone is **unchanged**
-///   — `role`, `local_index`, `mod_history`, `user_label` are all
-///   preserved (per-op transformation is task-5-8 scope per PRD).
+///   corresponding result sub-shape's handle. Parent-key fields
+///   (`feature_id`, `role`, `local_index`, `user_label`) are preserved;
+///   per-op transformation is task-5-8 scope per PRD.
+/// - Modified/Generated children of a parent that has > 1 result
+///   sub-shapes (across the same-kind Modified ∪ Generated union) inherit
+///   the parent attribute's parent-key fields AND get a fresh
+///   `ModEntry { splitting_feature_id: clone, split_index }` appended
+///   to `mod_history`. Single-result parents remain pure pass-through
+///   (mod_history unchanged). Records arriving in Modified-then-Generated
+///   order yield `split_index` 0, 1, 2, … deterministically per parent.
 /// - Deleted records are skipped: a deleted parent has no result entry
 ///   to write, and the parent's own table entry is left untouched (its
-///   handle still resolves; tasks 3/4 will add diagnostics for accidental
+///   handle still resolves; task 4 will add diagnostics for accidental
 ///   rebinds).
 ///
 /// Returns `Err(QueryError::QueryFailed)` if any record references an
@@ -88,10 +108,28 @@ pub fn propagate_attributes_via_brepalgoapi_history(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &BooleanOpHistoryRecords,
+    splitting_feature_id: &FeatureId,
 ) -> Result<(), QueryError> {
     let parent_face_handles = parents.face_slices();
     let parent_edge_handles = parents.edge_slices();
 
+    // Build a (parent_index, parent_subshape_index) → count map per kind
+    // (faces vs edges) across the Modified ∪ Generated union. A count > 1
+    // identifies a parent that was split, in which case each child needs
+    // a fresh ModEntry appended to its mod_history.
+    let face_child_counts =
+        count_children_per_parent(&history.face_modified, &history.face_generated);
+    let edge_child_counts =
+        count_children_per_parent(&history.edge_modified, &history.edge_generated);
+
+    // Per-parent split_index counters seeded at zero. Counts up as each
+    // record for a split parent is propagated (Modified records first,
+    // then Generated, in the same iteration order as the chain below).
+    let mut face_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
+    let mut edge_split_counters: HashMap<(u8, u32), u32> = HashMap::new();
+
+    let mut face_ctx =
+        SplitContext::new(splitting_feature_id, &face_child_counts, &mut face_split_counters);
     // Faces: Modified ∪ Generated.
     for record in history
         .face_modified
@@ -104,9 +142,12 @@ pub fn propagate_attributes_via_brepalgoapi_history(
             result_face_handles,
             record,
             "face",
+            &mut face_ctx,
         )?;
     }
 
+    let mut edge_ctx =
+        SplitContext::new(splitting_feature_id, &edge_child_counts, &mut edge_split_counters);
     // Edges: Modified ∪ Generated.
     for record in history
         .edge_modified
@@ -119,18 +160,116 @@ pub fn propagate_attributes_via_brepalgoapi_history(
             result_edge_handles,
             record,
             "edge",
+            &mut edge_ctx,
         )?;
     }
 
     // Deleted records are intentionally skipped: no result sub-shape
     // exists to receive the attribute, and parents' existing table
-    // entries remain valid (task 3 / task 4 will add diagnostics).
+    // entries remain valid (task 4 will add diagnostics).
     Ok(())
+}
+
+/// Build a `(parent_index, parent_subshape_index) → count` map across the
+/// concatenation of `records_modified` and `records_generated`.
+///
+/// Records are visited in `Modified` then `Generated` order within each
+/// kind; this ordering determines `split_index` assignment downstream in
+/// [`propagate_one`] (Modified records' children get the lower indices,
+/// Generated records' children follow). The count map and propagator MUST
+/// walk identical record streams in identical orders so that `split_index`
+/// for child `i` equals child `i`'s position in the per-parent record
+/// stream — both call sites use the same `chain(modified, generated)`
+/// iterator over the same `BooleanOpHistoryRecords` to enforce this.
+///
+/// A parent appearing in this map with `count > 1` is a split — each of
+/// its children is given a fresh `ModEntry { splitting_feature_id,
+/// split_index }` appended to `mod_history`. `count == 1` means a pure
+/// pass-through (mod_history unchanged).
+///
+/// Regression pin:
+/// `propagate_split_combines_modified_and_generated_records_for_same_parent`
+/// (parent appearing in BOTH Modified and Generated yields count == 2 with
+/// Modified-record child at split_index 0, Generated-record child at 1).
+fn count_children_per_parent(
+    records_modified: &[HistoryRecord],
+    records_generated: &[HistoryRecord],
+) -> HashMap<(u8, u32), usize> {
+    // Upper-bound capacity: at most one entry per record across the
+    // chained iteration (an empty pair of slices reserves zero, matching
+    // the pre-amendment behaviour for the default-history fast path).
+    // Skips the inner reallocs that the previous `HashMap::new()` would
+    // hit as the map grew through its default load-factor thresholds.
+    let mut counts: HashMap<(u8, u32), usize> =
+        HashMap::with_capacity(records_modified.len() + records_generated.len());
+    for rec in records_modified.iter().chain(records_generated.iter()) {
+        let key = (rec.parent_index, rec.parent_subshape_index);
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// Bundles the three split-related inputs threaded through `propagate_one`
+/// and `maybe_append_split_entry` per geometry kind (faces vs edges).
+///
+/// - `feature_id`: stamped onto each new `ModEntry` appended on a split.
+/// - `child_counts`: maps `(parent_index, parent_subshape_index)` → count of
+///   same-kind result children; count > 1 identifies a split parent.
+/// - `split_counters`: accumulates the per-parent `split_index` across the
+///   Modified ∪ Generated record stream so each sibling gets a distinct index.
+struct SplitContext<'a> {
+    feature_id: &'a FeatureId,
+    child_counts: &'a HashMap<(u8, u32), usize>,
+    split_counters: &'a mut HashMap<(u8, u32), u32>,
+}
+
+impl<'a> SplitContext<'a> {
+    fn new(
+        feature_id: &'a FeatureId,
+        child_counts: &'a HashMap<(u8, u32), usize>,
+        split_counters: &'a mut HashMap<(u8, u32), u32>,
+    ) -> Self {
+        Self { feature_id, child_counts, split_counters }
+    }
+}
+
+/// If the parent at `(parent_index, parent_subshape_index)` has more than
+/// one same-kind result child (count > 1), append a fresh
+/// `ModEntry { splitting_feature_id, split_index }` to `attr` and bump
+/// the per-parent `split_index` counter for the next sibling.
+///
+/// **Regression pin (`propagate_skips_mod_entry_for_single_result_parent`):**
+/// for single-result parents (count == 1) and parents absent from the
+/// count map (count == 0; defensive — the populator builds the map over
+/// the same record stream the propagator walks, so this branch is
+/// unreachable in practice) this is a no-op. The v0.2 invariant is that
+/// `mod_history` is only augmented on actual splits — pure pass-through
+/// propagation preserves prior `mod_history` exactly, including
+/// non-empty history accumulated by upstream split feeds (a parent that
+/// was itself split by an earlier feature retains its accumulated postfix
+/// when a later non-splitting op forwards it).
+fn maybe_append_split_entry(
+    attr: &mut TopologyAttribute,
+    parent_key: (u8, u32),
+    ctx: &mut SplitContext<'_>,
+) {
+    let count = ctx.child_counts.get(&parent_key).copied().unwrap_or(0);
+    if count > 1 {
+        let split_index = ctx.split_counters.entry(parent_key).or_insert(0);
+        attr.mod_history.push(ModEntry {
+            splitting_feature_id: ctx.feature_id.clone(),
+            split_index: *split_index,
+        });
+        *split_index += 1;
+    }
 }
 
 /// Look up the parent attribute via `record.parent_index` /
 /// `record.parent_subshape_index`, and if present, clone it onto the
-/// result sub-shape at `record.result_subshape_index`.
+/// result sub-shape at `record.result_subshape_index`. When the parent
+/// has more than one same-kind result child (`child_counts[(parent_index,
+/// parent_subshape_index)] > 1`), append a fresh `ModEntry` to the
+/// cloned attribute's `mod_history` before recording it.
 ///
 /// Returns `Err(QueryError::QueryFailed)` if any index is out of range.
 fn propagate_one(
@@ -139,6 +278,7 @@ fn propagate_one(
     result_handles: &[GeometryHandleId],
     record: &HistoryRecord,
     kind: &str,
+    ctx: &mut SplitContext<'_>,
 ) -> Result<(), QueryError> {
     let parent_idx = record.parent_index as usize;
     if parent_idx >= parent_handles.len() {
@@ -177,7 +317,9 @@ fn propagate_one(
     // nothing to clone — silently skip. The end-to-end test asserts
     // that explicitly-seeded parents propagate.
     if let Some(parent_attr) = table.lookup(parent_handle) {
-        let attr_clone = parent_attr.clone();
+        let mut attr_clone = parent_attr.clone();
+        let parent_key = (record.parent_index, record.parent_subshape_index);
+        maybe_append_split_entry(&mut attr_clone, parent_key, ctx);
         table.record(result_handle, attr_clone);
     }
     Ok(())
@@ -364,6 +506,176 @@ pub fn populate_revolve_attributes(
     Ok(())
 }
 
+/// Originate topology attributes for a `BRepOffsetAPI_MakePipe` (sweep)
+/// result, given the per-op history records returned by
+/// `OcctKernel::sweep_with_history`.
+///
+/// Mirrors [`populate_extrude_attributes`] but emits sweep-specific roles:
+///   - `start_cap_face_indices` → `Role::Cap(CapKind::Start)` (parametric
+///     Start/End semantics matching the spine's parameter direction; NOT
+///     extrude's gravitational Top/Bottom).
+///   - `end_cap_face_indices` → `Role::Cap(CapKind::End)`.
+///   - `face_generated` → `Role::SweptFace` (NOT `Role::Side` — this is
+///     the per-op distinguisher between extrude lateral faces and sweep
+///     lateral faces, per task-5b design decisions in geometry.rs).
+///
+/// Sweep is single-parent like extrude / revolve (the profile is the
+/// operand whose sub-shapes propagate to the result; the path / spine is
+/// not itself a parent), so this helper reuses `SweepOpHistoryRecords`
+/// verbatim — `parent_index` in every record is `0`.
+///
+/// Edge attributes (e.g. `Role::NewEdge` for cap-to-side seam edges) are
+/// **not** written by this helper, mirroring [`populate_extrude_attributes`]:
+/// edge-level attribution is deferred until the cap-edge / seam-edge
+/// classification rules are finalised.
+///
+/// Local-index assignment, parameter semantics, and out-of-range error
+/// behaviour are identical to [`populate_extrude_attributes`]; see that
+/// helper's doc-comment for the parameter contract.
+pub fn populate_sweep_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    profile_face_handles: &[GeometryHandleId],
+    profile_edge_handles: &[GeometryHandleId],
+    result_face_handles: &[GeometryHandleId],
+    result_edge_handles: &[GeometryHandleId],
+    history: &SweepOpHistoryRecords,
+) -> Result<(), QueryError> {
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.start_cap_face_indices,
+        Role::Cap(CapKind::Start),
+        "sweep start cap",
+    )?;
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.end_cap_face_indices,
+        Role::Cap(CapKind::End),
+        "sweep end cap",
+    )?;
+
+    write_face_generated_attributes(
+        table,
+        feature_id,
+        profile_face_handles,
+        profile_edge_handles,
+        result_face_handles,
+        result_edge_handles,
+        &history.face_generated,
+        Role::SweptFace,
+        "sweep swept face",
+    )?;
+
+    Ok(())
+}
+
+/// Originate topology attributes for a `BRepOffsetAPI_ThruSections` (loft)
+/// result, given the per-op history records returned by
+/// `OcctKernel::loft_with_history`.
+///
+/// Loft is the **multi-parent** variant: `parent_index` in each
+/// `face_generated` record denotes a section index in
+/// `[0, profiles.len())`, and `parent_subshape_index` denotes the edge
+/// index within that section's edge map. This helper validates both
+/// indices against the per-section profile face/edge slices the caller
+/// supplies.
+///
+/// Role assignments:
+///   - `start_cap_face_indices` → `Role::Cap(CapKind::Start)` (first
+///     profile section's cap under `is_solid=true`).
+///   - `end_cap_face_indices` → `Role::Cap(CapKind::End)` (last
+///     profile section's cap under `is_solid=true`).
+///   - `face_generated` → `Role::LoftedFace` (NOT `Role::Side` /
+///     `SweptFace` / `RevolvedFace` — per-op distinguisher per the
+///     task-5a/5b design decisions in geometry.rs).
+///
+/// `local_index` increments **sequentially across all sections** in the
+/// order the records appear in `face_generated` — sections are not
+/// re-numbered per-section. The C++ wrapper emits records in section
+/// order (section 0's edges first, then section 1's, ...), so the
+/// resulting `local_index` is naturally stable for selector portability
+/// when sections are added/removed at the end (head insertion
+/// invalidates indices, matching the documented v0.2 caveat).
+///
+/// Edge attributes (e.g. `Role::NewEdge` for rail edges between
+/// sections) are **not** written by this helper, mirroring
+/// [`populate_extrude_attributes`]: edge-level attribution is deferred
+/// until the cap-edge / seam-edge / rail-edge classification rules are
+/// finalised in a follow-up task.
+///
+/// # Errors
+///
+/// Returns `QueryError::QueryFailed` if any `face_generated` record's
+/// `parent_index` is `>= section_edge_handles_per_section.len()`, if its
+/// `parent_subshape_index` is out of range for the addressed section's
+/// edge slice, or if its `result_subshape_index` is out of range for
+/// `result_face_handles`. Also returns `QueryError::QueryFailed` if any
+/// cap-face index is out of range. The FFI primitive guarantees in-range
+/// indices on success, so these are defense-in-depth paths pinned by the
+/// step-9 unit tests.
+pub fn populate_loft_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    section_face_handles_per_section: &[Vec<GeometryHandleId>],
+    section_edge_handles_per_section: &[Vec<GeometryHandleId>],
+    result_face_handles: &[GeometryHandleId],
+    result_edge_handles: &[GeometryHandleId],
+    history: &LoftOpHistoryRecords,
+) -> Result<(), QueryError> {
+    // Pin the lockstep invariant: `engine_build.rs::populate_loft_op` builds
+    // `section_faces` and `section_edges` in tandem (one push per profile) so
+    // both slices always have `len() == profile_handles.len()`.
+    // `write_loft_face_generated_attributes` range-checks `parent_index` against
+    // `section_edge_handles_per_section.len()`; if the two families diverged, a
+    // `parent_index` valid in the edge family could silently be out-of-range in
+    // the face family (and vice versa once face-level writes land).
+    debug_assert_eq!(
+        section_face_handles_per_section.len(),
+        section_edge_handles_per_section.len(),
+        "loft section face/edge slice families must be built in lockstep \
+         (engine_build.rs::populate_loft_op); write_loft_face_generated_attributes' \
+         parent_index range check uses the edge-slice family"
+    );
+    // Both parameters are reserved at this public-API entry point rather than
+    // being dropped inside the inner helpers:
+    //   • `section_face_handles_per_section` — seam for future face-level
+    //     Modified records (once the loft kernel emits per-section face maps)
+    //   • `result_edge_handles` — seam for future rail/seam/cap-edge
+    //     classification
+    let _ = section_face_handles_per_section; // reserved for future face-level Modified records
+    let _ = result_edge_handles; // reserved for future rail/seam/cap-edge classification
+
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.start_cap_face_indices,
+        Role::Cap(CapKind::Start),
+        "loft start cap",
+    )?;
+    write_cap_attributes(
+        table,
+        feature_id,
+        result_face_handles,
+        &history.end_cap_face_indices,
+        Role::Cap(CapKind::End),
+        "loft end cap",
+    )?;
+    write_loft_face_generated_attributes(
+        table,
+        feature_id,
+        section_edge_handles_per_section,
+        result_face_handles,
+        &history.face_generated,
+    )?;
+
+    Ok(())
+}
+
 /// Shared helper: write `(feature_id, role, local_index = 0)` to each
 /// cap face index in `cap_indices`, validating that each index is in
 /// range for `result_face_handles`.
@@ -457,6 +769,85 @@ fn write_face_generated_attributes(
     Ok(())
 }
 
+/// Multi-parent variant of [`write_face_generated_attributes`] for loft
+/// (`BRepOffsetAPI_ThruSections`).  For each `face_generated` record:
+///
+///   1. Validate `parent_index` is in range for
+///      `section_edge_handles_per_section.len()` (the number of loft
+///      sections).  Returns `QueryFailed` mentioning "section" on
+///      out-of-range.
+///   2. Validate `parent_subshape_index` is in range for the addressed
+///      section's edge slice (the kernel emits each lateral face from a
+///      parent profile edge sweep, so the subshape index points into
+///      the edge map).
+///   3. Validate `result_subshape_index` is in range for
+///      `result_face_handles`.
+///   4. Write `(feature_id, Role::LoftedFace, local_index =
+///      sequential_idx)` keyed by the result face handle.
+///
+/// `local_index` increments sequentially across all sections in the
+/// order records appear in `face_generated` (section 0's edges first,
+/// then section 1's, ...).
+fn write_loft_face_generated_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    section_edge_handles_per_section: &[Vec<GeometryHandleId>],
+    result_face_handles: &[GeometryHandleId],
+    face_generated: &[HistoryRecord],
+) -> Result<(), QueryError> {
+    for (sequential_idx, record) in face_generated.iter().enumerate() {
+        // Step 1: parent_index in range over section count.
+        let parent_idx = record.parent_index as usize;
+        if parent_idx >= section_edge_handles_per_section.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "loft face_generated record has parent_index {} \
+                 but loft has only {} section(s)",
+                parent_idx,
+                section_edge_handles_per_section.len()
+            )));
+        }
+
+        // Step 2: parent_subshape_index in range over the addressed
+        // section's edge slice.
+        let parent_subshape_idx = record.parent_subshape_index as usize;
+        let section_edges = &section_edge_handles_per_section[parent_idx];
+        if parent_subshape_idx >= section_edges.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "loft face_generated record has parent_subshape_index {} \
+                 but section {} has only {} edges",
+                parent_subshape_idx,
+                parent_idx,
+                section_edges.len()
+            )));
+        }
+
+        // Step 3: result_subshape_index in range over result faces.
+        let result_subshape_idx = record.result_subshape_index as usize;
+        if result_subshape_idx >= result_face_handles.len() {
+            return Err(QueryError::QueryFailed(format!(
+                "loft face_generated record has result_subshape_index {} \
+                 but result has only {} faces",
+                result_subshape_idx,
+                result_face_handles.len()
+            )));
+        }
+
+        // Step 4: write the attribute, keyed by the result face handle.
+        let handle = result_face_handles[result_subshape_idx];
+        table.record(
+            handle,
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role: Role::LoftedFace,
+                local_index: sequential_idx as u32,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests focused on the `Err(QueryError::QueryFailed(...))`
@@ -471,13 +862,21 @@ mod tests {
     //! check that each variant surfaces as `QueryFailed`.
     use reify_types::{
         BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
-        HistoryRecord, QueryError, Role, SweepOpHistoryRecords, TopologyAttributeTable,
+        HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords,
+        TopologyAttribute, TopologyAttributeTable,
     };
 
     use super::{
-        populate_extrude_attributes, populate_revolve_attributes,
-        propagate_attributes_via_brepalgoapi_history,
+        populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
+        populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
     };
+
+    /// Synthetic FeatureId reused by every split-detection test as the
+    /// `splitting_feature_id` parameter to
+    /// `propagate_attributes_via_brepalgoapi_history`.
+    fn fuse_feature_id() -> FeatureId {
+        FeatureId::new("Fuse#realization[0]")
+    }
 
     /// Build a `BooleanOpHistoryRecords` with `rec` as the sole
     /// `face_modified` entry and every other vector empty.
@@ -519,6 +918,22 @@ mod tests {
         }
     }
 
+    /// One face/edge per parent + 3 result faces — used by split-detection
+    /// tests that need a parent's records to point at multiple result
+    /// sub-shapes (count > 1 ⇒ split).
+    fn split_layout() -> MinimalLayout {
+        MinimalLayout {
+            parent_faces: [vec![GeometryHandleId(1)], vec![GeometryHandleId(2)]],
+            parent_edges: [vec![GeometryHandleId(3)], vec![GeometryHandleId(4)]],
+            result_faces: vec![
+                GeometryHandleId(11),
+                GeometryHandleId(12),
+                GeometryHandleId(13),
+            ],
+            result_edges: vec![GeometryHandleId(15)],
+        }
+    }
+
     #[test]
     fn propagate_returns_query_failed_when_face_record_has_parent_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
@@ -541,6 +956,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for parent_index out of range");
         match err {
@@ -580,6 +996,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for parent_subshape_index out of range");
         match err {
@@ -619,6 +1036,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for result_subshape_index out of range");
         match err {
@@ -659,6 +1077,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for edge parent_index out of range");
         match err {
@@ -698,6 +1117,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for edge parent_subshape_index out of range");
         match err {
@@ -737,6 +1157,7 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect_err("expected QueryFailed for edge result_subshape_index out of range");
         match err {
@@ -769,6 +1190,7 @@ mod tests {
             &result_handles,
             &result_handles,
             &history,
+            &fuse_feature_id(),
         )
         .expect("empty history should propagate without error");
         assert!(table.is_empty(), "no-op propagation must not write entries");
@@ -793,9 +1215,264 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &fuse_feature_id(),
         )
         .expect("empty history with Binary parents should propagate without error");
         assert!(table.is_empty(), "no-op propagation must not write entries");
+    }
+
+    /// step-5 — split detection unions `face_modified` ∪ `face_generated`
+    /// per parent, and the iteration order is Modified-then-Generated.
+    ///
+    /// Parent (0, 0) appears in BOTH `face_modified = [(0, 0, 1)]` AND
+    /// `face_generated = [(0, 0, 2)]` — total count = 2 across the union
+    /// ⇒ split. The Modified record is encountered first (per the existing
+    /// `chain(face_modified, face_generated)` order), so result_face[1]
+    /// gets `split_index = 0` and result_face[2] gets `split_index = 1`.
+    /// Both children must carry a fresh ModEntry stamping the
+    /// splitting_feature_id.
+    ///
+    /// Pins both (a) the union semantics for split detection and (b) the
+    /// per-kind iteration order Modified→Generated.
+    #[test]
+    fn propagate_split_combines_modified_and_generated_records_for_same_parent() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = split_layout();
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+
+        let parent_handle = layout.parent_faces[0][0];
+        let parent_feature_id = FeatureId::new("Parent#realization[0]");
+        table.record(
+            parent_handle,
+            TopologyAttribute {
+                feature_id: parent_feature_id.clone(),
+                role: Role::Side,
+                local_index: 3,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+
+        // Same parent (0, 0) appears once in face_modified and once in
+        // face_generated — count == 2 across the union ⇒ split.
+        let history = BooleanOpHistoryRecords {
+            face_modified: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 1,
+            }],
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 2,
+            }],
+            ..Default::default()
+        };
+
+        let splitting = fuse_feature_id();
+        propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parents,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+            &splitting,
+        )
+        .expect("propagation should succeed for a well-formed cross-kind split");
+
+        // (a) result_faces[1] — first child (Modified record), split_index=0.
+        let attr_modified = table
+            .lookup(layout.result_faces[1])
+            .expect("Modified child should have a propagated entry");
+        assert_eq!(
+            attr_modified.mod_history,
+            vec![ModEntry {
+                splitting_feature_id: splitting.clone(),
+                split_index: 0,
+            }],
+            "Modified record is iterated before Generated; split_index = 0"
+        );
+
+        // (b) result_faces[2] — second child (Generated record), split_index=1.
+        let attr_generated = table
+            .lookup(layout.result_faces[2])
+            .expect("Generated child should have a propagated entry");
+        assert_eq!(
+            attr_generated.mod_history,
+            vec![ModEntry {
+                splitting_feature_id: splitting,
+                split_index: 1,
+            }],
+            "Generated record follows Modified in iteration order; split_index = 1"
+        );
+    }
+
+    /// step-3 — single-result parent must NOT receive a fresh ModEntry.
+    ///
+    /// The parent has exactly one same-kind result record (`face_modified`
+    /// only, no `face_generated` for that parent), so the count is 1 — not
+    /// a split. The propagator must clone the parent attribute pure
+    /// pass-through, preserving any prior `mod_history` exactly. This pins
+    /// the `count > 1` guard in `maybe_append_split_entry`.
+    #[test]
+    fn propagate_skips_mod_entry_for_single_result_parent() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = split_layout();
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+
+        // Seed the parent with a NON-empty mod_history — the regression
+        // pin is "preserves prior mod_history; new ModEntry only on splits".
+        let parent_handle = layout.parent_faces[0][0];
+        let parent_feature_id = FeatureId::new("Parent#realization[0]");
+        let prior_mod_history = vec![ModEntry {
+            splitting_feature_id: FeatureId::new("Earlier"),
+            split_index: 5,
+        }];
+        table.record(
+            parent_handle,
+            TopologyAttribute {
+                feature_id: parent_feature_id.clone(),
+                role: Role::Side,
+                local_index: 7,
+                user_label: None,
+                mod_history: prior_mod_history.clone(),
+            },
+        );
+
+        // Exactly ONE face_modified record for this parent; empty
+        // face_generated. count((0,0)) = 1 ⇒ no split, no new ModEntry.
+        let history = BooleanOpHistoryRecords {
+            face_modified: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 1,
+            }],
+            ..Default::default()
+        };
+
+        propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parents,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+            &fuse_feature_id(),
+        )
+        .expect("propagation should succeed for a well-formed single-result history");
+
+        let attr = table
+            .lookup(layout.result_faces[1])
+            .expect("result face 1 should have a propagated entry");
+        assert_eq!(attr.feature_id, parent_feature_id);
+        assert_eq!(attr.role, Role::Side);
+        assert_eq!(attr.local_index, 7);
+        assert!(attr.user_label.is_none());
+        assert_eq!(
+            attr.mod_history, prior_mod_history,
+            "single-result parent (count==1) must propagate prior mod_history unchanged",
+        );
+    }
+
+    /// step-1 (RED) — split parent with two `face_modified` records.
+    ///
+    /// A single parent face (parent 0, subshape 0) is mapped to TWO distinct
+    /// result faces by the boolean op. Per the v0.2 invariant: each child
+    /// inherits the parent's `(feature_id, role, local_index, user_label)`
+    /// AND gets a fresh `ModEntry { splitting_feature_id, split_index }`
+    /// appended to its `mod_history`. The first child (record 0) gets
+    /// `split_index = 0`; the second (record 1) gets `split_index = 1`.
+    #[test]
+    fn propagate_appends_mod_entry_for_split_parent_with_two_face_modified_records() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = split_layout();
+        let parents = BooleanOpParents::Binary {
+            faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+
+        // Seed the parent face with a non-empty user_label (so we can pin the
+        // user_label is also propagated unchanged).
+        let parent_handle = layout.parent_faces[0][0];
+        let parent_feature_id = FeatureId::new("Parent#realization[0]");
+        table.record(
+            parent_handle,
+            TopologyAttribute {
+                feature_id: parent_feature_id.clone(),
+                role: Role::Side,
+                local_index: 7,
+                user_label: Some("seam".to_string()),
+                mod_history: Vec::new(),
+            },
+        );
+
+        // Two face_modified records pointing the SAME parent at two distinct
+        // result faces — the split signature.
+        let history = BooleanOpHistoryRecords {
+            face_modified: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 1,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 2,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let splitting = fuse_feature_id();
+        propagate_attributes_via_brepalgoapi_history(
+            &mut table,
+            &parents,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+            &splitting,
+        )
+        .expect("propagation should succeed for a well-formed split history");
+
+        // (a) result_faces[1] — first child, split_index = 0.
+        let attr_1 = table
+            .lookup(layout.result_faces[1])
+            .expect("result face 1 should have a propagated entry");
+        assert_eq!(attr_1.feature_id, parent_feature_id);
+        assert_eq!(attr_1.role, Role::Side);
+        assert_eq!(attr_1.local_index, 7);
+        assert_eq!(attr_1.user_label, Some("seam".to_string()));
+        assert_eq!(
+            attr_1.mod_history,
+            vec![ModEntry {
+                splitting_feature_id: splitting.clone(),
+                split_index: 0,
+            }],
+            "first child of split parent must carry split_index=0"
+        );
+
+        // (b) result_faces[2] — second child, split_index = 1.
+        let attr_2 = table
+            .lookup(layout.result_faces[2])
+            .expect("result face 2 should have a propagated entry");
+        assert_eq!(attr_2.feature_id, parent_feature_id);
+        assert_eq!(attr_2.role, Role::Side);
+        assert_eq!(attr_2.local_index, 7);
+        assert_eq!(attr_2.user_label, Some("seam".to_string()));
+        assert_eq!(
+            attr_2.mod_history,
+            vec![ModEntry {
+                splitting_feature_id: splitting,
+                split_index: 1,
+            }],
+            "second child of split parent must carry split_index=1"
+        );
     }
 
     // -- populate_extrude_attributes tests (task 5a, step-11) --
@@ -1315,6 +1992,655 @@ mod tests {
                 );
             }
             other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    // -- populate_sweep_attributes tests (task 5b / #2619, step-7) --
+    //
+    // Mirrors the extrude helper but with sweep-specific role assignments:
+    // `start_cap_face_indices` → `Cap(Start)`, `end_cap_face_indices` →
+    // `Cap(End)` (parametric Start/End semantics, NOT extrude's Top/Bottom),
+    // `face_generated` → `SweptFace` (NOT `Side` — per-op distinguisher
+    // per task-5a design decisions, mirrored for 5b in geometry.rs).
+    // Sweep is single-parent like extrude/revolve so reuses
+    // `SweepOpHistoryRecords` verbatim.
+
+    /// Layout for a rect-face sweep: 1 profile face, 4 profile edges,
+    /// 9 result faces, 12 result edges. Same shape as the extrude
+    /// fixture; sweep produces an identical topology under a straight
+    /// spine (rect profile + linear path → rect prism).
+    fn sweep_layout_for_step7() -> ExtrudeLayout {
+        ExtrudeLayout {
+            profile_faces: vec![GeometryHandleId(501)],
+            profile_edges: vec![
+                GeometryHandleId(601),
+                GeometryHandleId(602),
+                GeometryHandleId(603),
+                GeometryHandleId(604),
+            ],
+            result_faces: (0..9).map(|i| GeometryHandleId(5000 + i)).collect(),
+            result_edges: (0..12).map(|i| GeometryHandleId(6000 + i)).collect(),
+        }
+    }
+
+    /// Synthetic SweepOpHistoryRecords for the step-7 happy path:
+    /// start_cap = [5], end_cap = [6], face_generated = [(0,0,7), (0,1,8)].
+    fn step7_sweep_history() -> SweepOpHistoryRecords {
+        SweepOpHistoryRecords {
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 7,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 8,
+                },
+            ],
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn populate_sweep_writes_cap_start_for_start_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let history = step7_sweep_history();
+
+        populate_sweep_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-7 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[5])
+            .expect("start_cap_face_indices[0] = 5 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::Start));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_sweep_writes_cap_end_for_end_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let history = step7_sweep_history();
+
+        populate_sweep_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-7 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[6])
+            .expect("end_cap_face_indices[0] = 6 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::End));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_sweep_writes_swept_face_with_sequential_local_index_for_face_generated() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let history = step7_sweep_history();
+
+        populate_sweep_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-7 history is well-formed");
+
+        let side_a = table
+            .lookup(layout.result_faces[7])
+            .expect("face_generated[0].result_subshape_index = 7 should have an entry");
+        assert_eq!(side_a.role, Role::SweptFace);
+        assert_eq!(side_a.local_index, 0);
+        assert_eq!(side_a.feature_id, feature_id);
+        assert!(side_a.mod_history.is_empty());
+        assert!(side_a.user_label.is_none());
+
+        let side_b = table
+            .lookup(layout.result_faces[8])
+            .expect("face_generated[1].result_subshape_index = 8 should have an entry");
+        assert_eq!(side_b.role, Role::SweptFace);
+        assert_eq!(side_b.local_index, 1);
+        assert_eq!(side_b.feature_id, feature_id);
+        assert!(side_b.mod_history.is_empty());
+        assert!(side_b.user_label.is_none());
+    }
+
+    #[test]
+    fn populate_sweep_empty_history_is_a_noop() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let history = SweepOpHistoryRecords::default();
+
+        populate_sweep_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("empty history is a no-op");
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn populate_sweep_returns_query_failed_when_start_cap_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![99], // result has only 9 faces.
+            ..Default::default()
+        };
+
+        let err = populate_sweep_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range start_cap index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("99"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_sweep_returns_query_failed_when_face_generated_result_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let history = SweepOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 42, // > result faces (9).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_sweep_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range result_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("42"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_sweep_returns_query_failed_when_parent_subshape_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::new("Pipe#realization[0]");
+        let history = SweepOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 99, // > profile edges (4).
+                result_subshape_index: 7,
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_sweep_attributes(
+            &mut table,
+            &feature_id,
+            &layout.profile_faces,
+            &layout.profile_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range parent_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("99"),
+                    "error should mention out-of-range parent_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    // -- populate_loft_attributes tests (task 5b / #2619, step-9) --
+    //
+    // Loft is the multi-parent variant: `parent_index` denotes a section
+    // index in `[0, profiles.len())`, and `parent_subshape_index` is the
+    // edge index within that section's edge map. `populate_loft_attributes`
+    // takes per-section profile face/edge slices (`&[Vec<GeometryHandleId>]`)
+    // and validates each `face_generated` record's
+    // `(parent_index, parent_subshape_index)` pair against the addressed
+    // section. Caps reuse `Role::Cap(CapKind::Start)` / `Role::Cap(CapKind::End)`
+    // (loft section 0 = start; loft section N-1 = end under `is_solid=true`).
+    // `face_generated` records emit `Role::LoftedFace` (NOT `SweptFace` /
+    // `RevolvedFace` / `Side` — per-op distinguisher per task-5a/5b design).
+    // `local_index` is sequential across all sections in the order records
+    // appear in `face_generated`.
+
+    /// Layout for a 2-section loft: each section has 1 profile face + 2
+    /// profile edges; result has 6 faces (cap_start + cap_end + 4 lateral)
+    /// and 8 result edges. Sized for the step-9 happy-path fixture.
+    struct LoftLayout {
+        section_faces: Vec<Vec<GeometryHandleId>>,
+        section_edges: Vec<Vec<GeometryHandleId>>,
+        result_faces: Vec<GeometryHandleId>,
+        result_edges: Vec<GeometryHandleId>,
+    }
+
+    fn loft_layout_for_step9() -> LoftLayout {
+        LoftLayout {
+            // Two sections; each has 1 profile face and 2 profile edges.
+            section_faces: vec![
+                vec![GeometryHandleId(701)],
+                vec![GeometryHandleId(702)],
+            ],
+            section_edges: vec![
+                vec![GeometryHandleId(801), GeometryHandleId(802)],
+                vec![GeometryHandleId(803), GeometryHandleId(804)],
+            ],
+            // 6 result faces: indices 0/1 = caps Start/End, 2..=5 = lateral.
+            result_faces: (0..6).map(|i| GeometryHandleId(7000 + i)).collect(),
+            result_edges: (0..8).map(|i| GeometryHandleId(8000 + i)).collect(),
+        }
+    }
+
+    /// Synthetic LoftOpHistoryRecords for the step-9 happy path:
+    /// start_cap = [0], end_cap = [1], face_generated =
+    /// [(0,0,2), (0,1,3), (1,0,4), (1,1,5)] (sequential across sections).
+    fn step9_loft_history() -> LoftOpHistoryRecords {
+        LoftOpHistoryRecords {
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 2,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 3,
+                },
+                HistoryRecord {
+                    parent_index: 1,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 4,
+                },
+                HistoryRecord {
+                    parent_index: 1,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 5,
+                },
+            ],
+            start_cap_face_indices: vec![0],
+            end_cap_face_indices: vec![1],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn populate_loft_writes_cap_start_for_start_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = step9_loft_history();
+
+        populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-9 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[0])
+            .expect("start_cap_face_indices[0] = 0 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::Start));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_loft_writes_cap_end_for_end_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = step9_loft_history();
+
+        populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-9 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[1])
+            .expect("end_cap_face_indices[0] = 1 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::End));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_loft_writes_lofted_face_with_sequential_local_index_across_sections() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = step9_loft_history();
+
+        populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-9 history is well-formed");
+
+        // local_index increments sequentially across all sections in the
+        // order face_generated records appear (sections [0][0], [0][1],
+        // [1][0], [1][1] → indices 0,1,2,3).
+        for (sequential_idx, result_face_idx) in [2_usize, 3, 4, 5].iter().enumerate() {
+            let attr = table
+                .lookup(layout.result_faces[*result_face_idx])
+                .unwrap_or_else(|| {
+                    panic!(
+                        "face_generated[{sequential_idx}].result_subshape_index = \
+                         {result_face_idx} should have an entry"
+                    )
+                });
+            assert_eq!(
+                attr.role,
+                Role::LoftedFace,
+                "loft face_generated must use Role::LoftedFace not Role::Side/Sweep/Revolved",
+            );
+            assert_eq!(attr.local_index, sequential_idx as u32);
+            assert_eq!(attr.feature_id, feature_id);
+            assert!(attr.user_label.is_none());
+            assert!(attr.mod_history.is_empty());
+        }
+    }
+
+    #[test]
+    fn populate_loft_empty_history_is_a_noop() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = LoftOpHistoryRecords::default();
+
+        populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("empty history is a no-op");
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn populate_loft_returns_query_failed_when_parent_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = LoftOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 9, // > sections (2).
+                parent_subshape_index: 0,
+                result_subshape_index: 2,
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range parent_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("9"),
+                    "error should mention out-of-range parent_index, got {msg:?}",
+                );
+                assert!(
+                    msg.to_lowercase().contains("section"),
+                    "error should mention 'section', got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_loft_returns_query_failed_when_parent_subshape_index_out_of_range_for_section() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        // Section 0 has 2 edges; index 7 is out of range.
+        let history = LoftOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 7,
+                result_subshape_index: 2,
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range parent_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("7"),
+                    "error should mention out-of-range parent_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_loft_returns_query_failed_when_face_generated_result_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = LoftOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 99, // > result faces (6).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range result_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("99"),
+                    "error should mention out-of-range result_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_loft_returns_query_failed_when_start_cap_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = LoftOpHistoryRecords {
+            start_cap_face_indices: vec![123], // > result faces (6).
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range start_cap index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("123"),
+                    "error should mention out-of-range index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn populate_loft_panics_on_asymmetric_face_edge_slice_counts() {
+        // Parameterised regression test: the lockstep `debug_assert_eq!` at the top of
+        // `populate_loft_attributes` fires for any (section_faces_count, section_edges_count)
+        // asymmetry regardless of which side is longer.  Testing both directions and zero-cases
+        // ensures a future refactor that weakens the check to `<=` or `>=` is caught.
+        for (nfaces, nedges) in [(2_usize, 1_usize), (1, 2), (3, 0), (0, 3)] {
+            let mut table = TopologyAttributeTable::default();
+            let feature_id = FeatureId::new("Loft#realization[0]");
+            let section_faces: Vec<Vec<GeometryHandleId>> = (0..nfaces)
+                .map(|i| vec![GeometryHandleId(700_u64 + i as u64)])
+                .collect();
+            let section_edges: Vec<Vec<GeometryHandleId>> = (0..nedges)
+                .map(|i| vec![GeometryHandleId(800_u64 + i as u64)])
+                .collect();
+            let result_faces = vec![GeometryHandleId(7000)];
+            let result_edges: Vec<GeometryHandleId> = vec![];
+            let history = LoftOpHistoryRecords::default();
+
+            let call_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = populate_loft_attributes(
+                        &mut table,
+                        &feature_id,
+                        &section_faces,
+                        &section_edges,
+                        &result_faces,
+                        &result_edges,
+                        &history,
+                    );
+                }));
+            assert!(
+                call_result.is_err(),
+                "expected lockstep panic for (faces={nfaces}, edges={nedges}) but none fired"
+            );
+            let payload = call_result.unwrap_err();
+            let msg = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("<non-string panic payload>");
+            assert!(
+                msg.contains(
+                    "loft section face/edge slice families must be built in lockstep"
+                ),
+                "wrong panic for (faces={nfaces}, edges={nedges}): {msg:?}"
+            );
         }
     }
 }

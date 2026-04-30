@@ -574,7 +574,12 @@ pub enum GuardState {
     /// user already wrote one — it just did not compile.
     Broken,
     /// The user wrote a `where` clause that compiled successfully.
-    Compiled(CompiledExpr),
+    ///
+    /// `CompiledExpr` is boxed so the enum's largest variant doesn't dominate
+    /// `Option<CompiledExpr>`-sized callers (Clippy's `large_enum_variant` lint
+    /// flags otherwise; `CompiledExprKind::Literal(Value)` keeps `CompiledExpr`
+    /// at hundreds of bytes thanks to `Value::SampledField`).
+    Compiled(Box<CompiledExpr>),
 }
 
 impl GuardState {
@@ -582,7 +587,7 @@ impl GuardState {
     /// that compiled successfully; `None` if there was no clause or it failed to compile.
     pub fn compiled(&self) -> Option<&CompiledExpr> {
         match self {
-            GuardState::Compiled(g) => Some(g),
+            GuardState::Compiled(g) => Some(g.as_ref()),
             _ => None,
         }
     }

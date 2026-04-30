@@ -58,6 +58,22 @@ pub mod ffi {
         edge_face_map_builds: u32,
     }
 
+    /// Result of `revolve_synthesis_post_sort_for_test`: the deduplicated
+    /// flat record buffer and the count of dropped duplicate records.
+    ///
+    /// Mirrors the `TopologyCacheBuildCounts` compound-return pattern.
+    /// Defined here (in the cxx bridge) so cxx generates matching C++ and
+    /// Rust types automatically.
+    struct RevolveSynthesisPostSortResult {
+        /// Deduplicated flat `(parent_index, parent_subshape_index,
+        /// result_subshape_index)` triples, stable-sorted by
+        /// `parent_subshape_index`, with duplicates removed.
+        output: Vec<u32>,
+        /// Number of records dropped because their `parent_subshape_index`
+        /// equalled the preceding record's (after stable-sort).
+        duplicate_count: u32,
+    }
+
     unsafe extern "C++" {
         include!("occt_wrapper.h");
 
@@ -82,6 +98,17 @@ pub mod ffi {
         /// materialized eagerly at construction time for the same lifetime
         /// reason as `BooleanOpHistory`.
         type SweepOpHistory;
+
+        /// Opaque container holding the `BRepOffsetAPI_ThruSections` loft
+        /// history records (Modified/Generated/Deleted for faces and edges)
+        /// plus first/last-cap face indices, plus the lofted result shape.
+        /// **Multi-parent** variant: `parent_index` in each record denotes
+        /// the section index 0..N-1 across N profiles (not always 0 like
+        /// `SweepOpHistory`). No diagnostic counters — those are
+        /// revolve-synthesis-specific. Records are materialized eagerly at
+        /// construction time for the same lifetime reason as the others.
+        /// Task 2619 (v0.2 persistent-naming-v2 5b).
+        type LoftOpHistory;
 
         // --- OcctShapeVec builder + reader ---
         fn new_shape_vec() -> UniquePtr<OcctShapeVec>;
@@ -165,6 +192,19 @@ pub mod ffi {
             angle_rad: f64,
         ) -> Result<UniquePtr<SweepOpHistory>>;
 
+        /// Run `BRepOffsetAPI_MakePipe` on `profile` along `spine` (a
+        /// wire), eagerly capturing the per-parent face/edge/vertex
+        /// Modified/Generated/Deleted records and the FirstShape/LastShape
+        /// cap-face indices alongside the swept result shape. Reuses the
+        /// SweepOpHistory shape (single-parent, `parent_index` always 0)
+        /// since `BRepOffsetAPI_MakePipe` inherits the same
+        /// Modified/Generated/IsDeleted/FirstShape/LastShape interface as
+        /// prism / revolve via `BRepBuilderAPI_MakeShape`. Task 5b (#2619).
+        fn make_pipe_with_history(
+            profile: &OcctShape,
+            spine: &OcctShape,
+        ) -> Result<UniquePtr<SweepOpHistory>>;
+
         /// Move the result shape out of the sweep-history wrapper for
         /// registration in the kernel's shape table. Subsequent
         /// `_take_result_shape` calls return an empty pointer.
@@ -192,6 +232,70 @@ pub mod ffi {
         fn sweep_op_history_start_cap_face_indices(history: &SweepOpHistory) -> Vec<u32>;
         /// 0-based result face_map indices of the LastShape() (end) cap faces.
         fn sweep_op_history_end_cap_face_indices(history: &SweepOpHistory) -> Vec<u32>;
+        /// Count of non-degenerate, untracked profile edges that did not produce a
+        /// face_generated record during the full-revolution synthesis post-pass.
+        /// Always 0 for prism ops and partial revolves; non-zero indicates a gap.
+        fn sweep_op_history_unsynthesized_profile_edge_count(history: &SweepOpHistory) -> u32;
+        /// Count of face_generated records dropped by the post-sort dedup pass
+        /// because their parent_subshape_index duplicated the preceding record.
+        /// Zero for a well-formed sweep.
+        fn sweep_op_history_duplicate_parent_subshape_index_count(history: &SweepOpHistory) -> u32;
+
+        // --- BRepOffsetAPI_ThruSections loft history (task 2619, step-6) ---
+
+        /// Run `BRepOffsetAPI_ThruSections` on `profiles` (>= 2 wire
+        /// sections), eagerly capturing the per-section
+        /// (multi-parent) face/edge correspondence records and the
+        /// FirstShape/LastShape cap-face indices alongside the lofted
+        /// result shape. `is_solid=true` produces a closed solid with
+        /// non-empty cap lists; `is_solid=false` produces an open shell
+        /// with empty cap lists. Errors out if `profiles.len() < 2` or
+        /// the algorithm fails (`!IsDone()`).
+        fn make_loft_with_history(
+            profiles: &OcctShapeVec,
+            is_solid: bool,
+        ) -> Result<UniquePtr<LoftOpHistory>>;
+
+        /// Move the result shape out of the loft-history wrapper for
+        /// registration in the kernel's shape table. Subsequent
+        /// `_take_result_shape` calls return an empty pointer.
+        fn loft_op_history_take_result_shape(
+            history: Pin<&mut LoftOpHistory>,
+        ) -> UniquePtr<OcctShape>;
+
+        /// Modified records for parent (section) faces (flat groups of 3 u32:
+        /// `parent_index, parent_subshape_index, result_subshape_index`).
+        /// `parent_index` is the section index 0..N-1. Expected to be empty
+        /// for `BRepOffsetAPI_ThruSections` (the algorithm generates a
+        /// fresh shape rather than transforming a parent), kept for layout
+        /// uniformity with `sweep_op_history_face_modified`.
+        fn loft_op_history_face_modified(history: &LoftOpHistory) -> Vec<u32>;
+        /// Generated records for parent (section) edges (flat groups of 3).
+        /// Each record corresponds to one section edge → one lateral
+        /// result face mapped via `BRepOffsetAPI_ThruSections::GeneratedFace(edge)`.
+        fn loft_op_history_face_generated(history: &LoftOpHistory) -> Vec<u32>;
+        /// Deleted records for parent (section) faces (flat groups of 2).
+        /// Expected to be empty; kept for layout uniformity.
+        fn loft_op_history_face_deleted(history: &LoftOpHistory) -> Vec<u32>;
+        /// Modified records for parent (section) edges. Expected to be empty.
+        fn loft_op_history_edge_modified(history: &LoftOpHistory) -> Vec<u32>;
+        /// Generated records for parent (section) edges. Expected to be empty
+        /// (loft surfaces in 5b only emit face-level Generated records via
+        /// `GeneratedFace`); kept for layout uniformity.
+        fn loft_op_history_edge_generated(history: &LoftOpHistory) -> Vec<u32>;
+        /// Deleted records for parent (section) edges. Expected to be empty.
+        fn loft_op_history_edge_deleted(history: &LoftOpHistory) -> Vec<u32>;
+        /// 0-based result face_map indices of the FirstShape() (start) cap
+        /// faces. Populated only when constructed with `is_solid=true`.
+        fn loft_op_history_start_cap_face_indices(history: &LoftOpHistory) -> Vec<u32>;
+        /// 0-based result face_map indices of the LastShape() (end) cap faces.
+        /// Populated only when constructed with `is_solid=true`.
+        fn loft_op_history_end_cap_face_indices(history: &LoftOpHistory) -> Vec<u32>;
+
+        /// Test fixture: run the post-sort/dedup pass on a synthetic flat
+        /// `face_generated`-layout input. Returns the deduplicated triples and the
+        /// count of dropped duplicates. Used to test dedup logic without real OCCT.
+        fn revolve_synthesis_post_sort_for_test(input: &[u32]) -> RevolveSynthesisPostSortResult;
 
         /// Probe whether `a` and `b` are intersecting (non-positive minimum distance)
         /// via BRepExtrema_DistShapeShape. Returns true iff dist.Value() <= 0.0.

@@ -103,6 +103,11 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <ShapeAnalysis_Shell.hxx>
 
+// OCCT messaging (for synthesis-gap diagnostics)
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <TCollection_ExtendedString.hxx>
+
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
@@ -581,6 +586,74 @@ static double compute_axial_coord(const gp_Pnt& point, const gp_Ax1& axis) {
     return gp_Vec(axis.Location(), point).Dot(gp_Vec(axis.Direction()));
 }
 
+/// Stable-sort `face_generated` triples by `parent_subshape_index` (field [1]),
+/// then walk the sorted records and drop any whose `parent_subshape_index`
+/// equals the immediately preceding record's, incrementing `out_duplicate_count`
+/// for each dropped record.
+///
+/// Preserves the `local_index = parent_subshape_index` invariant on surviving
+/// records (drop-duplicates rather than warn-and-keep or throw). In `#ifndef
+/// NDEBUG` builds asserts the post-dedup vector is strictly increasing in
+/// `parent_subshape_index`.
+///
+/// Also used by the FFI fixture `revolve_synthesis_post_sort_for_test` for
+/// unit-testing the dedup logic on synthetic flat input.
+static void revolve_synthesis_post_sort_and_dedup(
+    std::vector<uint32_t>& face_generated,
+    uint32_t& out_duplicate_count) {
+
+    const std::size_t n_recs = face_generated.size() / 3;
+    if (n_recs < 2) return;
+
+    // (1) Stable-sort by parent_subshape_index (element at offset +1 per triple).
+    std::vector<std::size_t> order(n_recs);
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(),
+        [&](std::size_t a, std::size_t b) {
+            return face_generated[a * 3 + 1] < face_generated[b * 3 + 1];
+        });
+    std::vector<uint32_t> sorted;
+    sorted.reserve(face_generated.size());
+    for (std::size_t idx : order) {
+        sorted.push_back(face_generated[idx * 3 + 0]);
+        sorted.push_back(face_generated[idx * 3 + 1]);
+        sorted.push_back(face_generated[idx * 3 + 2]);
+    }
+
+    // (2) In-place dedup: compact sorted[], dropping records whose
+    //     parent_subshape_index equals the preceding kept record.
+    //     Gate on write_idx > 0 so prev_parent is only read after being set,
+    //     which remains correct if record 0 is ever skipped by future
+    //     filtering (unlike rec_idx > 0, which would compare against the
+    //     uninitialized-sentinel 0 for position 1 after position 0 is skipped).
+    const std::size_t n_sorted = sorted.size();
+    std::size_t write_idx = 0;
+    uint32_t prev_parent = 0; // value irrelevant; only read when write_idx > 0
+    for (std::size_t i = 0; i < n_sorted; i += 3) {
+        uint32_t cur_parent = sorted[i + 1];
+        if (write_idx > 0 && cur_parent == prev_parent) {
+            ++out_duplicate_count;
+        } else {
+            // Safe: write_idx <= i/3, so destination never aliases unread src.
+            sorted[write_idx * 3 + 0] = sorted[i + 0];
+            sorted[write_idx * 3 + 1] = sorted[i + 1];
+            sorted[write_idx * 3 + 2] = sorted[i + 2];
+            prev_parent = cur_parent;
+            ++write_idx;
+        }
+    }
+    sorted.resize(write_idx * 3);
+
+    // (3) Debug-only: assert strictly increasing parent_subshape_index.
+#ifndef NDEBUG
+    for (std::size_t k = 1; k < write_idx; ++k) {
+        assert(sorted[k * 3 + 1] > sorted[(k - 1) * 3 + 1]);
+    }
+#endif
+
+    face_generated = std::move(sorted);
+}
+
 /// Synthesize `face_generated` records for purely-radial profile edges
 /// in a full-2π revolution.
 ///
@@ -604,16 +677,23 @@ static double compute_axial_coord(const gp_Pnt& point, const gp_Ax1& axis) {
 /// This preserves the `local_index = parent_subshape_index` invariant that
 /// `populate_revolve_attributes` (crates/reify-eval) relies on.
 ///
-/// INVARIANT CAVEAT: `local_index = parent_subshape_index` holds only when
-/// each profile edge index appears exactly once in face_generated. If OCCT's
-/// Generated() reports two records for the same edge (possible in degenerate
-/// sweeps with self-touching profiles), or if a synthesized record collides
-/// with an OCCT-reported one (prevented by the `tracked_parent_edges` guard
-/// but theoretically possible if OCCT partially reports a radial edge), the
-/// stable-sort will place duplicates adjacently but positions will diverge
-/// from parent_subshape_index and populate_revolve_attributes will assign
-/// misaligned local_index values silently. Well-formed CAD profiles (distinct
-/// edges, no self-intersection) are not expected to trigger this path.
+/// SILENT-DROPS: any non-degenerate, untracked profile edge that exits the
+/// synthesis loop without producing a face_generated record (axial path 4,
+/// slanted path 5, or inner matching-loop fall-through path 6) increments
+/// `SweepOpHistory::unsynthesized_profile_edge_count`. After the synthesis loop
+/// completes, if the counter is non-zero, one OCCT `Message_Warning` is
+/// emitted via `Message::DefaultMessenger()` summarising the count. The
+/// warning emission is best-effort (the OCCT messenger contract is not
+/// tested directly; only the counter field is asserted in integration
+/// tests). The counter is surfaced to Rust callers via the
+/// `SweepOpHistoryRecords` field `unsynthesized_profile_edge_count` so
+/// integration tests can assert it is zero for well-formed profiles.
+///
+/// DUPLICATE DETECTION: if `parent_subshape_index` values are not distinct
+/// in face_generated after sorting, duplicates are dropped by the
+/// `revolve_synthesis_post_sort_and_dedup` helper (first occurrence under
+/// stable sort wins) and the count is exposed via
+/// `SweepOpHistory::duplicate_parent_subshape_index_count`.
 ///
 /// MATCHING CAVEAT (same-z radial edges): the face-matching logic is greedy
 /// (first untracked face whose normal is parallel to the axis AND whose
@@ -681,10 +761,14 @@ static void synthesize_full_revolution_radial_face_records(
 
         double dot = std::abs(edge_vec.Dot(axis_dir));
         if (dot > 1.0 - DIR_TOL) {
-            continue; // Axial — OCCT Generated() should have caught this.
+            // Axial — OCCT Generated() should have caught this.
+            ++history.unsynthesized_profile_edge_count;
+            continue;
         }
         if (dot > DIR_TOL) {
-            continue; // Slanted — OCCT reports conical sweeps correctly.
+            // Slanted — OCCT reports conical sweeps correctly.
+            ++history.unsynthesized_profile_edge_count;
+            continue;
         }
 
         // Purely radial edge. Compute its midpoint axial coordinate.
@@ -692,6 +776,7 @@ static void synthesize_full_revolution_radial_face_records(
         double target_axial = compute_axial_coord(midpoint, axis);
 
         // Scan result faces for the matching annular-disk face.
+        bool matched = false;
         for (Standard_Integer j = 1; j <= n_faces; ++j) {
             const uint32_t face_idx_0 = static_cast<uint32_t>(j - 1);
             if (tracked_result_faces.count(face_idx_0)) {
@@ -750,31 +835,34 @@ static void synthesize_full_revolution_radial_face_records(
             history.face_generated.push_back(edge_idx_0);
             history.face_generated.push_back(face_idx_0);
             tracked_result_faces.insert(face_idx_0);
+            matched = true;
             break;
+        }
+        if (!matched) {
+            // Path 6: inner face-matching loop found no candidate.
+            ++history.unsynthesized_profile_edge_count;
         }
     }
 
-    // Stable-sort face_generated in groups of 3 by parent_subshape_index
-    // so synthesized records interleave with OCCT-reported ones in
-    // profile-edge order — preserving local_index = parent_subshape_index.
-    const std::size_t n_recs = history.face_generated.size() / 3;
-    if (n_recs >= 2) {
-        std::vector<std::size_t> order(n_recs);
-        std::iota(order.begin(), order.end(), 0);
-        std::stable_sort(order.begin(), order.end(),
-            [&](std::size_t a, std::size_t b) {
-                return history.face_generated[a * 3 + 1]
-                     < history.face_generated[b * 3 + 1];
-            });
-        std::vector<uint32_t> sorted;
-        sorted.reserve(history.face_generated.size());
-        for (std::size_t idx : order) {
-            sorted.push_back(history.face_generated[idx * 3 + 0]);
-            sorted.push_back(history.face_generated[idx * 3 + 1]);
-            sorted.push_back(history.face_generated[idx * 3 + 2]);
-        }
-        history.face_generated = std::move(sorted);
+    // Emit a single OCCT warning if any profile edges went unsynthesized.
+    if (history.unsynthesized_profile_edge_count > 0) {
+        std::ostringstream oss;
+        oss << "synthesize_full_revolution_radial_face_records: "
+            << history.unsynthesized_profile_edge_count
+            << " unsynthesized profile edge(s) — silent gap in face_generated";
+        Message::DefaultMessenger()->Send(
+            TCollection_ExtendedString(oss.str().c_str()),
+            Message_Warning);
     }
+
+    // Stable-sort face_generated by parent_subshape_index so synthesized
+    // records interleave with OCCT-reported ones in profile-edge order,
+    // then drop any duplicates (keeping the first under stable sort) and
+    // increment duplicate_parent_subshape_index_count per drop.
+    // Preserves the `local_index = parent_subshape_index` invariant that
+    // `populate_revolve_attributes` (crates/reify-eval) relies on.
+    revolve_synthesis_post_sort_and_dedup(
+        history.face_generated, history.duplicate_parent_subshape_index_count);
 }
 
 } // anonymous namespace
@@ -982,6 +1070,77 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
     });
 }
 
+std::unique_ptr<SweepOpHistory> make_pipe_with_history(
+    const OcctShape& profile, const OcctShape& spine) {
+    return wrap_occt_call("make_pipe_with_history", [&]() {
+        // BRepOffsetAPI_MakePipe inherits from BRepPrimAPI_MakeSweep (via
+        // BRepOffsetAPI_BuildAddSurface), which inherits from
+        // BRepBuilderAPI_MakeShape — so the Modified/IsDeleted/Generated/
+        // FirstShape/LastShape accessors expected by the templated
+        // `emit_sweep_*` helpers are all available. Sweep is single-parent
+        // like extrude/revolve, so the existing SweepOpHistory shape fits
+        // (parent_index always 0; cap-index lists for FirstShape/LastShape).
+        BRepOffsetAPI_MakePipe maker(TopoDS::Wire(spine.shape), profile.shape);
+        // BRepOffsetAPI_MakePipe calls Build() internally in its constructor;
+        // an explicit Build() here is redundant (matches `make_pipe`).
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_MakePipe failed");
+        }
+        auto history = std::make_unique<SweepOpHistory>();
+        history->result = std::make_unique<OcctShape>();
+        history->result->shape = maker.Shape();
+
+        // Build result face/edge maps once via the cached lazy accessors.
+        const auto& result_face_map = history->result->face_map();
+        const auto& result_edge_map = history->result->edge_map();
+
+        // Build a profile-vertex map ad-hoc (sweeps generate result edges
+        // from profile vertices; not cached on OcctShape because vertex
+        // maps are rarely needed except for sweeps).
+        TopTools_IndexedMapOfShape profile_vertex_map;
+        TopExp::MapShapes(profile.shape, TopAbs_VERTEX, profile_vertex_map);
+
+        // Faces (same-type modified): profile face → result face. Modified
+        // is typically empty for sweep (face sub-shapes go to FirstShape /
+        // LastShape, captured separately as caps); IsDeleted is empty too.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.face_map(), result_face_map,
+            history->face_modified, history->face_deleted);
+
+        // Edges (same-type modified): profile edge → result edge. Modified
+        // edges from a sweep are also typically empty.
+        emit_sweep_modified_deleted_for_parent(
+            maker, profile.edge_map(), result_edge_map,
+            history->edge_modified, history->edge_deleted);
+
+        // Cross-type Generated: profile EDGES generate result FACES (the
+        // lateral swept side faces). parent_subshape_index in each
+        // face_generated record is the profile edge index.
+        emit_sweep_generated_cross_type(
+            maker, profile.edge_map(), result_face_map, TopAbs_FACE,
+            history->face_generated);
+
+        // Cross-type Generated: profile VERTICES generate result EDGES
+        // (the lateral edges joining the start/end caps).
+        emit_sweep_generated_cross_type(
+            maker, profile_vertex_map, result_edge_map, TopAbs_EDGE,
+            history->edge_generated);
+
+        // Caps: FirstShape() == profile-as-placed (start of spine),
+        //       LastShape()  == profile at the spine end.
+        // BRepOffsetAPI_MakePipe inherits FirstShape/LastShape from
+        // BRepPrimAPI_MakeSweep so these accessors work the same way as
+        // for prism / revolve. Diagnostic counters
+        // (unsynthesized_profile_edge_count,
+        // duplicate_parent_subshape_index_count) remain at default 0;
+        // they are revolve-synthesis-specific and have no analogue here.
+        emit_cap_face_indices(maker.FirstShape(), result_face_map, history->start_cap_face_indices);
+        emit_cap_face_indices(maker.LastShape(),  result_face_map, history->end_cap_face_indices);
+
+        return history;
+    });
+}
+
 std::unique_ptr<OcctShape> sweep_op_history_take_result_shape(SweepOpHistory& history) {
     return std::move(history.result);
 }
@@ -1016,6 +1175,142 @@ rust::Vec<uint32_t> sweep_op_history_start_cap_face_indices(const SweepOpHistory
 
 rust::Vec<uint32_t> sweep_op_history_end_cap_face_indices(const SweepOpHistory& history) {
     return to_rust_vec(history.end_cap_face_indices);
+}
+
+uint32_t sweep_op_history_unsynthesized_profile_edge_count(const SweepOpHistory& history) {
+    return history.unsynthesized_profile_edge_count;
+}
+
+uint32_t sweep_op_history_duplicate_parent_subshape_index_count(const SweepOpHistory& history) {
+    return history.duplicate_parent_subshape_index_count;
+}
+
+// --- BRepOffsetAPI_ThruSections loft history (task 2619, step-6) ---
+
+std::unique_ptr<LoftOpHistory> make_loft_with_history(
+    const OcctShapeVec& profiles, bool is_solid) {
+    return wrap_occt_call("make_loft_with_history", [&]() {
+        if (profiles.shapes.size() < 2) {
+            throw std::runtime_error(
+                "make_loft_with_history: requires at least 2 profiles");
+        }
+        // Mirror `loft_profiles`: is_ruled=false (smooth interpolation
+        // between sections). is_solid is exposed at the FFI signature for
+        // forward compatibility with an open-shell loft variant; the Rust
+        // caller hard-codes `true` to match `GeometryOp::Loft`'s contract.
+        BRepOffsetAPI_ThruSections loft(
+            is_solid ? Standard_True : Standard_False, Standard_False);
+        for (const auto& shape : profiles.shapes) {
+            loft.AddWire(TopoDS::Wire(shape));
+        }
+        loft.Build();
+        if (!loft.IsDone()) {
+            throw std::runtime_error(
+                "BRepOffsetAPI_ThruSections (make_loft_with_history) failed");
+        }
+        auto history = std::make_unique<LoftOpHistory>();
+        history->result = std::make_unique<OcctShape>();
+        history->result->shape = loft.Shape();
+
+        // Build result face/edge maps once via the cached lazy accessors.
+        const auto& result_face_map = history->result->face_map();
+        // edge_map() is built lazily on demand; reserved for future
+        // edge-history use (e.g. seam edges between sections). Currently
+        // unused — `BRepOffsetAPI_ThruSections::GeneratedFace` is the
+        // sole correspondence accessor we exercise here.
+
+        // Per-section walk: for each profile section i ∈ [0, N), walk
+        // its edges in canonical TopExp `MapShapes(profile, TopAbs_EDGE, _)`
+        // order; for each edge call `loft.GeneratedFace(edge)` to recover
+        // the lateral side face in the result; look up the result face's
+        // 0-based index in `result_face_map` and emit a flat triple
+        // `(parent_index = i, parent_subshape_index = edge_idx_in_section,
+        //  result_subshape_index = result_face_idx)`.
+        //
+        // CANNOT REUSE `emit_sweep_generated_cross_type` because that
+        // helper hard-codes `parent_index = 0` (single-parent contract);
+        // loft's per-section walk needs distinct `parent_index` per section.
+        const std::size_t n_sections = profiles.shapes.size();
+        for (std::size_t i = 0; i < n_sections; ++i) {
+            const TopoDS_Shape& profile_shape = profiles.shapes[i];
+            TopTools_IndexedMapOfShape section_edge_map;
+            TopExp::MapShapes(profile_shape, TopAbs_EDGE, section_edge_map);
+            const Standard_Integer n_edges = section_edge_map.Extent();
+            for (Standard_Integer e = 1; e <= n_edges; ++e) {
+                const TopoDS_Shape& section_edge = section_edge_map.FindKey(e);
+                const TopoDS_Shape generated_face = loft.GeneratedFace(section_edge);
+                if (generated_face.IsNull()) {
+                    continue;
+                }
+                Standard_Integer one_based = result_face_map.FindIndex(generated_face);
+                if (one_based < 1) {
+                    continue;
+                }
+                history->face_generated.push_back(static_cast<uint32_t>(i));
+                history->face_generated.push_back(static_cast<uint32_t>(e - 1));
+                history->face_generated.push_back(static_cast<uint32_t>(one_based - 1));
+            }
+        }
+
+        // Caps: under is_solid=true, FirstShape() / LastShape() reference
+        // the first / last profile-section caps. Under is_solid=false,
+        // FirstShape() / LastShape() are the input wires (not faces) and
+        // produce empty cap-index lists — `emit_cap_face_indices` handles
+        // null / no-mapped-faces cases by skipping silently.
+        if (is_solid) {
+            emit_cap_face_indices(loft.FirstShape(), result_face_map, history->start_cap_face_indices);
+            emit_cap_face_indices(loft.LastShape(),  result_face_map, history->end_cap_face_indices);
+        }
+
+        return history;
+    });
+}
+
+std::unique_ptr<OcctShape> loft_op_history_take_result_shape(LoftOpHistory& history) {
+    return std::move(history.result);
+}
+
+rust::Vec<uint32_t> loft_op_history_face_modified(const LoftOpHistory& history) {
+    return to_rust_vec(history.face_modified);
+}
+
+rust::Vec<uint32_t> loft_op_history_face_generated(const LoftOpHistory& history) {
+    return to_rust_vec(history.face_generated);
+}
+
+rust::Vec<uint32_t> loft_op_history_face_deleted(const LoftOpHistory& history) {
+    return to_rust_vec(history.face_deleted);
+}
+
+rust::Vec<uint32_t> loft_op_history_edge_modified(const LoftOpHistory& history) {
+    return to_rust_vec(history.edge_modified);
+}
+
+rust::Vec<uint32_t> loft_op_history_edge_generated(const LoftOpHistory& history) {
+    return to_rust_vec(history.edge_generated);
+}
+
+rust::Vec<uint32_t> loft_op_history_edge_deleted(const LoftOpHistory& history) {
+    return to_rust_vec(history.edge_deleted);
+}
+
+rust::Vec<uint32_t> loft_op_history_start_cap_face_indices(const LoftOpHistory& history) {
+    return to_rust_vec(history.start_cap_face_indices);
+}
+
+rust::Vec<uint32_t> loft_op_history_end_cap_face_indices(const LoftOpHistory& history) {
+    return to_rust_vec(history.end_cap_face_indices);
+}
+
+RevolveSynthesisPostSortResult revolve_synthesis_post_sort_for_test(
+    rust::Slice<const uint32_t> input) {
+    std::vector<uint32_t> buf(input.begin(), input.end());
+    RevolveSynthesisPostSortResult result;
+    revolve_synthesis_post_sort_and_dedup(buf, result.duplicate_count);
+    for (uint32_t v : buf) {
+        result.output.push_back(v);
+    }
+    return result;
 }
 
 bool shapes_intersect(const OcctShape& a, const OcctShape& b) {
@@ -1362,9 +1657,12 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
             all_faces.push_back(TopoDS::Face(ex.Current()));
         }
         for (auto idx : face_indices) {
-            if (idx < all_faces.size()) {
-                faces_to_remove.Append(all_faces[idx]);
+            if (idx >= all_faces.size()) {
+                throw std::runtime_error(
+                    "shell_shape: face index " + std::to_string(idx) +
+                    " out of range (shape has " + std::to_string(all_faces.size()) + " faces)");
             }
+            faces_to_remove.Append(all_faces[idx]);
         }
         BRepOffsetAPI_MakeThickSolid maker;
         maker.MakeThickSolidByJoin(shape.shape, faces_to_remove, thickness, 1e-3);

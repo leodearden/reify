@@ -1,0 +1,24 @@
+// Worked example: moment_of_inertia for a steel box
+// PRD: docs/prds/topology-selectors.md task 7
+//
+// Demonstrates the mass-property triplet from §3.9 of the stdlib reference:
+// build a Solid via the box primitive, then query its moment-of-inertia tensor
+// at a given density.
+//
+// Coverage:
+//   1. box(L, W, H) primitive constructor
+//   2. moment_of_inertia(solid, density) stdlib call (PRD task 3 — language-level
+//      stdlib binding pending; see task 2325 triage note esc-2325-47 deferring
+//      stdlib wiring until a Tensor / MomentOfInertia type-system task lands;
+//      that work is now tracked under tasks 2696 and 2699).
+//
+// Until those bindings land, this fixture is exercised parse-only by
+// crates/reify-eval/tests/topology_selector_smoke_tests.rs. Compile-with-stdlib
+// and runtime-eval coverage will be added in the follow-up smoke-deepening
+// task (2691), which hard-deps on 2696 and 2699.
+
+structure def BlockInertia {
+    let b = box(50mm, 30mm, 10mm)
+    let steel_density = 7850.0
+    let i = moment_of_inertia(b, steel_density)
+}

@@ -575,6 +575,7 @@ fn append_body(
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, identity_transform_value};
     use reify_types::Value;
     use std::collections::BTreeMap;
 
@@ -666,41 +667,6 @@ mod tests {
 
     // ── body() 3-arg form (default parent = world, identity pose) ─────────
 
-    /// Test fixtures (copies of the joint fixtures in joints.rs::tests). A
-    /// follow-up could promote these to a shared internal helpers module;
-    /// for v0.1 we duplicate to keep the cross-module wiring minimal.
-    fn axis_x_unit() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
-    }
-
-    fn length_range_0_to_1m() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::length(0.0))),
-            upper: Some(Box::new(Value::length(1.0))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
-
-    /// Build the canonical identity `Value::Transform` (zero translation,
-    /// unit-quaternion rotation). Mirror of the default-pose helper used
-    /// inside `mechanism.rs`'s `append_body`.
-    fn identity_transform_value() -> Value {
-        Value::Transform {
-            rotation: Box::new(Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }),
-            translation: Box::new(Value::Vector(vec![
-                Value::length(0.0),
-                Value::length(0.0),
-                Value::length(0.0),
-            ])),
-        }
-    }
-
     /// `body(m, solid, j)` with the 3-arg form appends a body record with
     /// id=0, the supplied solid+at, parent defaulted to the world sentinel,
     /// and pose defaulted to the identity transform. The Mechanism map's
@@ -780,19 +746,6 @@ mod tests {
     }
 
     // ── body() 4-arg form (explicit parent joint) ────────────────────────
-
-    fn axis_z_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
-    }
-
-    fn angle_range_0_to_pi() -> Value {
-        Value::Range {
-            lower: Some(Box::new(Value::angle(0.0))),
-            upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }
-    }
 
     /// `body(m, solid, at, parent)` with the 4-arg form threads the
     /// explicit parent joint through to the body record and to
@@ -998,13 +951,6 @@ mod tests {
     }
 
     // ── closed-chain detection: parent conflict ──────────────────────────
-
-    /// Build a third joint distinct from j_a and j_b for the conflict
-    /// scenarios. Use a different axis so the joint Maps differ
-    /// structurally (they would otherwise be Value::Eq).
-    fn axis_y_unit() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
-    }
 
     /// v0.2: `body()` calls that try to give the same joint two different
     /// parents (`j_x` → `j_a` from call 1, `j_x` → `j_b` from call 2)

@@ -19,7 +19,10 @@ cxx-build = "1"
 cc = "1"
 
 [dev-dependencies]
-# Self-dev-dep enables `test-fixtures`-gated helpers (the `store_*_for_test` methods) in integration tests; see src/lib.rs
+# Self-dev-dep enables `test-fixtures`-gated helpers (the `store_*_for_test`
+# methods, plus `revolve_synthesis_post_sort_for_test`) in integration tests;
+# see src/lib.rs. The gate hides the Rust wrapper only — the underlying
+# cxx-bridge symbols and C++ implementations are built unconditionally.
 reify-kernel-occt = { path = ".", features = ["test-fixtures"] }
 reify-test-support.workspace = true
 serde_json = { workspace = true }

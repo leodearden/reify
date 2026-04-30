@@ -251,6 +251,45 @@ pub enum DiagnosticCode {
     /// Emitted when a field declaration uses the `imported { ... }` source form,
     /// which is deferred to v0.2 (v0.1 supports `analytical` and `composed` only).
     FieldImportedV02,
+    /// Origin: `crates/reify-expr/src/sampled.rs::sample_at_point`.
+    /// Emitted as a `Severity::Warning` once per Sampled field per session
+    /// when a `sample(field, point)` query falls outside the configured
+    /// `BoundingBox` bounds; the result is `Value::Undef`.
+    ///
+    /// Canonical message form:
+    /// `"sampled field '<name>' query is out of bounds; returning Undef"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FIELD_OUT_OF_BOUNDS`.
+    /// Once-per-field-per-session emission is enforced by an `AtomicBool`
+    /// `oob_emitted` flag on the runtime `SampledField` value
+    /// (see `crates/reify-types/src/value.rs::SampledField`).
+    FieldOutOfBounds,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::build_sampled_field`.
+    /// Emitted as a `Severity::Warning` when a `sampled` field's runtime
+    /// config fails to parse (typo'd grid kind, wrong interpolation name,
+    /// non-string slot for a string-keyed key, non-list `data`, etc.) or
+    /// violates a runtime invariant required by the interpolation primitives
+    /// (mismatched `data` length, axis grid with fewer than 2 nodes,
+    /// non-positive or non-finite spacing).
+    ///
+    /// On emission the field's lambda becomes `Value::Undef` and any
+    /// `sample(...)` call returns `Undef` — the warning gives the user a
+    /// clear message naming the field, the offending value, and (where
+    /// applicable) the allowed-set hint, instead of letting
+    /// `interp::interpolate_Nd`'s `assert!` panic the eval loop.
+    ///
+    /// Canonical message form:
+    /// `"sampled field '<name>': invalid <key>: expected <hint>, got <short_value>"`
+    /// (parse failure) or
+    /// `"sampled field '<name>': data length <N> does not match grid shape (<...>); expected <M> elements"`
+    /// (runtime invariant violation).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FIELD_SAMPLED_INVALID_CONFIG`.
+    /// Severity is `Warning` (not `Error`) for consistency with the sibling
+    /// `W_FIELD_OUT_OF_BOUNDS` and `W_INTERPOLATION_DEFERRED` warnings emitted
+    /// from the same dispatch path; downstream tooling that wants to surface
+    /// these as harder failures can filter by code at the consumer side.
+    FieldSampledInvalidConfig,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Replaces canonical message:
     /// `"field '<name>' codomain mismatch: declared codomain '<C>', lambda body produces '<T>'"`.
@@ -349,8 +388,20 @@ pub enum DiagnosticCode {
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
     /// invariant is violated for the supplied `AttributeQuery`).
     ///
-    /// Canonical message form:
-    /// `"topology-attribute selector matched <N> sub-shapes (expected exactly 1; topology may have changed)"`.
+    /// Canonical message forms:
+    ///   - `"topology-attribute selector matched <N> sub-shapes (expected exactly 1; topology may have changed)"`
+    ///     — emitted on a zero-match miss or a multi-match where the matched
+    ///     candidates have MIXED parent-keys (genuine ambiguity, e.g. label
+    ///     collision across distinct features). Resolution outcome:
+    ///     `AttributeResolution::Unresolved`.
+    ///   - `"topology-attribute selector matched <N> split children of the same parent (disambiguate via split_by(...) selector once vocabulary v2 lands)"`
+    ///     — emitted on a multi-match where ALL matched candidates share the
+    ///     parent-key (`feature_id, role, local_index, user_label`) and only
+    ///     differ in `mod_history`. The post-split-cluster sub-form added in
+    ///     task #2653; resolution outcome:
+    ///     `AttributeResolution::AmbiguousAfterSplit { children }`. Per PRD
+    ///     `docs/prds/v0_2/persistent-naming-v2.md` line 64, this surfaces the
+    ///     children set for user disambiguation rather than silently rebinding.
     ///
     /// Two labels accompany the warning where information is available:
     ///   - a primary label at the selector call site (`"selector call"`); and
@@ -470,6 +521,73 @@ pub enum DiagnosticCode {
     /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from the
     /// moment the diagnostic is emitted, with no further enum churn at integration time.
     MechanismDuplicateSolid,
+    /// Origin: `crates/reify-constraints/src/loop_closure.rs::solve_loop_closure_with_diagnostics`
+    /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
+    /// §"Singularity, over/under-constraint diagnostics").
+    ///
+    /// Canonical message form:
+    /// `"kinematic singularity detected: rank-deficient Jacobian; last-converged config returned"`.
+    ///
+    /// Emitted as a `Severity::Warning` when the loop-closure Newton solver
+    /// returns [`NewtonOutcome::Singular`](../../reify_constraints/loop_closure/enum.NewtonOutcome.html#variant.Singular)
+    /// (LDLᵀ pivot below `NewtonConfig::singularity_pivot_eps`). The wrapper sets
+    /// `LoopClosureReport::is_singular = true` and the `Singular` variant's `x`
+    /// field carries the last-converged config the PRD requires the snapshot to
+    /// surface.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_KINEMATIC_SINGULARITY`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ///
+    /// TODO: surfaced through the snapshot / sweep API in PRD task 10
+    /// (snapshot evaluator integration) — `reify-stdlib::snapshot` and the
+    /// eval engine do not yet call the wrapper. The variant is reserved now so
+    /// downstream tooling (LSP / MCP / IDE error UIs) can match on the typed code
+    /// identifier from the moment the diagnostic is first emitted, with no further
+    /// enum churn at integration time.
+    KinematicSingularity,
+    /// Origin: `crates/reify-constraints/src/loop_closure.rs::solve_loop_closure_with_diagnostics`
+    /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
+    /// §"Singularity, over/under-constraint diagnostics").
+    ///
+    /// Canonical message form:
+    /// `"kinematic system over-constrained: <N> free DOFs vs 6 loop residuals"`.
+    ///
+    /// Emitted as a `Severity::Error` when a single-loop closure problem has
+    /// fewer free DOFs than the 6-component twist residual (`free_b.len() < 6`).
+    /// The wrapper short-circuits the Newton solve and returns
+    /// `NewtonOutcome::NotConverged { x, residual_norm: f64::INFINITY }` —
+    /// the diagnostic, not a plausible-looking config, is the user-facing
+    /// signal of structural infeasibility.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_KINEMATIC_OVERCONSTRAINED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ///
+    /// TODO: surfaced through the snapshot / sweep API in PRD task 10
+    /// (snapshot evaluator integration). Reserved now for typed-code matching
+    /// at the moment the diagnostic is first emitted.
+    KinematicOverconstrained,
+    /// Origin: `crates/reify-constraints/src/loop_closure.rs::solve_loop_closure_with_diagnostics`
+    /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
+    /// §"Singularity, over/under-constraint diagnostics").
+    ///
+    /// Canonical message form:
+    /// `"kinematic system under-constrained: <N> free DOFs vs 6 loop residuals; consider adding an explicit binding"`.
+    ///
+    /// Emitted as a `Severity::Warning` when a single-loop closure problem has
+    /// more free DOFs than the 6-component twist residual (`free_b.len() > 6`).
+    /// The Newton solver still runs; the warning suggests an explicit binding.
+    /// The "closest-to-previous config" semantics the PRD describes are
+    /// realised by the caller's choice of
+    /// [`StartStrategy::WarmStart`](../../reify_constraints/loop_closure/enum.StartStrategy.html#variant.WarmStart),
+    /// not by extra logic in the wrapper.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_KINEMATIC_UNDERCONSTRAINED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ///
+    /// TODO: surfaced through the snapshot / sweep API in PRD task 10
+    /// (snapshot evaluator integration). Reserved now for typed-code matching
+    /// at the moment the diagnostic is first emitted.
+    KinematicUnderconstrained,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -899,6 +1017,65 @@ mod tests {
     fn diagnostic_code_purpose_let_unsupported_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::PurposeLetUnsupported).unwrap();
         assert_eq!(s, "\"PurposeLetUnsupported\"");
+    }
+
+    // --- FieldOutOfBounds tests (task 2341 — W_FIELD_OUT_OF_BOUNDS) ---
+    // Pairs with the runtime out-of-bounds detector in
+    // `crates/reify-expr/src/sampled.rs::sample_at_point`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldOutOfBounds` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::FieldOutOfBounds)`.
+    /// Pins existence of the new variant for v0.2 sampled-field OOB detection.
+    #[test]
+    fn field_out_of_bounds_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::warning("oob").with_code(DiagnosticCode::FieldOutOfBounds);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldOutOfBounds));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldOutOfBounds` serializes as
+    /// `"FieldOutOfBounds"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_out_of_bounds_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldOutOfBounds).unwrap();
+        assert_eq!(s, "\"FieldOutOfBounds\"");
+    }
+
+    // --- FieldSampledInvalidConfig tests (task 2341 — W_FIELD_SAMPLED_INVALID_CONFIG) ---
+    // Pairs with the runtime parse-failure / invariant-violation handler in
+    // `crates/reify-eval/src/engine_eval.rs::build_sampled_field`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldSampledInvalidConfig` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::FieldSampledInvalidConfig)`.
+    /// Pins existence of the new variant for v0.2 sampled-field parse-failure
+    /// and runtime-invariant-violation diagnostics.
+    #[test]
+    fn field_sampled_invalid_config_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d =
+            Diagnostic::warning("invalid").with_code(DiagnosticCode::FieldSampledInvalidConfig);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldSampledInvalidConfig));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldSampledInvalidConfig`
+    /// serializes as `"FieldSampledInvalidConfig"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_sampled_invalid_config_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldSampledInvalidConfig).unwrap();
+        assert_eq!(s, "\"FieldSampledInvalidConfig\"");
     }
 }
 

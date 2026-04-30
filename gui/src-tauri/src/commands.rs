@@ -205,6 +205,6 @@ pub fn get_containing_definition_impl(
 pub fn get_mechanism_descriptors_impl(
     engine: &Mutex<EngineSession>,
 ) -> Result<Vec<MechanismDescriptor>, String> {
-    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let mut s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
     Ok(s.get_mechanism_descriptors())
 }

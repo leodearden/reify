@@ -1,6 +1,6 @@
 // EngineSession — wraps Engine + CompiledModule + source text
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use tracing::warn;
@@ -70,6 +70,15 @@ pub struct EngineSession {
     /// overwritten on every `commit_state` call.  Used by `get_containing_definition`
     /// to skip the O(M) newline scan on every cursor/hover call.
     line_offsets_cache: Option<Vec<usize>>,
+    /// Consumed-idents cache for the terminal-mechanism filter in `get_mechanism_descriptors`.
+    ///
+    /// Keyed by structure name (template name); maps to the set of mechanism member names
+    /// consumed as `mech_in` by `body()` calls within that structure.  Populated lazily on
+    /// the first `get_mechanism_descriptors` call after a successful parse+compile+check cycle.
+    /// Invalidated (set to `None`) in `commit_state` alongside `parsed_cache` so both caches
+    /// share the same lifecycle.  Left `None` when `parsed_cache` is `None` at population time
+    /// — preserves the per-template WARN so fallback regressions remain visible.
+    consumed_idents_cache: Option<HashMap<String, HashSet<String>>>,
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -98,6 +107,7 @@ impl EngineSession {
             def_preview_cache: HashMap::new(),
             parsed_cache: None,
             line_offsets_cache: None,
+            consumed_idents_cache: None,
         }
     }
 
@@ -278,6 +288,9 @@ impl EngineSession {
         // Cache the line-offset table so get_containing_definition can skip the O(M)
         // newline scan on each call.  Unconditionally overwrites any prior value.
         self.line_offsets_cache = Some(build_line_offsets(source));
+        // Invalidate the consumed-idents cache so get_mechanism_descriptors rebuilds
+        // it on the next call for the new module.  Same lifecycle as parsed_cache.
+        self.consumed_idents_cache = None;
     }
 
     /// Export geometry to a file.
@@ -498,11 +511,31 @@ impl EngineSession {
     ///
     /// AST-based driving-param resolution (`driving_param_cell_id`) is added in
     /// step 12 of the task plan. `current_value_si` is populated in step 24.
-    pub fn get_mechanism_descriptors(&self) -> Vec<MechanismDescriptor> {
+    pub fn get_mechanism_descriptors(&mut self) -> Vec<MechanismDescriptor> {
         let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
             (Some(c), Some(k)) => (c, k),
             _ => return Vec::new(),
         };
+
+        // Lazily populate consumed_idents_cache on first call after commit_state.
+        // Only when parsed_cache is Some — if None, the per-template WARN branch
+        // below handles the fallback and the cache is left None so the warning
+        // fires on every call (regression signal).
+        if self.consumed_idents_cache.is_none()
+            && let Some(parsed) = self.parsed_cache.as_ref()
+        {
+            let new_cache: HashMap<String, HashSet<String>> = compiled
+                .templates
+                .iter()
+                .map(|tmpl| {
+                    (
+                        tmpl.name.clone(),
+                        collect_consumed_mechanism_idents(parsed, &tmpl.name),
+                    )
+                })
+                .collect();
+            self.consumed_idents_cache = Some(new_cache);
+        }
 
         let mut descriptors = Vec::new();
         // Cache of seen_joints (joint identity sequence) per mechanism cell_id.
@@ -510,14 +543,64 @@ impl EngineSession {
         // resolve_driving_params_from_ast, avoiding a redundant O(B) body-walk
         // inside the AST resolver for every (bind-pair, descriptor) pair.
         let mut seen_joints_cache: HashMap<String, Vec<Value>> = HashMap::new();
+        // Shared empty-set fallback for the consumed-idents lookup below.
+        // Declared once before the loop so both match arms can return `&HashSet`
+        // without cloning — `consumed_idents` is used only immutably (`.contains`),
+        // so a reference suffices.
+        let empty_consumed: HashSet<String> = HashSet::new();
 
-        // NOTE: this loop emits one descriptor per mechanism *cell*, which
-        // includes intermediate builder results (e.g. m0, m1, m2 from a
-        // `body()` chain).  The UI renders all non-errored cells; callers that
-        // want only the "final" mechanism (largest bodies_count) should filter
-        // the returned Vec themselves.  Errored mechanisms (closed-chain etc.)
-        // are suppressed via the `error` key check below.
+        // This loop emits one descriptor per **terminal** mechanism cell.
+        // A mechanism cell is considered intermediate (and dropped) when its
+        // member name appears as the first argument (mech_in) of a `body()` call
+        // within the same structure — i.e. it is consumed to build a larger
+        // mechanism.  Only `body()` consumption is filtered; `snapshot()`
+        // consumption is intentionally excluded (snapshot is a viewer, not a
+        // builder, and the snapshotted mechanism is the user-facing logical entity).
+        //
+        // See design decision: "Terminal-mechanism filter narrows the suggestion
+        // text to body() consumption only."
+        //
+        // When `parsed_cache` is `None` (test-injection without a full parse/compile
+        // cycle), the consumed-idents set is empty and every mechanism cell passes —
+        // preserving the pre-filter behaviour for legacy test helpers.  A WARN event
+        // is emitted *once per call* in this case so a future regression that
+        // accidentally drops `parsed_cache` (e.g. a load path that forgets to
+        // populate it alongside `compiled`) is surfaced immediately rather than
+        // silently re-emitting intermediate mechanism cells to the UI.
+        //
+        // Note: the WARN fires on the broken-invariant state (compiled Some, both
+        // caches None) unconditionally — even for a zero-template compiled module —
+        // because the guard precedes the per-template loop.  This is intentional:
+        // the signal indicates a broken load path, independent of template count.
+        //
+        // Errored mechanisms (closed-chain etc.) are suppressed via the `error` key
+        // check below.
+
+        // Defensive: after the lazy-populate block above, `consumed_idents_cache.is_none()`
+        // already implies `parsed_cache.is_none()` (the block transitions None→Some only
+        // when parsed_cache is Some).  The `&& self.parsed_cache.is_none()` clause is
+        // therefore logically redundant, but it is kept as belt-and-braces: if a future
+        // change to the populate block introduces a case where the cache stays None despite
+        // parsed_cache being Some, omitting the clause would suppress the warning silently.
+        if self.consumed_idents_cache.is_none() && self.parsed_cache.is_none() {
+            tracing::warn!(
+                target: "reify_gui::engine",
+                "parsed_cache is None while compiled is Some; \
+                 terminal-mechanism filter inactive — intermediate mechanism \
+                 cells may appear in descriptors"
+            );
+        }
         for template in &compiled.templates {
+            // Look up the consumed-idents set for this template from the cache,
+            // falling back to the shared empty set when the cache is None or has
+            // no entry for this template.  `consumed_idents` is only used for
+            // `.contains()` below, so a reference to the empty set suffices.
+            let consumed_idents: &HashSet<String> = self
+                .consumed_idents_cache
+                .as_ref()
+                .and_then(|c| c.get(&template.name))
+                .unwrap_or(&empty_consumed);
+
             for cell in &template.value_cells {
                 let val = check.values.get_or_undef(&cell.id);
 
@@ -534,6 +617,12 @@ impl EngineSession {
 
                 // Filter out errored mechanisms (closed-chain etc.).
                 if map.contains_key(&Value::String("error".to_string())) {
+                    continue;
+                }
+
+                // Terminal-mechanism filter: skip intermediate cells consumed as
+                // mech_in by a body() call within the same structure.
+                if consumed_idents.contains(&cell.id.member) {
                     continue;
                 }
 
@@ -1007,7 +1096,13 @@ fn build_constraints(
 ///
 /// `driving_param_cell_id` and `current_value_si` are left `None` here; they
 /// are populated by `resolve_driving_params_from_ast` (step-12 / step-24).
-fn extract_joints_from_mechanism(
+///
+/// Exposed as `pub(crate)` so unit tests in the sibling `tests/` module can
+/// pin the malformed-shape contract directly without round-tripping through
+/// Reify source.  The contract — non-Map `"at"` produces no descriptor, axis
+/// length ≠ 3 produces `axis = None` — is already enforced by
+/// `extract_joint_descriptor` and `extract_axis`; these tests lock it down.
+pub(crate) fn extract_joints_from_mechanism(
     map: &std::collections::BTreeMap<Value, Value>,
 ) -> (Vec<JointDescriptor>, Vec<Value>) {
     let bodies = match map.get(&Value::String("bodies".to_string())) {
@@ -1257,6 +1352,17 @@ fn resolve_driving_params_from_ast(
                 if let Some(jd) = desc.joints.get_mut(joint_index)
                     && jd.driving_param_cell_id.is_none() {
                         jd.driving_param_cell_id = Some(param_cell_id_str.clone());
+                        // Telemetry: confirm which (structure, joint, param) triple
+                        // was resolved so operators can verify AST-based matching.
+                        // Fires AFTER the Param check has passed and
+                        // driving_param_cell_id has been populated.
+                        tracing::debug!(
+                            target: "reify_gui::engine::param_resolution",
+                            structure = %structure_name,
+                            joint = %joint_cell_name,
+                            param_cell = %param_cell_id_str,
+                            "resolved driving param via snapshot+bind AST match"
+                        );
                         // Step-24: populate current_value_si from the param cell's
                         // post-eval value so the slider's initial position reflects
                         // the actual evaluated parameter value (not just the source
@@ -1270,77 +1376,181 @@ fn resolve_driving_params_from_ast(
     }
 }
 
-/// Recursively search `expr` for `snapshot(mech_expr, [bind(joint, value), …])`.
-/// For each `bind(Ident(joint_name), Ident(value_name))` append
-/// `(joint_name, value_name)` to `pairs`.
+/// Generic recursive AST walker that visits every `FunctionCall` node in
+/// `expr` and invokes `on_call(name, args)` for each one.
 ///
-/// Recurses into `FunctionCall`, `BinOp`, `UnOp`, `Conditional`, and
-/// `ListLiteral` sub-expressions.  Other leaf variants have no sub-expressions.
+/// Recurses into `FunctionCall` (all args), `BinOp` (both operands), `UnOp`
+/// (operand), `Conditional` (condition/then/else), and `ListLiteral` (all
+/// elements).  Other variants — `MapLiteral`, `SetLiteral`, `Match`,
+/// `MemberAccess`, `IndexAccess`, and leaf nodes — are currently not recursed;
+/// widen this list **here** to fix all callers at once.
 ///
-/// **Name-shadowing caveat:** matching is by textual function name only.  A
-/// user-defined function named `snapshot` or `bind` in the same module would
-/// match this search and produce incorrect (false-positive) bind pairs.  The
-/// caller (`resolve_driving_params_from_ast`) therefore relies on the assumption
-/// that `snapshot`/`bind` are stdlib-only names in well-formed Reify source.
-fn collect_snapshot_bind_pairs(
+/// # Motivation
+///
+/// `collect_snapshot_bind_pairs` and `collect_consumed_mechanism_idents` both
+/// need to walk the same subset of `ExprKind` variants and previously each
+/// carried an identical ~25-line recursion body.  `walk_function_calls`
+/// centralises that skeleton so a third AST-driven feature can register its
+/// match logic via the callback without duplicating the traversal again.
+fn walk_function_calls(
     expr: &reify_syntax::Expr,
-    pairs: &mut Vec<(String, String)>,
+    on_call: &mut dyn FnMut(&str, &Vec<reify_syntax::Expr>),
 ) {
     use reify_syntax::ExprKind;
     match &expr.kind {
         ExprKind::FunctionCall { name, args } => {
-            if name == "snapshot" && args.len() >= 2 {
-                // Extract bind() entries from the second argument (the bindings list).
-                if let ExprKind::ListLiteral(elems) = &args[1].kind {
-                    for elem in elems {
-                        let (bind_name, bind_args) = match &elem.kind {
-                            ExprKind::FunctionCall { name, args } => (name, args),
-                            _ => continue,
-                        };
-                        if bind_name != "bind" || bind_args.len() != 2 {
-                            continue;
-                        }
-                        let joint_ident = match &bind_args[0].kind {
-                            ExprKind::Ident(s) => s.clone(),
-                            _ => continue,
-                        };
-                        let value_ident = match &bind_args[1].kind {
-                            ExprKind::Ident(s) => s.clone(),
-                            _ => continue, // literal or complex expr → not a param ref
-                        };
-                        pairs.push((joint_ident, value_ident));
-                    }
-                }
-            }
-            // Recurse into all args regardless (snapshot may be nested).
+            on_call(name, args);
+            // Recurse into all args so nested calls are also visited.
             for arg in args {
-                collect_snapshot_bind_pairs(arg, pairs);
+                walk_function_calls(arg, on_call);
             }
         }
         ExprKind::BinOp { left, right, .. } => {
-            collect_snapshot_bind_pairs(left, pairs);
-            collect_snapshot_bind_pairs(right, pairs);
+            walk_function_calls(left, on_call);
+            walk_function_calls(right, on_call);
         }
         ExprKind::UnOp { operand, .. } => {
-            collect_snapshot_bind_pairs(operand, pairs);
+            walk_function_calls(operand, on_call);
         }
         ExprKind::Conditional {
             condition,
             then_branch,
             else_branch,
         } => {
-            collect_snapshot_bind_pairs(condition, pairs);
-            collect_snapshot_bind_pairs(then_branch, pairs);
-            collect_snapshot_bind_pairs(else_branch, pairs);
+            walk_function_calls(condition, on_call);
+            walk_function_calls(then_branch, on_call);
+            walk_function_calls(else_branch, on_call);
         }
         ExprKind::ListLiteral(elems) => {
             for elem in elems {
-                collect_snapshot_bind_pairs(elem, pairs);
+                walk_function_calls(elem, on_call);
             }
         }
-        // Leaf nodes (Ident, literals, etc.) have no sub-expressions to recurse.
+        // Leaf nodes and other compound variants (MapLiteral, SetLiteral,
+        // Match, MemberAccess, IndexAccess) are not recursed; widen here if
+        // a future feature needs coverage.
         _ => {}
     }
+}
+
+/// Recursively search `expr` for `snapshot(mech_expr, [bind(joint, value), …])`.
+/// For each `bind(Ident(joint_name), Ident(value_name))` append
+/// `(joint_name, value_name)` to `pairs`.
+///
+/// Delegates all AST recursion to [`walk_function_calls`].
+///
+/// **Name-shadowing caveat:** matching is by textual function name only.  A
+/// user-defined function named `snapshot` or `bind` in the same module would
+/// match this search and produce incorrect (false-positive) bind pairs.  The
+/// caller (`resolve_driving_params_from_ast`) therefore relies on the assumption
+/// that `snapshot`/`bind` are stdlib-only names in well-formed Reify source.
+///
+/// **Telemetry:** when a `name == "snapshot"` call with `args.len() >= 2` is
+/// found but contributes *zero* bind pairs (empty list or no valid
+/// `bind(Ident, Ident)` entries), a `tracing::debug!` event is emitted at
+/// target `"reify_gui::engine::snapshot_bind_pairs"`.  This surfaces potential
+/// user-shadowed `snapshot` functions or malformed bind lists that would
+/// otherwise silently produce no driving-param resolutions.
+fn collect_snapshot_bind_pairs(
+    expr: &reify_syntax::Expr,
+    pairs: &mut Vec<(String, String)>,
+) {
+    use reify_syntax::ExprKind;
+    walk_function_calls(expr, &mut |name, args| {
+        if name != "snapshot" || args.len() < 2 {
+            return;
+        }
+        // Snapshot the pair count before processing so we can detect
+        // whether this snapshot() call contributed any bind pairs.
+        let pairs_before = pairs.len();
+
+        // Extract bind() entries from the second argument (the bindings list).
+        if let ExprKind::ListLiteral(elems) = &args[1].kind {
+            for elem in elems {
+                let (bind_name, bind_args) = match &elem.kind {
+                    ExprKind::FunctionCall { name, args } => (name, args),
+                    _ => continue,
+                };
+                if bind_name != "bind" || bind_args.len() != 2 {
+                    continue;
+                }
+                let joint_ident = match &bind_args[0].kind {
+                    ExprKind::Ident(s) => s.clone(),
+                    _ => continue,
+                };
+                let value_ident = match &bind_args[1].kind {
+                    ExprKind::Ident(s) => s.clone(),
+                    _ => continue, // literal or complex expr → not a param ref
+                };
+                pairs.push((joint_ident, value_ident));
+            }
+        }
+
+        // Telemetry: surface zero-contribution snapshots.  Fires when:
+        // (a) args[1] is not a ListLiteral, or
+        // (b) the list had no valid bind(Ident, Ident) entries.
+        // Helps operators distinguish stdlib snapshot/bind from any
+        // user-defined function that shadows the same name.
+        if pairs.len() == pairs_before {
+            tracing::debug!(
+                target: "reify_gui::engine::snapshot_bind_pairs",
+                arg_count = args.len(),
+                "snapshot() textual match contributed zero bind pairs \
+                 (potential user-shadowed snapshot or malformed bind list)"
+            );
+        }
+    });
+}
+
+// ---- terminal-mechanism filter helpers ----------------------------------------
+
+/// Return the set of mechanism member names consumed as `mech_in` (first
+/// argument) by any `body()` call within the named structure.
+///
+/// Walks every `MemberDecl::Let` expression in the first structure whose name
+/// matches `structure_name` and delegates the per-expression AST traversal to
+/// [`walk_function_calls`].
+///
+/// The returned set is used by `get_mechanism_descriptors` to skip intermediate
+/// mechanism cells — only the terminal cell (not consumed by any `body()` call)
+/// survives into the returned `Vec<MechanismDescriptor>`.
+///
+/// **Design narrowing:** only `body()` consumption is collected; `snapshot()`
+/// consumption is intentionally excluded.  See design decision:
+/// "Terminal-mechanism filter narrows the suggestion text to body() consumption
+/// only."
+fn collect_consumed_mechanism_idents(
+    parsed: &reify_syntax::ParsedModule,
+    structure_name: &str,
+) -> HashSet<String> {
+    use reify_syntax::ExprKind;
+    let mut consumed = HashSet::new();
+
+    for decl in &parsed.declarations {
+        let structure = match decl {
+            reify_syntax::Declaration::Structure(s) if s.name == structure_name => s,
+            _ => continue,
+        };
+
+        for member in &structure.members {
+            let expr = match member {
+                reify_syntax::MemberDecl::Let(l) => &l.value,
+                _ => continue,
+            };
+            walk_function_calls(expr, &mut |name, args| {
+                if name == "body"
+                    && let Some(first_arg) = args.first()
+                    && let ExprKind::Ident(s) = &first_arg.kind
+                {
+                    consumed.insert(s.clone());
+                }
+            });
+        }
+        // Stop at the first matching structure; names are unique within a module.
+        break;
+    }
+
+    consumed
 }
 
 // ---- build_preview_gui_state -------------------------------------------------
@@ -1649,6 +1859,31 @@ impl EngineSession {
     /// uses the cached table rather than recomputing it from the source text.
     pub(crate) fn override_line_offsets_cache_for_test(&mut self, offsets: Vec<usize>) {
         self.line_offsets_cache = Some(offsets);
+    }
+
+    /// Return a reference to the cached consumed-idents map, or `None` if the
+    /// cache has not yet been populated (fresh session or just after `commit_state`).
+    ///
+    /// Intended only for tests that need to inspect cache state without widening
+    /// the production API.  Mirrors the style of `parsed_cache_for_test`.
+    pub(crate) fn consumed_idents_cache_for_test(
+        &self,
+    ) -> Option<&HashMap<String, HashSet<String>>> {
+        self.consumed_idents_cache.as_ref()
+    }
+
+    /// Replace the consumed-idents cache with `cache`, for testing purposes.
+    ///
+    /// Used by `get_mechanism_descriptors_reads_from_consumed_idents_cache` to
+    /// inject a deliberately-empty consumed-idents map for "Kinematic" and verify
+    /// that the descriptor build consults the cache (terminal-mechanism filter sees
+    /// zero consumed → emits all mechanism cells) rather than re-walking the AST.
+    /// Mirrors the style of `override_parsed_cache_for_test`.
+    pub(crate) fn override_consumed_idents_cache_for_test(
+        &mut self,
+        cache: HashMap<String, HashSet<String>>,
+    ) {
+        self.consumed_idents_cache = Some(cache);
     }
 
     /// Directly inject a `CompiledModule` as the session's current compiled state,

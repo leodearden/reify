@@ -6,10 +6,14 @@
 use std::sync::Arc;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_test_support::{eval_source, make_engine, parse_and_compile};
+use reify_test_support::{
+    collect_errors, eval_source, make_engine, make_simple_engine, parse_and_compile,
+    parse_and_compile_with_stdlib,
+};
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FIELD_ENTITY_PREFIX, FieldSourceKind,
-    ResolvedFunction, Type, Value, ValueCellId, ValueMap,
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DiagnosticCode, FIELD_ENTITY_PREFIX,
+    FieldSourceKind, InterpolationKind, ResolvedFunction, SampledGridKind, Severity, Type, Value,
+    ValueCellId, ValueMap,
 };
 
 /// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
@@ -1143,4 +1147,836 @@ fn eval_sample_von_mises_spatially_varying_field() {
     let sample_low = make_sample_at(vm_expr_low, 25.0, Type::Real);
     let result_low = eval_expr(&sample_low, &EvalContext::simple(&values));
     assert_real_approx(&result_low, sigma_b, "point=25 (<50): von Mises");
+}
+
+// ── Task 2341 step-9: eval-time elaboration of sampled field ────────────────
+//
+// Pins the v0.2 contract for `engine_eval::elaborate_field`'s Sampled arm:
+// the five-key config is evaluated, the resulting Values parse into a
+// `SampledField`, and the field's `lambda: Arc<Value>` slot holds
+// `Value::SampledField(...)`. This test is the elaboration pin — sample
+// dispatch is exercised separately by step-11/13/15/17 tests below.
+//
+// The source uses stdlib builtins `bbox` and `point3` to construct a
+// `Value::BoundingBox`. Reify's `bbox(...)` constructor takes only 3D
+// `Point3` arguments today; for `Regular1D` fields the eval-time parser
+// uses just the x-component of the bounding box's min/max points.
+
+#[test]
+fn eval_sampled_field_elaborates_to_sampled_field_value() {
+    let source = r#"field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "f");
+    let field_val = result
+        .values
+        .get(&field_id)
+        .unwrap_or_else(|| panic!("field 'f' not found in eval result values"));
+
+    let lambda = match field_val {
+        Value::Field {
+            source,
+            lambda,
+            ..
+        } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "expected FieldSourceKind::Sampled, got: {:?}",
+                source
+            );
+            lambda
+        }
+        other => panic!("expected Value::Field, got: {:?}", other),
+    };
+
+    let sf = match lambda.as_ref() {
+        Value::SampledField(sf) => sf,
+        other => panic!(
+            "expected Value::SampledField in field.lambda for Sampled source, got: {:?}",
+            other
+        ),
+    };
+
+    assert_eq!(sf.name, "f", "SampledField.name");
+    assert_eq!(
+        sf.kind,
+        SampledGridKind::Regular1D,
+        "expected Regular1D for grid = \"RegularGrid1\""
+    );
+    assert_eq!(
+        sf.bounds_min,
+        vec![0.0],
+        "Regular1D bounds_min should be the x-component of the bbox min"
+    );
+    assert_eq!(
+        sf.bounds_max,
+        vec![2.0],
+        "Regular1D bounds_max should be the x-component of the bbox max"
+    );
+    assert_eq!(sf.spacing, vec![1.0], "spacing in SI metres");
+    assert_eq!(
+        sf.interpolation,
+        InterpolationKind::Linear,
+        "interpolation = \"Linear\""
+    );
+    assert_eq!(
+        sf.data,
+        vec![0.0, 1.0, 2.0],
+        "data in SI units, row-major"
+    );
+    assert_eq!(
+        sf.axis_grids.len(),
+        1,
+        "Regular1D should have one axis grid"
+    );
+    // axis_grids[0] is linspace(0, 2, spacing=1) → [0.0, 1.0, 2.0]
+    let grid0 = &sf.axis_grids[0];
+    assert_eq!(grid0.len(), 3, "axis_grids[0] should have 3 nodes");
+    for (i, &expected) in [0.0_f64, 1.0, 2.0].iter().enumerate() {
+        assert!(
+            (grid0[i] - expected).abs() < 1e-12,
+            "axis_grids[0][{i}]: expected {expected}, got {}",
+            grid0[i]
+        );
+    }
+}
+
+// ── Task 2341 step-11: 1D sample dispatch on a Sampled field ───────────────
+//
+// Pins the v0.2 contract for `sample(f, x)` when `f.lambda` is
+// `Value::SampledField`: the runtime sampled-field helper extracts the
+// scalar query coord, calls `interp::interpolate_1d` with Linear method,
+// and wraps the result in `Value::Real` for a dimensionless codomain.
+//
+// The grid is [0.0m, 1.0m, 2.0m] with data [0.0, 1.0, 2.0]. Linear
+// interpolation midway between nodes returns the linear midpoint;
+// querying exactly on a node returns the node value.
+
+/// Linear midpoint between data nodes. `f` over `[0.0m, 2.0m]` spacing
+/// `1.0m` data `[0.0, 1.0, 2.0]` Linear: `sample(f, 0.5m)` ≈ 0.5.
+#[test]
+fn sample_sampled_field_1d_linear_interpolation_returns_expected_value() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let val = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 0.5).abs() < 1e-12,
+            "sample(f, 0.5m) expected 0.5 (linear midpoint), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 0.5).abs() < 1e-12,
+            "sample(f, 0.5m) expected 0.5 (linear midpoint), got {si_value}"
+        ),
+        other => panic!("expected Value::Real(0.5), got: {:?}", other),
+    }
+}
+
+/// 2D bilinear interpolation at the centroid of a 2×2 grid.
+///
+/// Grid nodes (axis-0 outer, row-major):
+/// `f(0,0)=0`, `f(0,1)=1`, `f(1,0)=2`, `f(1,1)=3`
+/// Bilinear at `(0.5, 0.5)` is the average of all four corners = `1.5`.
+#[test]
+fn sample_sampled_field_2d_linear_interpolation_returns_expected_value() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid2" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1.0m, 1.0m, 0.0m)) spacing = [1.0m, 1.0m] interpolation = "Linear" data = [0.0, 1.0, 2.0, 3.0] } }
+
+structure S {
+    let val = sample(f, point2(0.5m, 0.5m))
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 1.5).abs() < 1e-12,
+            "sample(f, point2(0.5m, 0.5m)) expected 1.5 (bilinear centroid), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 1.5).abs() < 1e-12,
+            "sample(f, point2(0.5m, 0.5m)) expected 1.5, got {si_value}"
+        ),
+        other => panic!("expected Value::Real(1.5), got: {:?}", other),
+    }
+}
+
+/// 3D trilinear interpolation at the centroid of a 2×2×2 grid.
+///
+/// Data `[0..7]` flattened row-major (axis-0 outer, axis-2 inner): the
+/// eight corners of the unit cube hold values `0..=7`. Trilinear at
+/// `(0.5, 0.5, 0.5)` is the average of all corners = `28/8 = 3.5`.
+#[test]
+fn sample_sampled_field_3d_linear_interpolation_returns_expected_value() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid3" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1.0m, 1.0m, 1.0m)) spacing = [1.0m, 1.0m, 1.0m] interpolation = "Linear" data = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0] } }
+
+structure S {
+    let val = sample(f, point3(0.5m, 0.5m, 0.5m))
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 3.5).abs() < 1e-12,
+            "sample(f, point3(0.5m,0.5m,0.5m)) expected 3.5 (trilinear centroid), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 3.5).abs() < 1e-12,
+            "sample(f, point3(0.5m,0.5m,0.5m)) expected 3.5, got {si_value}"
+        ),
+        other => panic!("expected Value::Real(3.5), got: {:?}", other),
+    }
+}
+
+/// Exact-on-node sample. `sample(f, 1.0m)` should return the data value
+/// at the midpoint node, i.e. `1.0`.
+#[test]
+fn sample_sampled_field_1d_at_grid_node_returns_exact_sample() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let val = sample(f, 1.0m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 1.0).abs() < 1e-12,
+            "sample(f, 1.0m) expected 1.0 (exact node), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 1.0).abs() < 1e-12,
+            "sample(f, 1.0m) expected 1.0 (exact node), got {si_value}"
+        ),
+        other => panic!("expected Value::Real(1.0), got: {:?}", other),
+    }
+}
+
+// ── Task 2341 step-15: out-of-bounds sample → Undef + once-per-session warning ──
+//
+// Pin two contracts at once:
+// 1. Every OOB query returns `Value::Undef` (no fallback to clamped value).
+// 2. The `W_FIELD_OUT_OF_BOUNDS` warning fires AT MOST ONCE per field per
+//    session even when the same field has multiple OOB queries. The
+//    `AtomicBool` flag on `SampledField` is the suppression mechanism.
+//
+// The structure has three sample sites that all query outside the field's
+// `[0.0m, 1.0m]` bounds (5.0m, 10.0m, 2.0m). Each must produce Undef; the
+// diagnostic vector should contain exactly one entry whose code is
+// `FieldOutOfBounds`, severity `Warning`, and whose message names field
+// `'f'`.
+
+#[test]
+fn sample_sampled_field_out_of_bounds_returns_undef_and_emits_warning_once() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0] } }
+
+structure S {
+    let oob_a = sample(f, 5.0m)
+    let oob_b = sample(f, 10.0m)
+    let oob_c = sample(f, 2.0m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    // Every OOB sample call returns Undef.
+    for member in &["oob_a", "oob_b", "oob_c"] {
+        let val = result
+            .values
+            .get(&ValueCellId::new("S", *member))
+            .unwrap_or_else(|| panic!("'S.{member}' not found in eval result values"));
+        assert!(
+            val.is_undef(),
+            "expected S.{member} = Undef for out-of-bounds sample, got {:?}",
+            val
+        );
+    }
+
+    // The `W_FIELD_OUT_OF_BOUNDS` warning fires exactly once across all
+    // three OOB queries in this session (suppression by AtomicBool on
+    // SampledField).
+    let oob_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldOutOfBounds)
+        })
+        .collect();
+    assert_eq!(
+        oob_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_OUT_OF_BOUNDS warning, got {}: {:?}",
+        oob_warnings.len(),
+        result.diagnostics
+    );
+    assert!(
+        oob_warnings[0].message.contains("'f'"),
+        "OOB warning message should name field 'f', got: {:?}",
+        oob_warnings[0].message
+    );
+}
+
+/// RBF interpolation on a Sampled field is deferred post-v0.1: it falls back
+/// to Linear and emits exactly one `W_INTERPOLATION_DEFERRED` warning.
+///
+/// Pinned by task 2341 step-17. The `interp::resolve_method` returns the
+/// deferral diagnostic whenever the user asks for `Rbf` or `Kriging`; the
+/// `sampled::sample_at_point` helper forwards `InterpolationResult.diagnostics`
+/// into `ctx.diagnostics`, which the runtime sink then drains into
+/// `EvalResult.diagnostics`.
+///
+/// Fallback proof: at the linear midpoint `0.5m` of `[0.0m, 2.0m]` data
+/// `[0.0, 1.0, 2.0]`, Linear yields `0.5` — the test asserts that exact value
+/// to confirm RBF dispatched through the Linear path, not some unimplemented
+/// RBF kernel.
+#[test]
+fn sample_sampled_field_with_rbf_emits_interpolation_deferred_warning_and_falls_back_to_linear() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Rbf" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let val = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    // (a) At least one InterpolationDeferred warning is emitted.
+    let deferred_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::InterpolationDeferred)
+        })
+        .collect();
+    assert!(
+        !deferred_warnings.is_empty(),
+        "expected at least one W_INTERPOLATION_DEFERRED warning, got diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    // (b) Fallback proof: RBF dispatched through the Linear path, so the
+    // sample at 0.5m of [0.0, 1.0, 2.0] equals 0.5 (linear midpoint).
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 0.5).abs() < 1e-12,
+            "RBF→Linear fallback at 0.5m expected 0.5 (linear midpoint), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 0.5).abs() < 1e-12,
+            "RBF→Linear fallback at 0.5m expected 0.5, got {si_value}"
+        ),
+        other => panic!("expected Value::Real(0.5), got: {:?}", other),
+    }
+}
+
+/// Kriging interpolation on a Sampled field is deferred post-v0.1: it falls
+/// back to Linear and emits exactly one `W_INTERPOLATION_DEFERRED` warning.
+/// Companion to the RBF test above; same dispatch contract.
+#[test]
+fn sample_sampled_field_with_kriging_emits_interpolation_deferred_warning_and_falls_back_to_linear()
+{
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Kriging" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let val = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let deferred_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::InterpolationDeferred)
+        })
+        .collect();
+    assert!(
+        !deferred_warnings.is_empty(),
+        "expected at least one W_INTERPOLATION_DEFERRED warning, got diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    let val_id = ValueCellId::new("S", "val");
+    let val = result
+        .values
+        .get(&val_id)
+        .unwrap_or_else(|| panic!("'S.val' not found in eval result values"));
+    match val {
+        Value::Real(v) => assert!(
+            (v - 0.5).abs() < 1e-12,
+            "Kriging→Linear fallback at 0.5m expected 0.5 (linear midpoint), got {v}"
+        ),
+        Value::Scalar { si_value, .. } => assert!(
+            (si_value - 0.5).abs() < 1e-12,
+            "Kriging→Linear fallback at 0.5m expected 0.5, got {si_value}"
+        ),
+        other => panic!("expected Value::Real(0.5), got: {:?}", other),
+    }
+}
+
+// ── Step 21: parse-failure diagnostics for Sampled-field config ──────────
+//
+// These tests pin the W_FIELD_SAMPLED_INVALID_CONFIG warning emitted from
+// `engine_eval::build_sampled_field` when the user's `sampled` config has
+// a typo'd grid-kind tag, an unknown interpolation name, or a non-string
+// value in a string-keyed slot. The field's lambda becomes `Value::Undef`
+// (poisoned no-op) and any `sample(...)` returns `Undef`.
+//
+// Required diagnostic shape:
+//   * `severity == Severity::Warning`
+//   * `code == Some(DiagnosticCode::FieldSampledInvalidConfig)`
+//   * message names the field (`'f'`) and (where applicable) both the
+//     offending value and an allowed-set hint to guide the user toward
+//     a valid config.
+
+/// A typo'd grid-kind tag (`"RegularGrid42"`) emits a single
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning whose message names both the
+/// offending value and the allowed-set hint, and the sample call returns
+/// `Value::Undef`. Pins the parse-failure path in `parse_grid_kind`.
+#[test]
+fn eval_sampled_field_with_typo_grid_kind_emits_specific_diagnostic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid42" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("RegularGrid42"),
+        "diagnostic should mention the offending value 'RegularGrid42', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("RegularGrid1"),
+        "diagnostic should mention the allowed-set hint 'RegularGrid1', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
+
+/// A typo'd interpolation tag (`"QuadraticSpline"`) emits a single
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning whose message names both the
+/// offending value and the allowed-set hint (`"Linear"`), and the sample
+/// call returns `Value::Undef`. Pins the parse-failure path in
+/// `parse_interpolation`.
+#[test]
+fn eval_sampled_field_with_typo_interpolation_emits_specific_diagnostic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "QuadraticSpline" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("QuadraticSpline"),
+        "diagnostic should mention the offending value 'QuadraticSpline', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("Linear"),
+        "diagnostic should mention an allowed-set hint 'Linear', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
+
+/// A non-string value in the `grid = …` slot (here an `Int`) emits a single
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning whose message names the field
+/// and indicates the slot expected a `String`, and the sample call returns
+/// `Value::Undef`. Pins the wrong-Value-variant path in `parse_grid_kind`.
+#[test]
+fn eval_sampled_field_with_non_string_grid_value_emits_specific_diagnostic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = 42 bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    // Must either explicitly name the expected variant ('String') or render
+    // the unexpected value type (`Int(42)`) so the user can locate the typo.
+    let mentions_expected_or_value = (msg.contains("expected") && msg.contains("String"))
+        || msg.contains("Int")
+        || msg.contains("42");
+    assert!(
+        mentions_expected_or_value,
+        "diagnostic should mention either 'expected … String' or render the unexpected value type / value '42', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Step-23: runtime-invariant violations must surface as
+// W_FIELD_SAMPLED_INVALID_CONFIG warnings rather than panicking the eval
+// loop via the `assert!`s in `interp::interpolate_Nd`.  Each test uses a
+// configuration that would have hit one of those assertions before
+// step-24 added pre-flight invariant checks in `build_sampled_field`.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// `data` slice is shorter than the axis grid implied by `bounds`+`spacing`
+/// (3-node grid, 2 data values).  Without step-24's invariant check,
+/// `interp::interpolate_1d`'s `assert!(grid.len() == values.len())` would
+/// panic the eval loop.  Pins: pre-flight check in `build_sampled_field`
+/// turns the mismatch into a `W_FIELD_SAMPLED_INVALID_CONFIG` warning,
+/// the field's lambda becomes `Value::Undef`, and any sample call returns
+/// `Undef`.
+#[test]
+fn eval_sampled_field_with_mismatched_data_length_emits_diagnostic_no_panic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    // Must run to completion: any `assert!` panic in interp would surface
+    // here as a panic message and fail the test (no `#[should_panic]`).
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("data length") || msg.contains("data"),
+        "diagnostic should mention 'data length' or 'data', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("3") || msg.contains("axis grid"),
+        "diagnostic should mention the grid shape '3' or 'axis grid', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
+
+/// Zero-length `bounds` span collapses the axis grid to a single node
+/// (`linspace_inclusive(1.0, 1.0, 1.0) → [1.0]`).  Without step-24's
+/// invariant check, `interp::interpolate_1d`'s
+/// `assert!(grid.len() >= 2)` would panic the eval loop.  Pins: pre-flight
+/// check in `build_sampled_field` turns this into a
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning and the sample returns
+/// `Undef`.
+#[test]
+fn eval_sampled_field_with_degenerate_axis_grid_emits_diagnostic_no_panic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(1.0m, 0.0m, 0.0m), point3(1.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("axis") || msg.contains("at least 2") || msg.contains("nodes"),
+        "diagnostic should mention 'axis', 'at least 2', or 'nodes', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
+}
+
+/// Non-positive `spacing` (`0.0m`) collapses the axis grid to a single
+/// node via `linspace_inclusive`'s defensive `spacing <= 0.0` guard.
+/// Without step-24's invariant check, the resulting 1-node grid would
+/// trip `interp::interpolate_1d`'s `assert!(grid.len() >= 2)` and panic
+/// the eval loop.  Pins: pre-flight check in `build_sampled_field`
+/// turns this into a `W_FIELD_SAMPLED_INVALID_CONFIG` warning whose
+/// message names the `spacing` slot, and the sample returns `Undef`.
+#[test]
+fn eval_sampled_field_with_non_positive_spacing_emits_diagnostic_no_panic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 0.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("spacing"),
+        "diagnostic should mention 'spacing', got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on poisoned sampled field, got {val:?}"
+    );
 }

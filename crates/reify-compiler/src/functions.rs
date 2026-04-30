@@ -272,30 +272,101 @@ pub(crate) fn compile_field(
                 expr: compiled_expr,
             }
         }
-        reify_syntax::FieldSource::Sampled { .. } => {
-            // Mirrors the Imported arm: v0.2 deferral — emit the diagnostic and
-            // return the variant with an empty config Vec.  (Imported is fully
-            // payload-less; Sampled keeps its config field but the compiler always
-            // emits an empty Vec here.)  The config block is intentionally not
-            // walked; the field-iteration loop in `Engine::eval` maps
-            // Sampled { .. } unconditionally to Value::Undef, so the compiled
-            // config has no runtime consumer.  `dot_chain_lint::walk_declaration`
-            // still walks the AST config expressions for shape-level lints
-            // (DeepDotChain); deeper compile_expr diagnostics — unresolved idents,
-            // type errors — are intentionally suppressed since the feature is
-            // wholesale deferred to v0.2.
-            diagnostics.push(
-                Diagnostic::error(
-                    "sampled field sources are deferred to v0.2; v0.1 supports analytical and composed only",
-                )
-                .with_code(DiagnosticCode::FieldSampledV02)
-                .with_label(DiagnosticLabel::new(
-                    field_def.span,
-                    "sampled field source is deferred to v0.2",
-                )),
-            );
+        reify_syntax::FieldSource::Sampled { config } => {
+            // v0.2 (task 2341): walk the AST config entries and compile each value
+            // expression. Runtime parsing of the resulting Values into a
+            // `SampledField` is performed in `engine_eval::elaborate_field`; this
+            // arm validates the shape (required keys + allowed keys + no
+            // duplicates) and forwards the compiled expressions.
+            //
+            // Validation rules:
+            //   - Accepted keys: `grid`, `bounds`, `spacing`, `interpolation`,
+            //     `data`. All five are required — a missing required key
+            //     produces one error per missing key, attached to the field
+            //     declaration's span.
+            //   - Unknown keys produce a hard error; the entry is dropped.
+            //   - Duplicate keys (e.g. two `grid = ...` entries) produce a hard
+            //     error; only the first occurrence is kept in the compiled
+            //     config so engine_eval sees a deterministic shape.
+            //
+            // Design rationale (esc-2341-149, 2026-04-29 steward): the
+            // originally-locked plan assumed users could write
+            // `grid = RegularGrid1 { spacing = …, bounds = … }` struct-literal
+            // syntax to bundle the kind tag with bounds/spacing, but Reify has
+            // no anonymous struct-literal expression form and no
+            // `RegularGrid*` constructor in stdlib. Resolution: surface
+            // `grid`/`bounds`/`spacing` as separate top-level keys. This
+            // mirrors the imported-field key=value walker pattern landed
+            // earlier today (commit 06a537e36c), and keeps `grid` as an
+            // explicit kind tag for diagnostic clarity.
+            //
+            // Error ordering matches the typical compile-time-error pattern in
+            // this module: per-entry errors (unknown / duplicate) are emitted
+            // as the entries are walked, and then missing-key errors are
+            // emitted in a fixed order (grid, bounds, spacing, interpolation,
+            // data) after the walk so that diagnostics referencing the same
+            // source span are grouped together.
+            const REQUIRED_KEYS: [&str; 5] =
+                ["grid", "bounds", "spacing", "interpolation", "data"];
+            let mut compiled_config: Vec<(String, reify_types::CompiledExpr)> = Vec::new();
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for (key, expr) in config {
+                let key_str = key.as_str();
+                let is_known = REQUIRED_KEYS.contains(&key_str);
+                if !is_known {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown sampled-field config key: '{}'; expected grid, bounds, spacing, interpolation, or data",
+                            key
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "unknown sampled config key",
+                        )),
+                    );
+                    // Drop unknown-keyed entries; do not call compile_expr so
+                    // unrelated unresolved-name diagnostics from the value don't
+                    // cascade after the canonical "unknown key" error.
+                    continue;
+                }
+                if !seen.insert(key_str) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate sampled-field config key: '{}'",
+                            key
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "duplicate sampled config key",
+                        )),
+                    );
+                    // Drop the duplicate; the first-seen entry is kept.
+                    continue;
+                }
+                let compiled_expr =
+                    compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+                compiled_config.push((key.clone(), compiled_expr));
+            }
+            // Emit one error per missing required key, in declaration order
+            // (grid, bounds, spacing, interpolation, data). The label points
+            // at the field def span since there is no per-entry span for a
+            // missing entry.
+            for required in REQUIRED_KEYS {
+                if !seen.contains(required) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "sampled field source is missing required key: '{}'",
+                            required
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            field_def.span,
+                            "missing required sampled config key",
+                        )),
+                    );
+                }
+            }
             CompiledFieldSource::Sampled {
-                config: Vec::new(),
+                config: compiled_config,
             }
         }
         reify_syntax::FieldSource::Composed { expr } => {

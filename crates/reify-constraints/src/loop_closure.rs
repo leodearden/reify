@@ -133,6 +133,14 @@ pub enum NewtonOutcome {
     },
     /// Solver detected a rank-deficient Jacobian (min-pivot below
     /// [`NewtonConfig::singularity_pivot_eps`]).
+    ///
+    /// The diagnostic-emitting wrapper [`solve_loop_closure_with_diagnostics`]
+    /// translates this variant into a [`DiagnosticCode::KinematicSingularity`]
+    /// Warning and sets `LoopClosureReport.is_singular = true`; the `x`
+    /// payload is preserved verbatim as the last-converged config the PRD
+    /// requires.
+    ///
+    /// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
     Singular {
         /// Free-variable values at the iteration where singularity was detected.
         x: Vec<f64>,
@@ -147,6 +155,50 @@ pub enum NewtonOutcome {
         /// assertions but not a stable API string.
         reason: String,
     },
+}
+
+/// Outcome of a [`solve_loop_closure_with_diagnostics`] call: the underlying
+/// Newton outcome, a flag indicating whether a rank-deficient Jacobian was
+/// detected, and any [`Diagnostic`]s the wrapper emitted.
+///
+/// The `outcome` field carries the canonical "what happened" enum from
+/// [`solve_loop_closure`]; `is_singular` mirrors
+/// `matches!(outcome, NewtonOutcome::Singular { .. })` for readability at
+/// call sites that consume the report; `diagnostics` collects the typed
+/// [`DiagnosticCode::KinematicSingularity`] / `KinematicOverconstrained` /
+/// `KinematicUnderconstrained` entries the PRD task 9 prose requires
+/// (`docs/prds/v0_2/kinematic-constraints.md` §"Singularity, over/under-constraint
+/// diagnostics").
+///
+/// See [`solve_loop_closure_with_diagnostics`] for the per-variant emission
+/// rules.  Future task 10 (sweep API integration) will be the first consumer
+/// that surfaces these diagnostics through the snapshot-call path.
+///
+/// [`Diagnostic`]: reify_types::Diagnostic
+/// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
+#[derive(Debug, Clone)]
+pub struct LoopClosureReport {
+    /// The Newton solver's canonical outcome (Converged / NotConverged /
+    /// Singular / InvalidInput).  For the over-constrained short-circuit
+    /// path, this is `NotConverged { x, residual_norm: f64::INFINITY }`
+    /// (the solver was not run; see
+    /// [`solve_loop_closure_with_diagnostics`] for the contract).
+    pub outcome: NewtonOutcome,
+    /// `true` iff the wrapper detected a rank-deficient Jacobian during the
+    /// Newton solve (i.e. `outcome` is `NewtonOutcome::Singular`).  This
+    /// mirrors the PRD's `is_singular: true` flag and pairs with the
+    /// `KinematicSingularity` warning entry in `diagnostics`.
+    ///
+    /// Structurally redundant with `matches!(outcome, NewtonOutcome::Singular { .. })`;
+    /// the wrapper's internal construction (`build_report`) always derives
+    /// this field from `outcome` so the two cannot drift out of agreement.
+    /// The field is retained in the public API to match the PRD's
+    /// `is_singular: true` shape (consumers may pattern-match either way).
+    pub is_singular: bool,
+    /// Typed diagnostic entries the wrapper emitted (over-/under-constrained
+    /// pre-checks and singular post-process).  Empty for a balanced,
+    /// non-singular solve.
+    pub diagnostics: Vec<reify_types::Diagnostic>,
 }
 
 /// Default pivot threshold below which the LDLᵀ factor is treated as
@@ -423,6 +475,17 @@ where
 ///
 /// Multi-loop is future work (the [`newton_solve`] core is generic — callers
 /// can stack residuals/columns from multiple loops).
+///
+/// ## See also
+///
+/// [`solve_loop_closure_with_diagnostics`] — diagnostic-emitting wrapper that
+/// adds over/under-constrained pre-checks and a singularity post-process,
+/// returning a [`LoopClosureReport`] (the canonical "what happened" outcome
+/// plus an `is_singular` flag and any
+/// [`DiagnosticCode::KinematicSingularity`] / `KinematicOverconstrained` /
+/// `KinematicUnderconstrained` entries the PRD task 9 prose requires).
+///
+/// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
 pub fn solve_loop_closure(
     chain_a: &[reify_types::Value],
     vals_a: &[f64],
@@ -653,6 +716,271 @@ fn strip_world_sentinel(path: &[reify_types::Value]) -> Option<Vec<reify_types::
         return None;
     }
     Some(path[1..].to_vec())
+}
+
+/// Hard-coded number of components in a single-loop closure residual.
+///
+/// The closure residual is a stacked twist `[ω_x, ω_y, ω_z, v_x, v_y, v_z]`
+/// (6 components per loop).  `solve_loop_closure` is single-loop today
+/// (task 2584's MVP scope), so the residual is exactly 6 entries.  Multi-loop
+/// stacking is deferred (PRD task 10 / future work).
+///
+/// `solve_loop_closure_with_diagnostics` compares `free_b.len()` against this
+/// constant for its over/under-constrained pre-check; the assumption that
+/// `free_b.len()` is a faithful free-DOF count holds because
+/// `chain_jacobian_fd` already rejects chains containing multi-DOF joints
+/// (planar/spherical/cylindrical) by returning `None`, so the only chains
+/// the solver accepts are 1-DOF (prismatic, revolute, coupling) plus 0-DOF
+/// (fixed).
+const SINGLE_LOOP_RESIDUAL_COUNT: usize = 6;
+
+/// Diagnostic-emitting wrapper around [`solve_loop_closure`].
+///
+/// Adds three pre-/post-process steps on top of the chain-based Newton
+/// solve, each translating a runtime condition into a typed [`Diagnostic`]:
+///
+/// 1. **Over-constrained pre-check** — if `free_b.len() < 6` (`= SINGLE_LOOP_RESIDUAL_COUNT`),
+///    the wrapper short-circuits the Newton solve and returns
+///    [`NewtonOutcome::NotConverged`] with `residual_norm: f64::INFINITY`,
+///    accompanied by a [`DiagnosticCode::KinematicOverconstrained`] Error.
+///    The diagnostic, not a plausible-looking config, is the user-facing
+///    signal of structural infeasibility per the PRD prose.
+/// 2. **Under-constrained pre-check** — if `free_b.len() > 6`, the wrapper
+///    emits a [`DiagnosticCode::KinematicUnderconstrained`] Warning and
+///    delegates to [`solve_loop_closure`].  The "closest-to-previous config"
+///    semantics the PRD describes are realised by the caller's choice of
+///    [`StartStrategy::WarmStart`].
+///    *(Wired in step-8 of task 2677.)*
+/// 3. **Singular post-process** — if the delegated Newton outcome is
+///    [`NewtonOutcome::Singular`], the wrapper sets `is_singular = true` and
+///    appends a [`DiagnosticCode::KinematicSingularity`] Warning.  The
+///    `Singular` variant's `x` payload carries the last-converged config the
+///    PRD requires.
+///    *(Wired in step-10 of task 2677.)*
+///
+/// **Single-loop assumption** — `solve_loop_closure` builds a 6-component
+/// twist residual against one closure constraint.  The free-DOF balance
+/// check therefore hard-codes `SINGLE_LOOP_RESIDUAL_COUNT = 6`.  Multi-loop
+/// generalisation is deferred to the [`newton_solve`] core (which is
+/// already generic over residual shape) plus a future caller that stacks
+/// residuals from multiple loops.
+///
+/// **1-DOF chain assumption** — `chain_jacobian_fd` returns `None` for
+/// chains containing planar/spherical/cylindrical (multi-DOF) joints, so
+/// `free_b.len()` is a faithful free-DOF count for the chains the existing
+/// solver supports.
+///
+/// See `docs/prds/v0_2/kinematic-constraints.md` §"Singularity,
+/// over/under-constraint diagnostics" and the [`LoopClosureReport`] type
+/// for the canonical return shape.
+///
+/// [`Diagnostic`]: reify_types::Diagnostic
+/// [`DiagnosticCode::KinematicOverconstrained`]: reify_types::DiagnosticCode::KinematicOverconstrained
+/// [`DiagnosticCode::KinematicUnderconstrained`]: reify_types::DiagnosticCode::KinematicUnderconstrained
+/// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
+pub fn solve_loop_closure_with_diagnostics(
+    chain_a: &[reify_types::Value],
+    vals_a: &[f64],
+    chain_b: &[reify_types::Value],
+    vals_b_initial: &[f64],
+    free_b: &[usize],
+    strategy: &StartStrategy,
+    config: &NewtonConfig,
+) -> LoopClosureReport {
+    // Mirror solve_loop_closure's input validation up front, regardless of
+    // DOF balance.  A caller that passes structurally over-constrained AND
+    // malformed inputs deserves the more accurate `InvalidInput` outcome,
+    // not `KinematicOverconstrained` — and short-circuiting before
+    // validation would also let out-of-range `free_b` indices silently
+    // shrink the returned `x` (length-mismatch contract violation).  We
+    // duplicate (rather than DRY into) `solve_loop_closure`'s checks to
+    // keep this wrapper layer's behaviour change isolated.
+    if let Some(reason) = validate_loop_closure_inputs(chain_b, vals_b_initial, free_b, strategy) {
+        tracing::warn!("solve_loop_closure_with_diagnostics: {reason}");
+        return build_report(
+            NewtonOutcome::InvalidInput { reason },
+            Vec::new(),
+        );
+    }
+
+    let mut diagnostics: Vec<reify_types::Diagnostic> = Vec::new();
+
+    if free_b.len() < SINGLE_LOOP_RESIDUAL_COUNT {
+        // Over-constrained: short-circuit Newton; the diagnostic IS the signal.
+        let diag = reify_types::Diagnostic::error(format!(
+            "kinematic system over-constrained: {} free DOFs vs {} loop residuals",
+            free_b.len(),
+            SINGLE_LOOP_RESIDUAL_COUNT
+        ))
+        .with_code(reify_types::DiagnosticCode::KinematicOverconstrained);
+        diagnostics.push(diag);
+
+        // Resolve the returned `x` from the strategy.  Inputs are validated
+        // above, so each branch produces a vector of exactly `free_b.len()`
+        // entries — preserving the implicit contract that `outcome.x`
+        // aligns positionally with the requested free vars.  Precise
+        // contents matter less than the diagnostic itself (residual_norm
+        // is f64::INFINITY and downstream tooling treats the diagnostic as
+        // the user-facing signal); the length invariant is what callers
+        // index against.
+        let x: Vec<f64> = match strategy {
+            StartStrategy::WarmStart(v) => {
+                // Length validated to match free_b.len() above.
+                v.clone()
+            }
+            StartStrategy::Midpoint => free_b
+                .iter()
+                .map(|&i| {
+                    // Indices and joint-range existence validated above;
+                    // expect documents the invariant rather than silently
+                    // dropping entries (the previous filter_map could
+                    // produce x.len() < free_b.len() — a contract
+                    // violation now caught by the validation pass).
+                    reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i])
+                        .expect("joint_range_midpoint validated above")
+                })
+                .collect(),
+        };
+
+        return build_report(
+            NewtonOutcome::NotConverged {
+                x,
+                residual_norm: f64::INFINITY,
+            },
+            diagnostics,
+        );
+    }
+
+    if free_b.len() > SINGLE_LOOP_RESIDUAL_COUNT {
+        // Under-constrained: Newton still runs (Gauss-Newton with WarmStart
+        // converges to the local minimum closest to the warm-started point —
+        // that IS the PRD's "closest-to-previous config" semantics).  The
+        // warning gives the user a signal that the mechanism is structurally
+        // under-determined and might want an explicit binding.
+        let diag = reify_types::Diagnostic::warning(format!(
+            "kinematic system under-constrained: {} free DOFs vs {} loop residuals; consider adding an explicit binding",
+            free_b.len(),
+            SINGLE_LOOP_RESIDUAL_COUNT
+        ))
+        .with_code(reify_types::DiagnosticCode::KinematicUnderconstrained);
+        diagnostics.push(diag);
+    }
+
+    // Balanced (== 6) or under-constrained (> 6).  Delegate to the
+    // existing solver; post-process the singular outcome.
+    let outcome = solve_loop_closure(
+        chain_a,
+        vals_a,
+        chain_b,
+        vals_b_initial,
+        free_b,
+        strategy,
+        config,
+    );
+
+    // Singular post-process: translate NewtonOutcome::Singular into the
+    // PRD's W_KINEMATIC_SINGULARITY warning class.  The Singular variant's
+    // `x` payload already carries the last-converged config the PRD
+    // requires; the wrapper's only job is to surface the typed diagnostic
+    // alongside the outcome.  Other outcomes (Converged / NotConverged /
+    // InvalidInput) add no singularity entry; `is_singular` is derived
+    // from `outcome` inside `build_report`, so there is one source of
+    // truth (the `outcome` enum).
+    if matches!(outcome, NewtonOutcome::Singular { .. }) {
+        let diag = reify_types::Diagnostic::warning(
+            "kinematic singularity detected: rank-deficient Jacobian; last-converged config returned",
+        )
+        .with_code(reify_types::DiagnosticCode::KinematicSingularity);
+        diagnostics.push(diag);
+    }
+
+    build_report(outcome, diagnostics)
+}
+
+/// Validate the structural inputs accepted by both [`solve_loop_closure`]
+/// and [`solve_loop_closure_with_diagnostics`].  Returns `Some(reason)`
+/// describing the first failed check, or `None` if every input is well-formed.
+///
+/// Mirrors the early-return checks `solve_loop_closure` performs before
+/// initial-guess resolution: every `free_b` index addresses a valid joint
+/// in `chain_b` AND a valid initial value in `vals_b_initial`, the
+/// `WarmStart` vector length matches `free_b.len()`, and `Midpoint`'s
+/// joint-range lookup succeeds for each free joint.  The diagnostic
+/// wrapper short-circuits on DOF balance only AFTER this validation
+/// passes, so a structurally over-constrained AND malformed input
+/// surfaces `InvalidInput` (the more accurate signal) rather than
+/// `KinematicOverconstrained`.
+fn validate_loop_closure_inputs(
+    chain_b: &[reify_types::Value],
+    vals_b_initial: &[f64],
+    free_b: &[usize],
+    strategy: &StartStrategy,
+) -> Option<String> {
+    for &i in free_b {
+        if i >= chain_b.len() {
+            return Some(format!(
+                "free_b index {} out of range (chain_b len {})",
+                i,
+                chain_b.len()
+            ));
+        }
+        if i >= vals_b_initial.len() {
+            return Some(format!(
+                "free_b index {} out of range (vals_b_initial len {})",
+                i,
+                vals_b_initial.len()
+            ));
+        }
+    }
+    match strategy {
+        StartStrategy::WarmStart(v) => {
+            if v.len() != free_b.len() {
+                return Some(format!(
+                    "WarmStart length {} != free_b length {}",
+                    v.len(),
+                    free_b.len()
+                ));
+            }
+        }
+        StartStrategy::Midpoint => {
+            for &i in free_b {
+                // free_b indices already validated above; `chain_b[i]` is safe.
+                if reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i]).is_none() {
+                    return Some(format!(
+                        "joint_range_midpoint returned None for free_b[{i}] — joint missing range or malformed"
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Smart constructor for [`LoopClosureReport`] that derives `is_singular`
+/// from `outcome` so the two cannot drift out of agreement.
+///
+/// `LoopClosureReport.is_singular` is structurally redundant with
+/// `matches!(outcome, NewtonOutcome::Singular { .. })`, but the field is
+/// preserved in the public API to match the PRD's `is_singular: true`
+/// shape.  Routing every wrapper-internal construction through this
+/// helper means we have a single source of truth (`outcome`) and a
+/// debug-build assertion catches any future caller that forgets the
+/// invariant.
+fn build_report(
+    outcome: NewtonOutcome,
+    diagnostics: Vec<reify_types::Diagnostic>,
+) -> LoopClosureReport {
+    let is_singular = matches!(outcome, NewtonOutcome::Singular { .. });
+    debug_assert_eq!(
+        is_singular,
+        matches!(outcome, NewtonOutcome::Singular { .. }),
+        "LoopClosureReport.is_singular must mirror matches!(outcome, NewtonOutcome::Singular {{ .. }})"
+    );
+    LoopClosureReport {
+        outcome,
+        is_singular,
+        diagnostics,
+    }
 }
 
 #[cfg(test)]
