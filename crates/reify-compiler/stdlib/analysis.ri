@@ -10,13 +10,13 @@
 // distinct user-facing name so call sites read naturally — `param yield : Stress`
 // vs `param yield : Pressure`. Both spellings resolve to the same Type::Scalar
 // dimension and are interchangeable in dimensional algebra.
-type Stress = Pressure
+pub type Stress = Pressure
 
 // Strain: dimensionless ratio of length over length. Like Stress, an alias on
 // the user-visible spelling so `param elongation : Strain` reads naturally and
 // future tooling can distinguish "an unnamed dimensionless quantity" from "a
 // strain" if it cares to.
-type Strain = Dimensionless
+pub type Strain = Dimensionless
 
 // ── Analysis result trait ──────────────────────────────────────────────────
 
