@@ -2383,27 +2383,28 @@ fn kernel_pragma_with_openvdb_sets_kernel_pragma() {
     );
 }
 
-/// `#kernel(brep_xyz)` (a non-occt kernel ident) emits exactly one error-level
-/// diagnostic with the literal text per PRD §4 / task acceptance, and stores
-/// the user-declared name verbatim per the storage-reflects-declared design
+/// `#kernel(brep_xyz)` (an unknown kernel ident — not in the v0.2 known set
+/// `{fidget, manifold, occt, openvdb}` per PRD §10.8) emits exactly one
+/// error-level diagnostic with the literal v0.2 wording, and stores the
+/// user-declared name verbatim per the storage-reflects-declared design
 /// decision. Mirrors the storage assertion shape of
 /// `version_pragma_too_new_number_form_emits_error_with_supported_wording`,
 /// which is the analogous non-warning policy for `#version`.
 #[test]
-fn kernel_pragma_with_other_ident_emits_v02_deferred_error() {
+fn kernel_pragma_with_unknown_ident_emits_unknown_kernel_error() {
     let module = compile_source("#kernel(brep_xyz)\nstructure S { param x : Real }");
 
     let kernel_errors: Vec<_> = errors_only(&module)
         .into_iter()
         .filter(|d| {
             d.message
-                == "kernel 'brep_xyz' is deferred to v0.2; v0.1 supports only #kernel(occt)"
+                == "unknown kernel 'brep_xyz'; v0.2 supports {fidget, manifold, occt, openvdb}"
         })
         .collect();
     assert_eq!(
         kernel_errors.len(),
         1,
-        "expected exactly 1 v0.2-deferred error for #kernel(brep_xyz), got {}: {:?}",
+        "expected exactly 1 unknown-kernel error for #kernel(brep_xyz), got {}: {:?}",
         kernel_errors.len(),
         errors_only(&module)
     );
