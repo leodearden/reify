@@ -514,10 +514,17 @@ impl CacheStore {
     ///   `engine_edit.rs::edit_source` — same shape: bulk-mark every member
     ///   of the eval-set Pending before the per-node evaluator runs.
     ///
-    /// All three of these intentionally drop the chain because none of them
-    /// has Failed or Pending in their input set at the moment they call
-    /// `mark_pending`. The §9.2 chain is laid down inside the per-node
-    /// evaluator itself (e.g. `evaluate_let_bindings` →
+    /// - `freshness_walk.rs` — the `None` arm of the `cause` match in the
+    ///   Pending-write branch: the walk's compute helper returned `Pending`
+    ///   but with `cause = None`, so there is no upstream `NodeId` to
+    ///   record. The chain is dropped not because the input set is clean,
+    ///   but because the helper produced no traceable upstream.
+    ///
+    /// All four of these intentionally drop the chain, but for different
+    /// reasons: the three bulk pre-pass callers have no Failed or Pending
+    /// nodes in their input set at call time; the freshness-walk caller has
+    /// no upstream `NodeId` to record. The §9.2 chain is laid down inside
+    /// the per-node evaluator itself (e.g. `evaluate_let_bindings` →
     /// `mark_pending_with_cause`), not by the bulk pre-pass. Future call
     /// sites that *do* have a known cause MUST migrate to
     /// [`CacheStore::mark_pending_with_cause`].
