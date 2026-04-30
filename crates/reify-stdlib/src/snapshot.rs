@@ -22,7 +22,10 @@ use reify_types::Value;
 
 use crate::eval_builtin;
 use crate::joints::is_joint_value;
-use crate::loop_closure::joint_range_midpoint;
+use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
+use crate::loop_closure_solver::{
+    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+};
 use crate::mechanism::is_world;
 
 /// Evaluate a snapshot/FK stdlib function by name.
@@ -129,52 +132,133 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 
             let bindings_list = bindings_entries.as_slice();
 
-            // Per-snapshot memoization cache for joint world transforms.
-            // Keys are joint Map values themselves — equal joints share
-            // an entry by `Value::Eq`. The cache is local to this
-            // `snapshot()` call so it doesn't leak state across calls
-            // and is invalidated naturally when bindings change.
-            let mut cache: BTreeMap<Value, Value> = BTreeMap::new();
+            // First-pass FK walk: compute body world transforms via the
+            // spanning-tree `joint_parents` chain with the user-supplied
+            // bindings.  For an open-chain mechanism (no `loop_closures`)
+            // this is the final answer; for a closed-chain mechanism the
+            // post-FK loop-closure pass below replaces these results with
+            // a re-walk under synthesized free-variable bindings.
+            let snapshot_bodies = match walk_fk(bodies, joint_parents, bindings_list) {
+                Some(b) => b,
+                None => return Some(Value::Undef),
+            };
 
-            let mut snapshot_bodies = Vec::with_capacity(bodies.len());
-            for body_value in bodies {
-                let body_map = match body_value {
-                    Value::Map(b) => b,
-                    _ => return Some(Value::Undef),
-                };
-                let id = match body_map.get(&Value::String("id".to_string())) {
-                    Some(v) => v.clone(),
-                    None => return Some(Value::Undef),
-                };
-                let solid = match body_map.get(&Value::String("solid".to_string())) {
-                    Some(v) => v.clone(),
-                    None => return Some(Value::Undef),
-                };
-                let at = match body_map.get(&Value::String("at".to_string())) {
-                    Some(v) => v.clone(),
-                    None => return Some(Value::Undef),
-                };
-                let pose = match body_map.get(&Value::String("pose".to_string())) {
-                    Some(v) => v.clone(),
-                    None => return Some(Value::Undef),
-                };
+            // Closed-chain post-process (task 2678 step-4).
+            //
+            // For each `loop_closures` record on the mechanism, drive the
+            // free joints in `path_b` to a configuration that closes the
+            // loop, then re-walk the FK with the original user bindings
+            // augmented by one synthesized binding per solved free joint.
+            // Open-chain mechanisms (empty `loop_closures`) skip the entire
+            // block — zero-cost early-out.
+            //
+            // Solver choice: this calls `solve_loop_closure` directly
+            // rather than the diagnostic-emitting wrapper because the
+            // wrapper's over-constrained pre-check (`free_b.len() < 6`)
+            // short-circuits the Newton solve to midpoint values for the
+            // simple 1-DOF prismatic-X loops the v0.2 verification fixtures
+            // exercise — those low-DOF chains are physically well-posed
+            // (the rotational components of the 6-vector residual are
+            // trivially zero) and Newton converges in one or two
+            // iterations.  The diagnostic wrapper integration is the
+            // scope of step-12; for step-4 we focus on the integration
+            // plumbing and leave the wrapper's pre-checks to a future
+            // refinement that can decompose `JOINT_KINDS` into
+            // translational vs rotational subspaces and run the
+            // appropriate residual subset.
+            let loop_closures = match mech_map.get(&Value::String("loop_closures".to_string())) {
+                Some(Value::List(lc)) => lc.as_slice(),
+                // Defense-in-depth: hand-built mechanism Maps that pre-date
+                // the v0.2 builder may omit `loop_closures` entirely; treat
+                // as open-chain.
+                _ => &[],
+            };
+            let snapshot_bodies = if loop_closures.is_empty() {
+                snapshot_bodies
+            } else {
+                // Build the synthesized bindings list: original bindings
+                // followed by one `make_binding(free_joint, wrapped_value)`
+                // per converged free variable across all loops.
+                //
+                // Order matters: original bindings come first so a user-
+                // supplied binding for a joint that ALSO appears as free
+                // in some loop wins over the synthesized fallback (the
+                // direct-binding scan in `value_for` is left-to-right
+                // first-match).  In practice `extract_loop_closure_chains`
+                // routes user-bound joints away from `free_b`, so the
+                // synthesized entries cover only joints with no direct
+                // binding — but the ordering stays correct under any
+                // future refactor that loosens that invariant.
+                let mut synth_bindings: Vec<Value> = bindings_list.to_vec();
+                for record in loop_closures {
+                    let (chain_a, vals_a, chain_b, vals_b_initial, free_b) =
+                        match extract_loop_closure_chains(record, bindings_list) {
+                            Some(t) => t,
+                            // A malformed loop_closure record (missing path,
+                            // unresolvable joint) collapses the whole
+                            // snapshot to Undef — surfaces the structural
+                            // bug rather than masking it with a partial
+                            // snapshot.
+                            None => return Some(Value::Undef),
+                        };
 
-                // Walk the parent chain ancestor-ward to compute the
-                // body's `at`-joint frame in world coordinates.
-                let t_at_world =
-                    match joint_world_transform(&at, joint_parents, bindings_list, &mut cache) {
-                        Some(t) => t,
-                        None => return Some(Value::Undef),
+                    let outcome = solve_loop_closure(
+                        &chain_a,
+                        &vals_a,
+                        &chain_b,
+                        &vals_b_initial,
+                        &free_b,
+                        &StartStrategy::Midpoint,
+                        &NewtonConfig::default(),
+                    );
+
+                    // Extract the converged free-variable values.  We
+                    // accept all three "produced an x" variants — converged
+                    // is the success path; not-converged returns the last
+                    // iterate (still useful as a best-effort approximation
+                    // for downstream FK); singular returns the iterate
+                    // where rank-deficiency was detected (preserves the
+                    // PRD's "last-converged config" guarantee).  Only
+                    // `InvalidInput` short-circuits, matching the
+                    // structural-bug semantics of `extract_*` returning
+                    // None above.
+                    let x = match outcome {
+                        NewtonOutcome::Converged { x, .. }
+                        | NewtonOutcome::NotConverged { x, .. }
+                        | NewtonOutcome::Singular { x, .. } => x,
+                        NewtonOutcome::InvalidInput { .. } => return Some(Value::Undef),
                     };
+                    if x.len() != free_b.len() {
+                        // Defence-in-depth: solver contract guarantees this
+                        // length match for every non-InvalidInput outcome.
+                        return Some(Value::Undef);
+                    }
 
-                // body's world_transform = T_at_world ∘ pose.
-                let world_transform = eval_builtin("transform_compose", &[t_at_world, pose.clone()]);
-                if world_transform.is_undef() {
-                    return Some(Value::Undef);
+                    for (k, &i) in free_b.iter().enumerate() {
+                        let joint = chain_b[i].clone();
+                        let wrapped = match wrap_midpoint_for_joint(&joint, x[k]) {
+                            Some(v) => v,
+                            // Multi-DOF or unknown joint kinds in chain_b's
+                            // free set cannot be wrapped back into a single
+                            // dimensioned `Value::length` / `Value::angle`
+                            // — surface this as Undef rather than silently
+                            // dropping the binding.
+                            None => return Some(Value::Undef),
+                        };
+                        synth_bindings.push(make_binding(joint, wrapped));
+                    }
                 }
 
-                snapshot_bodies.push(make_snapshot_body_record(id, solid, pose, world_transform));
-            }
+                // Re-walk FK with the synthesized bindings.  A FRESH cache
+                // is required because the first walk's cache holds
+                // memoized world transforms keyed on joints that may now
+                // be bound to different values (the synthesized bindings
+                // override the midpoint fallback for free joints).
+                match walk_fk(bodies, joint_parents, &synth_bindings) {
+                    Some(b) => b,
+                    None => return Some(Value::Undef),
+                }
+            };
 
             make_snapshot(snapshot_bodies)
         }
@@ -456,6 +540,49 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
         }
         _ => return None,
     })
+}
+
+/// FK walk over every body in a Mechanism's `bodies` list, returning the
+/// per-body snapshot record vector.  Encapsulates the FK loop the
+/// `eval_snapshot::"snapshot"` arm runs once for the cold first-pass
+/// FK and again, after the closed-chain solver step (task 2678 step-4),
+/// with synthesized bindings replacing the user bindings.
+///
+/// Returns `None` when any body's FK walk fails — propagated up to the
+/// caller's `Value::Undef` result.  The cache is local to this call,
+/// so the synthesized-bindings re-walk gets a clean memoization slate
+/// (preventing the cold-walk's midpoint-derived world transforms from
+/// leaking into the warm-walk's solver-derived chain).
+fn walk_fk(
+    bodies: &[Value],
+    joint_parents: &BTreeMap<Value, Value>,
+    bindings: &[Value],
+) -> Option<Vec<Value>> {
+    let mut cache: BTreeMap<Value, Value> = BTreeMap::new();
+    let mut snapshot_bodies = Vec::with_capacity(bodies.len());
+    for body_value in bodies {
+        let body_map = match body_value {
+            Value::Map(b) => b,
+            _ => return None,
+        };
+        let id = body_map.get(&Value::String("id".to_string()))?.clone();
+        let solid = body_map.get(&Value::String("solid".to_string()))?.clone();
+        let at = body_map.get(&Value::String("at".to_string()))?.clone();
+        let pose = body_map.get(&Value::String("pose".to_string()))?.clone();
+
+        // Walk the parent chain ancestor-ward to compute the body's
+        // `at`-joint frame in world coordinates.
+        let t_at_world = joint_world_transform(&at, joint_parents, bindings, &mut cache)?;
+
+        // body's world_transform = T_at_world ∘ pose.
+        let world_transform = eval_builtin("transform_compose", &[t_at_world, pose.clone()]);
+        if world_transform.is_undef() {
+            return None;
+        }
+
+        snapshot_bodies.push(make_snapshot_body_record(id, solid, pose, world_transform));
+    }
+    Some(snapshot_bodies)
 }
 
 /// Extract the three SI-unit translation components from a `Value::Transform`.
@@ -769,7 +896,7 @@ fn make_binding(joint: Value, value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
+    use crate::test_fixtures::{axis_x_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
     use reify_types::Value;
     use std::collections::BTreeMap;
 
