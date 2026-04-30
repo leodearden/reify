@@ -553,22 +553,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Some(q) => q,
                 None => return Some(Value::Undef),
             };
-            // R = R1 * R2 (Hamilton product). Although r1_n and r2_n are explicitly
-            // normalized above, we renormalize composed_r as a release-build safety
-            // net: if a future precondition lift on quat_mul (or an overflow-corner
-            // input that bypasses the r_norm_sq gate) yielded a non-unit or
-            // non-finite result, normalize_quaternion catches it and returns Undef
-            // rather than emitting an invalid Value::Orientation.
+            // R = R1 * R2 (Hamilton product). r1_n and r2_n are unit by construction;
+            // quat_mul of unit quaternions is unit (modulo FP rounding).
             let composed_r = quat_mul(r1_n, r2_n);
-            let r_val = match normalize_quaternion(
-                composed_r.0,
-                composed_r.1,
-                composed_r.2,
-                composed_r.3,
-            ) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
-            };
+            let r_val = Value::Orientation { w: composed_r.0, x: composed_r.1, y: composed_r.2, z: composed_r.3 };
             // t = R1 * t2 + t1.
             let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2[0], t2[1], t2[2]);
             Value::Transform {
@@ -2755,13 +2743,9 @@ mod tests {
     ///
     /// Overflow trace:
     /// - `decompose_transform` accepts: every component (1e200, 0, 0, 0) is finite.
-    /// - The `r_norm_sq < 1e-24` gate accepts: `1e200² = ∞` and `∞ < 1e-24` is false.
-    /// - But normalization produces `(0, 0, 0, 0)` because `1e200 / ∞ = 0.0` in f64.
-    /// - `quat_mul((0,0,0,0), (0,0,0,0)) = (0,0,0,0)`.
-    /// - Without a post-multiply renormalize, the direct construction emits
-    ///   `Value::Orientation { w:0, x:0, y:0, z:0 }` — a zero-norm Orientation, invalid.
-    /// - With renormalize (the fix), `normalize_quaternion` rejects the zero-norm result
-    ///   and the function returns `Undef`.
+    /// - `normalize_quat_input`: `norm_sq = 1e200² = ∞`. The gate `!norm_sq.is_finite()`
+    ///   fires for the first operand, returning `None`.
+    /// - `transform_compose` returns `Undef` immediately, before `quat_mul` is called.
     #[test]
     fn transform_compose_overflow_quaternion_returns_undef() {
         let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
@@ -2774,11 +2758,9 @@ mod tests {
 
     /// Same overflow corner as above but with a non-zero translation `(1.0, 2.0, 3.0)`.
     ///
-    /// With zero translation the zero-norm rotation cannot independently produce
-    /// non-finite output via `quat_rotate`. This sibling test confirms that the
-    /// rotation-side `normalize_quaternion` short-circuits before `quat_rotate`
-    /// ever sees the collapsed `(0,0,0,0)` rotation — it is the rotation gate
-    /// that saves us, not coincidental zero translation.
+    /// Confirms the rotation gate in `normalize_quat_input` (not coincidental zero
+    /// translation) is what produces Undef. The gate fires before `quat_mul` ever
+    /// sees the quaternion, so translation magnitude is irrelevant.
     #[test]
     fn transform_compose_overflow_quaternion_nonzero_translation_returns_undef() {
         let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
