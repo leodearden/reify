@@ -126,6 +126,17 @@ pub fn extract_output_tolerance_bound(
     constraints: &PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     output_template_name: &str,
 ) -> Option<f64> {
+    // Silent-skip audit (locked by `extract_output_tolerance_bound_skips_
+    // non_finite_non_length_and_unrelated_entity`):
+    //   Gate 1 (entity filter)        skips unrelated-entity entries
+    //   Gate 2 (UserFunctionCall +    skips non-RepresentationWithin or
+    //           name + arity)         wrong-arity outer shapes
+    //   Gate 3 (ValueRef +             skips non-ValueRef subjects or non-
+    //           StructureRef)         StructureRef result types
+    //   Gate 4a (LENGTH dimension)    skips non-LENGTH Scalar literals
+    //   Gate 4b (is_finite())         skips NaN / ±Inf tolerance literals
+    // Every non-match path uses `continue` — no `panic!`, `expect`, or
+    // `unwrap` is reachable, so a malformed graph never crashes the engine.
     let mut tightest: Option<f64> = None;
     for (id, data) in constraints.iter() {
         // Gate 1: entity exact-match filter.
