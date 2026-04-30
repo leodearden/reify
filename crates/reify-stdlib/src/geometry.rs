@@ -72,6 +72,10 @@ fn decompose_transform(v: &Value) -> Option<DecomposedTransform> {
     Some(((rw, rx, ry, rz), t, dim))
 }
 
+/// Minimum acceptable squared norm for an input quaternion accepted by
+/// `normalize_quat_input` (= (1e-12)²; see that function's doc for rationale).
+const INPUT_QUAT_NORM_SQ_MIN: f64 = 1e-24;
+
 /// Normalize a quaternion tuple `(w, x, y, z)` to unit length using the shared
 /// `1e-24` squared-norm gate, returning `None` if the quaternion is too small.
 ///
@@ -84,10 +88,10 @@ fn decompose_transform(v: &Value) -> Option<DecomposedTransform> {
 ///
 /// Called by `transform_log`, `transform_inverse`, and `transform_compose` for
 /// input-side quaternion normalization, unifying three formerly near-identical blocks.
-fn normalize_quat_tuple_gate24(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)> {
+fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)> {
     let (w, x, y, z) = q;
     let norm_sq = w * w + x * x + y * y + z * z;
-    if norm_sq < 1e-24 {
+    if norm_sq < INPUT_QUAT_NORM_SQ_MIN {
         return None;
     }
     let norm = norm_sq.sqrt();
@@ -407,8 +411,8 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             let (tx, ty, tz) = (t[0], t[1], t[2]);
             // Compute angular = orient_log(R): rotation vector ω.
             let (rw, rx, ry, rz) = r_q;
-            // Normalize quaternion first (1e-24 gate — see normalize_quat_tuple_gate24).
-            let (nw, nx, ny, nz) = match normalize_quat_tuple_gate24((rw, rx, ry, rz)) {
+            // Normalize quaternion first (1e-24 gate — see normalize_quat_input).
+            let (nw, nx, ny, nz) = match normalize_quat_input((rw, rx, ry, rz)) {
                 Some(q) => q,
                 None => return Some(Value::Undef),
             };
@@ -494,8 +498,8 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            // Normalize R first (1e-24 gate — see normalize_quat_tuple_gate24).
-            let r_n = match normalize_quat_tuple_gate24(r_q) {
+            // Normalize R first (1e-24 gate — see normalize_quat_input).
+            let r_n = match normalize_quat_input(r_q) {
                 Some(q) => q,
                 None => return Some(Value::Undef),
             };
@@ -538,12 +542,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             // Normalize R1 and R2 symmetrically (matches operator-level semantics in reify-expr;
-            // 1e-24 gate — see normalize_quat_tuple_gate24).
-            let r1_n = match normalize_quat_tuple_gate24(r1_q) {
+            // 1e-24 gate — see normalize_quat_input).
+            let r1_n = match normalize_quat_input(r1_q) {
                 Some(q) => q,
                 None => return Some(Value::Undef),
             };
-            let r2_n = match normalize_quat_tuple_gate24(r2_q) {
+            let r2_n = match normalize_quat_input(r2_q) {
                 Some(q) => q,
                 None => return Some(Value::Undef),
             };
