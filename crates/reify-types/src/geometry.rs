@@ -201,6 +201,46 @@ pub enum Operation {
     Convert { from: ReprKind },
 }
 
+/// Per-kernel feasibility table for v0.2 multi-kernel dispatch.
+///
+/// Each entry `(op, repr)` in [`Self::supports`] declares that this kernel
+/// can perform `op` and produce a result of representation family `repr`.
+/// Conversions are encoded as [`Operation::Convert { from }`] so the
+/// dispatcher's BFS can expand across reprs uniformly over a single table.
+///
+/// PRD `docs/prds/v0_2/multi-kernel.md` "Capability descriptor": the
+/// descriptor is a feasibility table only — there is no `cost_hint`, no
+/// `error_factor`, and no separate `conversions` field. The dispatcher in
+/// `crates/reify-eval/src/dispatcher.rs` ranks plans by conversion-stage
+/// count alone, with lexicographic tie-breaking on the registered kernel
+/// name.
+///
+/// Co-located with [`ReprKind`] and [`GeometryKernel`] so that future
+/// kernel-adapter crates (`-manifold`, `-fidget`, `-openvdb`) — which
+/// depend on `reify-types` for the dependency-inverted `GeometryKernel`
+/// trait but deliberately NOT on `reify-compiler` or `reify-eval` — can
+/// construct descriptors without pulling in dispatch logic.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CapabilityDescriptor {
+    /// The pairs `(op, produced_repr)` this kernel claims to support.
+    pub supports: Vec<(Operation, ReprKind)>,
+}
+
+impl CapabilityDescriptor {
+    /// Return `true` iff this descriptor's [`Self::supports`] table contains
+    /// the exact pair `(op, repr)`.
+    ///
+    /// O(n) linear scan over `self.supports`. The table is small (4 kernels
+    /// × ~10–50 entries each in v0.2), and scan order does not matter
+    /// because the dispatcher already enumerates kernels in lexicographic
+    /// `BTreeMap` order. Hiding the storage shape behind this helper keeps
+    /// callers unconcerned with whether the underlying container changes
+    /// (e.g. to a `HashSet<(Operation, ReprKind)>` for larger tables).
+    pub fn supports(&self, op: Operation, repr: ReprKind) -> bool {
+        self.supports.iter().any(|&(o, r)| o == op && r == repr)
+    }
+}
+
 /// Operations that can be sent to a geometry kernel.
 #[derive(Debug, Clone)]
 pub enum GeometryOp {

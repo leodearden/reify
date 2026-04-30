@@ -47,8 +47,8 @@ pub use expr::{
     TAG_REFLECTIVE_CELL_LIST, TAG_UN_OP, TAG_USER_FUNCTION_CALL, TAG_VALUE_REF,
 };
 pub use geometry::{
-    AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, BooleanOpParentsError, CapKind,
-    DeletedRecord, ExportError, ExportFormat,
+    AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, BooleanOpParentsError,
+    CapKind, CapabilityDescriptor, DeletedRecord, ExportError, ExportFormat,
     FeatureId,
     FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, HistoryRecord, LoftOpHistoryRecords, Mesh, ModEntry, Operation,
