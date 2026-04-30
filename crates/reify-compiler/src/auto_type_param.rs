@@ -61,6 +61,40 @@
 //! violation. The lex-first tiebreak under `auto(free)` uses `accepted[0]`
 //! because Phase B preserves Phase A's alphabetical input order.
 //!
+//! # Multi-Param Orchestration
+//!
+//! [`resolve_auto_type_params`] composes Phase A → B → C for each of a list of
+//! `auto:` type-parameters, iterating in **declared order** (PRD task 4 /
+//! acceptance criterion 6: "`Coupling<auto: A, auto: B>` — A resolves first;
+//! B's candidate pool is computed against the resolved A").
+//!
+//! Key behaviors:
+//!
+//! - **Declared order** — params are visited in the slice order supplied by the
+//!   caller, which must match source declaration order. The substitution Vec and
+//!   `per_param` Vec both accumulate in that order.
+//! - **Halt-on-first-failure** — when any param fails (`CandidateEnumeration::Overflow`,
+//!   `SelectionResult::NoCandidate`, or `SelectionResult::Ambiguous`), the
+//!   orchestrator records that param's outcome in `per_param` and STOPS. No later
+//!   param is enumerated, feasibility-checked, or selected, and no additional
+//!   diagnostics are emitted. This is the v0.1 "no cross-param backtracking" rule.
+//! - **Substitution Vec** — `resolve_auto_type_params` returns a
+//!   `Vec<(String, String)>` (`param_name → resolved_fqn`) in declared order.
+//!   For v0.1 this Vec is recorded but NOT yet consumed by Phase A's `bounds`
+//!   slice or Phase B's `ValueMap` (deferred substitution work; see Phase B
+//!   scope cut 2). The wiring is in place so a future task can read the map
+//!   without a signature change.
+//! - **Per-param `free` flag** — each [`AutoTypeParam`] carries its own `free`
+//!   flag; the orchestrator passes `param.free` to Phase C independently for
+//!   each param. A strict param and a free param in the same call may produce
+//!   different Phase C arms (error vs. warning+selected).
+//!
+//! **Why "Multi-Param Orchestration" not "Phase D"?** The existing module
+//! doc-comment reserves "Phase D" for the SchemaNode topology-trigger work
+//! (re-resolution on registry change; task 2388). Calling this section "Phase D"
+//! would clash with that reservation. "Multi-Param Orchestration" maps directly
+//! to PRD task 4's label without invalidating the existing Phase D reservation.
+//!
 //! # Common Scope
 //!
 //! All three phases are delivered as **pure utility modules**: the parser
