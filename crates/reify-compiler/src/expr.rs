@@ -810,6 +810,21 @@ pub(crate) fn compile_expr_guarded(
                         // below when the structural pattern doesn't match
                         // (e.g., poisoned type), preserving anti-cascade.
                         (**inner).clone()
+                    } else if name == "flat_map"
+                        && compiled_args.len() == 2
+                        && let Type::Function { return_type, .. } =
+                            &compiled_args[1].result_type
+                    {
+                        // flat_map(List<A>, (A) -> List<B>) -> List<B>
+                        // (task 2698). Read the lambda's return_type,
+                        // populated by the Lambda compilation arm at
+                        // expr.rs:~1741. The return_type is List<B>, which
+                        // is exactly what flat_map yields. Falls through to
+                        // the first-arg fallback when the structural
+                        // pattern doesn't match (poisoned types, no second
+                        // arg, second arg not a Function), preserving
+                        // anti-cascade.
+                        (**return_type).clone()
                     } else {
                         compiled_args
                             .first()

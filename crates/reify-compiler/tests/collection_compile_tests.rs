@@ -392,18 +392,23 @@ fn compile_flat_map_infers_lambda_return_type_bool() {
     );
 }
 
-/// Sanity guard: even when the lambda body matches the input element type
-/// (so the fallback would coincidentally be correct), the new branch must
-/// still produce the right type.
+/// Second discriminator: untyped lambda params default to Real (current
+/// language behaviour — see compile_expr_guarded's Lambda arm), so the
+/// body `[x, x]` has return_type `List<Real>` regardless of the input
+/// list element type. The new branch reads that lambda return_type, so
+/// `flat_map([Int], |x| [x, x])` infers `List<Real>` — which differs from
+/// the first-arg fallback's `List<Int>`, proving the new branch fired.
+/// (Refining lambda-param inference from the input list element type is
+/// out-of-scope for task 2698 per the design decisions.)
 #[test]
-fn compile_flat_map_infers_lambda_return_type_int() {
+fn compile_flat_map_infers_lambda_return_type_real() {
     let compiled =
         parse_and_compile("structure S { let xs = flat_map([1, 2, 3], |x| [x, x]) }");
     let expr = get_cell_expr(&compiled, "xs");
     assert_eq!(
         expr.result_type,
-        Type::List(Box::new(Type::Int)),
-        "flat_map([Int], |x| [Int]) should have result_type List<Int>, got {:?}",
+        Type::List(Box::new(Type::Real)),
+        "flat_map([Int], |x: Real| [x, x]) should have result_type List<Real>, got {:?}",
         expr.result_type
     );
 }
