@@ -513,6 +513,10 @@ sub bearing1 : Bearing<auto: Seal> { bore_diameter = 25mm }
 
 Type parameter `auto` is resolved at elaboration time, before value parameter resolution begins. If resolution fails, the diagnostic reports the bound, the candidates considered, and why each was rejected or why selection was ambiguous.
 
+The candidate pool is capped at **10**. If more than 10 in-scope types satisfy the bound, resolution errors with `E_AUTO_TYPE_PARAM_POOL_OVERFLOW` listing the alphabetically-first 10 and asks the user to disambiguate. Lexicographic tiebreak by fully qualified name (FQN) applies both to candidate ordering and to `auto(free)` selection. Multiple `auto:` type-params in one definition resolve in declared order; no cross-parameter backtracking in v0.1.
+
+See `docs/auto-type-param-resolution.md` for the complete algorithm, diagnostic codes, and worked example. Cross-parameter backtracking is deferred to v0.2 per `docs/prds/v0_2/auto-resolution-backtracking.md`.
+
 **Type inference:** Conservative. Infer type parameters when context unambiguously determines them. Never infer value parameters -- the determinacy model handles "not yet specified" via `undef`/`auto`/constrained/determined.
 
 **Limited dependent typing:** Value parameters of type `Int` and `Bool` can appear in type-level positions (collection sizes, conditional presence gating, array dimensions). This is a targeted set of rules, not a general dependent type theory.
@@ -1769,7 +1773,7 @@ Tooling should make it easy to trace why a value is `undef` -- which upstream pa
 - **Strict `auto` (default):** Resolved value must be uniquely determined or uniquely optimal. If not, resolution failure with diagnostic.
 - **Free `auto`:** Returns a feasible solution, warns about non-uniqueness.
 
-**`auto` for type parameters:** Valid -- means "pick a type that satisfies the bounds."
+**`auto` for type parameters:** Valid -- means "pick a type that satisfies the bounds." See §3.9 and `docs/auto-type-param-resolution.md` for the resolution algorithm (per-parameter BFS, cap of 10, lexicographic tiebreak by FQN).
 
 **Interaction with `undef`:** If some parameters are `undef` (not `auto`), the optimizer's result for `auto` parameters is conditional on the `undef` parameters. When `undef` parameters later become determined, dependent `auto` resolutions are invalidated and re-resolved.
 
