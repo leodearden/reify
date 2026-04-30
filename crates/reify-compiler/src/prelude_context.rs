@@ -28,6 +28,50 @@
 //! The struct has private fields with public accessors, so additional caches
 //! (prelude functions, trait names, …) can be added in future tasks without
 //! breaking the `compile_with_prelude_context` signature.
+//!
+//! # Cross-prelude collision policy
+//!
+//! Three sibling phases all consume `PreludeContext` data but apply **different**
+//! collision policies when two prelude modules declare the same name:
+//!
+//! | Phase | Call site | Policy | Diagnostic |
+//! |-------|-----------|--------|------------|
+//! | **units** | `compile_builder::units_phase::phase_units` | last-wins | `Severity::Warning` "declared in both X and Y; last-wins" |
+//! | **aliases** | `compile_builder::aliases_phase::phase_aliases` (emission in `compile_with_prelude_context`) | first-wins | `Severity::Warning` "declared in both X and Y; first-wins" |
+//! | **functions** | `merge_prelude_functions` | first-wins | none (silent) |
+//!
+//! **Why the divergence exists (architectural root):**
+//!
+//! - *Aliases* are pre-computed and cached on `PreludeContext` at construction
+//!   time (here, in `PreludeContext::new`). Eager dedup is the natural
+//!   cache-build flow; first-wins falls out of "skip if already in HashMap."
+//!   Cross-prelude alias collisions are therefore resolved **before** the seed
+//!   loop in `phase_aliases` ever runs — the seed loop sees a pre-deduplicated
+//!   slice and is idempotent.
+//!
+//! - *Units* are **not** cached on `PreludeContext` (there is no `pub_units`
+//!   field). The seed loop in `phase_units` iterates raw `prelude_module.units`
+//!   on every compile call; overwrite-on-collision is the natural
+//!   register-as-you-go flow, and emitting the warning at the overwrite site is
+//!   the natural emission point.
+//!
+//! - *Functions* go through the separate `merge_prelude_functions` helper
+//!   (used by `compile_with_prelude_refs` to build the overload-resolution
+//!   table). Silent first-wins is documented as deliberate: rely on
+//!   stdlib-level review for accidental prelude-vs-prelude function collisions
+//!   rather than a diagnostic.
+//!
+//! **This divergence is deliberate** (documented in task 2776). Runtime
+//! contracts are pinned by existing regression tests:
+//!
+//! - *units last-wins*: `prelude_module_unit_collision_emits_warning`,
+//!   `three_prelude_collision_emits_two_chained_warnings`,
+//!   `intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning`
+//!   (`tests/unit_registry_tests.rs`).
+//! - *aliases first-wins*: `cross_prelude_alias_collision_emits_warning`
+//!   (`tests/cross_module_alias_propagation_tests.rs`).
+//! - *functions first-wins-silent*: no diagnostic to pin; stdlib-level review
+//!   is the guard.
 
 use reify_types::EnumDef;
 use std::collections::HashMap;
