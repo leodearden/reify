@@ -56,4 +56,23 @@ mod tests {
             "tighter output-bound (1e-6) wins over looser purpose-bound (50e-6) — symmetric"
         );
     }
+
+    #[test]
+    fn combine_passes_through_lone_some_or_returns_none_when_both_none() {
+        assert_eq!(
+            combine_demanded_tolerance(Some(1e-6), None),
+            Some(1e-6),
+            "lone output-bound passes through when purpose-bound is None"
+        );
+        assert_eq!(
+            combine_demanded_tolerance(None, Some(1e-6)),
+            Some(1e-6),
+            "lone purpose-bound passes through when output-bound is None"
+        );
+        assert_eq!(
+            combine_demanded_tolerance(None, None),
+            None,
+            "both None must return None — no demand contributor exists"
+        );
+    }
 }
