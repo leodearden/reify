@@ -84,3 +84,56 @@ fn point3_length_resolves_to_typed_point() {
         "Point3<Length> must resolve to Type::Point {{ n: 3, quantity: Scalar(LENGTH) }}"
     );
 }
+
+/// Verify the `_with_subst` codepath for `Vector3<Q>`: define a parametric alias
+/// `type V<Q> = Vector3<Q>` and annotate a structure param as `V<Dimensionless>`.
+/// This exercises `resolve_parameterized_alias` → `resolve_type_alias_expr_with_subst` →
+/// `resolve_parameterized_builtin_type_with_subst("Vector3", ..., {Q: Scalar(DIMENSIONLESS)})`.
+///
+/// The PRD's exact form `Vector3<Dimensionless>` is verified inside this fixture.
+const ALIAS_SUBST_SOURCE: &str = r#"
+type V<Q> = Vector3<Q>
+
+structure def Alias {
+    param dir : V<Dimensionless>
+}
+"#;
+
+#[test]
+fn vector3_via_parametric_alias_resolves_through_subst_path() {
+    let module = compile_with_stdlib_helper(ALIAS_SUBST_SOURCE);
+
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "ALIAS_SUBST_SOURCE must produce no Error-severity diagnostics; got: {:?}",
+        errs
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Alias")
+        .expect("template `Alias` not found in compiled module");
+
+    let dir = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "dir")
+        .expect("cell `dir` not found on `Alias`")
+        .cell_type
+        .clone();
+
+    assert_eq!(
+        dir,
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        }),
+        "V<Dimensionless> (via alias subst) must resolve to Type::Vector {{ n: 3, \
+         quantity: Scalar(DIMENSIONLESS) }}"
+    );
+}
