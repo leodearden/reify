@@ -183,6 +183,42 @@ fn ambiguous_diagnostic_message_includes_lex_first_explicit_substitution_suggest
     );
 }
 
+// ─── step-13: NonUnique message — names chosen lex-first candidate ──────
+
+/// The NON_UNIQUE warning must surface the lex-first candidate that was
+/// selected, not just list it among the structured `candidates` field.
+/// This pins the human-readable surface so a regression that emits an
+/// empty/generic warning would fail.
+#[test]
+fn non_unique_diagnostic_message_names_chosen_lex_first_candidate() {
+    let feasibility = FeasibilityResult::Feasible {
+        accepted: vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
+        rejected: vec![],
+    };
+    let mut diagnostics = Vec::new();
+    let _ = select_candidate(
+        feasibility,
+        &["Seal".to_string()],
+        true,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    let d = &diagnostics[0];
+    assert!(
+        d.message.contains("GraphiteSeal"),
+        "NON_UNIQUE message must contain the chosen lex-first candidate 'GraphiteSeal'; got: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("auto(free)")
+            || d.message.contains("non-unique")
+            || d.message.contains("selected"),
+        "NON_UNIQUE message must convey choice-under-non-uniqueness; got: {}",
+        d.message
+    );
+}
+
 // ─── step-9: NoCandidate diagnostic shape (full contract) ─────────────────
 
 /// Pins the NO_CANDIDATE diagnostic's full contract: rejected FQNs land in
