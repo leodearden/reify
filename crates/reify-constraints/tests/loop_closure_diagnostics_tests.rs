@@ -165,10 +165,12 @@ fn solve_loop_closure_with_diagnostics_emits_overconstrained_for_one_dof() {
 /// (free_b.len() = 7 > 6) AND structurally singular (all 7 free vars
 /// contribute to the same +X translation, so the Jacobian is rank-1).
 ///
-/// Step-7 asserts ONLY the under-constrained pre-check fires at this point
-/// (KinematicSingularity post-processing is wired in step-10).  The count
-/// of 1 is loose-by-design: step-10 will update this assertion to expect 2
-/// once both warnings co-emit.  See plan.json step-7 for rationale.
+/// With both the under-constrained pre-check (step-8) and the singularity
+/// post-process (step-10) wired, this single problem co-emits BOTH
+/// warnings:
+///   * `KinematicUnderconstrained` (Warning) — DOF-balance pre-check;
+///   * `KinematicSingularity` (Warning) — rank-deficient Jacobian
+///     post-process.
 ///
 /// Pinning that the wrapped outcome is `Singular` or `Converged` (NOT a
 /// short-circuited `NotConverged` with `f64::INFINITY` residual_norm)
@@ -194,16 +196,30 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_for_seven_dofs() {
         &cfg,
     );
 
+    // Two diagnostics: under-constrained pre-check + singular post-process.
+    // Both are Warning severity per PRD prose (W_*).
     assert_eq!(
         report.diagnostics.len(),
-        1,
-        "step-7 expects exactly one under-constrained diagnostic (singularity \
-         post-process arrives in step-10), got {:?}",
+        2,
+        "expected under-constrained AND singularity warnings on rank-deficient 7-prismatic-x chain, got {:?}",
         report.diagnostics
     );
-    let d = &report.diagnostics[0];
-    assert_eq!(d.severity, Severity::Warning);
-    assert_eq!(d.code, Some(DiagnosticCode::KinematicUnderconstrained));
+    assert!(
+        report.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::KinematicUnderconstrained)
+        }),
+        "missing KinematicUnderconstrained warning in {:?}",
+        report.diagnostics
+    );
+    assert!(
+        report.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::KinematicSingularity)
+        }),
+        "missing KinematicSingularity warning in {:?}",
+        report.diagnostics
+    );
 
     // Outcome must reflect that the solver was actually invoked — NOT the
     // over-constrained short-circuit shape (NotConverged with INFINITY

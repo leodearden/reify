@@ -690,8 +690,8 @@ pub fn solve_loop_closure_with_diagnostics(
         diagnostics.push(diag);
     }
 
-    // Balanced (== 6) or under-constrained (> 6) — singular branch handled
-    // in step-10 of task 2677.  Delegate to the existing solver.
+    // Balanced (== 6) or under-constrained (> 6).  Delegate to the
+    // existing solver; post-process the singular outcome.
     let outcome = solve_loop_closure(
         chain_a,
         vals_a,
@@ -701,9 +701,26 @@ pub fn solve_loop_closure_with_diagnostics(
         strategy,
         config,
     );
+
+    // Singular post-process: translate NewtonOutcome::Singular into the
+    // PRD's W_KINEMATIC_SINGULARITY warning and lift the is_singular flag.
+    // The Singular variant's `x` payload already carries the last-converged
+    // config the PRD requires; the wrapper's only job is to surface the
+    // typed diagnostic alongside the outcome.  Other outcomes (Converged /
+    // NotConverged / InvalidInput) leave is_singular false and add no
+    // singularity entry.
+    let is_singular = matches!(outcome, NewtonOutcome::Singular { .. });
+    if is_singular {
+        let diag = reify_types::Diagnostic::warning(
+            "kinematic singularity detected: rank-deficient Jacobian; last-converged config returned",
+        )
+        .with_code(reify_types::DiagnosticCode::KinematicSingularity);
+        diagnostics.push(diag);
+    }
+
     LoopClosureReport {
         outcome,
-        is_singular: false,
+        is_singular,
         diagnostics,
     }
 }
