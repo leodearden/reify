@@ -114,17 +114,9 @@ pub(crate) fn extract_tolerance_bindings(
             continue;
         }
 
-        // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. }) AND
-        // its `si_value` must be finite AND non-negative. NaN/±Inf would
-        // propagate into the scope and stick — `merge_with_min` uses
-        // `tol < *cur` which is always false when either side is NaN, so a
-        // stale NaN could never be displaced by a real value. A negative
-        // finite literal would similarly poison the scope: it wins
-        // `merge_with_min` against any positive contributor, then crashes
-        // `combine_demanded_tolerance`'s debug-assert `is_finite() && >= 0.0`
-        // in debug builds and silently wins an `o.min(p)` race in release.
-        // Reject both at extraction time to keep this extractor in lockstep
-        // with `extract_output_tolerance_bound`.
+        // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, si_value })
+        // where si_value.is_finite() && si_value >= 0.0 — see gate-3 in the
+        // function docstring above for the full rationale.
         let tol_arg = &args[1];
         let si_value = match &tol_arg.kind {
             CompiledExprKind::Literal(Value::Scalar {
@@ -443,6 +435,40 @@ mod tests {
                 bad_value
             );
         }
+    }
+
+    /// `si_value == 0.0` is the exact lower boundary accepted by the
+    /// `si_value >= 0.0` gate. A zero-tolerance `RepresentationWithin` is
+    /// semantically valid (it means "exact representation" — a degenerate but
+    /// permissible tolerance). This test pins that 0.0 produces exactly one
+    /// binding with `si_tolerance == 0.0`, which also locks the boundary
+    /// contract in lockstep with `extract_output_tolerance_bound` (which
+    /// accepts 0.0 under the same `>= 0.0` gate).
+    #[test]
+    fn extract_tolerance_bindings_accepts_zero_tolerance_literal() {
+        let constraint_expr = representation_within_constraint(
+            "subject",
+            "Bracket",
+            0.0,
+            DimensionVector::LENGTH,
+        );
+
+        let purpose = CompiledPurposeBuilder::new("manufacturing")
+            .param("subject", "Structure")
+            .constraint("subject", 0, None, constraint_expr)
+            .build();
+
+        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+
+        assert_eq!(
+            bindings.len(),
+            1,
+            "zero tolerance literal must be accepted (lower boundary of >= 0.0 gate)"
+        );
+        assert_eq!(
+            bindings[0].si_tolerance, 0.0,
+            "binding si_tolerance must preserve the zero value exactly"
+        );
     }
 
     #[test]
