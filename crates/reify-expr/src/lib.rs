@@ -3000,12 +3000,15 @@ mod tests {
         );
     }
 
-    /// Input list contains `Value::Undef` — `apply_lambda` is called with an
-    /// Undef arg, and the body (`[x]`) yields `[Undef]`, which IS a list,
-    /// so flat_map concatenates and returns `[Undef]`. This regression-locks
-    /// the per-element propagation: poison flows through, but ONLY through
-    /// the lambda body — flat_map itself doesn't short-circuit on Undef
-    /// elements (mirroring the per-element behaviour of `map`).
+    /// Input list contains `Value::Undef`. Because the lambda body wraps its
+    /// argument (`[x]`), an Undef element produces `[Undef]` — a list — so
+    /// flat_map concatenates normally and returns `[Undef]`.
+    ///
+    /// Note: the per-element non-list fallback (`_ => return Value::Undef`)
+    /// is **not** exercised here. That leg is covered by the sibling test
+    /// `function_call_flat_map_lambda_returns_undef_propagates_undef`, whose
+    /// lambda body evaluates to a literal `Value::Undef` (not wrapped in a
+    /// list), so the fallback fires and poisons the whole result.
     #[test]
     fn function_call_flat_map_input_with_undef_element_propagates() {
         let x_id = ValueCellId::new("$lambda_flat_map_undef_in.S", "x");
