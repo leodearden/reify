@@ -2595,64 +2595,52 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(
-        expected = "loft section face/edge slice families must be built in lockstep"
-    )]
-    fn populate_loft_panics_when_section_face_and_edge_slice_lengths_differ() {
-        let mut table = TopologyAttributeTable::default();
-        let feature_id = FeatureId::new("Loft#realization[0]");
-        // section_faces has 2 entries; section_edges has 1 — asymmetric input.
-        // populate_loft_attributes must debug_assert that the two families have
-        // equal length (lockstep invariant), so this call must panic in debug.
-        let section_faces = vec![
-            vec![GeometryHandleId(701)],
-            vec![GeometryHandleId(702)],
-        ];
-        let section_edges = vec![vec![GeometryHandleId(801), GeometryHandleId(802)]];
-        let result_faces = vec![GeometryHandleId(7000)];
-        let result_edges: Vec<GeometryHandleId> = vec![];
-        let history = LoftOpHistoryRecords::default();
+    fn populate_loft_panics_on_asymmetric_face_edge_slice_counts() {
+        // Parameterised regression test: the lockstep `debug_assert_eq!` at the top of
+        // `populate_loft_attributes` fires for any (section_faces_count, section_edges_count)
+        // asymmetry regardless of which side is longer.  Testing both directions and zero-cases
+        // ensures a future refactor that weakens the check to `<=` or `>=` is caught.
+        for (nfaces, nedges) in [(2_usize, 1_usize), (1, 2), (3, 0), (0, 3)] {
+            let mut table = TopologyAttributeTable::default();
+            let feature_id = FeatureId::new("Loft#realization[0]");
+            let section_faces: Vec<Vec<GeometryHandleId>> = (0..nfaces)
+                .map(|i| vec![GeometryHandleId(700_u64 + i as u64)])
+                .collect();
+            let section_edges: Vec<Vec<GeometryHandleId>> = (0..nedges)
+                .map(|i| vec![GeometryHandleId(800_u64 + i as u64)])
+                .collect();
+            let result_faces = vec![GeometryHandleId(7000)];
+            let result_edges: Vec<GeometryHandleId> = vec![];
+            let history = LoftOpHistoryRecords::default();
 
-        let _ = populate_loft_attributes(
-            &mut table,
-            &feature_id,
-            &section_faces,
-            &section_edges,
-            &result_faces,
-            &result_edges,
-            &history,
-        );
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(
-        expected = "loft section face/edge slice families must be built in lockstep"
-    )]
-    fn populate_loft_panics_when_section_edge_slice_longer_than_face_slice() {
-        // Converse of `populate_loft_panics_when_section_face_and_edge_slice_lengths_differ`:
-        // section_faces has 1 entry; section_edges has 2 — asymmetric in the opposite direction.
-        // The `debug_assert_eq!` is symmetric (`==` not `<=`/`>=`), so a future refactor that
-        // mistakenly weakened it to one-directional (e.g., `<=`) would only be caught by this test.
-        let mut table = TopologyAttributeTable::default();
-        let feature_id = FeatureId::new("Loft#realization[0]");
-        let section_faces = vec![vec![GeometryHandleId(701)]];
-        let section_edges = vec![
-            vec![GeometryHandleId(801), GeometryHandleId(802)],
-            vec![GeometryHandleId(803), GeometryHandleId(804)],
-        ];
-        let result_faces = vec![GeometryHandleId(7000)];
-        let result_edges: Vec<GeometryHandleId> = vec![];
-        let history = LoftOpHistoryRecords::default();
-
-        let _ = populate_loft_attributes(
-            &mut table,
-            &feature_id,
-            &section_faces,
-            &section_edges,
-            &result_faces,
-            &result_edges,
-            &history,
-        );
+            let call_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = populate_loft_attributes(
+                        &mut table,
+                        &feature_id,
+                        &section_faces,
+                        &section_edges,
+                        &result_faces,
+                        &result_edges,
+                        &history,
+                    );
+                }));
+            assert!(
+                call_result.is_err(),
+                "expected lockstep panic for (faces={nfaces}, edges={nedges}) but none fired"
+            );
+            let payload = call_result.unwrap_err();
+            let msg = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("<non-string panic payload>");
+            assert!(
+                msg.contains(
+                    "loft section face/edge slice families must be built in lockstep"
+                ),
+                "wrong panic for (faces={nfaces}, edges={nedges}): {msg:?}"
+            );
+        }
     }
 }
