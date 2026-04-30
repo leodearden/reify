@@ -769,7 +769,7 @@ fn make_binding(joint: Value, value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
+    use crate::test_fixtures::{axis_x_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
     use reify_types::Value;
     use std::collections::BTreeMap;
 

@@ -962,8 +962,8 @@ mod tests {
     /// - bodies[1].at == j_x, bodies[1].parent == j_b, bodies[1].id == Int(1)
     /// - `joint_parents.get(j_x) == Some(j_a)` (first-recorded edge wins)
     /// - `loop_closures` is a List with exactly one Map entry:
-    ///     kind="loop_closure", body_id=Int(1), closing_joint=j_x,
-    ///     path_a=[world, j_a, j_x], path_b=[world, j_b, j_x]
+    ///   `kind="loop_closure"`, `body_id=Int(1)`, `closing_joint=j_x`,
+    ///   path_a=[world, j_a, j_x], path_b=[world, j_b, j_x]
     #[test]
     fn parent_conflict_records_loop_closure_constraint() {
         // j_a, j_b distinct; j_x distinct again.
@@ -1086,10 +1086,10 @@ mod tests {
     /// - joint_parents has only `j_a → j_b` (the cycle-closing `j_b → j_a`
     ///   edge is NOT recorded in joint_parents)
     /// - loop_closures has one entry with:
-    ///     kind="loop_closure", body_id=Int(1), closing_joint=j_b,
-    ///     path_a=[world, j_b]  (walk_to_world({j_a:j_b}, j_b) = [j_b]; world prepended)
-    ///     path_b=[world, j_b, j_a, j_b]  (walk_to_world({j_a:j_b}, j_a)=[j_b,j_a] top-down;
-    ///                                      world prepended; closing edge at=j_b appended)
+    ///   kind="loop_closure", body_id=Int(1), closing_joint=j_b,
+    ///   path_a=[world, j_b]  (walk_to_world({j_a:j_b}, j_b) = [j_b]; world prepended);
+    ///   path_b=[world, j_b, j_a, j_b]  (walk_to_world({j_a:j_b}, j_a)=[j_b,j_a]
+    ///   top-down; world prepended; closing edge at=j_b appended)
     #[test]
     fn cycle_records_loop_closure_constraint() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
