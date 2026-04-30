@@ -105,6 +105,58 @@ fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplat
     );
 }
 
+/// Recover the left and right `Expr` spans from the first
+/// `ForallConnectBody::Connect` body in the named structure.
+/// Panics if no `ForallConnect` is found or if its body is not `Connect`.
+fn find_forall_connect_body_spans(
+    source: &str,
+    structure_name: &str,
+) -> (reify_types::SourceSpan, reify_types::SourceSpan) {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Structure(s) = decl
+            && s.name == structure_name
+        {
+            for m in &s.members {
+                if let reify_syntax::MemberDecl::ForallConnect(f) = m {
+                    if let reify_syntax::ForallConnectBody::Connect(cd) = &f.body {
+                        return (cd.left.expr.span, cd.right.expr.span);
+                    }
+                    panic!("ForallConnect body is not a Connect variant in {}", structure_name);
+                }
+            }
+        }
+    }
+    panic!("no ForallConnect found in structure {}", structure_name);
+}
+
+/// Build the boilerplate source fixture for the three unsupported-port-shape
+/// tests, interpolating `left` and `right` into the connect line.
+///
+/// Skeleton: `trait Air`, `structure def Vent` with `port inlet : out Air`,
+/// `structure def S` with deferred-count `sub vents : List<Vent>`, a
+/// parameter `n`, `constraint vents.count == n`, `port air_channel`, and
+/// `forall v in vents: connect <left> -> <right>`.
+fn make_fixture(left: &str, right: &str) -> String {
+    format!(
+        r#"
+trait Air {{ param d : Length }}
+structure def Vent {{
+    port inlet : out Air {{ param d : Length = 5mm }}
+}}
+structure def S {{
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air {{ param d : Length = 5mm }}
+    forall v in vents: connect {} -> {}
+}}
+"#,
+        left, right,
+    )
+}
+
 /// Shared structural assertion helper for the three unsupported-port-shape
 /// diagnostic tests (`(None, Some)`, `(Some, None)`, `(None, None)` arms).
 ///
@@ -114,9 +166,10 @@ fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplat
 /// - (c) Zero CompiledForallTemplates (early-return path).
 /// - (d) Exactly one `Severity::Info` diagnostic total.
 /// - (e) That diagnostic has a label `{message: "forall connect", span: forall_span}`.
-/// - (f) Per-side label presence/absence: if `expect_left_label`, exactly one
-///       `"left port shape not supported"` label; otherwise zero. Likewise for
-///       `expect_right_label` and `"right port shape not supported"`.
+/// - (f) Per-side label presence/absence **with span pinning**: if
+///       `expect_left_label`, exactly one `"left port shape not supported"`
+///       label AND its `span` equals `cd.left.expr.span`; otherwise zero.
+///       Likewise for `expect_right_label` and `cd.right.expr.span`.
 fn assert_unsupported_port_shape_diagnostic(
     source: &str,
     structure_name: &str,
@@ -190,37 +243,61 @@ fn assert_unsupported_port_shape_diagnostic(
         forall_span
     );
 
-    // (f) Per-side label presence/absence.
-    let left_label_count = diag
+    // (f) Per-side label presence/absence with span pinning.
+    let (left_expr_span, right_expr_span) =
+        find_forall_connect_body_spans(source, structure_name);
+
+    let left_labels: Vec<_> = diag
         .labels
         .iter()
         .filter(|l| l.message == "left port shape not supported")
-        .count();
+        .collect();
     let expected_left = usize::from(expect_left_label);
     assert_eq!(
-        left_label_count,
+        left_labels.len(),
         expected_left,
         "expected {} label(s) with message \"left port shape not supported\", \
          got {}; labels = {:?}",
         expected_left,
-        left_label_count,
+        left_labels.len(),
         diag.labels
     );
-    let right_label_count = diag
+    if expect_left_label {
+        assert_eq!(
+            left_labels[0].span,
+            left_expr_span,
+            "left-side label span should equal left expr span; \
+             label span = {:?}, expected = {:?}",
+            left_labels[0].span,
+            left_expr_span
+        );
+    }
+
+    let right_labels: Vec<_> = diag
         .labels
         .iter()
         .filter(|l| l.message == "right port shape not supported")
-        .count();
+        .collect();
     let expected_right = usize::from(expect_right_label);
     assert_eq!(
-        right_label_count,
+        right_labels.len(),
         expected_right,
         "expected {} label(s) with message \"right port shape not supported\", \
          got {}; labels = {:?}",
         expected_right,
-        right_label_count,
+        right_labels.len(),
         diag.labels
     );
+    if expect_right_label {
+        assert_eq!(
+            right_labels[0].span,
+            right_expr_span,
+            "right-side label span should equal right expr span; \
+             label span = {:?}, expected = {:?}",
+            right_labels[0].span,
+            right_expr_span
+        );
+    }
 }
 
 /// `forall v in [1, 2, 3]: constraint v > 0` should emit exactly 3
@@ -2396,35 +2473,13 @@ structure S {
 /// (e) The diagnostic has a label with `message == "forall connect"` and
 ///     `span == find_forall_connect_span(source, "S")` (stable construct-kind token;
 ///     does NOT pin user-facing prose).
-/// (f) Exactly one label with `message == "left port shape not supported"`;
-///     zero labels with `message == "right port shape not supported"` (left side is
-///     the unsupported `v.inner.a` for this `(None, Some)` arm).
+/// (f) Exactly one label with `message == "left port shape not supported"` whose
+///     span equals `cd.left.expr.span`; zero labels with
+///     `message == "right port shape not supported"`.
 #[test]
 fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_info_diagnostic() {
-    // `v.inner.a` is a synthetic 3-level dotted access: the parser accepts any
-    // chained member-access expression in a connect body, and the deferred path
-    // never validates port semantics (compile_connection is not called).
-    // After substitution v → vents[0], the left side becomes
-    // `MemberAccess { object: MemberAccess { IndexAccess(vents,0), "inner" }, "a" }`
-    // which hits the `_ => None` arm of resolve_port_name because the outer
-    // MemberAccess.object is a MemberAccess (not Ident / IndexAccess).
-    // NOTE: This is NOT a realistic nested-sub port path — it is purely chosen to
-    // trigger the None branch. See the doc-comment TODO for a follow-up fixture.
-    let source = r#"
-trait Air { param d : Length }
-structure def Vent {
-    port inlet : out Air { param d : Length = 5mm }
-}
-structure def S {
-    sub vents : List<Vent>
-    param n : Int
-    constraint vents.count == n
-    port air_channel : in Air { param d : Length = 5mm }
-    forall v in vents: connect v.inner.a -> air_channel
-}
-"#;
     // (None, Some) arm: left unsupported, right resolves fine.
-    assert_unsupported_port_shape_diagnostic(source, "S", true, false);
+    assert_unsupported_port_shape_diagnostic(&make_fixture("v.inner.a", "air_channel"), "S", true, false);
 }
 
 /// `(Some, None)` arm of forall-Connect unsupported-port-shape diagnostic:
@@ -2442,27 +2497,13 @@ structure def S {
 /// (d) Exactly one `Severity::Info` diagnostic total.
 /// (e) The diagnostic has a label with `message == "forall connect"` and
 ///     `span == find_forall_connect_span(source, "S")`.
-/// (f) Exactly one label with `message == "right port shape not supported"`;
-///     zero labels with `message == "left port shape not supported"`.
+/// (f) Exactly one label with `message == "right port shape not supported"` whose
+///     span equals `cd.right.expr.span`; zero labels with
+///     `message == "left port shape not supported"`.
 #[test]
 fn forall_connect_over_undef_count_unsupported_right_port_shape_emits_right_label() {
-    // Right side: `v.inner.a` (doubly-nested MemberAccess) → resolve_port_name returns None.
-    // Left side: `air_channel` (plain Ident) → resolves fine.
-    let source = r#"
-trait Air { param d : Length }
-structure def Vent {
-    port inlet : out Air { param d : Length = 5mm }
-}
-structure def S {
-    sub vents : List<Vent>
-    param n : Int
-    constraint vents.count == n
-    port air_channel : in Air { param d : Length = 5mm }
-    forall v in vents: connect air_channel -> v.inner.a
-}
-"#;
     // (Some, None) arm: left resolves fine, right unsupported.
-    assert_unsupported_port_shape_diagnostic(source, "S", false, true);
+    assert_unsupported_port_shape_diagnostic(&make_fixture("air_channel", "v.inner.a"), "S", false, true);
 }
 
 /// `(None, None)` arm of forall-Connect unsupported-port-shape diagnostic: both
@@ -2470,9 +2511,10 @@ structure def S {
 ///
 /// Fixture: `connect v.inner.a -> v.inner.b` — both sides are doubly-nested
 /// `MemberAccess` expressions that hit `_ => None` in `resolve_port_name`.
-/// Using distinct trailing members (`a` vs `b`) ensures each side gets its own
-/// span, so the two per-side label assertions cannot accidentally match the
-/// same `DiagnosticLabel` object.
+/// Distinct trailing members (`a` vs `b`) give each side a unique source span;
+/// this is required by the per-side span assertions in
+/// `assert_unsupported_port_shape_diagnostic`, which pin that each label's span
+/// equals `cd.left.expr.span` / `cd.right.expr.span` respectively.
 ///
 /// NOTE: Like the `(None, Some)` fixture, this is intentionally synthetic —
 /// `v.inner.a` / `v.inner.b` are chosen to force the doubly-nested path, not
@@ -2486,30 +2528,14 @@ structure def S {
 /// (d) Exactly one `Severity::Info` diagnostic total.
 /// (e) The diagnostic has a label with `message == "forall connect"` and
 ///     `span == find_forall_connect_span(source, "S")`.
-/// (f) Exactly one label with `message == "left port shape not supported"` AND
-///     exactly one label with `message == "right port shape not supported"` —
-///     both arms of the per-side check fire simultaneously.
+/// (f) Exactly one label with `message == "left port shape not supported"` whose
+///     span equals `cd.left.expr.span`, AND exactly one label with
+///     `message == "right port shape not supported"` whose span equals
+///     `cd.right.expr.span` — both arms of the per-side check fire simultaneously.
 #[test]
 fn forall_connect_over_undef_count_unsupported_both_port_shapes_emits_both_labels() {
-    // Both sides: doubly-nested MemberAccess after substitution.
-    // v.inner.a → MemberAccess { object: MemberAccess { IndexAccess(vents,0), "inner" }, "a" }
-    // v.inner.b → MemberAccess { object: MemberAccess { IndexAccess(vents,0), "inner" }, "b" }
-    // Both hit the `_ => None` arm of resolve_port_name.
-    let source = r#"
-trait Air { param d : Length }
-structure def Vent {
-    port inlet : out Air { param d : Length = 5mm }
-}
-structure def S {
-    sub vents : List<Vent>
-    param n : Int
-    constraint vents.count == n
-    port air_channel : in Air { param d : Length = 5mm }
-    forall v in vents: connect v.inner.a -> v.inner.b
-}
-"#;
     // (None, None) arm: both sides unsupported.
-    assert_unsupported_port_shape_diagnostic(source, "S", true, true);
+    assert_unsupported_port_shape_diagnostic(&make_fixture("v.inner.a", "v.inner.b"), "S", true, true);
 }
 
 /// `forall v in vents: connect v.inlet <-> air_channel` over a 3-element
