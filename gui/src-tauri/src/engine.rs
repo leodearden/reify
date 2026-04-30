@@ -1392,7 +1392,7 @@ fn resolve_driving_params_from_ast(
 /// match logic via the callback without duplicating the traversal again.
 fn walk_function_calls(
     expr: &reify_syntax::Expr,
-    on_call: &mut dyn FnMut(&str, &Vec<reify_syntax::Expr>),
+    on_call: &mut dyn FnMut(&str, &[reify_syntax::Expr]),
 ) {
     use reify_syntax::ExprKind;
     match &expr.kind {
