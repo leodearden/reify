@@ -489,3 +489,56 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
          found: {rel_paths:#?}"
     );
 }
+
+// ─── step-15: per-file timing uses single pipeline pass ──────────────────────
+
+/// Pin that the per-file timing block in `v0_1_example_corpus_compile_and_check_time_is_bounded`
+/// does NOT perform redundant compile work (i.e., does not call
+/// `parse_and_compile_with_stdlib` separately before `check_source_with_stdlib`).
+///
+/// Rationale for the 1.6× threshold: the buggy pattern (calling both
+/// `parse_and_compile_with_stdlib` + `check_source_with_stdlib` separately)
+/// produces a ratio ≈ 2.0 since both calls run parse+compile internally.
+/// The fixed pattern (calling only `measure_corpus_file`) produces ratio ≈ 1.0.
+/// A threshold of 1.6× is wide enough to absorb min-of-5 jitter on a fast
+/// fixture without masking 2× duplicate work.
+///
+/// `check_source_with_stdlib` already invokes `parse_and_compile_with_stdlib`
+/// internally (see `reify_test_support/src/helpers.rs`), so calling it alone
+/// covers the full parse+compile+check pipeline exactly once per file.
+#[test]
+fn corpus_per_file_timing_uses_single_pipeline_pass() {
+    let src = source();
+
+    // Warm-up: one pass to ensure any lazy initialisation (stdlib, caches)
+    // has fired before we start timing.
+    let _ = check_source_with_stdlib(src);
+
+    // direct_min: minimum over 5 trials of `check_source_with_stdlib` alone.
+    let direct_min: Duration = (0..5)
+        .map(|_| {
+            let t = Instant::now();
+            let _ = check_source_with_stdlib(src);
+            t.elapsed()
+        })
+        .min()
+        .expect("iterator is non-empty");
+
+    // helper_min: minimum over 5 trials of the corpus helper.
+    let helper_min: Duration = (0..5)
+        .map(|_| measure_corpus_file(src))
+        .min()
+        .expect("iterator is non-empty");
+
+    // 1.6× threshold: above 1.0× (single-pass jitter) but below 2.0× (double-pass cost).
+    let threshold_nanos = (direct_min.as_nanos() as f64 * 1.6) as u128;
+    assert!(
+        helper_min.as_nanos() <= threshold_nanos,
+        "corpus_per_file timing overhead is too high — likely calling parse_and_compile_with_stdlib \
+         separately before check_source_with_stdlib (double pipeline pass).\n\
+         direct_min = {:.3}ms, helper_min = {:.3}ms, ratio = {:.2}× (threshold 1.6×)",
+        direct_min.as_secs_f64() * 1000.0,
+        helper_min.as_secs_f64() * 1000.0,
+        helper_min.as_nanos() as f64 / direct_min.as_nanos() as f64,
+    );
+}
