@@ -343,6 +343,34 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 {
                     analysis::compute_safety_factor(&evaluated_args[0], &evaluated_args[1])
                 }
+                // flat_map(list, lambda): apply `lambda` to each element of
+                // `list`, expect each call to return a list, and concatenate
+                // the per-element results into a single flat list. Intercepted
+                // here (rather than in `reify_stdlib::eval_builtin`) because
+                // applying the lambda requires `EvalContext` — the same reason
+                // map/filter/fold are dispatched from `eval_method_call`.
+                //
+                // Convention: silent `Value::Undef` on type errors (non-list
+                // input, non-lambda second arg, lambda result not a list,
+                // wrong lambda arity). Matches the existing list-helper
+                // convention; see task 2698 design decisions.
+                "flat_map" if evaluated_args.len() == 2 => {
+                    match (&evaluated_args[0], &evaluated_args[1]) {
+                        (Value::List(items), lambda @ Value::Lambda { .. }) => {
+                            let mut out: Vec<Value> = Vec::new();
+                            for item in items {
+                                let r =
+                                    apply_lambda(lambda, std::slice::from_ref(item), ctx);
+                                match r {
+                                    Value::List(sub) => out.extend(sub),
+                                    _ => return Value::Undef,
+                                }
+                            }
+                            Value::List(out)
+                        }
+                        _ => Value::Undef,
+                    }
+                }
                 _ => {
                     // Composed-field call dispatch: a name in a composed lambda
                     // body (e.g. `base(p)` inside `composed { |p| base(p) * 30 }`)
