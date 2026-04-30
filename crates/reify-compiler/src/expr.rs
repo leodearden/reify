@@ -800,38 +800,10 @@ pub(crate) fn compile_expr_guarded(
                             .expect("is_geometry_kinematic_query implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
-                    } else if name == "single"
-                        && let Some(arg) = compiled_args.first()
-                        && let Type::List(inner) = &arg.result_type
+                    } else if let Some(t) =
+                        infer_list_helper_return_type(name, &compiled_args)
                     {
-                        // single(List<T>) -> T (task 2698). Unwrap the list
-                        // element type so downstream cells see T, not List<T>.
-                        // Falls through to the generic first-arg fallback
-                        // below when the structural pattern doesn't match
-                        // (e.g., poisoned type), preserving anti-cascade.
-                        (**inner).clone()
-                    } else if name == "flat_map"
-                        && compiled_args.len() == 2
-                        && let Type::Function { return_type, .. } =
-                            &compiled_args[1].result_type
-                        && matches!(**return_type, Type::List(_))
-                    {
-                        // flat_map(List<A>, (A) -> List<B>) -> List<B>
-                        // (task 2698). Read the lambda's return_type,
-                        // populated by the Lambda compilation arm at
-                        // expr.rs:~1741. The return_type must itself be
-                        // `List<_>` for this branch to fire — a non-list
-                        // lambda body (e.g. `flat_map([1, 2], |x| x)`) is
-                        // a runtime type error (silently propagates as
-                        // Value::Undef per the task 2698 convention) and
-                        // would yield a misleading non-list cell type if
-                        // we unwrapped it here. Falls through to the
-                        // first-arg fallback below when the structural
-                        // pattern doesn't match (poisoned types, no
-                        // second arg, second arg not a Function, or
-                        // lambda body not a list), preserving anti-cascade
-                        // and ensuring the cell type stays `List<_>`.
-                        (**return_type).clone()
+                        t
                     } else {
                         compiled_args
                             .first()
@@ -1719,6 +1691,7 @@ pub(crate) fn compile_expr_guarded(
                     let name_opt = match &type_expr.kind {
                         reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                        reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
                     };
                     if let Some(name) = name_opt {
                         match resolve_type_name(name) {

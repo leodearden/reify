@@ -200,6 +200,16 @@ pub(crate) fn compile_field(
             );
             Type::Real
         }
+        reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+            diagnostics.push(
+                Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_label(DiagnosticLabel::new(
+                        field_def.domain_type.span,
+                        "integer literal not allowed in this position",
+                    )),
+            );
+            Type::Real
+        }
     };
     let codomain_type = match &field_def.codomain_type.kind {
         reify_syntax::TypeExprKind::Named { name, .. } => resolve_field_type_name(
@@ -217,6 +227,19 @@ pub(crate) fn compile_field(
                 .with_label(DiagnosticLabel::new(
                     field_def.codomain_type.span,
                     "unexpected dimensional expression",
+                )),
+            );
+            Type::Real
+        }
+        reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unresolved field type: {}",
+                    field_def.codomain_type
+                ))
+                .with_label(DiagnosticLabel::new(
+                    field_def.codomain_type.span,
+                    "integer literal not allowed in this position",
                 )),
             );
             Type::Real

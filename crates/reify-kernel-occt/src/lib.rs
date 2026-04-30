@@ -87,14 +87,14 @@ use std::collections::HashMap;
 #[cfg(has_occt)]
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp,
-    GeometryQuery, Mesh, OpaqueState, QueryError, ReprKind, TessError, Value, WarmStartable,
+    BRepKind, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable,
 };
 
 #[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
 ///
 /// Contains BRep ASCII serializations of all shapes in the kernel, the
-/// per-handle [`ReprKind`] classification map, and the next handle ID counter.
+/// per-handle [`BRepKind`] classification map, and the next handle ID counter.
 /// BRep format is valid UTF-8 text, so `String` is used instead of `Vec<u8>`.
 ///
 /// The `reprs` map is kept in lock-step with `shapes`: only IDs whose BRep
@@ -103,12 +103,12 @@ use reify_types::{
 struct OcctWarmState {
     /// Map from handle ID to BRep ASCII string of the corresponding shape.
     shapes: HashMap<u64, String>,
-    /// Map from handle ID to [`ReprKind`] classification (Face, Solid, Edge, …).
+    /// Map from handle ID to [`BRepKind`] classification (Face, Solid, Edge, …).
     ///
     /// Restored alongside `shapes` in `with_warm_state` so that post-warm-start
-    /// dispatch (e.g. `Centroid` → `query_face_centroid` for `ReprKind::Face`)
+    /// dispatch (e.g. `Centroid` → `query_face_centroid` for `BRepKind::Face`)
     /// works correctly.
-    reprs: HashMap<u64, ReprKind>,
+    reprs: HashMap<u64, BRepKind>,
     /// The next handle ID to assign (preserves ID namespace across warm-start).
     next_id: u64,
 }
@@ -260,11 +260,11 @@ fn decode_deleted_records(flat: Vec<u32>) -> Vec<DeletedRecord> {
 /// [`OcctKernelHandle`] which runs the kernel on a dedicated OS thread.
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
-    /// Per-handle ReprKind, populated alongside `shapes` in `store_with_repr`.
+    /// Per-handle BRepKind, populated alongside `shapes` in `store_with_repr`.
     /// Looked up via the public `repr_of(id)` accessor. Warm-start does not
     /// repopulate this map (best-effort: post-restore queries return `None`
     /// until the handle is re-stored locally).
-    reprs: HashMap<u64, ReprKind>,
+    reprs: HashMap<u64, BRepKind>,
     next_id: u64,
     /// Number of shapes that failed deserialization during the last `with_warm_state()` call.
     last_warm_start_failures: usize,
@@ -285,27 +285,27 @@ impl OcctKernel {
         }
     }
 
-    /// Return the [`ReprKind`] that was assigned to `id` at `store_with_repr`
+    /// Return the [`BRepKind`] that was assigned to `id` at `store_with_repr`
     /// time, or `None` if `id` is unknown to this kernel.
     ///
     /// After a `warm_state()`/`with_warm_state()` round-trip the classification
     /// is restored from the persisted `reprs` map. Any handle whose BRep
     /// serialized successfully but whose repr entry was absent falls back to
-    /// [`ReprKind::Solid`] (matches the implicit default in [`OcctKernel::store`]).
-    pub fn repr_of(&self, id: GeometryHandleId) -> Option<ReprKind> {
+    /// [`BRepKind::Solid`] (matches the implicit default in [`OcctKernel::store`]).
+    pub fn repr_of(&self, id: GeometryHandleId) -> Option<BRepKind> {
         self.reprs.get(&id.0).copied()
     }
 
-    /// Store a shape and return the next handle (defaults to `ReprKind::Solid`).
+    /// Store a shape and return the next handle (defaults to `BRepKind::Solid`).
     fn store(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandle {
-        self.store_with_repr(shape, ReprKind::Solid)
+        self.store_with_repr(shape, BRepKind::Solid)
     }
 
-    /// Store a shape with an explicit `ReprKind`.
+    /// Store a shape with an explicit `BRepKind`.
     fn store_with_repr(
         &mut self,
         shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
-        repr: ReprKind,
+        repr: BRepKind,
     ) -> GeometryHandle {
         let id = self.next_id;
         self.next_id += 1;
@@ -341,7 +341,7 @@ impl OcctKernel {
     }
 
     /// Extract every unique edge of `handle` as a fresh handle with
-    /// `ReprKind::Edge`. Order follows the canonical
+    /// `BRepKind::Edge`. Order follows the canonical
     /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration.
     ///
     /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
@@ -370,14 +370,14 @@ impl OcctKernel {
 
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
-            let h = self.store_with_repr(sub, ReprKind::Edge);
+            let h = self.store_with_repr(sub, BRepKind::Edge);
             ids.push(h.id);
         }
         Ok(ids)
     }
 
     /// Extract every unique face of `handle` as a fresh handle with
-    /// `ReprKind::Face`. Order follows the canonical
+    /// `BRepKind::Face`. Order follows the canonical
     /// `TopExp::MapShapes(.., TopAbs_FACE, ..)` enumeration.
     ///
     /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
@@ -403,7 +403,7 @@ impl OcctKernel {
 
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
-            let h = self.store_with_repr(sub, ReprKind::Face);
+            let h = self.store_with_repr(sub, BRepKind::Face);
             ids.push(h.id);
         }
         Ok(ids)
@@ -467,7 +467,7 @@ impl OcctKernel {
     /// fused-result handle alongside the per-parent face/edge history
     /// records (Modified / Generated / Deleted).
     ///
-    /// The result handle is registered with `ReprKind::Solid` (matching
+    /// The result handle is registered with `BRepKind::Solid` (matching
     /// the existing `boolean_fuse` arm of `execute(GeometryOp::Union)`).
     /// The history records describe the parent ↔ result correspondence
     /// emitted by `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
@@ -523,7 +523,7 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
         Ok((handle, records))
     }
 
@@ -535,7 +535,7 @@ impl OcctKernel {
     /// Mirrors the call convention of the `GeometryOp::Extrude` arm of
     /// [`OcctKernel::execute`]: profile is extruded along `(0, 0, distance)`,
     /// validated to be finite and non-zero. Result handle is registered
-    /// with `ReprKind::Solid`.
+    /// with `BRepKind::Solid`.
     ///
     /// `parent_index` in every record is `0` (single parent profile).
     /// `start_cap_face_indices` carries the FirstShape() face index (the
@@ -608,7 +608,7 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
         Ok((handle, records))
     }
 
@@ -622,7 +622,7 @@ impl OcctKernel {
     /// Mirrors the call convention of the `GeometryOp::Revolve` arm of
     /// [`OcctKernel::execute`]: same finite/non-zero/non-degenerate
     /// validation thresholds (AXIS_MAG_SQ_MIN, ANGLE_ABS_MIN). Result
-    /// handle is registered with `ReprKind::Solid`.
+    /// handle is registered with `BRepKind::Solid`.
     ///
     /// Cap behavior:
     /// - PARTIAL revolution (angle_rad mod 2π ∈ (0, 2π)) →
@@ -735,7 +735,7 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
         Ok((handle, records))
     }
 
@@ -746,7 +746,7 @@ impl OcctKernel {
     ///
     /// Mirrors the call convention of the `GeometryOp::Sweep` arm of
     /// [`OcctKernel::execute`]: same handle resolution and result
-    /// registration with `ReprKind::Solid`. Sweep is single-parent
+    /// registration with `BRepKind::Solid`. Sweep is single-parent
     /// (the profile is the operand; the path is the spine along which
     /// the profile is swept), so `parent_index` is always `0` and the
     /// existing `SweepOpHistoryRecords` struct fits verbatim.
@@ -813,7 +813,7 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
         Ok((handle, records))
     }
 
@@ -826,7 +826,7 @@ impl OcctKernel {
     /// Mirrors the call convention of the `GeometryOp::Loft` arm of
     /// [`OcctKernel::execute`]: same handle resolution, same
     /// `profiles.len() < 2` validation, and same result registration
-    /// with `ReprKind::Solid`. Loft is **multi-parent** — each profile
+    /// with `BRepKind::Solid`. Loft is **multi-parent** — each profile
     /// section is a distinct parent indexed `0..N-1`, and
     /// `LoftOpHistoryRecords::face_generated`'s `parent_index` field
     /// denotes the section index (NOT always 0 like sweep / extrude /
@@ -901,7 +901,7 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
         Ok((handle, records))
     }
 }
@@ -1399,7 +1399,7 @@ impl OcctKernel {
                     .map_err(GeometryError::OperationFailed)?;
                 let shape = ffi::ffi::make_line_wire(*x1, *y1, *z1, *x2, *y2, *z2)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+                return Ok(self.store_with_repr(shape, BRepKind::Wire));
             }
             GeometryOp::Arc {
                 center, radius, start_angle, end_angle, axis,
@@ -1422,7 +1422,7 @@ impl OcctKernel {
                     axis[0], axis[1], axis[2],
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+                return Ok(self.store_with_repr(shape, BRepKind::Wire));
             }
             GeometryOp::Helix { radius, pitch, height } => {
                 if !radius.is_finite() || *radius <= 0.0 {
@@ -1442,7 +1442,7 @@ impl OcctKernel {
                 }
                 let shape = ffi::ffi::make_helix_wire(*radius, *pitch, *height)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+                return Ok(self.store_with_repr(shape, BRepKind::Wire));
             }
             GeometryOp::InterpCurve { points } => {
                 if points.len() < 2 {
@@ -1453,7 +1453,7 @@ impl OcctKernel {
                 let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
                 let shape = ffi::ffi::make_interp_curve(&coords, points.len())
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+                return Ok(self.store_with_repr(shape, BRepKind::Wire));
             }
             GeometryOp::BezierCurve { control_points } => {
                 if control_points.len() < 2 {
@@ -1464,7 +1464,7 @@ impl OcctKernel {
                 let coords: Vec<f64> = control_points.iter().flat_map(|p| p.iter().copied()).collect();
                 let shape = ffi::ffi::make_bezier_curve(&coords, control_points.len())
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+                return Ok(self.store_with_repr(shape, BRepKind::Wire));
             }
             GeometryOp::NurbsCurve {
                 control_points, weights, knots, degree,
@@ -1505,7 +1505,7 @@ impl OcctKernel {
                     *degree as i32,
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+                return Ok(self.store_with_repr(shape, BRepKind::Wire));
             }
             GeometryOp::LinearPattern2D {
                 target,
@@ -1601,7 +1601,7 @@ impl OcctKernel {
                 Ok(Value::Real(area))
             }
             GeometryQuery::Centroid(id) => {
-                // Dispatch by stored ReprKind so an extracted Face handle
+                // Dispatch by stored BRepKind so an extracted Face handle
                 // (no enclosed volume — `query_centroid`'s VolumeProperties
                 // path would default to the origin) routes through the
                 // surface-area centroid. Every other repr (Solid, Compound,
@@ -1612,7 +1612,7 @@ impl OcctKernel {
                 let shape = self
                     .get_shape(*id)
                     .map_err(|_| QueryError::InvalidHandle(*id))?;
-                let pt = if self.repr_of(*id) == Some(ReprKind::Face) {
+                let pt = if self.repr_of(*id) == Some(BRepKind::Face) {
                     ffi::ffi::query_face_centroid(shape)
                         .map_err(|e| QueryError::QueryFailed(e.to_string()))?
                 } else {
@@ -1845,7 +1845,7 @@ impl WarmStartable for OcctKernel {
             return None;
         }
         let mut warm_shapes = HashMap::new();
-        let mut warm_reprs: HashMap<u64, ReprKind> = HashMap::new();
+        let mut warm_reprs: HashMap<u64, BRepKind> = HashMap::new();
         let mut total_bytes: usize = 0;
         for (&id, shape) in &self.shapes {
             let Some(shape_ref) = shape.as_ref() else {
@@ -1913,7 +1913,7 @@ impl WarmStartable for OcctKernel {
         // successfully deserialized. Otherwise the kernel state is untouched.
         if !staged.is_empty() {
             // Rebuild repr map: for every successfully staged id, take the
-            // persisted repr if present, falling back to ReprKind::Solid
+            // persisted repr if present, falling back to BRepKind::Solid
             // (matches the implicit default in OcctKernel::store).
             // debug_assert guards against a future producer that serializes
             // warm.shapes and warm.reprs out of sync: if reprs is non-empty it
@@ -1926,7 +1926,7 @@ impl WarmStartable for OcctKernel {
                     "warm.reprs and warm.shapes are out of sync: \
                      id {id} present in shapes but missing from reprs"
                 );
-                let repr = warm.reprs.get(&id).copied().unwrap_or(ReprKind::Solid);
+                let repr = warm.reprs.get(&id).copied().unwrap_or(BRepKind::Solid);
                 new_reprs.insert(id, repr);
             }
             self.shapes = staged;
@@ -1992,7 +1992,7 @@ impl OcctKernel {
 
     /// Create a `width × height` rectangular face centered at the origin in
     /// the XY plane via the OCCT FFI and store it in the kernel, returning
-    /// its `GeometryHandleId` (registered with `ReprKind::Face`).
+    /// its `GeometryHandleId` (registered with `BRepKind::Face`).
     ///
     /// Exposed for integration tests of sweep history primitives
     /// (`extrude_with_history`, `revolve_with_history`) that need a planar
@@ -2002,13 +2002,13 @@ impl OcctKernel {
     pub fn store_rect_face_for_test(&mut self, width: f64, height: f64) -> GeometryHandleId {
         let shape = ffi::ffi::make_rect_face(width, height, 0.0, 0.0, 0.0)
             .expect("make_rect_face should succeed in test fixture");
-        let h = self.store_with_repr(shape, ReprKind::Face);
+        let h = self.store_with_repr(shape, BRepKind::Face);
         h.id
     }
 
     /// Create a `width × height` rectangular face in the XZ plane centered
     /// at `(cx, cy, cz)`, store it in the kernel, and return its
-    /// `GeometryHandleId` (registered with `ReprKind::Face`).
+    /// `GeometryHandleId` (registered with `BRepKind::Face`).
     ///
     /// Variant of `store_rect_face_for_test` purpose-built for the
     /// `revolve_with_history` integration test: the rect is placed in the
@@ -2033,13 +2033,13 @@ impl OcctKernel {
             .expect("rotate_shape should succeed in test fixture");
         let translated = ffi::ffi::translate_shape(&rotated, cx, cy, cz)
             .expect("translate_shape should succeed in test fixture");
-        let h = self.store_with_repr(translated, ReprKind::Face);
+        let h = self.store_with_repr(translated, BRepKind::Face);
         h.id
     }
 
     /// Create a triangular face in the plane Y=cy with vertices
     /// (x1, cy, z1), (x2, cy, z2), (x3, cy, z3), store it in the kernel,
-    /// and return its `GeometryHandleId` (registered with `ReprKind::Face`).
+    /// and return its `GeometryHandleId` (registered with `BRepKind::Face`).
     ///
     /// Used by the revolve history regression test (task 2636, step-3) to
     /// exercise a non-rectangular profile with one radial edge (bottom edge
@@ -2058,7 +2058,7 @@ impl OcctKernel {
     ) -> GeometryHandleId {
         let shape = ffi::ffi::make_triangle_face(x1, z1, x2, z2, x3, z3, cy)
             .expect("make_triangle_face should succeed in test fixture");
-        let h = self.store_with_repr(shape, ReprKind::Face);
+        let h = self.store_with_repr(shape, BRepKind::Face);
         h.id
     }
 
@@ -2445,11 +2445,11 @@ mod tests {
 
     #[test]
     fn repr_of_survives_warm_start_round_trip() {
-        // Pins the invariant that `repr_of` returns the correct ReprKind after a
+        // Pins the invariant that `repr_of` returns the correct BRepKind after a
         // warm_state()/with_warm_state() round-trip. Prior to the fix, OcctWarmState
         // did not persist the `reprs` map, so every restored handle returned None.
 
-        // 1. Build kernel A with a box → ReprKind::Solid (id 1).
+        // 1. Build kernel A with a box → BRepKind::Solid (id 1).
         let mut kernel_a = OcctKernel::new();
         let box_h = kernel_a
             .execute(&GeometryOp::Box {
@@ -2460,7 +2460,7 @@ mod tests {
             .expect("Box should succeed");
         let box_id = box_h.id;
 
-        // 2. Extract faces → each is ReprKind::Face. Capture the first face id.
+        // 2. Extract faces → each is BRepKind::Face. Capture the first face id.
         let faces = kernel_a
             .extract_faces(box_id)
             .expect("extract_faces on a valid box should succeed");
@@ -2470,13 +2470,13 @@ mod tests {
         // 3. Pre-condition: assert reprs are correct before warm-start.
         assert_eq!(
             kernel_a.repr_of(face_id),
-            Some(ReprKind::Face),
-            "pre-warm: face handle should have ReprKind::Face"
+            Some(BRepKind::Face),
+            "pre-warm: face handle should have BRepKind::Face"
         );
         assert_eq!(
             kernel_a.repr_of(box_id),
-            Some(ReprKind::Solid),
-            "pre-warm: box handle should have ReprKind::Solid"
+            Some(BRepKind::Solid),
+            "pre-warm: box handle should have BRepKind::Solid"
         );
 
         // 4. Round-trip.
@@ -2484,18 +2484,18 @@ mod tests {
         let mut kernel_b = OcctKernel::new();
         kernel_b.with_warm_state(state);
 
-        // 5. Post-warm: face handle must still report ReprKind::Face (the regression).
+        // 5. Post-warm: face handle must still report BRepKind::Face (the regression).
         assert_eq!(
             kernel_b.repr_of(face_id),
-            Some(ReprKind::Face),
-            "post-warm: face handle should have ReprKind::Face, not None"
+            Some(BRepKind::Face),
+            "post-warm: face handle should have BRepKind::Face, not None"
         );
 
-        // 6. Post-warm: box handle must still report ReprKind::Solid.
+        // 6. Post-warm: box handle must still report BRepKind::Solid.
         assert_eq!(
             kernel_b.repr_of(box_id),
-            Some(ReprKind::Solid),
-            "post-warm: box handle should have ReprKind::Solid"
+            Some(BRepKind::Solid),
+            "post-warm: box handle should have BRepKind::Solid"
         );
 
         // 7. Truly-unknown id must still report None.

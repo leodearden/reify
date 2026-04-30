@@ -2436,7 +2436,7 @@ Point3 query_centroid(const OcctShape& shape) {
 /// Surface-properties centroid for a 2D sub-shape (FACE).
 ///
 /// Used by the `GeometryQuery::Centroid` dispatch when the stored
-/// `ReprKind` is `Face` (extracted via `extract_faces`). Volume-based
+/// `BRepKind` is `Face` (extracted via `extract_faces`). Volume-based
 /// `query_centroid` returns mass=0 → origin for an isolated face, which
 /// is meaningless for downstream filters like `edges_at_height` that
 /// need the geometric centroid of the surface.

@@ -568,6 +568,16 @@ impl<'a> Lowering<'a> {
     }
 
     /// Extract type arguments from a node that has a type_args field or type_arg_list child.
+    ///
+    /// Type-arg-list elements come in two shapes:
+    /// - A `type_expr` / `parameterized_type` / `identifier` node, lowered to
+    ///   `TypeExprKind::Named` (or a deeper structure) via `lower_type_expr_node`.
+    /// - A `number_literal` node, used by parametric `Tensor<r,n,q>` and
+    ///   `Matrix<m,n,q>` syntax. Lowered to `TypeExprKind::IntegerLiteral`.
+    ///   Non-integer literals (e.g. `Tensor<2.5, ...>`) are recorded with the
+    ///   integer part dropped — type resolution issues a diagnostic when this
+    ///   variant appears in a non-Tensor/Matrix slot or when the literal is
+    ///   non-integral.
     fn lower_type_args_from_node(&self, node: tree_sitter::Node) -> Vec<TypeExpr> {
         let mut args = Vec::new();
         let mut cursor = node.walk();
@@ -580,6 +590,16 @@ impl<'a> Lowering<'a> {
                         || inner.kind() == "identifier"
                     {
                         args.push(self.lower_type_expr_node(inner));
+                    } else if inner.kind() == "number_literal" {
+                        let text = self.node_text(inner);
+                        // Parse as u32. Float literals (e.g. "2.5") fail to_parse and lower to 0;
+                        // type-resolution surfaces a diagnostic for non-integer / out-of-range
+                        // type arguments.
+                        let value: u32 = text.parse().unwrap_or(0);
+                        args.push(TypeExpr {
+                            kind: TypeExprKind::IntegerLiteral(value),
+                            span: self.span(inner),
+                        });
                     }
                 }
                 return args;

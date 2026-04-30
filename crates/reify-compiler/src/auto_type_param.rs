@@ -509,6 +509,11 @@ pub fn select_candidate(
     );
     match feasibility {
         FeasibilityResult::Empty { rejected } => {
+            debug_assert!(
+                !rejected.is_empty(),
+                "FeasibilityResult::Empty must carry at least one rejected candidate; \
+                 otherwise Phase A's empty-pool path would have fired first"
+            );
             let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
             // Per-rejection prose: each candidate paired with its violated
             // constraint ids. v0.1 encodes per-rejection details as a string;
@@ -529,11 +534,22 @@ pub fn select_candidate(
                 .collect::<Vec<_>>()
                 .join(", ");
             let rejected_names: Vec<String> = rejected.iter().map(|r| r.name.clone()).collect();
-            let message = format!(
-                "auto type parameter has no feasible candidates for bound '{bounds_str}': {summary}",
-                bounds_str = joined_bounds,
-                summary = rejection_summary,
-            );
+            // In debug builds the assert above fires before this point when
+            // `rejected` is empty. In release builds (where `debug_assert!`
+            // is a no-op), guard against the malformed trailing ': ' that
+            // would result from an empty `rejection_summary`.
+            let message = if rejection_summary.is_empty() {
+                format!(
+                    "auto type parameter has no feasible candidates for bound '{bounds_str}'",
+                    bounds_str = joined_bounds,
+                )
+            } else {
+                format!(
+                    "auto type parameter has no feasible candidates for bound '{bounds_str}': {summary}",
+                    bounds_str = joined_bounds,
+                    summary = rejection_summary,
+                )
+            };
             diagnostics.push(
                 Diagnostic::error(message)
                     .with_code(DiagnosticCode::AutoTypeParamNoCandidate)

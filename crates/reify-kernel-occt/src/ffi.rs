@@ -523,7 +523,7 @@ pub mod ffi {
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
         /// Surface-properties centroid for a 2D sub-shape (TopoDS_Face).
         /// Used by the `Centroid` query path when the stored repr is
-        /// `ReprKind::Face`, since `query_centroid` (volume-based) returns
+        /// `BRepKind::Face`, since `query_centroid` (volume-based) returns
         /// the origin for isolated faces with zero enclosed volume.
         fn query_face_centroid(shape: &OcctShape) -> Result<Point3>;
         fn query_bbox(shape: &OcctShape) -> Result<BBox>;

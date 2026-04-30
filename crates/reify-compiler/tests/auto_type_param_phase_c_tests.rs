@@ -505,3 +505,35 @@ fn single_feasible_candidate_returns_selected_regardless_of_free_flag() {
         );
     }
 }
+
+// ─── step-19: Empty.rejected must be non-empty (debug_assert!) ───────────
+
+/// Passing `FeasibilityResult::Empty { rejected: vec![] }` to
+/// `select_candidate` is a caller bug per the invariant established in
+/// Phase A. Phase A's empty-pool path emits `E_AUTO_TYPE_PARAM_POOL_OVERFLOW`
+/// before any feasibility check, so a normal flow can never reach
+/// `select_candidate` with `rejected = vec![]`; every `FeasibilityResult::Empty`
+/// produced in normal flow carries ≥1 `RejectedCandidate`. The `debug_assert!`
+/// exists to catch hand-constructed misuse (e.g., wiring a bare `Empty { rejected:
+/// vec![] }` directly to Phase C) and prevent the malformed diagnostic message
+/// that would otherwise result — one ending in `for bound 'Seal': ` (trailing
+/// colon-space, empty rejection_summary).
+///
+/// The `#[cfg(debug_assertions)]` gate skips this test in release builds where
+/// `debug_assert!` is a no-op, avoiding spurious test failures in optimized
+/// profiles. In debug builds (the default for `cargo test`), the assert fires
+/// and the `#[should_panic(expected = ...)]` attribute pins the exact message
+/// substring so that any future weakening or removal of the assert fails loudly.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "FeasibilityResult::Empty")]
+fn select_panics_on_empty_rejected_in_feasibility_empty() {
+    let feasibility = FeasibilityResult::Empty { rejected: vec![] };
+    let _ = select_candidate(
+        feasibility,
+        &["Seal".to_string()],
+        false,
+        SourceSpan::empty(0),
+        &mut Vec::new(),
+    );
+}

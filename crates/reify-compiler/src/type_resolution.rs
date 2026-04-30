@@ -94,6 +94,7 @@ pub(crate) fn resolve_dimension_type(
     let name = match &type_expr.kind {
         reify_syntax::TypeExprKind::Named { name, .. } => name.as_str(),
         reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
+        reify_syntax::TypeExprKind::IntegerLiteral(_) => return None,
     };
     // Scan the shared table (name → dimension direction).
     if let Some((dim, _)) = reify_types::NAMED_DIMENSIONS.iter().find(|(_, n)| *n == name) {
@@ -454,6 +455,12 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "DynamicViscosity" => Some(Type::Scalar {
             dimension: DimensionVector::DYNAMIC_VISCOSITY,
         }),
+        "MomentOfInertia" => Some(Type::Scalar {
+            dimension: DimensionVector::MOMENT_OF_INERTIA,
+        }),
+        "Density" => Some(Type::Scalar {
+            dimension: DimensionVector::MASS_DENSITY,
+        }),
         "Dimensionless" => Some(Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         }),
@@ -622,6 +629,16 @@ pub(crate) fn resolve_type_alias_expr(
             let empty_traits = HashSet::new();
             resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
         }
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` is only allowed as a type argument of `Tensor` or `Matrix`",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "integer literal not allowed in this position")),
+            );
+            None
+        }
     }
 }
 
@@ -666,6 +683,16 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
             );
             None
         }
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` cannot appear as a dimension type",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "expected a dimension name")),
+            );
+            None
+        }
     }
 }
 
@@ -687,6 +714,16 @@ pub(crate) fn resolve_type_expr_with_aliases(
             (name.as_str(), type_args.as_slice())
         }
         reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` is only allowed as a type argument of `Tensor` or `Matrix`",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "integer literal not allowed in this position")),
+            );
+            return None;
+        }
     };
     // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
     if !type_args.is_empty()
@@ -947,14 +984,26 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
             let empty_traits = HashSet::new();
             resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
         }
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` is only allowed as a type argument of `Tensor` or `Matrix`",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "integer literal not allowed in this position")),
+            );
+            None
+        }
     }
 }
 
-/// Resolve a parameterized builtin type constructor (List, Set, Map, Option)
-/// within a type alias RHS expression.
+/// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
+/// Tensor, Matrix, Scalar) within a type alias RHS expression.
 ///
 /// Each type argument is resolved recursively via `resolve_type_expr_with_aliases`,
 /// which allows inner type args to be trait names (e.g. `Option<MyTrait>`).
+/// `Tensor<rank, n, q>` and `Matrix<m, n, q>` consume two integer-literal args
+/// followed by a quantity type; `Scalar<Q>` consumes one quantity type-expression.
 ///
 /// `structure_names` and `trait_names` are threaded through so that inner args
 /// can be resolved to `Type::StructureRef` / `Type::TraitObject` respectively.
@@ -1022,7 +1071,68 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::Option(Box::new(inner)))
         }
+        "Scalar" if type_args.len() == 1 => {
+            // Scalar<Q>: resolve Q to a DimensionVector and wrap.
+            let dim = resolve_type_alias_expr_to_dimension(
+                &type_args[0],
+                alias_registry,
+                diagnostics,
+            )?;
+            Some(Type::Scalar { dimension: dim })
+        }
+        "Tensor" if type_args.len() == 3 => {
+            // Tensor<rank, n, Q>: two integer literals + a quantity type.
+            let rank = expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
+            let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
+            let quantity = resolve_type_expr_with_aliases(
+                &type_args[2],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::tensor(rank, n, quantity))
+        }
+        "Matrix" if type_args.len() == 3 => {
+            // Matrix<m, n, Q>: two integer literals + a quantity type.
+            let m = expect_integer_literal_type_arg(&type_args[0], "Matrix", "m", diagnostics)?;
+            let n = expect_integer_literal_type_arg(&type_args[1], "Matrix", "n", diagnostics)?;
+            let quantity = resolve_type_expr_with_aliases(
+                &type_args[2],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::matrix(m, n, quantity))
+        }
         _ => None,
+    }
+}
+
+/// Pull an unsigned integer out of a type-arg position that requires one
+/// (`Tensor<rank, n, Q>`, `Matrix<m, n, Q>`). Emits a diagnostic and returns
+/// `None` when the arg is not a `TypeExprKind::IntegerLiteral`.
+fn expect_integer_literal_type_arg(
+    type_expr: &reify_syntax::TypeExpr,
+    constructor: &str,
+    slot: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<usize> {
+    match &type_expr.kind {
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => Some(*n as usize),
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "`{}` expects an integer literal for `{}`, found `{}`",
+                    constructor, slot, type_expr
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "expected integer literal")),
+            );
+            None
+        }
     }
 }
 
@@ -1089,6 +1199,39 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
             )?;
             Some(Type::Option(Box::new(inner)))
         }
+        "Scalar" if type_args.len() == 1 => {
+            let dim = resolve_type_alias_expr_to_dim_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            Some(Type::Scalar { dimension: dim })
+        }
+        "Tensor" if type_args.len() == 3 => {
+            let rank = expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
+            let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
+            let quantity = resolve_type_alias_expr_with_subst(
+                &type_args[2],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::tensor(rank, n, quantity))
+        }
+        "Matrix" if type_args.len() == 3 => {
+            let m = expect_integer_literal_type_arg(&type_args[0], "Matrix", "m", diagnostics)?;
+            let n = expect_integer_literal_type_arg(&type_args[1], "Matrix", "n", diagnostics)?;
+            let quantity = resolve_type_alias_expr_with_subst(
+                &type_args[2],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::matrix(m, n, quantity))
+        }
         _ => None,
     }
 }
@@ -1145,6 +1288,16 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
             );
             None
         }
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` cannot appear as a dimension type",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "expected a dimension name")),
+            );
+            None
+        }
     }
 }
 
@@ -1162,6 +1315,8 @@ pub(crate) fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec
         reify_syntax::TypeExprKind::Named { name, type_args } => std::iter::once(name.clone())
             .chain(type_args.iter().flat_map(collect_type_expr_names))
             .collect(),
+        // Integer-literal type-args contribute no type *names* to dependency graphs.
+        reify_syntax::TypeExprKind::IntegerLiteral(_) => Vec::new(),
     }
 }
 
@@ -1263,6 +1418,12 @@ pub(crate) fn convert_type_params(
                              the parser only emits Named nodes for type-param defaults"
                     )
                 }
+                reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+                    unreachable!(
+                        "integer literal cannot appear as a type-parameter default; \
+                             the grammar restricts integer literals to type_arg_list slots"
+                    )
+                }
             });
             reify_types::TypeParam {
                 name: d.name.clone(),
@@ -1294,6 +1455,35 @@ mod tests {
             resolve_type_name("Money"),
             Some(Type::Scalar {
                 dimension: DimensionVector::MONEY
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_type_name_recognises_moment_of_inertia() {
+        assert_eq!(
+            resolve_type_name("MomentOfInertia"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::MOMENT_OF_INERTIA
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_type_name_recognises_density_as_mass_density() {
+        // User-facing "Density" resolves to the kg·m⁻³ mass-density singleton,
+        // NOT to MAGNETIC_FLUX_DENSITY. The Rust constant is renamed to
+        // MASS_DENSITY to make this distinction unambiguous at the source level.
+        assert_eq!(
+            resolve_type_name("Density"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY
+            })
+        );
+        assert_ne!(
+            resolve_type_name("Density"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::MAGNETIC_FLUX_DENSITY
             })
         );
     }

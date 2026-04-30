@@ -165,6 +165,16 @@ pub(super) fn check_phase_resolve_structure_members(
                     // cascade via the type_compat.rs producer-side wildcard.
                     Type::Error
                 }
+                reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!("unresolved type in conformance check: {}", te))
+                            .with_label(DiagnosticLabel::new(
+                                te.span,
+                                "integer literal not allowed in this position",
+                            )),
+                    );
+                    Type::Error
+                }
             }
         };
 

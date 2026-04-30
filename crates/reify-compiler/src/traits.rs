@@ -23,6 +23,7 @@ pub(crate) fn compile_trait(
                             Some((name.as_str(), type_args.as_slice()))
                         }
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                        reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
                     };
                     if let Some((name, type_args)) = name_opt {
                         if let Some(t) = resolve_type_with_aliases(
@@ -110,6 +111,7 @@ pub(crate) fn compile_trait(
                     let name_opt = match &type_expr.kind {
                         reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                        reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
                     };
                     if let Some(name) = name_opt {
                         match resolve_type_with_aliases(

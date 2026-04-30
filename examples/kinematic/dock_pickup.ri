@@ -1,0 +1,77 @@
+// Dock-pickup gantry worked example
+//
+// Demonstrates a 2-DOF gantry (j_y vertical lift, j_x horizontal reach)
+// picking up a tool from a parking station.  Verifies that at the home
+// position the head does not collide with the parked tool and that the
+// minimum clearance between them is ~580 mm.
+//
+// PRD ref:  docs/prds/kinematic-constraints.md task 10 (worked examples)
+//
+// ── v0.1 source-let positioning note ─────────────────────────────────────────
+// Reify v0.1 `interferes`, `interferes_with`, and `min_clearance` query the
+// OCCT kernel using source-let geometry placements, *not* the per-snapshot FK
+// world_transforms.  Geometry must therefore be pre-positioned at the
+// source-let level via `translate(box(...), …)` rather than relying on the
+// kinematic chain to move solids into place.
+//
+// The head and parked-tool solids are placed via source-lets:
+//   head_solid:        box at origin, spans [0,20]×[0,20]×[0,20] mm
+//   parked_tool_solid: box at +600 mm X, spans [600,620]×[0,20]×[0,20] mm
+//   → closest face-to-face gap = 600 mm − 20 mm = 580 mm
+//
+// FK joints (j_y, j_x) and the sweep are still declared to demonstrate the
+// full kinematic API surface.  Forward integration (v0.2) will remove the
+// explicit translate and let FK transforms drive the kernel.
+// ─────────────────────────────────────────────────────────────────────────────
+structure def DockPickup {
+    // Gantry Y joint: vertical lift axis, range 0..800 mm.
+    let j_y = prismatic(vec3(0, 1, 0), 0mm .. 800mm)
+    // Head X joint: horizontal reach axis, range 0..500 mm.
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+
+    // Source-let positioned solids (v0.1: OCCT kernel uses these, not FK).
+    let head_solid        = box(20mm, 20mm, 20mm)
+    let parked_tool_solid = translate(box(20mm, 20mm, 20mm), 600mm, 0mm, 0mm)
+
+    // Mechanism: head slides along j_x (parent = world); parked tool is fixed
+    // (also parent = world).  Body insertion order determines body IDs:
+    //   "head_solid"        → body_id_of result = 0
+    //   "parked_tool_solid" → body_id_of result = 1
+    let m0 = mechanism()
+    let m1 = body(m0, "head_solid", j_x)
+    let m2 = body(m1, "parked_tool_solid", fixed())
+
+    // Sweep: 5 equally-spaced head positions from 0 to 400 mm.
+    // Demonstrates the sweep API; snap_count == 5 is verified by a constraint.
+    //
+    // Note: `snaps` is used only to produce `snap_count` here.  The kinematic-
+    // query cells (pairs, collide, clearance) are driven by the separate `s`
+    // snapshot at the home position.  The v0.1 post-process resolves top-level
+    // `interferes(snapshot_let)` cells but does not recurse into `.map()` lambdas,
+    // so sweep-driven interference queries are not yet supported.  Forward
+    // integration (v0.2) will add sweep-level kinematic queries.
+    let snaps = sweep(m2, j_x, 0mm .. 400mm, 5)
+
+    // Single home-position snapshot for the interference probe.
+    // bind(j_y, 0mm) is recorded in the snapshot but ignored by FK evaluation
+    // (no body has j_y as its at-joint in this mechanism's spanning tree).
+    let s = snapshot(m2, [bind(j_x, 0mm), bind(j_y, 0mm)])
+
+    // Body IDs — used as selector arguments to interferes_with/min_clearance.
+    // These must be declared before the kinematic-query cells so the post-process
+    // can resolve their Int-valued args via resolve_int_value_ref.
+    let id_head = body_id_of(m2, "head_solid")
+    let id_park = body_id_of(m2, "parked_tool_solid")
+
+    // Kinematic-query cells (post-processed by engine.build + OCCT kernel).
+    // pure engine.eval() leaves these at Value::Undef; they are resolved when
+    // Engine::post_process_kinematic_queries runs inside engine.build().
+    let pairs     = interferes(s)
+    let collide   = interferes_with(s, id_head, id_park)
+    let clearance = min_clearance(s, id_head, id_park)
+
+    // Snap count — resolved by pure engine.eval() (no OCCT needed).
+    let snap_count = snaps.count
+
+    constraint snap_count == 5
+}

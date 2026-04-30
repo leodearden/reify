@@ -450,8 +450,8 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
 ///       `result_face_handles` as candidates. The resolver must return
 ///       `AttributeResolution::AmbiguousAfterSplit { children }` whose
 ///       handles match the SET of children we identified in (a). A
-///       `TopologyAttributeStale` diagnostic with the "split children"
-///       message sub-form must accompany the resolution.
+///       `TopologyAttributeAmbiguousAfterSplit` diagnostic must accompany
+///       the resolution.
 ///
 /// If OCCT's actual fuse output for two cubes offset by half-width
 /// produces NO parent face splits — possible for an aligned fuse where
@@ -725,7 +725,7 @@ fn mod_history_threading_with_orthogonal_slabs() {
 ///       user_label) and assert `resolve_unique_by_attribute` returns
 ///       `AttributeResolution::AmbiguousAfterSplit { children }` whose
 ///       set equals the propagated child set, plus exactly one
-///       `TopologyAttributeStale` diagnostic mentioning "split children".
+///       `TopologyAttributeAmbiguousAfterSplit` diagnostic.
 ///
 /// Last-write-wins discipline: a single result_subshape_index can be
 /// touched by records from multiple parents (e.g. an internal shared
@@ -933,14 +933,12 @@ fn assert_mod_history_propagation_and_clustering(
     assert_eq!(
         diagnostics.len(),
         1,
-        "expected exactly one TopologyAttributeStale diagnostic for the split-children resolution"
+        "expected exactly one TopologyAttributeAmbiguousAfterSplit diagnostic for the split-children resolution"
     );
     let diag = &diagnostics[0];
-    assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
-    assert!(
-        diag.message.contains("split children"),
-        "diagnostic message must mention 'split children', got: {}",
-        diag.message
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
     );
 
     ClusteringCoverage {

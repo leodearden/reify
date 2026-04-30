@@ -580,7 +580,7 @@ pub fn solve_loop_closure(
 /// Returns `None` on any shape error:
 /// - a `loop_closures` entry is not a `Value::Map`
 /// - `path_a` or `path_b` fields are missing or not a `Value::List`
-/// - either path is empty (no world sentinel to strip)
+/// - either path has fewer than 2 elements (the stripped tail would not terminate at a closing joint)
 /// - the first element of a path does not have `kind = "world"`
 ///
 /// Downstream contract: chains terminate at the closing joint (the last
@@ -2147,6 +2147,68 @@ mod tests {
             super::mechanism_loop_closure_chains(&Value::Map(mech)),
             Some(vec![]),
             "a Mechanism Map without the loop_closures field must yield Some(empty)"
+        );
+    }
+
+    /// Pins that `mechanism_loop_closure_chains` correctly extracts
+    /// `(chain_a, chain_b)` for the cycle/self-loop case, where `path_b`
+    /// contains the closing joint twice.  Specifically:
+    ///
+    /// - `chain_a == [j_b]`            (path_a = [world, j_b] stripped)
+    /// - `chain_b == [j_b, j_a, j_b]`  (path_b = [world, j_b, j_a, j_b] stripped)
+    /// - both chains terminate at `j_b` (the closing joint)
+    ///
+    /// Both paths have length ≥ 2, so `strip_world_sentinel` accepts them.
+    /// Regression-proofs the cycle path's length≥2 invariant against any
+    /// future change to `strip_world_sentinel` or the cycle branch of
+    /// `append_body`, and pins the duplicated-closing-joint shape called
+    /// out in `mechanism_loop_closure_chains`'s docstring caveat.
+    #[test]
+    fn mechanism_loop_closure_chains_extracts_cycle_pair() {
+        use crate::eval_builtin;
+
+        // Build joints using the existing test helpers.
+        let j_a = prismatic_x_0_to_1();
+        let j_b = revolute_z_0_to_pi();
+        let solid_a = Value::String("solidA".to_string());
+        let solid_b = Value::String("solidB".to_string());
+
+        // Two-body cycle: body(m0, solid_a, j_a, j_b) then body(m1, solid_b, j_b, j_a).
+        // After body-1: joint_parents = {j_a: j_b}.
+        // body-2 triggers cycle_introduced → records loop closure with:
+        //   path_a = [world, j_b]            (at=j_b, walk_to_world(jp, j_b)=[j_b])
+        //   path_b = [world, j_b, j_a, j_b]  (walk_to_world(jp, j_a)=[j_b,j_a], j_b appended)
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_a.clone(), j_b.clone()]);
+        let m2 = eval_builtin("body", &[m1, solid_b, j_b.clone(), j_a.clone()]);
+
+        let chains = super::mechanism_loop_closure_chains(&m2);
+        assert!(
+            chains.is_some(),
+            "mechanism_loop_closure_chains must return Some for a cycle mechanism"
+        );
+        let pairs = chains.unwrap();
+        assert_eq!(pairs.len(), 1, "one loop-closure pair expected");
+
+        let (chain_a, chain_b) = &pairs[0];
+        // chain_a = [j_b]  (world sentinel stripped from [world, j_b])
+        assert_eq!(chain_a, &vec![j_b.clone()], "chain_a should be [j_b]");
+        // chain_b = [j_b, j_a, j_b]  (world sentinel stripped from [world, j_b, j_a, j_b])
+        assert_eq!(
+            chain_b,
+            &vec![j_b.clone(), j_a.clone(), j_b.clone()],
+            "chain_b should be [j_b, j_a, j_b] (closing joint duplicated)"
+        );
+        // Both chains end with j_b (the closing joint).
+        assert_eq!(
+            chain_a.last(),
+            Some(&j_b),
+            "chain_a must terminate at j_b (the closing joint)"
+        );
+        assert_eq!(
+            chain_b.last(),
+            Some(&j_b),
+            "chain_b must terminate at j_b (the closing joint)"
         );
     }
 

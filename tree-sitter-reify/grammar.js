@@ -598,9 +598,14 @@ module.exports = grammar({
       '>',
     ),
 
+    // type_arg_list: comma-separated list of type arguments. Each element is either
+    // a type expression (`Box<T>`, `Vec3<Force>`) or an integer literal — required
+    // for parametric types like `Tensor<rank, n, quantity>` and `Matrix<m, n, q>`.
+    // The integer-vs-float / non-negative-integer constraint is enforced at type
+    // resolution, not at parse time.
     type_arg_list: $ => seq(
-      $.type_expr,
-      repeat(seq(',', $.type_expr)),
+      choice($.type_expr, $.number_literal),
+      repeat(seq(',', choice($.type_expr, $.number_literal))),
       optional(','),
     ),
 

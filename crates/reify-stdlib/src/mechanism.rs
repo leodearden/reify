@@ -354,24 +354,18 @@ fn cycle_introduced(
 /// `next_id`, and `kind` fields verbatim and appends `error`,
 /// `error_path1`, `error_path2`, `error_message`.
 ///
-/// Under v0.2 the only caller is the duplicate-solid branch of
-/// `append_body`, which always passes empty `path1`/`path2` Lists since
-/// `duplicate_solid` has no path-shaped diagnostic context (the
-/// `error_path1`/`error_path2` fields are retained as empty Lists for
-/// shape uniformity with the v0.1 error-Map convention). The v0.1
-/// closed-chain conflict path also called this; in v0.2 that path
-/// records a loop closure instead and no longer emits an error Map.
-fn make_error_mechanism(
+/// The sole caller is the duplicate-solid branch of `append_body`.
+/// `error_path1` and `error_path2` are emitted as empty `Value::List`s
+/// for v0.1 error-Map shape uniformity (see module-level doc lines 13-16);
+/// `duplicate_solid` has no path-shaped diagnostic context.
+fn make_duplicate_solid_error(
     mech_map: &BTreeMap<Value, Value>,
-    error_kind: &str,
-    path1: Vec<Value>,
-    path2: Vec<Value>,
     message: String,
 ) -> Value {
     let mut new_map = mech_map.clone();
     new_map.insert(
         Value::String("error".to_string()),
-        Value::String(error_kind.to_string()),
+        Value::String("duplicate_solid".to_string()),
     );
     new_map.insert(
         Value::String("error_message".to_string()),
@@ -379,11 +373,11 @@ fn make_error_mechanism(
     );
     new_map.insert(
         Value::String("error_path1".to_string()),
-        Value::List(path1),
+        Value::List(Vec::new()),
     );
     new_map.insert(
         Value::String("error_path2".to_string()),
-        Value::List(path2),
+        Value::List(Vec::new()),
     );
     Value::Map(new_map)
 }
@@ -482,11 +476,8 @@ fn append_body(
         if let Value::Map(b) = existing
             && b.get(&Value::String("solid".to_string())) == Some(&solid)
         {
-            return make_error_mechanism(
+            return make_duplicate_solid_error(
                 mech_map,
-                "duplicate_solid",
-                Vec::new(),
-                Vec::new(),
                 "duplicate solid: solid value already attached to a body in this mechanism"
                     .to_string(),
             );
@@ -962,7 +953,7 @@ mod tests {
     /// - bodies[1].at == j_x, bodies[1].parent == j_b, bodies[1].id == Int(1)
     /// - `joint_parents.get(j_x) == Some(j_a)` (first-recorded edge wins)
     /// - `loop_closures` is a List with exactly one Map entry:
-    ///   kind="loop_closure", body_id=Int(1), closing_joint=j_x,
+    ///   `kind="loop_closure"`, `body_id=Int(1)`, `closing_joint=j_x`,
     ///   path_a=[world, j_a, j_x], path_b=[world, j_b, j_x]
     #[test]
     fn parent_conflict_records_loop_closure_constraint() {
@@ -1087,9 +1078,9 @@ mod tests {
     ///   edge is NOT recorded in joint_parents)
     /// - loop_closures has one entry with:
     ///   kind="loop_closure", body_id=Int(1), closing_joint=j_b,
-    ///   path_a=[world, j_b]  (walk_to_world({j_a:j_b}, j_b) = [j_b]; world prepended)
-    ///   path_b=[world, j_b, j_a, j_b]  (walk_to_world({j_a:j_b}, j_a)=[j_b,j_a] top-down;
-    ///   world prepended; closing edge at=j_b appended)
+    ///   path_a=[world, j_b]  (walk_to_world({j_a:j_b}, j_b) = [j_b]; world prepended);
+    ///   path_b=[world, j_b, j_a, j_b]  (walk_to_world({j_a:j_b}, j_a)=[j_b,j_a]
+    ///   top-down; world prepended; closing edge at=j_b appended)
     #[test]
     fn cycle_records_loop_closure_constraint() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
@@ -1322,8 +1313,9 @@ mod tests {
     // ── duplicate-solid detection ────────────────────────────────────────
 
     /// `body()` calls that try to insert the same solid value twice
-    /// produce an errored Mechanism Map with `error="duplicate_solid"`
-    /// and a non-empty `error_message`.
+    /// produce an errored Mechanism Map with `error="duplicate_solid"`,
+    /// a non-empty `error_message`, and empty-List `error_path1`/`error_path2`
+    /// fields (shape-uniformity with the v0.1 error-Map convention).
     ///
     /// v0.1 detects duplicates by **structural** `Value` equality —
     /// the docs §13.2 spec says "by referential identity" but Reify's
@@ -1358,6 +1350,16 @@ mod tests {
             }
             other => panic!("expected error_message String, got {:?}", other),
         }
+        assert_eq!(
+            map.get(&Value::String("error_path1".to_string())),
+            Some(&Value::List(vec![])),
+            "error_path1 should be an empty List for duplicate_solid"
+        );
+        assert_eq!(
+            map.get(&Value::String("error_path2".to_string())),
+            Some(&Value::List(vec![])),
+            "error_path2 should be an empty List for duplicate_solid"
+        );
     }
 
     // ── body_id_of() lookup ──────────────────────────────────────────────

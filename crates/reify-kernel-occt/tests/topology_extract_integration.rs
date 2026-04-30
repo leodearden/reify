@@ -2,14 +2,14 @@
 //! `extract_faces` on the public OcctKernel API (task 318).
 //!
 //! These selectors materialize each unique sub-shape (deduplicated by
-//! `IsSame`) into a fresh kernel handle whose ReprKind reflects the
+//! `IsSame`) into a fresh kernel handle whose BRepKind reflects the
 //! sub-shape kind (`Edge` or `Face`).
 
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
 use reify_types::{
-    GeometryHandleId, GeometryOp, GeometryQuery, QueryError, ReprKind, Value, WarmStartable,
+    GeometryHandleId, GeometryOp, GeometryQuery, QueryError, BRepKind, Value, WarmStartable,
 };
 
 /// Helper: build a kernel containing one box of the given mm dimensions
@@ -76,8 +76,8 @@ fn extract_edges_handles_have_edge_repr_kind() {
             .unwrap_or_else(|| panic!("repr_of({:?}) returned None for an extracted edge", id));
         assert_eq!(
             repr,
-            ReprKind::Edge,
-            "extracted edge handle {:?} should have ReprKind::Edge, got {:?}",
+            BRepKind::Edge,
+            "extracted edge handle {:?} should have BRepKind::Edge, got {:?}",
             id,
             repr
         );
@@ -120,8 +120,8 @@ fn extract_faces_box_returns_six_distinct_face_handles() {
             .unwrap_or_else(|| panic!("repr_of({:?}) returned None for an extracted face", id));
         assert_eq!(
             repr,
-            ReprKind::Face,
-            "extracted face handle {:?} should have ReprKind::Face, got {:?}",
+            BRepKind::Face,
+            "extracted face handle {:?} should have BRepKind::Face, got {:?}",
             id,
             repr
         );
@@ -502,7 +502,7 @@ fn centroid_of_face_handle_survives_warm_start_round_trip() {
     );
 
     // 7. Specifically assert the face centroid is NOT the origin (z ≠ 0).
-    // Before the fix, the face handle loses its ReprKind::Face classification
+    // Before the fix, the face handle loses its BRepKind::Face classification
     // after warm-start, causing dispatch to the volume-based query_centroid
     // which returns (0,0,0) for sub-faces. This assertion catches that regression.
     assert!(

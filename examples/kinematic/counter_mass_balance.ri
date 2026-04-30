@@ -1,0 +1,73 @@
+// Counter-mass-balance worked example
+//
+// Demonstrates the COM-stationarity invariant:
+// When a head slides +X via a prismatic joint and a counter-mass slides -X
+// via a couple(-1) derivation, the system's center of mass stays fixed at
+// the origin regardless of the joint position.
+//
+// PRD refs:
+//   - docs/prds/kinematic-constraints.md task 6 (center_of_mass)
+//   - docs/prds/kinematic-constraints.md task 10 (worked examples)
+//
+// Acceptance criterion mirror:
+//   crates/reify-stdlib/src/snapshot.rs::tests::center_of_mass_counter_mass_balance_stationarity
+//   proves the FK + couple(-1) + center_of_mass pipeline produces a stationary
+//   origin within 1e-9 m.  This .ri file replays that scenario via sweep().
+structure def CounterMassBalance {
+    // Joint: prismatic along +X, range 0..500 mm
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    // Couple: counter-mass moves -1× j_x (equal-and-opposite)
+    let j_cm = couple(j_x, -1.0)
+
+    // Solids (equal mass — uniform density, same geometry)
+    let head    = box(20mm, 20mm, 20mm)
+    let counter = box(20mm, 20mm, 20mm)
+
+    // Mechanism: two bodies, each bound to one joint
+    let m0 = mechanism()
+    let m1 = body(m0, "head", j_x)
+    let m2 = body(m1, "counter", j_cm)
+
+    // Sweep head joint over full range → 11 evenly-spaced snapshots
+    let snaps = sweep(m2, j_x, 0mm .. 500mm, 11)
+
+    // Center of mass for each snapshot.
+    //
+    // COM-stationarity invariant (PRD task 6 acceptance criterion):
+    //   Because j_cm = couple(j_x, -1.0), the counter-mass displaces exactly
+    //   opposite to the head.  With equal-mass (equal-geometry) bodies the
+    //   system COM remains at the origin for all joint positions.
+    //
+    // Unit-test mirror:
+    //   crates/reify-stdlib/src/snapshot.rs::tests::center_of_mass_counter_mass_balance_stationarity
+    //   proves this invariant holds within 1e-9 m at the Rust level.
+    //   This .ri replays the same scenario through surface syntax.
+    //
+    // Note: Reify v0.1 grammar does not support `expr.method(lambda)` syntax
+    // (member_access is zero-arg only; function_call requires a bare identifier).
+    // Use the free-function form `flat_map(list, |x| [f(x)])` instead.
+    let coms = flat_map(snaps, |s| [center_of_mass(s)])
+
+    // Magnitude of each COM from the origin (a LENGTH-dimensioned scalar).
+    // flat_map is used (see note above — .map(lambda) is not supported in v0.1).
+    let com_magnitudes = flat_map(coms, |c| [magnitude(c)])
+
+    // Stationarity predicate: all COM magnitudes are < 1um.
+    //
+    // 1um tolerance is generous relative to the 1e-9 m Rust-level bound in
+    // center_of_mass_counter_mass_balance_stationarity; it avoids surfacing
+    // floating-point noise as a constraint violation while the Rust test is
+    // free to assert the tighter bound directly.
+    //
+    // forall-in syntax is used because .all(lambda) is not supported in v0.1
+    // (see note above); the parameter is named `d` (not `m`) to avoid
+    // shadowing the meter unit identifier `m`.
+    let stationary = forall d in com_magnitudes: d < 1um
+
+    // Count of snapshots (informational — used by constraint and test assertions).
+    let snap_count = snaps.count
+
+    // Constraint verification (PRD task 10 acceptance criterion)
+    constraint snap_count == 11
+    constraint stationary
+}

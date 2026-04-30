@@ -26,6 +26,7 @@ mod geometry_ops;
 pub mod graph;
 pub mod journal;
 pub mod primitive_attribute_seed;
+pub mod realization_cache;
 pub mod snapshot;
 pub mod test_runner;
 pub mod tolerance_bucket;
@@ -38,6 +39,7 @@ pub mod topology_selectors;
 mod unfold;
 pub mod warm_pool;
 pub use primitive_attribute_seed::seed_primitive_attributes;
+pub use realization_cache::RealizationCache;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 pub use topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,

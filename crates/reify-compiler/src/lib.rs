@@ -24,6 +24,7 @@ pub mod geometry_traits;
 pub mod geometry_traits_inference;
 mod guards;
 mod ice;
+mod list_helpers;
 pub mod module_dag;
 mod module_pragmas;
 pub mod prelude_context;
@@ -62,6 +63,7 @@ pub(crate) use geometry_modify::*;
 pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
 pub(crate) use ice::*;
+pub(crate) use list_helpers::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
 pub(crate) use termination::*;

@@ -34,12 +34,15 @@ impl GeometryHandleId {
 #[derive(Debug, Clone)]
 pub struct GeometryHandle {
     pub id: GeometryHandleId,
-    pub repr: ReprKind,
+    pub repr: BRepKind,
 }
 
-/// What kind of geometric representation this handle holds.
+/// B-rep sub-shape classifier for geometry handles managed by the OCCT kernel.
+///
+/// Renamed from `ReprKind` (task 2640) to free the `ReprKind` name for the
+/// multi-kernel coarse classifier (`BRep | Mesh | Sdf | Voxel`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReprKind {
+pub enum BRepKind {
     /// B-rep solid.
     Solid,
     /// Shell (open or closed).
@@ -56,6 +59,32 @@ pub enum ReprKind {
     ///
     /// Distinct from `Shell` (which is a collection of faces, possibly closed).
     Face,
+}
+
+/// Multi-kernel representation family classifier.
+///
+/// Classifies the broad representation family a geometry handle belongs to,
+/// independent of any particular kernel's internal sub-shape hierarchy.
+/// Use this as the outer key of [`crate::RealizationCache`] (together with
+/// `entity_id` and tolerance) to keep per-family caches isolated.
+///
+/// Defined in PRD `docs/prds/v0_2/multi-kernel.md` "Resolved design decisions":
+/// four variants at the kernel-family level. Extensible in non-breaking minor
+/// versions — match arms should always include a catch-all to remain forward-
+/// compatible once this enum is stabilised.
+///
+/// See also [`BRepKind`] for the finer-grained B-rep sub-shape classifier
+/// (Solid / Shell / Wire / Compound / Edge / Face) used by the OCCT kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReprKind {
+    /// Boundary-representation solid (OCCT / OpenCASCADE B-rep kernel).
+    BRep,
+    /// Surface mesh (triangle or quad mesh, e.g. Manifold).
+    Mesh,
+    /// Signed-distance field / implicit surface (e.g. Fidget).
+    Sdf,
+    /// Volumetric voxel grid (e.g. OpenVDB).
+    Voxel,
 }
 
 /// Operations that can be sent to a geometry kernel.
@@ -669,7 +698,7 @@ pub trait GeometryKernel: Send + Sync {
     /// Extract the unique edges of a shape, storing each as a new handle.
     ///
     /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
-    /// edge sub-shape (with `ReprKind::Edge`). The ordering follows the
+    /// edge sub-shape (with `BRepKind::Edge`). The ordering follows the
     /// kernel's canonical `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration,
     /// deduplicated by `TopoDS_Shape::IsSame`.
     ///
@@ -688,7 +717,7 @@ pub trait GeometryKernel: Send + Sync {
     /// Extract the unique faces of a shape, storing each as a new handle.
     ///
     /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
-    /// face sub-shape (with `ReprKind::Face`). The ordering follows the
+    /// face sub-shape (with `BRepKind::Face`). The ordering follows the
     /// kernel's canonical `TopExp::MapShapes(.., TopAbs_FACE, ..)` enumeration,
     /// deduplicated by `TopoDS_Shape::IsSame`.
     ///
@@ -1899,28 +1928,28 @@ mod tests {
     }
 
     #[test]
-    fn repr_kind_face_and_edge_variants_exist() {
-        // Construct and pattern-match the new ReprKind::Edge variant.
-        let edge_repr = ReprKind::Edge;
+    fn b_rep_kind_face_and_edge_variants_exist() {
+        // Construct and pattern-match the BRepKind::Edge variant.
+        let edge_repr = BRepKind::Edge;
         match edge_repr {
-            ReprKind::Edge => {}
-            other => panic!("expected ReprKind::Edge, got {:?}", other),
+            BRepKind::Edge => {}
+            other => panic!("expected BRepKind::Edge, got {:?}", other),
         }
 
-        // Construct and pattern-match the new ReprKind::Face variant.
-        let face_repr = ReprKind::Face;
+        // Construct and pattern-match the BRepKind::Face variant.
+        let face_repr = BRepKind::Face;
         match face_repr {
-            ReprKind::Face => {}
-            other => panic!("expected ReprKind::Face, got {:?}", other),
+            BRepKind::Face => {}
+            other => panic!("expected BRepKind::Face, got {:?}", other),
         }
 
         // Edge and Face must be distinguishable from each other and from
         // existing variants (Wire/Shell/Solid/Compound).
-        assert_ne!(ReprKind::Edge, ReprKind::Face);
-        assert_ne!(ReprKind::Edge, ReprKind::Wire);
-        assert_ne!(ReprKind::Face, ReprKind::Shell);
-        assert_ne!(ReprKind::Edge, ReprKind::Solid);
-        assert_ne!(ReprKind::Face, ReprKind::Compound);
+        assert_ne!(BRepKind::Edge, BRepKind::Face);
+        assert_ne!(BRepKind::Edge, BRepKind::Wire);
+        assert_ne!(BRepKind::Face, BRepKind::Shell);
+        assert_ne!(BRepKind::Edge, BRepKind::Solid);
+        assert_ne!(BRepKind::Face, BRepKind::Compound);
 
         // Construct and pattern-match the new GeometryQuery::EdgeLength variant.
         let edge_len = GeometryQuery::EdgeLength(GeometryHandleId(7));
@@ -2378,7 +2407,7 @@ mod tests {
                 self.next_id += 1;
                 Ok(GeometryHandle {
                     id: GeometryHandleId(id),
-                    repr: ReprKind::Solid,
+                    repr: BRepKind::Solid,
                 })
             }
 
@@ -2763,7 +2792,7 @@ mod tests {
                 self.next_id += 1;
                 Ok(GeometryHandle {
                     id: GeometryHandleId(id),
-                    repr: ReprKind::Solid,
+                    repr: BRepKind::Solid,
                 })
             }
 
@@ -3197,5 +3226,87 @@ mod tests {
             edges: &[&[][..], &[][..]],
         };
         let _ = parents.edge_slices();
+    }
+
+    /// Verify that `BRepKind` (renamed from `ReprKind`) retains `Hash + Eq + Copy + Debug`
+    /// so it can act as a `HashMap` key and be compared / logged by callers.
+    ///
+    /// All six B-rep sub-shape variants must be pairwise distinct.
+    #[test]
+    fn b_rep_kind_variants_round_trip_through_hashmap_key() {
+        use std::collections::HashMap;
+        let variants = [
+            BRepKind::Solid,
+            BRepKind::Shell,
+            BRepKind::Wire,
+            BRepKind::Compound,
+            BRepKind::Edge,
+            BRepKind::Face,
+        ];
+
+        // All variants are pairwise distinct.
+        for i in 0..variants.len() {
+            for j in 0..variants.len() {
+                if i != j {
+                    assert_ne!(variants[i], variants[j], "expected distinct variants at {i} and {j}");
+                }
+            }
+        }
+
+        // All six variants survive a HashMap round-trip (requires Hash + Eq).
+        let mut map: HashMap<BRepKind, u32> = HashMap::new();
+        for (idx, v) in variants.iter().enumerate() {
+            map.insert(*v, idx as u32); // *v requires Copy
+        }
+        assert_eq!(map.len(), 6, "all 6 BRepKind variants must be stored as distinct keys");
+        for (idx, v) in variants.iter().enumerate() {
+            assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
+        }
+    }
+
+    /// Verify that the new multi-kernel `ReprKind` (BRep | Mesh | Sdf | Voxel) has
+    /// `Hash + Eq + Copy + Debug` and that all four variants are pairwise distinct.
+    ///
+    /// The compile-time `match` arm at the end proves exhaustiveness — any future
+    /// variant addition will cause a compile error here, prompting the developer to
+    /// update the test and the RealizationCache's handling.
+    #[test]
+    fn repr_kind_kernel_family_variants_round_trip_through_hashmap_key() {
+        use std::collections::HashMap;
+        let variants = [
+            ReprKind::BRep,
+            ReprKind::Mesh,
+            ReprKind::Sdf,
+            ReprKind::Voxel,
+        ];
+
+        // All four variants are pairwise distinct (6 pairs).
+        for i in 0..variants.len() {
+            for j in 0..variants.len() {
+                if i != j {
+                    assert_ne!(variants[i], variants[j], "expected distinct variants at {i} and {j}");
+                }
+            }
+        }
+
+        // All four variants survive a HashMap round-trip (requires Hash + Eq + Copy).
+        let mut map: HashMap<ReprKind, u32> = HashMap::new();
+        for (idx, v) in variants.iter().enumerate() {
+            map.insert(*v, idx as u32); // *v requires Copy
+        }
+        assert_eq!(map.len(), 4, "all 4 ReprKind variants must be stored as distinct keys");
+        for (idx, v) in variants.iter().enumerate() {
+            assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
+        }
+
+        // Compile-time exhaustiveness check: this match must cover all variants.
+        // If a new variant is added, this will fail to compile.
+        let v = ReprKind::BRep;
+        match v {
+            ReprKind::BRep => {}
+            ReprKind::Mesh => {}
+            ReprKind::Sdf => {}
+            ReprKind::Voxel => {}
+        }
     }
 }

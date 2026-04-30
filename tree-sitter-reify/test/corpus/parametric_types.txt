@@ -1,0 +1,63 @@
+================================================================================
+Parametric Tensor with integer rank/n and a quantity type
+================================================================================
+
+fn f() -> Tensor<2, 3, MomentOfInertia> { 0 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    return_type: (type_expr
+      (parameterized_type
+        name: (identifier)
+        type_args: (type_arg_list
+          (number_literal)
+          (number_literal)
+          (type_expr
+            (identifier)))))
+    (fn_body
+      result: (number_literal))))
+
+================================================================================
+Parametric Matrix with integer m/n and a quantity type
+================================================================================
+
+fn g() -> Matrix<3, 2, Length> { 0 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    return_type: (type_expr
+      (parameterized_type
+        name: (identifier)
+        type_args: (type_arg_list
+          (number_literal)
+          (number_literal)
+          (type_expr
+            (identifier)))))
+    (fn_body
+      result: (number_literal))))
+
+================================================================================
+Parametric Scalar with one quantity type-arg
+================================================================================
+
+fn h() -> Scalar<Density> { 0 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    return_type: (type_expr
+      (parameterized_type
+        name: (identifier)
+        type_args: (type_arg_list
+          (type_expr
+            (identifier)))))
+    (fn_body
+      result: (number_literal))))

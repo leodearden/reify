@@ -386,22 +386,15 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
     /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
-    /// invariant is violated for the supplied `AttributeQuery`).
+    /// invariant is violated for the supplied `AttributeQuery`), specifically for
+    /// genuine-ambiguity outcomes (zero-match or mixed parent-keys).
     ///
-    /// Canonical message forms:
+    /// Canonical message form:
     ///   - `"topology-attribute selector matched <N> sub-shapes (expected exactly 1; topology may have changed)"`
     ///     — emitted on a zero-match miss or a multi-match where the matched
     ///     candidates have MIXED parent-keys (genuine ambiguity, e.g. label
     ///     collision across distinct features). Resolution outcome:
     ///     `AttributeResolution::Unresolved`.
-    ///   - `"topology-attribute selector matched <N> split children of the same parent (disambiguate via split_by(...) selector once vocabulary v2 lands)"`
-    ///     — emitted on a multi-match where ALL matched candidates share the
-    ///     parent-key (`feature_id, role, local_index, user_label`) and only
-    ///     differ in `mod_history`. The post-split-cluster sub-form added in
-    ///     task #2653; resolution outcome:
-    ///     `AttributeResolution::AmbiguousAfterSplit { children }`. Per PRD
-    ///     `docs/prds/v0_2/persistent-naming-v2.md` line 64, this surfaces the
-    ///     children set for user disambiguation rather than silently rebinding.
     ///
     /// Two labels accompany the warning where information is available:
     ///   - a primary label at the selector call site (`"selector call"`); and
@@ -417,8 +410,32 @@ pub enum DiagnosticCode {
     /// test assertions and downstream tooling distinguish a v0.1 selector failure
     /// from a v0.2 attribute-resolver failure during the migration window.
     ///
+    /// The split-cluster sub-form (post-split-cluster outcome) has its own typed
+    /// variant: see [`TopologyAttributeAmbiguousAfterSplit`].
+    ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_STALE`.
     TopologyAttributeStale,
+    /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::emit_split_children_diagnostic`.
+    ///
+    /// Emitted as a `Warning` when the v0.2 attribute resolver encounters a
+    /// multi-match where ALL matched candidates share the same parent-key
+    /// (`feature_id`, `role`, `local_index`, `user_label`) and differ only in
+    /// `mod_history` — the signature of a post-split cluster. Resolution outcome:
+    /// `AttributeResolution::AmbiguousAfterSplit { children }`.
+    ///
+    /// Canonical message form:
+    ///   `"topology-attribute selector matched <N> split children of the same parent (disambiguate via split_by(...) selector once vocabulary v2 lands)"`
+    ///
+    /// Per PRD `docs/prds/v0_2/persistent-naming-v2.md` line 64, the resolver
+    /// surfaces the children set for user disambiguation rather than silently
+    /// rebinding. This is the typed disambiguation of the post-split-cluster
+    /// outcome introduced in task #2653, distinct from the genuine-ambiguity
+    /// case which retains [`TopologyAttributeStale`].
+    ///
+    /// A primary label is emitted at the selector call site (`"selector call"`).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT`.
+    TopologyAttributeAmbiguousAfterSplit,
     /// Origin: `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs`.
     ///
     /// Emitted as an `Error` when a `param`, `port`, or `sub` declaration appears
@@ -1134,6 +1151,41 @@ mod tests {
     fn diagnostic_code_field_sampled_invalid_config_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::FieldSampledInvalidConfig).unwrap();
         assert_eq!(s, "\"FieldSampledInvalidConfig\"");
+    }
+
+    // --- TopologyAttributeAmbiguousAfterSplit tests (task 2721 — W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT) ---
+    // Pairs with `emit_split_children_diagnostic` in
+    // `crates/reify-eval/src/topology_attribute_resolver.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip, severity, and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TopologyAttributeAmbiguousAfterSplit` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)`.
+    /// Pins the warning-severity contract and variant existence for the typed
+    /// disambiguation of the post-split-cluster outcome (`AttributeResolution::AmbiguousAfterSplit`).
+    #[test]
+    fn diagnostic_code_topology_attribute_ambiguous_after_split_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x")
+            .with_code(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TopologyAttributeAmbiguousAfterSplit`
+    /// serializes as `"TopologyAttributeAmbiguousAfterSplit"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_topology_attribute_ambiguous_after_split_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::TopologyAttributeAmbiguousAfterSplit).unwrap();
+        assert_eq!(s, "\"TopologyAttributeAmbiguousAfterSplit\"");
     }
 }
 
