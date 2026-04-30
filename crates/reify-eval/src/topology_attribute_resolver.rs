@@ -820,57 +820,6 @@ mod tests {
         );
     }
 
-    /// Multi-match with mixed parent-keys must stay Unresolved (genuine
-    /// ambiguity, not a split).
-    ///
-    /// Two candidates share `(role, local_index) = (Role::Side, 0)` but
-    /// originate from distinct features ("Boss" vs "Slot"). Per PRD line
-    /// 64, this is a TRUE ambiguity — not a split — and the resolver must
-    /// route it through the Unresolved arm with the canonical "matched 2
-    /// sub-shapes" diagnostic, NOT the new "split children" sub-form.
-    ///
-    /// Pins the disambiguation between split-clusters
-    /// (`AmbiguousAfterSplit`) and genuine ambiguity (`Unresolved`).
-    /// Distinct from `unresolved_with_diagnostic_when_multi_match`
-    /// (which exercises the same negative path with different fixture
-    /// handles); together the two tests pin the contract from two
-    /// independent setups.
-    #[test]
-    fn resolve_keeps_unresolved_for_distinct_parent_keys_in_multi_match() {
-        let boss = FeatureId::new("Boss");
-        let slot = FeatureId::new("Slot");
-        let mut table = TopologyAttributeTable::default();
-        table.record(h(80), attr_for(boss, Role::Side, 0, None));
-        table.record(h(81), attr_for(slot, Role::Side, 0, None));
-        let candidates = [h(80), h(81)];
-        let query = AttributeQuery {
-            user_label: None,
-            role_and_index: Some((Role::Side, 0)),
-            feature_id: None,
-        };
-        let mut diagnostics = Vec::new();
-        let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
-        assert_eq!(
-            result,
-            AttributeResolution::Unresolved,
-            "mixed parent-keys → Unresolved, not AmbiguousAfterSplit"
-        );
-        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        let diag = &diagnostics[0];
-        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
-        assert!(
-            diag.message.contains("matched 2 sub-shapes"),
-            "message should contain 'matched 2 sub-shapes' (genuine-ambiguity sub-form), got: {}",
-            diag.message
-        );
-        assert!(
-            !diag.message.contains("split children"),
-            "mixed-parent multi-match must NOT use the split-children sub-form, got: {}",
-            diag.message
-        );
-    }
-
     /// Zero-match unresolved diagnostic emission.
     ///
     /// At least one candidate has an attribute entry (so we are NOT in the
