@@ -192,6 +192,15 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
     // Emit a structured debug event for the four AutoTypeParam diagnostic codes
     // so protocol-level debugging can observe code/severity/candidates without
     // parsing message text. Filterable via RUST_LOG=reify_lsp::auto_type_param=debug.
+    //
+    // Behavioral note: unlike the previous `#[cfg(debug_assertions)] eprintln!(...)`
+    // block (compiled out entirely in release builds), this call executes in release
+    // builds as well. The cost in the default configuration is negligible: a metadata
+    // lookup plus an `enabled()` check, both short-circuiting before any allocation.
+    // This is intentional — operators can opt in to DEBUG-level tracing in production
+    // via `RUST_LOG=reify_lsp::auto_type_param=debug`, which the old `eprintln!` gate
+    // could not provide. This matches the unconditional `tracing::debug!` pattern
+    // established in `crates/reify-constraints/src/solver.rs`.
     if let Some(
         DiagnosticCode::AutoTypeParamPoolOverflow
         | DiagnosticCode::AutoTypeParamNoCandidate
@@ -709,13 +718,33 @@ mod tests {
     ///
     /// This test fails on the `eprintln!`-based code (counter stays at 0) and
     /// passes once the `tracing::debug!` implementation is in place.
+    ///
+    /// # Field-level coverage
+    ///
+    /// This test intentionally does not assert on individual field values (`code`,
+    /// `severity`, `candidates`). The load-bearing contract is that each AutoTypeParam
+    /// code emits *a* debug event on the correct target and that non-matching codes do
+    /// not; field-value pinning would couple the test to `?Debug` format stability
+    /// without locking in a meaningful invariant. The structured field schema is
+    /// documented in the plan's design decisions instead.
+    ///
+    /// A DEBUG-level field-capturing subscriber (analogous to `warn_capturing_subscriber`
+    /// in `reify-test-support`) does not yet exist in the workspace. If field-level
+    /// regression coverage becomes important, the right approach is to extend
+    /// `reify-test-support` with a generic level-parameterised capturing subscriber,
+    /// then add a second test here that calls `assert_any_event_has_fields` for the
+    /// `code`, `severity`, and `candidates` fields.
     #[test]
     fn convert_diagnostic_emits_tracing_debug_only_for_auto_type_param_codes() {
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .target_prefix("reify_lsp::auto_type_param")
             .count_level(tracing::Level::DEBUG)
             .build();
-        let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
+        let debug_count = std::sync::Arc::clone(
+            counters
+                .get(&tracing::Level::DEBUG)
+                .expect("DEBUG counter must be registered — add .count_level(Level::DEBUG) to the builder"),
+        );
 
         tracing::subscriber::with_default(subscriber, || {
             let source = "auto";
