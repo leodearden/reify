@@ -3237,4 +3237,50 @@ mod tests {
             assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
         }
     }
+
+    /// Verify that the new multi-kernel `ReprKind` (BRep | Mesh | Sdf | Voxel) has
+    /// `Hash + Eq + Copy + Debug` and that all four variants are pairwise distinct.
+    ///
+    /// The compile-time `match` arm at the end proves exhaustiveness — any future
+    /// variant addition will cause a compile error here, prompting the developer to
+    /// update the test and the RealizationCache's handling.
+    #[test]
+    fn repr_kind_kernel_family_variants_round_trip_through_hashmap_key() {
+        use std::collections::HashMap;
+        let variants = [
+            ReprKind::BRep,
+            ReprKind::Mesh,
+            ReprKind::Sdf,
+            ReprKind::Voxel,
+        ];
+
+        // All four variants are pairwise distinct (6 pairs).
+        for i in 0..variants.len() {
+            for j in 0..variants.len() {
+                if i != j {
+                    assert_ne!(variants[i], variants[j], "expected distinct variants at {i} and {j}");
+                }
+            }
+        }
+
+        // All four variants survive a HashMap round-trip (requires Hash + Eq + Copy).
+        let mut map: HashMap<ReprKind, u32> = HashMap::new();
+        for (idx, v) in variants.iter().enumerate() {
+            map.insert(*v, idx as u32); // *v requires Copy
+        }
+        assert_eq!(map.len(), 4, "all 4 ReprKind variants must be stored as distinct keys");
+        for (idx, v) in variants.iter().enumerate() {
+            assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
+        }
+
+        // Compile-time exhaustiveness check: this match must cover all variants.
+        // If a new variant is added, this will fail to compile.
+        let v = ReprKind::BRep;
+        match v {
+            ReprKind::BRep => {}
+            ReprKind::Mesh => {}
+            ReprKind::Sdf => {}
+            ReprKind::Voxel => {}
+        }
+    }
 }
