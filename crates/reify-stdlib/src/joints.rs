@@ -3740,6 +3740,10 @@ mod tests {
     /// - 3-arg call → Undef (arity guard preserved)
     /// - 1-arg call with prismatic joint → Undef (1-arg only valid for fixed)
     /// - 1-arg call with revolute joint → Undef (1-arg only valid for fixed)
+    /// - 1-arg call with planar joint → Undef (1-arg only valid for fixed)
+    /// - 1-arg call with spherical joint → Undef (1-arg only valid for fixed)
+    /// - 1-arg call with cylindrical joint → Undef (1-arg only valid for fixed)
+    /// - 1-arg call with non-Map first arg (Undef, Real) → Undef (Map-check preserved)
     #[test]
     fn transform_at_fixed_with_one_arg_returns_identity_transform() {
         let fj = eval_builtin("fixed", &[]);
@@ -3785,6 +3789,34 @@ mod tests {
         assert!(
             eval_builtin("transform_at", &[rj]).is_undef(),
             "transform_at(revolute): expected Undef (1-arg form is fixed-only)"
+        );
+
+        // (f) 1-arg planar joint → Undef (locks full joint taxonomy: 1-arg is fixed-only)
+        assert!(
+            eval_builtin("transform_at", &[planar_xy_joint()]).is_undef(),
+            "transform_at(planar): expected Undef (1-arg form is fixed-only)"
+        );
+
+        // (g) 1-arg spherical joint → Undef (locks full joint taxonomy: 1-arg is fixed-only)
+        assert!(
+            eval_builtin("transform_at", &[spherical_joint()]).is_undef(),
+            "transform_at(spherical): expected Undef (1-arg form is fixed-only)"
+        );
+
+        // (h) 1-arg cylindrical joint → Undef (locks full joint taxonomy: 1-arg is fixed-only)
+        assert!(
+            eval_builtin("transform_at", &[cylindrical_z_joint()]).is_undef(),
+            "transform_at(cylindrical): expected Undef (1-arg form is fixed-only)"
+        );
+
+        // (i) 1-arg non-Map first arg → Undef (Map-check fires before kind dispatch)
+        assert!(
+            eval_builtin("transform_at", &[Value::Undef]).is_undef(),
+            "transform_at(Undef): expected Undef (non-Map first arg)"
+        );
+        assert!(
+            eval_builtin("transform_at", &[Value::Real(0.0)]).is_undef(),
+            "transform_at(Real): expected Undef (non-Map first arg)"
         );
     }
 
