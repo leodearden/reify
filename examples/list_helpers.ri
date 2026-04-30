@@ -1,0 +1,13 @@
+// Smoke fixture: stdlib list helpers `single` and `flat_map` (task 2698).
+//
+// Exercises the function-call form used by the topology-selectors PRD
+// worked example, but with simple Int lists so this fixture has no
+// topology / sibling-task dependencies. The full topology fixture
+// (`examples/topology_selectors/fillet_top_edges.ri`) remains SKIP'd
+// until tasks 2699 (topology selectors) and 2691 (deepening) land.
+
+structure def ListHelpersSmoke {
+    let xs = [1, 2, 3]
+    let only_one = single([42])
+    let doubled = flat_map(xs, |x| [x, x])
+}
