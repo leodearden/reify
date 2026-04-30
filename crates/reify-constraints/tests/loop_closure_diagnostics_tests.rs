@@ -479,3 +479,116 @@ fn solve_loop_closure_with_diagnostics_balanced_full_rank_emits_no_diagnostics()
         report.outcome
     );
 }
+
+/// Fills the (under-constrained × full-rank) cell of the 2×2 (pre-check ×
+/// singularity) coverage matrix:
+///
+/// |                      | full-rank Jacobian                              | singular Jacobian                                      |
+/// |----------------------|-------------------------------------------------|--------------------------------------------------------|
+/// | balanced (len==6)    | `balanced_full_rank_emits_no_diagnostics` ✓     | `emits_singularity_for_rank_one_chain` ✓               |
+/// | under-constrained    | **this test** ✓                                 | `emits_underconstrained_for_seven_dofs` ✓              |
+///
+/// ## Construction
+///
+/// The chain is `[prismatic_x, prismatic_y, prismatic_z, revolute_x,
+/// revolute_y, revolute_z, prismatic_x]` — 7 joints.  The first 6 span all
+/// 6 components of the closure-residual twist (proven in
+/// `balanced_full_rank_emits_no_diagnostics`); the 7th redundant
+/// `prismatic_x` pushes `free_b.len()` to 7, triggering the
+/// under-constrained pre-check (`free_b.len() > SINGLE_LOOP_RESIDUAL_COUNT`).
+///
+/// `chain_a == chain_b` at `vals_a == vals_b_initial` produces an
+/// identically-zero residual at iteration 0.  `newton_solve`'s convergence
+/// check fires BEFORE `JᵀJ` is built or `LDLᵀ` is invoked, so the solver
+/// returns `Converged` in 0
+/// iters.  With `LDLᵀ` never running, `NewtonOutcome::Singular` is
+/// **structurally unreachable** → the wrapper's singularity post-process
+/// cannot fire.
+///
+/// ## What this pins
+///
+/// A regression that broke ONLY the under-constrained branch (without also
+/// breaking the singularity branch) would still pass
+/// `emits_underconstrained_for_seven_dofs` (because the singularity warning
+/// would still appear), but it would FAIL HERE because the under-constrained
+/// warning would be absent and the diagnostic count would be 0 instead of 1.
+#[test]
+fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jacobian() {
+    let chain: Vec<Value> = vec![
+        prismatic_x_0_to_1(),
+        prismatic_y_0_to_1(),
+        prismatic_z_0_to_1(),
+        revolute_x_0_to_pi(),
+        revolute_y_0_to_pi(),
+        revolute_z_0_to_pi(),
+        prismatic_x_0_to_1(), // 7th joint: redundant → free_b.len()=7 > 6
+    ];
+    let vals = vec![0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.5];
+    let chain_a = chain.clone();
+    let vals_a = vals.clone();
+    let chain_b = chain;
+    let vals_b_initial = vals.clone(); // identity residual: chain_a == chain_b at same vals
+    let free_b: Vec<usize> = (0..7).collect();
+    let strategy = StartStrategy::WarmStart(vals.clone());
+    let cfg = NewtonConfig::default();
+
+    let report = solve_loop_closure_with_diagnostics(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b_initial,
+        &free_b,
+        &strategy,
+        &cfg,
+    );
+
+    // At least one diagnostic must exist: the under-constrained pre-check warning.
+    // Using >=1 (rather than ==1) keeps this check independent of the
+    // KinematicSingularity bleed-through assertion below — both carry real weight.
+    assert!(
+        report.diagnostics.len() >= 1,
+        "expected at least one under-constrained diagnostic, got {:?}",
+        report.diagnostics
+    );
+    let d = &report.diagnostics[0];
+    assert_eq!(
+        d.severity,
+        Severity::Warning,
+        "KinematicUnderconstrained must be Warning severity, got {:?}",
+        d.severity
+    );
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::KinematicUnderconstrained),
+        "diagnostic code must be KinematicUnderconstrained, got {:?}",
+        d.code
+    );
+
+    // Decoupling guarantee: no singularity bleed-through.
+    // Independent of the >=1 length check above — a regression that caused
+    // KinematicSingularity to co-emit (e.g. if the LDLᵀ path fired) would
+    // fail here even if the under-constrained diagnostic is also present.
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::KinematicSingularity)),
+        "full-rank construction must NOT emit KinematicSingularity, got {:?}",
+        report.diagnostics
+    );
+
+    // is_singular must stay false — the LDLᵀ path was never taken.
+    assert!(
+        !report.is_singular,
+        "full-rank construction must NOT lift is_singular, got is_singular={} (outcome={:?})",
+        report.is_singular,
+        report.outcome,
+    );
+
+    // Zero initial residual → Converged in 0 iters.
+    assert!(
+        matches!(report.outcome, NewtonOutcome::Converged { .. }),
+        "expected Converged on identity residual, got {:?}",
+        report.outcome
+    );
+}
