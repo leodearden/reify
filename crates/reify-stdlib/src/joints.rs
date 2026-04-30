@@ -750,6 +750,29 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // arms): the result is zero regardless of the stored range_angle, so a
         // hand-built Map with a missing field returns the same correct placeholder.
         "spherical" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        // 2-DOF cylindrical joint: returns a `Value::List` of two analytic twist
+        // columns (one per DOF) — element [0] is the prismatic-DOF column
+        // (angular=0, linear=unit_axis) and element [1] is the revolute-DOF
+        // column (angular=unit_axis, linear=0). The per-DOF ordering invariant
+        // ([0]=prismatic, [1]=revolute) is documented so future analytic-Jacobian
+        // composition can rely on it (PRD task 5).
+        //
+        // The List-of-Maps shape (vs. a single Map) is non-Undef — passes the
+        // `joint_jacobian_dispatches_for_every_joint_kind` coverage test — and
+        // also naturally signals to `loop_closure::per_joint_jacobian_local`
+        // (which calls `twist_map_to_array` expecting a single Map) to return
+        // None, triggering the documented FD-fallback path. This contrasts with
+        // the planar/spherical zero-twist Map placeholder pattern: cylindrical's
+        // analytic per-DOF columns are simple enough to emit cleanly.
+        "cylindrical" => {
+            let [nax, nay, naz] = match unit_axis_from_map(map) {
+                Some(a) => a,
+                None => return Value::Undef,
+            };
+            let prismatic_col = make_jacobian([0.0, 0.0, 0.0], [nax, nay, naz]);
+            let revolute_col = make_jacobian([nax, nay, naz], [0.0, 0.0, 0.0]);
+            Value::List(vec![prismatic_col, revolute_col])
+        }
         "coupling" => {
             let parent_map = match map.get(&Value::String("parent".to_string())) {
                 Some(Value::Map(pm)) => pm,
