@@ -64,3 +64,37 @@ fn select_returns_no_candidate_and_emits_error_when_feasibility_is_empty() {
         Some(DiagnosticCode::AutoTypeParamNoCandidate)
     );
 }
+
+// ─── step-3: single-feasible — Selected, no diagnostic ───────────────────
+
+/// When `FeasibilityResult::Feasible` carries exactly one accepted candidate,
+/// `select_candidate` returns [`SelectionResult::Selected(name)`] and emits
+/// no diagnostic. There is nothing to disambiguate when only one candidate
+/// is feasible.
+#[test]
+fn select_returns_selected_for_single_feasible_candidate_with_no_diagnostic() {
+    let feasibility = FeasibilityResult::Feasible {
+        accepted: vec!["ORingSeal".to_string()],
+        rejected: vec![],
+    };
+
+    let mut diagnostics = Vec::new();
+    let result = select_candidate(
+        feasibility,
+        &["Seal".to_string()],
+        false,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        result,
+        SelectionResult::Selected("ORingSeal".to_string()),
+        "single feasible candidate must be Selected directly"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "single feasible candidate must emit no diagnostic, got: {:?}",
+        diagnostics
+    );
+}
