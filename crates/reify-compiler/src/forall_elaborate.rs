@@ -570,23 +570,39 @@ pub(crate) fn elaborate_forall_connect(
                     let right_substituted = substitute_expr(&cd.right.expr, &bindings);
 
                     // Resolve each substituted side to a flat port-name
-                    // string. `resolve_port_name` returns None for shapes
-                    // it does not understand (e.g. an arbitrary expression
-                    // tree); in that case skip capture without diagnostic.
-                    // Such shapes would already have errored on the
-                    // resolved (non-deferred) path; the silent skip here
-                    // mirrors the Constraint arm's "trust the captured
-                    // template" policy and avoids spurious diagnostics on
-                    // a path that compile_connection wouldn't normally
-                    // reach.
-                    let left_port_template = match resolve_port_name(&left_substituted) {
-                        Some(s) => s,
-                        None => return,
-                    };
-                    let right_port_template = match resolve_port_name(&right_substituted) {
-                        Some(s) => s,
-                        None => return,
-                    };
+                    // string. `resolve_port_name` understands:
+                    //   * bare `Ident` ("air_channel")
+                    //   * `Ident.member` ("v.inlet" → "vents[0].inlet")
+                    //   * `Ident[N].member` ("vents[0].inlet")
+                    //   * `Ident[N]` ("vents[0]")
+                    //   * `AdHocSelector` patterns
+                    // Anything outside this set (e.g. a doubly-nested
+                    // MemberAccess like `vents[0].inner.a` produced by
+                    // substituting `v.inner.a`) returns None.
+                    //
+                    // On the deferred path `compile_connection` is NEVER
+                    // invoked, so no resolved-path error can fire here.
+                    // Silently skipping would leave the user with no
+                    // connections and no diagnostic — task 2717 fixes this
+                    // by emitting an info diagnostic before the early return.
+                    let (left_port_template, right_port_template) =
+                        match (resolve_port_name(&left_substituted), resolve_port_name(&right_substituted)) {
+                            (Some(l), Some(r)) => (l, r),
+                            _ => {
+                                diagnostics.push(
+                                    Diagnostic::info(
+                                        "forall connect with unsupported left/right port shape \
+                                         over deferred-count collections will not re-elaborate \
+                                         at runtime (task 2690 future scope)",
+                                    )
+                                    .with_label(DiagnosticLabel::new(
+                                        decl.span,
+                                        "port shape not supported",
+                                    )),
+                                );
+                                return;
+                            }
+                        };
 
                     // task-2690 amendment: surface the connector-spec drop.
                     //

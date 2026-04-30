@@ -2275,13 +2275,17 @@ structure S {
 fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_info_diagnostic() {
     use reify_types::Severity;
 
+    // `sub inner : Inner` is not valid Reify syntax (sub requires a List<T>
+    // type).  Instead we write `v.inner.a` directly — the parser accepts any
+    // chained member-access expression in a connect body, and the deferred
+    // path never validates port semantics (compile_connection is not called).
+    // After substitution v → vents[0], the left side becomes
+    // `MemberAccess { object: MemberAccess { IndexAccess(vents,0), "inner" }, "a" }`
+    // which hits the `_ => None` arm of resolve_port_name.
     let source = r#"
 trait Air { param d : Length }
-structure def Inner {
-    port a : out Air { param d : Length = 5mm }
-}
 structure def Vent {
-    sub inner : Inner
+    port inlet : out Air { param d : Length = 5mm }
 }
 structure def S {
     sub vents : List<Vent>
