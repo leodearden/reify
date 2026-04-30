@@ -263,4 +263,52 @@ mod tests {
             );
         }
     }
+
+    /// Three None-return branches must all hold:
+    ///   (a) no conversion path from any available repr to the demanded repr;
+    ///   (b) op never declared on any reachable repr;
+    ///   (c) registry empty.
+    #[test]
+    fn dispatch_returns_none_when_no_chain_exists() {
+        // (a) occt only supports BRep ops, no conversion to Mesh; Mesh demand
+        //     is unreachable.
+        let occt = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &occt);
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::BRep);
+        assert_eq!(
+            dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available),
+            None,
+            "(a) demanded repr Mesh unreachable from {{BRep}} via no conversions ⇒ None",
+        );
+
+        // (b) Demand-repr matches kernel's declared support repr (BRep), but
+        //     `available` is empty AND no conversion exists to bring any repr
+        //     into scope. Frontier seeded empty ⇒ never enters the probe.
+        let empty_available: HashSet<ReprKind> = HashSet::new();
+        assert_eq!(
+            dispatch(&registry, Operation::BooleanUnion, ReprKind::BRep, &empty_available),
+            None,
+            "(b) demanded BRep is in occt's supports table but `available` is empty ⇒ None",
+        );
+
+        // (c) Op not in any descriptor (registry has only Convert + a single
+        //     boolean) — query a Modify op and expect None.
+        assert_eq!(
+            dispatch(&registry, Operation::ModifyFillet, ReprKind::BRep, &available),
+            None,
+            "(c) ModifyFillet not in any kernel's supports ⇒ None",
+        );
+
+        // Edge case: empty registry. Frontier is seeded but nothing matches.
+        let empty_registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        assert_eq!(
+            dispatch(&empty_registry, Operation::BooleanUnion, ReprKind::Mesh, &available),
+            None,
+            "edge: empty registry ⇒ None",
+        );
+    }
 }
