@@ -127,10 +127,7 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 _ => return Some(Value::Undef),
             };
 
-            let bindings_list = match &args[1] {
-                Value::List(b) => b.as_slice(),
-                _ => return Some(Value::Undef), // unreachable: validated above.
-            };
+            let bindings_list = bindings_entries.as_slice();
 
             // Per-snapshot memoization cache for joint world transforms.
             // Keys are joint Map values themselves — equal joints share
