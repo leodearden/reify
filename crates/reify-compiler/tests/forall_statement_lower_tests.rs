@@ -2255,6 +2255,105 @@ structure S {
     }
 }
 
+/// task 2717: when `resolve_port_name` returns `None` for a substituted port
+/// expression over a deferred-count collection, an `info` diagnostic is emitted
+/// before the early return so the user can discover the limitation.
+///
+/// Fixture: `v.inner.a` (3-level dotted access) substitutes to
+/// `MemberAccess { object: MemberAccess { ... }, member: "a" }` — the outer
+/// `MemberAccess.object` is itself a `MemberAccess`, which `resolve_port_name`
+/// doesn't understand → returns `None`.
+///
+/// Pins:
+/// (a) No errors (deferred path bypasses `compile_connection`).
+/// (b) Zero `CompiledConnections` and zero `forall@*` constraint labels.
+/// (c) Zero `CompiledForallTemplates` — early return preserves no-capture semantics.
+/// (d) Exactly one `Severity::Info` diagnostic whose message contains both
+///     `"port shape"` and `"task 2690 future scope"`.
+/// (e) The diagnostic's primary label span equals `find_forall_connect_span(source, "S")`.
+#[test]
+fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_info_diagnostic() {
+    use reify_types::Severity;
+
+    let source = r#"
+trait Air { param d : Length }
+structure def Inner {
+    port a : out Air { param d : Length = 5mm }
+}
+structure def Vent {
+    sub inner : Inner
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inner.a -> air_channel
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall connect with unsupported \
+         port shape, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero CompiledConnections and zero forall@* constraint labels.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) Zero captured runtime templates — early return preserves no-capture semantics.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall connect \
+         with unsupported port shape (early return), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one info diagnostic whose message contains "port shape" and
+    //     "task 2690 future scope".
+    let info_diags: Vec<&reify_types::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .filter(|d| d.message.contains("port shape") && d.message.contains("task 2690 future scope"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 info diagnostic naming the unsupported port shape, \
+         got {}: {:?}",
+        info_diags.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (e) Diagnostic label span matches the source forall span.
+    let forall_span = find_forall_connect_span(source, "S");
+    let diag = info_diags[0];
+    let label_spans: Vec<reify_types::SourceSpan> =
+        diag.labels.iter().map(|l| l.span).collect();
+    assert!(
+        label_spans.contains(&forall_span),
+        "expected diagnostic label span to match the source forall span; \
+         labels = {:?}, forall_span = {:?}",
+        label_spans,
+        forall_span
+    );
+}
+
 /// `forall v in vents: connect v.inlet <-> air_channel` over a 3-element
 /// `bidi`-ported collection sub should emit exactly 3 `CompiledConnection`s,
 /// each with `operator == ConnectOp::Bidirectional`. Pins that `cd.operator`
