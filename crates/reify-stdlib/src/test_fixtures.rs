@@ -60,3 +60,10 @@ pub(crate) fn planar_xy_joint() -> Value {
 pub(crate) fn spherical_joint() -> Value {
     eval_builtin("spherical", &[angle_range_0_to_pi()])
 }
+
+pub(crate) fn cylindrical_z_joint() -> Value {
+    eval_builtin(
+        "cylindrical",
+        &[axis_z_unit(), length_range_0_to_1m(), angle_range_0_to_pi()],
+    )
+}

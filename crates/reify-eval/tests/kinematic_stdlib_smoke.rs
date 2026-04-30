@@ -54,6 +54,12 @@ use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 ///   `sj_xform_euler` = `transform_at(sj, q_euler_in)` → Transform { rotation=q_euler_in, translation=0 }
 ///   `sj_euler_back`  = `orient_to_euler("xyz", q_euler_in)` → List of 3 angle scalars (round-trips to 0.1, 0.2, 0.3)
 ///   `sj_aa_back`     = `orient_to_axis_angle(q_euler_in)` → Map { angle, axis } (axis-angle facade)
+///   `cyl`            = `cylindrical(vec3(0,0,1), 0mm..1mm, 0rad..pi rad)`
+///                     → Map { kind="cylindrical", axis, translation_range, rotation_range } (4 keys)
+///   `cyl_xform`      = `transform_at(cyl, [1mm, π/2rad])`
+///                     → Transform { rotation=(cos(π/4),0,0,sin(π/4)), translation=[0,0,1mm] }
+///   `cyl_jac`        = `joint_jacobian(cyl)` → 2-element List of analytic twist columns
+///                     [ Map{angular=[0,0,0], linear=[0,0,1]}, Map{angular=[0,0,1], linear=[0,0,0]} ]
 ///   `screw_joint`    = `screw(prism, 1mm)` → coupling Map { kind="coupling", ratio=1mm/(2π) }
 ///   `screw_xform`    = `transform_at(screw_joint, 6.283185307179586)` (2π rad-equivalent input)
 ///                     → Transform { translation=[1mm,0,0], rotation=identity }
@@ -102,6 +108,10 @@ structure def Kinematic {
     let sj_xform_euler = transform_at(sj, q_euler_in)
     let sj_euler_back  = orient_to_euler("xyz", q_euler_in)
     let sj_aa_back     = orient_to_axis_angle(q_euler_in)
+
+    let cyl       = cylindrical(vec3(0, 0, 1), 0mm .. 1mm, 0rad .. 3.141592653589793rad)
+    let cyl_xform = transform_at(cyl, [1mm, 1.5707963267948966rad])
+    let cyl_jac   = joint_jacobian(cyl)
 
     let screw_joint  = screw(prism, 1mm)
     let screw_xform  = transform_at(screw_joint, 6.283185307179586)
@@ -692,6 +702,84 @@ fn kinematic_stdlib_smoke_e2e() {
     assert!(
         pos_diff < 1e-12 || neg_diff < 1e-12,
         "sj_aa_back: axis-angle round-trip failed; reconstructed ±({recon_w}, {recon_x}, {recon_y}, {recon_z}), expected ({qei_w}, {qei_x}, {qei_y}, {qei_z})"
+    );
+
+    // ── cylindrical joint (2-DOF: prismatic ⊕ revolute on a shared axis) ─
+    // cyl = cylindrical(vec3(0, 0, 1), 0mm..1mm, 0rad..π) → flat Map with the
+    // four keys { kind, axis, translation_range, rotation_range }, mirroring
+    // the prismatic/revolute flat-Map convention. PRD v0.2 kinematic task 5.
+    let cyl = get_value(v, "cyl");
+    let cyl_map = match cyl {
+        Value::Map(m) => m,
+        other => panic!("cyl: expected Map, got {other:?}"),
+    };
+    assert_eq!(
+        cyl_map.get(&Value::String("kind".to_string())),
+        Some(&Value::String("cylindrical".to_string())),
+        "cyl: kind field should be 'cylindrical'"
+    );
+    assert_eq!(
+        cyl_map.len(),
+        4,
+        "cyl: Map should have exactly 4 keys (kind, axis, translation_range, rotation_range)"
+    );
+    for required in ["axis", "translation_range", "rotation_range"] {
+        assert!(
+            cyl_map.contains_key(&Value::String(required.to_string())),
+            "cyl: Map missing required key '{required}'"
+        );
+    }
+
+    // cyl_xform = transform_at(cyl, [1mm, π/2 rad]) → Transform with
+    //   rotation = axis_angle_quaternion(unit_z, π/2) = (cos(π/4), 0, 0, sin(π/4))
+    //   translation = 1mm * unit_z = [0, 0, 1e-3] (LENGTH-dimensioned).
+    // Translation along axis n and rotation about n commute in SE(3), so the
+    // single-step construction is unambiguous (no compose round-trip).
+    let cyl_xform = get_value(v, "cyl_xform");
+    let (cx_rot, cx_trans) = match cyl_xform {
+        Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+        other => panic!("cyl_xform: expected Transform, got {other:?}"),
+    };
+    let cyl_cos = std::f64::consts::FRAC_PI_4.cos();
+    let cyl_sin = std::f64::consts::FRAC_PI_4.sin();
+    assert_orientation_close(cx_rot, (cyl_cos, 0.0, 0.0, cyl_sin), 1e-12, "cyl_xform rotation");
+    assert_vec3_close(cx_trans, [0.0, 0.0, 1e-3], 1e-12, "cyl_xform translation");
+    assert_vec3_dim(cx_trans, DimensionVector::LENGTH, "cyl_xform translation dim");
+
+    // cyl_jac = joint_jacobian(cyl) → Value::List of two analytic twist columns:
+    //   [0] = prismatic DOF: angular=[0,0,0], linear=unit_axis = [0,0,1]
+    //   [1] = revolute DOF:  angular=unit_axis = [0,0,1], linear=[0,0,0]
+    // The List shape (vs single Map) is the 2-DOF representation; per_joint_
+    // jacobian_local interprets the List as the FD-fallback signal in
+    // loop_closure.
+    let cyl_jac = get_value(v, "cyl_jac");
+    let cyl_jac_items = match cyl_jac {
+        Value::List(items) if items.len() == 2 => items,
+        other => panic!("cyl_jac: expected 2-element List, got {other:?}"),
+    };
+    assert_vec3_close(
+        map_vec3(&cyl_jac_items[0], "angular", "cyl_jac[0].angular"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "cyl_jac[0].angular (prismatic DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&cyl_jac_items[0], "linear", "cyl_jac[0].linear"),
+        [0.0, 0.0, 1.0],
+        1e-12,
+        "cyl_jac[0].linear (prismatic DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&cyl_jac_items[1], "angular", "cyl_jac[1].angular"),
+        [0.0, 0.0, 1.0],
+        1e-12,
+        "cyl_jac[1].angular (revolute DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&cyl_jac_items[1], "linear", "cyl_jac[1].linear"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "cyl_jac[1].linear (revolute DOF)",
     );
 
     // ── Coupling specialisations: screw, gear, rack_and_pinion (task 2676) ─

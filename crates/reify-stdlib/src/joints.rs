@@ -115,6 +115,34 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
             make_spherical(args[0].clone())
         }
+        // 2-DOF cylindrical joint: composite of prismatic ⊕ revolute on a single
+        // shared axis. Per PRD v0_2/kinematic-constraints.md §"Decomposition plan"
+        // task 5.
+        //
+        // Signature: cylindrical(axis, translation_range, rotation_range)
+        // where axis is a dimensionless Vector3 (finite, non-zero), translation_range
+        // is a LENGTH range (bounded), and rotation_range is an ANGLE range (bounded).
+        // The raw (unnormalised) axis is stored; normalisation happens at
+        // `transform_at` and `joint_jacobian` time — matching the prismatic /
+        // revolute / planar precedent.
+        "cylindrical" => {
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            // Validate axis: dimensionless Vector3, finite, non-zero.
+            if validate_axis(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            // Validate translation_range: bounded, LENGTH-dimensioned.
+            if validate_range(&args[1], DimensionVector::LENGTH).is_none() {
+                return Some(Value::Undef);
+            }
+            // Validate rotation_range: bounded, ANGLE-dimensioned.
+            if validate_range(&args[2], DimensionVector::ANGLE).is_none() {
+                return Some(Value::Undef);
+            }
+            make_cylindrical_joint(args[0].clone(), args[1].clone(), args[2].clone())
+        }
         // 0-DOF group-only joint (sub-assembly grouping, clearance-pair filtering).
         // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 7.
         //
@@ -275,6 +303,46 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                             Value::length(0.0),
                             Value::length(0.0),
                         ])),
+                    }
+                }
+                // 2-DOF cylindrical joint: motion variable is a 2-element
+                // `Value::List` of `[Length, Angle]` (translation distance,
+                // rotation angle). List-only mirrors the planar arm — Reify
+                // `[a, b]` literals lower to `Value::List`.
+                //
+                // Composition rationale (single-step construction): translation
+                // along axis n and rotation about the same axis n commute in
+                // SE(3) — for any d, θ, R(n, θ)·(d·n) = d·n (rotation about an
+                // axis preserves vectors along that axis). So `T_p` (translation
+                // d·n, identity rotation) and `T_r` (rotation R(n, θ), zero
+                // translation) compose to the same result regardless of order:
+                // {rotation = R(n, θ), translation = d·n}. We build that result
+                // directly, avoiding the round-trip through `transform_compose`
+                // and the floating-point drift it would introduce.
+                "cylindrical" => {
+                    let [nax, nay, naz] = match unit_axis_from_map(map) {
+                        Some(a) => a,
+                        None => return Some(Value::Undef),
+                    };
+                    let (dist, theta) = match cylindrical_motion_vars(&args[1]) {
+                        Some(pair) => pair,
+                        None => return Some(Value::Undef),
+                    };
+                    // Defense-in-depth: cylindrical_motion_vars uses
+                    // length_input/trig_input which already reject non-finite,
+                    // but mirror the prismatic/revolute arms for symmetry.
+                    if !dist.is_finite() || !theta.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    let rotation = axis_angle_quaternion(nax, nay, naz, theta);
+                    let translation = Value::Vector(vec![
+                        Value::length(dist * nax),
+                        Value::length(dist * nay),
+                        Value::length(dist * naz),
+                    ]);
+                    Value::Transform {
+                        rotation: Box::new(rotation),
+                        translation: Box::new(translation),
                     }
                 }
                 "coupling" => {
@@ -683,6 +751,29 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // arms): the result is zero regardless of the stored range_angle, so a
         // hand-built Map with a missing field returns the same correct placeholder.
         "spherical" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        // 2-DOF cylindrical joint: returns a `Value::List` of two analytic twist
+        // columns (one per DOF) — element [0] is the prismatic-DOF column
+        // (angular=0, linear=unit_axis) and element [1] is the revolute-DOF
+        // column (angular=unit_axis, linear=0). The per-DOF ordering invariant
+        // ([0]=prismatic, [1]=revolute) is documented so future analytic-Jacobian
+        // composition can rely on it (PRD task 5).
+        //
+        // The List-of-Maps shape (vs. a single Map) is non-Undef — passes the
+        // `joint_jacobian_dispatches_for_every_joint_kind` coverage test — and
+        // also naturally signals to `loop_closure::per_joint_jacobian_local`
+        // (which calls `twist_map_to_array` expecting a single Map) to return
+        // None, triggering the documented FD-fallback path. This contrasts with
+        // the planar/spherical zero-twist Map placeholder pattern: cylindrical's
+        // analytic per-DOF columns are simple enough to emit cleanly.
+        "cylindrical" => {
+            let [nax, nay, naz] = match unit_axis_from_map(map) {
+                Some(a) => a,
+                None => return Value::Undef,
+            };
+            let prismatic_col = make_jacobian([0.0, 0.0, 0.0], [nax, nay, naz]);
+            let revolute_col = make_jacobian([nax, nay, naz], [0.0, 0.0, 0.0]);
+            Value::List(vec![prismatic_col, revolute_col])
+        }
         "coupling" => {
             let parent_map = match map.get(&Value::String("parent".to_string())) {
                 Some(Value::Map(pm)) => pm,
@@ -817,6 +908,36 @@ fn length_input(v: &Value) -> Option<f64> {
     }
 }
 
+/// Extract `(dist, theta)` from a cylindrical motion-variable argument.
+///
+/// Accepts a 2-element `Value::List` whose elements are:
+/// - `items[0]`: a length scalar (LENGTH-dim Scalar, or bare Real/Int as metres)
+/// - `items[1]`: an angle scalar (ANGLE-dim Scalar, or bare Real/Int as radians)
+///
+/// Returns `None` if:
+/// - the container is not a 2-element `List`,
+/// - either element fails its dimension/finiteness contract
+///   (`length_input` / `trig_input`, which also reject NaN/Inf and the
+///   wrong-dimension Scalar).
+///
+/// The dim-swap case `[angle, length]` is rejected for free: `length_input`
+/// rejects an angle Scalar (wrong dim) and `trig_input` rejects a length Scalar.
+///
+/// Container shape: List-only, mirroring the planar arm (joints.rs ~200).
+/// Reify list literals `[a, b]` lower to `Value::List`, so accepting a
+/// `Value::Vector` here would be reachable only from internal callers and
+/// would create an asymmetry with planar that future readers would have to
+/// re-derive. Keeping the surface narrow keeps the joint-zoo consistent.
+fn cylindrical_motion_vars(value: &Value) -> Option<(f64, f64)> {
+    let items = match value {
+        Value::List(items) if items.len() == 2 => items,
+        _ => return None,
+    };
+    let dist = length_input(&items[0])?;
+    let theta = trig_input(&items[1])?;
+    Some((dist, theta))
+}
+
 /// Unit-normalise a 3-component array.
 ///
 /// The caller must have already validated the input via [`validate_axis`],
@@ -908,7 +1029,14 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
 /// runtime slice membership, so those arms **must be kept in sync with
 /// this constant** when a new kind is added.
 /// `mechanism::body()` validates joint-kind membership via `is_joint_value`.
-pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar", "spherical"];
+///
+/// Multi-DOF kinds: `"planar"` (3-DOF), `"spherical"` (3-DOF), and
+/// `"cylindrical"` (2-DOF). These have explicit `None` arms in
+/// `loop_closure::value_for_joint` and `loop_closure::joint_range_midpoint`
+/// because the f64-per-joint signature of `chain_transform` /
+/// `chain_jacobian_fd` cannot represent multi-DOF motion variables; see
+/// `loop_closure::MULTI_DOF_KINDS`.
+pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar", "spherical", "cylindrical"];
 
 /// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
 /// the strings in [`JOINT_KINDS`]. Used by `mechanism::body()` for
@@ -971,6 +1099,27 @@ fn make_spherical(range_angle: Value) -> Value {
     let mut m = BTreeMap::new();
     m.insert(Value::String("kind".to_string()), Value::String("spherical".to_string()));
     m.insert(Value::String("range_angle".to_string()), range_angle);
+    Value::Map(m)
+}
+
+/// Build a cylindrical joint `Value::Map` with the four-key layout:
+/// `"axis"`, `"kind"`, `"rotation_range"`, `"translation_range"`.
+///
+/// Keys are in `BTreeMap` alphabetical order, mirroring `make_joint` /
+/// `make_planar` / `make_spherical`.  The raw (unnormalised) axis is
+/// stored; normalisation happens at `transform_at` / `joint_jacobian`
+/// time, matching the prismatic / revolute precedent.
+///
+/// Design intent (PRD task 5): the cylindrical joint is the flat composite
+/// of prismatic ⊕ revolute on a single shared axis.  Storing translation_range
+/// and rotation_range at the top level (rather than nesting prismatic/revolute
+/// children) avoids axis duplication and keeps `joint_axis` working unchanged.
+fn make_cylindrical_joint(axis: Value, translation_range: Value, rotation_range: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("kind".to_string()), Value::String("cylindrical".to_string()));
+    m.insert(Value::String("axis".to_string()), axis);
+    m.insert(Value::String("translation_range".to_string()), translation_range);
+    m.insert(Value::String("rotation_range".to_string()), rotation_range);
     Value::Map(m)
 }
 
@@ -1086,7 +1235,7 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint, spherical_joint};
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint, spherical_joint};
     use reify_types::{DimensionVector, Value};
     use super::{is_joint_value, JOINT_KINDS};
 
@@ -3287,6 +3436,15 @@ mod tests {
                 spherical_joint(),
                 Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
             )],
+            // 2-DOF cylindrical joint: motion variable is a 2-element
+            // `Value::List` of `[length, angle]` (translation distance,
+            // rotation angle). The (0, 0) pair is the minimal fixture and
+            // exercises both the `transform_at` and `joint_jacobian_value`
+            // cylindrical arms via the dispatch coverage tests.
+            "cylindrical" => vec![(
+                cylindrical_z_joint(),
+                Value::List(vec![Value::length(0.0), Value::angle(0.0)]),
+            )],
             _ => panic!(
                 "JOINT_KINDS contains '{kind}' but the dispatch tests have no fixture; \
                  add a minimal well-formed fixture here and confirm that both \
@@ -4133,6 +4291,452 @@ mod tests {
             "\"spherical\" must be in JOINT_KINDS so that is_joint_value accepts spherical \
              joints and the dispatch-coverage tests exercise the spherical arms in \
              transform_at and joint_jacobian_value. Add \"spherical\" to the JOINT_KINDS const."
+        );
+    }
+
+    // ── is_joint_value recognises cylindrical (step-15) ──────────────────────
+
+    /// `is_joint_value(map)` returns true for both a hand-built
+    /// `{ "kind" → "cylindrical" }` Map and the well-formed Map produced by
+    /// the `cylindrical` constructor. Pins the contract that adding
+    /// `"cylindrical"` to `JOINT_KINDS` (step-16) makes the predicate accept
+    /// cylindrical joints.
+    #[test]
+    fn is_joint_value_recognizes_cylindrical() {
+        use std::collections::BTreeMap;
+
+        // (a) hand-built Map with kind="cylindrical"
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("cylindrical".to_string()));
+        assert!(
+            is_joint_value(&Value::Map(m)),
+            "Map with kind='cylindrical' should be a joint value once step-16 adds the kind to JOINT_KINDS"
+        );
+
+        // (b) constructor output → Map shape that is_joint_value accepts
+        let cyl = eval_builtin(
+            "cylindrical",
+            &[axis_z_unit(), length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        assert!(
+            is_joint_value(&cyl),
+            "cylindrical(...) constructor output should be recognised as a joint value"
+        );
+    }
+
+    // ── JOINT_KINDS membership regression pin for cylindrical (step-15) ──────
+    //
+    // Asserts that `"cylindrical"` is a member of `JOINT_KINDS` so that:
+    //  1. `is_joint_value` accepts cylindrical joints as valid mechanism joints, and
+    //  2. the existing dispatch-coverage tests
+    //     (`transform_at_dispatches_for_every_joint_kind` and
+    //     `joint_jacobian_dispatches_for_every_joint_kind`) iterate over cylindrical.
+    //
+    // This test fails until step-16 appends `"cylindrical"` to `JOINT_KINDS` and
+    // adds the cylindrical arm to `joint_kind_minimal_fixture`.
+    #[test]
+    fn joint_kinds_includes_cylindrical() {
+        assert!(
+            JOINT_KINDS.contains(&"cylindrical"),
+            "\"cylindrical\" must be in JOINT_KINDS so that is_joint_value accepts cylindrical \
+             joints and the dispatch-coverage tests exercise the cylindrical arms in \
+             transform_at and joint_jacobian_value. Add \"cylindrical\" to the JOINT_KINDS const."
+        );
+    }
+
+    // ── cylindrical transform_at: translation-only (step-5) ──────────────────
+
+    /// `transform_at(cyl, [length(0.5), angle(0.0)])` returns a Transform with
+    /// identity rotation and translation 0.5m along the cylindrical joint's
+    /// axis (here, +Z). Verifies the translation arm of the cylindrical
+    /// transform_at dispatch in isolation (rotation = identity).
+    #[test]
+    fn cylindrical_transform_at_translation_only() {
+        let cyl = cylindrical_z_joint();
+        let motion = Value::List(vec![Value::length(0.5), Value::angle(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl, motion]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.5],
+            1e-12,
+            "cyl Z, d=0.5m θ=0",
+        );
+    }
+
+    // ── cylindrical transform_at: rotation-only (step-7) ─────────────────────
+
+    /// `transform_at(cyl, [length(0.0), angle(π/2)])` returns a Transform whose
+    /// rotation is the analytical revolute-Z quaternion (cos(π/4), 0, 0, sin(π/4))
+    /// and zero translation. Verifies the rotation arm of the cylindrical
+    /// transform_at dispatch in isolation.
+    #[test]
+    fn cylindrical_transform_at_rotation_only() {
+        let cyl = cylindrical_z_joint();
+        let pi = std::f64::consts::PI;
+        let motion = Value::List(vec![Value::length(0.0), Value::angle(pi / 2.0)]);
+        let result = eval_builtin("transform_at", &[cyl, motion]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, 0.0, sin),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "cyl Z, d=0 θ=π/2",
+        );
+    }
+
+    // ── cylindrical transform_at: combined motion + unnormalised axis (step-9) ──
+
+    /// Three sub-scenarios for `transform_at(cylindrical, [d, θ])`:
+    /// (a) unit Z axis, combined translation+rotation,
+    /// (b) unnormalised axis (magnitude 2 along +X) — verifies axis is
+    ///     normalised before being used in both the rotation quaternion and
+    ///     the translation scaling,
+    /// (c) diagonal axis [1,1,0]/√2 — verifies translation along a non-axis-
+    ///     aligned direction.
+    #[test]
+    fn cylindrical_transform_at_combined_and_unnormalized_axis() {
+        let pi = std::f64::consts::PI;
+
+        // (a) unit Z axis, [d=0.3m, θ=π/4]
+        let cyl_z = cylindrical_z_joint();
+        let motion_a = Value::List(vec![Value::length(0.3), Value::angle(pi / 4.0)]);
+        let result_a = eval_builtin("transform_at", &[cyl_z, motion_a]);
+        let cos_a = (pi / 8.0).cos();
+        let sin_a = (pi / 8.0).sin();
+        assert_transform_approx(
+            &result_a,
+            (cos_a, 0.0, 0.0, sin_a),
+            [0.0, 0.0, 0.3],
+            1e-12,
+            "cyl Z, d=0.3m θ=π/4",
+        );
+
+        // (b) unnormalised axis [2, 0, 0] → unit X; [d=1.0m, θ=π/2] → translation [1,0,0],
+        //     rotation about +X by π/2 = (cos(π/4), sin(π/4), 0, 0).
+        let axis_2x = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let cyl_2x = eval_builtin(
+            "cylindrical",
+            &[axis_2x, length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let motion_b = Value::List(vec![Value::length(1.0), Value::angle(pi / 2.0)]);
+        let result_b = eval_builtin("transform_at", &[cyl_2x, motion_b]);
+        let cos_b = (pi / 4.0).cos();
+        let sin_b = (pi / 4.0).sin();
+        assert_transform_approx(
+            &result_b,
+            (cos_b, sin_b, 0.0, 0.0),
+            [1.0, 0.0, 0.0],
+            1e-12,
+            "cyl unnormalised [2,0,0], d=1m θ=π/2",
+        );
+
+        // (c) diagonal axis [1,1,0]/√2 unit; [d=√2 m, θ=0] → translation [1,1,0], identity rotation.
+        let s2 = std::f64::consts::FRAC_1_SQRT_2;
+        let axis_diag = Value::Vector(vec![Value::Real(s2), Value::Real(s2), Value::Real(0.0)]);
+        let cyl_diag = eval_builtin(
+            "cylindrical",
+            &[axis_diag, length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let motion_c = Value::List(vec![
+            Value::length(std::f64::consts::SQRT_2),
+            Value::angle(0.0),
+        ]);
+        let result_c = eval_builtin("transform_at", &[cyl_diag, motion_c]);
+        assert_transform_approx(
+            &result_c,
+            (1.0, 0.0, 0.0, 0.0),
+            [1.0, 1.0, 0.0],
+            1e-12,
+            "cyl diag [1,1,0]/√2, d=√2 m θ=0",
+        );
+    }
+
+    // ── cylindrical joint_jacobian: two-column List (step-13) ────────────────
+
+    /// `joint_jacobian(cyl)` returns a `Value::List` of length 2 with one twist
+    /// Map per DOF:
+    ///   [0] prismatic DOF: { angular: [0,0,0], linear: unit_axis }
+    ///   [1] revolute  DOF: { angular: unit_axis, linear: [0,0,0] }
+    ///
+    /// Three sub-scenarios cover unit-Z, unit-X, and an unnormalised axis
+    /// `[3, 4, 0]` (magnitude 5) that must normalise to `[0.6, 0.8, 0]` in
+    /// both columns.  The List shape (vs. a single Map) is essential: it
+    /// preserves analytic per-DOF information and naturally signals to
+    /// `loop_closure::per_joint_jacobian_local` (which expects a single Map)
+    /// to fall back to FD via its `twist_map_to_array` failure path.
+    #[test]
+    fn cylindrical_joint_jacobian_returns_two_columns() {
+        // (a) unit Z
+        let cyl_z = cylindrical_z_joint();
+        let result_z = eval_builtin("joint_jacobian", &[cyl_z]);
+        assert_jacobian_list_two_columns(&result_z, [0.0, 0.0, 1.0], "cyl Z unit");
+
+        // (b) unit X
+        let cyl_x = eval_builtin(
+            "cylindrical",
+            &[axis_x_unit(), length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let result_x = eval_builtin("joint_jacobian", &[cyl_x]);
+        assert_jacobian_list_two_columns(&result_x, [1.0, 0.0, 0.0], "cyl X unit");
+
+        // (c) unnormalised axis [3, 4, 0] (magnitude 5) → unit [0.6, 0.8, 0]
+        let axis_345 = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let cyl_345 = eval_builtin(
+            "cylindrical",
+            &[axis_345, length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let result_345 = eval_builtin("joint_jacobian", &[cyl_345]);
+        assert_jacobian_list_two_columns(&result_345, [0.6, 0.8, 0.0], "cyl unnormalised [3,4,0]");
+    }
+
+    /// Helper: assert that `result` is a `Value::List` of length 2 whose
+    /// elements are `Map { angular, linear }` columns matching the cylindrical
+    /// joint_jacobian contract — element [0] is the prismatic-DOF column
+    /// (linear = `unit_axis`, angular = zero) and element [1] is the
+    /// revolute-DOF column (angular = `unit_axis`, linear = zero).
+    fn assert_jacobian_list_two_columns(result: &Value, unit_axis: [f64; 3], label: &str) {
+        let items = match result {
+            Value::List(v) => v,
+            other => panic!("{label}: expected List, got {:?}", other),
+        };
+        assert_eq!(items.len(), 2, "{label}: List should have exactly 2 columns");
+
+        // column [0]: prismatic DOF
+        assert_jacobian_map_components(
+            &items[0],
+            [0.0, 0.0, 0.0],
+            unit_axis,
+            &format!("{label} col[0] (prismatic DOF)"),
+        );
+        // column [1]: revolute DOF
+        assert_jacobian_map_components(
+            &items[1],
+            unit_axis,
+            [0.0, 0.0, 0.0],
+            &format!("{label} col[1] (revolute DOF)"),
+        );
+    }
+
+    /// Helper: assert a Jacobian Map has the expected angular and linear
+    /// Vector3 components (component-wise within 1e-12).
+    fn assert_jacobian_map_components(
+        map_val: &Value,
+        exp_ang: [f64; 3],
+        exp_lin: [f64; 3],
+        label: &str,
+    ) {
+        let map = match map_val {
+            Value::Map(m) => m,
+            other => panic!("{label}: expected Map, got {:?}", other),
+        };
+        let read_vec3 = |key: &str| -> [f64; 3] {
+            let v = map
+                .get(&Value::String(key.to_string()))
+                .unwrap_or_else(|| panic!("{label}: missing key {key:?}"));
+            let items = match v {
+                Value::Vector(items) if items.len() == 3 => items,
+                other => panic!("{label}: {key} expected Vector3, got {:?}", other),
+            };
+            [
+                items[0].as_f64().unwrap(),
+                items[1].as_f64().unwrap(),
+                items[2].as_f64().unwrap(),
+            ]
+        };
+        let ang = read_vec3("angular");
+        let lin = read_vec3("linear");
+        for i in 0..3 {
+            assert!(
+                (ang[i] - exp_ang[i]).abs() < 1e-12,
+                "{label}: angular[{i}] expected {} got {}",
+                exp_ang[i],
+                ang[i]
+            );
+            assert!(
+                (lin[i] - exp_lin[i]).abs() < 1e-12,
+                "{label}: linear[{i}] expected {} got {}",
+                exp_lin[i],
+                lin[i]
+            );
+        }
+    }
+
+    // ── cylindrical transform_at: invalid motion-var (step-11) ──────────────
+
+    /// Table-driven validation surface for the cylindrical transform_at second
+    /// argument. All listed shapes return Undef. Also includes one positive
+    /// polarity case (a 2-element `Value::List` with the right dims) that
+    /// MUST return a Transform — guards against accidental over-rejection
+    /// of the canonical List container shape.
+    ///
+    /// Container shape is List-only (mirrors the planar arm); a 2-element
+    /// `Value::Vector` is rejected as a negative case to keep the joint-zoo
+    /// surface consistent. Reify `[a, b]` literals lower to `Value::List`,
+    /// so List-only is the canonical motion-var shape.
+    #[test]
+    fn cylindrical_transform_at_invalid_value_returns_undef() {
+        let cyl = cylindrical_z_joint();
+
+        let undef_cases: &[(&str, Value)] = &[
+            ("bare scalar Length",
+             Value::length(0.5)),
+            ("List of 0",
+             Value::List(vec![])),
+            ("List of 1 element",
+             Value::List(vec![Value::length(0.5)])),
+            ("List of 3 elements",
+             Value::List(vec![Value::length(0.5), Value::angle(0.0), Value::angle(0.0)])),
+            ("dim-swapped: [angle, length]",
+             Value::List(vec![Value::angle(0.5), Value::length(0.5)])),
+            ("NaN translation, valid angle",
+             Value::List(vec![Value::Real(f64::NAN), Value::angle(0.0)])),
+            ("Inf translation, valid angle",
+             Value::List(vec![Value::Real(f64::INFINITY), Value::angle(0.0)])),
+            ("valid translation, NaN rotation",
+             Value::List(vec![Value::length(0.0), Value::Real(f64::NAN)])),
+            ("zero translation, Inf rotation",
+             Value::List(vec![Value::length(0.0), Value::Real(f64::INFINITY)])),
+            // Vector container is rejected (List-only contract, mirrors planar).
+            ("Vector container (wrong shape — List required)",
+             Value::Vector(vec![Value::length(0.5), Value::angle(0.0)])),
+        ];
+
+        for (label, motion) in undef_cases {
+            assert!(
+                eval_builtin("transform_at", &[cyl.clone(), motion.clone()]).is_undef(),
+                "transform_at(cyl, {label}) should return Undef but didn't"
+            );
+        }
+
+        // Positive polarity: 2-element List container is valid.
+        let list_motion = Value::List(vec![Value::length(0.5), Value::angle(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl.clone(), list_motion]);
+        assert!(
+            matches!(&result, Value::Transform { .. }),
+            "transform_at(cyl, List[length, angle]) must return Transform, got {:?}",
+            result
+        );
+    }
+
+    // ── cylindrical constructor: validation surface (step-3) ─────────────────
+
+    /// Table-driven validation surface for the cylindrical constructor.
+    ///
+    /// Every row should produce `Value::Undef`. Covers wrong arg counts, axis
+    /// validation failures (reuses `validate_axis`'s contracts), translation_range
+    /// validation failures (LENGTH-typed bounded `Range`), and rotation_range
+    /// validation failures (ANGLE-typed bounded `Range`). Mirrors the structure
+    /// of `planar_invalid_args_returns_undef` and `spherical_invalid_args_returns_undef`.
+    #[test]
+    fn cylindrical_constructor_validation_table() {
+        let ax = axis_z_unit();
+        let tr = length_range_0_to_1m();
+        let rr = angle_range_0_to_pi();
+
+        // Wrong-dimensioned axis (LENGTH-typed Vector3)
+        let length_axis = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        // 2-component axis
+        let axis2 = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)]);
+        // Non-vector axis
+        let non_vec = Value::Real(1.0);
+        // Zero axis
+        let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        // NaN axis
+        let nan_axis = Value::Vector(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        // Unbounded range (lower=Some, upper=None)
+        let unbounded = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+        let unbounded_angle = Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+
+        let cases: Vec<(&str, Vec<Value>)> = vec![
+            // (a) wrong arg counts
+            ("0 args",  vec![]),
+            ("1 arg",   vec![ax.clone()]),
+            ("2 args",  vec![ax.clone(), tr.clone()]),
+            ("4 args",  vec![ax.clone(), tr.clone(), rr.clone(), Value::Real(0.0)]),
+            // (b) axis invalid variants
+            ("axis: bare Real",          vec![non_vec.clone(), tr.clone(), rr.clone()]),
+            ("axis: 2-component",        vec![axis2.clone(), tr.clone(), rr.clone()]),
+            ("axis: LENGTH-dimensioned", vec![length_axis.clone(), tr.clone(), rr.clone()]),
+            ("axis: zero",               vec![zero_axis.clone(), tr.clone(), rr.clone()]),
+            ("axis: NaN",                vec![nan_axis.clone(), tr.clone(), rr.clone()]),
+            // (c) translation_range invalid
+            ("translation_range: bare Real",  vec![ax.clone(), Value::Real(1.0), rr.clone()]),
+            ("translation_range: unbounded",  vec![ax.clone(), unbounded.clone(), rr.clone()]),
+            ("translation_range: ANGLE-dim",  vec![ax.clone(), angle_range_0_to_pi(), rr.clone()]),
+            // (d) rotation_range invalid
+            ("rotation_range: bare Real",     vec![ax.clone(), tr.clone(), Value::Real(1.0)]),
+            ("rotation_range: unbounded",     vec![ax.clone(), tr.clone(), unbounded_angle.clone()]),
+            ("rotation_range: LENGTH-dim",    vec![ax.clone(), tr.clone(), length_range_0_to_1m()]),
+        ];
+
+        for (label, args) in &cases {
+            assert_builtin_undef("cylindrical", args, label);
+        }
+    }
+
+    // ── cylindrical constructor: happy path (step-1) ─────────────────────────
+
+    /// `cylindrical(axis, translation_range, rotation_range)` returns a 4-key Map
+    /// with `kind="cylindrical"` and the three input fields stored verbatim.
+    ///
+    /// PRD task 5: 2-DOF composite of prismatic ⊕ revolute on a single shared
+    /// axis. The Map shape is flat (mirrors prismatic/revolute/planar/spherical):
+    ///   { "axis", "kind", "rotation_range", "translation_range" }
+    /// (alphabetically ordered via `BTreeMap`).
+    #[test]
+    fn cylindrical_returns_map_with_correct_fields() {
+        let axis = axis_z_unit();
+        let translation_range = length_range_0_to_1m();
+        let rotation_range = angle_range_0_to_pi();
+        let result = eval_builtin(
+            "cylindrical",
+            &[axis.clone(), translation_range.clone(), rotation_range.clone()],
+        );
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("cylindrical".to_string())),
+            "kind field should be 'cylindrical'"
+        );
+        assert_eq!(
+            map.get(&Value::String("axis".to_string())),
+            Some(&axis),
+            "axis field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("translation_range".to_string())),
+            Some(&translation_range),
+            "translation_range field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("rotation_range".to_string())),
+            Some(&rotation_range),
+            "rotation_range field should match input"
+        );
+        assert_eq!(
+            map.len(),
+            4,
+            "cylindrical joint Map should have exactly 4 keys \
+             (kind, axis, translation_range, rotation_range), got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
         );
     }
 

@@ -151,6 +151,19 @@ fn twist_map_to_array(twist_map: &Value) -> Option<[f64; 6]> {
 /// motion variable — the coupling's `transform_at` arm applies the ratio
 /// downstream when computing the parent's coupled position.  This is the
 /// joint's own free-variable space, not the coupled output.
+///
+/// **Multi-DOF kinds** (`planar`, `spherical`, `cylindrical` — see
+/// `crate::joints::JOINT_KINDS` for the canonical kind list and the test
+/// module's `MULTI_DOF_KINDS` for the multi-DOF subset) return `None`:
+/// each has more than one motion variable and therefore no single-scalar
+/// midpoint to seed. Callers building initial-guess vectors should skip
+/// these kinds just as they skip `fixed`. Multi-DOF chain support is
+/// deferred to PRD v0.2 kinematic task 2 (taskmaster #2670 — "FD fallback
+/// for spherical, cylindrical, planar"); the explicit per-arm `=> None`
+/// dispatch is retained (rather than relying on the catch-all `_ => None`)
+/// so a future kind addition cannot silently change this behaviour, and
+/// the JOINT_KINDS-iteration partition test in this module's `tests` block
+/// loud-fails any drift.
 pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
     let map = match joint {
         Value::Map(m) => m,
@@ -182,31 +195,12 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
             let parent = map.get(&Value::String("parent".to_string()))?;
             joint_range_midpoint(parent)
         }
-        // 0-DOF joint: empty free-variable space — no midpoint to compute.
-        // Note: callers seeding free-variable start values (e.g. for a
-        // solver initial guess) should skip fixed joints rather than
-        // propagating this None. value_for_joint returns Some(Real(0.0))
-        // for "fixed", so chain_transform/chain_jacobian_fd handle fixed
-        // joints in the chain without special-casing at the call site.
+        // 0-DOF — empty free-variable space; see fn-doc.
         "fixed" => None,
-        // 3-DOF planar joint: no single-scalar midpoint to compute.
-        // Planar's free-variable space is 3-dimensional (x_length, y_length,
-        // theta_angle), so there is no single f64 midpoint to seed. Callers
-        // building initial-guess vectors should skip planar joints just as
-        // they skip fixed joints. Supporting planar's multi-DOF midpoint
-        // requires the refactor scheduled in PRD v0.2 kinematic task 2
-        // (taskmaster #2670 — "FD fallback for spherical, cylindrical, planar").
+        // Multi-DOF — see fn-doc / JOINT_KINDS / MULTI_DOF_KINDS.
         "planar" => None,
-        // 3-DOF spherical joint: no single-scalar midpoint to compute.
-        // Spherical's free-variable space is the unit-quaternion manifold of
-        // SO(3), which cannot be summarised as a single f64 midpoint. Callers
-        // building initial-guess vectors should skip spherical joints just as
-        // they skip fixed and planar joints. The explicit arm makes the
-        // contract source-visible (rather than relying on the catch-all
-        // `_ => None`) so a future kind addition cannot silently change this
-        // behaviour. Multi-DOF chain support is deferred to PRD v0.2
-        // kinematic task 2 (taskmaster #2670).
         "spherical" => None,
+        "cylindrical" => None,
         _ => None,
     }
 }
@@ -301,6 +295,30 @@ pub fn chain_jacobian_fd(
 /// Coupling joints delegate to their parent's kind.
 ///
 /// Returns `None` for unknown kinds or malformed Maps.
+///
+/// **Single-DOF / 0-DOF coverage**: `prismatic` returns `Some(length(scalar))`,
+/// `revolute` returns `Some(angle(scalar))`, `coupling` delegates to parent
+/// kind, and `fixed` returns `Some(Real(0.0))` (the second arg is ignored by
+/// `transform_at("fixed", _)` — any non-Undef sentinel works; we pick the
+/// conventional zero).
+///
+/// **Multi-DOF kinds** (`planar`, `spherical`, `cylindrical` — see
+/// `crate::joints::JOINT_KINDS` for the canonical kind list and the test
+/// module's `MULTI_DOF_KINDS` for the multi-DOF subset) return `None`
+/// because their motion variables are multi-element values
+/// (`Value::List`/`Value::Orientation`) that cannot be packed into the
+/// single-f64 signature of this function. Returning `None` here causes
+/// `chain_transform` / `chain_jacobian_fd` to short-circuit to `None` for any
+/// chain containing a multi-DOF joint. Multi-DOF chain support is deferred
+/// to PRD v0.2 kinematic task 2 (taskmaster #2670 — "FD fallback for
+/// spherical, cylindrical, planar"), which will refactor the f64-per-joint
+/// signature. Until that lands, callers needing multi-DOF transforms must
+/// use `transform_at(joint, motion_var)` or `joint_jacobian(joint)`
+/// directly, not the chain wrappers. The explicit per-arm `=> None`
+/// dispatch is retained (rather than relying on the catch-all `_ => None`)
+/// so a future kind addition cannot silently change this behaviour, and
+/// the JOINT_KINDS-iteration partition test in this module's `tests` block
+/// loud-fails any drift.
 fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
     let map = match joint {
         Value::Map(m) => m,
@@ -328,41 +346,12 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
                 _ => None,
             }
         }
-        // 0-DOF joint: no free variable; transform_at("fixed", _) ignores the
-        // second argument (any non-Undef Value → identity). Real(0.0) is the
-        // conventional sentinel, mirroring `transform_at(fixed_joint, 0)` in
-        // the kinematic_stdlib_smoke test. Note: joint_range_midpoint returns
-        // None for "fixed" (no free-variable space to seed). Callers building
-        // an initial-guess vector from joint_range_midpoint should skip fixed
-        // joints; chain_transform/chain_jacobian_fd handle them transparently.
+        // 0-DOF — second arg ignored; see fn-doc.
         "fixed" => Some(Value::Real(0.0)),
-        // 3-DOF planar joint: no f64-scalar motion variable representation.
-        // Planar's motion variable in `transform_at` is a 3-element
-        // `Value::List [x_length, y_length, theta_angle]`, which doesn't fit
-        // this function's `(joint, scalar: f64) -> Option<Value>` signature.
-        // Returning None here causes chain_transform and chain_jacobian_fd to
-        // short-circuit to None for any chain containing a planar joint.
-        // Multi-DOF chain support (including planar) is deferred to PRD v0.2
-        // kinematic task 2 (taskmaster #2670 — "FD fallback for spherical,
-        // cylindrical, planar"), which will refactor the f64-per-joint
-        // signature. Until that lands, callers needing planar transforms must
-        // use `transform_at(planar, list)` or `joint_jacobian(planar)` directly,
-        // not the chain wrappers.
+        // Multi-DOF — see fn-doc / JOINT_KINDS / MULTI_DOF_KINDS.
         "planar" => None,
-        // 3-DOF spherical joint: no f64-scalar motion variable representation.
-        // Spherical's motion variable in `transform_at` is a `Value::Orientation`
-        // (unit quaternion), which doesn't fit this function's
-        // `(joint, scalar: f64) -> Option<Value>` signature. The explicit arm
-        // makes the contract source-visible (rather than relying on the
-        // catch-all `_ => None`) so a future kind addition cannot silently
-        // change spherical's behaviour. Returning None here causes
-        // chain_transform and chain_jacobian_fd to short-circuit to None for
-        // any chain containing a spherical joint. Multi-DOF chain support is
-        // deferred to PRD v0.2 kinematic task 2 (taskmaster #2670). Until
-        // that lands, callers needing spherical transforms must use
-        // `transform_at(spherical, q)` or `joint_jacobian(spherical)` directly,
-        // not the chain wrappers.
         "spherical" => None,
+        "cylindrical" => None,
         _ => None,
     }
 }
@@ -371,10 +360,18 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
 mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{
-        angle_range_0_to_pi, axis_x_unit, axis_z_unit, length_range_0_to_1m, planar_xy_joint,
-        spherical_joint,
+        angle_range_0_to_pi, axis_x_unit, axis_z_unit, cylindrical_z_joint, length_range_0_to_1m,
+        planar_xy_joint, spherical_joint,
     };
     use reify_types::Value;
+
+    /// The subset of `crate::joints::JOINT_KINDS` whose motion variables cannot
+    /// be represented by a single f64 — `value_for_joint` and
+    /// `joint_range_midpoint` must return `None` for every kind in this list.
+    /// The complement (`prismatic`, `revolute`, `coupling`, `fixed`) returns
+    /// `Some` from `value_for_joint`. See the contract tests below for the
+    /// JOINT_KINDS-iteration partition guard.
+    const MULTI_DOF_KINDS: &[&str] = &["planar", "spherical", "cylindrical"];
 
     fn prismatic_x() -> Value {
         eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()])
@@ -1142,5 +1139,199 @@ mod tests {
             .is_none(),
             "chain_jacobian_fd must return None when any joint in the chain is spherical"
         );
+    }
+
+    // ── cylindrical joint pin tests (step-17 / step-19) ─────────────────────
+    //
+    // Multi-DOF deferred-integration contract: chain_transform's single-f64-
+    // per-joint signature cannot represent the (translation, rotation) tuple
+    // for cylindrical, so `value_for_joint` returns None and any chain
+    // containing cylindrical short-circuits to None. Full chain integration
+    // is deferred to PRD v0.2 kinematic task 9/10 (closed-chain mechanism).
+
+    /// `value_for_joint` returns `None` for a cylindrical joint.
+    #[test]
+    fn value_for_joint_cylindrical_returns_none() {
+        assert!(
+            super::value_for_joint(&cylindrical_z_joint(), 0.5).is_none(),
+            "value_for_joint must return None for a cylindrical joint"
+        );
+    }
+
+    /// `chain_transform` returns `None` when the chain contains a cylindrical joint.
+    #[test]
+    fn chain_transform_with_cylindrical_returns_none() {
+        assert!(
+            super::chain_transform(&[cylindrical_z_joint()], &[0.0]).is_none(),
+            "chain_transform must return None for a chain containing a cylindrical joint"
+        );
+    }
+
+    /// `chain_jacobian_fd` returns `None` when the chain contains a cylindrical joint.
+    #[test]
+    fn chain_jacobian_fd_with_cylindrical_returns_none() {
+        assert!(
+            super::chain_jacobian_fd(&[cylindrical_z_joint()], &[0.0], &[0], 1e-6).is_none(),
+            "chain_jacobian_fd must return None for a chain containing a cylindrical joint"
+        );
+    }
+
+    /// `chain_transform` returns `None` for a mixed `[prismatic, cylindrical]`
+    /// chain — same stronger contract as the planar/spherical mixed pins.
+    #[test]
+    fn chain_transform_mixed_prismatic_cylindrical_returns_none() {
+        assert!(
+            super::chain_transform(&[prismatic_x(), cylindrical_z_joint()], &[0.5, 0.0]).is_none(),
+            "chain_transform must return None when any joint in the chain is cylindrical"
+        );
+    }
+
+    /// `chain_jacobian_fd` returns `None` for a mixed chain containing a
+    /// cylindrical joint.
+    #[test]
+    fn chain_jacobian_fd_mixed_prismatic_cylindrical_returns_none() {
+        assert!(
+            super::chain_jacobian_fd(
+                &[prismatic_x(), cylindrical_z_joint()],
+                &[0.5, 0.0],
+                &[0, 1],
+                1e-6,
+            )
+            .is_none(),
+            "chain_jacobian_fd must return None when any joint in the chain is cylindrical"
+        );
+    }
+
+    /// `joint_range_midpoint` returns `None` for a cylindrical joint.
+    ///
+    /// Contract: cylindrical is 2-DOF (translation_range LENGTH,
+    /// rotation_range ANGLE). The fn signature returns `Option<f64>` — a
+    /// single midpoint per joint — and 2-DOF has two midpoints (one per
+    /// DOF). Callers seeding fresh-snapshot start values should skip
+    /// cylindrical joints just as they skip fixed/planar/spherical today.
+    #[test]
+    fn joint_range_midpoint_cylindrical_returns_none() {
+        assert!(
+            super::joint_range_midpoint(&cylindrical_z_joint()).is_none(),
+            "joint_range_midpoint must return None for a cylindrical joint"
+        );
+    }
+
+    // ── multi-DOF None contract: JOINT_KINDS-iteration partition (step-21) ──
+    //
+    // Pins the contract that `value_for_joint` and `joint_range_midpoint`
+    // partition `crate::joints::JOINT_KINDS` cleanly:
+    //   - MULTI_DOF_KINDS (planar, spherical, cylindrical): both fns return None
+    //   - the complement (prismatic, revolute, coupling, fixed): value_for_joint
+    //     returns Some; joint_range_midpoint returns Some for prismatic/revolute/
+    //     coupling and None for fixed (0-DOF empty range).
+    //
+    // Any future kind addition is forced through this partition: an unhandled
+    // kind triggers `minimal_joint`'s panic (with a remediation message) and
+    // the assertions cleanly fail if multi-DOF/single-DOF classification needs
+    // updating. This is the structural safety net that lets step-23
+    // consolidate the per-arm prose into a single function-level block.
+
+    /// Build a minimal well-formed joint for each kind in JOINT_KINDS.
+    /// Mirrors `joints::tests::joint_kind_minimal_fixture` but joint-only
+    /// (no value_arg pairing) — a separate copy lives here so loop_closure's
+    /// test module is self-contained without leaking joints.rs's private
+    /// fixture helper.
+    fn minimal_joint(kind: &str) -> Value {
+        match kind {
+            "prismatic" => prismatic_x(),
+            "revolute" => revolute_z(),
+            "coupling" => eval_builtin("couple", &[prismatic_x(), Value::Real(1.0)]),
+            "fixed" => eval_builtin("fixed", &[]),
+            "planar" => planar_xy_joint(),
+            "spherical" => spherical_joint(),
+            "cylindrical" => cylindrical_z_joint(),
+            _ => panic!(
+                "minimal_joint: unknown kind '{kind}' — JOINT_KINDS contains a \
+                 kind that loop_closure's tests have no fixture for. Add a \
+                 fixture row here and decide whether the kind belongs in \
+                 MULTI_DOF_KINDS or the single-DOF complement."
+            ),
+        }
+    }
+
+    #[test]
+    fn value_for_joint_returns_none_for_all_multi_dof_kinds() {
+        for &kind in MULTI_DOF_KINDS {
+            assert!(
+                super::value_for_joint(&minimal_joint(kind), 0.0).is_none(),
+                "value_for_joint must return None for multi-DOF kind '{kind}'"
+            );
+        }
+    }
+
+    #[test]
+    fn joint_range_midpoint_returns_none_for_all_multi_dof_kinds() {
+        for &kind in MULTI_DOF_KINDS {
+            assert!(
+                super::joint_range_midpoint(&minimal_joint(kind)).is_none(),
+                "joint_range_midpoint must return None for multi-DOF kind '{kind}'"
+            );
+        }
+    }
+
+    /// Partition contract for `value_for_joint`: every kind in JOINT_KINDS is
+    /// in exactly one of two buckets — multi-DOF (None) or single-DOF (Some).
+    /// Asserts MULTI_DOF_KINDS is a subset of JOINT_KINDS so a stale entry
+    /// can't slip through.
+    #[test]
+    fn value_for_joint_partition_covers_joint_kinds() {
+        use crate::joints::JOINT_KINDS;
+        // Subset guard
+        for &k in MULTI_DOF_KINDS {
+            assert!(
+                JOINT_KINDS.contains(&k),
+                "MULTI_DOF_KINDS member '{k}' must also be in JOINT_KINDS"
+            );
+        }
+        // Partition: multi-DOF → None, single-DOF → Some.
+        for &kind in JOINT_KINDS {
+            let result = super::value_for_joint(&minimal_joint(kind), 0.0);
+            if MULTI_DOF_KINDS.contains(&kind) {
+                assert!(
+                    result.is_none(),
+                    "value_for_joint must return None for multi-DOF kind '{kind}'"
+                );
+            } else {
+                assert!(
+                    result.is_some(),
+                    "value_for_joint must return Some for single-DOF kind '{kind}'"
+                );
+            }
+        }
+    }
+
+    /// Partition contract for `joint_range_midpoint`: returns None for every
+    /// kind in `JOINT_RANGE_MIDPOINT_NONE_KINDS`, Some for the rest. Note
+    /// this partition differs from value_for_joint's because `fixed` returns
+    /// Some(Real(0.0)) from value_for_joint but None from
+    /// joint_range_midpoint (no free-variable space to seed).
+    #[test]
+    fn joint_range_midpoint_partition_covers_joint_kinds() {
+        use crate::joints::JOINT_KINDS;
+        const JOINT_RANGE_MIDPOINT_NONE_KINDS: &[&str] =
+            &["fixed", "planar", "spherical", "cylindrical"];
+        for &kind in JOINT_KINDS {
+            let result = super::joint_range_midpoint(&minimal_joint(kind));
+            if JOINT_RANGE_MIDPOINT_NONE_KINDS.contains(&kind) {
+                assert!(
+                    result.is_none(),
+                    "joint_range_midpoint must return None for kind '{kind}'"
+                );
+            } else {
+                let mid = result.unwrap_or_else(|| {
+                    panic!("joint_range_midpoint must return Some for kind '{kind}'")
+                });
+                assert!(
+                    mid.is_finite(),
+                    "joint_range_midpoint('{kind}') midpoint must be finite, got {mid}"
+                );
+            }
+        }
     }
 }
