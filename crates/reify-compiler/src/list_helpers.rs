@@ -1,4 +1,4 @@
-use super::*;
+use reify_types::{CompiledExpr, Type};
 
 /// Infer the return type of a list-helper stdlib call from the compiled
 /// argument list.
@@ -63,7 +63,8 @@ pub(crate) fn infer_list_helper_return_type(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::infer_list_helper_return_type;
+    use reify_types::{CompiledExpr, Type, Value};
 
     // Helper: build a cheap synthetic CompiledExpr with the given result_type.
     fn arg(ty: Type) -> CompiledExpr {
@@ -126,6 +127,20 @@ mod tests {
     #[test]
     fn flat_map_wrong_arity_returns_none() {
         let args = vec![arg(Type::List(Box::new(Type::Int)))];
+        assert_eq!(infer_list_helper_return_type("flat_map", &args), None);
+    }
+
+    #[test]
+    fn flat_map_too_many_args_returns_none() {
+        let lambda_ty = Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::List(Box::new(Type::Bool))),
+        };
+        let args = vec![
+            arg(Type::List(Box::new(Type::Int))),
+            arg(lambda_ty),
+            arg(Type::Int),
+        ];
         assert_eq!(infer_list_helper_return_type("flat_map", &args), None);
     }
 

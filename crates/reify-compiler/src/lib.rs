@@ -63,6 +63,7 @@ pub(crate) use geometry_modify::*;
 pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
 pub(crate) use ice::*;
+pub(crate) use list_helpers::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
 pub(crate) use termination::*;
@@ -72,7 +73,6 @@ pub(crate) use traits::*;
 #[allow(unused_imports)]
 pub(crate) use type_compat::*;
 pub(crate) use type_resolution::*;
-pub(crate) use list_helpers::*;
 pub(crate) use units::*;
 pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry};
 
