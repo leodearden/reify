@@ -189,4 +189,40 @@ mod tests {
             plan.conversions[0],
         );
     }
+
+    /// Two competing chains lead to (BooleanUnion, Mesh): a 1-stage path via
+    /// alpha (BRep→Mesh→Union) and a 2-stage path via beta (BRep→Sdf→Mesh→
+    /// Union). BFS by stage-count must pick the shorter one. Locks the
+    /// "rank by conversion-stage count alone" PRD requirement.
+    #[test]
+    fn dispatch_prefers_shorter_chain() {
+        let alpha = CapabilityDescriptor {
+            supports: vec![
+                (Operation::BooleanUnion, ReprKind::Mesh),
+                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+            ],
+        };
+        let beta = CapabilityDescriptor {
+            supports: vec![
+                (Operation::BooleanUnion, ReprKind::Mesh),
+                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Sdf),
+                (Operation::Convert { from: ReprKind::Sdf }, ReprKind::Mesh),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("alpha".to_string(), &alpha);
+        registry.insert("beta".to_string(), &beta);
+
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::BRep);
+
+        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
+            .expect("a 1-stage chain via alpha must be findable");
+
+        assert_eq!(
+            plan.conversions.len(),
+            1,
+            "BFS must pick the 1-stage chain, not the 2-stage chain via Sdf — got {plan:?}",
+        );
+    }
 }
