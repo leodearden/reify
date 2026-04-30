@@ -6,9 +6,9 @@
 //!   step-5: compile_with_prelude_context parity with compile_with_prelude
 //!   step-7: load_stdlib_context caching (pointer stability + enum parity)
 
-use reify_compiler::{CompiledModule, PreludeContext, compile_with_prelude, compile_with_prelude_context, compile_with_stdlib, stdlib_loader};
+use reify_compiler::{CompiledModule, CompiledTypeAlias, PreludeContext, compile_with_prelude, compile_with_prelude_context, compile_with_stdlib, stdlib_loader};
 use reify_test_support::CompiledModuleBuilder;
-use reify_types::{EnumDef, ModulePath};
+use reify_types::{ContentHash, DimensionVector, EnumDef, ModulePath, SourceSpan, Type};
 
 // ─── step-3: PreludeContext::from_slice ergonomics ─────────────────────────
 
@@ -351,4 +351,55 @@ structure def Beam {
     let actual = compile_with_stdlib(&parsed);
 
     assert_compiled_module_parity(&actual, &expected, "compile_with_stdlib-e2e");
+}
+
+// ─── step-1 (task 2750): PreludeContext::pub_aliases invariants ────────────
+
+fn make_alias(name: &str, resolved_type: Option<Type>, is_pub: bool) -> CompiledTypeAlias {
+    CompiledTypeAlias {
+        name: name.to_string(),
+        resolved_type,
+        type_params: vec![],
+        is_pub,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str(name),
+    }
+}
+
+/// pub_aliases() returns only pub entries, in source order across modules,
+/// filtering out non-pub aliases.
+#[test]
+fn pub_aliases_flattens_pub_entries_in_source_order() {
+    // m1 carries two aliases: pub Stress and non-pub Internal
+    let stress = make_alias("Stress", Some(Type::Scalar { dimension: DimensionVector::PRESSURE }), true);
+    let internal = make_alias("Internal", Some(Type::Scalar { dimension: DimensionVector::LENGTH }), false);
+    let m1 = CompiledModuleBuilder::new(ModulePath::single("alias_m1"))
+        .type_alias(stress)
+        .type_alias(internal)
+        .build();
+
+    // m2 carries one pub alias: Strain
+    let strain = make_alias("Strain", Some(Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }), true);
+    let m2 = CompiledModuleBuilder::new(ModulePath::single("alias_m2"))
+        .type_alias(strain)
+        .build();
+
+    let ctx = PreludeContext::new(&[&m1, &m2]);
+    let aliases = ctx.pub_aliases();
+
+    assert_eq!(aliases.len(), 2, "expected exactly 2 pub aliases (Internal filtered), got: {:?}", aliases.iter().map(|a| &a.name).collect::<Vec<_>>());
+    assert_eq!(aliases[0].name, "Stress", "first alias must be Stress from m1");
+    assert_eq!(aliases[1].name, "Strain", "second alias must be Strain from m2");
+    assert!(!aliases.iter().any(|a| a.name == "Internal"), "non-pub Internal must be filtered out");
+}
+
+/// pub_aliases() on a context built from an empty prelude returns an empty slice.
+#[test]
+fn pub_aliases_empty_for_empty_prelude() {
+    let ctx: PreludeContext = PreludeContext::new(&[]);
+    assert!(
+        ctx.pub_aliases().is_empty(),
+        "empty prelude should yield empty pub_aliases(), got len={}",
+        ctx.pub_aliases().len()
+    );
 }
