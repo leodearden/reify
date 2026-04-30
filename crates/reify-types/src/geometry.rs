@@ -87,6 +87,120 @@ pub enum ReprKind {
     Voxel,
 }
 
+/// Multi-kernel operation classifier.
+///
+/// Names every operation a geometry kernel might claim to support. The pair
+/// `(Operation, ReprKind)` in [`CapabilityDescriptor::supports`] reads as
+/// "this kernel can perform `Operation` and produce `ReprKind`". Conversions
+/// across representation families are modelled here as
+/// [`Operation::Convert { from }`] so that the dispatcher's BFS can expand
+/// across reprs uniformly over a single feasibility table (PRD
+/// `docs/prds/v0_2/multi-kernel.md` "Capability descriptor": `supports:
+/// Vec<(Operation, ReprKind)>` is the single feasibility table — no separate
+/// `conversions` field).
+///
+/// Variants enumerate the v0.1 op surface (Booleans×3, Primitives×4,
+/// Modify×5, Transform×4, Pattern×5, Sweep×8, Curve×6) plus the v0.2
+/// multi-kernel `Convert { from }` variant (one logical entry per source
+/// `ReprKind`). Each variant is a coarse op classifier: parameters that vary
+/// per call site (e.g. fillet radius, sphere centre) live on
+/// [`GeometryOp`], not here. This enum is `Hash + Eq + Copy + Debug` so it
+/// can act as a `HashMap`/`BTreeMap` key in the dispatcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Operation {
+    // ── Booleans ─────────────────────────────────────────────────────────────
+    /// Boolean union of two solids/meshes/SDFs.
+    BooleanUnion,
+    /// Boolean difference (left − right).
+    BooleanDifference,
+    /// Boolean intersection.
+    BooleanIntersection,
+
+    // ── Primitives ───────────────────────────────────────────────────────────
+    /// Box primitive (centred at origin, axis-aligned).
+    PrimitiveBox,
+    /// Cylinder primitive (along Z axis).
+    PrimitiveCylinder,
+    /// Sphere primitive.
+    PrimitiveSphere,
+    /// Tube primitive (hollow cylinder).
+    PrimitiveTube,
+
+    // ── Modify (local edits to a single shape) ──────────────────────────────
+    /// Fillet (round) edges by radius.
+    ModifyFillet,
+    /// Chamfer edges by distance.
+    ModifyChamfer,
+    /// Shell (hollow out) by thickness.
+    ModifyShell,
+    /// Draft faces by angle.
+    ModifyDraft,
+    /// Thicken a surface by offset.
+    ModifyThicken,
+
+    // ── Transform (rigid / scale) ───────────────────────────────────────────
+    /// Translate by vector.
+    TransformTranslate,
+    /// Rotate around an axis (origin-centred).
+    TransformRotate,
+    /// Scale (uniform or non-uniform).
+    TransformScale,
+    /// Rotate around an arbitrary axis.
+    TransformRotateAround,
+
+    // ── Pattern (replicate) ─────────────────────────────────────────────────
+    /// Linear pattern along an axis.
+    PatternLinear,
+    /// Circular pattern around an axis.
+    PatternCircular,
+    /// Mirror across a plane.
+    PatternMirror,
+    /// Linear pattern along two axes (grid).
+    PatternLinear2D,
+    /// Arbitrary placement list.
+    PatternArbitrary,
+
+    // ── Sweep (extrude / revolve / loft / pipe) ─────────────────────────────
+    /// Loft through a sequence of profiles.
+    SweepLoft,
+    /// Extrude a profile linearly.
+    SweepExtrude,
+    /// Revolve a profile around an axis.
+    SweepRevolve,
+    /// Sweep a profile along a path.
+    SweepSweep,
+    /// Symmetric extrude (both directions).
+    SweepExtrudeSymmetric,
+    /// Sweep with explicit guide rails.
+    SweepSweepGuided,
+    /// Loft with explicit guide rails.
+    SweepLoftGuided,
+    /// Pipe along a path.
+    SweepPipe,
+
+    // ── Curve (1D primitives) ───────────────────────────────────────────────
+    /// Line segment.
+    CurveLineSegment,
+    /// Arc.
+    CurveArc,
+    /// Helix.
+    CurveHelix,
+    /// Interpolated curve through points.
+    CurveInterpCurve,
+    /// Bezier curve from control points.
+    CurveBezierCurve,
+    /// NURBS curve.
+    CurveNurbsCurve,
+
+    // ── Convert (representation change) ─────────────────────────────────────
+    /// Convert geometry from one [`ReprKind`] family to another. The pair
+    /// `(Convert { from: BRep }, Mesh)` in a kernel's `supports` table reads
+    /// as "this kernel can convert BRep input to Mesh output" (e.g. OCCT
+    /// tessellation). The destination repr is the second element of the
+    /// `supports` tuple, not encoded here.
+    Convert { from: ReprKind },
+}
+
 /// Operations that can be sent to a geometry kernel.
 #[derive(Debug, Clone)]
 pub enum GeometryOp {
