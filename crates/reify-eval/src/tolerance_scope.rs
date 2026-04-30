@@ -74,7 +74,9 @@ pub(crate) fn extract_tolerance_bindings(
 ) -> Vec<ToleranceBinding> {
     let mut bindings = Vec::new();
     #[cfg(debug_assertions)]
-    let mut distinct_subject_params: BTreeSet<&str> = BTreeSet::new();
+    let mut first_param_seen: Option<&str> = None;
+    #[cfg(debug_assertions)]
+    let mut second_distinct_param: Option<&str> = None;
     for constraint in &purpose.constraints {
         // Match: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1])
         let (function_name, args) = match &constraint.expr.kind {
@@ -118,11 +120,22 @@ pub(crate) fn extract_tolerance_bindings(
         // Track distinct subject param names that pass the membership gate.
         // Used by the debug_assert after the loop to enforce the single-binding
         // contract (see function docstring # Single-binding contract).
-        // The insert (and the BTreeSet declaration above) are gated on
-        // debug_assertions so the bookkeeping disappears entirely from
-        // release builds, where the consuming debug_assert! is a no-op.
+        // Both declarations and this block are gated on debug_assertions so the
+        // bookkeeping disappears entirely from release builds, where the consuming
+        // debug_assert! is a no-op.  `first_param_seen` records the initial name;
+        // `second_distinct_param` captures the first name that differs — enough
+        // context to produce a fault-localising panic message ({:?} after {:?}).
         #[cfg(debug_assertions)]
-        distinct_subject_params.insert(subject_cell_id.entity.as_str());
+        {
+            let name = subject_cell_id.entity.as_str();
+            match first_param_seen {
+                None => first_param_seen = Some(name),
+                Some(first) if first != name && second_distinct_param.is_none() => {
+                    second_distinct_param = Some(name);
+                }
+                _ => {}
+            }
+        }
 
         // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, si_value })
         // where si_value.is_finite() && si_value >= 0.0 — see gate-3 in the
@@ -146,14 +159,14 @@ pub(crate) fn extract_tolerance_bindings(
     }
     #[cfg(debug_assertions)]
     debug_assert!(
-        distinct_subject_params.len() <= 1,
-        "single-binding contract: extract_tolerance_bindings saw {} distinct \
-         purpose-param subjects ({:?}) but today's activate_purpose API binds \
-         only one entity_ref per purpose; a multi-param-aware producer must \
-         thread param identity into ToleranceBinding rather than collapsing \
-         to bound_entity_ref",
-        distinct_subject_params.len(),
-        distinct_subject_params,
+        second_distinct_param.is_none(),
+        "single-binding contract: extract_tolerance_bindings saw a second distinct \
+         purpose-param subject ({:?} after {:?}) but today's activate_purpose API \
+         binds only one entity_ref per purpose; a multi-param-aware producer must \
+         thread param identity into ToleranceBinding rather than collapsing to \
+         bound_entity_ref",
+        second_distinct_param,
+        first_param_seen,
     );
     bindings
 }
