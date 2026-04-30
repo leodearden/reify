@@ -10,10 +10,15 @@
 //! implements the "tighter satisfies looser" rule: a cached entry at tolerance `t_cached`
 //! satisfies a request at `t_req` when `t_cached ≤ t_req`.
 //!
-//! # This task (2640)
+//! # Keying design (per PRD `docs/prds/v0_2/multi-kernel.md` "Resolved design decisions")
 //!
-//! This module introduces the data structure with the final `(entity_id, repr_kind)`
-//! outer keying.  It is *not* wired into `CacheStore` or `NodeId::Realization` —
+//! The outer key is `(entity_id: String, repr_kind: ReprKind)` — the two-dimensional
+//! classifier introduced by the multi-kernel PRD.  `ReprKind` (BRep | Mesh | Sdf | Voxel)
+//! identifies the kernel-family that produced the representation; `entity_id` identifies
+//! the source entity.  Together they uniquely partition the tolerance space.
+//!
+//! This module introduces the data structure with the final `(entity_id, repr_kind, tol)`
+//! keying.  It is *not* wired into `CacheStore` or `NodeId::Realization` —
 //! that is task 2641's responsibility.
 //!
 //! The public API takes `entity: &str` and `repr_kind: ReprKind` as separate arguments
