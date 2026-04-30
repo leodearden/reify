@@ -1135,6 +1135,41 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::FieldSampledInvalidConfig).unwrap();
         assert_eq!(s, "\"FieldSampledInvalidConfig\"");
     }
+
+    // --- TopologyAttributeAmbiguousAfterSplit tests (task 2721 — W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT) ---
+    // Pairs with `emit_split_children_diagnostic` in
+    // `crates/reify-eval/src/topology_attribute_resolver.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip, severity, and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TopologyAttributeAmbiguousAfterSplit` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)`.
+    /// Pins the warning-severity contract and variant existence for the typed
+    /// disambiguation of the post-split-cluster outcome (`AttributeResolution::AmbiguousAfterSplit`).
+    #[test]
+    fn diagnostic_code_topology_attribute_ambiguous_after_split_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x")
+            .with_code(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TopologyAttributeAmbiguousAfterSplit`
+    /// serializes as `"TopologyAttributeAmbiguousAfterSplit"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_topology_attribute_ambiguous_after_split_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::TopologyAttributeAmbiguousAfterSplit).unwrap();
+        assert_eq!(s, "\"TopologyAttributeAmbiguousAfterSplit\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
