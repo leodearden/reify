@@ -81,12 +81,17 @@ impl<V> RealizationCache<V> {
     /// This forwards [`ToleranceBucket`]'s precondition: `tol` must be finite and
     /// non-negative (`tol.is_finite() && tol >= 0.0`).
     pub fn insert(&mut self, entity: &str, repr_kind: ReprKind, tol: f64, val: V) -> bool {
-        self.buckets
-            .entry(repr_kind)
-            .or_default()
-            .entry(entity.to_owned())
-            .or_insert_with(ToleranceBucket::new)
-            .insert(tol, val)
+        let inner = self.buckets.entry(repr_kind).or_default();
+        if let Some(bucket) = inner.get_mut(entity) {
+            // Fast path: entity already present under this repr_kind — no allocation.
+            bucket.insert(tol, val)
+        } else {
+            // Slow path: first appearance of this entity under repr_kind — pay one to_owned().
+            inner
+                .entry(entity.to_owned())
+                .or_insert_with(ToleranceBucket::new)
+                .insert(tol, val)
+        }
     }
 
     /// Looks up the loosest cached entry that satisfies `tol` under `(entity, repr_kind)`.
