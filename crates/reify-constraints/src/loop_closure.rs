@@ -133,6 +133,14 @@ pub enum NewtonOutcome {
     },
     /// Solver detected a rank-deficient Jacobian (min-pivot below
     /// [`NewtonConfig::singularity_pivot_eps`]).
+    ///
+    /// The diagnostic-emitting wrapper [`solve_loop_closure_with_diagnostics`]
+    /// translates this variant into a [`DiagnosticCode::KinematicSingularity`]
+    /// Warning and sets `LoopClosureReport.is_singular = true`; the `x`
+    /// payload is preserved verbatim as the last-converged config the PRD
+    /// requires.
+    ///
+    /// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
     Singular {
         /// Free-variable values at the iteration where singularity was detected.
         x: Vec<f64>,
@@ -461,6 +469,17 @@ where
 ///
 /// Multi-loop is future work (the [`newton_solve`] core is generic — callers
 /// can stack residuals/columns from multiple loops).
+///
+/// ## See also
+///
+/// [`solve_loop_closure_with_diagnostics`] — diagnostic-emitting wrapper that
+/// adds over/under-constrained pre-checks and a singularity post-process,
+/// returning a [`LoopClosureReport`] (the canonical "what happened" outcome
+/// plus an `is_singular` flag and any
+/// [`DiagnosticCode::KinematicSingularity`] / `KinematicOverconstrained` /
+/// `KinematicUnderconstrained` entries the PRD task 9 prose requires).
+///
+/// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
 pub fn solve_loop_closure(
     chain_a: &[reify_types::Value],
     vals_a: &[f64],
