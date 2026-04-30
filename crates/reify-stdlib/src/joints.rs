@@ -4371,6 +4371,116 @@ mod tests {
         );
     }
 
+    // ── cylindrical joint_jacobian: two-column List (step-13) ────────────────
+
+    /// `joint_jacobian(cyl)` returns a `Value::List` of length 2 with one twist
+    /// Map per DOF:
+    ///   [0] prismatic DOF: { angular: [0,0,0], linear: unit_axis }
+    ///   [1] revolute  DOF: { angular: unit_axis, linear: [0,0,0] }
+    ///
+    /// Three sub-scenarios cover unit-Z, unit-X, and an unnormalised axis
+    /// `[3, 4, 0]` (magnitude 5) that must normalise to `[0.6, 0.8, 0]` in
+    /// both columns.  The List shape (vs. a single Map) is essential: it
+    /// preserves analytic per-DOF information and naturally signals to
+    /// `loop_closure::per_joint_jacobian_local` (which expects a single Map)
+    /// to fall back to FD via its `twist_map_to_array` failure path.
+    #[test]
+    fn cylindrical_joint_jacobian_returns_two_columns() {
+        // (a) unit Z
+        let cyl_z = cylindrical_z_joint();
+        let result_z = eval_builtin("joint_jacobian", &[cyl_z]);
+        assert_jacobian_list_two_columns(&result_z, [0.0, 0.0, 1.0], "cyl Z unit");
+
+        // (b) unit X
+        let cyl_x = eval_builtin(
+            "cylindrical",
+            &[axis_x_unit(), length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let result_x = eval_builtin("joint_jacobian", &[cyl_x]);
+        assert_jacobian_list_two_columns(&result_x, [1.0, 0.0, 0.0], "cyl X unit");
+
+        // (c) unnormalised axis [3, 4, 0] (magnitude 5) → unit [0.6, 0.8, 0]
+        let axis_345 = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let cyl_345 = eval_builtin(
+            "cylindrical",
+            &[axis_345, length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let result_345 = eval_builtin("joint_jacobian", &[cyl_345]);
+        assert_jacobian_list_two_columns(&result_345, [0.6, 0.8, 0.0], "cyl unnormalised [3,4,0]");
+    }
+
+    /// Helper: assert that `result` is a `Value::List` of length 2 whose
+    /// elements are `Map { angular, linear }` columns matching the cylindrical
+    /// joint_jacobian contract — element [0] is the prismatic-DOF column
+    /// (linear = `unit_axis`, angular = zero) and element [1] is the
+    /// revolute-DOF column (angular = `unit_axis`, linear = zero).
+    fn assert_jacobian_list_two_columns(result: &Value, unit_axis: [f64; 3], label: &str) {
+        let items = match result {
+            Value::List(v) => v,
+            other => panic!("{label}: expected List, got {:?}", other),
+        };
+        assert_eq!(items.len(), 2, "{label}: List should have exactly 2 columns");
+
+        // column [0]: prismatic DOF
+        assert_jacobian_map_components(
+            &items[0],
+            [0.0, 0.0, 0.0],
+            unit_axis,
+            &format!("{label} col[0] (prismatic DOF)"),
+        );
+        // column [1]: revolute DOF
+        assert_jacobian_map_components(
+            &items[1],
+            unit_axis,
+            [0.0, 0.0, 0.0],
+            &format!("{label} col[1] (revolute DOF)"),
+        );
+    }
+
+    /// Helper: assert a Jacobian Map has the expected angular and linear
+    /// Vector3 components (component-wise within 1e-12).
+    fn assert_jacobian_map_components(
+        map_val: &Value,
+        exp_ang: [f64; 3],
+        exp_lin: [f64; 3],
+        label: &str,
+    ) {
+        let map = match map_val {
+            Value::Map(m) => m,
+            other => panic!("{label}: expected Map, got {:?}", other),
+        };
+        let read_vec3 = |key: &str| -> [f64; 3] {
+            let v = map
+                .get(&Value::String(key.to_string()))
+                .unwrap_or_else(|| panic!("{label}: missing key {key:?}"));
+            let items = match v {
+                Value::Vector(items) if items.len() == 3 => items,
+                other => panic!("{label}: {key} expected Vector3, got {:?}", other),
+            };
+            [
+                items[0].as_f64().unwrap(),
+                items[1].as_f64().unwrap(),
+                items[2].as_f64().unwrap(),
+            ]
+        };
+        let ang = read_vec3("angular");
+        let lin = read_vec3("linear");
+        for i in 0..3 {
+            assert!(
+                (ang[i] - exp_ang[i]).abs() < 1e-12,
+                "{label}: angular[{i}] expected {} got {}",
+                exp_ang[i],
+                ang[i]
+            );
+            assert!(
+                (lin[i] - exp_lin[i]).abs() < 1e-12,
+                "{label}: linear[{i}] expected {} got {}",
+                exp_lin[i],
+                lin[i]
+            );
+        }
+    }
+
     // ── cylindrical transform_at: invalid motion-var (step-11) ──────────────
 
     /// Table-driven validation surface for the cylindrical transform_at second
