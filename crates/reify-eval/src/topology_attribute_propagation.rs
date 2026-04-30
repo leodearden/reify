@@ -2576,4 +2576,34 @@ mod tests {
             other => panic!("expected QueryError::QueryFailed, got {other:?}"),
         }
     }
+
+    #[test]
+    #[should_panic(
+        expected = "loft section face/edge slice families must be built in lockstep"
+    )]
+    fn populate_loft_panics_when_section_face_and_edge_slice_lengths_differ() {
+        let mut table = TopologyAttributeTable::default();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        // section_faces has 2 entries; section_edges has 1 — asymmetric input.
+        // populate_loft_attributes must debug_assert that the two families have
+        // equal length (lockstep invariant), so this call must panic in debug.
+        let section_faces = vec![
+            vec![GeometryHandleId(701)],
+            vec![GeometryHandleId(702)],
+        ];
+        let section_edges = vec![vec![GeometryHandleId(801), GeometryHandleId(802)]];
+        let result_faces = vec![GeometryHandleId(7000)];
+        let result_edges: Vec<GeometryHandleId> = vec![];
+        let history = LoftOpHistoryRecords::default();
+
+        let _ = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &section_faces,
+            &section_edges,
+            &result_faces,
+            &result_edges,
+            &history,
+        );
+    }
 }
