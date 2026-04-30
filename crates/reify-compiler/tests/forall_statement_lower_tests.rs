@@ -2617,3 +2617,17 @@ structure def S {
         );
     }
 }
+
+/// Unit test: `with_first_forall_connect` invokes the caller-supplied closure
+/// with the first `ForallConnectDecl` found in the named structure.
+///
+/// Initially fails to compile because `with_first_forall_connect` does not
+/// exist yet (step 1 of the extract-shared-helper refactor).
+#[test]
+fn with_first_forall_connect_invokes_closure_with_matched_node() {
+    let source = make_fixture("v.a", "hub");
+    let (variable, span) =
+        with_first_forall_connect(&source, "S", |f| (f.variable.clone(), f.span));
+    assert_eq!(variable, "v", "expected bound variable 'v', got {:?}", variable);
+    assert!(span.len() > 0, "expected non-empty forall span, got {:?}", span);
+}
