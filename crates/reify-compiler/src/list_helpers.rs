@@ -24,12 +24,13 @@ pub(crate) fn infer_list_helper_return_type(
             // (returns None here) when the structural pattern doesn't match
             // (e.g., poisoned type or non-list argument), preserving
             // anti-cascade.
-            if let Some(arg) = compiled_args.first() {
-                if let Type::List(inner) = &arg.result_type {
-                    return Some((**inner).clone());
-                }
+            if let Some(arg) = compiled_args.first()
+                && let Type::List(inner) = &arg.result_type
+            {
+                Some((**inner).clone())
+            } else {
+                None
             }
-            None
         }
         "flat_map" => {
             // flat_map(List<A>, (A) -> List<B>) -> List<B>  (task 2698).
@@ -47,14 +48,14 @@ pub(crate) fn infer_list_helper_return_type(
             // wrong arity, second arg not a Function, or lambda body not a
             // List), preserving anti-cascade and ensuring the cell type stays
             // List<_>.
-            if compiled_args.len() == 2 {
-                if let Type::Function { return_type, .. } = &compiled_args[1].result_type {
-                    if matches!(**return_type, Type::List(_)) {
-                        return Some((**return_type).clone());
-                    }
-                }
+            if compiled_args.len() == 2
+                && let Type::Function { return_type, .. } = &compiled_args[1].result_type
+                && matches!(**return_type, Type::List(_))
+            {
+                Some((**return_type).clone())
+            } else {
+                None
             }
-            None
         }
         _ => None,
     }
