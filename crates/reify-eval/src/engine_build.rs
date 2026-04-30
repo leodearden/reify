@@ -7,8 +7,8 @@ use reify_compiler::CompiledModule;
 use reify_types::{
     AttributeHistory, CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat,
     FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId, GeometryKernel,
-    GeometryOp, Mesh, RealizationNodeId, SourceSpan, SweepOpHistoryRecords, TopologyAttributeTable,
-    ValueMap, VersionId,
+    GeometryOp, LoftOpHistoryRecords, Mesh, RealizationNodeId, SourceSpan, SweepOpHistoryRecords,
+    TopologyAttributeTable, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -17,9 +17,23 @@ use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
 use crate::topology_attribute_propagation::{
-    populate_extrude_attributes, populate_revolve_attributes,
+    populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
+    populate_sweep_attributes,
 };
 use crate::{BuildResult, Engine, TessellateResult};
+
+/// Per-op kind for `populate_single_parent_sweep_op` — the three single-
+/// parent sweep variants (extrude, revolve, sweep) that share the
+/// `SweepOpHistoryRecords` shape but emit different per-op
+/// `Role` / `Cap`-flavor combos through their dedicated propagation
+/// helper. Loft is *not* included here because it is multi-parent and
+/// uses its own `LoftOpHistoryRecords` + `populate_loft_op` helper.
+#[derive(Debug, Clone, Copy)]
+enum SingleParentSweepKind {
+    Extrude,
+    Revolve,
+    Sweep,
+}
 
 /// Dispatch on `attribute_history` to populate `topology_attribute_table`
 /// for sweep-style ops (extrude / revolve, currently). Called by
@@ -56,14 +70,14 @@ fn populate_attribute_history(
                     )));
                 }
             };
-            populate_sweep_op(
+            populate_single_parent_sweep_op(
                 table,
                 kernel,
                 feature_id,
                 profile_handle,
                 result_handle,
                 history,
-                /*is_revolve=*/ false,
+                SingleParentSweepKind::Extrude,
             )
         }
         AttributeHistory::Revolve(history) => {
@@ -76,39 +90,84 @@ fn populate_attribute_history(
                     )));
                 }
             };
-            populate_sweep_op(
+            populate_single_parent_sweep_op(
                 table,
                 kernel,
                 feature_id,
                 profile_handle,
                 result_handle,
                 history,
-                /*is_revolve=*/ true,
+                SingleParentSweepKind::Revolve,
+            )
+        }
+        AttributeHistory::Sweep(history) => {
+            // GeometryOp::Sweep is single-parent like Extrude/Revolve: the
+            // profile is the operand whose sub-shapes propagate into the
+            // result; the path/spine is not itself a parent.
+            let profile_handle = match geom_op {
+                GeometryOp::Sweep { profile, .. } => *profile,
+                _ => {
+                    return Err(reify_types::QueryError::QueryFailed(format!(
+                        "AttributeHistory::Sweep returned for non-Sweep GeometryOp: {:?}",
+                        geom_op
+                    )));
+                }
+            };
+            populate_single_parent_sweep_op(
+                table,
+                kernel,
+                feature_id,
+                profile_handle,
+                result_handle,
+                history,
+                SingleParentSweepKind::Sweep,
+            )
+        }
+        AttributeHistory::Loft(history) => {
+            // GeometryOp::Loft is multi-parent: each profile section is a
+            // parent; `parent_index` in `face_generated` denotes the
+            // section index in `[0, profiles.len())`.
+            let profiles = match geom_op {
+                GeometryOp::Loft { profiles } => profiles,
+                _ => {
+                    return Err(reify_types::QueryError::QueryFailed(format!(
+                        "AttributeHistory::Loft returned for non-Loft GeometryOp: {:?}",
+                        geom_op
+                    )));
+                }
+            };
+            populate_loft_op(
+                table,
+                kernel,
+                feature_id,
+                profiles,
+                result_handle,
+                history,
             )
         }
     }
 }
 
-/// Shared helper: extract the profile and result face/edge slices from
-/// `kernel`, then dispatch to either `populate_extrude_attributes` or
-/// `populate_revolve_attributes` per `is_revolve`. Centralised so the
-/// extract sequence + error-propagation shape stays uniform across both
-/// sweep variants (and any future variants added in task 5b).
-fn populate_sweep_op(
+/// Shared helper for the three single-parent sweep variants (extrude,
+/// revolve, sweep). Extracts the profile and result face/edge slices
+/// from `kernel`, then dispatches to the appropriate per-op propagation
+/// helper based on `kind`. Centralised so the extract sequence +
+/// error-propagation shape stays uniform across the variants.
+fn populate_single_parent_sweep_op(
     table: &mut TopologyAttributeTable,
     kernel: &mut dyn GeometryKernel,
     feature_id: &FeatureId,
     profile_handle: GeometryHandleId,
     result_handle: GeometryHandleId,
     history: &SweepOpHistoryRecords,
-    is_revolve: bool,
+    kind: SingleParentSweepKind,
 ) -> Result<(), reify_types::QueryError> {
     let profile_faces = kernel.extract_faces(profile_handle)?;
     let profile_edges = kernel.extract_edges(profile_handle)?;
     let result_faces = kernel.extract_faces(result_handle)?;
     let result_edges = kernel.extract_edges(result_handle)?;
-    if is_revolve {
-        populate_revolve_attributes(
+    match kind {
+        SingleParentSweepKind::Extrude => populate_extrude_attributes(
             table,
             feature_id,
             &profile_faces,
@@ -116,9 +175,8 @@ fn populate_sweep_op(
             &result_faces,
             &result_edges,
             history,
-        )
-    } else {
-        populate_extrude_attributes(
+        ),
+        SingleParentSweepKind::Revolve => populate_revolve_attributes(
             table,
             feature_id,
             &profile_faces,
@@ -126,8 +184,51 @@ fn populate_sweep_op(
             &result_faces,
             &result_edges,
             history,
-        )
+        ),
+        SingleParentSweepKind::Sweep => populate_sweep_attributes(
+            table,
+            feature_id,
+            &profile_faces,
+            &profile_edges,
+            &result_faces,
+            &result_edges,
+            history,
+        ),
     }
+}
+
+/// Multi-parent variant of `populate_single_parent_sweep_op` for
+/// `GeometryOp::Loft`. Walks the `profiles` handle list, calls
+/// `kernel.extract_faces` / `extract_edges` once per section to build
+/// the per-section profile face/edge slice families, extracts the
+/// result face/edge slices, and dispatches to
+/// `populate_loft_attributes`. Failure semantics preserved (Diagnostic::
+/// warning at the call site, no Failed regression per task-2574).
+fn populate_loft_op(
+    table: &mut TopologyAttributeTable,
+    kernel: &mut dyn GeometryKernel,
+    feature_id: &FeatureId,
+    profile_handles: &[GeometryHandleId],
+    result_handle: GeometryHandleId,
+    history: &LoftOpHistoryRecords,
+) -> Result<(), reify_types::QueryError> {
+    let mut section_faces: Vec<Vec<GeometryHandleId>> = Vec::with_capacity(profile_handles.len());
+    let mut section_edges: Vec<Vec<GeometryHandleId>> = Vec::with_capacity(profile_handles.len());
+    for &profile_handle in profile_handles {
+        section_faces.push(kernel.extract_faces(profile_handle)?);
+        section_edges.push(kernel.extract_edges(profile_handle)?);
+    }
+    let result_faces = kernel.extract_faces(result_handle)?;
+    let result_edges = kernel.extract_edges(result_handle)?;
+    populate_loft_attributes(
+        table,
+        feature_id,
+        &section_faces,
+        &section_edges,
+        &result_faces,
+        &result_edges,
+        history,
+    )
 }
 
 impl Engine {
