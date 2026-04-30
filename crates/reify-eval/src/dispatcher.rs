@@ -225,4 +225,40 @@ mod tests {
             "BFS must pick the 1-stage chain, not the 2-stage chain via Sdf — got {plan:?}",
         );
     }
+
+    /// Two kernels both directly support the demanded (op, repr) with zero
+    /// conversions. The lexicographically smaller kernel name wins.
+    ///
+    /// Five repeated calls confirm determinism — a HashMap-based registry
+    /// would otherwise return a random kernel each call. Locks the PRD's
+    /// "Selection deterministic given pinned runtime configuration".
+    #[test]
+    fn dispatch_tie_break_lexicographic_kernel_name() {
+        let alpha = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("alpha".to_string(), &alpha);
+        registry.insert("manifold".to_string(), &manifold);
+
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::Mesh);
+
+        // Repeat 5x: every call must return the same kernel name.
+        for trial in 0..5 {
+            let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
+                .expect("both kernels can answer the demand directly");
+            assert_eq!(
+                plan.kernel, "alpha",
+                "trial {trial}: lexicographically smaller name 'alpha' must win over 'manifold', got {plan:?}",
+            );
+            assert!(
+                plan.conversions.is_empty(),
+                "trial {trial}: zero-conversion path expected, got {plan:?}",
+            );
+        }
+    }
 }
