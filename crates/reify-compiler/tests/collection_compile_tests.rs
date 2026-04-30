@@ -480,3 +480,42 @@ fn compile_flat_map_non_list_lambda_body_falls_back_to_first_arg_type() {
         expr.result_type
     );
 }
+
+/// Explicit fixture-loading guard for `examples/list_helpers.ri` (task 2698).
+///
+/// The file is also auto-discovered by `examples_smoke::all_examples_parse_and_compile_with_stdlib`
+/// (it walks the `examples/` directory tree), so removing it from disk would
+/// be caught by that bulk-smoke test. This test adds a *named*, in-scope
+/// guard that fails loudly if the fixture is renamed, moved, or reduced to
+/// content that no longer exercises both `single` and `flat_map`. The error
+/// surface here points directly at the file (rather than buried in a 40-file
+/// bulk-failure report), which makes accidental drift easier to triage.
+#[test]
+fn list_helpers_fixture_compiles_with_stdlib() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/list_helpers.ri"
+    );
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {}: {}", path, e));
+
+    // Sanity check: the fixture must mention both helpers — a regression
+    // that strips one of them would otherwise compile clean (since both
+    // are now registered) but defeat the purpose of the smoke fixture.
+    assert!(
+        source.contains("single("),
+        "list_helpers fixture must invoke `single(...)`; \
+         did the fixture get reduced?"
+    );
+    assert!(
+        source.contains("flat_map("),
+        "list_helpers fixture must invoke `flat_map(...)`; \
+         did the fixture get reduced?"
+    );
+
+    // parse_and_compile panics on any error-severity diagnostic, so this
+    // call IS the assertion: if either helper is mis-registered the test
+    // fails with the diagnostic list. Use the with_stdlib variant because
+    // the fixture relies on stdlib-prelude registration of single/flat_map.
+    let _compiled = reify_test_support::parse_and_compile_with_stdlib(&source);
+}
