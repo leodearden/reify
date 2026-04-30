@@ -763,9 +763,9 @@ mod tests {
             Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
         );
         assert!(
-            diag.message.contains(&candidates.len().to_string()),
-            "diagnostic message should interpolate the children count ({}), got: {}",
-            candidates.len(),
+            diag.message.contains("matched 2 split children"),
+            "diagnostic message should interpolate the children count via the wording \
+             template ('matched N split children'), got: {}",
             diag.message,
         );
     }
@@ -816,6 +816,12 @@ mod tests {
         assert_eq!(
             diag.code,
             Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
+        );
+        assert!(
+            diag.message.contains("matched 2 split children"),
+            "diagnostic message should interpolate the children count via the wording \
+             template ('matched N split children'), got: {}",
+            diag.message,
         );
     }
 
