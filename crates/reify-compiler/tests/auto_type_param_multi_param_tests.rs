@@ -28,7 +28,7 @@ use reify_compiler::auto_type_param::{
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
-use reify_types::{CompiledFunction, DiagnosticCode, Severity, SourceSpan};
+use reify_types::{CompiledExpr, CompiledFunction, ConstraintNodeId, DiagnosticCode, Satisfaction, Severity, SourceSpan, Value};
 
 /// Build a Reify source with `trait Seal {}` and `count` structures
 /// `S00`..`S{count-1}` each declaring `: Seal`. Zero-padded to two digits
@@ -836,5 +836,163 @@ structure def ORingSeal2 : Polished {
         diagnostics[0].severity,
         Severity::Warning,
         "NonUnique diagnostic must be a Warning (not Error)"
+    );
+}
+
+// ─── step-19: Phase B all-rejected → Phase C NoCandidate wiring ───────────
+
+/// Pins the orchestrator's Phase B → Phase C wiring for the "all-rejected"
+/// path: Phase A finds one candidate (ORingSeal), Phase B's constraint checker
+/// returns `Violated` for every candidate, and Phase C emits a
+/// `AutoTypeParamNoCandidate` diagnostic with a **rejection-summary** message.
+///
+/// # Coverage gap this test fills
+///
+/// The three existing `NoCandidate`-related orchestrator tests in this file
+/// (e.g. `no_candidate_on_first_param_halts_and_does_not_enumerate_second_param`)
+/// all flow through Phase A's **Empty** pool (zero structures implementing the
+/// trait). That path emits `AutoTypeParamNoCandidate` directly inside the
+/// `CandidateEnumeration::Empty` arm of the orchestrator, bypassing Phase B
+/// and Phase C entirely.
+///
+/// The path exercised here is:
+///   Phase A `CandidateEnumeration::Found(["ORingSeal"])`
+///   → Phase B `filter_feasible_candidates` (receives `parameterized_template`,
+///     `constraint_checker`, and `functions`)
+///   → all candidates rejected → `FeasibilityResult::Empty { rejected: [...] }`
+///   → Phase C `select_candidate(FeasibilityResult::Empty { ... })`
+///   → `SelectionResult::NoCandidate`
+///   → orchestrator emits the rejection-summary `AutoTypeParamNoCandidate`
+///     diagnostic.
+///
+/// A regression that drops `parameterized_template`, `constraint_checker`, or
+/// `functions` from the `filter_feasible_candidates` call, or mis-routes
+/// `param.use_site_span` into Phase C, would not be caught by the existing
+/// empty-pool tests nor by the happy-path tests. This test catches all such
+/// regressions via a set of load-bearing assertions:
+///
+/// - `message.contains("rejected by constraint")` — distinguishes Phase C's
+///   rejection-summary form from Phase A's zero-rejections form.
+/// - `candidates == ["ORingSeal"]` — Phase C's Empty arm populates `candidates`
+///   with rejected names; Phase A's short-circuit leaves `candidates` empty.
+/// - `labels[0].span == use_site_span` — pins span propagation into Phase C.
+#[test]
+fn phase_b_all_rejected_routes_through_orchestrator_to_no_candidate_with_rejection_summary() {
+    // Phase A will find exactly one candidate: ORingSeal.
+    let source = r#"
+trait Seal {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Parameterized template carries one top-level constraint (Coupling#0) so
+    // Phase B has something to check. The mock ignores expression content; the
+    // literal is only needed so the builder has a value to store.
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    // Mock returns Violated for the constraint → ORingSeal is rejected → Phase B
+    // returns FeasibilityResult::Empty { rejected: [ORingSeal] }.
+    let cnid = ConstraintNodeId::new("Coupling", 0);
+    let checker = MockConstraintChecker::new().with_result(cnid, Satisfaction::Violated);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    // Non-zero span so we can verify span propagation through Phase C.
+    let use_site_span = SourceSpan::new(100, 110);
+
+    let params = vec![AutoTypeParam {
+        name: "T".to_string(),
+        bounds: vec!["Seal".to_string()],
+        free: false,
+        use_site_span,
+    }];
+
+    let outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diagnostics,
+    );
+
+    // 1. per_param has exactly one entry: (T, NoCandidate).
+    assert_eq!(
+        outcome.per_param,
+        vec![("T".to_string(), SelectionResult::NoCandidate)],
+        "Phase B all-rejected must produce per_param=[(T, NoCandidate)]"
+    );
+
+    // 2. No successful substitution.
+    assert!(
+        outcome.substitution.is_empty(),
+        "Phase B all-rejected must yield empty substitution, got: {:?}",
+        outcome.substitution
+    );
+
+    // 3. Exactly one diagnostic.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "Phase B all-rejected must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+
+    // 4. Correct diagnostic code.
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "diagnostic code must be AutoTypeParamNoCandidate, got: {:?}",
+        diagnostics[0].code
+    );
+
+    // 5. Severity must be Error.
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "no-candidate diagnostic must be an Error"
+    );
+
+    // 6. Message carries the rejection-summary form, not the zero-rejections form.
+    //    Phase C's Empty arm produces "...rejected by constraint <id>"; Phase A's
+    //    short-circuit produces "no feasible candidates for bound '<B>'" (no suffix).
+    assert!(
+        diagnostics[0].message.contains("rejected by constraint"),
+        "message must contain 'rejected by constraint' (Phase C rejection-summary form); \
+         got: {:?}",
+        diagnostics[0].message
+    );
+
+    // 7. Structured candidates field carries the rejected FQN (ORingSeal), not empty.
+    //    Phase C's Empty arm calls with_candidates(rejected_names); Phase A's
+    //    short-circuit calls with_candidates(Vec::<String>::new()).
+    assert_eq!(
+        diagnostics[0].candidates,
+        vec!["ORingSeal".to_string()],
+        "candidates field must carry [\"ORingSeal\"] (Phase C rejection-summary); \
+         got: {:?}",
+        diagnostics[0].candidates
+    );
+
+    // 8. Label span pins span propagation into Phase C (param.use_site_span).
+    assert!(
+        !diagnostics[0].labels.is_empty(),
+        "diagnostic must have at least one label"
+    );
+    assert_eq!(
+        diagnostics[0].labels[0].span,
+        use_site_span,
+        "label span must equal use_site_span ({:?}); got: {:?}",
+        use_site_span,
+        diagnostics[0].labels[0].span
     );
 }
