@@ -1,0 +1,33 @@
+// Counter-mass-balance worked example
+//
+// Demonstrates the COM-stationarity invariant:
+// When a head slides +X via a prismatic joint and a counter-mass slides -X
+// via a couple(-1) derivation, the system's center of mass stays fixed at
+// the origin regardless of the joint position.
+//
+// PRD refs:
+//   - docs/prds/kinematic-constraints.md task 6 (center_of_mass)
+//   - docs/prds/kinematic-constraints.md task 10 (worked examples)
+//
+// Acceptance criterion mirror:
+//   crates/reify-stdlib/src/snapshot.rs::tests::center_of_mass_counter_mass_balance_stationarity
+//   proves the FK + couple(-1) + center_of_mass pipeline produces a stationary
+//   origin within 1e-9 m.  This .ri file replays that scenario via sweep().
+structure def CounterMassBalance {
+    // Joint: prismatic along +X, range 0..500 mm
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    // Couple: counter-mass moves -1× j_x (equal-and-opposite)
+    let j_cm = couple(j_x, -1.0)
+
+    // Solids (equal mass — uniform density, same geometry)
+    let head    = box(20mm, 20mm, 20mm)
+    let counter = box(20mm, 20mm, 20mm)
+
+    // Mechanism: two bodies, each bound to one joint
+    let m0 = mechanism()
+    let m1 = body(m0, "head", j_x)
+    let m2 = body(m1, "counter", j_cm)
+
+    // Sweep head joint over full range → 11 evenly-spaced snapshots
+    let snaps = sweep(m2, j_x, 0mm .. 500mm, 11)
+}
