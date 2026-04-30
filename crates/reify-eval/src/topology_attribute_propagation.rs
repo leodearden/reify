@@ -646,11 +646,6 @@ pub fn populate_loft_attributes(
     //     Modified records (once the loft kernel emits per-section face maps)
     //   • `result_edge_handles` — seam for future rail/seam/cap-edge
     //     classification
-    // Both face-level Modified and edge-level rail/seam/cap classification
-    // land at this entry point, so the inner helpers drop them while the
-    // public surface keeps them — preserving the call-site signature for
-    // callers that already collect the data (e.g. `populate_loft_op` in
-    // `engine_build.rs`).
     let _ = section_face_handles_per_section; // reserved for future face-level Modified records
     let _ = result_edge_handles; // reserved for future rail/seam/cap-edge classification
 

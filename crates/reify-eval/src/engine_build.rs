@@ -213,10 +213,9 @@ fn populate_single_parent_sweep_op(
 /// surface heavy duplicate-handle lofts a future task can introduce a
 /// `HashMap<GeometryHandleId, Vec<GeometryHandleId>>` cache here.
 ///
-/// `kernel.extract_faces(profile_handle)` is called per-section and
-/// `kernel.extract_edges(result_handle)` is called once even though
-/// `populate_loft_attributes` currently reserves both via `let _` (no
-/// reads today). The over-collection is deliberate:
+/// The two extractions whose results are currently dropped inside
+/// `populate_loft_attributes` (`extract_faces(profile_handle)` per section,
+/// `extract_edges(result_handle)` once) are still performed eagerly because:
 ///   (a) loft profiles are typically wires (≈ 0 faces extracted), so
 ///       per-section `extract_faces` is near-free;
 ///   (b) result-edge extraction is a single call;
