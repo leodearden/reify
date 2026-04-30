@@ -341,6 +341,106 @@ std::unique_ptr<SweepOpHistory> make_pipe_with_history(
 /// observe an empty `unique_ptr`.
 std::unique_ptr<OcctShape> sweep_op_history_take_result_shape(SweepOpHistory& history);
 
+// --- BRepOffsetAPI_ThruSections loft history (v0.2 persistent-naming-v2, task 2619) ---
+
+/// Records the per-section face/edge correspondence emitted by a loft
+/// (`BRepOffsetAPI_ThruSections`). Loft is **multi-parent**: each profile
+/// section indexed `0..N-1` is a distinct parent, and `parent_index` in
+/// every record denotes the section index (NOT always 0 like
+/// `SweepOpHistory`). Field shape mirrors `SweepOpHistory` for layout
+/// uniformity but **without** the diagnostic counters
+/// `unsynthesized_profile_edge_count` / `duplicate_parent_subshape_index_count`
+/// — those are revolve-synthesis-specific (full-2π radial-edge synthesis
+/// post-pass, task 2706) and have no analogue in loft.
+///
+/// `face_modified` / `face_deleted` / `edge_modified` / `edge_deleted` are
+/// expected to be empty for `BRepOffsetAPI_ThruSections` — the algorithm
+/// generates a fresh shape rather than transforming one parent. Kept here
+/// for layout uniformity with `SweepOpHistory`. `face_generated` carries
+/// the per-section edge → result-face correspondence sourced from
+/// `loft.GeneratedFace(edge)`.
+///
+/// `start_cap_face_indices` / `end_cap_face_indices` are populated only
+/// when the underlying loft was constructed with `is_solid=true`
+/// (closing caps from the first / last profile sections).
+///
+/// As with `SweepOpHistory`, records are materialized EAGERLY at
+/// construction time because the algorithm's tracking maps are tied to
+/// its lifetime — once it goes out of scope the maps are gone.
+///
+/// `result` owns the lofted shape; `loft_op_history_take_result_shape`
+/// hands it off to the kernel via `std::move`.
+struct LoftOpHistory {
+    std::unique_ptr<OcctShape> result;
+    std::vector<uint32_t> face_modified;
+    std::vector<uint32_t> face_generated;
+    std::vector<uint32_t> face_deleted;
+    std::vector<uint32_t> edge_modified;
+    std::vector<uint32_t> edge_generated;
+    std::vector<uint32_t> edge_deleted;
+    /// 0-based result `face_map` indices of the FirstShape() cap (first
+    /// profile section under `is_solid=true`). Empty when `is_solid=false`.
+    std::vector<uint32_t> start_cap_face_indices;
+    /// 0-based result `face_map` indices of the LastShape() cap (last
+    /// profile section under `is_solid=true`). Empty when `is_solid=false`.
+    std::vector<uint32_t> end_cap_face_indices;
+};
+
+/// Run `BRepOffsetAPI_ThruSections` on `profiles` (N >= 2 wire profiles),
+/// materializing the result shape AND the per-section face correspondence
+/// records into a single `LoftOpHistory`. The algorithm exposes
+/// `GeneratedFace(edge)` (NOT the generic `Generated()` interface), so
+/// the helper walks each profile section's edges and maps each to its
+/// generated lateral face in the result.
+///
+/// `is_solid=true` produces a closed solid (caps populated from
+/// `FirstShape()` / `LastShape()`); `is_solid=false` produces an open
+/// shell with empty cap-index lists. `is_ruled` is hard-coded to
+/// `Standard_False` to match the `loft_profiles` non-history variant
+/// (smooth interpolation between sections).
+///
+/// `parent_index` in every `face_generated` record is the section index
+/// (0..N-1 across N profiles); `parent_subshape_index` is the per-section
+/// edge index in canonical TopExp `MapShapes(profile, TopAbs_EDGE, _)`
+/// order. **Cannot reuse `emit_sweep_modified_deleted_for_parent` /
+/// `emit_sweep_generated_cross_type` directly** because those hard-code
+/// `parent_index = 0` (single-parent contract); loft's per-section walk
+/// is implemented inline below.
+///
+/// Result-side indices come from the result shape's cached
+/// `face_map()` / `edge_map()`. Empty result-side lookups (a child
+/// reported by the algorithm but not appearing in the result map) are
+/// silently skipped.
+///
+/// Throws `std::runtime_error` if `profiles.size() < 2` or the
+/// `BRepOffsetAPI_ThruSections` algorithm fails (`!IsDone()`).
+std::unique_ptr<LoftOpHistory> make_loft_with_history(
+    const OcctShapeVec& profiles, bool is_solid);
+
+/// Move the result shape out of the loft-history wrapper. Returns the
+/// freshly constructed `OcctShape` for the kernel to register; subsequent
+/// calls observe an empty `unique_ptr`.
+std::unique_ptr<OcctShape> loft_op_history_take_result_shape(LoftOpHistory& history);
+
+/// Eight accessors returning the flat record buffers as `rust::Vec<uint32_t>`
+/// (deep-copied at the FFI boundary). Modified/Generated buffers hold flat
+/// groups of 3 `uint32_t`s `(parent_index, parent_subshape_index,
+/// result_subshape_index)`; Deleted buffers hold groups of 2
+/// `(parent_index, parent_subshape_index)`. Cap-face buffers hold flat
+/// `uint32_t` indices into the result `face_map` (no grouping).
+///
+/// `face_modified` / `face_deleted` / `edge_modified` / `edge_deleted` are
+/// expected to be empty for `BRepOffsetAPI_ThruSections`; the accessors
+/// are provided for layout uniformity with `sweep_op_history_*`.
+rust::Vec<uint32_t> loft_op_history_face_modified(const LoftOpHistory& history);
+rust::Vec<uint32_t> loft_op_history_face_generated(const LoftOpHistory& history);
+rust::Vec<uint32_t> loft_op_history_face_deleted(const LoftOpHistory& history);
+rust::Vec<uint32_t> loft_op_history_edge_modified(const LoftOpHistory& history);
+rust::Vec<uint32_t> loft_op_history_edge_generated(const LoftOpHistory& history);
+rust::Vec<uint32_t> loft_op_history_edge_deleted(const LoftOpHistory& history);
+rust::Vec<uint32_t> loft_op_history_start_cap_face_indices(const LoftOpHistory& history);
+rust::Vec<uint32_t> loft_op_history_end_cap_face_indices(const LoftOpHistory& history);
+
 /// Eight accessors returning the flat record buffers as `rust::Vec<uint32_t>`
 /// (deep-copied at the FFI boundary). Modified/Generated buffers hold flat
 /// groups of 3 `uint32_t`s `(parent_index, parent_subshape_index,

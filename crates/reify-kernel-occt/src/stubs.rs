@@ -4,7 +4,7 @@
 //! OcctKernelHandle, but all operations return errors. This allows
 //! downstream crates to compile and fail gracefully at runtime.
 
-use crate::{BooleanOpHistoryRecords, SweepOpHistoryRecords};
+use crate::{BooleanOpHistoryRecords, LoftOpHistoryRecords, SweepOpHistoryRecords};
 use reify_types::{
     AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value,
@@ -228,6 +228,17 @@ impl OcctKernelHandle {
         _profile: GeometryHandleId,
         _path: GeometryHandleId,
     ) -> Result<(GeometryHandleId, SweepOpHistoryRecords), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub `loft_with_history` — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernelHandle::loft_with_history`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`.
+    /// Part of v0.2 persistent-naming-v2 (task 5b / #2619, step-6).
+    pub fn loft_with_history(
+        &self,
+        _profiles: &[GeometryHandleId],
+    ) -> Result<(GeometryHandleId, LoftOpHistoryRecords), GeometryError> {
         Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 

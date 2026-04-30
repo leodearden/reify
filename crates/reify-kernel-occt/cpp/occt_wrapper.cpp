@@ -1185,6 +1185,123 @@ uint32_t sweep_op_history_duplicate_parent_subshape_index_count(const SweepOpHis
     return history.duplicate_parent_subshape_index_count;
 }
 
+// --- BRepOffsetAPI_ThruSections loft history (task 2619, step-6) ---
+
+std::unique_ptr<LoftOpHistory> make_loft_with_history(
+    const OcctShapeVec& profiles, bool is_solid) {
+    return wrap_occt_call("make_loft_with_history", [&]() {
+        if (profiles.shapes.size() < 2) {
+            throw std::runtime_error(
+                "make_loft_with_history: requires at least 2 profiles");
+        }
+        // Mirror `loft_profiles`: is_ruled=false (smooth interpolation
+        // between sections). is_solid is exposed at the FFI signature for
+        // forward compatibility with an open-shell loft variant; the Rust
+        // caller hard-codes `true` to match `GeometryOp::Loft`'s contract.
+        BRepOffsetAPI_ThruSections loft(
+            is_solid ? Standard_True : Standard_False, Standard_False);
+        for (const auto& shape : profiles.shapes) {
+            loft.AddWire(TopoDS::Wire(shape));
+        }
+        loft.Build();
+        if (!loft.IsDone()) {
+            throw std::runtime_error(
+                "BRepOffsetAPI_ThruSections (make_loft_with_history) failed");
+        }
+        auto history = std::make_unique<LoftOpHistory>();
+        history->result = std::make_unique<OcctShape>();
+        history->result->shape = loft.Shape();
+
+        // Build result face/edge maps once via the cached lazy accessors.
+        const auto& result_face_map = history->result->face_map();
+        // edge_map() is built lazily on demand; reserved for future
+        // edge-history use (e.g. seam edges between sections). Currently
+        // unused — `BRepOffsetAPI_ThruSections::GeneratedFace` is the
+        // sole correspondence accessor we exercise here.
+
+        // Per-section walk: for each profile section i ∈ [0, N), walk
+        // its edges in canonical TopExp `MapShapes(profile, TopAbs_EDGE, _)`
+        // order; for each edge call `loft.GeneratedFace(edge)` to recover
+        // the lateral side face in the result; look up the result face's
+        // 0-based index in `result_face_map` and emit a flat triple
+        // `(parent_index = i, parent_subshape_index = edge_idx_in_section,
+        //  result_subshape_index = result_face_idx)`.
+        //
+        // CANNOT REUSE `emit_sweep_generated_cross_type` because that
+        // helper hard-codes `parent_index = 0` (single-parent contract);
+        // loft's per-section walk needs distinct `parent_index` per section.
+        const std::size_t n_sections = profiles.shapes.size();
+        for (std::size_t i = 0; i < n_sections; ++i) {
+            const TopoDS_Shape& profile_shape = profiles.shapes[i];
+            TopTools_IndexedMapOfShape section_edge_map;
+            TopExp::MapShapes(profile_shape, TopAbs_EDGE, section_edge_map);
+            const Standard_Integer n_edges = section_edge_map.Extent();
+            for (Standard_Integer e = 1; e <= n_edges; ++e) {
+                const TopoDS_Shape& section_edge = section_edge_map.FindKey(e);
+                const TopoDS_Shape generated_face = loft.GeneratedFace(section_edge);
+                if (generated_face.IsNull()) {
+                    continue;
+                }
+                Standard_Integer one_based = result_face_map.FindIndex(generated_face);
+                if (one_based < 1) {
+                    continue;
+                }
+                history->face_generated.push_back(static_cast<uint32_t>(i));
+                history->face_generated.push_back(static_cast<uint32_t>(e - 1));
+                history->face_generated.push_back(static_cast<uint32_t>(one_based - 1));
+            }
+        }
+
+        // Caps: under is_solid=true, FirstShape() / LastShape() reference
+        // the first / last profile-section caps. Under is_solid=false,
+        // FirstShape() / LastShape() are the input wires (not faces) and
+        // produce empty cap-index lists — `emit_cap_face_indices` handles
+        // null / no-mapped-faces cases by skipping silently.
+        if (is_solid) {
+            emit_cap_face_indices(loft.FirstShape(), result_face_map, history->start_cap_face_indices);
+            emit_cap_face_indices(loft.LastShape(),  result_face_map, history->end_cap_face_indices);
+        }
+
+        return history;
+    });
+}
+
+std::unique_ptr<OcctShape> loft_op_history_take_result_shape(LoftOpHistory& history) {
+    return std::move(history.result);
+}
+
+rust::Vec<uint32_t> loft_op_history_face_modified(const LoftOpHistory& history) {
+    return to_rust_vec(history.face_modified);
+}
+
+rust::Vec<uint32_t> loft_op_history_face_generated(const LoftOpHistory& history) {
+    return to_rust_vec(history.face_generated);
+}
+
+rust::Vec<uint32_t> loft_op_history_face_deleted(const LoftOpHistory& history) {
+    return to_rust_vec(history.face_deleted);
+}
+
+rust::Vec<uint32_t> loft_op_history_edge_modified(const LoftOpHistory& history) {
+    return to_rust_vec(history.edge_modified);
+}
+
+rust::Vec<uint32_t> loft_op_history_edge_generated(const LoftOpHistory& history) {
+    return to_rust_vec(history.edge_generated);
+}
+
+rust::Vec<uint32_t> loft_op_history_edge_deleted(const LoftOpHistory& history) {
+    return to_rust_vec(history.edge_deleted);
+}
+
+rust::Vec<uint32_t> loft_op_history_start_cap_face_indices(const LoftOpHistory& history) {
+    return to_rust_vec(history.start_cap_face_indices);
+}
+
+rust::Vec<uint32_t> loft_op_history_end_cap_face_indices(const LoftOpHistory& history) {
+    return to_rust_vec(history.end_cap_face_indices);
+}
+
 RevolveSynthesisPostSortResult revolve_synthesis_post_sort_for_test(
     rust::Slice<const uint32_t> input) {
     std::vector<uint32_t> buf(input.begin(), input.end());

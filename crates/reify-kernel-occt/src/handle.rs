@@ -14,7 +14,7 @@
 //! implements `GeometryKernel`, so it can be used anywhere a boxed kernel
 //! is expected.
 
-use crate::{BooleanOpHistoryRecords, SweepOpHistoryRecords};
+use crate::{BooleanOpHistoryRecords, LoftOpHistoryRecords, SweepOpHistoryRecords};
 use reify_types::{
     AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value,
@@ -461,6 +461,50 @@ impl OcctKernelHandle {
         }
     }
 
+    /// Convenience wrapper around [`execute_with_history`](Self::execute_with_history)
+    /// for the [`GeometryOp::Loft`] case: returns `(handle_id,
+    /// LoftOpHistoryRecords)` directly.
+    ///
+    /// Loft is **multi-parent** — each profile section indexed `0..N-1`
+    /// is a distinct parent, and the `parent_index` field in every
+    /// `face_generated` record denotes the section index. The result
+    /// `LoftOpHistoryRecords` carries per-section
+    /// `BRepOffsetAPI_ThruSections::GeneratedFace(edge)` correspondences
+    /// alongside the FirstShape/LastShape cap-face indices (populated
+    /// under the hard-coded `is_solid=true` semantics).
+    ///
+    /// # Errors
+    ///
+    /// - `GeometryError::OperationFailed("Loft requires at least 2 profiles")`
+    ///   when `profiles.len() < 2`. Mirrors the `GeometryOp::Loft` arm of
+    ///   `OcctKernel::execute` and the C++ `make_loft_with_history`
+    ///   validation.
+    /// - `GeometryError::OperationFailed` if the kernel reported an
+    ///   unexpected `AttributeHistory` variant. This is a programming-
+    ///   error guard (the dispatcher always returns `Loft(_)` for `Loft`
+    ///   ops); exposed as `Err` so test code can pin the contract.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 5b / #2619, step-6).
+    pub fn loft_with_history(
+        &self,
+        profiles: &[GeometryHandleId],
+    ) -> Result<(GeometryHandleId, LoftOpHistoryRecords), GeometryError> {
+        let op = GeometryOp::Loft {
+            profiles: profiles.to_vec(),
+        };
+        let (handle, history) = self.execute_with_history(&op)?;
+        match history {
+            AttributeHistory::Loft(records) => Ok((handle.id, records)),
+            other => Err(GeometryError::OperationFailed(format!(
+                "loft_with_history expected AttributeHistory::Loft, got {other:?}"
+            ))),
+        }
+    }
+
     /// Test-fixture: build a `width × height` rect_face profile on the
     /// kernel thread and return its handle id (registered with
     /// `ReprKind::Face`). Only compiled when the `test-fixtures` cargo
@@ -681,6 +725,13 @@ impl OcctKernelHandle {
                             GeometryOp::Sweep { profile, path } => kernel
                                 .sweep_with_history(*profile, *path)
                                 .map(|(h, recs)| (h, AttributeHistory::Sweep(recs))),
+                            // Task 5b (#2619): GeometryOp::Loft routes to
+                            // `OcctKernel::loft_with_history`, which uses
+                            // `BRepOffsetAPI_ThruSections::GeneratedFace(edge)`
+                            // for per-section face correspondence (multi-parent).
+                            GeometryOp::Loft { profiles } => kernel
+                                .loft_with_history(profiles)
+                                .map(|(h, recs)| (h, AttributeHistory::Loft(recs))),
                             // Default arm: no history-aware primitive yet for
                             // this op. Forward to plain `execute` and emit
                             // `AttributeHistory::None`.
