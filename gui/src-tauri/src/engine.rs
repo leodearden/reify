@@ -563,33 +563,31 @@ impl EngineSession {
         // When `parsed_cache` is `None` (test-injection without a full parse/compile
         // cycle), the consumed-idents set is empty and every mechanism cell passes —
         // preserving the pre-filter behaviour for legacy test helpers.  A WARN event
-        // is emitted in this case so a future regression that accidentally drops
-        // `parsed_cache` (e.g. a load path that forgets to populate it alongside
-        // `compiled`) is surfaced immediately rather than silently re-emitting
-        // intermediate mechanism cells to the UI.
+        // is emitted *once per call* in this case so a future regression that
+        // accidentally drops `parsed_cache` (e.g. a load path that forgets to
+        // populate it alongside `compiled`) is surfaced immediately rather than
+        // silently re-emitting intermediate mechanism cells to the UI.
         //
         // Errored mechanisms (closed-chain etc.) are suppressed via the `error` key
         // check below.
+        if self.consumed_idents_cache.is_none() && self.parsed_cache.is_none() {
+            tracing::warn!(
+                target: "reify_gui::engine",
+                "parsed_cache is None while compiled is Some; \
+                 terminal-mechanism filter inactive — intermediate mechanism \
+                 cells may appear in descriptors"
+            );
+        }
         for template in &compiled.templates {
-            // Look up the consumed-idents set for this template from the cache.
-            // A reference is returned rather than a clone — `consumed_idents` is
-            // only used for `.contains()` below, so no owned copy is needed.
-            // `empty_consumed` is used as the fallback when the cache has no entry
-            // for this template (or when the cache is None and the WARN fires).
-            let consumed_idents: &HashSet<String> =
-                match self.consumed_idents_cache.as_ref() {
-                    Some(cache) => cache.get(&template.name).unwrap_or(&empty_consumed),
-                    None => {
-                        tracing::warn!(
-                            target: "reify_gui::engine",
-                            template = %template.name,
-                            "parsed_cache is None while compiled is Some; \
-                             terminal-mechanism filter inactive — intermediate mechanism \
-                             cells may appear in descriptors"
-                        );
-                        &empty_consumed
-                    }
-                };
+            // Look up the consumed-idents set for this template from the cache,
+            // falling back to the shared empty set when the cache is None or has
+            // no entry for this template.  `consumed_idents` is only used for
+            // `.contains()` below, so a reference to the empty set suffices.
+            let consumed_idents: &HashSet<String> = self
+                .consumed_idents_cache
+                .as_ref()
+                .and_then(|c| c.get(&template.name))
+                .unwrap_or(&empty_consumed);
 
             for cell in &template.value_cells {
                 let val = check.values.get_or_undef(&cell.id);
