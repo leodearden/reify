@@ -43,11 +43,31 @@ structure def CounterMassBalance {
     //   proves this invariant holds within 1e-9 m at the Rust level.
     //   This .ri replays the same scenario through surface syntax.
     //
-    // Note: Reify v0.1 does not support `expr.method(lambda)` syntax; use the
-    // free-function form `flat_map(list, |x| [f(x)])` instead (grammar.js
-    // `function_call` requires a bare identifier; `member_access` is zero-arg only).
+    // Note: Reify v0.1 grammar does not support `expr.method(lambda)` syntax
+    // (member_access is zero-arg only; function_call requires a bare identifier).
+    // Use the free-function form `flat_map(list, |x| [f(x)])` instead.
     let coms = flat_map(snaps, |s| [center_of_mass(s)])
+
+    // Magnitude of each COM from the origin (a LENGTH-dimensioned scalar).
+    // flat_map is used (see note above — .map(lambda) is not supported in v0.1).
+    let com_magnitudes = flat_map(coms, |c| [magnitude(c)])
+
+    // Stationarity predicate: all COM magnitudes are < 1um.
+    //
+    // 1um tolerance is generous relative to the 1e-9 m Rust-level bound in
+    // center_of_mass_counter_mass_balance_stationarity; it avoids surfacing
+    // floating-point noise as a constraint violation while the Rust test is
+    // free to assert the tighter bound directly.
+    //
+    // forall-in syntax is used because .all(lambda) is not supported in v0.1
+    // (see note above); the parameter is named `d` (not `m`) to avoid
+    // shadowing the meter unit identifier `m`.
+    let stationary = forall d in com_magnitudes: d < 1um
 
     // Count of snapshots (informational — used by constraint and test assertions).
     let snap_count = snaps.count
+
+    // Constraint verification (PRD task 10 acceptance criterion)
+    constraint snap_count == 11
+    constraint stationary
 }
