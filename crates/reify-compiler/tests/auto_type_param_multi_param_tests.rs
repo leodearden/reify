@@ -338,3 +338,88 @@ fn overflow_on_first_param_halts_and_does_not_enumerate_second_param() {
         "overflow diagnostic must be an error"
     );
 }
+
+// ─── step-9: Phase C NoCandidate on first param halts orchestration ────────
+
+/// When the first param's bounds match zero in-scope structures, Phase C
+/// emits a `NoCandidate` error and the orchestrator halts. The second param
+/// is NOT enumerated.
+///
+/// Pins:
+/// - `per_param == [("T", NoCandidate)]` — length 1
+/// - `substitution.is_empty()` — no successful substitutions
+/// - exactly one `AutoTypeParamNoCandidate` diagnostic
+/// - no second diagnostic (second param not enumerated)
+#[test]
+fn no_candidate_on_first_param_halts_and_does_not_enumerate_second_param() {
+    // Source with trait Seal (but no structures implementing it) and a
+    // structure implementing Cooled for the second param.
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()], // zero structures implement Seal
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()], // one structure; should NOT be enumerated
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![("T".to_string(), SelectionResult::NoCandidate)],
+            substitution: vec![],
+        },
+        "no-candidate on first param must halt with per_param=[(T, NoCandidate)], substitution=[]"
+    );
+
+    // Exactly one diagnostic: NoCandidate for T (not a second for U).
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one no-candidate diagnostic expected (second param not enumerated), got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "diagnostic must be AutoTypeParamNoCandidate, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "no-candidate diagnostic must be an error"
+    );
+}
