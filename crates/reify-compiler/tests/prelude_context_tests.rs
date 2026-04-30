@@ -403,3 +403,43 @@ fn pub_aliases_empty_for_empty_prelude() {
         ctx.pub_aliases().len()
     );
 }
+
+// ─── step-9: parity guard for prelude with alias ───────────────────────────
+
+/// Parity test: `compile_with_prelude_context` and `compile_with_prelude` must
+/// produce identical `CompiledModule` output when the prelude carries a pub
+/// type alias and the user module references it.
+///
+/// This verifies that the pre-built `pub_aliases` cache in `PreludeContext`
+/// does not break parity with the raw-prelude path — the key property that
+/// justifies using `PreludeContext` as an amortised-cost equivalent of
+/// `compile_with_prelude`.
+#[test]
+fn compile_with_prelude_context_parity_two_module_prelude_with_alias() {
+    let foo_alias = CompiledTypeAlias {
+        name: "Foo".to_string(),
+        resolved_type: Some(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        type_params: vec![],
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("Foo=Length"),
+    };
+    let pm = CompiledModuleBuilder::new(ModulePath::single("alias_parity_prelude"))
+        .type_alias(foo_alias)
+        .build();
+
+    let prelude: Vec<CompiledModule> = vec![pm];
+
+    // User module that references the prelude alias as a param type.
+    let source = "structure def W {\n    param p : Foo\n}\n";
+    let parsed = reify_syntax::parse(source, ModulePath::single("alias_parity_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let expected = compile_with_prelude(&parsed, &prelude);
+    let ctx = PreludeContext::from_slice(&prelude);
+    let actual = compile_with_prelude_context(&parsed, &ctx);
+
+    assert_compiled_module_parity(&actual, &expected, "two-module-prelude-with-alias");
+}

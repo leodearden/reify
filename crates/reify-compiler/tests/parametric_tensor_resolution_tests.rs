@@ -160,11 +160,14 @@ structure def Demo {
 /// the aliases parse, type-resolve, and produce no diagnostics inside their
 /// own module.
 ///
-/// Cross-module exposure of stdlib type aliases (so a user module can write
-/// `param yield : Stress` without `import std.analysis`) is not wired up
-/// today — `PreludeContext` carries modules and pre-flattened enums but not
-/// the alias registry. That gap is filed as a follow-up; for task 2696 we
-/// only commit to the alias *declaration* shipping in stdlib.
+/// Cross-module exposure of stdlib type aliases is now wired up (task 2750):
+/// see `stdlib_stress_alias_resolves_to_pressure_dimension` and
+/// `stdlib_strain_alias_resolves_to_dimensionless` for the acceptance tests
+/// that verify a user module can write `param yield : Stress` and resolve it
+/// to `Type::Scalar(PRESSURE)` without an in-module alias decl.  This
+/// smoke test is retained as a fast-fail load-time assertion: it exercises the
+/// stdlib loader path and confirms no Error diagnostics appear in the prelude
+/// modules themselves.
 #[test]
 fn stdlib_stress_strain_aliases_load_without_errors() {
     let module = compile_with_stdlib_helper("structure def Empty { }");
@@ -177,5 +180,93 @@ fn stdlib_stress_strain_aliases_load_without_errors() {
         errs.is_empty(),
         "stdlib (incl. analysis.ri Stress/Strain aliases) must compile clean; got: {:?}",
         errs
+    );
+}
+
+/// Acceptance test (task 2750): `pub type Stress = Pressure` in `analysis.ri`
+/// must be visible in user modules compiled with the stdlib prelude.
+///
+/// Prior to task 2750, `PreludeContext` carried modules and pre-flattened enums
+/// but not alias data; this test ensures the `Stress` alias is now propagated
+/// through the prelude-seeding mechanism introduced in step-4 and resolves to
+/// `Type::Scalar(PRESSURE)` in a user-module param annotation.
+///
+/// See also: `stdlib_strain_alias_resolves_to_dimensionless`.
+#[test]
+fn stdlib_stress_alias_resolves_to_pressure_dimension() {
+    let source = "structure def Beam { param yield : Stress }";
+    let module = compile_with_stdlib_helper(source);
+
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "structure with `param yield : Stress` must compile clean with stdlib; got: {:?}",
+        errs
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Beam")
+        .expect("template `Beam` not found in compiled module");
+
+    let yield_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "yield")
+        .expect("value cell `yield` not found on `Beam`");
+
+    assert_eq!(
+        yield_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        },
+        "param `yield : Stress` must resolve to Type::Scalar(PRESSURE) via stdlib prelude alias"
+    );
+}
+
+/// Acceptance test (task 2750): `pub type Strain = Dimensionless` in
+/// `analysis.ri` must be visible in user modules compiled with the stdlib
+/// prelude.
+///
+/// See also: `stdlib_stress_alias_resolves_to_pressure_dimension`.
+#[test]
+fn stdlib_strain_alias_resolves_to_dimensionless() {
+    let source = "structure def Specimen { param elongation : Strain }";
+    let module = compile_with_stdlib_helper(source);
+
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "structure with `param elongation : Strain` must compile clean with stdlib; got: {:?}",
+        errs
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Specimen")
+        .expect("template `Specimen` not found in compiled module");
+
+    let elong_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "elongation")
+        .expect("value cell `elongation` not found on `Specimen`");
+
+    assert_eq!(
+        elong_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        "param `elongation : Strain` must resolve to Type::Scalar(DIMENSIONLESS) via stdlib prelude alias"
     );
 }

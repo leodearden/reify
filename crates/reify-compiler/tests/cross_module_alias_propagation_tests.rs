@@ -6,7 +6,7 @@
 //!   step-7: exclusion tests (#no_prelude, non-pub, parametric skip)
 //!   step-9: stdlib safety-net
 
-use reify_compiler::{CompiledTypeAlias, compile_with_prelude};
+use reify_compiler::{CompiledTypeAlias, compile_with_prelude, compile_with_stdlib, parse_with_stdlib};
 use reify_test_support::CompiledModuleBuilder;
 use reify_types::{ContentHash, DimensionVector, ModulePath, Severity, SourceSpan, Type, TypeParam};
 
@@ -353,4 +353,53 @@ fn parametric_pub_prelude_alias_skipped_with_no_panic() {
         "parametric prelude alias 'Vec' must be skipped and produce ≥1 Error diagnostic"
     );
     // Smoke test: if we reach here, no panic occurred.
+}
+
+// ─── step-9: stdlib safety-net ───────────────────────────────────────────────
+
+/// Stdlib safety-net: the new prelude-alias seeding pass (step-4) must not
+/// regress stdlib compilation for modules that don't use any type aliases.
+///
+/// Verifies that a basic `Length`-typed param still compiles cleanly with
+/// `compile_with_stdlib` after the alias-registry seeding changes, and that the
+/// resolved cell type is unaffected — i.e. the new pass does not interfere with
+/// the existing type-resolution pipeline for non-alias param types.
+#[test]
+fn compile_with_stdlib_unaffected_for_module_without_alias_use() {
+    let source = "structure def S { param x : Length = 1m }";
+    let parsed = parse_with_stdlib(source, ModulePath::single("safety_net_module"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_stdlib(&parsed);
+
+    assert_eq!(
+        error_count(&compiled),
+        0,
+        "stdlib compilation of a simple Length param must produce zero Error diagnostics; got: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
+    );
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template `S` not found");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("value cell `x` not found on `S`");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "param `x : Length` must resolve to Type::Scalar(LENGTH)"
+    );
 }
