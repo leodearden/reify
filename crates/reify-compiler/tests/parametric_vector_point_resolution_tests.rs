@@ -137,3 +137,54 @@ fn vector3_via_parametric_alias_resolves_through_subst_path() {
          quantity: Scalar(DIMENSIONLESS) }}"
     );
 }
+
+/// Verify the `_with_subst` codepath for `Point3<Q>`: define a parametric alias
+/// `type P<Q> = Point3<Q>` and annotate a structure param as `P<Length>`.
+/// This exercises `resolve_parameterized_alias` → `resolve_type_alias_expr_with_subst` →
+/// `resolve_parameterized_builtin_type_with_subst("Point3", ..., {Q: Scalar(LENGTH)})`.
+const POINT_ALIAS_SUBST_SOURCE: &str = r#"
+type P<Q> = Point3<Q>
+
+structure def AliasPoint {
+    param origin : P<Length>
+}
+"#;
+
+#[test]
+fn point3_via_parametric_alias_resolves_through_subst_path() {
+    let module = compile_with_stdlib_helper(POINT_ALIAS_SUBST_SOURCE);
+
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "POINT_ALIAS_SUBST_SOURCE must produce no Error-severity diagnostics; got: {:?}",
+        errs
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "AliasPoint")
+        .expect("template `AliasPoint` not found in compiled module");
+
+    let origin = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "origin")
+        .expect("cell `origin` not found on `AliasPoint`")
+        .cell_type
+        .clone();
+
+    assert_eq!(
+        origin,
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        "P<Length> (via alias subst) must resolve to Type::Point {{ n: 3, \
+         quantity: Scalar(LENGTH) }}"
+    );
+}
