@@ -1,5 +1,5 @@
 use reify_syntax::ParseError;
-use reify_types::{Diagnostic, Severity, SourceSpan};
+use reify_types::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
 use tower_lsp::lsp_types::{self, DiagnosticRelatedInformation, DiagnosticSeverity, Position, Url};
 
 /// Convert a byte offset in `source` to an LSP Position (line, character).
@@ -133,9 +133,60 @@ pub fn convert_severity(severity: Severity) -> DiagnosticSeverity {
     }
 }
 
+/// Emit a debug log line for the four `AutoTypeParam` diagnostic codes.
+///
+/// Called from [`convert_diagnostic`] immediately after the `code` value is
+/// computed.  Under `#[cfg(debug_assertions)]` the log line surfaces the code
+/// variant, severity, and candidate count to stderr so protocol-level debugging
+/// (e.g. `reify gui --debug`) can trace the four codes through the LSP
+/// conversion path without parsing the message body.
+///
+/// Follows the existing `[reify-lsp] …` `eprintln!` convention used in
+/// `diagnostics.rs` (e.g. the `WARNING: check_snapshot returned None` line).
+/// Non-`AutoTypeParam` codes are a silent no-op; the function never mutates
+/// any state.
+fn log_auto_type_param_diagnostic(diag: &Diagnostic) {
+    #[cfg(debug_assertions)]
+    match diag.code {
+        Some(
+            DiagnosticCode::AutoTypeParamPoolOverflow
+            | DiagnosticCode::AutoTypeParamNoCandidate
+            | DiagnosticCode::AutoTypeParamAmbiguous
+            | DiagnosticCode::AutoTypeParamNonUnique,
+        ) => {
+            eprintln!(
+                "[reify-lsp] auto-type-param diagnostic: code={:?} severity={:?} candidates={} message={:?}",
+                diag.code,
+                diag.severity,
+                diag.candidates.len(),
+                diag.message,
+            );
+        }
+        _ => {}
+    }
+}
+
 /// Convert a Reify Diagnostic to an LSP Diagnostic. The `code` field, when
 /// present, is rendered as a PascalCase string identifier matching the serde
 /// wire form of `DiagnosticCode`.
+///
+/// # Candidate list → `data` field
+///
+/// When the source [`Diagnostic`] carries a non-empty candidate list (attached
+/// via [`Diagnostic::with_candidates`]), this function populates the LSP
+/// `data` field with a JSON object of the form:
+///
+/// ```json
+/// {"candidates": ["FQN1", "FQN2", ...]}
+/// ```
+///
+/// This is the canonical home for machine-readable candidate info per LSP 3.16
+/// (`data: LSPAny`). LSP consumers (code-action providers, IDE quick-fixes)
+/// can read the list without parsing the human-readable `message` body.
+///
+/// Diagnostics without a candidate list leave `data` as `None` so the field
+/// is omitted from the serialized wire form (`#[serde(skip_serializing_if =
+/// "Option::is_none")]`), keeping non-candidate diagnostic payloads compact.
 pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_types::Diagnostic {
     let range = if let Some(first_label) = diag.labels.first() {
         span_to_range(source, first_label.span)
@@ -171,6 +222,20 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         .and_then(|c| serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_owned)))
         .map(lsp_types::NumberOrString::String);
 
+    // Emit a debug log line for the four AutoTypeParam diagnostic codes so
+    // that protocol-level debugging can see the candidate count and code name
+    // without parsing the message body.
+    log_auto_type_param_diagnostic(diag);
+
+    // Populate the LSP `data` field with the structured candidate list when
+    // one is present.  Only non-empty lists produce a payload; empty lists
+    // leave `data = None` so the field is omitted from the wire form.
+    let data = if diag.candidates.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({"candidates": diag.candidates}))
+    };
+
     lsp_types::Diagnostic {
         range,
         severity: Some(convert_severity(diag.severity)),
@@ -178,6 +243,7 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         message: diag.message.clone(),
         source: Some("reify".to_string()),
         related_information,
+        data,
         ..Default::default()
     }
 }
