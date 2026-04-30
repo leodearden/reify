@@ -7,6 +7,7 @@ description = "Standard library: unit definitions and built-in functions"
 
 [dependencies]
 reify-types.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true

@@ -31,7 +31,7 @@
 //! multi-loop residuals aggregate sub-norms via L2 across loops.
 //!
 //! Jacobian strategy: chain Jacobians come from
-//! `reify_stdlib::loop_closure::chain_jacobian_fd` (central difference,
+//! `crate::loop_closure::chain_jacobian_fd` (central difference,
 //! correct for all joint kinds).  Per-joint analytic columns from
 //! `per_joint_jacobian_local` are wired but not yet composed into chain
 //! Jacobians via SE(3) adjoint transport — that optimisation is a v0.2
@@ -91,7 +91,7 @@ impl Default for NewtonConfig {
 ///
 /// `WarmStart(v)` uses the supplied vector directly (typical: previous
 /// snapshot's converged values).  `Midpoint` queries each free joint's range
-/// midpoint via [`reify_stdlib::loop_closure::joint_range_midpoint`].
+/// midpoint via [`crate::loop_closure::joint_range_midpoint`].
 #[derive(Debug, Clone)]
 pub enum StartStrategy {
     /// Re-use a prior solution.  Vector length must match the free-variable count.
@@ -469,8 +469,8 @@ where
 /// - [`StartStrategy::WarmStart`] vector length ≠ `free_b.len()`.
 ///
 /// Internally builds a residual+jacobian closure that calls
-/// [`reify_stdlib::loop_closure::loop_residual_twist`] and
-/// [`reify_stdlib::loop_closure::chain_jacobian_fd`], then dispatches to
+/// [`crate::loop_closure::loop_residual_twist`] and
+/// [`crate::loop_closure::chain_jacobian_fd`], then dispatches to
 /// [`newton_solve`].
 ///
 /// Multi-loop is future work (the [`newton_solve`] core is generic — callers
@@ -509,7 +509,7 @@ pub fn solve_loop_closure(
         StartStrategy::Midpoint => free_b
             .iter()
             .map(|&i| {
-                reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i])
+                crate::loop_closure::joint_range_midpoint(&chain_b[i])
                     .expect("joint_range_midpoint validated above")
             })
             .collect(),
@@ -538,13 +538,13 @@ pub fn solve_loop_closure(
             }
             vals_b_scratch[i] = x[k];
         }
-        let twist = reify_stdlib::loop_closure::loop_residual_twist(
+        let twist = crate::loop_closure::loop_residual_twist(
             &chain_a_vec,
             &vals_a_vec,
             &chain_b_vec,
             &vals_b_scratch,
         )?;
-        let cols = reify_stdlib::loop_closure::chain_jacobian_fd(
+        let cols = crate::loop_closure::chain_jacobian_fd(
             &chain_b_vec,
             &vals_b_scratch,
             &free_b_vec,
@@ -798,7 +798,7 @@ pub fn solve_loop_closure_with_diagnostics(
                     // dropping entries (the previous filter_map could
                     // produce x.len() < free_b.len() — a contract
                     // violation now caught by the validation pass).
-                    reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i])
+                    crate::loop_closure::joint_range_midpoint(&chain_b[i])
                         .expect("joint_range_midpoint validated above")
                 })
                 .collect(),
@@ -905,7 +905,7 @@ fn validate_loop_closure_inputs(
         StartStrategy::Midpoint => {
             for &i in free_b {
                 // free_b indices already validated above; `chain_b[i]` is safe.
-                if reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i]).is_none() {
+                if crate::loop_closure::joint_range_midpoint(&chain_b[i]).is_none() {
                     return Some(format!(
                         "joint_range_midpoint returned None for free_b[{i}] — joint missing range or malformed"
                     ));
@@ -1319,7 +1319,7 @@ mod tests {
 
     // ── solve_loop_closure tests (step-15, step-17, step-19) ────────────
 
-    use reify_stdlib::eval_builtin;
+    use crate::eval_builtin;
     use reify_types::Value;
 
     fn axis_x() -> Value {
@@ -1876,7 +1876,7 @@ mod tests {
     ///   chain_b = [j_b, j_x]
     #[test]
     fn mechanism_loop_closure_chains_extracts_pairs() {
-        use reify_stdlib::eval_builtin;
+        use crate::eval_builtin;
 
         // Build joints (from existing test helpers in this file).
         let j_a = eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)]);
@@ -1915,7 +1915,7 @@ mod tests {
     /// closures) returns `Some(vec![])` — an empty list of pairs.
     #[test]
     fn mechanism_loop_closure_chains_open_chain_returns_empty_vec() {
-        use reify_stdlib::eval_builtin;
+        use crate::eval_builtin;
 
         let j_a = prismatic_x_0_to_1();
         let solid_a = Value::String("solidA".to_string());
@@ -1954,7 +1954,7 @@ mod tests {
         );
 
         // World sentinel.
-        let world = reify_stdlib::eval_builtin("world", &[]);
+        let world = crate::eval_builtin("world", &[]);
         assert_eq!(
             super::mechanism_loop_closure_chains(&world),
             None,
@@ -1970,7 +1970,7 @@ mod tests {
         use std::collections::BTreeMap;
 
         // Build joint Maps used as path elements.
-        let world = reify_stdlib::eval_builtin("world", &[]);
+        let world = crate::eval_builtin("world", &[]);
         let j_a = prismatic_x_0_to_1();
         let j_b = revolute_z_0_to_pi();
         let j_x = Value::Map({
@@ -2064,7 +2064,7 @@ mod tests {
     fn mechanism_loop_closure_chains_malformed_second_entry_returns_none() {
         use std::collections::BTreeMap;
 
-        let world = reify_stdlib::eval_builtin("world", &[]);
+        let world = crate::eval_builtin("world", &[]);
         let j_a = prismatic_x_0_to_1();
         let j_b = revolute_z_0_to_pi();
         let j_x = Value::Map({
@@ -2165,7 +2165,7 @@ mod tests {
     /// out in `mechanism_loop_closure_chains`'s docstring caveat.
     #[test]
     fn mechanism_loop_closure_chains_extracts_cycle_pair() {
-        use reify_stdlib::eval_builtin;
+        use crate::eval_builtin;
 
         // Build joints using the existing test helpers.
         let j_a = prismatic_x_0_to_1();
@@ -2217,7 +2217,7 @@ mod tests {
     /// the closing joint, which an empty chain violates.
     #[test]
     fn strip_world_sentinel_rejects_world_only_path() {
-        let world = reify_stdlib::eval_builtin("world", &[]);
+        let world = crate::eval_builtin("world", &[]);
         let path = vec![world];
         assert_eq!(
             super::strip_world_sentinel(&path),

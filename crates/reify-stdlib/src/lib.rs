@@ -26,6 +26,7 @@ mod joints;
 mod linalg;
 mod list;
 pub mod loop_closure;
+pub mod loop_closure_solver;
 mod matrix;
 mod mechanism;
 mod numeric;

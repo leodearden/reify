@@ -596,7 +596,7 @@ pub enum DiagnosticCode {
     /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from the
     /// moment the diagnostic is emitted, with no further enum churn at integration time.
     MechanismDuplicateSolid,
-    /// Origin: `crates/reify-constraints/src/loop_closure.rs::solve_loop_closure_with_diagnostics`
+    /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
     /// §"Singularity, over/under-constraint diagnostics").
     ///
@@ -604,7 +604,7 @@ pub enum DiagnosticCode {
     /// `"kinematic singularity detected: rank-deficient Jacobian; last-converged config returned"`.
     ///
     /// Emitted as a `Severity::Warning` when the loop-closure Newton solver
-    /// returns [`NewtonOutcome::Singular`](../../reify_constraints/loop_closure/enum.NewtonOutcome.html#variant.Singular)
+    /// returns [`NewtonOutcome::Singular`](../../reify_stdlib/loop_closure_solver/enum.NewtonOutcome.html#variant.Singular)
     /// (LDLᵀ pivot below `NewtonConfig::singularity_pivot_eps`). The wrapper sets
     /// `LoopClosureReport::is_singular = true` and the `Singular` variant's `x`
     /// field carries the last-converged config the PRD requires the snapshot to
@@ -620,7 +620,7 @@ pub enum DiagnosticCode {
     /// identifier from the moment the diagnostic is first emitted, with no further
     /// enum churn at integration time.
     KinematicSingularity,
-    /// Origin: `crates/reify-constraints/src/loop_closure.rs::solve_loop_closure_with_diagnostics`
+    /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
     /// §"Singularity, over/under-constraint diagnostics").
     ///
@@ -641,7 +641,7 @@ pub enum DiagnosticCode {
     /// (snapshot evaluator integration). Reserved now for typed-code matching
     /// at the moment the diagnostic is first emitted.
     KinematicOverconstrained,
-    /// Origin: `crates/reify-constraints/src/loop_closure.rs::solve_loop_closure_with_diagnostics`
+    /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
     /// §"Singularity, over/under-constraint diagnostics").
     ///
@@ -653,7 +653,7 @@ pub enum DiagnosticCode {
     /// The Newton solver still runs; the warning suggests an explicit binding.
     /// The "closest-to-previous config" semantics the PRD describes are
     /// realised by the caller's choice of
-    /// [`StartStrategy::WarmStart`](../../reify_constraints/loop_closure/enum.StartStrategy.html#variant.WarmStart),
+    /// [`StartStrategy::WarmStart`](../../reify_stdlib/loop_closure_solver/enum.StartStrategy.html#variant.WarmStart),
     /// not by extra logic in the wrapper.
     ///
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_UNDERCONSTRAINED`

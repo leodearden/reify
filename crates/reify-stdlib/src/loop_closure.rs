@@ -356,12 +356,234 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
     }
 }
 
+/// Solver-input bundle returned by [`extract_loop_closure_chains`].
+///
+/// Tuple layout — see the function's doc comment for the full per-field
+/// contract (kept there to keep the field semantics next to the extraction
+/// logic that produces them):
+///
+///   `(chain_a, vals_a, chain_b, vals_b_initial, free_b)`
+///
+/// Aliased here purely to satisfy `clippy::type_complexity` — the 5-tuple
+/// is a one-shot return shape consumed by snapshot.rs's loop-closure arm
+/// and not a durable structural concern, so a tuple alias (rather than a
+/// new struct) keeps the call-site destructuring pattern unchanged.
+pub type LoopClosureSolverInputs = (Vec<Value>, Vec<f64>, Vec<Value>, Vec<f64>, Vec<usize>);
+
+/// Extract the per-loop solver inputs from a single `loop_closure` Map record.
+///
+/// Translates a `loop_closure` Map record (the kind appended to a Mechanism
+/// Map's `loop_closures` list by the v0.2 builder) plus the user's
+/// `bindings: &[Value]` slice into the five vectors the closed-chain Newton
+/// solver in `reify_constraints::loop_closure::solve_loop_closure_with_diagnostics`
+/// consumes:
+///
+///   * `chain_a`         — the joints in `path_a` with the leading world
+///     sentinel stripped (left-to-right composition order).
+///   * `vals_a`          — the SI-unit motion values for `chain_a`,
+///     resolved from `bindings` per-joint (prismatic → metres,
+///     revolute → radians, coupling → parent's input units, fixed → `0.0`
+///     sentinel since `transform_at` ignores the value).  Missing bindings
+///     fall back to the joint's range midpoint.
+///   * `chain_b`         — the joints in `path_b` with the world sentinel
+///     stripped.
+///   * `vals_b_initial`  — initial-guess SI values for `chain_b`. Joints with
+///     a direct binding entry use the bound value; otherwise the range midpoint.
+///   * `free_b`          — positions in `chain_b` whose joints are free
+///     (no direct binding entry); the solver iterates these.
+///
+/// Returns `None` on:
+///   * non-Map record,
+///   * missing/non-List `path_a` or `path_b`,
+///   * either path empty or missing the leading world sentinel,
+///   * any chain joint that has no resolvable SI value (no binding,
+///     no midpoint — e.g. multi-DOF kinds, malformed Maps).
+///
+/// The world sentinel at chain head is identified by `kind = "world"`
+/// (matching `mechanism::is_world`) and dropped before composition — the
+/// closing-chain composition starts at the joint immediately attached to
+/// world, not at the world sentinel itself.
+///
+/// **Pure value-side helper** — performs no FK walk and no solver invocation.
+/// Built so it can be tested in isolation before snapshot.rs consumes it.
+pub fn extract_loop_closure_chains(
+    record: &Value,
+    bindings: &[Value],
+) -> Option<LoopClosureSolverInputs> {
+    let map = match record {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let path_a = match map.get(&Value::String("path_a".to_string())) {
+        Some(Value::List(p)) => p.as_slice(),
+        _ => return None,
+    };
+    let path_b = match map.get(&Value::String("path_b".to_string())) {
+        Some(Value::List(p)) => p.as_slice(),
+        _ => return None,
+    };
+
+    let chain_a = strip_world_sentinel(path_a)?;
+    let chain_b = strip_world_sentinel(path_b)?;
+
+    // chain_a is the spanning-tree (already-resolved) side: every joint must
+    // resolve to an SI f64 via direct binding, coupling-tracks-parent
+    // recursion, fixed-joint sentinel, or range-midpoint fallback.  Any
+    // joint that fails all four short-circuits the whole call to None.
+    let mut vals_a = Vec::with_capacity(chain_a.len());
+    for joint in &chain_a {
+        let v_si = resolve_joint_value_si(joint, bindings)?;
+        vals_a.push(v_si);
+    }
+
+    // chain_b is the closing side: a joint with a *direct* binding entry
+    // is a fixed initial value; any joint without a direct binding becomes
+    // a free index, seeded from its range midpoint.  Coupling and fixed
+    // arms intentionally fall through the direct-lookup branch — multi-loop
+    // coupling is out of v0.2 scope (see plan design-decisions §4).
+    //
+    // **Asymmetry note (v0.2 limitation).**  `chain_a` resolves via
+    // `resolve_joint_value_si`, which carries a fixed-joint sentinel arm
+    // (returns `Some(0.0)`).  `chain_b`'s unbound-joint fallback uses
+    // `joint_range_midpoint` directly, which returns `None` for fixed
+    // joints — so a fixed joint appearing in `path_b` without a direct
+    // binding would collapse the whole record to None and the snapshot
+    // to Undef.  In practice the mechanism builder does not place fixed
+    // joints on closing paths (the closing edge always references a
+    // motion joint to drive the solver), so this asymmetry is a latent
+    // shape constraint rather than a live bug.  A future v0.3 refactor
+    // can route this fallback through `resolve_joint_value_si` (and
+    // skip the index from `free_b` when the result is the fixed
+    // sentinel) once a real fixture demands fixed joints in path_b.
+    let mut vals_b_initial = Vec::with_capacity(chain_b.len());
+    let mut free_b: Vec<usize> = Vec::new();
+    for (i, joint) in chain_b.iter().enumerate() {
+        if let Some(v_si) = direct_binding_value_si(joint, bindings) {
+            vals_b_initial.push(v_si);
+        } else {
+            let mid_si = joint_range_midpoint(joint)?;
+            vals_b_initial.push(mid_si);
+            free_b.push(i);
+        }
+    }
+
+    Some((chain_a, vals_a, chain_b, vals_b_initial, free_b))
+}
+
+/// Strip the leading world sentinel from a path (`[world, j_1, ..., j_k]` →
+/// `[j_1, ..., j_k]`).  Returns None if the path is shorter than 2 elements
+/// (the stripped tail would terminate before the closing joint) or if the
+/// first element is not a `kind = "world"` Map.
+///
+/// Mirrors `reify_constraints::loop_closure::strip_world_sentinel` (which
+/// is private to that module); duplicated here so the stdlib helper is
+/// self-contained without crossing the constraints crate boundary.
+fn strip_world_sentinel(path: &[Value]) -> Option<Vec<Value>> {
+    if path.len() < 2 {
+        return None;
+    }
+    let first = path.first()?;
+    let is_world = match first {
+        Value::Map(m) => {
+            m.get(&Value::String("kind".to_string()))
+                == Some(&Value::String("world".to_string()))
+        }
+        _ => false,
+    };
+    if !is_world {
+        return None;
+    }
+    Some(path[1..].to_vec())
+}
+
+/// Look up a joint's SI value via a *direct* binding entry (no coupling
+/// recursion, no midpoint fallback).
+///
+/// Linear scan — same shape as snapshot.rs's `value_for` direct-binding
+/// arm, but returns the bound value's SI f64 rather than a dimensioned
+/// `Value`.  Returns None when no binding entry's `joint` field is
+/// structurally equal to `joint`, or when the bound `value` is not a
+/// numeric type the dimension extractor recognises.
+///
+/// Used in the closing-side `chain_b` walk to distinguish "user-pinned
+/// joint with explicit binding" (fixed initial value) from "free joint
+/// the solver should iterate" (no direct binding, falls through to
+/// midpoint seed + free_b membership).
+///
+/// **Dimension validation is deferred.**  `Value::as_f64()` returns the
+/// bare `si_value` regardless of the carried `Dimension`, so a user who
+/// binds a length-dimensioned scalar to a revolute joint (or vice versa)
+/// will silently feed a wrong-magnitude SI numeric value into the
+/// solver's `vals_a` / `vals_b_initial`.  The closed-chain path here is
+/// upstream of snapshot.rs's `transform_at` validation site, which
+/// catches the dimension mismatch when the solver-converged value is
+/// rehydrated for the FK re-walk via `wrap_midpoint_for_joint` →
+/// `transform_at`.  In practice the residual-evaluation path inside
+/// `solve_loop_closure` invokes `chain_transform`, which itself routes
+/// through dimension-checked Transform composition; a wrong-dimension
+/// value will surface as a non-converging residual rather than as a
+/// silent acceptance of an inconsistent configuration.  Callers that
+/// want eager validation should compose this with the joint-kind
+/// predicate at the snapshot boundary.
+fn direct_binding_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
+    for entry in bindings {
+        let map = match entry {
+            Value::Map(m) => m,
+            _ => continue,
+        };
+        if map.get(&Value::String("joint".to_string())) == Some(joint)
+            && let Some(v) = map.get(&Value::String("value".to_string()))
+        {
+            // See fn-doc: as_f64() is dimension-blind here; downstream
+            // `transform_at` / `chain_transform` is the canonical
+            // dimension-validation site for closed-chain inputs.
+            return v.as_f64();
+        }
+    }
+    None
+}
+
+/// Resolve a joint's motion value to an SI f64 via the same fallback
+/// chain `snapshot::value_for` uses, then extract the underlying SI scalar.
+///
+/// Resolution order:
+/// 1. Direct binding by structural `Value::Eq` on the joint Map.
+/// 2. Coupling-tracks-parent: when `joint` is a coupling and isn't directly
+///    bound, recurse on the coupling's `parent` joint.
+/// 3. Fixed joint sentinel: `Value::Real(0.0)` (snapshot.rs's `transform_at`
+///    arm ignores the second argument for fixed joints).
+/// 4. Range-midpoint fallback via [`joint_range_midpoint`].
+///
+/// Returns None for malformed joint Maps, multi-DOF kinds the f64-per-joint
+/// signature cannot represent (planar / spherical / cylindrical), or
+/// joints with no resolvable value (no binding AND no midpoint).
+fn resolve_joint_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
+    if let Some(v) = direct_binding_value_si(joint, bindings) {
+        return Some(v);
+    }
+    if let Value::Map(map) = joint {
+        let kind = match map.get(&Value::String("kind".to_string())) {
+            Some(Value::String(s)) => s.as_str(),
+            _ => return None,
+        };
+        if kind == "coupling"
+            && let Some(parent) = map.get(&Value::String("parent".to_string()))
+        {
+            return resolve_joint_value_si(parent, bindings);
+        }
+        if kind == "fixed" {
+            return Some(0.0);
+        }
+    }
+    joint_range_midpoint(joint)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{
-        angle_range_0_to_pi, axis_x_unit, axis_z_unit, cylindrical_z_joint, length_range_0_to_1m,
-        planar_xy_joint, spherical_joint,
+        angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
+        length_range_0_to_1m, planar_xy_joint, spherical_joint,
     };
     use reify_types::Value;
 
@@ -1333,5 +1555,120 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── extract_loop_closure_chains tests ───────────────────────────────────
+    //
+    // Pure value-side helper: translates a loop_closure Map record + bindings
+    // slice into the five solver-input vectors.  The world sentinel at chain
+    // head is stripped; per-joint SI values come from `value_for`-style
+    // resolution (binding → midpoint fallback); free indices are positions
+    // in path_b with no direct binding entry.
+
+    /// Build the canonical world sentinel Map (kind="world") used as the
+    /// leading element of a `loop_closure` record's `path_a` / `path_b`.
+    /// Mirrors the construction in `mechanism::make_world_sentinel` (private
+    /// to mechanism.rs); duplicated here so the test module stays self-
+    /// contained rather than reaching across modules for a private helper.
+    fn world_sentinel() -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("world".to_string()),
+        );
+        Value::Map(m)
+    }
+
+    /// Build a `loop_closure` Map record paralleling
+    /// `mechanism::make_loop_closure_record`.  Test-local copy so the
+    /// loop_closure tests don't depend on mechanism.rs's private helper.
+    fn loop_closure_record(path_a: Vec<Value>, path_b: Vec<Value>, closing_joint: Value) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("body_id".to_string()), Value::Int(0));
+        m.insert(Value::String("closing_joint".to_string()), closing_joint);
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("loop_closure".to_string()),
+        );
+        m.insert(Value::String("path_a".to_string()), Value::List(path_a));
+        m.insert(Value::String("path_b".to_string()), Value::List(path_b));
+        Value::Map(m)
+    }
+
+    /// `extract_loop_closure_chains` returns the expected five-vector tuple
+    /// for a record with `path_a = [world, jA]` (driven by a bound length
+    /// of 0.5m) and `path_b = [world, jB]` (free — no binding entry).
+    ///
+    /// Asserts:
+    ///   * chain_a stripped of world sentinel: `[jA]`
+    ///   * vals_a populated from binding: `[0.5]` (SI metres)
+    ///   * chain_b stripped of world sentinel: `[jB]`
+    ///   * vals_b_initial seeded from jB's range midpoint: `[0.5]`
+    ///     (jB has range 0..1m → midpoint 0.5m).
+    ///   * free_b indices: `[0]` (the only joint in chain_b is unbound).
+    #[test]
+    fn extract_loop_closure_chains_returns_chains_vals_and_free_indices() {
+        // jA and jB must be structurally distinct Maps so the binding for
+        // jA does not also match jB by `Value::Eq` — same-axis prismatic
+        // joints would collapse to the same Map and falsely satisfy the
+        // direct-binding lookup for jB.  Use jA on +X and jB on +Y so the
+        // closing-side joint is unambiguously "free".
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bindings = vec![bind_a];
+        let record = loop_closure_record(
+            vec![world_sentinel(), j_a.clone()],
+            vec![world_sentinel(), j_b.clone()],
+            j_b.clone(),
+        );
+
+        let (chain_a, vals_a, chain_b, vals_b_initial, free_b) =
+            super::extract_loop_closure_chains(&record, &bindings)
+                .expect("extract_loop_closure_chains must return Some for a well-formed record");
+
+        assert_eq!(chain_a, vec![j_a.clone()], "chain_a should strip world sentinel");
+        assert_eq!(vals_a.len(), 1, "vals_a length must equal chain_a length");
+        assert!(
+            (vals_a[0] - 0.5).abs() < 1e-12,
+            "vals_a[0] expected 0.5 (bound), got {}",
+            vals_a[0]
+        );
+        assert_eq!(chain_b, vec![j_b.clone()], "chain_b should strip world sentinel");
+        assert_eq!(vals_b_initial.len(), 1, "vals_b_initial length must equal chain_b length");
+        assert!(
+            (vals_b_initial[0] - 0.5).abs() < 1e-12,
+            "vals_b_initial[0] expected midpoint 0.5 (jB range 0..1m), got {}",
+            vals_b_initial[0]
+        );
+        assert_eq!(free_b, vec![0], "free_b should mark jB (index 0) as free");
+    }
+
+    /// Negative case: a malformed record missing the `path_b` key collapses
+    /// to None.  The arity guard in snapshot.rs's closed-chain arm relies on
+    /// this so a bogus loop_closure record cannot smuggle bad chains into
+    /// the solver.
+    #[test]
+    fn extract_loop_closure_chains_missing_path_b_returns_none() {
+        let j_a = prismatic_x();
+        let bindings: Vec<Value> = Vec::new();
+        // Hand-built loop_closure record WITHOUT path_b.
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("body_id".to_string()), Value::Int(0));
+        m.insert(Value::String("closing_joint".to_string()), j_a.clone());
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("loop_closure".to_string()),
+        );
+        m.insert(
+            Value::String("path_a".to_string()),
+            Value::List(vec![world_sentinel(), j_a]),
+        );
+        let record = Value::Map(m);
+
+        assert!(
+            super::extract_loop_closure_chains(&record, &bindings).is_none(),
+            "extract_loop_closure_chains must return None for a record missing path_b"
+        );
     }
 }

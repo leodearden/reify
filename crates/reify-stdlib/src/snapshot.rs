@@ -22,7 +22,10 @@ use reify_types::Value;
 
 use crate::eval_builtin;
 use crate::joints::is_joint_value;
-use crate::loop_closure::joint_range_midpoint;
+use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
+use crate::loop_closure_solver::{
+    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+};
 use crate::mechanism::is_world;
 
 /// Evaluate a snapshot/FK stdlib function by name.
@@ -56,12 +59,18 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
         "snapshot" => {
             // Validation surface (each guard short-circuits to
             // Value::Undef BEFORE the FK walk):
-            //   args.len() == 2                                → arity guard
+            //   args.len() ∈ {2, 3}                            → arity guard
             //   args[0] is Map with kind="mechanism"           → mechanism guard
             //   args[1] is Value::List                         → bindings guard
+            //   args[2] (when present) is List<List<Real>>     → warm-start
+            //     shape guard (parsed below)                     guard
+            // 3-arg form is the warm-start path (task 2678 step-8):
+            // `snapshot(m, bindings, prev_free_values)` seeds the
+            // loop-closure solver from the previous snapshot's
+            // converged free values via `StartStrategy::WarmStart`.
             // Errored-mechanism short-circuit and per-binding
             // shape validation are layered on in subsequent steps.
-            if args.len() != 2 {
+            if args.len() != 2 && args.len() != 3 {
                 return Some(Value::Undef);
             }
             let mech_map = match &args[0] {
@@ -129,54 +138,233 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 
             let bindings_list = bindings_entries.as_slice();
 
-            // Per-snapshot memoization cache for joint world transforms.
-            // Keys are joint Map values themselves — equal joints share
-            // an entry by `Value::Eq`. The cache is local to this
-            // `snapshot()` call so it doesn't leak state across calls
-            // and is invalidated naturally when bindings change.
-            let mut cache: BTreeMap<Value, Value> = BTreeMap::new();
+            // Read `loop_closures` up-front so the cold FK walk can be
+            // skipped on closed-chain mechanisms (task 2678 perf
+            // amendment).  For closed-chain mechanisms the cold walk is
+            // dead work: the closed-chain post-process below re-walks
+            // the FK with synthesized free-variable bindings and
+            // discards the cold-walk result entirely.  Open-chain
+            // mechanisms still run the cold walk once; closed-chain
+            // mechanisms walk only after the solver converges,
+            // halving FK cost per snapshot for closed-chain sweeps.
+            //
+            // Closed-chain post-process (task 2678 step-4).
+            //
+            // For each `loop_closures` record on the mechanism, drive the
+            // free joints in `path_b` to a configuration that closes the
+            // loop, then walk the FK with the original user bindings
+            // augmented by one synthesized binding per solved free joint.
+            // Open-chain mechanisms (empty `loop_closures`) skip the entire
+            // block — zero-cost early-out.
+            //
+            // Solver choice: this calls `solve_loop_closure` directly
+            // rather than the diagnostic-emitting wrapper because the
+            // wrapper's over-constrained pre-check (`free_b.len() < 6`)
+            // short-circuits the Newton solve to midpoint values for the
+            // simple 1-DOF prismatic-X loops the v0.2 verification fixtures
+            // exercise — those low-DOF chains are physically well-posed
+            // (the rotational components of the 6-vector residual are
+            // trivially zero) and Newton converges in one or two
+            // iterations.  The diagnostic wrapper integration is the
+            // scope of step-12; for step-4 we focus on the integration
+            // plumbing and leave the wrapper's pre-checks to a future
+            // refinement that can decompose `JOINT_KINDS` into
+            // translational vs rotational subspaces and run the
+            // appropriate residual subset.
+            let loop_closures = match mech_map.get(&Value::String("loop_closures".to_string())) {
+                Some(Value::List(lc)) => lc.as_slice(),
+                // Defense-in-depth: hand-built mechanism Maps that pre-date
+                // the v0.2 builder may omit `loop_closures` entirely; treat
+                // as open-chain.
+                _ => &[],
+            };
 
-            let mut snapshot_bodies = Vec::with_capacity(bodies.len());
-            for body_value in bodies {
-                let body_map = match body_value {
-                    Value::Map(b) => b,
+            // Warm-start parsing (task 2678 step-8).
+            //
+            // When `args.len() == 3`, parse args[2] as
+            // `Value::List<Value::List<Value::Real>>` matching the
+            // `free_values` shape produced by step-6.  Outer-List length
+            // MUST equal `loop_closures.len()` — defense-in-depth against
+            // a caller threading a stale snapshot's free_values into a
+            // structurally different mechanism.  Per-loop inner-List
+            // length checks land later (need each loop's `free_b.len()`
+            // to validate, which is computed inside the closed-chain
+            // block below).
+            //
+            // Open-chain (loop_closures empty) + 3-arg with empty outer
+            // List is a no-op fast path: the warm-start vec stays empty
+            // (`Some(vec![])`) and the closed-chain block doesn't run.
+            // Functionally identical to `None` for open-chain mechanisms
+            // — both skip the closed-chain block — but `Some(vec![])`
+            // is what `build_snapshot_list` actually threads, so we
+            // accept it explicitly rather than collapsing to None.
+            // This is exactly what `build_snapshot_list` will do — it
+            // threads the prev snapshot's `free_values` (which is `[]`
+            // for open-chain mechanisms) through every step.
+            let warm_start_seeds: Option<Vec<Vec<f64>>> = if args.len() == 3 {
+                let outer = match &args[2] {
+                    Value::List(l) => l,
                     _ => return Some(Value::Undef),
                 };
-                let id = match body_map.get(&Value::String("id".to_string())) {
-                    Some(v) => v.clone(),
-                    None => return Some(Value::Undef),
-                };
-                let solid = match body_map.get(&Value::String("solid".to_string())) {
-                    Some(v) => v.clone(),
-                    None => return Some(Value::Undef),
-                };
-                let at = match body_map.get(&Value::String("at".to_string())) {
-                    Some(v) => v.clone(),
-                    None => return Some(Value::Undef),
-                };
-                let pose = match body_map.get(&Value::String("pose".to_string())) {
-                    Some(v) => v.clone(),
-                    None => return Some(Value::Undef),
-                };
-
-                // Walk the parent chain ancestor-ward to compute the
-                // body's `at`-joint frame in world coordinates.
-                let t_at_world =
-                    match joint_world_transform(&at, joint_parents, bindings_list, &mut cache) {
-                        Some(t) => t,
-                        None => return Some(Value::Undef),
-                    };
-
-                // body's world_transform = T_at_world ∘ pose.
-                let world_transform = eval_builtin("transform_compose", &[t_at_world, pose.clone()]);
-                if world_transform.is_undef() {
+                if outer.len() != loop_closures.len() {
                     return Some(Value::Undef);
                 }
+                let mut parsed: Vec<Vec<f64>> = Vec::with_capacity(outer.len());
+                for entry in outer {
+                    let inner = match entry {
+                        Value::List(l) => l,
+                        _ => return Some(Value::Undef),
+                    };
+                    let mut row: Vec<f64> = Vec::with_capacity(inner.len());
+                    for v in inner {
+                        match v {
+                            Value::Real(r) if r.is_finite() => row.push(*r),
+                            _ => return Some(Value::Undef),
+                        }
+                    }
+                    parsed.push(row);
+                }
+                Some(parsed)
+            } else {
+                None
+            };
 
-                snapshot_bodies.push(make_snapshot_body_record(id, solid, pose, world_transform));
-            }
+            // Per-loop converged free-variable values, threaded into the
+            // Snapshot Map's `free_values` key (task 2678 step-6).  Outer
+            // List length == loop_closures.len(); inner List length ==
+            // per-loop free var count; leaves are `Value::Real` carrying
+            // SI-unit values (matches the warm-start arg shape in step-8).
+            // Open-chain mechanisms emit an empty outer List for shape
+            // stability (the BTreeMap key invariant {bodies, free_values,
+            // kind} stays alphabetically consistent across mechanism
+            // shapes).
+            let mut free_values: Vec<Value> = Vec::with_capacity(loop_closures.len());
+            let snapshot_bodies = if loop_closures.is_empty() {
+                // Open-chain: walk_fk once with user bindings; that's the
+                // final answer.  Closed-chain mechanisms skip this walk
+                // entirely (the synthesized re-walk below produces the
+                // same shape with the solver-driven free-joint values
+                // baked in).
+                match walk_fk(bodies, joint_parents, bindings_list) {
+                    Some(b) => b,
+                    None => return Some(Value::Undef),
+                }
+            } else {
+                // Build the synthesized bindings list: original bindings
+                // followed by one `make_binding(free_joint, wrapped_value)`
+                // per converged free variable across all loops.
+                //
+                // Order matters: original bindings come first so a user-
+                // supplied binding for a joint that ALSO appears as free
+                // in some loop wins over the synthesized fallback (the
+                // direct-binding scan in `value_for` is left-to-right
+                // first-match).  In practice `extract_loop_closure_chains`
+                // routes user-bound joints away from `free_b`, so the
+                // synthesized entries cover only joints with no direct
+                // binding — but the ordering stays correct under any
+                // future refactor that loosens that invariant.
+                let mut synth_bindings: Vec<Value> = bindings_list.to_vec();
+                for (loop_idx, record) in loop_closures.iter().enumerate() {
+                    let (chain_a, vals_a, chain_b, vals_b_initial, free_b) =
+                        match extract_loop_closure_chains(record, bindings_list) {
+                            Some(t) => t,
+                            // A malformed loop_closure record (missing path,
+                            // unresolvable joint) collapses the whole
+                            // snapshot to Undef — surfaces the structural
+                            // bug rather than masking it with a partial
+                            // snapshot.
+                            None => return Some(Value::Undef),
+                        };
 
-            make_snapshot(snapshot_bodies)
+                    // Pick the strategy: warm-start when the caller supplied
+                    // a 3rd arg with a matching-length seed vector, midpoint
+                    // otherwise.  Per-loop inner-List length (validated here)
+                    // MUST equal this loop's `free_b.len()` — the solver's
+                    // own `validate_loop_closure_inputs` re-enforces it, but
+                    // catching it here surfaces the structural bug at the
+                    // snapshot boundary rather than burying it inside an
+                    // `InvalidInput` outcome.
+                    let strategy = match warm_start_seeds.as_ref() {
+                        Some(seeds) => {
+                            let row = &seeds[loop_idx];
+                            if row.len() != free_b.len() {
+                                return Some(Value::Undef);
+                            }
+                            StartStrategy::WarmStart(row.clone())
+                        }
+                        None => StartStrategy::Midpoint,
+                    };
+
+                    let outcome = solve_loop_closure(
+                        &chain_a,
+                        &vals_a,
+                        &chain_b,
+                        &vals_b_initial,
+                        &free_b,
+                        &strategy,
+                        &NewtonConfig::default(),
+                    );
+
+                    // Extract the converged free-variable values.  We
+                    // accept all three "produced an x" variants — converged
+                    // is the success path; not-converged returns the last
+                    // iterate (still useful as a best-effort approximation
+                    // for downstream FK); singular returns the iterate
+                    // where rank-deficiency was detected (preserves the
+                    // PRD's "last-converged config" guarantee).  Only
+                    // `InvalidInput` short-circuits, matching the
+                    // structural-bug semantics of `extract_*` returning
+                    // None above.
+                    let x = match outcome {
+                        NewtonOutcome::Converged { x, .. }
+                        | NewtonOutcome::NotConverged { x, .. }
+                        | NewtonOutcome::Singular { x, .. } => x,
+                        NewtonOutcome::InvalidInput { .. } => return Some(Value::Undef),
+                    };
+                    if x.len() != free_b.len() {
+                        // Defence-in-depth: solver contract guarantees this
+                        // length match for every non-InvalidInput outcome.
+                        return Some(Value::Undef);
+                    }
+
+                    // Collect this loop's converged free values as
+                    // bare `Value::Real` leaves (SI units).  The dimensioned
+                    // wrapping that follows for synth_bindings rehydrates
+                    // these into `Value::length` / `Value::angle` for the
+                    // FK re-walk; the Snapshot Map carrier stays bare-Real
+                    // so warm-start round-trips through pure f64 vectors
+                    // (matches `StartStrategy::WarmStart(Vec<f64>)`).
+                    let per_loop_reals: Vec<Value> =
+                        x.iter().map(|&v| Value::Real(v)).collect();
+                    free_values.push(Value::List(per_loop_reals));
+
+                    for (k, &i) in free_b.iter().enumerate() {
+                        let joint = chain_b[i].clone();
+                        let wrapped = match wrap_midpoint_for_joint(&joint, x[k]) {
+                            Some(v) => v,
+                            // Multi-DOF or unknown joint kinds in chain_b's
+                            // free set cannot be wrapped back into a single
+                            // dimensioned `Value::length` / `Value::angle`
+                            // — surface this as Undef rather than silently
+                            // dropping the binding.
+                            None => return Some(Value::Undef),
+                        };
+                        synth_bindings.push(make_binding(joint, wrapped));
+                    }
+                }
+
+                // Re-walk FK with the synthesized bindings.  A FRESH cache
+                // is required because the first walk's cache holds
+                // memoized world transforms keyed on joints that may now
+                // be bound to different values (the synthesized bindings
+                // override the midpoint fallback for free joints).
+                match walk_fk(bodies, joint_parents, &synth_bindings) {
+                    Some(b) => b,
+                    None => return Some(Value::Undef),
+                }
+            };
+
+            make_snapshot(snapshot_bodies, free_values)
         }
         "bodies" => {
             // Validation surface (each guard short-circuits to Undef):
@@ -458,6 +646,49 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
     })
 }
 
+/// FK walk over every body in a Mechanism's `bodies` list, returning the
+/// per-body snapshot record vector.  Encapsulates the FK loop the
+/// `eval_snapshot::"snapshot"` arm runs once for the cold first-pass
+/// FK and again, after the closed-chain solver step (task 2678 step-4),
+/// with synthesized bindings replacing the user bindings.
+///
+/// Returns `None` when any body's FK walk fails — propagated up to the
+/// caller's `Value::Undef` result.  The cache is local to this call,
+/// so the synthesized-bindings re-walk gets a clean memoization slate
+/// (preventing the cold-walk's midpoint-derived world transforms from
+/// leaking into the warm-walk's solver-derived chain).
+fn walk_fk(
+    bodies: &[Value],
+    joint_parents: &BTreeMap<Value, Value>,
+    bindings: &[Value],
+) -> Option<Vec<Value>> {
+    let mut cache: BTreeMap<Value, Value> = BTreeMap::new();
+    let mut snapshot_bodies = Vec::with_capacity(bodies.len());
+    for body_value in bodies {
+        let body_map = match body_value {
+            Value::Map(b) => b,
+            _ => return None,
+        };
+        let id = body_map.get(&Value::String("id".to_string()))?.clone();
+        let solid = body_map.get(&Value::String("solid".to_string()))?.clone();
+        let at = body_map.get(&Value::String("at".to_string()))?.clone();
+        let pose = body_map.get(&Value::String("pose".to_string()))?.clone();
+
+        // Walk the parent chain ancestor-ward to compute the body's
+        // `at`-joint frame in world coordinates.
+        let t_at_world = joint_world_transform(&at, joint_parents, bindings, &mut cache)?;
+
+        // body's world_transform = T_at_world ∘ pose.
+        let world_transform = eval_builtin("transform_compose", &[t_at_world, pose.clone()]);
+        if world_transform.is_undef() {
+            return None;
+        }
+
+        snapshot_bodies.push(make_snapshot_body_record(id, solid, pose, world_transform));
+    }
+    Some(snapshot_bodies)
+}
+
 /// Extract the three SI-unit translation components from a `Value::Transform`.
 ///
 /// Returns `None` (which callers map to `Value::Undef`) when:
@@ -527,16 +758,29 @@ fn snapshot_bodies(snap: &Value) -> Option<&[Value]> {
 ///
 /// Shape (alphabetical key order, matching `BTreeMap` iteration):
 /// - `bodies` → `Value::List(vec![])`
+/// - `free_values` → `Value::List(vec![])`
 /// - `kind` → `Value::String("snapshot")`
 fn make_empty_snapshot() -> Value {
-    make_snapshot(Vec::new())
+    make_snapshot(Vec::new(), Vec::new())
 }
 
 /// Build a Snapshot `Value::Map` carrying the supplied list of
-/// per-body world-transform records.
-fn make_snapshot(bodies: Vec<Value>) -> Value {
+/// per-body world-transform records and the per-loop converged
+/// free-variable values from the loop-closure solver.
+///
+/// `free_values` is the carrier that lets sweep's warm-start path
+/// round-trip the previous step's solver state into the next step
+/// via the optional 3rd arg to `snapshot()` (task 2678 step-8).
+/// Open-chain callers pass `Vec::new()` for shape stability — the
+/// `free_values` key is always present, just with an empty outer
+/// List for mechanisms that have no `loop_closures` records.
+fn make_snapshot(bodies: Vec<Value>, free_values: Vec<Value>) -> Value {
     let mut m = BTreeMap::new();
     m.insert(Value::String("bodies".to_string()), Value::List(bodies));
+    m.insert(
+        Value::String("free_values".to_string()),
+        Value::List(free_values),
+    );
     m.insert(
         Value::String("kind".to_string()),
         Value::String("snapshot".to_string()),
@@ -1114,18 +1358,28 @@ mod tests {
     //   AND a present `joint`/`value` field             → per-entry guard
     // Any guard failure returns `Value::Undef` BEFORE any FK work.
 
-    /// `snapshot()` with an arity outside {2} returns Undef.
+    /// `snapshot()` with an arity outside {2, 3} returns Undef.  3 args
+    /// is the warm-start form (task 2678 step-8): `snapshot(m, bindings,
+    /// prev_free_values)`.
     #[test]
     fn snapshot_wrong_arity_returns_undef() {
         let m0 = eval_builtin("mechanism", &[]);
-        // 0, 1, 3 args
+        // 0, 1, 4 args
         assert!(eval_builtin("snapshot", &[]).is_undef());
         assert!(eval_builtin("snapshot", std::slice::from_ref(&m0)).is_undef());
-        assert!(eval_builtin(
-            "snapshot",
-            &[m0.clone(), Value::List(vec![]), Value::List(vec![])]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "snapshot",
+                &[
+                    m0.clone(),
+                    Value::List(vec![]),
+                    Value::List(vec![]),
+                    Value::List(vec![])
+                ]
+            )
+            .is_undef(),
+            "4-arg snapshot call must return Undef (arity guard)"
+        );
     }
 
     /// `snapshot(non_mechanism, [])` returns Undef when args[0] is not
@@ -1937,6 +2191,533 @@ mod tests {
         assert!(
             s.is_undef(),
             "snapshot with unbound planar joint must return Undef, got {:?}",
+            s
+        );
+    }
+
+    // ── Closed-chain snapshot via loop-closure solver (task 2678 step-3) ───
+    //
+    // For closed-chain mechanisms (non-empty `loop_closures`), `snapshot()`
+    // must invoke the Newton solver to drive free joints into a configuration
+    // that closes every recorded loop.  Today's pre-step-4 snapshot ignores
+    // `loop_closures` entirely — for our 4-body fixture below it produces a
+    // `Snapshot Map` whose `bodies[1]` (at=jB) sits at jB's range midpoint
+    // rather than the loop-closure-solved value, leaving body 3's
+    // (closing-edge) world translation inconsistent across paths a and b.
+    // After step-4, the synthesized binding for jB drives both paths to
+    // the same translation within solver tolerance.
+
+    /// Closed-chain mechanism: two prismatic-X joints (`j_a`, `j_b`)
+    /// attached to the world via separate bodies, plus a closing joint
+    /// (`j_x`) that body C anchors to `j_a` (forming the spanning-tree
+    /// edge `j_x → j_a`) and body D anchors to `j_b` (forming the
+    /// closing edge that becomes a `loop_closures` record with
+    /// `path_a=[world,j_a,j_x]` and `path_b=[world,j_b,j_x]`).
+    ///
+    /// `j_a` is bound to 0.5 m (driver value).  The closure constraint
+    /// `j_a + j_x = j_b + j_x` forces `j_b = j_a = 0.5 m`.  Today's
+    /// snapshot ignores `loop_closures` and `j_b` falls back to its
+    /// range midpoint (1.0 m for range 0..2 m) — so body 1's translation
+    /// (1.0, 0, 0) violates the closure, distinguishable from the
+    /// post-step-4 solver-driven (0.5, 0, 0).
+    ///
+    /// The closing-edge body's world translation is asserted to match
+    /// the path-b expectation `(j_b_solved + j_x_value)` within 1e-6 m,
+    /// pinning the round-trip from solver output back into the FK walk.
+    #[test]
+    fn snapshot_solves_closed_chain_via_loop_closure_solver() {
+        // jA on +X with range 0..1m; midpoint = 0.5m.
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        // jB on +X with range 0..2m (DIFFERENT Map by range). Its midpoint
+        // is 1.0m — distinct from jA's 0.5m so today's naive midpoint
+        // fallback for `j_b` produces a translation that violates the
+        // closure constraint and is observable in the test.
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        // jX is a revolute around +Z with range 0..π; pure rotation about
+        // world-Z preserves the +X translation contributions of j_a and j_b
+        // (both project onto the rotated +X), so the closure simplifies to
+        // a 1-DOF translation match with jX's rotation cancelling out of
+        // both paths.
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        // Body A: at=jA, parent=world.  joint_parents = {jA: world}.
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+        );
+        // Body B: at=jB, parent=world.  joint_parents = {jA: world, jB: world}.
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+        );
+        // Body C: at=jX, parent=jA.  joint_parents = {jA: world, jB: world, jX: jA}.
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+        );
+        // Body D: at=jX, parent=jB.  Closing edge — jX is already mapped to jA.
+        // loop_closures records path_a=[world, jA, jX], path_b=[world, jB, jX].
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+        );
+
+        // Sanity: m4 must be a closed-chain mechanism with non-empty loop_closures.
+        match &m4 {
+            Value::Map(map) => {
+                assert!(
+                    !map.contains_key(&Value::String("error".to_string())),
+                    "fixture should not produce an errored mechanism"
+                );
+                let lc = map
+                    .get(&Value::String("loop_closures".to_string()))
+                    .expect("mechanism must carry a loop_closures field");
+                match lc {
+                    Value::List(records) => assert_eq!(
+                        records.len(),
+                        1,
+                        "exactly one loop-closure record expected, got {}",
+                        records.len()
+                    ),
+                    other => panic!("loop_closures must be a List, got {:?}", other),
+                }
+            }
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        }
+
+        // Bind jA = 0.5m.  The closure jA + jX = jB + jX simplifies to
+        // jA = jB → solver should drive jB to 0.5m (NOT jB's midpoint 1.0m).
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a])]);
+
+        // After step-4 the closed-chain snapshot must produce a valid
+        // Snapshot Map (not Undef): the loop-closure-solver wiring runs
+        // during snapshot construction and the FK re-walk yields a
+        // consistent set of body world transforms.
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!(
+                "expected Snapshot Map after closed-chain solve, got {:?}",
+                other
+            ),
+        };
+        assert_eq!(
+            smap.get(&Value::String("kind".to_string())),
+            Some(&Value::String("snapshot".to_string())),
+            "closed-chain snapshot must carry kind='snapshot'"
+        );
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected bodies List, got {:?}", other),
+        };
+        assert_eq!(bodies.len(), 4, "4-body closed-chain mechanism");
+
+        // Body 1 (at=jB, parent=world) — its world translation x must
+        // equal the loop-closure-solved jB value (= 0.5m), not the
+        // naive midpoint (1.0m).  This is the assertion that fails
+        // today (snapshot ignores loop_closures and falls back to
+        // midpoint(jB) = 1.0m).
+        let body_1 = match &bodies[1] {
+            Value::Map(b) => b,
+            other => panic!("expected body 1 record Map, got {:?}", other),
+        };
+        let wt_1 = body_1
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body 1 must carry a world_transform field");
+        let (_, [tx_1, ty_1, tz_1]) = decompose_transform_for_assert(wt_1);
+        assert!(
+            (tx_1 - 0.5).abs() < 1e-6,
+            "body 1 (at=jB) tx must be loop-closure-solved 0.5m (NOT midpoint 1.0m), got {tx_1}"
+        );
+        assert!(ty_1.abs() < 1e-6, "body 1 ty must be 0, got {ty_1}");
+        assert!(tz_1.abs() < 1e-6, "body 1 tz must be 0, got {tz_1}");
+
+        // Body 3 (closing-edge, at=jX, parent=jB): the FK walk uses
+        // joint_parents (which records jX → jA), so its world transform
+        // is computed via path_a (jA + jX).  The closure constraint
+        // demands path_a's value == path_b's value within 1e-6 m;
+        // verify by comparing body 3's stored translation against the
+        // path_b expectation jB_solved + jX_value (with jX projecting
+        // onto +X via its initial frame, the translation contribution
+        // from jX is zero — its contribution is purely rotational).
+        let body_3 = match &bodies[3] {
+            Value::Map(b) => b,
+            other => panic!("expected body 3 record Map, got {:?}", other),
+        };
+        let wt_3 = body_3
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body 3 must carry a world_transform field");
+        let (_, [tx_3, ty_3, tz_3]) = decompose_transform_for_assert(wt_3);
+        // Path-a expectation: jA + jX = 0.5m on +X (jX is pure rotation
+        // about Z and doesn't contribute translation).
+        assert!(
+            (tx_3 - 0.5).abs() < 1e-6,
+            "body 3 (closing-edge) tx must equal path-a/path-b solved 0.5m, got {tx_3}"
+        );
+        assert!(ty_3.abs() < 1e-6, "body 3 ty must be 0, got {ty_3}");
+        assert!(tz_3.abs() < 1e-6, "body 3 tz must be 0, got {tz_3}");
+    }
+
+    // ── Snapshot Map carries `free_values` (task 2678 step-5) ─────────────
+    //
+    // The Snapshot Map is the natural carrier for the loop-closure solver's
+    // converged free-variable values — sweep's warm-start path reads the
+    // previous step's `free_values` and feeds it as a 3rd arg back into
+    // `snapshot()` for the next step.  Shape contract (per design decision
+    // "Add a `free_values` top-level key…"):
+    //   - Outer List length == loop_closures.len()
+    //   - Inner List length == per-loop free-var count
+    //   - Each leaf is a Value::Real carrying the SI-unit converged value
+    //   - Open-chain mechanisms emit `Value::List(vec![])` for shape stability
+    //
+    // These tests pin the shape on both axes (closed-chain populated,
+    // open-chain empty) before step-6 wires `make_snapshot` to emit the key.
+
+    /// Closed-chain mechanism (same fixture as step-3): one loop_closures
+    /// record with a single free variable (jB).  After the solver runs,
+    /// the Snapshot Map must carry `free_values =
+    /// List<List<Real>>` with outer length 1 (one loop) and inner length 1
+    /// (one free var jB), and the leaf value within tolerance of 0.5m
+    /// (= the solved jB matching the bound jA driver).
+    #[test]
+    fn snapshot_records_free_values_for_closed_chain() {
+        // Reuse the step-3 fixture inline — keeps the test self-contained
+        // without coupling to the helper's internal naming.
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+        );
+
+        // Bind jA = 0.5m (driver) AND jX = 0 rad (pin the shared revolute
+        // so it isn't a free var on path_b).  Without binding jX,
+        // `extract_loop_closure_chains` flags BOTH jB and jX-on-path-b as
+        // free indices because chain_b carries every joint that lacks a
+        // direct binding entry — multi-loop coupling that would dedupe
+        // joints shared with path_a is out of v0.2 scope (see plan
+        // design-decisions §4).  Pinning jX gives us a single-free-var
+        // shape that step-9 / step-11 assume, and keeps this test focused
+        // on the carrier shape rather than multi-DOF solver behaviour.
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(0.0)]);
+        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a, bind_x])]);
+
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+
+        let free_values = smap
+            .get(&Value::String("free_values".to_string()))
+            .expect("Snapshot Map must carry a free_values field after step-6");
+
+        // Outer-List shape: one entry per loop_closures record.
+        let loops = match free_values {
+            Value::List(l) => l,
+            other => panic!("free_values must be a List, got {:?}", other),
+        };
+        assert_eq!(
+            loops.len(),
+            1,
+            "free_values outer-List length must equal loop_closures.len() == 1"
+        );
+
+        // Inner-List shape: one Real per free var (here, jB only — jX is
+        // pinned via bind_x above so it doesn't enter `free_b`).
+        let inner = match &loops[0] {
+            Value::List(l) => l,
+            other => panic!("free_values[0] must be a List, got {:?}", other),
+        };
+        assert_eq!(
+            inner.len(),
+            1,
+            "free_values[0] inner-List length must equal free-var count == 1"
+        );
+
+        // Leaf shape: Real carrying the SI-unit converged value (≈ 0.5m).
+        let solved = match &inner[0] {
+            Value::Real(r) => *r,
+            other => panic!("free_values[0][0] must be a Real, got {:?}", other),
+        };
+        assert!(
+            (solved - 0.5).abs() < 1e-6,
+            "solved jB free var must match driver jA = 0.5m, got {solved}"
+        );
+    }
+
+    /// Open-chain mechanism (no `loop_closures`): the Snapshot Map must
+    /// still carry the `free_values` key for shape stability — set to
+    /// `Value::List(vec![])`.  Pins the open-chain regression so step-6's
+    /// `make_snapshot` always emits a 3-key Map.
+    #[test]
+    fn snapshot_records_empty_free_values_for_open_chain() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let m1 = eval_builtin("body", &[m0, Value::String("solidA".to_string()), j.clone()]);
+
+        let bind = eval_builtin("bind", &[j, Value::length(0.002)]);
+        let s = eval_builtin("snapshot", &[m1, Value::List(vec![bind])]);
+
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+
+        let free_values = smap
+            .get(&Value::String("free_values".to_string()))
+            .expect("Snapshot Map must carry a free_values field after step-6 (even for open-chain)");
+        assert_eq!(
+            free_values,
+            &Value::List(vec![]),
+            "open-chain free_values must be an empty List, got {:?}",
+            free_values
+        );
+    }
+
+    // ── Warm-start third-arg consumption (task 2678 step-7) ───────────────
+    //
+    // `snapshot()` accepts an optional 3rd arg carrying the previous step's
+    // `free_values` (List<List<Real>> shape from step-6).  When supplied,
+    // the loop-closure solver runs from `StartStrategy::WarmStart(Vec<f64>)`
+    // instead of `Midpoint`.  Sweep's warm-start path threads the previous
+    // step's `free_values` through this arg, producing the same converged
+    // configuration as the cold-start solve when the warm-start seed is the
+    // cold solution itself (round-trip identity).
+
+    /// Closed-chain mechanism: build cold once, then warm-start from the
+    /// cold result's `free_values`.  The warm-start `snapshot()` must
+    /// converge to the same `free_values` (within solver tolerance) and
+    /// the same body world transforms.  Pins both the API surface (3rd
+    /// arg accepted, no Undef) and the cold→warm round-trip identity.
+    #[test]
+    fn snapshot_consumes_warm_start_state_via_optional_third_arg() {
+        // Same step-3 fixture, with jX pinned to keep free_b == [0].
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+        );
+
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(0.0)]);
+        let bindings = Value::List(vec![bind_a, bind_x]);
+
+        // Cold call: 2-arg form, solver runs from Midpoint.
+        let s_cold = eval_builtin("snapshot", &[m4.clone(), bindings.clone()]);
+        let smap_cold = match s_cold {
+            Value::Map(m) => m,
+            other => panic!("expected cold Snapshot Map, got {:?}", other),
+        };
+        let cold_free_values = smap_cold
+            .get(&Value::String("free_values".to_string()))
+            .expect("cold snapshot must carry free_values")
+            .clone();
+        let cold_bodies = smap_cold
+            .get(&Value::String("bodies".to_string()))
+            .expect("cold snapshot must carry bodies")
+            .clone();
+
+        // Warm call: 3-arg form with cold's free_values as the seed.  Step-8
+        // routes this through `StartStrategy::WarmStart`; the solver must
+        // still converge (the seed IS the cold solution, so the residual
+        // is already at tolerance and Newton accepts on iter 0/1).
+        let s_warm = eval_builtin("snapshot", &[m4, bindings, cold_free_values.clone()]);
+        let smap_warm = match s_warm {
+            Value::Map(m) => m,
+            other => panic!(
+                "expected warm Snapshot Map (3-arg form), got {:?} — \
+                 either arity guard or warm-start parser rejected the call",
+                other
+            ),
+        };
+        let warm_free_values = smap_warm
+            .get(&Value::String("free_values".to_string()))
+            .expect("warm snapshot must carry free_values")
+            .clone();
+        let warm_bodies = smap_warm
+            .get(&Value::String("bodies".to_string()))
+            .expect("warm snapshot must carry bodies")
+            .clone();
+
+        // Round-trip identity: warm's free_values match cold's within
+        // solver tolerance (1µm — cold and warm should both converge to
+        // the same minimum).
+        let cold_loops = match &cold_free_values {
+            Value::List(l) => l,
+            other => panic!("cold free_values must be a List, got {:?}", other),
+        };
+        let warm_loops = match &warm_free_values {
+            Value::List(l) => l,
+            other => panic!("warm free_values must be a List, got {:?}", other),
+        };
+        assert_eq!(
+            cold_loops.len(),
+            warm_loops.len(),
+            "cold and warm must agree on loop count"
+        );
+        for (c_loop, w_loop) in cold_loops.iter().zip(warm_loops.iter()) {
+            let c_inner = match c_loop {
+                Value::List(l) => l,
+                other => panic!("cold inner must be a List, got {:?}", other),
+            };
+            let w_inner = match w_loop {
+                Value::List(l) => l,
+                other => panic!("warm inner must be a List, got {:?}", other),
+            };
+            assert_eq!(
+                c_inner.len(),
+                w_inner.len(),
+                "per-loop free var count must agree cold↔warm"
+            );
+            for (c_v, w_v) in c_inner.iter().zip(w_inner.iter()) {
+                let c_f = match c_v {
+                    Value::Real(r) => *r,
+                    other => panic!("cold leaf must be Real, got {:?}", other),
+                };
+                let w_f = match w_v {
+                    Value::Real(r) => *r,
+                    other => panic!("warm leaf must be Real, got {:?}", other),
+                };
+                assert!(
+                    (c_f - w_f).abs() < 1e-6,
+                    "cold↔warm free var must agree within 1µm: cold={c_f}, warm={w_f}"
+                );
+            }
+        }
+
+        // Body world transforms must match cold↔warm: with the same bindings
+        // and a converged solve, the FK re-walk produces the same poses.
+        assert_eq!(
+            cold_bodies, warm_bodies,
+            "cold and warm bodies must match — same converged configuration"
+        );
+    }
+
+    /// Mismatched-length 3rd arg returns Undef.  When the user-supplied
+    /// `prev_free_values` outer-List length disagrees with the mechanism's
+    /// `loop_closures.len()`, the warm-start handler can't pair seeds with
+    /// loops — the call collapses to Undef rather than silently dropping
+    /// or padding seeds (defense-in-depth: the only legal source for the
+    /// 3rd arg is a previous `snapshot()`'s `free_values`, and any length
+    /// mismatch is a structural bug at the caller).
+    #[test]
+    fn snapshot_warm_start_length_mismatch_returns_undef() {
+        // Reuse the closed-chain fixture (one loop_closures record).
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+        );
+
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(0.0)]);
+        let bindings = Value::List(vec![bind_a, bind_x]);
+
+        // Pass an empty outer List as prev_free_values — mismatches the 1
+        // loop_closures record.  Result must be Undef.
+        let s = eval_builtin(
+            "snapshot",
+            &[m4, bindings, Value::List(vec![])],
+        );
+        assert!(
+            s.is_undef(),
+            "snapshot with mismatched-length warm-start arg must return Undef, got {:?}",
             s
         );
     }

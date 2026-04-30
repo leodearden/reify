@@ -7,7 +7,6 @@
 mod classifier;
 mod cpsat;
 mod decompose;
-mod loop_closure;
 mod registry;
 mod slvs_sys;
 mod solver;
@@ -16,7 +15,18 @@ mod solvespace;
 pub use classifier::ConstraintClassifier;
 pub use cpsat::CpSatSolver;
 pub use decompose::{SubProblem, decompose_into_components};
-pub use loop_closure::*;
+// Loop-closure Newton solver was relocated to reify-stdlib (task 2678) to
+// resolve a would-be cycle: `reify_stdlib::snapshot` needs to invoke the
+// solver on closed-chain mechanisms, but `reify-stdlib` cannot depend on
+// `reify-constraints` (the latter already depends on the former for FK
+// primitives).  These re-exports preserve the original
+// `reify_constraints::{NewtonConfig, ...}` paths so downstream callers
+// (reify-eval tests, reify-constraints integration tests) compile unchanged.
+pub use reify_stdlib::loop_closure_solver::{
+    LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
+    mechanism_loop_closure_chains, newton_solve, solve_loop_closure,
+    solve_loop_closure_with_diagnostics,
+};
 pub use registry::SolverRegistry;
 pub use solver::DimensionalSolver;
 pub use solvespace::SolveSpaceSolver;
