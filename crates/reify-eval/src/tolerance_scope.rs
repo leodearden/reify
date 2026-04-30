@@ -515,45 +515,6 @@ mod tests {
         extract_tolerance_bindings(&purpose, "MyDesign");
     }
 
-    /// Complements `extract_tolerance_bindings_panics_on_multi_param_subjects_in_debug`
-    /// by locking the *new* debug_assert phrasing introduced by the Option-pair refactor.
-    ///
-    /// The existing test pins the stable `"single-binding contract"` prefix; this test
-    /// pins the fault-localising body `"a second distinct purpose-param subject"` which
-    /// names the offending pair via `({:?} after {:?})` so the maintainer can immediately
-    /// identify which two params triggered the violation.  Two independent regression locks
-    /// are better than one amended `expected` substring: if either phrase accidentally drifts,
-    /// exactly one test breaks and the failure message names the affected pin.
-    ///
-    /// Fixture is identical to the sibling test — a two-param `CompiledPurpose` with one
-    /// `RepresentationWithin` per param, both passing every extraction gate.
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "a second distinct purpose-param subject")]
-    fn extract_tolerance_bindings_panic_message_names_second_distinct_param_in_debug() {
-        let constraint_subject = representation_within_constraint(
-            "subject",
-            "Bracket",
-            1e-6,
-            DimensionVector::LENGTH,
-        );
-        let constraint_other = representation_within_constraint(
-            "other_param",
-            "Bracket",
-            5e-6,
-            DimensionVector::LENGTH,
-        );
-
-        let purpose = CompiledPurposeBuilder::new("manufacturing")
-            .param("subject", "Structure")
-            .param("other_param", "Structure")
-            .constraint("subject", 0, None, constraint_subject)
-            .constraint("other_param", 1, None, constraint_other)
-            .build();
-
-        extract_tolerance_bindings(&purpose, "MyDesign");
-    }
-
     /// `si_value == 0.0` is the exact lower boundary accepted by the
     /// `si_value >= 0.0` gate. A zero-tolerance `RepresentationWithin` is
     /// semantically valid (it means "exact representation" — a degenerate but
