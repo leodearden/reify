@@ -84,6 +84,59 @@ use reify_types::{
 use crate::entity::satisfies_trait_bound;
 use crate::types::{CompiledTrait, TopologyTemplate};
 
+// ─── Multi-Param Orchestration types ─────────────────────────────────────────
+
+/// Input record for a single `auto:` type-parameter to be resolved by
+/// [`resolve_auto_type_params`].
+///
+/// One `AutoTypeParam` is produced per `auto: TraitName` clause in the source.
+/// The fields mirror the per-param information that Phase A/B/C consume:
+/// - `name`: the type-parameter name (e.g., `"T"`, `"U"`).
+/// - `bounds`: the list of required trait names (intersection semantics, same
+///   as Phase A's `bounds` parameter).
+/// - `free`: the strict-vs-free flag (same as Phase C's `free` parameter).
+/// - `use_site_span`: the source span of the `auto:` clause, used for
+///   diagnostic labels by Phase A and Phase C.
+///
+/// The order of params in the slice passed to `resolve_auto_type_params`
+/// determines resolution order (declared order, PRD criterion 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoTypeParam {
+    /// The type-parameter name (e.g., `"T"`).
+    pub name: String,
+    /// Required trait bound(s) — intersection semantics, matches Phase A's
+    /// `bounds` parameter.
+    pub bounds: Vec<String>,
+    /// Strict (`false`) vs. free (`true`) resolution flag — matches Phase C's
+    /// `free` parameter.
+    pub free: bool,
+    /// Span of the `auto:` clause at the use site — used for diagnostic labels.
+    pub use_site_span: SourceSpan,
+}
+
+/// Result of [`resolve_auto_type_params`].
+///
+/// - `per_param` — one entry per *processed* param, in declared order. Each
+///   entry is `(param_name, SelectionResult)`. All params up to and including
+///   the first failure are recorded here; params *after* the first failure are
+///   NOT recorded (halt-on-first-failure rule).
+/// - `substitution` — only the *successfully resolved* params, in declared
+///   order. Each entry is `(param_name, resolved_fqn)`. A param appears here
+///   iff its `SelectionResult` was `Selected`.
+///
+/// The asymmetry between `per_param` and `substitution` is intentional and
+/// load-bearing: `per_param` carries every outcome (success and the first
+/// failure), while `substitution` carries only the successful substitutions.
+/// Tests assert both lengths to pin declared-order halt semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiParamResolutionOutcome {
+    /// Per-param outcomes in declared order, stopping at the first failure.
+    pub per_param: Vec<(String, SelectionResult)>,
+    /// Successfully resolved substitutions `(param_name, resolved_fqn)`, in
+    /// declared order.
+    pub substitution: Vec<(String, String)>,
+}
+
 /// Maximum size of the `auto:` candidate pool.
 ///
 /// PRD `docs/prds/auto-type-param-resolution.md` §"Phase A" mandates that
@@ -630,5 +683,172 @@ pub fn select_candidate(
             );
             SelectionResult::Selected(lex_first)
         }
+    }
+}
+
+// ─── Multi-Param Orchestration ────────────────────────────────────────────────
+
+/// Resolve multiple `auto:` type-parameters in **declared order**, composing
+/// Phase A → B → C for each param and halting on the first failure.
+///
+/// # Declared-order semantics (PRD criterion 6)
+///
+/// Params are iterated in the order supplied by the caller — declared order.
+/// Each `SelectionResult::Selected(name)` is recorded into `substitution` in
+/// that order. The v0.1 substitution map is plumbed through but NOT yet
+/// consumed by Phase A's `bounds` slice or Phase B's `ValueMap`; the deferred
+/// type-substitution mechanics (substituting `Type::TypeParam(T)` →
+/// `Type::StructureRef(candidate)`) will read this vec without a signature
+/// change when that follow-up task lands.
+///
+/// # Halt-on-first-failure
+///
+/// When any param fails — `CandidateEnumeration::Overflow`, `SelectionResult::NoCandidate`,
+/// or `SelectionResult::Ambiguous` — the orchestrator records that param's
+/// outcome in `per_param` and **stops**. Later params are not enumerated,
+/// not feasibility-checked, and emit no diagnostics. This is the v0.1
+/// "no cross-param backtracking" rule.
+///
+/// # Per-param `free` flag
+///
+/// Each `AutoTypeParam` carries its own `free` flag (strict vs. free
+/// resolution). The orchestrator passes `param.free` to Phase C independently
+/// for each param — it does NOT use a single `free` value for all params.
+///
+/// # Empty params
+///
+/// An empty `params` slice is a vacuous success: the function returns an
+/// empty `MultiParamResolutionOutcome` immediately without emitting any
+/// diagnostic. This is NOT a precondition violation — a definition with zero
+/// `auto:` type-params has no orchestration work to do.
+///
+/// # Naming note
+///
+/// This section is named "Multi-Param Orchestration" (not "Phase D") because
+/// the existing module doc-comment reserves "Phase D" for the SchemaNode
+/// topology-trigger work (task 2388). The PRD refers to this functionality as
+/// task 4 / PRD criterion 6.
+pub fn resolve_auto_type_params(
+    params: &[AutoTypeParam],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    parameterized_template: &TopologyTemplate,
+    constraint_checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> MultiParamResolutionOutcome {
+    // Vacuous success: empty params slice is a valid no-op (not a bug).
+    if params.is_empty() {
+        return MultiParamResolutionOutcome {
+            per_param: vec![],
+            substitution: vec![],
+        };
+    }
+
+    let mut per_param: Vec<(String, SelectionResult)> = Vec::new();
+    let mut substitution: Vec<(String, String)> = Vec::new();
+
+    // declared order — see PRD criterion 6
+    for param in params {
+        // Phase A: enumerate candidates.
+        let enumeration = enumerate_candidates(
+            &param.bounds,
+            template_registry,
+            trait_registry,
+            param.use_site_span,
+            diagnostics,
+        );
+
+        let candidates = match enumeration {
+            CandidateEnumeration::Empty => {
+                // No candidates found — flow through to Phase C which will
+                // emit the no-candidate error and produce NoCandidate.
+                vec![]
+            }
+            CandidateEnumeration::Found(candidates) => candidates,
+            CandidateEnumeration::Overflow(overflow_vec) => {
+                // Phase A already pushed the overflow diagnostic.
+                // Model overflow as Ambiguous (same "≥2 candidates, can't
+                // pick one without user input" shape) and halt.
+                // See function doc-comment for the mapping rationale.
+                let result = SelectionResult::Ambiguous(overflow_vec);
+                per_param.push((param.name.clone(), result));
+                break;
+            }
+        };
+
+        // Phase B: feasibility filter.
+        let feasibility = if candidates.is_empty() {
+            // Phase A returned Empty — construct a synthetic FeasibilityResult::Empty
+            // with no rejected candidates so Phase C emits NoCandidate.
+            // This path should not happen under normal Phase A/B wiring (Phase A
+            // Empty goes straight to Phase C via the EmptyPool path), but we
+            // handle it defensively here by building a zero-rejected Empty.
+            // Phase C's debug_assert on non-empty rejected is intentionally NOT
+            // triggered here because we short-circuit below instead.
+            //
+            // Actually, we need to avoid calling filter_feasible_candidates with
+            // an empty slice (debug_assert there), so handle the empty case
+            // directly in Phase C via a synthetic FeasibilityResult::Empty.
+            FeasibilityResult::Empty { rejected: vec![] }
+        } else {
+            filter_feasible_candidates(
+                &candidates,
+                parameterized_template,
+                constraint_checker,
+                functions,
+            )
+        };
+
+        // Phase C: selection. Phase C handles both empty-pool (via
+        // FeasibilityResult::Empty) and feasibility filter output.
+        // For the Phase A Empty case, we need special handling since Phase C's
+        // debug_assert requires non-empty rejected in FeasibilityResult::Empty.
+        // We instead emit NoCandidate manually for the zero-candidate path.
+        let selection = if matches!(feasibility, FeasibilityResult::Empty { rejected: ref r } if r.is_empty())
+        {
+            // Phase A found zero candidates (CandidateEnumeration::Empty). Emit
+            // the no-candidate error directly (mirrors what Phase C would do but
+            // without triggering the debug_assert on empty rejected vec).
+            let (joined_bounds, label_message) = render_auto_type_param_label(&param.bounds);
+            let message = format!(
+                "auto type parameter has no candidates satisfying bound '{bounds_str}': no in-scope structure declares conformance",
+                bounds_str = joined_bounds,
+            );
+            diagnostics.push(
+                Diagnostic::error(message)
+                    .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
+                    .with_label(DiagnosticLabel::new(param.use_site_span, label_message))
+                    .with_candidates(Vec::<String>::new()),
+            );
+            SelectionResult::NoCandidate
+        } else {
+            select_candidate(
+                feasibility,
+                &param.bounds,
+                param.free,
+                param.use_site_span,
+                diagnostics,
+            )
+        };
+
+        match selection {
+            SelectionResult::Selected(ref name) => {
+                // Record the substitution and continue to the next param.
+                substitution.push((param.name.clone(), name.clone()));
+                per_param.push((param.name.clone(), selection));
+            }
+            SelectionResult::NoCandidate | SelectionResult::Ambiguous(_) => {
+                // Phase C already pushed the appropriate diagnostic.
+                // Record the failure and halt — no later param is processed.
+                per_param.push((param.name.clone(), selection));
+                break;
+            }
+        }
+    }
+
+    MultiParamResolutionOutcome {
+        per_param,
+        substitution,
     }
 }
