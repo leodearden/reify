@@ -181,3 +181,12 @@ fn point3_unknown_dimension_produces_error() {
 fn vector3_integer_literal_arg_produces_error() {
     assert_produces_error("structure def Bad { param v : Vector3<3> }");
 }
+
+/// `Point3<3>` — parallel negative fixture for the Point3 arm; mirrors
+/// `vector3_integer_literal_arg_produces_error`. `resolve_type_alias_expr_to_dimension`
+/// rejects integer literals as dimensions in the `Point3<Q>` arm just as it does
+/// for `Vector3<Q>`.
+#[test]
+fn point3_integer_literal_arg_produces_error() {
+    assert_produces_error("structure def Bad { param v : Point3<3> }");
+}
