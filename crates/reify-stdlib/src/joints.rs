@@ -4185,6 +4185,38 @@ mod tests {
         );
     }
 
+    // ── cylindrical test helpers (local; promoted to test_fixtures in step-16) ──
+
+    /// Build a unit-Z cylindrical joint: axis=Z, translation_range=0..1m,
+    /// rotation_range=0..π. Local stand-in until step-16 promotes this to
+    /// `crate::test_fixtures::cylindrical_z_joint`.
+    fn cylindrical_z_joint() -> Value {
+        eval_builtin(
+            "cylindrical",
+            &[axis_z_unit(), length_range_0_to_1m(), angle_range_0_to_pi()],
+        )
+    }
+
+    // ── cylindrical transform_at: translation-only (step-5) ──────────────────
+
+    /// `transform_at(cyl, [length(0.5), angle(0.0)])` returns a Transform with
+    /// identity rotation and translation 0.5m along the cylindrical joint's
+    /// axis (here, +Z). Verifies the translation arm of the cylindrical
+    /// transform_at dispatch in isolation (rotation = identity).
+    #[test]
+    fn cylindrical_transform_at_translation_only() {
+        let cyl = cylindrical_z_joint();
+        let motion = Value::List(vec![Value::length(0.5), Value::angle(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl, motion]);
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.5],
+            1e-12,
+            "cyl Z, d=0.5m θ=0",
+        );
+    }
+
     // ── cylindrical constructor: validation surface (step-3) ─────────────────
 
     /// Table-driven validation surface for the cylindrical constructor.
