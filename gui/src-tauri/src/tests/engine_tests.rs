@@ -4320,6 +4320,12 @@ fn consumed_idents_cache_lifecycle() {
         session.consumed_idents_cache_for_test().is_some(),
         "after second get_mechanism_descriptors call: consumed_idents_cache should be Some again"
     );
+    let cache = session.consumed_idents_cache_for_test().unwrap();
+    assert!(
+        cache.values().all(|s| s.is_empty()),
+        "bracket_source has no body() calls — every cache entry must be an empty set, got {:?}",
+        cache
+    );
 }
 
 /// Proves that `get_mechanism_descriptors` reads from `consumed_idents_cache` rather
