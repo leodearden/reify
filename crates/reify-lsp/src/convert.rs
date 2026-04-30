@@ -716,8 +716,9 @@ mod tests {
     /// (on the `reify_lsp::auto_type_param` target) for each of the four
     /// `AutoTypeParam*` diagnostic codes, and zero events for a non-matching code.
     ///
-    /// This test fails on the `eprintln!`-based code (counter stays at 0) and
-    /// passes once the `tracing::debug!` implementation is in place.
+    /// This test verifies that each AutoTypeParam diagnostic emits exactly one
+    /// structured tracing event on the `reify_lsp::auto_type_param` target, and
+    /// that no other diagnostic code emits on that target.
     ///
     /// # Field-level coverage
     ///
