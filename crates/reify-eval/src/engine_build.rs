@@ -1011,13 +1011,13 @@ impl Engine {
         kernel: &dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        // Snapshot `values` once so each cell's dispatch reads the
-        // pre-patch state. Later cells in the loop body therefore cannot
-        // observe the kernel-resolved value of an earlier kinematic cell
-        // — none of the helpers chain (a `min_clearance(s, …)` cannot
-        // depend on an `interferes(s)` result), so this is a clean
-        // simplification rather than a behaviour change.
-        let snapshot_values = values.clone();
+        // Iterate `values` directly without snapshotting (parallels the
+        // `post_process_conformance_queries` sibling above). Safe because
+        // none of the kinematic helpers chain — a later cell's dispatch
+        // reads `args[0]` as a `ValueRef` to a Snapshot let-cell filled by
+        // the regular `eval_expr` pass, never to another kinematic-query
+        // cell, so an earlier patch in this loop cannot influence a later
+        // dispatch's input.
         for cell in &template.value_cells {
             let default_expr = match &cell.default_expr {
                 Some(e) => e,
@@ -1026,7 +1026,7 @@ impl Engine {
             if let Some(value) = crate::geometry_ops::try_eval_kinematic_query(
                 default_expr,
                 named_steps,
-                &snapshot_values,
+                values,
                 kernel,
                 diagnostics,
             ) {
