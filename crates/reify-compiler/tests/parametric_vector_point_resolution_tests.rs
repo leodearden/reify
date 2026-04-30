@@ -229,3 +229,16 @@ fn vector3_bare_name_falls_through_to_structure_ref() {
         &Type::StructureRef("Vector3".into()),
     );
 }
+
+/// Parallel to `vector3_bare_name_falls_through_to_structure_ref` for `Point3`.
+/// With `structure def Point3 {}` declared, bare `Point3` falls through to
+/// `Type::StructureRef("Point3")`.
+#[test]
+fn point3_bare_name_falls_through_to_structure_ref() {
+    assert_param_type(
+        BARE_NAME_FALLBACK_SOURCE,
+        "UseBare",
+        "p",
+        &Type::StructureRef("Point3".into()),
+    );
+}
