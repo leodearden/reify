@@ -236,12 +236,10 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                     _ => return Some(Value::Undef),
                 };
                 if body_map.get(&Value::String("id".to_string())) == Some(&args[1]) {
-                    return Some(
-                        body_map
-                            .get(&Value::String("world_transform".to_string()))
-                            .cloned()
-                            .unwrap_or(Value::Undef),
-                    );
+                    return match body_map.get(&Value::String("world_transform".to_string())) {
+                        Some(v) => Some(v.clone()),
+                        None => Some(Value::Undef),
+                    };
                 }
             }
             Value::Undef
