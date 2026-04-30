@@ -393,6 +393,46 @@ mod tests {
         }
     }
 
+    /// Negative-finite tolerance literals (e.g. -1e-3, -1e-6, -1.0) must be
+    /// rejected by `extract_tolerance_bindings` and produce no `ToleranceBinding`.
+    ///
+    /// Why: (a) A tolerance is a magnitude — a negative value has no semantics.
+    /// (b) Allowing a negative literal to survive extraction is a runtime hazard:
+    /// it wins `merge_with_min` against any positive contributor (because
+    /// `negative < positive` is unconditionally true), propagates to
+    /// `combine_demanded_tolerance`, and panics that function's debug-assert
+    /// (`is_finite() && >= 0.0`) in debug builds — or silently wins an
+    /// `o.min(p)` race in release, corrupting the demanded tolerance for the
+    /// entire output. (c) The `>= 0.0` half of the gate restores the symmetry
+    /// the `tolerance_combine.rs` "Recognition-shape twin" docstring claims
+    /// with `extract_output_tolerance_bound`: both extractors must apply the
+    /// identical `is_finite() && >= 0.0` guard so the combiner's invariant is
+    /// upheld upstream rather than panicked at the boundary.
+    #[test]
+    fn extract_tolerance_bindings_rejects_negative_finite_tolerance_literals() {
+        for bad_value in [-1e-6_f64, -1e-3, -1.0] {
+            let constraint_expr = representation_within_constraint(
+                "subject",
+                "Bracket",
+                bad_value,
+                DimensionVector::LENGTH,
+            );
+
+            let purpose = CompiledPurposeBuilder::new("manufacturing")
+                .param("subject", "Structure")
+                .constraint("subject", 0, None, constraint_expr)
+                .build();
+
+            let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+
+            assert!(
+                bindings.is_empty(),
+                "negative finite tolerance literal {:?} must be rejected",
+                bad_value
+            );
+        }
+    }
+
     #[test]
     fn propagate_subject_to_descendants_collects_subject_and_dotted_descendants() {
         let mut cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
