@@ -861,6 +861,59 @@ fn collect_snapshot_bind_pairs_stays_silent_for_empty_bind_list() {
     );
 }
 
+/// `snapshot(m1)` — only one argument, so `args.len() < 2`.
+/// This pins the `args.len() < 2` early-return carve-out documented in
+/// `engine.rs` (`collect_snapshot_bind_pairs`): a 1-arg snapshot() call
+/// cannot contribute any bind pairs and must stay completely silent —
+/// no DEBUG, no WARN.  Without this test a future refactor that removes
+/// the early return would let the `ListLiteral` check run on `args[1]` of a
+/// 1-arg call and panic on out-of-bounds indexing with no test catching it.
+const ONE_ARG_SNAPSHOT_SOURCE: &str = r#"
+structure Kinematic {
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j1)
+    let snap = snapshot(m1)
+}
+"#;
+
+#[test]
+fn collect_snapshot_bind_pairs_stays_silent_for_one_arg_call() {
+    // Regression-pin for the args.len() < 2 carve-out.  A 1-arg snapshot()
+    // call cannot contribute bind pairs and must NOT emit any telemetry at
+    // the snapshot_bind_pairs target.
+    let mut session = make_session();
+    session
+        .load_from_source(ONE_ARG_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load 1-arg snapshot source");
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine::snapshot_bind_pairs")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+
+    assert_eq!(
+        debug_count, 0,
+        "expected 0 DEBUG events at target reify_gui::engine::snapshot_bind_pairs \
+         for snapshot(m1) — 1-arg call cannot contribute pairs and must stay silent; got {}",
+        debug_count
+    );
+    assert_eq!(
+        warn_count, 0,
+        "expected 0 WARN events at target reify_gui::engine::snapshot_bind_pairs \
+         for snapshot(m1); got {}",
+        warn_count
+    );
+}
+
 /// `snapshot(m1, j1)` — second arg is an `Ident` (a joint cell), not a
 /// `ListLiteral`.  This is case (a): args[1] is not a ListLiteral, which
 /// suggests a user-shadowed `snapshot` or malformed call — must emit DEBUG.
