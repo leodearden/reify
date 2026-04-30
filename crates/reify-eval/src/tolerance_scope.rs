@@ -49,9 +49,15 @@ pub(crate) struct ToleranceBinding {
 ///    typed `StructureRef(_)`, so a hypothetical second purpose param or an unrelated
 ///    structure reference doesn't silently bind a tolerance to `bound_entity_ref`.
 /// 3. **Tolerance literal (arg1):** `Literal(Value::Scalar { dimension == LENGTH, si_value })`
-///    where `si_value.is_finite()`. Non-finite values (NaN, ±Inf) have no semantics for a
-///    tolerance — and worse, NaN would propagate into the scope and stick (NaN comparisons
-///    always evaluate false, so `merge_with_min` could never displace it with a real value).
+///    where `si_value.is_finite() && si_value >= 0.0`. Non-finite values (NaN, ±Inf) and
+///    negative finite values have no semantics for a tolerance — and worse, both would
+///    propagate into the scope and corrupt downstream consumers. NaN sticks because
+///    `merge_with_min` could never displace it (NaN comparisons evaluate false); a
+///    negative literal would win `merge_with_min` against any positive contributor and
+///    then panic `combine_demanded_tolerance`'s debug-assert `is_finite() && >= 0.0`
+///    in debug builds (or silently win an `o.min(p)` race in release). The
+///    `>= 0.0` half of the gate restores the symmetry `tolerance_combine.rs`'s
+///    "Recognition-shape twin" docstring claims with `extract_output_tolerance_bound`.
 ///
 /// # Single-binding contract
 ///
@@ -108,11 +114,9 @@ pub(crate) fn extract_tolerance_bindings(
             continue;
         }
 
-        // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. }) AND
-        // its `si_value` must be finite. NaN/±Inf would propagate into the
-        // scope and stick — `merge_with_min` uses `tol < *cur` which is always
-        // false when either side is NaN, so a stale NaN could never be
-        // displaced by a real value.
+        // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, si_value })
+        // where si_value.is_finite() && si_value >= 0.0 — see gate-3 in the
+        // function docstring above for the full rationale.
         let tol_arg = &args[1];
         let si_value = match &tol_arg.kind {
             CompiledExprKind::Literal(Value::Scalar {
@@ -121,7 +125,7 @@ pub(crate) fn extract_tolerance_bindings(
             }) if *dimension == DimensionVector::LENGTH => *si_value,
             _ => continue,
         };
-        if !si_value.is_finite() {
+        if !si_value.is_finite() || si_value < 0.0 {
             continue;
         }
 
@@ -391,6 +395,80 @@ mod tests {
                 bad_value
             );
         }
+    }
+
+    /// Negative-finite tolerance literals (e.g. -1e-3, -1e-6, -1.0) must be
+    /// rejected by `extract_tolerance_bindings` and produce no `ToleranceBinding`.
+    ///
+    /// Why: (a) A tolerance is a magnitude — a negative value has no semantics.
+    /// (b) Allowing a negative literal to survive extraction is a runtime hazard:
+    /// it wins `merge_with_min` against any positive contributor (because
+    /// `negative < positive` is unconditionally true), propagates to
+    /// `combine_demanded_tolerance`, and panics that function's debug-assert
+    /// (`is_finite() && >= 0.0`) in debug builds — or silently wins an
+    /// `o.min(p)` race in release, corrupting the demanded tolerance for the
+    /// entire output. (c) The `>= 0.0` half of the gate restores the symmetry
+    /// the `tolerance_combine.rs` "Recognition-shape twin" docstring claims
+    /// with `extract_output_tolerance_bound`: both extractors must apply the
+    /// identical `is_finite() && >= 0.0` guard so the combiner's invariant is
+    /// upheld upstream rather than panicked at the boundary.
+    #[test]
+    fn extract_tolerance_bindings_rejects_negative_finite_tolerance_literals() {
+        for bad_value in [-1e-6_f64, -1e-3, -1.0] {
+            let constraint_expr = representation_within_constraint(
+                "subject",
+                "Bracket",
+                bad_value,
+                DimensionVector::LENGTH,
+            );
+
+            let purpose = CompiledPurposeBuilder::new("manufacturing")
+                .param("subject", "Structure")
+                .constraint("subject", 0, None, constraint_expr)
+                .build();
+
+            let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+
+            assert!(
+                bindings.is_empty(),
+                "negative finite tolerance literal {:?} must be rejected",
+                bad_value
+            );
+        }
+    }
+
+    /// `si_value == 0.0` is the exact lower boundary accepted by the
+    /// `si_value >= 0.0` gate. A zero-tolerance `RepresentationWithin` is
+    /// semantically valid (it means "exact representation" — a degenerate but
+    /// permissible tolerance). This test pins that 0.0 produces exactly one
+    /// binding with `si_tolerance == 0.0`, which also locks the boundary
+    /// contract in lockstep with `extract_output_tolerance_bound` (which
+    /// accepts 0.0 under the same `>= 0.0` gate).
+    #[test]
+    fn extract_tolerance_bindings_accepts_zero_tolerance_literal() {
+        let constraint_expr = representation_within_constraint(
+            "subject",
+            "Bracket",
+            0.0,
+            DimensionVector::LENGTH,
+        );
+
+        let purpose = CompiledPurposeBuilder::new("manufacturing")
+            .param("subject", "Structure")
+            .constraint("subject", 0, None, constraint_expr)
+            .build();
+
+        let bindings = extract_tolerance_bindings(&purpose, "MyDesign");
+
+        assert_eq!(
+            bindings.len(),
+            1,
+            "zero tolerance literal must be accepted (lower boundary of >= 0.0 gate)"
+        );
+        assert_eq!(
+            bindings[0].si_tolerance, 0.0,
+            "binding si_tolerance must preserve the zero value exactly"
+        );
     }
 
     #[test]
