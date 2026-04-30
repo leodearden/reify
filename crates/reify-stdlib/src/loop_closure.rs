@@ -356,6 +356,20 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
     }
 }
 
+/// Solver-input bundle returned by [`extract_loop_closure_chains`].
+///
+/// Tuple layout — see the function's doc comment for the full per-field
+/// contract (kept there to keep the field semantics next to the extraction
+/// logic that produces them):
+///
+///   `(chain_a, vals_a, chain_b, vals_b_initial, free_b)`
+///
+/// Aliased here purely to satisfy `clippy::type_complexity` — the 5-tuple
+/// is a one-shot return shape consumed by snapshot.rs's loop-closure arm
+/// and not a durable structural concern, so a tuple alias (rather than a
+/// new struct) keeps the call-site destructuring pattern unchanged.
+pub type LoopClosureSolverInputs = (Vec<Value>, Vec<f64>, Vec<Value>, Vec<f64>, Vec<usize>);
+
 /// Extract the per-loop solver inputs from a single `loop_closure` Map record.
 ///
 /// Translates a `loop_closure` Map record (the kind appended to a Mechanism
@@ -395,7 +409,7 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
 pub fn extract_loop_closure_chains(
     record: &Value,
     bindings: &[Value],
-) -> Option<(Vec<Value>, Vec<f64>, Vec<Value>, Vec<f64>, Vec<usize>)> {
+) -> Option<LoopClosureSolverInputs> {
     let map = match record {
         Value::Map(m) => m,
         _ => return None,
