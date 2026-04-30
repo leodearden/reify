@@ -43,6 +43,19 @@ pub fn combine_demanded_tolerance(
     output_bound: Option<f64>,
     purpose_bound: Option<f64>,
 ) -> Option<f64> {
+    // Mirror `tolerance_bucket::insert/lookup` and `tolerance_budget::
+    // per_stage_tolerance` posture: NaN/Inf/negative tolerances would
+    // propagate silently into demand callers (NaN comparisons always evaluate
+    // false, so a stale NaN min could never be displaced). Panic in debug
+    // builds at the call site rather than letting the bad value contaminate
+    // a downstream realization. Same panic-message format across the four
+    // tolerance_* modules so authoring errors surface with one voice.
+    for tol in [output_bound, purpose_bound].iter().flatten() {
+        debug_assert!(
+            tol.is_finite() && *tol >= 0.0,
+            "ToleranceCombine: tolerance must be finite and non-negative, got {tol}"
+        );
+    }
     match (output_bound, purpose_bound) {
         (Some(o), Some(p)) => Some(o.min(p)),
         (Some(t), None) | (None, Some(t)) => Some(t),
