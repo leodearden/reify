@@ -189,10 +189,9 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         .and_then(|c| serde_json::to_value(c).ok().and_then(|v| v.as_str().map(str::to_owned)))
         .map(lsp_types::NumberOrString::String);
 
-    // Emit a debug log line for the four AutoTypeParam diagnostic codes so
-    // that protocol-level debugging can see the candidate count and code name
-    // without parsing the message body.
-    #[cfg(debug_assertions)]
+    // Emit a structured debug event for the four AutoTypeParam diagnostic codes
+    // so protocol-level debugging can observe code/severity/candidates without
+    // parsing message text. Filterable via RUST_LOG=reify_lsp::auto_type_param=debug.
     if let Some(
         DiagnosticCode::AutoTypeParamPoolOverflow
         | DiagnosticCode::AutoTypeParamNoCandidate
@@ -200,12 +199,12 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         | DiagnosticCode::AutoTypeParamNonUnique,
     ) = diag.code
     {
-        eprintln!(
-            "[reify-lsp] auto-type-param diagnostic: code={:?} severity={:?} candidates={} message={:?}",
-            diag.code,
-            diag.severity,
-            diag.candidates.len(),
-            diag.message,
+        tracing::debug!(
+            target: "reify_lsp::auto_type_param",
+            code = ?diag.code,
+            severity = ?diag.severity,
+            candidates = diag.candidates.len(),
+            "auto-type-param diagnostic"
         );
     }
 
