@@ -1023,7 +1023,14 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
 /// runtime slice membership, so those arms **must be kept in sync with
 /// this constant** when a new kind is added.
 /// `mechanism::body()` validates joint-kind membership via `is_joint_value`.
-pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar", "spherical"];
+///
+/// Multi-DOF kinds: `"planar"` (3-DOF), `"spherical"` (3-DOF), and
+/// `"cylindrical"` (2-DOF). These have explicit `None` arms in
+/// `loop_closure::value_for_joint` and `loop_closure::joint_range_midpoint`
+/// because the f64-per-joint signature of `chain_transform` /
+/// `chain_jacobian_fd` cannot represent multi-DOF motion variables; see
+/// `loop_closure::MULTI_DOF_KINDS`.
+pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar", "spherical", "cylindrical"];
 
 /// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
 /// the strings in [`JOINT_KINDS`]. Used by `mechanism::body()` for
@@ -1222,7 +1229,7 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint, spherical_joint};
+    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint, spherical_joint};
     use reify_types::{DimensionVector, Value};
     use super::{is_joint_value, JOINT_KINDS};
 
@@ -3423,6 +3430,15 @@ mod tests {
                 spherical_joint(),
                 Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
             )],
+            // 2-DOF cylindrical joint: motion variable is a 2-element
+            // `Value::List` of `[length, angle]` (translation distance,
+            // rotation angle). The (0, 0) pair is the minimal fixture and
+            // exercises both the `transform_at` and `joint_jacobian_value`
+            // cylindrical arms via the dispatch coverage tests.
+            "cylindrical" => vec![(
+                cylindrical_z_joint(),
+                Value::List(vec![Value::length(0.0), Value::angle(0.0)]),
+            )],
             _ => panic!(
                 "JOINT_KINDS contains '{kind}' but the dispatch tests have no fixture; \
                  add a minimal well-formed fixture here and confirm that both \
@@ -4320,18 +4336,6 @@ mod tests {
              joints and the dispatch-coverage tests exercise the cylindrical arms in \
              transform_at and joint_jacobian_value. Add \"cylindrical\" to the JOINT_KINDS const."
         );
-    }
-
-    // ── cylindrical test helpers (local; promoted to test_fixtures in step-16) ──
-
-    /// Build a unit-Z cylindrical joint: axis=Z, translation_range=0..1m,
-    /// rotation_range=0..π. Local stand-in until step-16 promotes this to
-    /// `crate::test_fixtures::cylindrical_z_joint`.
-    fn cylindrical_z_joint() -> Value {
-        eval_builtin(
-            "cylindrical",
-            &[axis_z_unit(), length_range_0_to_1m(), angle_range_0_to_pi()],
-        )
     }
 
     // ── cylindrical transform_at: translation-only (step-5) ──────────────────
