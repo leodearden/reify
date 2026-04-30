@@ -242,3 +242,17 @@ fn point3_bare_name_falls_through_to_structure_ref() {
         &Type::StructureRef("Point3".into()),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Arity-mismatch — default stdlib (no user structure declared)
+// ---------------------------------------------------------------------------
+
+/// `Vector3<Force, Length>` with no user-declared `structure def Vector3 {}`:
+/// two type args fail the `type_args.len() == 1` guard in
+/// `resolve_parameterized_builtin_type`, fall through `resolve_type_with_aliases`
+/// (no structure-name match in default stdlib state), and the `param`-resolution
+/// caller emits `unresolved type: Vector3<Force, Length>`.
+#[test]
+fn vector3_two_type_args_in_default_stdlib_produces_error() {
+    assert_produces_error("structure def Bad { param v : Vector3<Force, Length> }");
+}
