@@ -308,6 +308,65 @@ mod tests {
         );
     }
 
+    /// Two-stage chain as winner: the only path from `{BRep}` to
+    /// `(BooleanUnion, Mesh)` is BRep→Sdf (via alpha) then Sdf→Mesh (via
+    /// beta), because no kernel declares `(Convert{BRep}, Mesh)`. Locks BFS
+    /// multi-stage expansion as the *accepted-path winner*, not just the
+    /// rejected-path loser as in `dispatch_prefers_shorter_chain`.
+    #[test]
+    fn dispatch_two_stage_chain_is_shortest() {
+        // alpha: converts BRep → Sdf only. No direct BRep→Mesh anywhere.
+        let alpha = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert { from: ReprKind::BRep },
+                ReprKind::Sdf,
+            )],
+        };
+        // beta: converts Sdf → Mesh only.
+        let beta = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert { from: ReprKind::Sdf },
+                ReprKind::Mesh,
+            )],
+        };
+        // manifold: runs BooleanUnion on Mesh. No conversion edges declared.
+        let manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("alpha".to_string(), &alpha);
+        registry.insert("beta".to_string(), &beta);
+        registry.insert("manifold".to_string(), &manifold);
+
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::BRep);
+
+        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
+            .expect("a 2-stage chain BRep→Sdf→Mesh→Union must be findable");
+
+        assert_eq!(
+            plan.conversions.len(),
+            2,
+            "exactly two conversion stages (BRep→Sdf, Sdf→Mesh) are required, got {plan:?}",
+        );
+        assert_eq!(
+            plan.kernel, "manifold",
+            "the final-stage Mesh BooleanUnion must run on manifold, got {plan:?}",
+        );
+        assert_eq!(
+            plan.conversions[0],
+            ("alpha".to_string(), ReprKind::BRep, ReprKind::Sdf),
+            "first conversion stage must be (alpha, BRep, Sdf), got {:?}",
+            plan.conversions[0],
+        );
+        assert_eq!(
+            plan.conversions[1],
+            ("beta".to_string(), ReprKind::Sdf, ReprKind::Mesh),
+            "second conversion stage must be (beta, Sdf, Mesh), got {:?}",
+            plan.conversions[1],
+        );
+    }
+
     /// Two kernels both directly support the demanded (op, repr) with zero
     /// conversions. The lexicographically smaller kernel name wins.
     ///
