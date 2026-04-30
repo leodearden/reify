@@ -657,6 +657,59 @@ mod tests {
         assert_eq!(find_word_at_offset(source, 100), None);
     }
 
+    // --- AutoTypeParam full LSP contract tests (step-3 and onwards) ---
+
+    /// Locks the full LSP conversion contract for `AutoTypeParamPoolOverflow`.
+    ///
+    /// Mirrors the producer site at `auto_type_param.rs:242-247`:
+    /// severity=ERROR, code="AutoTypeParamPoolOverflow", message contains
+    /// "first 10 alphabetically", data carries the 10-name candidate list,
+    /// source="reify".
+    #[test]
+    fn convert_diagnostic_auto_type_param_pool_overflow_full_lsp_contract() {
+        use reify_types::DiagnosticCode;
+        let source = "auto";
+        let candidates: Vec<String> = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let diag = Diagnostic::error(
+            "auto type parameter has more than 10 candidates satisfying bound 'Seal'; first 10 alphabetically: A, B, C, D, E, F, G, H, I, J",
+        )
+        .with_code(DiagnosticCode::AutoTypeParamPoolOverflow)
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(0, 4),
+            "auto type-param bound 'Seal' here",
+        ))
+        .with_candidates(candidates.clone());
+        let lsp = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp.severity,
+            Some(DiagnosticSeverity::ERROR),
+            "POOL_OVERFLOW must be ERROR severity"
+        );
+        assert_eq!(
+            lsp.code,
+            Some(NumberOrString::String("AutoTypeParamPoolOverflow".to_string())),
+            "POOL_OVERFLOW code must wire as 'AutoTypeParamPoolOverflow'"
+        );
+        assert!(
+            lsp.message.contains("first 10 alphabetically"),
+            "POOL_OVERFLOW message must contain 'first 10 alphabetically', got: {:?}",
+            lsp.message
+        );
+        assert_eq!(
+            lsp.data,
+            Some(serde_json::json!({"candidates": ["A","B","C","D","E","F","G","H","I","J"]})),
+            "POOL_OVERFLOW data must carry the 10-name candidate list"
+        );
+        assert_eq!(
+            lsp.source,
+            Some("reify".to_string()),
+            "source must be 'reify'"
+        );
+    }
+
     // --- Candidate list → LSP data field (step-1) ---
 
     /// Asserts that `convert_diagnostic` populates the LSP `data` field with a
