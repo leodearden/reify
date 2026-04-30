@@ -11,6 +11,7 @@ pub mod ignore_hygiene;
 pub mod lsp_fixtures;
 pub mod mocks;
 pub mod tracing_support;
+pub mod value_decompose;
 pub mod values;
 
 pub use builders::*;
@@ -19,4 +20,5 @@ pub use helpers::*;
 pub use lsp_fixtures::*;
 pub use mocks::*;
 pub use tracing_support::*;
+pub use value_decompose::*;
 pub use values::*;
