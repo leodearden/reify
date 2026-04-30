@@ -473,8 +473,19 @@ pub fn select_candidate(
             let _ = use_site_span;
             SelectionResult::NoCandidate
         }
-        FeasibilityResult::Feasible { .. } => {
-            unimplemented!("Feasible arms (1, ≥2) are landed in subsequent steps")
+        FeasibilityResult::Feasible { accepted, .. } => {
+            // Single-feasible: there is nothing to disambiguate, so emit no
+            // diagnostic and return Selected(name). This branch DOES NOT
+            // consult `free` — under PRD §"Phase C", a sole feasible
+            // candidate is always selected directly regardless of strict
+            // vs. free; emitting `W_AUTO_TYPE_PARAM_NON_UNIQUE` here would
+            // be both noise and a contract violation.
+            if accepted.len() == 1 {
+                let mut accepted = accepted;
+                let name = accepted.remove(0);
+                return SelectionResult::Selected(name);
+            }
+            unimplemented!("≥2-feasible arms (strict / free) are landed in subsequent steps")
         }
     }
 }
