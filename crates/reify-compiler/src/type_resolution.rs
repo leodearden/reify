@@ -997,11 +997,13 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
     }
 }
 
-/// Resolve a parameterized builtin type constructor (List, Set, Map, Option)
-/// within a type alias RHS expression.
+/// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
+/// Tensor, Matrix, Scalar) within a type alias RHS expression.
 ///
 /// Each type argument is resolved recursively via `resolve_type_expr_with_aliases`,
 /// which allows inner type args to be trait names (e.g. `Option<MyTrait>`).
+/// `Tensor<rank, n, q>` and `Matrix<m, n, q>` consume two integer-literal args
+/// followed by a quantity type; `Scalar<Q>` consumes one quantity type-expression.
 ///
 /// `structure_names` and `trait_names` are threaded through so that inner args
 /// can be resolved to `Type::StructureRef` / `Type::TraitObject` respectively.
@@ -1069,7 +1071,68 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::Option(Box::new(inner)))
         }
+        "Scalar" if type_args.len() == 1 => {
+            // Scalar<Q>: resolve Q to a DimensionVector and wrap.
+            let dim = resolve_type_alias_expr_to_dimension(
+                &type_args[0],
+                alias_registry,
+                diagnostics,
+            )?;
+            Some(Type::Scalar { dimension: dim })
+        }
+        "Tensor" if type_args.len() == 3 => {
+            // Tensor<rank, n, Q>: two integer literals + a quantity type.
+            let rank = expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
+            let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
+            let quantity = resolve_type_expr_with_aliases(
+                &type_args[2],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::tensor(rank, n, quantity))
+        }
+        "Matrix" if type_args.len() == 3 => {
+            // Matrix<m, n, Q>: two integer literals + a quantity type.
+            let m = expect_integer_literal_type_arg(&type_args[0], "Matrix", "m", diagnostics)?;
+            let n = expect_integer_literal_type_arg(&type_args[1], "Matrix", "n", diagnostics)?;
+            let quantity = resolve_type_expr_with_aliases(
+                &type_args[2],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::matrix(m, n, quantity))
+        }
         _ => None,
+    }
+}
+
+/// Pull an unsigned integer out of a type-arg position that requires one
+/// (`Tensor<rank, n, Q>`, `Matrix<m, n, Q>`). Emits a diagnostic and returns
+/// `None` when the arg is not a `TypeExprKind::IntegerLiteral`.
+fn expect_integer_literal_type_arg(
+    type_expr: &reify_syntax::TypeExpr,
+    constructor: &str,
+    slot: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<usize> {
+    match &type_expr.kind {
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => Some(*n as usize),
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "`{}` expects an integer literal for `{}`, found `{}`",
+                    constructor, slot, type_expr
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "expected integer literal")),
+            );
+            None
+        }
     }
 }
 
@@ -1135,6 +1198,39 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 depth,
             )?;
             Some(Type::Option(Box::new(inner)))
+        }
+        "Scalar" if type_args.len() == 1 => {
+            let dim = resolve_type_alias_expr_to_dim_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            Some(Type::Scalar { dimension: dim })
+        }
+        "Tensor" if type_args.len() == 3 => {
+            let rank = expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
+            let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
+            let quantity = resolve_type_alias_expr_with_subst(
+                &type_args[2],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::tensor(rank, n, quantity))
+        }
+        "Matrix" if type_args.len() == 3 => {
+            let m = expect_integer_literal_type_arg(&type_args[0], "Matrix", "m", diagnostics)?;
+            let n = expect_integer_literal_type_arg(&type_args[1], "Matrix", "n", diagnostics)?;
+            let quantity = resolve_type_alias_expr_with_subst(
+                &type_args[2],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::matrix(m, n, quantity))
         }
         _ => None,
     }
