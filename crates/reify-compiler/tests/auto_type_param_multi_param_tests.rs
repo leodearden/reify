@@ -150,3 +150,80 @@ structure def ORingSeal : Seal {
         diagnostics
     );
 }
+
+// ─── step-5: multi-param happy path with declared-order substitution ───────
+
+/// Two `AutoTypeParam`s T (bound: Seal → ORingSeal) and U (bound: Cooled →
+/// AirCooled), both resolving cleanly. Expected outcome: `per_param` has both
+/// entries in declared order, `substitution` has both entries in declared
+/// order, and zero diagnostics are emitted.
+///
+/// Pins that the orchestrator correctly iterates ALL params when each succeeds
+/// and that both `per_param` and `substitution` accumulate in declared order.
+#[test]
+fn multi_param_happy_path_resolves_both_in_declared_order() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+                ("U".to_string(), SelectionResult::Selected("AirCooled".to_string())),
+            ],
+            substitution: vec![
+                ("T".to_string(), "ORingSeal".to_string()),
+                ("U".to_string(), "AirCooled".to_string()),
+            ],
+        },
+        "multi-param happy path must accumulate both params in declared order"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "multi-param happy path must emit zero diagnostics, got: {:?}",
+        diagnostics
+    );
+}
