@@ -42,7 +42,11 @@ structure def CounterMassBalance {
     //   crates/reify-stdlib/src/snapshot.rs::tests::center_of_mass_counter_mass_balance_stationarity
     //   proves this invariant holds within 1e-9 m at the Rust level.
     //   This .ri replays the same scenario through surface syntax.
-    let coms = snaps.map(|s| center_of_mass(s))
+    //
+    // Note: Reify v0.1 does not support `expr.method(lambda)` syntax; use the
+    // free-function form `flat_map(list, |x| [f(x)])` instead (grammar.js
+    // `function_call` requires a bare identifier; `member_access` is zero-arg only).
+    let coms = flat_map(snaps, |s| [center_of_mass(s)])
 
     // Count of snapshots (informational — used by constraint and test assertions).
     let snap_count = snaps.count
