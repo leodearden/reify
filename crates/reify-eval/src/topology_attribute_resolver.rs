@@ -762,6 +762,12 @@ mod tests {
             diag.code,
             Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
         );
+        assert!(
+            diag.message.contains(&candidates.len().to_string()),
+            "diagnostic message should interpolate the children count ({}), got: {}",
+            candidates.len(),
+            diag.message,
+        );
     }
 
     /// User_label multi-match where ALL matched candidates share the
