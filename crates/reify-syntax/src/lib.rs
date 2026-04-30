@@ -894,7 +894,9 @@ impl DimOp {
     }
 }
 
-/// What a [`TypeExpr`] actually is — a named type or a binary dimensional operation.
+/// What a [`TypeExpr`] actually is — a named type, a binary dimensional operation,
+/// or an integer literal (only valid as a type-argument of parametric types like
+/// `Tensor<rank, n, q>` and `Matrix<m, n, q>`).
 #[derive(Debug, Clone)]
 pub enum TypeExprKind {
     /// A named type with optional type arguments (e.g., `Scalar`, `Box<T>`, `Map<K, V>`).
@@ -905,6 +907,12 @@ pub enum TypeExprKind {
         left: Box<TypeExpr>,
         right: Box<TypeExpr>,
     },
+    /// An unsigned integer literal in type-argument position (e.g., the `2` and `3`
+    /// in `Tensor<2, 3, MomentOfInertia>`). Only valid as a child of
+    /// `Named.type_args` for the parametric `Tensor`/`Matrix` constructors —
+    /// every other consumer of `TypeExpr` must reject this variant with a
+    /// diagnostic.
+    IntegerLiteral(u32),
 }
 
 /// A type expression in the AST (e.g., `Scalar`, `Bool`, `Box<T>`, `Force / Area`).
@@ -934,6 +942,7 @@ impl fmt::Display for TypeExpr {
             TypeExprKind::DimensionalOp { op, left, right } => {
                 write!(f, "{} {} {}", left, op.as_str(), right)
             }
+            TypeExprKind::IntegerLiteral(n) => write!(f, "{}", n),
         }
     }
 }

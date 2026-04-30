@@ -94,6 +94,7 @@ pub(crate) fn resolve_dimension_type(
     let name = match &type_expr.kind {
         reify_syntax::TypeExprKind::Named { name, .. } => name.as_str(),
         reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
+        reify_syntax::TypeExprKind::IntegerLiteral(_) => return None,
     };
     // Scan the shared table (name → dimension direction).
     if let Some((dim, _)) = reify_types::NAMED_DIMENSIONS.iter().find(|(_, n)| *n == name) {
@@ -628,6 +629,16 @@ pub(crate) fn resolve_type_alias_expr(
             let empty_traits = HashSet::new();
             resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
         }
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` is only allowed as a type argument of `Tensor` or `Matrix`",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "integer literal not allowed in this position")),
+            );
+            None
+        }
     }
 }
 
@@ -672,6 +683,16 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
             );
             None
         }
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` cannot appear as a dimension type",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "expected a dimension name")),
+            );
+            None
+        }
     }
 }
 
@@ -693,6 +714,16 @@ pub(crate) fn resolve_type_expr_with_aliases(
             (name.as_str(), type_args.as_slice())
         }
         reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` is only allowed as a type argument of `Tensor` or `Matrix`",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "integer literal not allowed in this position")),
+            );
+            return None;
+        }
     };
     // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
     if !type_args.is_empty()
@@ -953,6 +984,16 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
             let empty_traits = HashSet::new();
             resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
         }
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` is only allowed as a type argument of `Tensor` or `Matrix`",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "integer literal not allowed in this position")),
+            );
+            None
+        }
     }
 }
 
@@ -1151,6 +1192,16 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
             );
             None
         }
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "integer literal `{}` cannot appear as a dimension type",
+                    n
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "expected a dimension name")),
+            );
+            None
+        }
     }
 }
 
@@ -1168,6 +1219,8 @@ pub(crate) fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec
         reify_syntax::TypeExprKind::Named { name, type_args } => std::iter::once(name.clone())
             .chain(type_args.iter().flat_map(collect_type_expr_names))
             .collect(),
+        // Integer-literal type-args contribute no type *names* to dependency graphs.
+        reify_syntax::TypeExprKind::IntegerLiteral(_) => Vec::new(),
     }
 }
 
@@ -1267,6 +1320,12 @@ pub(crate) fn convert_type_params(
                     unreachable!(
                         "dimensional operator cannot appear as a type-parameter default; \
                              the parser only emits Named nodes for type-param defaults"
+                    )
+                }
+                reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+                    unreachable!(
+                        "integer literal cannot appear as a type-parameter default; \
+                             the grammar restricts integer literals to type_arg_list slots"
                     )
                 }
             });

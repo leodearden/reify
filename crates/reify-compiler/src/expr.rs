@@ -1719,6 +1719,7 @@ pub(crate) fn compile_expr_guarded(
                     let name_opt = match &type_expr.kind {
                         reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                        reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
                     };
                     if let Some(name) = name_opt {
                         match resolve_type_name(name) {
