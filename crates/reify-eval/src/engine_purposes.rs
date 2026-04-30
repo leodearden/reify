@@ -260,6 +260,71 @@ impl Engine {
         self.active_tolerance_scope.get(entity_ref).copied()
     }
 
+    /// Look up the demanded tolerance (SI metres) for an output occurrence
+    /// instance — the tighter of (a) the output template's own
+    /// `RepresentationWithin` bound and (b) the active purpose's tolerance
+    /// scope at `subject_entity_ref`. Returns `None` if neither contributor
+    /// has a tolerance for this query.
+    ///
+    /// # Two distinct keys
+    ///
+    /// The two contributors are keyed differently because they live at
+    /// conceptually different scopes (per arch §14.5 vs §14.4):
+    ///
+    /// - `output_template_name` — the output occurrence's *template* name
+    ///   (e.g. `"STEPOutput"`). Output-occurrence body constraints stay
+    ///   under their template-name entity scope in the runtime graph
+    ///   regardless of how many times the occurrence is sub-instantiated
+    ///   (subs duplicate value cells under scoped entity-refs but do NOT
+    ///   scope-duplicate constraints — see
+    ///   `crate::graph::EvaluationGraph::from_templates`). Resolved via
+    ///   [`crate::tolerance_combine::extract_output_tolerance_bound`].
+    /// - `subject_entity_ref` — the realization target (e.g. `"MyDesign"`)
+    ///   the active purpose's subject prefix-scan covers. Resolved via
+    ///   [`Self::active_tolerance_for`].
+    ///
+    /// Decoupling the two keys keeps the API explicit about which lookup
+    /// is which — a single coalesced argument would force callers to pass
+    /// the same string for two semantically distinct lookups.
+    ///
+    /// # Combination rule
+    ///
+    /// Both bounds are folded by
+    /// [`crate::tolerance_combine::combine_demanded_tolerance`]. Each row
+    /// is pinned by an integration test in `tests/tolerance_combine.rs`:
+    ///
+    /// | output_bound | purpose_bound | demanded_tolerance_for_output | scenario       | pinned by                                                     |
+    /// |--------------|---------------|-------------------------------|----------------|---------------------------------------------------------------|
+    /// | `Some(o)`    | `Some(p)`     | `Some(o.min(p))`              | both-active    | `engine_demanded_tolerance_for_output_combines_via_min_when_both_active` |
+    /// | `Some(t)`    | `None`        | `Some(t)`                     | output-only    | `engine_demanded_tolerance_for_output_handles_partial_inputs` (a)        |
+    /// | `None`       | `Some(t)`     | `Some(t)`                     | purpose-only   | `engine_demanded_tolerance_for_output_handles_partial_inputs` (b)        |
+    /// | `None`       | `None`        | `None`                        | neither        | `engine_demanded_tolerance_for_output_handles_partial_inputs` (c)        |
+    ///
+    /// "Tighter satisfies looser" — same partial-order semantics as the
+    /// cache-side `tolerance_bucket` `<=` rule and the purpose-side
+    /// `tolerance_scope::merge_with_min`.
+    ///
+    /// Pre-eval (`eval_state == None`) the output-bound query naturally
+    /// returns `None` (no graph to scan); the combiner then falls back to
+    /// whatever the purpose-side contributes. No explicit guard needed.
+    ///
+    /// Per PRD `docs/prds/v0_2/per-purpose-tolerance.md` ("Resolved design
+    /// decisions" → "Tolerance lives at the purpose"), task 2650.
+    pub fn demanded_tolerance_for_output(
+        &self,
+        output_template_name: &str,
+        subject_entity_ref: &str,
+    ) -> Option<f64> {
+        let output_bound = self.eval_state.as_ref().and_then(|state| {
+            crate::tolerance_combine::extract_output_tolerance_bound(
+                &state.snapshot.graph.constraints,
+                output_template_name,
+            )
+        });
+        let purpose_bound = self.active_tolerance_for(subject_entity_ref);
+        crate::tolerance_combine::combine_demanded_tolerance(output_bound, purpose_bound)
+    }
+
     /// Rebuild `active_tolerance_scope` from scratch by walking every
     /// currently-active purpose binding, extracting its tolerance bindings
     /// (RepresentationWithin shape recognition), propagating each subject
