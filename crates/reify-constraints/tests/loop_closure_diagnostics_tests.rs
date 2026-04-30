@@ -220,3 +220,82 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_for_seven_dofs() {
         ),
     }
 }
+
+// ── Step-9: singularity post-process (rank-deficient Jacobian) ──────────
+
+/// 6 prismatic joints all on +X axis is balanced (free_b.len() = 6 == 6,
+/// no DOF imbalance) but structurally singular: the Jacobian is rank-1
+/// (all 6 columns project onto the same +X linear contribution), so the
+/// LDLᵀ pivot guard inside `newton_solve` returns
+/// `NewtonOutcome::Singular`.
+///
+/// The wrapper's job is to translate that signal into the PRD's
+/// `W_KINEMATIC_SINGULARITY` warning class while preserving the
+/// last-converged config in the `Singular` variant's `x` payload.
+///
+/// Pinning that no `KinematicOverconstrained` / `KinematicUnderconstrained`
+/// entry leaks in confirms the singularity branch is independent of the
+/// DOF-balance pre-checks.
+#[test]
+fn solve_loop_closure_with_diagnostics_emits_singularity_for_rank_one_chain() {
+    let chain_a = vec![prismatic_x_0_to_1()];
+    let vals_a = vec![0.5];
+    let chain_b: Vec<Value> = (0..6).map(|_| prismatic_x_0_to_1()).collect();
+    let vals_b_initial = vec![0.5; 6];
+    let free_b: Vec<usize> = (0..6).collect();
+    let strategy = StartStrategy::WarmStart(vec![0.0; 6]);
+    let cfg = NewtonConfig::default();
+
+    let report = solve_loop_closure_with_diagnostics(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b_initial,
+        &free_b,
+        &strategy,
+        &cfg,
+    );
+
+    assert!(
+        report.is_singular,
+        "expected is_singular=true on rank-deficient Jacobian, got is_singular={} \
+         (outcome={:?})",
+        report.is_singular,
+        report.outcome,
+    );
+    match &report.outcome {
+        NewtonOutcome::Singular { x, .. } => {
+            assert_eq!(
+                x.len(),
+                6,
+                "Singular outcome must preserve the last-converged config (6 free vars), \
+                 got x.len()={}",
+                x.len()
+            );
+        }
+        other => panic!(
+            "expected NewtonOutcome::Singular from rank-deficient Jacobian, got {other:?}"
+        ),
+    }
+
+    // Exactly one diagnostic, and it MUST be the singularity warning — no
+    // bleed-through from the over/under-constrained pre-checks (free_b.len()=6).
+    assert_eq!(
+        report.diagnostics.len(),
+        1,
+        "expected exactly one singularity diagnostic, got {:?}",
+        report.diagnostics
+    );
+    let d = &report.diagnostics[0];
+    assert_eq!(d.severity, Severity::Warning);
+    assert_eq!(d.code, Some(DiagnosticCode::KinematicSingularity));
+    assert!(
+        !report.diagnostics.iter().any(|x| matches!(
+            x.code,
+            Some(DiagnosticCode::KinematicOverconstrained)
+                | Some(DiagnosticCode::KinematicUnderconstrained)
+        )),
+        "balanced free-DOF count (6) must not emit over/under-constrained diagnostics, got {:?}",
+        report.diagnostics
+    );
+}
