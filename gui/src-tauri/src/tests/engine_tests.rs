@@ -917,6 +917,17 @@ fn collect_snapshot_bind_pairs_stays_silent_for_one_arg_call() {
 /// `snapshot(m1, j1)` — second arg is an `Ident` (a joint cell), not a
 /// `ListLiteral`.  This is case (a): args[1] is not a ListLiteral, which
 /// suggests a user-shadowed `snapshot` or malformed call — must emit DEBUG.
+///
+/// **Fragility warning**: this source fixture depends on the stdlib's
+/// `snapshot` frontend signature being permissive — `compile_with_stdlib`
+/// does NOT emit a `Severity::Error` for a non-list `args[1]`, so
+/// `load_from_source` succeeds and the engine sees the call with its
+/// original AST shape.  If the stdlib is later tightened to reject a
+/// non-`ListLiteral` second argument with a `Severity::Error`, the
+/// `.expect("load non-list-arg snapshot source")` call below will panic
+/// with a misleading message and the test will need to be updated — either
+/// to expect the load failure, or (more durably) to construct the AST
+/// directly via `reify_syntax` so the frontend check is bypassed.
 const NON_LIST_SNAPSHOT_ARG_SOURCE: &str = r#"
 structure Kinematic {
     let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
