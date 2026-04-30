@@ -26,16 +26,27 @@
 ///   [`crate::Engine::active_tolerance_for`], computed by the
 ///   active-purpose subject prefix-scan in `tolerance_scope`.
 ///
-/// Returns the tighter (smaller) of the two when both Some — only the
-/// both-Some branch is wired in this scaffold; the other arms will be
-/// completed in step-4.
+/// # Combination rule
+///
+/// | output_bound  | purpose_bound | result                |
+/// |---------------|---------------|-----------------------|
+/// | `Some(o)`     | `Some(p)`     | `Some(o.min(p))`      |
+/// | `Some(t)`     | `None`        | `Some(t)`             |
+/// | `None`        | `Some(t)`     | `Some(t)`             |
+/// | `None`        | `None`        | `None`                |
+///
+/// The `min`-when-both-Some rule is the same partial-order semantics as the
+/// cache-side `tolerance_bucket` (lookup uses the `<=` rule) and the
+/// purpose-side `tolerance_scope::merge_with_min`: tighter satisfies looser,
+/// so the smaller of two demanded tolerances wins.
 pub fn combine_demanded_tolerance(
     output_bound: Option<f64>,
     purpose_bound: Option<f64>,
 ) -> Option<f64> {
     match (output_bound, purpose_bound) {
         (Some(o), Some(p)) => Some(o.min(p)),
-        _ => unimplemented!(),
+        (Some(t), None) | (None, Some(t)) => Some(t),
+        (None, None) => None,
     }
 }
 
