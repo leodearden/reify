@@ -146,3 +146,54 @@ fn select_returns_ambiguous_for_two_strict_feasible_candidates() {
     );
     assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
 }
+
+// ─── step-7: ≥2 feasible under free — Selected(lex_first) + Warning ──────
+
+/// When two or more candidates are feasible and `free=true`,
+/// `select_candidate` returns [`SelectionResult::Selected(lex_first)`] — the
+/// lexicographically-first candidate (which is `accepted[0]` because Phase
+/// B preserves Phase A's alphabetical input order) — and pushes one
+/// **Warning** diagnostic with the `AutoTypeParamNonUnique` code. The
+/// warning severity is the load-bearing assertion that distinguishes this
+/// path from the strict-ambiguous error path.
+#[test]
+fn select_returns_lex_first_for_two_free_feasible_candidates_and_emits_warning() {
+    let use_site_span = SourceSpan::new(100, 110);
+    let feasibility = FeasibilityResult::Feasible {
+        accepted: vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
+        rejected: vec![],
+    };
+
+    let mut diagnostics = Vec::new();
+    let result = select_candidate(
+        feasibility,
+        &["Seal".to_string()],
+        true,
+        use_site_span,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        result,
+        SelectionResult::Selected("GraphiteSeal".to_string()),
+        "≥2 feasible under auto(free) must Selected(lex_first)"
+    );
+    assert_eq!(diagnostics.len(), 1, "exactly one non-unique diagnostic");
+    let d = &diagnostics[0];
+    assert_eq!(
+        d.severity,
+        Severity::Warning,
+        "auto(free) non-unique resolution must emit Warning, not Error"
+    );
+    assert_eq!(d.code, Some(DiagnosticCode::AutoTypeParamNonUnique));
+    assert_eq!(
+        d.candidates,
+        vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
+        "diagnostic.candidates must list every feasible FQN in input order"
+    );
+    assert!(
+        !d.labels.is_empty(),
+        "diagnostic must carry at least one label at the use-site span"
+    );
+    assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
+}
