@@ -473,6 +473,23 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_AUTO_TYPE_PARAM_NO_CANDIDATE`
     /// (see `docs/prds/auto-type-param-resolution.md` §"Phase C").
     AutoTypeParamNoCandidate,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs`
+    /// (Phase C selection logic — `select_candidate`).
+    ///
+    /// Canonical message form:
+    /// `"auto type parameter has multiple feasible candidates for bound '<TraitNames>': <names>; consider an explicit substitution like '<lex_first>' instead of 'auto:'"`.
+    ///
+    /// Emitted as `Severity::Error` when, under strict (`free = false`)
+    /// resolution, Phase B yields ≥2 feasible candidates. The diagnostic
+    /// carries every feasible FQN in the structured
+    /// [`Diagnostic::candidates`] field (input/alphabetical order) and
+    /// surfaces the lexicographically-first FQN as the suggested explicit
+    /// substitution in the human-readable message. A single label is
+    /// attached at the `auto:` use-site span.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AUTO_TYPE_PARAM_AMBIGUOUS`
+    /// (see `docs/prds/auto-type-param-resolution.md` §"Phase C").
+    AutoTypeParamAmbiguous,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:

@@ -460,7 +460,6 @@ pub fn select_candidate(
     use_site_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SelectionResult {
-    let _ = free; // free flag is consulted only on the ≥2-feasible path (added in step-6/8).
     match feasibility {
         FeasibilityResult::Empty { rejected: _ } => {
             // step-2 GREEN: minimal diagnostic just to satisfy the existence
@@ -485,7 +484,33 @@ pub fn select_candidate(
                 let name = accepted.remove(0);
                 return SelectionResult::Selected(name);
             }
-            unimplemented!("≥2-feasible arms (strict / free) are landed in subsequent steps")
+            // ≥2 feasible: dispatch on `free` flag.
+            debug_assert!(
+                accepted.len() >= 2,
+                "FeasibilityResult::Feasible.accepted is non-empty by construction; \
+                 length-1 path returned above; only length-≥2 reaches here"
+            );
+            if !free {
+                // Strict (`free=false`) + ≥2 feasible → AMBIGUOUS error.
+                let joined_bounds = bounds.join(" + ");
+                let candidates_join = accepted.join(", ");
+                let lex_first = &accepted[0];
+                let message = format!(
+                    "auto type parameter has multiple feasible candidates for bound '{bounds_str}': {names}; consider an explicit substitution like '{lex_first}' instead of 'auto:'",
+                    bounds_str = joined_bounds,
+                    names = candidates_join,
+                    lex_first = lex_first,
+                );
+                let label_message = format!("auto type-param bound '{}' here", joined_bounds);
+                diagnostics.push(
+                    Diagnostic::error(message)
+                        .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
+                        .with_label(DiagnosticLabel::new(use_site_span, label_message))
+                        .with_candidates(accepted.clone()),
+                );
+                return SelectionResult::Ambiguous(accepted);
+            }
+            unimplemented!("≥2-feasible free arm is landed in step-8")
         }
     }
 }
