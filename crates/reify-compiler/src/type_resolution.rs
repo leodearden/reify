@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 /// Internal type alias entry — stored in the registry during compilation.
 ///
@@ -59,6 +60,13 @@ impl TypeAliasEntry {
 /// Built during the pre-pass so type resolution can check aliases.
 pub(crate) struct TypeAliasRegistry {
     entries: HashMap<String, TypeAliasEntry>,
+    /// Names of entries seeded from prelude modules (not user-declared).
+    ///
+    /// `into_compiled()` and `iter()` exclude these so the user module's
+    /// exported `type_aliases` and content hash only reflect its own declarations,
+    /// mirroring the units pattern (`ctx.compiled_units` only contains user-declared
+    /// units, not prelude-seeded ones).
+    seeded_names: HashSet<String>,
 }
 
 impl TypeAliasRegistry {
@@ -66,6 +74,7 @@ impl TypeAliasRegistry {
     pub(crate) fn new() -> Self {
         TypeAliasRegistry {
             entries: HashMap::new(),
+            seeded_names: HashSet::new(),
         }
     }
 
@@ -79,21 +88,49 @@ impl TypeAliasRegistry {
         }
     }
 
+    /// Register an alias entry seeded from a prelude module (not user-declared).
+    ///
+    /// Like `register`, but marks the entry as prelude-seeded so `into_compiled()`
+    /// and `iter()` exclude it from the user module's exported alias set and
+    /// content hash.  This mirrors the units pattern: prelude-seeded entries are
+    /// available for type resolution (via `lookup`) but are NOT re-exported through
+    /// the user module's `type_aliases` field.
+    ///
+    /// Returns `Err(entry)` if the name is already registered (collision).
+    pub(crate) fn register_as_prelude_seed(&mut self, entry: TypeAliasEntry) -> Result<(), Box<TypeAliasEntry>> {
+        if self.entries.contains_key(&entry.name) {
+            Err(Box::new(entry))
+        } else {
+            self.seeded_names.insert(entry.name.clone());
+            self.entries.insert(entry.name.clone(), entry);
+            Ok(())
+        }
+    }
+
     /// Look up a type alias by name.
     pub(crate) fn lookup(&self, name: &str) -> Option<&TypeAliasEntry> {
         self.entries.get(name)
     }
 
-    /// Iterate over all entries in the registry.
+    /// Iterate over user-declared alias entries (excluding prelude-seeded entries).
+    ///
+    /// Used by `compute_module_hash` to ensure only user-declared aliases influence
+    /// the module's content hash — changes to prelude aliases must not invalidate
+    /// the content hash of user modules that don't declare or redeclare them.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &TypeAliasEntry> {
-        self.entries.values()
+        self.entries.values().filter(|e| !self.seeded_names.contains(&e.name))
     }
 
-    /// Consume the registry, returning all compiled entries.
+    /// Consume the registry, returning compiled entries for user-declared aliases only.
+    ///
+    /// Excludes prelude-seeded entries (registered via `register_as_prelude_seed`) so
+    /// the user module's exported `type_aliases` only contains its own declarations —
+    /// prelude aliases are visible for resolution but are not re-exported.
     pub(crate) fn into_compiled(self) -> Vec<CompiledTypeAlias> {
         self.entries
-            .into_values()
-            .map(|e| e.into_compiled())
+            .into_iter()
+            .filter(|(name, _)| !self.seeded_names.contains(name))
+            .map(|(_, e)| e.into_compiled())
             .collect()
     }
 }

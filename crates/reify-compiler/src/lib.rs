@@ -266,6 +266,21 @@ pub fn compile_with_prelude_context(
     let prelude_aliases = if prelude_refs.is_empty() {
         &[][..]
     } else {
+        // Emit cross-prelude pub alias collision warnings detected at PreludeContext
+        // construction time. Mirroring units_phase's 'last-wins' warning for cross-prelude
+        // unit collisions, but first-wins here (PreludeContext::new deduplicates eagerly).
+        for (alias_name, first_module, second_module) in ctx.pub_alias_collision_warnings() {
+            compile_ctx.diagnostics.push(
+                Diagnostic::warning(format!(
+                    "prelude pub alias '{}' declared in both '{}' and '{}'; first-wins",
+                    alias_name, first_module, second_module
+                ))
+                .with_label(DiagnosticLabel::new(
+                    SourceSpan::prelude(),
+                    "cross-prelude collision",
+                )),
+            );
+        }
         ctx.pub_aliases()
     };
     compile_builder::aliases_phase::phase_aliases(&mut compile_ctx, prelude_aliases, &decl_refs.alias_refs);

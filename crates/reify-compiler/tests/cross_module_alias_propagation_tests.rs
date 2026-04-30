@@ -336,13 +336,17 @@ fn parametric_pub_prelude_alias_skipped_with_no_panic() {
         .type_alias(parametric_alias)
         .build();
 
-    // User tries to use the parametric alias (will not resolve — skip is intentional)
-    let source = "structure def S { param p : Vec<Length> }";
+    // Use a bare `Vec` reference (no type arguments) so the parser succeeds
+    // cleanly and the error is unambiguously from the alias skip, not from the
+    // parser's handling of `<`.  The prelude alias has type_params=[T], so it
+    // is skipped by phase_aliases, leaving `Vec` unresolved at the use site.
+    let source = "structure def S { param p : Vec }";
     let parsed = reify_syntax::parse(source, ModulePath::single("param_user"));
-    // Parse may or may not produce errors depending on parser context; we only
-    // check that compile does not panic and produces ≥1 Error for 'Vec'.
+    assert!(parsed.errors.is_empty(), "parse must succeed for bare Vec reference: {:?}", parsed.errors);
+
     let compiled = compile_with_prelude(&parsed, &[prelude_m]);
 
+    // Must not panic (smoke), and the unresolved-type error must name 'Vec'.
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -350,9 +354,15 @@ fn parametric_pub_prelude_alias_skipped_with_no_panic() {
         .collect();
     assert!(
         !errors.is_empty(),
-        "parametric prelude alias 'Vec' must be skipped and produce ≥1 Error diagnostic"
+        "parametric prelude alias 'Vec' must be skipped; expected ≥1 Error diagnostic naming 'Vec', got: {:?}",
+        compiled.diagnostics
     );
-    // Smoke test: if we reach here, no panic occurred.
+    assert!(
+        errors.iter().any(|d| d.message.contains("Vec")),
+        "at least one Error diagnostic must mention 'Vec' (the skipped parametric alias); \
+         got errors: {:?}",
+        errors
+    );
 }
 
 // ─── step-9: stdlib safety-net ───────────────────────────────────────────────
@@ -401,5 +411,108 @@ fn compile_with_stdlib_unaffected_for_module_without_alias_use() {
             dimension: DimensionVector::LENGTH,
         },
         "param `x : Length` must resolve to Type::Scalar(LENGTH)"
+    );
+}
+
+// ─── amendment: contract regression guards ────────────────────────────────────
+
+/// A user module that references a prelude alias must NOT re-export that alias
+/// through its own `type_aliases` field.  Only aliases declared in the user
+/// module's own source (via `type Foo = Bar`) should appear in the output
+/// `CompiledModule.type_aliases`.
+///
+/// Guards against the contract regression identified in task 2750 review:
+/// before the fix, `alias_registry.into_compiled()` returned all entries
+/// including prelude-seeded ones, so `module.type_aliases` contained the
+/// prelude aliases the user had referenced.
+#[test]
+fn prelude_alias_not_re_exported_in_user_module_type_aliases() {
+    let stress = make_pub_alias(
+        "Stress",
+        Type::Scalar { dimension: DimensionVector::PRESSURE },
+    );
+    let prelude_a = CompiledModuleBuilder::new(ModulePath::single("re_export_prelude"))
+        .type_alias(stress)
+        .build();
+
+    // User module references the prelude alias but does NOT declare it.
+    let source = "structure def Beam { param yield : Stress }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("re_export_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_a]);
+
+    assert_eq!(
+        error_count(&compiled),
+        0,
+        "must compile without errors; got: {:?}",
+        compiled.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+    );
+
+    // The user module has no type alias declarations of its own — the prelude
+    // alias must NOT appear in the output type_aliases.
+    assert!(
+        compiled.type_aliases.is_empty(),
+        "user module must not re-export prelude aliases through type_aliases; \
+         expected empty, got: {:?}",
+        compiled.type_aliases.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
+}
+
+// ─── amendment: cross-prelude collision warning ─────────────────────────────
+
+/// Two prelude modules declaring the same pub alias name must produce a
+/// `Severity::Warning` diagnostic naming both modules.  First-wins takes effect:
+/// the first prelude module's definition is used for resolution.
+#[test]
+fn cross_prelude_alias_collision_emits_warning() {
+    let foo_from_a = make_pub_alias("Foo", Type::Scalar { dimension: DimensionVector::LENGTH });
+    let foo_from_b = make_pub_alias("Foo", Type::Scalar { dimension: DimensionVector::MASS });
+    let prelude_a = CompiledModuleBuilder::new(ModulePath::single("collision_prelude_a"))
+        .type_alias(foo_from_a)
+        .build();
+    let prelude_b = CompiledModuleBuilder::new(ModulePath::single("collision_prelude_b"))
+        .type_alias(foo_from_b)
+        .build();
+
+    let source = "structure def S { param p : Foo }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("collision_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_a, prelude_b]);
+
+    // Must have a Warning diagnostic mentioning the alias name and both modules.
+    let warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("Foo")
+                && d.message.contains("collision_prelude_a")
+                && d.message.contains("collision_prelude_b")
+        })
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected a Warning naming both prelude modules for the Foo collision; \
+         got diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    // First-wins: p must resolve to Length (from collision_prelude_a), not Mass.
+    assert_eq!(
+        error_count(&compiled),
+        0,
+        "must compile without errors (first-wins resolution); got: {:?}",
+        compiled.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect::<Vec<_>>()
+    );
+    let s_template = compiled.templates.iter().find(|t| t.name == "S")
+        .expect("template `S` not found");
+    let p_cell = s_template.value_cells.iter().find(|c| c.id.member == "p")
+        .expect("value cell `p` not found on `S`");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "first-wins: p must resolve to LENGTH (from collision_prelude_a)"
     );
 }

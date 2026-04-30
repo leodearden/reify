@@ -72,8 +72,11 @@ pub(crate) fn phase_aliases(
             continue;
         }
         let entry = TypeAliasEntry::from_compiled_for_prelude(pa);
-        // Silently ignore Err (first-wins for prelude-vs-prelude collisions).
-        let _ = ctx.alias_registry.register(entry);
+        // Use register_as_prelude_seed so the entry is excluded from
+        // into_compiled() and iter() (which feed the module's exported
+        // type_aliases and content hash).  Silently ignore Err — duplicates
+        // are already deduplicated by PreludeContext::new (first-wins).
+        let _ = ctx.alias_registry.register_as_prelude_seed(entry);
     }
 
     // Build a lookup map of all user alias declarations, detecting duplicates.
