@@ -2243,4 +2243,137 @@ mod tests {
         assert!(ty_3.abs() < 1e-6, "body 3 ty must be 0, got {ty_3}");
         assert!(tz_3.abs() < 1e-6, "body 3 tz must be 0, got {tz_3}");
     }
+
+    // ── Snapshot Map carries `free_values` (task 2678 step-5) ─────────────
+    //
+    // The Snapshot Map is the natural carrier for the loop-closure solver's
+    // converged free-variable values — sweep's warm-start path reads the
+    // previous step's `free_values` and feeds it as a 3rd arg back into
+    // `snapshot()` for the next step.  Shape contract (per design decision
+    // "Add a `free_values` top-level key…"):
+    //   - Outer List length == loop_closures.len()
+    //   - Inner List length == per-loop free-var count
+    //   - Each leaf is a Value::Real carrying the SI-unit converged value
+    //   - Open-chain mechanisms emit `Value::List(vec![])` for shape stability
+    //
+    // These tests pin the shape on both axes (closed-chain populated,
+    // open-chain empty) before step-6 wires `make_snapshot` to emit the key.
+
+    /// Closed-chain mechanism (same fixture as step-3): one loop_closures
+    /// record with a single free variable (jB).  After the solver runs,
+    /// the Snapshot Map must carry `free_values =
+    /// List<List<Real>>` with outer length 1 (one loop) and inner length 1
+    /// (one free var jB), and the leaf value within tolerance of 0.5m
+    /// (= the solved jB matching the bound jA driver).
+    #[test]
+    fn snapshot_records_free_values_for_closed_chain() {
+        // Reuse the step-3 fixture inline — keeps the test self-contained
+        // without coupling to the helper's internal naming.
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+        );
+
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a])]);
+
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+
+        let free_values = smap
+            .get(&Value::String("free_values".to_string()))
+            .expect("Snapshot Map must carry a free_values field after step-6");
+
+        // Outer-List shape: one entry per loop_closures record.
+        let loops = match free_values {
+            Value::List(l) => l,
+            other => panic!("free_values must be a List, got {:?}", other),
+        };
+        assert_eq!(
+            loops.len(),
+            1,
+            "free_values outer-List length must equal loop_closures.len() == 1"
+        );
+
+        // Inner-List shape: one Real per free var (here, jB only).
+        let inner = match &loops[0] {
+            Value::List(l) => l,
+            other => panic!("free_values[0] must be a List, got {:?}", other),
+        };
+        assert_eq!(
+            inner.len(),
+            1,
+            "free_values[0] inner-List length must equal free-var count == 1"
+        );
+
+        // Leaf shape: Real carrying the SI-unit converged value (≈ 0.5m).
+        let solved = match &inner[0] {
+            Value::Real(r) => *r,
+            other => panic!("free_values[0][0] must be a Real, got {:?}", other),
+        };
+        assert!(
+            (solved - 0.5).abs() < 1e-6,
+            "solved jB free var must match driver jA = 0.5m, got {solved}"
+        );
+    }
+
+    /// Open-chain mechanism (no `loop_closures`): the Snapshot Map must
+    /// still carry the `free_values` key for shape stability — set to
+    /// `Value::List(vec![])`.  Pins the open-chain regression so step-6's
+    /// `make_snapshot` always emits a 3-key Map.
+    #[test]
+    fn snapshot_records_empty_free_values_for_open_chain() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let m1 = eval_builtin("body", &[m0, Value::String("solidA".to_string()), j.clone()]);
+
+        let bind = eval_builtin("bind", &[j, Value::length(0.002)]);
+        let s = eval_builtin("snapshot", &[m1, Value::List(vec![bind])]);
+
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+
+        let free_values = smap
+            .get(&Value::String("free_values".to_string()))
+            .expect("Snapshot Map must carry a free_values field after step-6 (even for open-chain)");
+        assert_eq!(
+            free_values,
+            &Value::List(vec![]),
+            "open-chain free_values must be an empty List, got {:?}",
+            free_values
+        );
+    }
 }
