@@ -517,6 +517,73 @@ pub enum DiagnosticCode {
     /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from the
     /// moment the diagnostic is emitted, with no further enum churn at integration time.
     MechanismDuplicateSolid,
+    /// Origin: `crates/reify-constraints/src/loop_closure.rs::solve_loop_closure_with_diagnostics`
+    /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
+    /// §"Singularity, over/under-constraint diagnostics").
+    ///
+    /// Canonical message form:
+    /// `"kinematic singularity detected: rank-deficient Jacobian; last-converged config returned"`.
+    ///
+    /// Emitted as a `Severity::Warning` when the loop-closure Newton solver
+    /// returns [`NewtonOutcome::Singular`](../../reify_constraints/loop_closure/enum.NewtonOutcome.html#variant.Singular)
+    /// (LDLᵀ pivot below `NewtonConfig::singularity_pivot_eps`). The wrapper sets
+    /// `LoopClosureReport::is_singular = true` and the `Singular` variant's `x`
+    /// field carries the last-converged config the PRD requires the snapshot to
+    /// surface.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_KINEMATIC_SINGULARITY`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ///
+    /// TODO: surfaced through the snapshot / sweep API in PRD task 10
+    /// (snapshot evaluator integration) — `reify-stdlib::snapshot` and the
+    /// eval engine do not yet call the wrapper. The variant is reserved now so
+    /// downstream tooling (LSP / MCP / IDE error UIs) can match on the typed code
+    /// identifier from the moment the diagnostic is first emitted, with no further
+    /// enum churn at integration time.
+    KinematicSingularity,
+    /// Origin: `crates/reify-constraints/src/loop_closure.rs::solve_loop_closure_with_diagnostics`
+    /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
+    /// §"Singularity, over/under-constraint diagnostics").
+    ///
+    /// Canonical message form:
+    /// `"kinematic system over-constrained: <N> free DOFs vs 6 loop residuals"`.
+    ///
+    /// Emitted as a `Severity::Error` when a single-loop closure problem has
+    /// fewer free DOFs than the 6-component twist residual (`free_b.len() < 6`).
+    /// The wrapper short-circuits the Newton solve and returns
+    /// `NewtonOutcome::NotConverged { x, residual_norm: f64::INFINITY }` —
+    /// the diagnostic, not a plausible-looking config, is the user-facing
+    /// signal of structural infeasibility.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_KINEMATIC_OVERCONSTRAINED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ///
+    /// TODO: surfaced through the snapshot / sweep API in PRD task 10
+    /// (snapshot evaluator integration). Reserved now for typed-code matching
+    /// at the moment the diagnostic is first emitted.
+    KinematicOverconstrained,
+    /// Origin: `crates/reify-constraints/src/loop_closure.rs::solve_loop_closure_with_diagnostics`
+    /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
+    /// §"Singularity, over/under-constraint diagnostics").
+    ///
+    /// Canonical message form:
+    /// `"kinematic system under-constrained: <N> free DOFs vs 6 loop residuals; consider adding an explicit binding"`.
+    ///
+    /// Emitted as a `Severity::Warning` when a single-loop closure problem has
+    /// more free DOFs than the 6-component twist residual (`free_b.len() > 6`).
+    /// The Newton solver still runs; the warning suggests an explicit binding.
+    /// The "closest-to-previous config" semantics the PRD describes are
+    /// realised by the caller's choice of
+    /// [`StartStrategy::WarmStart`](../../reify_constraints/loop_closure/enum.StartStrategy.html#variant.WarmStart),
+    /// not by extra logic in the wrapper.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_KINEMATIC_UNDERCONSTRAINED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    ///
+    /// TODO: surfaced through the snapshot / sweep API in PRD task 10
+    /// (snapshot evaluator integration). Reserved now for typed-code matching
+    /// at the moment the diagnostic is first emitted.
+    KinematicUnderconstrained,
 }
 
 /// A diagnostic message with location and optional labels.
