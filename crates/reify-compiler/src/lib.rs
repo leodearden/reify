@@ -259,7 +259,16 @@ pub fn compile_with_prelude_context(
     let decl_refs = compile_builder::pre_pass::collect_decl_refs(&mut compile_ctx, parsed);
 
     compile_builder::units_phase::phase_units(&mut compile_ctx, prelude_refs, &decl_refs.unit_refs);
-    compile_builder::aliases_phase::phase_aliases(&mut compile_ctx, &decl_refs.alias_refs);
+    // Mirror the resolution_enums gate (lib.rs:270-277): when prelude_refs is
+    // empty (#no_prelude pragma or empty prelude), pass &[] so prelude aliases
+    // are not seeded — consistent with how units, enums, traits, and functions
+    // suppress prelude contribution when the pragma is active.
+    let prelude_aliases = if prelude_refs.is_empty() {
+        &[][..]
+    } else {
+        ctx.pub_aliases()
+    };
+    compile_builder::aliases_phase::phase_aliases(&mut compile_ctx, prelude_aliases, &decl_refs.alias_refs);
 
     // Use the pre-built resolution_enums from the context instead of
     // re-flattening the prelude modules on every call.

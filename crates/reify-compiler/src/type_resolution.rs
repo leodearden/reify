@@ -32,6 +32,27 @@ impl TypeAliasEntry {
             content_hash: self.content_hash,
         }
     }
+
+    /// Construct a `TypeAliasEntry` from a prelude `CompiledTypeAlias`.
+    ///
+    /// `type_expr` is set to `None` because `CompiledTypeAlias` deliberately
+    /// omits the `TypeExpr` field to preserve the reify-compiler ↔ reify-syntax
+    /// module boundary.  As a consequence, parameterized prelude aliases cannot
+    /// be substituted at use sites; the caller (seed loop in `phase_aliases`)
+    /// must skip entries with non-empty `type_params` before calling this
+    /// constructor — otherwise `resolve_parameterized_alias` would find
+    /// `type_expr: None` and produce an internal error.
+    pub(crate) fn from_compiled_for_prelude(cta: &CompiledTypeAlias) -> TypeAliasEntry {
+        TypeAliasEntry {
+            name: cta.name.clone(),
+            resolved_type: cta.resolved_type.clone(),
+            type_params: cta.type_params.clone(),
+            type_expr: None,
+            is_pub: cta.is_pub,
+            span: cta.span,
+            content_hash: cta.content_hash,
+        }
+    }
 }
 
 /// Registry mapping type alias names to compiled alias entries.

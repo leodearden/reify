@@ -4,6 +4,21 @@
 //! Populates `ctx.alias_registry` from `alias_refs`; `alias_decl_map` and
 //! the `resolving` cycle-detection set stay phase-local because they are
 //! only consumed inside this phase.
+//!
+//! # Prelude seeding
+//!
+//! When `prelude_aliases` is non-empty, pub aliases from the prelude are
+//! seeded into `ctx.alias_registry` BEFORE any user-module alias is
+//! processed.  Two invariants are maintained:
+//!
+//! 1. **User shadows prelude** — if the user module declares an alias with
+//!    the same name as a prelude alias, the prelude entry is skipped at seed
+//!    time (`user_alias_names` set). This ensures the user's own DFS
+//!    resolution wins without producing a duplicate-alias diagnostic.
+//!
+//! 2. **Parametric skip** — prelude aliases with non-empty `type_params` are
+//!    skipped (TODO: cross-module parametric propagation requires carrying
+//!    `TypeExpr` across the module boundary, which is deferred).
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,16 +26,46 @@ use reify_syntax::TypeAliasDecl;
 use reify_types::{Diagnostic, DiagnosticLabel};
 
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::type_resolution::resolve_alias_dfs;
+use crate::type_resolution::{TypeAliasEntry, resolve_alias_dfs};
+use crate::types::CompiledTypeAlias;
 
 /// Run phase-5 (type aliases).
 ///
-/// Builds a name → decl lookup map with duplicate-alias diagnostics (keyed on
+/// Seeds `ctx.alias_registry` with non-parametric pub entries from
+/// `prelude_aliases` (prelude-alias seeding, user shadows prelude), then
+/// builds a name → decl lookup map with duplicate-alias diagnostics (keyed on
 /// `span` so both declared-here locations are pointed at), then DFS-resolves
-/// each alias into `ctx.alias_registry`. Cycles are caught via the phase-local
-/// `resolving` set.
-pub(crate) fn phase_aliases(ctx: &mut CompilationCtx, alias_refs: &[&TypeAliasDecl]) {
-    // Build a lookup map of all alias declarations, detecting duplicates.
+/// each user alias into `ctx.alias_registry`. Cycles are caught via the
+/// phase-local `resolving` set.
+///
+/// Pass `&[]` for `prelude_aliases` when the `#no_prelude` pragma is active or
+/// when the caller has no prelude (mirrors the pattern used for enums_phase).
+pub(crate) fn phase_aliases(
+    ctx: &mut CompilationCtx,
+    prelude_aliases: &[CompiledTypeAlias],
+    alias_refs: &[&TypeAliasDecl],
+) {
+    // Collect user-declared alias names so we can let them shadow prelude entries.
+    let user_alias_names: HashSet<&str> = alias_refs.iter().map(|d| d.name.as_str()).collect();
+
+    // Seed prelude aliases first (non-parametric only; user names take precedence).
+    for pa in prelude_aliases {
+        // Skip parametric aliases — CompiledTypeAlias omits type_expr so they
+        // cannot be instantiated at use sites. TODO: revisit when the module
+        // boundary allows carrying type_expr cross-module.
+        if !pa.type_params.is_empty() {
+            continue;
+        }
+        // Skip if user declared their own alias with this name (user wins).
+        if user_alias_names.contains(pa.name.as_str()) {
+            continue;
+        }
+        let entry = TypeAliasEntry::from_compiled_for_prelude(pa);
+        // Silently ignore Err (first-wins for prelude-vs-prelude collisions).
+        let _ = ctx.alias_registry.register(entry);
+    }
+
+    // Build a lookup map of all user alias declarations, detecting duplicates.
     let mut alias_decl_map: HashMap<String, &TypeAliasDecl> = HashMap::new();
     for alias_decl in alias_refs {
         if let Some(first) = alias_decl_map.get(&alias_decl.name) {
@@ -40,7 +85,7 @@ pub(crate) fn phase_aliases(ctx: &mut CompilationCtx, alias_refs: &[&TypeAliasDe
         }
     }
 
-    // DFS-resolve each alias with cycle detection via resolving-set.
+    // DFS-resolve each user alias with cycle detection via resolving-set.
     let mut resolving = HashSet::new();
     for alias_decl in alias_refs {
         resolve_alias_dfs(
