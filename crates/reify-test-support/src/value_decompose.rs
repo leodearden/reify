@@ -75,14 +75,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "label: expected Value::Point len=3")]
+    #[should_panic(expected = "label: expected Value::Point, got")]
     fn decompose_point3_panics_on_non_point() {
         let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         decompose_point3(&v, "label");
     }
 
     #[test]
-    #[should_panic(expected = "label: expected Value::Point len=3")]
+    #[should_panic(expected = "label: expected Value::Point len=3, got len=2")]
     fn decompose_point3_panics_on_wrong_length() {
         let v = Value::Point(vec![Value::Real(0.0), Value::Real(0.0)]);
         decompose_point3(&v, "label");
