@@ -14,6 +14,46 @@ mod common;
 use common::compile_with_stdlib_helper;
 use reify_types::{DimensionVector, Severity, Type};
 
+/// Compile `source`, assert no Error-severity diagnostics, then find `template`
+/// and return the resolved type of cell `member`.
+///
+/// This helper collapses the repeated "compile → assert clean → find template →
+/// find cell → assert type" scaffolding that the four happy-path tests share.
+fn assert_param_type(source: &str, template_name: &str, member: &str, expected: &Type) {
+    let module = compile_with_stdlib_helper(source);
+
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "source must produce no Error-severity diagnostics; got: {:?}",
+        errs
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == template_name)
+        .unwrap_or_else(|| panic!("template `{}` not found in compiled module", template_name));
+
+    let cell_type = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == member)
+        .unwrap_or_else(|| panic!("cell `{}` not found on `{}`", member, template_name))
+        .cell_type
+        .clone();
+
+    assert_eq!(
+        cell_type, *expected,
+        "{}::{} — expected {:?}",
+        template_name, member, expected
+    );
+}
+
 /// End-to-end fixture: a structure with two params whose annotated types exercise
 /// the `Vector3<Q>` and `Point3<Q>` resolution arms.
 ///
@@ -26,62 +66,27 @@ structure def Body {
 }
 "#;
 
-/// Compile `ACCEPTANCE_SOURCE` and return the resolved cell types for
-/// `force_vec` and `origin` after asserting no Error-severity diagnostics.
-fn compile_acceptance() -> (Type, Type) {
-    let module = compile_with_stdlib_helper(ACCEPTANCE_SOURCE);
-
-    let errs: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errs.is_empty(),
-        "ACCEPTANCE_SOURCE must produce no Error-severity diagnostics; got: {:?}",
-        errs
-    );
-
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Body")
-        .expect("template `Body` not found in compiled module");
-
-    let find_cell_type = |member: &str| {
-        template
-            .value_cells
-            .iter()
-            .find(|c| c.id.member == member)
-            .unwrap_or_else(|| panic!("cell `{}` not found on `Body`", member))
-            .cell_type
-            .clone()
-    };
-
-    (find_cell_type("force_vec"), find_cell_type("origin"))
-}
-
 #[test]
 fn vector3_force_resolves_to_typed_vector() {
-    let (force_vec, _) = compile_acceptance();
-    assert_eq!(
-        force_vec,
-        Type::vec3(Type::Scalar {
+    assert_param_type(
+        ACCEPTANCE_SOURCE,
+        "Body",
+        "force_vec",
+        &Type::vec3(Type::Scalar {
             dimension: DimensionVector::FORCE,
         }),
-        "Vector3<Force> must resolve to Type::Vector {{ n: 3, quantity: Scalar(FORCE) }}"
     );
 }
 
 #[test]
 fn point3_length_resolves_to_typed_point() {
-    let (_, origin) = compile_acceptance();
-    assert_eq!(
-        origin,
-        Type::point3(Type::Scalar {
+    assert_param_type(
+        ACCEPTANCE_SOURCE,
+        "Body",
+        "origin",
+        &Type::point3(Type::Scalar {
             dimension: DimensionVector::LENGTH,
         }),
-        "Point3<Length> must resolve to Type::Point {{ n: 3, quantity: Scalar(LENGTH) }}"
     );
 }
 
@@ -101,40 +106,13 @@ structure def Alias {
 
 #[test]
 fn vector3_via_parametric_alias_resolves_through_subst_path() {
-    let module = compile_with_stdlib_helper(ALIAS_SUBST_SOURCE);
-
-    let errs: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errs.is_empty(),
-        "ALIAS_SUBST_SOURCE must produce no Error-severity diagnostics; got: {:?}",
-        errs
-    );
-
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Alias")
-        .expect("template `Alias` not found in compiled module");
-
-    let dir = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "dir")
-        .expect("cell `dir` not found on `Alias`")
-        .cell_type
-        .clone();
-
-    assert_eq!(
-        dir,
-        Type::vec3(Type::Scalar {
+    assert_param_type(
+        ALIAS_SUBST_SOURCE,
+        "Alias",
+        "dir",
+        &Type::vec3(Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         }),
-        "V<Dimensionless> (via alias subst) must resolve to Type::Vector {{ n: 3, \
-         quantity: Scalar(DIMENSIONLESS) }}"
     );
 }
 
@@ -152,39 +130,54 @@ structure def AliasPoint {
 
 #[test]
 fn point3_via_parametric_alias_resolves_through_subst_path() {
-    let module = compile_with_stdlib_helper(POINT_ALIAS_SUBST_SOURCE);
+    assert_param_type(
+        POINT_ALIAS_SUBST_SOURCE,
+        "AliasPoint",
+        "origin",
+        &Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+    );
+}
 
+// ---------------------------------------------------------------------------
+// Negative tests — bad type arguments must produce Error-severity diagnostics
+// ---------------------------------------------------------------------------
+
+/// Compile `source` and assert that at least one Error-severity diagnostic is
+/// emitted. Used by the negative test battery below.
+fn assert_produces_error(source: &str) {
+    let module = compile_with_stdlib_helper(source);
     let errs: Vec<_> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
-        errs.is_empty(),
-        "POINT_ALIAS_SUBST_SOURCE must produce no Error-severity diagnostics; got: {:?}",
-        errs
+        !errs.is_empty(),
+        "source must produce at least one Error-severity diagnostic, but got none.\
+         \nSource:\n{source}"
     );
+}
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "AliasPoint")
-        .expect("template `AliasPoint` not found in compiled module");
+/// `Vector3<NotADim>` — the quantity type arg is an unknown name; the
+/// `resolve_type_alias_expr_to_dimension` helper must emit a "cannot resolve to a
+/// dimension type" Error before the Vector3 arm returns `None`.
+#[test]
+fn vector3_unknown_dimension_produces_error() {
+    assert_produces_error("structure def Bad { param v : Vector3<NotADim> }");
+}
 
-    let origin = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "origin")
-        .expect("cell `origin` not found on `AliasPoint`")
-        .cell_type
-        .clone();
+/// `Point3<NotADim>` — parallel negative fixture for the Point3 arm.
+#[test]
+fn point3_unknown_dimension_produces_error() {
+    assert_produces_error("structure def Bad { param v : Point3<NotADim> }");
+}
 
-    assert_eq!(
-        origin,
-        Type::point3(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        }),
-        "P<Length> (via alias subst) must resolve to Type::Point {{ n: 3, \
-         quantity: Scalar(LENGTH) }}"
-    );
+/// `Vector3<3>` — an integer literal is not a valid quantity; the
+/// `resolve_type_alias_expr_to_dimension` helper must emit an
+/// "integer literal cannot appear as a dimension type" Error.
+#[test]
+fn vector3_integer_literal_arg_produces_error() {
+    assert_produces_error("structure def Bad { param v : Vector3<3> }");
 }

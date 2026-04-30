@@ -581,10 +581,14 @@ pub(crate) fn resolve_type_alias_expr(
             // structures are compiled, so trait-name fallback must NOT fire here.
             //
             // Use a temporary diagnostics vector: during the alias DFS pre-pass,
-            // type args may contain unresolved type params (e.g. `Vector3<Q>` in
-            // `type V<Q> = Vector3<Q>`). If the resolution succeeds we promote the
-            // diagnostics; if it fails we discard them silently — the alias will be
-            // fully resolved at instantiation time via resolve_type_alias_expr_with_subst.
+            // type args may contain unresolved type params for ANY parameterized
+            // builtin — e.g. `List<T>`, `Scalar<Q>`, `Vector3<Q>`, `Point3<Q>`
+            // all appear here when their alias body contains a free type param.
+            // If the resolution succeeds we promote the diagnostics; if it fails
+            // we discard them silently — the alias will be fully resolved at
+            // instantiation time via resolve_type_alias_expr_with_subst.  This
+            // discard behaviour is intentional for all builtins handled by
+            // resolve_parameterized_builtin_type, not just the Vector3/Point3 arms.
             if !type_args.is_empty() {
                 let mut tmp_diags = Vec::new();
                 if let Some(ty) = resolve_parameterized_builtin_type(
