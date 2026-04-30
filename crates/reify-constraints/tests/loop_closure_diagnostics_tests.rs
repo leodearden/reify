@@ -158,3 +158,65 @@ fn solve_loop_closure_with_diagnostics_emits_overconstrained_for_one_dof() {
     );
     assert!(!report.is_singular, "no Newton run → is_singular must stay false");
 }
+
+// ── Step-7: under-constrained pre-check (free_b.len() > 6) ──────────────
+
+/// 7 prismatic-x joints all on the +X axis is under-constrained
+/// (free_b.len() = 7 > 6) AND structurally singular (all 7 free vars
+/// contribute to the same +X translation, so the Jacobian is rank-1).
+///
+/// Step-7 asserts ONLY the under-constrained pre-check fires at this point
+/// (KinematicSingularity post-processing is wired in step-10).  The count
+/// of 1 is loose-by-design: step-10 will update this assertion to expect 2
+/// once both warnings co-emit.  See plan.json step-7 for rationale.
+///
+/// Pinning that the wrapped outcome is `Singular` or `Converged` (NOT a
+/// short-circuited `NotConverged` with `f64::INFINITY` residual_norm)
+/// proves the under-constrained branch DELEGATES to the solver rather
+/// than short-circuiting it.
+#[test]
+fn solve_loop_closure_with_diagnostics_emits_underconstrained_for_seven_dofs() {
+    let chain_a = vec![prismatic_x_0_to_1()];
+    let vals_a = vec![0.5];
+    let chain_b: Vec<Value> = (0..7).map(|_| prismatic_x_0_to_1()).collect();
+    let vals_b_initial = vec![0.0; 7];
+    let free_b: Vec<usize> = (0..7).collect();
+    let strategy = StartStrategy::WarmStart(vec![0.0; 7]);
+    let cfg = NewtonConfig::default();
+
+    let report = solve_loop_closure_with_diagnostics(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b_initial,
+        &free_b,
+        &strategy,
+        &cfg,
+    );
+
+    assert_eq!(
+        report.diagnostics.len(),
+        1,
+        "step-7 expects exactly one under-constrained diagnostic (singularity \
+         post-process arrives in step-10), got {:?}",
+        report.diagnostics
+    );
+    let d = &report.diagnostics[0];
+    assert_eq!(d.severity, Severity::Warning);
+    assert_eq!(d.code, Some(DiagnosticCode::KinematicUnderconstrained));
+
+    // Outcome must reflect that the solver was actually invoked — NOT the
+    // over-constrained short-circuit shape (NotConverged with INFINITY
+    // residual_norm).
+    match &report.outcome {
+        NewtonOutcome::Singular { .. } | NewtonOutcome::Converged { .. } => {}
+        NewtonOutcome::NotConverged { residual_norm, .. } if residual_norm.is_finite() => {
+            // Solver ran but didn't converge with finite residual — also OK
+            // proof that the solver wasn't short-circuited.
+        }
+        other => panic!(
+            "expected Singular or Converged (or finite-residual NotConverged) \
+             from under-constrained delegation, got {other:?}"
+        ),
+    }
+}
