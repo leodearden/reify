@@ -3198,4 +3198,40 @@ mod tests {
         };
         let _ = parents.edge_slices();
     }
+
+    /// Verify that `BRepKind` (renamed from `ReprKind`) retains `Hash + Eq + Copy + Debug`
+    /// so it can act as a `HashMap` key and be compared / logged by callers.
+    ///
+    /// All six B-rep sub-shape variants must be pairwise distinct.
+    #[test]
+    fn b_rep_kind_variants_round_trip_through_hashmap_key() {
+        use std::collections::HashMap;
+        let variants = [
+            BRepKind::Solid,
+            BRepKind::Shell,
+            BRepKind::Wire,
+            BRepKind::Compound,
+            BRepKind::Edge,
+            BRepKind::Face,
+        ];
+
+        // All variants are pairwise distinct.
+        for i in 0..variants.len() {
+            for j in 0..variants.len() {
+                if i != j {
+                    assert_ne!(variants[i], variants[j], "expected distinct variants at {i} and {j}");
+                }
+            }
+        }
+
+        // All six variants survive a HashMap round-trip (requires Hash + Eq).
+        let mut map: HashMap<BRepKind, u32> = HashMap::new();
+        for (idx, v) in variants.iter().enumerate() {
+            map.insert(*v, idx as u32); // *v requires Copy
+        }
+        assert_eq!(map.len(), 6, "all 6 BRepKind variants must be stored as distinct keys");
+        for (idx, v) in variants.iter().enumerate() {
+            assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
+        }
+    }
 }
