@@ -626,6 +626,13 @@ pub fn populate_loft_attributes(
     result_edge_handles: &[GeometryHandleId],
     history: &LoftOpHistoryRecords,
 ) -> Result<(), QueryError> {
+    // Reserved: kept in the public API as the seam for future face-level
+    // Modified records and rail/seam/cap-edge classification — mirroring the
+    // `let _ = profile_face_handles;` reservation in
+    // `write_face_generated_attributes`.
+    let _ = section_face_handles_per_section; // reserved for future face-level Modified records
+    let _ = result_edge_handles; // reserved for future rail/seam/cap-edge classification
+
     write_cap_attributes(
         table,
         feature_id,
@@ -642,17 +649,9 @@ pub fn populate_loft_attributes(
         Role::Cap(CapKind::End),
         "loft end cap",
     )?;
-
-    // Reserved: kept in the public API as the seam for future face-level
-    // Modified records and rail/seam/cap-edge classification — mirroring the
-    // `let _ = profile_face_handles;` reservation in
-    // `write_face_generated_attributes`.
-    let _ = section_face_handles_per_section; // reserved for future face-level Modified records
-    let _ = result_edge_handles; // reserved for future rail/seam/cap-edge classification
     write_loft_face_generated_attributes(
         table,
         feature_id,
-        section_edge_handles_per_section.len(),
         section_edge_handles_per_section,
         result_face_handles,
         &history.face_generated,
@@ -757,9 +756,10 @@ fn write_face_generated_attributes(
 /// Multi-parent variant of [`write_face_generated_attributes`] for loft
 /// (`BRepOffsetAPI_ThruSections`).  For each `face_generated` record:
 ///
-///   1. Validate `parent_index` is in range for `section_count` (the
-///      number of loft sections; faces and edges share the same count).
-///      Returns `QueryFailed` mentioning "section" on out-of-range.
+///   1. Validate `parent_index` is in range for
+///      `section_edge_handles_per_section.len()` (the number of loft
+///      sections).  Returns `QueryFailed` mentioning "section" on
+///      out-of-range.
 ///   2. Validate `parent_subshape_index` is in range for the addressed
 ///      section's edge slice (the kernel emits each lateral face from a
 ///      parent profile edge sweep, so the subshape index points into
@@ -775,7 +775,6 @@ fn write_face_generated_attributes(
 fn write_loft_face_generated_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,
-    section_count: usize,
     section_edge_handles_per_section: &[Vec<GeometryHandleId>],
     result_face_handles: &[GeometryHandleId],
     face_generated: &[HistoryRecord],
@@ -783,12 +782,12 @@ fn write_loft_face_generated_attributes(
     for (sequential_idx, record) in face_generated.iter().enumerate() {
         // Step 1: parent_index in range over section count.
         let parent_idx = record.parent_index as usize;
-        if parent_idx >= section_count {
+        if parent_idx >= section_edge_handles_per_section.len() {
             return Err(QueryError::QueryFailed(format!(
                 "loft face_generated record has parent_index {} \
                  but loft has only {} section(s)",
                 parent_idx,
-                section_count
+                section_edge_handles_per_section.len()
             )));
         }
 
