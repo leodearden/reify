@@ -133,48 +133,20 @@ pub struct EvaluationGraph {
     /// Resolved `auto:` type-parameter substitution map for this graph.
     ///
     /// Each entry is `(param_name, concrete_template_name)`, e.g.
-    /// `("T", "ORingSeal")`. Set by the caller after `from_templates` to
-    /// communicate the outcome of `resolve_auto_type_params` (Phase A→B→C
-    /// in `crates/reify-compiler/src/auto_type_param.rs`).
+    /// `("T", "ORingSeal")`. Populated from
+    /// `MultiParamResolutionOutcome.substitution` (same `Vec<(String, String)>`
+    /// shape, no adapter needed; see `crates/reify-compiler/src/auto_type_param.rs`).
     ///
-    /// **Source:** consumes `MultiParamResolutionOutcome.substitution`
-    /// (`crates/reify-compiler/src/auto_type_param.rs:166-172`) directly
-    /// without an adapter — the shape is identical `Vec<(param_name,
-    /// template_name)>`. This is the v0.1 consumer described by the Phase D
-    /// note at `auto_type_param.rs:81-87`.
+    /// **Hash stability:** mixed into `topology_fingerprint` as a seventh
+    /// per-bucket sub-hash. Entries are sorted by `param_name` before hashing
+    /// so the same logical map always produces the same fingerprint regardless
+    /// of Vec insertion order (revert-stable: same candidate re-selected after
+    /// a parameter edit + revert → same fingerprint → cache reuse).
     ///
-    /// **Hash stability:** mixed into `topology_fingerprint` (a seventh
-    /// per-bucket sub-hash with domain separation). The bucket sorts
-    /// entries by `param_name` before hashing so that the same logical
-    /// substitution map always produces the same fingerprint regardless
-    /// of Vec insertion order (revert-stable: same candidate re-selected
-    /// after a parameter edit + revert → same fingerprint → cache reuse).
-    /// See arch §6.2 row 5, §6.4, and PRD task 5 criterion 7.
+    /// **Empty-Vec:** the default empty Vec contributes `ContentHash(0)` (the
+    /// neutral element of `combine_all`) — no special-case branch needed.
     ///
-    /// **Empty-Vec note (step-7 back-compat contract):** an empty Vec (the
-    /// `Default` value) preserves bit-equality with `EvaluationGraph::default()`
-    /// at the substitution-bucket level — `combine_all([])` returns
-    /// `ContentHash(0)` (neutral element). However, the seven-bucket
-    /// `combine_all` still differs from any pre-task-2388 six-bucket
-    /// fingerprint: adding a bucket changes the rolled-up output regardless
-    /// of the bucket's content. No special-case branch is needed in
-    /// `topology_fingerprint()`.
-    ///
-    /// **Warm-pool round-trip contract (step-10):** when a substitution is
-    /// reverted (graph_a → graph_b → graph_c with substitution_a ==
-    /// substitution_c), `topology_fingerprint()` is restored to the pre-flip
-    /// value. This allows a `WarmStatePool` keyed by the surviving cells'
-    /// `NodeId`s to checkout previously-donated state via path-based identity
-    /// (arch §6.5). This is the v0.1 minimum for criterion 7's "warm-state
-    /// pool reuses prior cached node results" clause; full engine-level revert
-    /// via `Engine::edit_source` is deferred until the parser accepts
-    /// `auto: TraitName` in type-arg position.
-    ///
-    /// **Cross-crate shape (step-12):** consumes
-    /// `crates/reify-compiler/src/auto_type_param.rs::MultiParamResolutionOutcome
-    /// .substitution` directly without an adapter — the shape is identical
-    /// `Vec<(param_name, template_name)>`, matching the contract documented
-    /// at `auto_type_param.rs:81-87`.
+    /// **Invariant:** param names must be unique; duplicates are a producer bug.
     pub auto_type_substitution: Vec<(String, String)>,
 }
 
@@ -671,10 +643,24 @@ impl EvaluationGraph {
         // ContentHash(0) to the bucket via combine_all([])'s neutral-element
         // semantics — no special-case branch is needed.
         let auto_type_sub_hash = {
+            // Invariant: param names must be unique (producer guarantee).
+            debug_assert!(
+                {
+                    let mut seen = std::collections::HashSet::new();
+                    self.auto_type_substitution
+                        .iter()
+                        .all(|(p, _)| seen.insert(p.as_str()))
+                },
+                "auto_type_substitution: param names must be unique; duplicates are a producer bug"
+            );
             let mut sorted = self.auto_type_substitution.clone();
             sorted.sort_by(|a, b| a.0.cmp(&b.0));
             let pair_hashes: Vec<ContentHash> = sorted
                 .iter()
+                // `param_name` and `template_name` are identifier tokens
+                // validated upstream; they cannot contain '=' or ':', so
+                // the "auto:{p}={t}" domain-separated prefix is unambiguous
+                // (no aliasing between distinct (param, template) pairs).
                 .map(|(p, t)| ContentHash::of_str(&format!("auto:{}={}", p, t)))
                 .collect();
             ContentHash::combine_all(pair_hashes)
