@@ -1881,6 +1881,63 @@ mod tests {
         );
     }
 
+    /// Task 2713 step-3/step-4: `frame_constraint` on a CompiledConnection must
+    /// influence `topology_fingerprint`. Three graphs whose only difference is
+    /// `frame_constraint` (None, Some(ConstraintNodeId("Frame",0)),
+    /// Some(ConstraintNodeId("Frame",1))) must produce pairwise distinct
+    /// fingerprints.
+    ///
+    /// RED before step-4: the connection-bucket hash chain does not yet
+    /// include `frame_constraint`, so all three graphs produce identical
+    /// fingerprints.
+    #[test]
+    fn topology_fingerprint_includes_frame_constraint() {
+        use reify_syntax::ConnectOp;
+        use reify_types::SourceSpan;
+
+        let base_conn = reify_compiler::CompiledConnection {
+            left_port: "p".to_string(),
+            operator: ConnectOp::Forward,
+            right_port: "q".to_string(),
+            connector_sub: None,
+            compatibility_constraint: ConstraintNodeId::new("X", 0),
+            port_mappings: Vec::new(),
+            frame_constraint: None,
+            span: SourceSpan::empty(0),
+        };
+
+        let mut graph_none = EvaluationGraph::default();
+        graph_none.connections.push(base_conn.clone());
+
+        let mut graph_some_a = EvaluationGraph::default();
+        graph_some_a.connections.push(reify_compiler::CompiledConnection {
+            frame_constraint: Some(ConstraintNodeId::new("Frame", 0)),
+            ..base_conn.clone()
+        });
+
+        let mut graph_some_b = EvaluationGraph::default();
+        graph_some_b.connections.push(reify_compiler::CompiledConnection {
+            frame_constraint: Some(ConstraintNodeId::new("Frame", 1)),
+            ..base_conn
+        });
+
+        assert_ne!(
+            graph_none.topology_fingerprint(),
+            graph_some_a.topology_fingerprint(),
+            "fingerprint must differ: frame_constraint None vs Some(id_0)",
+        );
+        assert_ne!(
+            graph_some_a.topology_fingerprint(),
+            graph_some_b.topology_fingerprint(),
+            "fingerprint must differ: frame_constraint Some(id_0) vs Some(id_1)",
+        );
+        assert_ne!(
+            graph_none.topology_fingerprint(),
+            graph_some_b.topology_fingerprint(),
+            "fingerprint must differ: frame_constraint None vs Some(id_1)",
+        );
+    }
+
     /// Task 2690 step-7/step-8: insertion order of `connections` must NOT
     /// affect `topology_fingerprint`. Mirrors `topology_fingerprint_order_independent`.
     ///
