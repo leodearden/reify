@@ -1376,14 +1376,12 @@ fn resolve_driving_params_from_ast(
     }
 }
 
-/// Generic recursive AST walker that visits every `FunctionCall` node in
-/// `expr` and invokes `on_call(name, args)` for each one.
-///
-/// Recurses into `FunctionCall` (all args), `BinOp` (both operands), `UnOp`
-/// (operand), `Conditional` (condition/then/else), and `ListLiteral` (all
-/// elements).  Other variants — `MapLiteral`, `SetLiteral`, `Match`,
-/// `MemberAccess`, `IndexAccess`, and leaf nodes — are currently not recursed;
-/// widen this list **here** to fix all callers at once.
+/// Generic recursive AST walker that invokes `on_call(name, args)` for each
+/// `FunctionCall` node reachable through `FunctionCall` args, `BinOp`
+/// operands, `UnOp` operands, `Conditional` branches, and `ListLiteral`
+/// elements only.  `FunctionCall`s embedded in `MapLiteral`, `SetLiteral`,
+/// `Match`, `MemberAccess`, or `IndexAccess` are **not** visited; widen the
+/// recursion **here** to fix all callers at once.
 ///
 /// # Motivation
 ///
