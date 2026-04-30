@@ -7,7 +7,7 @@ use reify_types::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId,
     ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError,
     GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh,
-    OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ReprKind,
+    BRepKind, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError,
     ResolutionProblem, Satisfaction, SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
 };
 
@@ -790,8 +790,8 @@ impl GeometryKernel for MockGeometryKernel {
             | GeometryOp::Helix { .. }
             | GeometryOp::InterpCurve { .. }
             | GeometryOp::BezierCurve { .. }
-            | GeometryOp::NurbsCurve { .. } => ReprKind::Wire,
-            _ => ReprKind::Solid,
+            | GeometryOp::NurbsCurve { .. } => BRepKind::Wire,
+            _ => BRepKind::Solid,
         };
 
         Ok(GeometryHandle { id, repr })

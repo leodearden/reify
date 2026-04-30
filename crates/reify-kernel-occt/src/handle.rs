@@ -289,7 +289,7 @@ impl OcctKernelHandle {
     ///
     /// Mirrors [`OcctKernel::boolean_fuse_with_history`] across the
     /// kernel-thread channel. Result handle is registered with
-    /// `ReprKind::Solid`.
+    /// `BRepKind::Solid`.
     ///
     /// # Panics
     ///
@@ -507,7 +507,7 @@ impl OcctKernelHandle {
 
     /// Test-fixture: build a `width × height` rect_face profile on the
     /// kernel thread and return its handle id (registered with
-    /// `ReprKind::Face`). Only compiled when the `test-fixtures` cargo
+    /// `BRepKind::Face`). Only compiled when the `test-fixtures` cargo
     /// feature is enabled — mirrors the `OcctKernel::store_*_for_test`
     /// pattern in `lib.rs`.
     ///
@@ -539,7 +539,7 @@ impl OcctKernelHandle {
 
     /// Test-fixture: build a `width × height` rect_face profile in the
     /// **XZ plane** centered at `(cx, cy, cz)` on the kernel thread, and
-    /// return its handle id (registered with `ReprKind::Face`). Variant of
+    /// return its handle id (registered with `BRepKind::Face`). Variant of
     /// `make_rect_profile_for_test` purpose-built for the
     /// `revolve_with_history` integration test: the rect is placed in a
     /// plane containing the Z-axis (XZ plane), so revolving about Z
@@ -578,7 +578,7 @@ impl OcctKernelHandle {
     /// Test-fixture: build a triangular face profile in the plane Y=cy
     /// with vertices (x1, cy, z1), (x2, cy, z2), (x3, cy, z3) on the
     /// kernel thread, and return its handle id (registered with
-    /// `ReprKind::Face`). Used by the revolve history regression test
+    /// `BRepKind::Face`). Used by the revolve history regression test
     /// (task 2636, step-3) to exercise a non-rectangular profile.
     ///
     /// # Panics
@@ -1144,7 +1144,7 @@ impl GeometryKernel for OcctKernelHandle {
 
 #[cfg(all(test, has_occt))]
 mod tests {
-    use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, ReprKind, Value};
+    use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, BRepKind, Value};
 
     /// Compile-time assertion: OcctKernelHandle must be Send + Sync.
     const _: fn() = || {
@@ -1169,7 +1169,7 @@ mod tests {
         };
         let result = handle.execute(&op).unwrap();
         assert_eq!(result.id, GeometryHandleId(1));
-        assert_eq!(result.repr, ReprKind::Solid);
+        assert_eq!(result.repr, BRepKind::Solid);
     }
 
     #[test]
@@ -1521,7 +1521,7 @@ mod tests {
         };
         let result = handle.execute_async(&op).await.unwrap();
         assert_eq!(result.id, GeometryHandleId(1));
-        assert_eq!(result.repr, ReprKind::Solid);
+        assert_eq!(result.repr, BRepKind::Solid);
     }
 
     #[tokio::test]
