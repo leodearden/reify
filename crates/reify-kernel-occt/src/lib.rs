@@ -219,7 +219,7 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 // `reify_types::{BooleanOpHistoryRecords, HistoryRecord, DeletedRecord}`.
 pub use reify_types::{
     AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord,
-    SweepOpHistoryRecords,
+    LoftOpHistoryRecords, SweepOpHistoryRecords,
 };
 
 #[cfg(has_occt)]
@@ -732,6 +732,172 @@ impl OcctKernel {
                 end_cap_face_indices,
                 unsynthesized_profile_edge_count,
                 duplicate_parent_subshape_index_count,
+            };
+            (result_shape, records)
+        };
+        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        Ok((handle, records))
+    }
+
+    /// Sweep `profile` along `path` (a wire) via `BRepOffsetAPI_MakePipe`,
+    /// returning the swept-result handle alongside the per-parent
+    /// face/edge Modified/Generated/Deleted history records AND the
+    /// FirstShape/LastShape cap-face indices.
+    ///
+    /// Mirrors the call convention of the `GeometryOp::Sweep` arm of
+    /// [`OcctKernel::execute`]: same handle resolution and result
+    /// registration with `ReprKind::Solid`. Sweep is single-parent
+    /// (the profile is the operand; the path is the spine along which
+    /// the profile is swept), so `parent_index` is always `0` and the
+    /// existing `SweepOpHistoryRecords` struct fits verbatim.
+    ///
+    /// Cap behavior: `start_cap_face_indices` carries the FirstShape()
+    /// face index (profile-as-placed at the spine start);
+    /// `end_cap_face_indices` carries the LastShape() face index
+    /// (profile at the spine end).
+    ///
+    /// Diagnostic counters `unsynthesized_profile_edge_count` and
+    /// `duplicate_parent_subshape_index_count` are always `0` for
+    /// sweep — those are revolve-synthesis-specific (full-revolution
+    /// radial-edge synthesis post-pass) and have no analogue in pipe
+    /// sweeping.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 5b / #2619, step-4).
+    pub fn sweep_with_history(
+        &mut self,
+        profile_id: GeometryHandleId,
+        path_id: GeometryHandleId,
+    ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
+        let (result_shape, records) = {
+            let profile_shape = self.get_shape(profile_id)?;
+            let path_shape = self.get_shape(path_id)?;
+            let mut history = ffi::ffi::make_pipe_with_history(profile_shape, path_shape)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let face_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
+            let face_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_face_generated(&history));
+            let face_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_face_deleted(&history));
+            let edge_modified =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_modified(&history));
+            let edge_generated =
+                decode_history_records(ffi::ffi::sweep_op_history_edge_generated(&history));
+            let edge_deleted =
+                decode_deleted_records(ffi::ffi::sweep_op_history_edge_deleted(&history));
+            let start_cap_face_indices =
+                ffi::ffi::sweep_op_history_start_cap_face_indices(&history)
+                    .into_iter()
+                    .collect();
+            let end_cap_face_indices = ffi::ffi::sweep_op_history_end_cap_face_indices(&history)
+                .into_iter()
+                .collect();
+            let unsynthesized_profile_edge_count =
+                ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
+            let duplicate_parent_subshape_index_count =
+                ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
+            // Take the result shape last, after all record buffers have
+            // been read off (mirrors extrude/revolve pattern).
+            let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
+            let records = SweepOpHistoryRecords {
+                face_modified,
+                face_generated,
+                face_deleted,
+                edge_modified,
+                edge_generated,
+                edge_deleted,
+                start_cap_face_indices,
+                end_cap_face_indices,
+                unsynthesized_profile_edge_count,
+                duplicate_parent_subshape_index_count,
+            };
+            (result_shape, records)
+        };
+        let handle = self.store_with_repr(result_shape, ReprKind::Solid);
+        Ok((handle, records))
+    }
+
+    /// Loft through `profile_ids` (>= 2 wire profiles) via
+    /// `BRepOffsetAPI_ThruSections(is_solid=true, is_ruled=false)`,
+    /// returning the lofted result handle alongside the per-section
+    /// (multi-parent) face-correspondence records and the
+    /// FirstShape/LastShape cap-face indices.
+    ///
+    /// Mirrors the call convention of the `GeometryOp::Loft` arm of
+    /// [`OcctKernel::execute`]: same handle resolution, same
+    /// `profiles.len() < 2` validation, and same result registration
+    /// with `ReprKind::Solid`. Loft is **multi-parent** — each profile
+    /// section is a distinct parent indexed `0..N-1`, and
+    /// `LoftOpHistoryRecords::face_generated`'s `parent_index` field
+    /// denotes the section index (NOT always 0 like sweep / extrude /
+    /// revolve), so a separate `LoftOpHistoryRecords` struct (mirroring
+    /// `SweepOpHistoryRecords`'s field shape but without the diagnostic
+    /// counters) carries the result.
+    ///
+    /// `start_cap_face_indices` carries the FirstShape() face index (first
+    /// profile section under `is_solid=true`); `end_cap_face_indices`
+    /// carries the LastShape() face index (last profile section). Both
+    /// are populated under the hard-coded `is_solid=true` semantics
+    /// matching `GeometryOp::Loft`'s contract.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 5b / #2619, step-6).
+    pub fn loft_with_history(
+        &mut self,
+        profile_ids: &[GeometryHandleId],
+    ) -> Result<(GeometryHandle, LoftOpHistoryRecords), GeometryError> {
+        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Loft validation in
+        // `execute` so direct callers (integration tests, future inherent
+        // dispatchers) get the same descriptive error before the FFI call.
+        if profile_ids.len() < 2 {
+            return Err(GeometryError::OperationFailed(
+                "Loft requires at least 2 profiles".into(),
+            ));
+        }
+        let (result_shape, records) = {
+            // Build an OcctShapeVec from the profile handles. Reuses the
+            // same `new_shape_vec` / `shape_vec_push` builder pattern as
+            // the non-history `loft_profiles` arm of `execute`.
+            let mut vec = ffi::ffi::new_shape_vec();
+            for &pid in profile_ids {
+                let shape = self.get_shape(pid)?;
+                ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
+            }
+            // is_solid hard-coded to `true` to match `GeometryOp::Loft`'s
+            // contract; the FFI exposes the flag for forward-compatibility.
+            let mut history = ffi::ffi::make_loft_with_history(&vec, true)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let face_modified =
+                decode_history_records(ffi::ffi::loft_op_history_face_modified(&history));
+            let face_generated =
+                decode_history_records(ffi::ffi::loft_op_history_face_generated(&history));
+            let face_deleted =
+                decode_deleted_records(ffi::ffi::loft_op_history_face_deleted(&history));
+            let edge_modified =
+                decode_history_records(ffi::ffi::loft_op_history_edge_modified(&history));
+            let edge_generated =
+                decode_history_records(ffi::ffi::loft_op_history_edge_generated(&history));
+            let edge_deleted =
+                decode_deleted_records(ffi::ffi::loft_op_history_edge_deleted(&history));
+            let start_cap_face_indices =
+                ffi::ffi::loft_op_history_start_cap_face_indices(&history)
+                    .into_iter()
+                    .collect();
+            let end_cap_face_indices =
+                ffi::ffi::loft_op_history_end_cap_face_indices(&history)
+                    .into_iter()
+                    .collect();
+            // Take the result shape last, after all record buffers have
+            // been read off (mirrors extrude/revolve/sweep pattern).
+            let result_shape = ffi::ffi::loft_op_history_take_result_shape(history.pin_mut());
+            let records = LoftOpHistoryRecords {
+                face_modified,
+                face_generated,
+                face_deleted,
+                edge_modified,
+                edge_generated,
+                edge_deleted,
+                start_cap_face_indices,
+                end_cap_face_indices,
             };
             (result_shape, records)
         };
