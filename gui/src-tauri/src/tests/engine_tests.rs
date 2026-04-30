@@ -817,11 +817,9 @@ structure Kinematic {
 
 #[test]
 fn collect_snapshot_bind_pairs_stays_silent_for_empty_bind_list() {
-    // Step 1 RED (task 2725): snapshot(m1, []) has an empty bind list —
-    // case (b) per the telemetry refinement plan.  An empty list is valid
-    // stdlib usage and must NOT emit a DEBUG event.  The current impl fires
-    // once (the post-loop zero-contribution check fires unconditionally),
-    // so this asserts 0 and is RED until the case-(b) silence is implemented.
+    // snapshot(m1, []) has an empty bind list — case (b) per the telemetry
+    // refinement plan.  An empty list is valid stdlib usage and must NOT emit
+    // a DEBUG event.
     let mut session = make_session();
     session
         .load_from_source(EMPTY_BIND_SNAPSHOT_SOURCE, "kinematic")
@@ -871,7 +869,6 @@ structure Kinematic {
 fn collect_snapshot_bind_pairs_emits_debug_when_args1_not_listliteral() {
     // Regression-pin for case (a): snapshot() with a non-ListLiteral second
     // arg must emit exactly 1 DEBUG event at the snapshot_bind_pairs target.
-    // Should pass after step-2 impl.
     let mut session = make_session();
     session
         .load_from_source(NON_LIST_SNAPSHOT_ARG_SOURCE, "kinematic")
@@ -919,7 +916,6 @@ structure Kinematic {
 fn collect_snapshot_bind_pairs_emits_debug_when_list_has_no_valid_binds() {
     // Regression-pin for case (c): non-empty bind list whose entries all fail
     // the bind(Ident, Ident) filter must emit exactly 1 DEBUG event.
-    // Should pass after step-2 impl.
     let mut session = make_session();
     session
         .load_from_source(NON_BIND_LIST_SNAPSHOT_SOURCE, "kinematic")

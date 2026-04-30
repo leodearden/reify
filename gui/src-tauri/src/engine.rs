@@ -1455,6 +1455,10 @@ fn walk_function_calls(
 /// Sub-case **(b)** — an empty `ListLiteral` — is **silent**; `snapshot(m, [])`
 /// is valid stdlib usage (a snapshot with no bound parameters) and must not be
 /// flagged as anomalous.
+///
+/// Calls with fewer than two arguments (`args.len() < 2`) are also **silent**
+/// — they cannot contribute pairs regardless of shadowing, so they are
+/// excluded from the anomaly surface intentionally.
 fn collect_snapshot_bind_pairs(
     expr: &reify_syntax::Expr,
     pairs: &mut Vec<(String, String)>,
