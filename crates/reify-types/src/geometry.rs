@@ -3555,4 +3555,72 @@ mod tests {
             Operation::Convert { from: _ } => {}
         }
     }
+
+    /// `CapabilityDescriptor::default()` must produce an empty `supports` table.
+    /// Locks the `Default` derive contract — kernel adapters rely on starting
+    /// from an empty descriptor and pushing `(op, repr)` entries.
+    #[test]
+    fn capability_descriptor_default_is_empty() {
+        let d = CapabilityDescriptor::default();
+        assert!(d.supports.is_empty(), "default descriptor must have empty supports table");
+    }
+
+    /// `descriptor.supports(op, repr)` performs an exact-pair match against the
+    /// underlying `supports: Vec<(Operation, ReprKind)>`. The test descriptor
+    /// claims `(BooleanUnion, Mesh)` and `(Convert{from: BRep}, Mesh)`. Probes:
+    /// (a) declared pair → true, (b) op declared but mismatched repr → false,
+    /// (c) op never declared → false.
+    #[test]
+    fn capability_descriptor_supports_lookup() {
+        let d = CapabilityDescriptor {
+            supports: vec![
+                (Operation::BooleanUnion, ReprKind::Mesh),
+                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+            ],
+        };
+
+        // Declared pair → true.
+        assert!(
+            d.supports(Operation::BooleanUnion, ReprKind::Mesh),
+            "(BooleanUnion, Mesh) is declared, expected supports() to return true"
+        );
+        assert!(
+            d.supports(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+            "(Convert{{from: BRep}}, Mesh) is declared, expected supports() to return true"
+        );
+
+        // Op declared but mismatched output repr → false.
+        assert!(
+            !d.supports(Operation::BooleanUnion, ReprKind::BRep),
+            "(BooleanUnion, BRep) NOT declared, expected supports() to return false"
+        );
+
+        // Op never declared → false.
+        assert!(
+            !d.supports(Operation::BooleanDifference, ReprKind::Mesh),
+            "(BooleanDifference, Mesh) NOT declared, expected supports() to return false"
+        );
+
+        // Convert with a different `from` is a distinct entry — not a match.
+        assert!(
+            !d.supports(Operation::Convert { from: ReprKind::Mesh }, ReprKind::Mesh),
+            "Convert{{from: Mesh}} != Convert{{from: BRep}}, expected supports() to return false"
+        );
+    }
+
+    /// `Clone` derive on `CapabilityDescriptor` must round-trip the entire
+    /// `supports` table. Locks the `Clone` derive contract.
+    #[test]
+    fn capability_descriptor_clone_round_trip() {
+        let d = CapabilityDescriptor {
+            supports: vec![
+                (Operation::BooleanUnion, ReprKind::Mesh),
+                (Operation::PrimitiveBox, ReprKind::BRep),
+            ],
+        };
+        let cloned = d.clone();
+        assert_eq!(cloned.supports, d.supports, "clone must preserve supports table");
+        // PartialEq derive: descriptors compare by structural equality.
+        assert_eq!(cloned, d, "PartialEq derive must hold for cloned descriptor");
+    }
 }
