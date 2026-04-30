@@ -43,6 +43,13 @@ structure def DockPickup {
 
     // Sweep: 5 equally-spaced head positions from 0 to 400 mm.
     // Demonstrates the sweep API; snap_count == 5 is verified by a constraint.
+    //
+    // Note: `snaps` is used only to produce `snap_count` here.  The kinematic-
+    // query cells (pairs, collide, clearance) are driven by the separate `s`
+    // snapshot at the home position.  The v0.1 post-process resolves top-level
+    // `interferes(snapshot_let)` cells but does not recurse into `.map()` lambdas,
+    // so sweep-driven interference queries are not yet supported.  Forward
+    // integration (v0.2) will add sweep-level kinematic queries.
     let snaps = sweep(m2, j_x, 0mm .. 400mm, 5)
 
     // Single home-position snapshot for the interference probe.

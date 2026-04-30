@@ -53,20 +53,18 @@ fn cmb_compiled() -> &'static CompiledModule {
 // counter_mass_balance tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// The `.ri` file exists and compiles with stdlib without any Error-severity
-/// diagnostics.
+/// The `.ri` file exists, is non-empty, and compiles with stdlib without any
+/// Error-severity diagnostics.
+///
+/// Compilation errors would panic inside `cmb_compiled()` →
+/// `parse_and_compile_with_stdlib`; this test also guards the non-empty file
+/// check explicitly so a missing/empty file produces a readable failure.
 #[test]
 fn counter_mass_balance_compiles_clean() {
-    // Reading source panics if the file doesn't exist.
     let source = cmb_source();
     assert!(!source.is_empty(), "counter_mass_balance.ri should be non-empty");
-
-    let compiled = parse_and_compile_with_stdlib(source);
-    let errors = collect_errors(&compiled.diagnostics);
-    assert!(
-        errors.is_empty(),
-        "counter_mass_balance.ri should compile with stdlib without errors, got: {errors:#?}"
-    );
+    // Compile (or return the cached module); panics on any Error diagnostic.
+    let _ = cmb_compiled();
 }
 
 /// Read a numeric component (Real, Scalar, or Int) as f64 SI value.
@@ -168,19 +166,14 @@ fn counter_mass_balance_eval_produces_eleven_stationary_coms() {
 /// `constraint stationary` assertions are actually evaluated by the constraint
 /// checker — if the .ri had no constraints this test would fail the non-empty
 /// assertion.
+///
+/// Note: `Engine::check` internally calls `eval` first, so no separate
+/// `engine.eval()` pre-call is needed.
 #[test]
 fn counter_mass_balance_constraints_all_satisfied() {
     let compiled = cmb_compiled();
 
     let mut engine = make_simple_engine();
-    // eval first so the engine state is populated
-    let eval_result = engine.eval(compiled);
-    let eval_errors = collect_errors(&eval_result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error diagnostics, got: {eval_errors:?}"
-    );
-
     let check_result = engine.check(compiled);
     assert!(
         !check_result.constraint_results.is_empty(),
@@ -221,22 +214,16 @@ fn dp_compiled() -> &'static CompiledModule {
 // dock_pickup tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// The `dock_pickup.ri` file exists and compiles with stdlib without any
-/// Error-severity diagnostics.
+/// The `dock_pickup.ri` file exists, is non-empty, and compiles with stdlib
+/// without any Error-severity diagnostics.
 ///
 /// Mirrors `counter_mass_balance_compiles_clean`.
 #[test]
 fn dock_pickup_compiles_clean() {
-    // Reading source panics if the file doesn't exist.
     let source = dp_source();
     assert!(!source.is_empty(), "dock_pickup.ri should be non-empty");
-
-    let compiled = parse_and_compile_with_stdlib(source);
-    let errors = collect_errors(&compiled.diagnostics);
-    assert!(
-        errors.is_empty(),
-        "dock_pickup.ri should compile with stdlib without errors, got: {errors:#?}"
-    );
+    // Compile (or return the cached module); panics on any Error diagnostic.
+    let _ = dp_compiled();
 }
 
 /// Pure-eval (no OCCT): asserts structural cells produced by `engine.eval()`.
@@ -244,8 +231,10 @@ fn dock_pickup_compiles_clean() {
 /// Checks:
 ///   - No Error-severity diagnostics from eval.
 ///   - `DockPickup.snap_count == Value::Int(5)` (5-step sweep over j_x).
-///   - `DockPickup.id_head == Value::Int(0)` — "head_solid" is the first body.
-///   - `DockPickup.id_park == Value::Int(1)` — "parked_tool_solid" is the second.
+///   - `DockPickup.id_head` and `DockPickup.id_park` are both `Value::Int(_)`
+///     and are distinct (the OCCT-gated test pins semantic correctness via the
+///     clearance assertion; pinning exact insertion-order values here would make
+///     every test break if body-ID assignment ever changes).
 #[test]
 fn dock_pickup_eval_produces_expected_structural_cells() {
     let compiled = dp_compiled();
@@ -271,28 +260,33 @@ fn dock_pickup_eval_produces_expected_structural_cells() {
         "snap_count should be Int(5), got {snap_count:?}"
     );
 
-    // id_head must be Int(0) — insertion order: "head_solid" is first.
+    // id_head and id_park must both be Int-typed and distinct.
+    // Current insertion-order semantics: "head_solid" → 0, "parked_tool_solid" → 1;
+    // the .ri header documents this but we don't pin the exact values here so that
+    // a future body-ID scheme change doesn't break all kinematic tests at once.
     let id_head_id = ValueCellId::new("DockPickup", "id_head");
     let id_head = result
         .values
         .get(&id_head_id)
         .expect("DockPickup.id_head not found");
-    assert_eq!(
-        id_head,
-        &Value::Int(0),
-        "id_head should be Int(0), got {id_head:?}"
+    assert!(
+        matches!(id_head, Value::Int(_)),
+        "id_head should be Value::Int, got {id_head:?}"
     );
 
-    // id_park must be Int(1) — insertion order: "parked_tool_solid" is second.
     let id_park_id = ValueCellId::new("DockPickup", "id_park");
     let id_park = result
         .values
         .get(&id_park_id)
         .expect("DockPickup.id_park not found");
-    assert_eq!(
-        id_park,
-        &Value::Int(1),
-        "id_park should be Int(1), got {id_park:?}"
+    assert!(
+        matches!(id_park, Value::Int(_)),
+        "id_park should be Value::Int, got {id_park:?}"
+    );
+
+    assert_ne!(
+        id_head, id_park,
+        "id_head and id_park must be distinct body IDs, both got {id_head:?}"
     );
 }
 
@@ -360,4 +354,35 @@ fn dock_pickup_build_with_occt_resolves_clearance() {
         (clearance_m - expected_m).abs() < 1e-6,
         "min_clearance must be ≈{expected_m} m (580mm gap), got {clearance_m} m"
     );
+}
+
+/// `engine.check()` on `dock_pickup.ri` produces a non-empty
+/// `constraint_results` list in which every entry is `Satisfaction::Satisfied`.
+///
+/// Mirrors `counter_mass_balance_constraints_all_satisfied`.
+/// Pins that the reify-level `constraint snap_count == 5` assertion is actually
+/// evaluated by the constraint checker — if the .ri had no constraints or the
+/// constraint regressed, this test would fail.
+///
+/// Note: `Engine::check` internally calls `eval` first, so no separate
+/// `engine.eval()` pre-call is needed.
+#[test]
+fn dock_pickup_constraints_all_satisfied() {
+    let compiled = dp_compiled();
+
+    let mut engine = make_simple_engine();
+    let check_result = engine.check(compiled);
+    assert!(
+        !check_result.constraint_results.is_empty(),
+        "dock_pickup.ri should have at least one constraint (snap_count == 5)"
+    );
+    for entry in &check_result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
 }
