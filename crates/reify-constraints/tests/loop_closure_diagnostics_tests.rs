@@ -500,10 +500,12 @@ fn solve_loop_closure_with_diagnostics_balanced_full_rank_emits_no_diagnostics()
 /// `chain_a == chain_b` at `vals_a == vals_b_initial` produces an
 /// identically-zero residual at iteration 0.  `newton_solve`'s convergence
 /// check fires BEFORE `JᵀJ` is built or `LDLᵀ` is invoked, so the solver
-/// returns `Converged` in 0
-/// iters.  With `LDLᵀ` never running, `NewtonOutcome::Singular` is
-/// **structurally unreachable** → the wrapper's singularity post-process
-/// cannot fire.
+/// returns `Converged` in 0 iters.  With `LDLᵀ` never running,
+/// `NewtonOutcome::Singular` is **structurally unreachable** → the wrapper's
+/// singularity post-process cannot fire.  The `iters == 0` assertion below
+/// pins this short-circuit explicitly — a future change that broke the
+/// short-circuit and proceeded to Newton iteration would fail there with a
+/// clear `expected iters=0, got N` message.
 ///
 /// ## What this pins
 ///
@@ -512,6 +514,18 @@ fn solve_loop_closure_with_diagnostics_balanced_full_rank_emits_no_diagnostics()
 /// `emits_underconstrained_for_seven_dofs` (because the singularity warning
 /// would still appear), but it would FAIL HERE because the under-constrained
 /// warning would be absent and the diagnostic count would be 0 instead of 1.
+///
+/// **Why no perturbation?**  For `n_free > 6` against a 6-DOF
+/// closure-residual, the Jacobian `J` is `6 × n_free` with at most rank 6.
+/// `JᵀJ` is therefore rank-deficient by construction (rank ≤ 6 in
+/// `n_free × n_free` space) and the `LDLᵀ` pivot guard returns
+/// `NewtonOutcome::Singular` regardless of perturbation magnitude — verified
+/// empirically.  The *(under-constrained × full-rank-J)* cell can only be
+/// exercised by the zero-residual short-circuit under plain Gauss-Newton;
+/// testing the *LDLᵀ-runs-and-succeeds* path against a non-zero residual
+/// would require either a balanced (`n_free == 6`) configuration (covered by
+/// `balanced_full_rank_emits_no_diagnostics`) or LM damping / SVD-based
+/// pseudoinverse in the production solver (out of scope).
 #[test]
 fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jacobian() {
     let chain: Vec<Value> = vec![
