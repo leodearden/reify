@@ -404,3 +404,68 @@ fn select_returns_lex_first_for_two_free_feasible_candidates_and_emits_warning()
     );
     assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
 }
+
+// ─── step-17: single-feasible is independent of `free` flag ──────────────
+
+/// Pins the design decision that a single-feasible candidate is selected
+/// directly without consulting the `free` flag and without emitting any
+/// diagnostic. PRD §"Phase C" specifies "1 feasible → use it." with no
+/// condition on strictness; emitting `W_AUTO_TYPE_PARAM_NON_UNIQUE` under
+/// `auto(free)` for a 1-candidate input would be both noise and a contract
+/// violation. This test exercises BOTH `free=false` and `free=true` with
+/// the same single-feasible input to prevent a future refactor from
+/// accidentally surfacing a warning on the 1-candidate path.
+#[test]
+fn single_feasible_candidate_returns_selected_regardless_of_free_flag() {
+    // Strict (`free=false`).
+    {
+        let feasibility = FeasibilityResult::Feasible {
+            accepted: vec!["X".to_string()],
+            rejected: vec![],
+        };
+        let mut diagnostics = Vec::new();
+        let result = select_candidate(
+            feasibility,
+            &["Seal".to_string()],
+            false,
+            SourceSpan::empty(0),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result,
+            SelectionResult::Selected("X".to_string()),
+            "single feasible under free=false must return Selected(name)"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "single feasible under free=false must emit no diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    // Free (`free=true`).
+    {
+        let feasibility = FeasibilityResult::Feasible {
+            accepted: vec!["X".to_string()],
+            rejected: vec![],
+        };
+        let mut diagnostics = Vec::new();
+        let result = select_candidate(
+            feasibility,
+            &["Seal".to_string()],
+            true,
+            SourceSpan::empty(0),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result,
+            SelectionResult::Selected("X".to_string()),
+            "single feasible under free=true must return Selected(name)"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "single feasible under free=true must emit no diagnostic (NON_UNIQUE warning would be a contract violation), got: {:?}",
+            diagnostics
+        );
+    }
+}
