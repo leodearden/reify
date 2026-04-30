@@ -441,6 +441,20 @@ pub fn extract_loop_closure_chains(
     // a free index, seeded from its range midpoint.  Coupling and fixed
     // arms intentionally fall through the direct-lookup branch — multi-loop
     // coupling is out of v0.2 scope (see plan design-decisions §4).
+    //
+    // **Asymmetry note (v0.2 limitation).**  `chain_a` resolves via
+    // `resolve_joint_value_si`, which carries a fixed-joint sentinel arm
+    // (returns `Some(0.0)`).  `chain_b`'s unbound-joint fallback uses
+    // `joint_range_midpoint` directly, which returns `None` for fixed
+    // joints — so a fixed joint appearing in `path_b` without a direct
+    // binding would collapse the whole record to None and the snapshot
+    // to Undef.  In practice the mechanism builder does not place fixed
+    // joints on closing paths (the closing edge always references a
+    // motion joint to drive the solver), so this asymmetry is a latent
+    // shape constraint rather than a live bug.  A future v0.3 refactor
+    // can route this fallback through `resolve_joint_value_si` (and
+    // skip the index from `free_b` when the result is the fixed
+    // sentinel) once a real fixture demands fixed joints in path_b.
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
@@ -495,6 +509,22 @@ fn strip_world_sentinel(path: &[Value]) -> Option<Vec<Value>> {
 /// joint with explicit binding" (fixed initial value) from "free joint
 /// the solver should iterate" (no direct binding, falls through to
 /// midpoint seed + free_b membership).
+///
+/// **Dimension validation is deferred.**  `Value::as_f64()` returns the
+/// bare `si_value` regardless of the carried `Dimension`, so a user who
+/// binds a length-dimensioned scalar to a revolute joint (or vice versa)
+/// will silently feed a wrong-magnitude SI numeric value into the
+/// solver's `vals_a` / `vals_b_initial`.  The closed-chain path here is
+/// upstream of snapshot.rs's `transform_at` validation site, which
+/// catches the dimension mismatch when the solver-converged value is
+/// rehydrated for the FK re-walk via `wrap_midpoint_for_joint` →
+/// `transform_at`.  In practice the residual-evaluation path inside
+/// `solve_loop_closure` invokes `chain_transform`, which itself routes
+/// through dimension-checked Transform composition; a wrong-dimension
+/// value will surface as a non-converging residual rather than as a
+/// silent acceptance of an inconsistent configuration.  Callers that
+/// want eager validation should compose this with the joint-kind
+/// predicate at the snapshot boundary.
 fn direct_binding_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
     for entry in bindings {
         let map = match entry {
@@ -504,6 +534,9 @@ fn direct_binding_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
         if map.get(&Value::String("joint".to_string())) == Some(joint)
             && let Some(v) = map.get(&Value::String("value".to_string()))
         {
+            // See fn-doc: as_f64() is dimension-blind here; downstream
+            // `transform_at` / `chain_transform` is the canonical
+            // dimension-validation site for closed-chain inputs.
             return v.as_f64();
         }
     }
