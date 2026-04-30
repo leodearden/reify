@@ -640,10 +640,17 @@ pub fn populate_loft_attributes(
          (engine_build.rs::populate_loft_op); write_loft_face_generated_attributes' \
          parent_index range check uses the edge-slice family"
     );
-    // Reserved: kept in the public API as the seam for future face-level
-    // Modified records and rail/seam/cap-edge classification — mirroring the
-    // `let _ = profile_face_handles;` reservation in
-    // `write_face_generated_attributes`.
+    // Both parameters are reserved at this public-API entry point rather than
+    // being dropped inside the inner helpers:
+    //   • `section_face_handles_per_section` — seam for future face-level
+    //     Modified records (once the loft kernel emits per-section face maps)
+    //   • `result_edge_handles` — seam for future rail/seam/cap-edge
+    //     classification
+    // Both face-level Modified and edge-level rail/seam/cap classification
+    // land at this entry point, so the inner helpers drop them while the
+    // public surface keeps them — preserving the call-site signature for
+    // callers that already collect the data (e.g. `populate_loft_op` in
+    // `engine_build.rs`).
     let _ = section_face_handles_per_section; // reserved for future face-level Modified records
     let _ = result_edge_handles; // reserved for future rail/seam/cap-edge classification
 
