@@ -571,6 +571,128 @@ pub fn solve_loop_closure(
     newton_solve(x0, closure, config)
 }
 
+/// Hard-coded number of components in a single-loop closure residual.
+///
+/// The closure residual is a stacked twist `[ω_x, ω_y, ω_z, v_x, v_y, v_z]`
+/// (6 components per loop).  `solve_loop_closure` is single-loop today
+/// (task 2584's MVP scope), so the residual is exactly 6 entries.  Multi-loop
+/// stacking is deferred (PRD task 10 / future work).
+///
+/// `solve_loop_closure_with_diagnostics` compares `free_b.len()` against this
+/// constant for its over/under-constrained pre-check; the assumption that
+/// `free_b.len()` is a faithful free-DOF count holds because
+/// `chain_jacobian_fd` already rejects chains containing multi-DOF joints
+/// (planar/spherical/cylindrical) by returning `None`, so the only chains
+/// the solver accepts are 1-DOF (prismatic, revolute, coupling) plus 0-DOF
+/// (fixed).
+const SINGLE_LOOP_RESIDUAL_COUNT: usize = 6;
+
+/// Diagnostic-emitting wrapper around [`solve_loop_closure`].
+///
+/// Adds three pre-/post-process steps on top of the chain-based Newton
+/// solve, each translating a runtime condition into a typed [`Diagnostic`]:
+///
+/// 1. **Over-constrained pre-check** — if `free_b.len() < 6` (`= SINGLE_LOOP_RESIDUAL_COUNT`),
+///    the wrapper short-circuits the Newton solve and returns
+///    [`NewtonOutcome::NotConverged`] with `residual_norm: f64::INFINITY`,
+///    accompanied by a [`DiagnosticCode::KinematicOverconstrained`] Error.
+///    The diagnostic, not a plausible-looking config, is the user-facing
+///    signal of structural infeasibility per the PRD prose.
+/// 2. **Under-constrained pre-check** — if `free_b.len() > 6`, the wrapper
+///    emits a [`DiagnosticCode::KinematicUnderconstrained`] Warning and
+///    delegates to [`solve_loop_closure`].  The "closest-to-previous config"
+///    semantics the PRD describes are realised by the caller's choice of
+///    [`StartStrategy::WarmStart`].
+///    *(Wired in step-8 of task 2677.)*
+/// 3. **Singular post-process** — if the delegated Newton outcome is
+///    [`NewtonOutcome::Singular`], the wrapper sets `is_singular = true` and
+///    appends a [`DiagnosticCode::KinematicSingularity`] Warning.  The
+///    `Singular` variant's `x` payload carries the last-converged config the
+///    PRD requires.
+///    *(Wired in step-10 of task 2677.)*
+///
+/// **Single-loop assumption** — `solve_loop_closure` builds a 6-component
+/// twist residual against one closure constraint.  The free-DOF balance
+/// check therefore hard-codes `SINGLE_LOOP_RESIDUAL_COUNT = 6`.  Multi-loop
+/// generalisation is deferred to the [`newton_solve`] core (which is
+/// already generic over residual shape) plus a future caller that stacks
+/// residuals from multiple loops.
+///
+/// **1-DOF chain assumption** — `chain_jacobian_fd` returns `None` for
+/// chains containing planar/spherical/cylindrical (multi-DOF) joints, so
+/// `free_b.len()` is a faithful free-DOF count for the chains the existing
+/// solver supports.
+///
+/// See `docs/prds/v0_2/kinematic-constraints.md` §"Singularity,
+/// over/under-constraint diagnostics" and the [`LoopClosureReport`] type
+/// for the canonical return shape.
+///
+/// [`Diagnostic`]: reify_types::Diagnostic
+/// [`DiagnosticCode::KinematicOverconstrained`]: reify_types::DiagnosticCode::KinematicOverconstrained
+/// [`DiagnosticCode::KinematicUnderconstrained`]: reify_types::DiagnosticCode::KinematicUnderconstrained
+/// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
+pub fn solve_loop_closure_with_diagnostics(
+    chain_a: &[reify_types::Value],
+    vals_a: &[f64],
+    chain_b: &[reify_types::Value],
+    vals_b_initial: &[f64],
+    free_b: &[usize],
+    strategy: &StartStrategy,
+    config: &NewtonConfig,
+) -> LoopClosureReport {
+    let mut diagnostics: Vec<reify_types::Diagnostic> = Vec::new();
+
+    if free_b.len() < SINGLE_LOOP_RESIDUAL_COUNT {
+        // Over-constrained: short-circuit Newton; the diagnostic IS the signal.
+        let diag = reify_types::Diagnostic::error(format!(
+            "kinematic system over-constrained: {} free DOFs vs {} loop residuals",
+            free_b.len(),
+            SINGLE_LOOP_RESIDUAL_COUNT
+        ))
+        .with_code(reify_types::DiagnosticCode::KinematicOverconstrained);
+        diagnostics.push(diag);
+
+        // Build the returned `x` from the strategy where it resolves
+        // unambiguously, else fall back to copying the free entries of
+        // vals_b_initial.  Precise contents matter less than the diagnostic
+        // itself: residual_norm is f64::INFINITY and downstream tooling
+        // treats the diagnostic as the user-facing signal.
+        let x: Vec<f64> = match strategy {
+            StartStrategy::WarmStart(v) if v.len() == free_b.len() => v.clone(),
+            _ => free_b
+                .iter()
+                .filter_map(|&i| vals_b_initial.get(i).copied())
+                .collect(),
+        };
+
+        return LoopClosureReport {
+            outcome: NewtonOutcome::NotConverged {
+                x,
+                residual_norm: f64::INFINITY,
+            },
+            is_singular: false,
+            diagnostics,
+        };
+    }
+
+    // Balanced (== 6) — or under/singular branches handled in subsequent
+    // task-2677 steps.  Delegate to the existing solver.
+    let outcome = solve_loop_closure(
+        chain_a,
+        vals_a,
+        chain_b,
+        vals_b_initial,
+        free_b,
+        strategy,
+        config,
+    );
+    LoopClosureReport {
+        outcome,
+        is_singular: false,
+        diagnostics,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
