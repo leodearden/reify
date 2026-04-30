@@ -2533,6 +2533,145 @@ structure def S {
     );
 }
 
+/// `(None, None)` arm of forall-Connect unsupported-port-shape diagnostic: both
+/// sides have unsupported port shapes.
+///
+/// Fixture: `connect v.inner.a -> v.inner.b` — both sides are doubly-nested
+/// `MemberAccess` expressions that hit `_ => None` in `resolve_port_name`.
+/// Using distinct trailing members (`a` vs `b`) ensures each side gets its own
+/// span, so the two per-side label assertions cannot accidentally match the
+/// same `DiagnosticLabel` object.
+///
+/// NOTE: Like the `(None, Some)` fixture, this is intentionally synthetic —
+/// `v.inner.a` / `v.inner.b` are chosen to force the doubly-nested path, not
+/// to represent realistic nested sub-component port accesses. When nested
+/// sub-components gain full port reach, a realistic fixture should be added.
+///
+/// Pins:
+/// (a) No errors.
+/// (b) Zero `CompiledConnections` and zero `forall@*` constraint labels.
+/// (c) Zero `CompiledForallTemplates`.
+/// (d) Exactly one `Severity::Info` diagnostic total.
+/// (e) The diagnostic has a label with `message == "forall connect"` and
+///     `span == find_forall_connect_span(source, "S")`.
+/// (f) Exactly one label with `message == "left port shape not supported"` AND
+///     exactly one label with `message == "right port shape not supported"` —
+///     both arms of the per-side check fire simultaneously.
+#[test]
+fn forall_connect_over_undef_count_unsupported_both_port_shapes_emits_both_labels() {
+    use reify_types::Severity;
+
+    // Both sides: doubly-nested MemberAccess after substitution.
+    // v.inner.a → MemberAccess { object: MemberAccess { IndexAccess(vents,0), "inner" }, "a" }
+    // v.inner.b → MemberAccess { object: MemberAccess { IndexAccess(vents,0), "inner" }, "b" }
+    // Both hit the `_ => None` arm of resolve_port_name.
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inner.a -> v.inner.b
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall connect with unsupported \
+         port shapes on both sides, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero CompiledConnections and zero forall@* constraint labels.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) Zero captured runtime templates.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall connect \
+         with both port shapes unsupported (early return), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one Severity::Info diagnostic total.
+    let total_info_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .count();
+    assert_eq!(
+        total_info_count,
+        1,
+        "expected exactly 1 info diagnostic total, got {}: {:?}",
+        total_info_count,
+        module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Info)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Info)
+        .expect("info diagnostic not found");
+
+    // (e) Primary label with stable construct-kind token and matching span.
+    let forall_span = find_forall_connect_span(source, "S");
+    assert!(
+        diag.labels
+            .iter()
+            .any(|l| l.message == "forall connect" && l.span == forall_span),
+        "expected a label {{message: \"forall connect\", span: forall_span}} on the \
+         info diagnostic; labels = {:?}, forall_span = {:?}",
+        diag.labels,
+        forall_span
+    );
+
+    // (f) Both per-side labels present — left AND right both unsupported.
+    let left_label_count = diag
+        .labels
+        .iter()
+        .filter(|l| l.message == "left port shape not supported")
+        .count();
+    assert_eq!(
+        left_label_count,
+        1,
+        "expected exactly 1 label with message \"left port shape not supported\", \
+         got {}; labels = {:?}",
+        left_label_count,
+        diag.labels
+    );
+    let right_label_count = diag
+        .labels
+        .iter()
+        .filter(|l| l.message == "right port shape not supported")
+        .count();
+    assert_eq!(
+        right_label_count,
+        1,
+        "expected exactly 1 label with message \"right port shape not supported\", \
+         got {}; labels = {:?}",
+        right_label_count,
+        diag.labels
+    );
+}
+
 /// `forall v in vents: connect v.inlet <-> air_channel` over a 3-element
 /// `bidi`-ported collection sub should emit exactly 3 `CompiledConnection`s,
 /// each with `operator == ConnectOp::Bidirectional`. Pins that `cd.operator`
