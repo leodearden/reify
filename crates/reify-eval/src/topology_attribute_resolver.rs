@@ -587,51 +587,128 @@ mod tests {
     /// Multi-match with MIXED parent-keys → Unresolved + count-aware
     /// diagnostic (genuine ambiguity, not a split).
     ///
-    /// Two candidates carry the same `(role, local_index)` but originate
-    /// from DIFFERENT features ("Boss" vs "Slot"). The role/idx query
-    /// matches both, but the parent-keys disagree on `feature_id`, so
-    /// `try_cluster_after_split` returns None and the resolver falls
-    /// through to Unresolved with the canonical "matched 2 sub-shapes"
-    /// message form (NOT the new "split children" sub-form, which is
-    /// reserved for parent-key-clustered matches per task #2653).
+    /// Multi-match where the matched candidates disagree on one of the four
+    /// parent-key fields (`feature_id`, `role`, `local_index`, `user_label`)
+    /// must route to `AttributeResolution::Unresolved` with the canonical
+    /// "matched N sub-shapes" diagnostic — NOT the "split children" sub-form,
+    /// which is reserved for parent-key-clustered matches per task #2653.
     ///
-    /// The v0.2 invariant that splits go to mod_history rather than
-    /// reusing local_index is enforced by the populator; the resolver
-    /// still defends against degenerate inputs by emitting the
-    /// genuine-ambiguity diagnostic for distinct-parent multi-match
-    /// (PRD line 64).
+    /// Parameterized over all four parent-key disagreement axes. Each axis
+    /// uses the query branch that allows both candidates to match (see design
+    /// decisions for branch-coverage rationale). Pins PRD line 64 and the
+    /// disambiguation between genuine ambiguity (`Unresolved`) and split
+    /// detection (`AmbiguousAfterSplit`).
     #[test]
     fn unresolved_with_diagnostic_when_multi_match() {
-        let boss = FeatureId::new("Boss");
-        let slot = FeatureId::new("Slot");
-        let mut table = TopologyAttributeTable::default();
-        // Distinct feature_ids on the two matched candidates → mixed
-        // parent-keys → cluster check fails → Unresolved.
-        table.record(h(60), attr_for(boss, Role::Side, 0, None));
-        table.record(h(61), attr_for(slot, Role::Side, 0, None));
-        let candidates = [h(60), h(61)];
-        let query = AttributeQuery {
-            user_label: None,
-            role_and_index: Some((Role::Side, 0)),
-            feature_id: None,
-        };
-        let mut diagnostics = Vec::new();
-        let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
-        assert_eq!(result, AttributeResolution::Unresolved);
-        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        let diag = &diagnostics[0];
-        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
-        assert!(
-            diag.message.contains("matched 2 sub-shapes"),
-            "message should contain 'matched 2 sub-shapes', got: {}",
-            diag.message
-        );
-        assert!(
-            !diag.message.contains("split children"),
-            "mixed-parent multi-match must NOT use the split-children sub-form, got: {}",
-            diag.message
-        );
+        struct Case {
+            axis: &'static str,
+            attr_a: TopologyAttribute,
+            attr_b: TopologyAttribute,
+            query: AttributeQuery,
+        }
+
+        let cases = [
+            // (1) feature_id axis: both match role/idx query; parent-keys
+            //     disagree on feature_id → cluster check fails → Unresolved.
+            Case {
+                axis: "feature_id",
+                attr_a: attr_for(FeatureId::new("Boss"), Role::Side, 0, None),
+                attr_b: attr_for(FeatureId::new("Slot"), Role::Side, 0, None),
+                query: AttributeQuery {
+                    user_label: None,
+                    role_and_index: Some((Role::Side, 0)),
+                    feature_id: None,
+                },
+            },
+            // (2) role axis: both match user_label query ("seam"); parent-keys
+            //     disagree on role → cluster check fails → Unresolved.
+            //     (role/idx branch would filter out role-disagreeing candidates,
+            //     so user_label branch is required here.)
+            Case {
+                axis: "role",
+                attr_a: attr(Role::Side, 0, Some("seam")),
+                attr_b: attr(Role::Cap(CapKind::Top), 0, Some("seam")),
+                query: AttributeQuery {
+                    user_label: Some("seam".to_string()),
+                    role_and_index: None,
+                    feature_id: None,
+                },
+            },
+            // (3) local_index axis: both match user_label query ("seam");
+            //     parent-keys disagree on local_index → cluster check fails →
+            //     Unresolved. (Same reasoning as role axis.)
+            Case {
+                axis: "local_index",
+                attr_a: attr(Role::Side, 0, Some("seam")),
+                attr_b: attr(Role::Side, 1, Some("seam")),
+                query: AttributeQuery {
+                    user_label: Some("seam".to_string()),
+                    role_and_index: None,
+                    feature_id: None,
+                },
+            },
+            // (4) user_label axis: both match role/idx query (Side, 0);
+            //     parent-keys disagree on user_label → cluster check fails →
+            //     Unresolved. (user_label branch would filter out
+            //     user_label-disagreeing candidates, so role/idx branch is
+            //     required here.)
+            Case {
+                axis: "user_label",
+                attr_a: attr(Role::Side, 0, Some("alpha")),
+                attr_b: attr(Role::Side, 0, Some("beta")),
+                query: AttributeQuery {
+                    user_label: None,
+                    role_and_index: Some((Role::Side, 0)),
+                    feature_id: None,
+                },
+            },
+        ];
+
+        for case in cases {
+            let mut table = TopologyAttributeTable::default();
+            table.record(h(60), case.attr_a);
+            table.record(h(61), case.attr_b);
+            let candidates = [h(60), h(61)];
+            let mut diagnostics = Vec::new();
+            let result = resolve_unique_by_attribute(
+                &table,
+                &candidates,
+                &case.query,
+                span(),
+                &mut diagnostics,
+            );
+            assert_eq!(
+                result,
+                AttributeResolution::Unresolved,
+                "[{}] mixed parent-keys must resolve to Unresolved",
+                case.axis
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "[{}] expected exactly one diagnostic",
+                case.axis
+            );
+            let diag = &diagnostics[0];
+            assert_eq!(
+                diag.code,
+                Some(DiagnosticCode::TopologyAttributeStale),
+                "[{}] expected TopologyAttributeStale diagnostic code",
+                case.axis
+            );
+            assert!(
+                diag.message.contains("matched 2 sub-shapes"),
+                "[{}] message should contain 'matched 2 sub-shapes', got: {}",
+                case.axis,
+                diag.message
+            );
+            assert!(
+                !diag.message.contains("split children"),
+                "[{}] mixed-parent multi-match must NOT use the split-children sub-form, got: {}",
+                case.axis,
+                diag.message
+            );
+        }
     }
 
     /// Role/idx multi-match where ALL matched candidates share the same
