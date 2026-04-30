@@ -1739,25 +1739,6 @@ impl Engine {
                                 t.collection_sub_name,
                                 t_idx,
                             );
-                            // `port_mappings` is identical across every
-                            // per-element emission. Hoist a single owned
-                            // copy outside the loop, clone from it on
-                            // earlier iterations, and `mem::take` it on
-                            // the last iteration so the final emission
-                            // moves rather than clones. Saves one
-                            // allocation per re-emission for `new_count
-                            // >= 1` (N alloc → 1 alloc + (N-1) clones).
-                            // For `new_count == 0` the owned copy is
-                            // never read; skip the hoist in that path
-                            // to preserve the prior zero-allocation
-                            // behaviour. (task-2690 amendment.)
-                            let mut port_mappings_owned: Vec<(String, String)> =
-                                if new_count > 0 {
-                                    port_mappings.clone()
-                                } else {
-                                    Vec::new()
-                                };
-
                             for i in 0..new_count {
                                 let rewritten_left = rewrite_port_placeholder(
                                     left_port_template,
@@ -1791,18 +1772,13 @@ impl Engine {
                                     .graph
                                     .constraints
                                     .insert(cnid.clone(), node);
-                                let port_mappings_for_this = if i + 1 == new_count {
-                                    std::mem::take(&mut port_mappings_owned)
-                                } else {
-                                    port_mappings_owned.clone()
-                                };
                                 new_snapshot.graph.connections.push(CompiledConnection {
                                     left_port: rewritten_left,
                                     operator: *operator,
                                     right_port: rewritten_right,
                                     connector_sub: None,
                                     compatibility_constraint: cnid.clone(),
-                                    port_mappings: port_mappings_for_this,
+                                    port_mappings: port_mappings.clone(),
                                     frame_constraint: None,
                                     span: t.span,
                                 });
