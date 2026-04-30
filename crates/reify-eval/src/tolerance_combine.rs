@@ -233,6 +233,77 @@ mod tests {
     }
 
     #[test]
+    fn extract_output_tolerance_bound_skips_non_finite_non_length_and_unrelated_entity() {
+        let mut constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData> =
+            PersistentMap::default();
+
+        // (a) NaN tolerance literal under STEPOutput — must be silently
+        // skipped (no panic). NaN comparisons always evaluate false, so a
+        // stale NaN min could never be displaced.
+        let (id_a, data_a) = representation_within_constraint_node(
+            "STEPOutput",
+            0,
+            f64::NAN,
+            DimensionVector::LENGTH,
+        );
+        constraints.insert(id_a, data_a);
+
+        // (b) INFINITY tolerance literal under STEPOutput — silently skipped.
+        let (id_b, data_b) = representation_within_constraint_node(
+            "STEPOutput",
+            1,
+            f64::INFINITY,
+            DimensionVector::LENGTH,
+        );
+        constraints.insert(id_b, data_b);
+
+        // (c) NEG_INFINITY tolerance literal under STEPOutput — silently
+        // skipped.
+        let (id_c, data_c) = representation_within_constraint_node(
+            "STEPOutput",
+            2,
+            f64::NEG_INFINITY,
+            DimensionVector::LENGTH,
+        );
+        constraints.insert(id_c, data_c);
+
+        // (d) DIMENSIONLESS Scalar literal under STEPOutput — silently
+        // skipped by the LENGTH match-guard.
+        let (id_d, data_d) = representation_within_constraint_node(
+            "STEPOutput",
+            3,
+            1.0,
+            DimensionVector::DIMENSIONLESS,
+        );
+        constraints.insert(id_d, data_d);
+
+        // (e) Valid finite LENGTH RepresentationWithin under "OtherTemplate"
+        // — silently skipped by the entity exact-match filter (even though
+        // its tolerance is tighter than (f) below).
+        let (id_e, data_e) = representation_within_constraint_node(
+            "OtherTemplate",
+            0,
+            1e-6,
+            DimensionVector::LENGTH,
+        );
+        constraints.insert(id_e, data_e);
+
+        // (f) The one valid finite LENGTH RepresentationWithin under
+        // STEPOutput — survives all gates.
+        let (id_f, data_f) =
+            representation_within_constraint_node("STEPOutput", 4, 5e-6, DimensionVector::LENGTH);
+        constraints.insert(id_f, data_f);
+
+        assert_eq!(
+            extract_output_tolerance_bound(&constraints, "STEPOutput"),
+            Some(5e-6),
+            "only the valid finite LENGTH constraint under STEPOutput must \
+             survive — all other entries (NaN, ±Inf, dimensionless, \
+             unrelated entity) must be silently skipped"
+        );
+    }
+
+    #[test]
     fn extract_output_tolerance_bound_returns_min_under_matching_entity() {
         let mut constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData> =
             PersistentMap::default();
