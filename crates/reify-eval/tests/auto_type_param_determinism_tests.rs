@@ -30,7 +30,7 @@ use reify_compiler::auto_type_param::{
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, check_source_with_stdlib, parse_and_compile_with_stdlib};
-use reify_types::{ContentHash, DiagnosticCode, Satisfaction, Severity, SourceSpan};
+use reify_types::{DiagnosticCode, Satisfaction, Severity, SourceSpan};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -122,12 +122,12 @@ fn build_registries(
 }
 
 /// Run the full Phase A→B→C pipeline on the given module and return
-/// `(CandidateEnumeration, FeasibilityResult, SelectionResult, sorted_diag_codes)`.
+/// `(CandidateEnumeration, FeasibilityResult, SelectionResult, diag_codes)`.
 ///
 /// - Phase B uses `MockConstraintChecker::with_default(default)`.
 /// - Phase C uses `strict` mode (`free = false`).
-/// - Diagnostic codes are sorted so that Eq comparison is order-independent
-///   if Phase B emits them in non-deterministic order.
+/// - Diagnostic codes are returned in emission order (NOT sorted), so that
+///   non-deterministic emission order is detectable via `assert_eq!`.
 fn run_pipeline_with_default(
     module: &CompiledModule,
     default: Satisfaction,
@@ -172,11 +172,10 @@ fn run_pipeline_with_default(
         &mut diagnostics,
     );
 
-    let mut codes: Vec<DiagnosticCode> = diagnostics
+    let codes: Vec<DiagnosticCode> = diagnostics
         .iter()
         .filter_map(|d| d.code)
         .collect();
-    codes.sort_by_key(|c| format!("{c:?}"));
 
     (enumeration, feasibility, selection, codes)
 }
@@ -184,22 +183,6 @@ fn run_pipeline_with_default(
 /// Run the pipeline with `Satisfaction::Satisfied` (all candidates accepted).
 fn run_pipeline(module: &CompiledModule) -> (CandidateEnumeration, FeasibilityResult, SelectionResult, Vec<DiagnosticCode>) {
     run_pipeline_with_default(module, Satisfaction::Satisfied)
-}
-
-/// Compute the "resolved snapshot hash" for a pipeline run.
-///
-/// As specified by PRD task 7 ("assert that the resolved snapshot hash is
-/// identical both times"), the hash is computed over a canonical-string
-/// rendering of the Phase A→B→C result tuple. Since source-level
-/// `Bearing<auto: Seal>` parsing is not yet supported, this is the
-/// algorithm-output stability hash — the closest available proxy until
-/// the parser learns `auto:` in type-arg position.
-///
-/// Uses `ContentHash::of_str` (XXH3-128) consistent with the rest of the
-/// codebase (`crates/reify-types/src/expr.rs`).
-fn pipeline_snapshot_hash(module: &CompiledModule) -> ContentHash {
-    let tuple = run_pipeline(module);
-    ContentHash::of_str(&format!("{:?}", tuple))
 }
 
 /// Strip `EXAMPLES_DIR` prefix and return a portable forward-slash-separated
@@ -336,65 +319,73 @@ fn enumerate_candidates_pipeline_is_byte_stable_across_50_iterations() {
     }
 }
 
-// ─── step-5: full A→B→C pipeline is byte-stable across two runs ──────────────
+// ─── step-5: full A→B→C pipeline is byte-stable across two invocations ───────
 
 /// Drives the full Phase A→B→C pipeline twice in succession on freshly-built
-/// registries and asserts both runs' result tuples are equal AND their
-/// sorted diagnostic-code vectors are equal.
+/// registries derived from the same cached compiled module, and asserts both
+/// runs' result tuples and diagnostic-code sequences are identical.
+///
+/// Note: both invocations share the same `compiled()` module, so this test
+/// exercises algorithm-level determinism (HashMap re-randomization in
+/// freshly-built registries). Cross-compilation determinism — where two
+/// independent `parse_and_compile_with_stdlib` calls produce the same output —
+/// is covered by `pipeline_output_is_stable_across_two_independent_compilations`.
 #[test]
-fn full_pipeline_enumerate_filter_select_is_byte_stable_across_runs() {
+fn full_pipeline_is_byte_stable_across_two_invocations_on_same_module() {
     let module = compiled();
     let run_1 = run_pipeline(module);
     let run_2 = run_pipeline(module);
     assert_eq!(
         run_1, run_2,
-        "Phase A→B→C pipeline must produce identical results on successive runs"
+        "Phase A→B→C pipeline must produce identical results on successive invocations \
+         with freshly-built registries (same compiled module)"
     );
 }
 
-// ─── step-7: snapshot hash is stable across two independent compilations ─────
+// ─── step-7: pipeline output is stable across two independent compilations ────
 
 /// Compiles `bearing_auto_seal.ri` twice **independently** (bypassing the
-/// `OnceLock` cache), runs `pipeline_snapshot_hash` on each, and asserts
-/// both hashes are equal.
+/// `OnceLock` cache via `compile_fresh()`), runs `run_pipeline` on each, and
+/// asserts both result tuples are equal via `assert_eq!`.
 ///
-/// This is the "resolved snapshot hash is identical both times" assertion
-/// from PRD task 7. The two independent compilations exercise HashMap
-/// re-randomization between separate `parse_and_compile_with_stdlib` calls.
+/// This is the "resolved snapshot hash is identical both times" assertion from
+/// PRD task 7, implemented as direct tuple equality (the all-derive-`Eq` tuple
+/// produces an actionable diff on failure, unlike an opaque hash comparison).
+/// The two independent compilations exercise HashMap re-randomization between
+/// separate `parse_and_compile_with_stdlib` calls.
 #[test]
-fn pipeline_snapshot_hash_is_stable_across_two_independent_compilations() {
-    let hash_1 = pipeline_snapshot_hash(&compile_fresh());
-    let hash_2 = pipeline_snapshot_hash(&compile_fresh());
+fn pipeline_output_is_stable_across_two_independent_compilations() {
+    let tuple_1 = run_pipeline(&compile_fresh());
+    let tuple_2 = run_pipeline(&compile_fresh());
     assert_eq!(
-        hash_1, hash_2,
-        "resolved snapshot hash must be identical across two independent compilations \
+        tuple_1, tuple_2,
+        "Phase A→B→C pipeline must produce identical output across two independent compilations \
          (HashMap re-randomization must not affect the algorithm output)"
     );
 }
 
-// ─── step-9: snapshot hash is stable under NoCandidate arm ──────────────────
+// ─── step-9: pipeline output is stable under NoCandidate arm ────────────────
 
 /// Drives the pipeline with `MockConstraintChecker::with_default(Violated)` so
 /// Phase B's `Empty` arm fires and Phase C emits `E_AUTO_TYPE_PARAM_NO_CANDIDATE`.
-/// Computes the snapshot hash over two independent compilations and asserts
-/// both are equal.
+/// Runs over two independent compilations and asserts both result tuples are
+/// equal via `assert_eq!`.
 ///
 /// Pins determinism of the diagnostic path — a regression that rendered
-/// rejected candidates in HashMap-iteration order would flip the hash.
+/// rejected candidates in HashMap-iteration order would produce unequal tuples.
+/// Using direct `assert_eq!` (rather than hashing) gives an actionable diff
+/// when the assertion fails.
 #[test]
-fn pipeline_snapshot_hash_is_stable_under_no_candidate_arm() {
+fn pipeline_output_is_stable_under_no_candidate_arm() {
     let module_1 = compile_fresh();
     let module_2 = compile_fresh();
 
     let tuple_1 = run_pipeline_with_default(&module_1, Satisfaction::Violated);
     let tuple_2 = run_pipeline_with_default(&module_2, Satisfaction::Violated);
 
-    let hash_1 = ContentHash::of_str(&format!("{:?}", tuple_1));
-    let hash_2 = ContentHash::of_str(&format!("{:?}", tuple_2));
-
     assert_eq!(
-        hash_1, hash_2,
-        "NoCandidate-arm snapshot hash must be identical across two independent compilations"
+        tuple_1, tuple_2,
+        "NoCandidate-arm pipeline output must be identical across two independent compilations"
     );
 
     // Also assert the NoCandidate arm was actually reached (sanity guard).
@@ -408,11 +399,24 @@ fn pipeline_snapshot_hash_is_stable_under_no_candidate_arm() {
 // ─── step-11: v0.1 corpus compile+check time is bounded ─────────────────────
 
 /// Walk `examples/*.ri` recursively, skipping SKIP_SET entries, and for each
-/// file time `parse_and_compile_with_stdlib + check_source_with_stdlib`.
+/// file time `check_source_with_stdlib` (which internally calls
+/// `parse_and_compile_with_stdlib`, so the measurement covers the full
+/// parse+compile+check pipeline exactly once per file).
 /// Asserts every per-file duration < 10s AND total elapsed < 120s.
 ///
 /// On failure, prints a sorted `(path, duration)` table so the slow file is
 /// immediately visible. Pinned by PRD acceptance criterion 12.
+///
+/// # Budget rationale
+///
+/// The generous bounds (10s/file, 120s total) are intentional: tight
+/// per-machine baselines flake on slow CI and require continual recalibration.
+/// The PRD §"Phase A" cap-of-10 rationale targets obvious quadratic regressions,
+/// not microbenchmark drift. As a rough baseline on a modern developer machine,
+/// each `.ri` example file compiles in under 500ms; the 10s/file and 120s
+/// total limits provide >10× headroom against a p99 outlier without risking
+/// false positives from CI scheduling jitter. If a regression pushes a file
+/// past the budget, the sorted violation table will identify it.
 #[test]
 fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     use std::collections::HashSet;
