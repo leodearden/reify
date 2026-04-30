@@ -14,8 +14,7 @@ pub fn read_f64(v: &Value, label: &str) -> f64 {
 pub fn decompose_point3(v: &Value, label: &str) -> [f64; 3] {
     let comps = match v {
         Value::Point(c) if c.len() == 3 => c,
-        Value::Point(c) => panic!("{label}: expected Value::Point len=3, got len={}", c.len()),
-        other => panic!("{label}: expected Value::Point, got {other:?}"),
+        other => panic!("{label}: expected Value::Point len=3, got {other:?}"),
     };
     [
         read_f64(&comps[0], &format!("{label}.p[0]")),
@@ -76,14 +75,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "label: expected Value::Point, got")]
+    #[should_panic(expected = "label: expected Value::Point len=3")]
     fn decompose_point3_panics_on_non_point() {
         let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         decompose_point3(&v, "label");
     }
 
     #[test]
-    #[should_panic(expected = "label: expected Value::Point len=3, got len=2")]
+    #[should_panic(expected = "label: expected Value::Point len=3")]
     fn decompose_point3_panics_on_wrong_length() {
         let v = Value::Point(vec![Value::Real(0.0), Value::Real(0.0)]);
         decompose_point3(&v, "label");
