@@ -374,3 +374,36 @@ fn compile_single_infers_element_type() {
         expr.result_type
     );
 }
+
+/// `flat_map(List<A>, (A) -> List<B>) -> List<B>`. The element type of the
+/// result follows the lambda's return type, NOT the input list's element
+/// type — so a Bool-bodied lambda must yield `List<Bool>` rather than
+/// `List<Int>` (which would happen via the first-arg fallback).
+#[test]
+fn compile_flat_map_infers_lambda_return_type_bool() {
+    let compiled =
+        parse_and_compile("structure S { let xs = flat_map([1, 2, 3], |x| [x > 0]) }");
+    let expr = get_cell_expr(&compiled, "xs");
+    assert_eq!(
+        expr.result_type,
+        Type::List(Box::new(Type::Bool)),
+        "flat_map([Int], |x| [Bool]) should have result_type List<Bool>, got {:?}",
+        expr.result_type
+    );
+}
+
+/// Sanity guard: even when the lambda body matches the input element type
+/// (so the fallback would coincidentally be correct), the new branch must
+/// still produce the right type.
+#[test]
+fn compile_flat_map_infers_lambda_return_type_int() {
+    let compiled =
+        parse_and_compile("structure S { let xs = flat_map([1, 2, 3], |x| [x, x]) }");
+    let expr = get_cell_expr(&compiled, "xs");
+    assert_eq!(
+        expr.result_type,
+        Type::List(Box::new(Type::Int)),
+        "flat_map([Int], |x| [Int]) should have result_type List<Int>, got {:?}",
+        expr.result_type
+    );
+}
