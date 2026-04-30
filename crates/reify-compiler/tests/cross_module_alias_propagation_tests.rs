@@ -29,6 +29,17 @@ fn error_count(module: &reify_compiler::CompiledModule) -> usize {
         .count()
 }
 
+fn make_alias_with_pub(name: &str, resolved_type: Type, is_pub: bool) -> CompiledTypeAlias {
+    CompiledTypeAlias {
+        name: name.to_string(),
+        resolved_type: Some(resolved_type),
+        type_params: vec![],
+        is_pub,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str(name),
+    }
+}
+
 // ─── step-3: headline acceptance tests ────────────────────────────────────
 
 /// A `pub type Stress = Pressure` alias in a prelude module must be visible
@@ -138,5 +149,108 @@ fn pub_prelude_alias_strain_resolves_to_dimensionless() {
             dimension: DimensionVector::DIMENSIONLESS,
         },
         "param `elongation : Strain` must resolve to Type::Scalar(DIMENSIONLESS)"
+    );
+}
+
+// ─── step-5: user-alias shadowing tests ───────────────────────────────────
+
+/// A user-module alias with the same name as a prelude alias must shadow the
+/// prelude alias — the user's type wins, and NO "duplicate type alias" Error
+/// diagnostic must be produced for the collision.
+#[test]
+fn user_alias_shadows_prelude_without_diagnostic() {
+    // Prelude declares pub type Foo = Length
+    let prelude_alias = make_alias_with_pub(
+        "Foo",
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        true,
+    );
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("shadow_prelude"))
+        .type_alias(prelude_alias)
+        .build();
+
+    // User module declares `type Foo = Mass` — must shadow the prelude's Length.
+    let source = "type Foo = Mass\nstructure def S { param p : Foo }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("shadow_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    // (a) No Error diagnostics — no duplicate-alias error.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "shadowing must not produce Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // (b) param p resolves to MASS (user's alias), not LENGTH (prelude's).
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template `S` not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("value cell `p` not found on `S`");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Scalar { dimension: DimensionVector::MASS },
+        "param `p : Foo` must resolve to MASS (user alias wins over prelude's LENGTH)"
+    );
+}
+
+/// When the user module does NOT declare its own alias for a name that appears
+/// in the prelude, the prelude alias must be visible.
+#[test]
+fn prelude_alias_visible_when_user_does_not_shadow() {
+    // Prelude declares pub type Foo = Length
+    let prelude_alias = make_alias_with_pub(
+        "Foo",
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        true,
+    );
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("visible_prelude"))
+        .type_alias(prelude_alias)
+        .build();
+
+    // User module does NOT declare type Foo — must pick it up from prelude.
+    let source = "structure def S { param p : Foo }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("visible_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    assert_eq!(
+        error_count(&compiled),
+        0,
+        "prelude alias must be visible; no Error diagnostics expected, got: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
+    );
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template `S` not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("value cell `p` not found on `S`");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "param `p : Foo` must resolve to LENGTH from prelude alias"
     );
 }
