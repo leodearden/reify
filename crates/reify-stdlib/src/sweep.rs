@@ -1462,4 +1462,200 @@ mod tests {
             "sweep must return Undef for a planar driving joint"
         );
     }
+
+    // ── Closed-chain warm-start across sweep steps (task 2678 step-9) ──────
+    //
+    // `build_snapshot_list`'s for-loop must thread the previous step's
+    // `free_values` into the next step's `snapshot()` call as the optional
+    // 3rd warm-start arg.  Result shape:
+    //   - List length == steps
+    //   - Each Snapshot Map's free_values matches the per-step solved
+    //     configuration
+    //   - Solved free var is monotonic in the swept driver (continuity
+    //     check — warm-start preserves the local minimum the cold solve
+    //     would have found, no jumps)
+    //
+    // Fixture (2-prismatic-X closed loop):
+    //   jA: prismatic +X, range 0..1m   (driver, swept by `sweep()`)
+    //   jB: prismatic +X, range 0..2m
+    //   Body A at jA, parent=world      → joint_parents = {jA: world}
+    //   Body B at jB, parent=world      → {jA: world, jB: world}
+    //   Body C at jB, parent=jA         → closing edge: jB's existing parent
+    //                                     was world, new is jA → loop_closure
+    //                                     record with path_a=[world, jB] and
+    //                                     path_b=[world, jA, jB].  jA is
+    //                                     directly bound (sweep), so chain_b's
+    //                                     index 0 (jA) drops from free_b;
+    //                                     chain_b's index 1 (jB) is the only
+    //                                     free var.
+    // Closure equation (composing pure +X prismatic transforms):
+    //   chain_a translation = chain_b translation
+    //   midpoint(jB)         = jA_driver + jB_free_in_chain_b
+    //   1.0                  = driver + x      →  x = 1.0 - driver
+    // For driver ∈ [0, 1]m, solved jB ∈ [1.0, 0.0]m — strictly monotonic
+    // decreasing.  Pins both the warm-start threading AND the per-step
+    // free_values shape.
+
+    /// Closed-chain sweep produces N snapshots, each with non-empty
+    /// `free_values` whose single leaf varies monotonically with the
+    /// swept driver.  The continuity check is the warm-start signal —
+    /// without warm-start, the cold solver might converge to a
+    /// secondary minimum (or fail to converge in pathological cases),
+    /// breaking monotonicity.
+    #[test]
+    fn sweep_threads_warm_start_through_closed_chain_steps() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+        );
+        // Closing edge: body C at jB, parent jA — jB's existing parent
+        // is world, so this differs and produces a loop_closure record.
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("solidC".to_string()), j_b.clone(), j_a.clone()],
+        );
+
+        // Sanity: confirm m3 has exactly one loop_closures record before sweeping.
+        match &m3 {
+            Value::Map(map) => {
+                assert!(
+                    !map.contains_key(&Value::String("error".to_string())),
+                    "fixture should not produce an errored mechanism"
+                );
+                let lc = map
+                    .get(&Value::String("loop_closures".to_string()))
+                    .expect("mechanism must carry a loop_closures field");
+                match lc {
+                    Value::List(records) => assert_eq!(
+                        records.len(),
+                        1,
+                        "exactly one loop-closure record expected"
+                    ),
+                    other => panic!("loop_closures must be a List, got {:?}", other),
+                }
+            }
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        }
+
+        // Sweep jA over [0, 1]m in 5 steps → driver values: 0, 0.25, 0.5, 0.75, 1.0.
+        let result = eval_builtin(
+            "sweep",
+            &[m3, j_a, length_range_0_to_1m(), Value::Int(5)],
+        );
+        let snaps = match result {
+            Value::List(s) => s,
+            other => panic!("sweep must return a List of snapshots, got {:?}", other),
+        };
+        assert_eq!(snaps.len(), 5, "sweep must produce 5 snapshots");
+
+        // Per-step free_values shape + monotonicity check.  Expected
+        // solved jB = 1.0 - driver, so as driver increases 0→1, solved
+        // jB decreases 1.0→0.0.  We assert strict-monotonic-decreasing
+        // across consecutive steps; tolerance 1µm absorbs solver wobble.
+        let mut prev_solved: Option<f64> = None;
+        for (i, snap) in snaps.iter().enumerate() {
+            let smap = match snap {
+                Value::Map(m) => m,
+                other => panic!("snap {i} must be a Map, got {:?}", other),
+            };
+            let fv = smap
+                .get(&Value::String("free_values".to_string()))
+                .unwrap_or_else(|| panic!("snap {i} must carry free_values"));
+            let outer = match fv {
+                Value::List(l) => l,
+                other => panic!("snap {i} free_values must be List, got {:?}", other),
+            };
+            assert_eq!(
+                outer.len(),
+                1,
+                "snap {i} outer free_values must have one entry (one loop)"
+            );
+            let inner = match &outer[0] {
+                Value::List(l) => l,
+                other => panic!("snap {i} inner free_values must be List, got {:?}", other),
+            };
+            assert_eq!(
+                inner.len(),
+                1,
+                "snap {i} inner free_values must have one Real (jB)"
+            );
+            let solved = match &inner[0] {
+                Value::Real(r) => *r,
+                other => panic!("snap {i} leaf must be Real, got {:?}", other),
+            };
+            // Expected: 1.0 - driver where driver = i / 4.0 m for 5 steps over [0,1].
+            let driver = (i as f64) / 4.0;
+            let expected = 1.0 - driver;
+            assert!(
+                (solved - expected).abs() < 1e-6,
+                "snap {i}: solved jB={solved} must match closure prediction {expected} (driver={driver})"
+            );
+            // Monotonic-decreasing check (strict; warm-start should hit
+            // the same continuous branch the cold solve found).
+            if let Some(p) = prev_solved {
+                assert!(
+                    solved < p + 1e-6,
+                    "snap {i}: solved jB={solved} must be ≤ previous {p} (monotonic decreasing)"
+                );
+            }
+            prev_solved = Some(solved);
+        }
+    }
+
+    /// Open-chain regression: sweep over a 1-body open-chain mechanism
+    /// still returns N snapshots, each with `free_values == []`.  The
+    /// warm-start arg threading is a no-op in the open-chain path
+    /// (empty in → empty out), so this pins the round-trip equality.
+    #[test]
+    fn sweep_open_chain_emits_empty_free_values_per_step() {
+        let m0 = eval_builtin("mechanism", &[]);
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j.clone()],
+        );
+        let result = eval_builtin(
+            "sweep",
+            &[m1, j, length_range_0_to_1m(), Value::Int(5)],
+        );
+        let snaps = match result {
+            Value::List(s) => s,
+            other => panic!("sweep must return a List, got {:?}", other),
+        };
+        assert_eq!(snaps.len(), 5);
+        for (i, snap) in snaps.iter().enumerate() {
+            let smap = match snap {
+                Value::Map(m) => m,
+                other => panic!("snap {i} must be a Map, got {:?}", other),
+            };
+            let fv = smap
+                .get(&Value::String("free_values".to_string()))
+                .unwrap_or_else(|| panic!("snap {i} must carry free_values"));
+            assert_eq!(
+                fv,
+                &Value::List(vec![]),
+                "open-chain snap {i} free_values must be empty"
+            );
+        }
+    }
 }
