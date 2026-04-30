@@ -2384,6 +2384,136 @@ structure def S {
     );
 }
 
+/// `(Some, None)` arm of forall-Connect unsupported-port-shape diagnostic:
+/// right side is an unsupported port shape.
+///
+/// Fixture: `connect air_channel -> v.inner.a` — the left side (`air_channel`) is
+/// a plain `Ident` that resolves fine; the right side (`v.inner.a` after
+/// substitution) is a doubly-nested `MemberAccess` that hits `_ => None` in
+/// `resolve_port_name`.
+///
+/// Pins:
+/// (a) No errors.
+/// (b) Zero `CompiledConnections` and zero `forall@*` constraint labels.
+/// (c) Zero `CompiledForallTemplates`.
+/// (d) Exactly one `Severity::Info` diagnostic total.
+/// (e) The diagnostic has a label with `message == "forall connect"` and
+///     `span == find_forall_connect_span(source, "S")`.
+/// (f) Exactly one label with `message == "right port shape not supported"`;
+///     zero labels with `message == "left port shape not supported"`.
+#[test]
+fn forall_connect_over_undef_count_unsupported_right_port_shape_emits_right_label() {
+    use reify_types::Severity;
+
+    // Right side: `v.inner.a` (doubly-nested MemberAccess) → resolve_port_name returns None.
+    // Left side: `air_channel` (plain Ident) → resolves fine.
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect air_channel -> v.inner.a
+}
+"#;
+    let module = compile_source(source);
+
+    // (a) No errors.
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall connect with unsupported \
+         right port shape, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+
+    // (b) Zero CompiledConnections and zero forall@* constraint labels.
+    assert_no_forall_connect_emissions(template);
+
+    // (c) Zero captured runtime templates.
+    assert!(
+        template.forall_templates.is_empty(),
+        "expected zero CompiledForallTemplates for deferred-count forall connect \
+         with unsupported right port shape (early return), got {} entries",
+        template.forall_templates.len()
+    );
+
+    // (d) Exactly one Severity::Info diagnostic total.
+    let total_info_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .count();
+    assert_eq!(
+        total_info_count,
+        1,
+        "expected exactly 1 info diagnostic total, got {}: {:?}",
+        total_info_count,
+        module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Info)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Info)
+        .expect("info diagnostic not found");
+
+    // (e) Primary label with stable construct-kind token and matching span.
+    let forall_span = find_forall_connect_span(source, "S");
+    assert!(
+        diag.labels
+            .iter()
+            .any(|l| l.message == "forall connect" && l.span == forall_span),
+        "expected a label {{message: \"forall connect\", span: forall_span}} on the \
+         info diagnostic; labels = {:?}, forall_span = {:?}",
+        diag.labels,
+        forall_span
+    );
+
+    // (f) Exactly one label for the right side; zero labels for the left side.
+    let right_label_count = diag
+        .labels
+        .iter()
+        .filter(|l| l.message == "right port shape not supported")
+        .count();
+    assert_eq!(
+        right_label_count,
+        1,
+        "expected exactly 1 label with message \"right port shape not supported\", \
+         got {}; labels = {:?}",
+        right_label_count,
+        diag.labels
+    );
+    let left_label_count = diag
+        .labels
+        .iter()
+        .filter(|l| l.message == "left port shape not supported")
+        .count();
+    assert_eq!(
+        left_label_count,
+        0,
+        "expected zero labels with message \"left port shape not supported\" \
+         (left side resolves fine), got {}; labels = {:?}",
+        left_label_count,
+        diag.labels
+    );
+}
+
 /// `forall v in vents: connect v.inlet <-> air_channel` over a 3-element
 /// `bidi`-ported collection sub should emit exactly 3 `CompiledConnection`s,
 /// each with `operator == ConnectOp::Bidirectional`. Pins that `cd.operator`
