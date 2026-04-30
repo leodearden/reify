@@ -49,9 +49,15 @@ pub(crate) struct ToleranceBinding {
 ///    typed `StructureRef(_)`, so a hypothetical second purpose param or an unrelated
 ///    structure reference doesn't silently bind a tolerance to `bound_entity_ref`.
 /// 3. **Tolerance literal (arg1):** `Literal(Value::Scalar { dimension == LENGTH, si_value })`
-///    where `si_value.is_finite()`. Non-finite values (NaN, ±Inf) have no semantics for a
-///    tolerance — and worse, NaN would propagate into the scope and stick (NaN comparisons
-///    always evaluate false, so `merge_with_min` could never displace it with a real value).
+///    where `si_value.is_finite() && si_value >= 0.0`. Non-finite values (NaN, ±Inf) and
+///    negative finite values have no semantics for a tolerance — and worse, both would
+///    propagate into the scope and corrupt downstream consumers. NaN sticks because
+///    `merge_with_min` could never displace it (NaN comparisons evaluate false); a
+///    negative literal would win `merge_with_min` against any positive contributor and
+///    then panic `combine_demanded_tolerance`'s debug-assert `is_finite() && >= 0.0`
+///    in debug builds (or silently win an `o.min(p)` race in release). The
+///    `>= 0.0` half of the gate restores the symmetry `tolerance_combine.rs`'s
+///    "Recognition-shape twin" docstring claims with `extract_output_tolerance_bound`.
 ///
 /// # Single-binding contract
 ///
@@ -109,10 +115,16 @@ pub(crate) fn extract_tolerance_bindings(
         }
 
         // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. }) AND
-        // its `si_value` must be finite. NaN/±Inf would propagate into the
-        // scope and stick — `merge_with_min` uses `tol < *cur` which is always
-        // false when either side is NaN, so a stale NaN could never be
-        // displaced by a real value.
+        // its `si_value` must be finite AND non-negative. NaN/±Inf would
+        // propagate into the scope and stick — `merge_with_min` uses
+        // `tol < *cur` which is always false when either side is NaN, so a
+        // stale NaN could never be displaced by a real value. A negative
+        // finite literal would similarly poison the scope: it wins
+        // `merge_with_min` against any positive contributor, then crashes
+        // `combine_demanded_tolerance`'s debug-assert `is_finite() && >= 0.0`
+        // in debug builds and silently wins an `o.min(p)` race in release.
+        // Reject both at extraction time to keep this extractor in lockstep
+        // with `extract_output_tolerance_bound`.
         let tol_arg = &args[1];
         let si_value = match &tol_arg.kind {
             CompiledExprKind::Literal(Value::Scalar {
@@ -121,7 +133,7 @@ pub(crate) fn extract_tolerance_bindings(
             }) if *dimension == DimensionVector::LENGTH => *si_value,
             _ => continue,
         };
-        if !si_value.is_finite() {
+        if !si_value.is_finite() || si_value < 0.0 {
             continue;
         }
 
