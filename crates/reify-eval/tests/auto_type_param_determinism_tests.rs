@@ -202,6 +202,19 @@ fn pipeline_snapshot_hash(module: &CompiledModule) -> ContentHash {
     ContentHash::of_str(&format!("{:?}", tuple))
 }
 
+/// Time a single full parse+compile+check pipeline pass on `src`.
+///
+/// `check_source_with_stdlib` internally calls `parse_and_compile_with_stdlib`
+/// (see `reify_test_support/src/helpers.rs:73-77`), so calling it alone covers
+/// the full parse+compile+check pipeline exactly once per file. Callers should
+/// NOT call `parse_and_compile_with_stdlib` separately before this function —
+/// that would run the pipeline twice and inflate the timing baseline by ≈2×.
+fn measure_corpus_file(src: &str) -> Duration {
+    let t = Instant::now();
+    let _ = check_source_with_stdlib(src);
+    t.elapsed()
+}
+
 /// Strip `EXAMPLES_DIR` prefix and return a portable forward-slash-separated
 /// relative path. Mirrors `relative_to_examples_dir` from `examples_smoke.rs`.
 fn relative_to_examples_dir(path: &Path) -> String {
@@ -435,12 +448,9 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
 
-        let t = Instant::now();
-        let module = parse_and_compile_with_stdlib(&src);
-        let _ = check_source_with_stdlib(&src);
-        let elapsed = t.elapsed();
-
-        let _ = module; // suppress unused warning
+        // measure_corpus_file calls check_source_with_stdlib, which already
+        // invokes parse_and_compile_with_stdlib internally — one pipeline pass.
+        let elapsed = measure_corpus_file(&src);
 
         if elapsed > PER_FILE_BUDGET {
             violations.push((rel, elapsed));
