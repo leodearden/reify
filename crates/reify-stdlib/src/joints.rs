@@ -4281,6 +4281,141 @@ mod tests {
         );
     }
 
+    // ── cylindrical transform_at: rotation-only (step-7) ─────────────────────
+
+    /// `transform_at(cyl, [length(0.0), angle(π/2)])` returns a Transform whose
+    /// rotation is the analytical revolute-Z quaternion (cos(π/4), 0, 0, sin(π/4))
+    /// and zero translation. Verifies the rotation arm of the cylindrical
+    /// transform_at dispatch in isolation.
+    #[test]
+    fn cylindrical_transform_at_rotation_only() {
+        let cyl = cylindrical_z_joint();
+        let pi = std::f64::consts::PI;
+        let motion = Value::List(vec![Value::length(0.0), Value::angle(pi / 2.0)]);
+        let result = eval_builtin("transform_at", &[cyl, motion]);
+        let cos = (pi / 4.0).cos();
+        let sin = (pi / 4.0).sin();
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, 0.0, sin),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "cyl Z, d=0 θ=π/2",
+        );
+    }
+
+    // ── cylindrical transform_at: combined motion + unnormalised axis (step-9) ──
+
+    /// Three sub-scenarios for `transform_at(cylindrical, [d, θ])`:
+    /// (a) unit Z axis, combined translation+rotation,
+    /// (b) unnormalised axis (magnitude 2 along +X) — verifies axis is
+    ///     normalised before being used in both the rotation quaternion and
+    ///     the translation scaling,
+    /// (c) diagonal axis [1,1,0]/√2 — verifies translation along a non-axis-
+    ///     aligned direction.
+    #[test]
+    fn cylindrical_transform_at_combined_and_unnormalized_axis() {
+        let pi = std::f64::consts::PI;
+
+        // (a) unit Z axis, [d=0.3m, θ=π/4]
+        let cyl_z = cylindrical_z_joint();
+        let motion_a = Value::List(vec![Value::length(0.3), Value::angle(pi / 4.0)]);
+        let result_a = eval_builtin("transform_at", &[cyl_z, motion_a]);
+        let cos_a = (pi / 8.0).cos();
+        let sin_a = (pi / 8.0).sin();
+        assert_transform_approx(
+            &result_a,
+            (cos_a, 0.0, 0.0, sin_a),
+            [0.0, 0.0, 0.3],
+            1e-12,
+            "cyl Z, d=0.3m θ=π/4",
+        );
+
+        // (b) unnormalised axis [2, 0, 0] → unit X; [d=1.0m, θ=π/2] → translation [1,0,0],
+        //     rotation about +X by π/2 = (cos(π/4), sin(π/4), 0, 0).
+        let axis_2x = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let cyl_2x = eval_builtin(
+            "cylindrical",
+            &[axis_2x, length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let motion_b = Value::List(vec![Value::length(1.0), Value::angle(pi / 2.0)]);
+        let result_b = eval_builtin("transform_at", &[cyl_2x, motion_b]);
+        let cos_b = (pi / 4.0).cos();
+        let sin_b = (pi / 4.0).sin();
+        assert_transform_approx(
+            &result_b,
+            (cos_b, sin_b, 0.0, 0.0),
+            [1.0, 0.0, 0.0],
+            1e-12,
+            "cyl unnormalised [2,0,0], d=1m θ=π/2",
+        );
+
+        // (c) diagonal axis [1,1,0]/√2 unit; [d=√2 m, θ=0] → translation [1,1,0], identity rotation.
+        let s2 = std::f64::consts::FRAC_1_SQRT_2;
+        let axis_diag = Value::Vector(vec![Value::Real(s2), Value::Real(s2), Value::Real(0.0)]);
+        let cyl_diag = eval_builtin(
+            "cylindrical",
+            &[axis_diag, length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        let motion_c = Value::List(vec![
+            Value::length(std::f64::consts::SQRT_2),
+            Value::angle(0.0),
+        ]);
+        let result_c = eval_builtin("transform_at", &[cyl_diag, motion_c]);
+        assert_transform_approx(
+            &result_c,
+            (1.0, 0.0, 0.0, 0.0),
+            [1.0, 1.0, 0.0],
+            1e-12,
+            "cyl diag [1,1,0]/√2, d=√2 m θ=0",
+        );
+    }
+
+    // ── cylindrical transform_at: invalid motion-var (step-11) ──────────────
+
+    /// Table-driven validation surface for the cylindrical transform_at second
+    /// argument. All listed shapes return Undef. Also includes one positive
+    /// polarity case (a 2-element `Value::Vector` with the right dims) that
+    /// MUST return a Transform — guards against accidental over-rejection
+    /// of the Vector container shape.
+    #[test]
+    fn cylindrical_transform_at_invalid_value_returns_undef() {
+        let cyl = cylindrical_z_joint();
+
+        let undef_cases: &[(&str, Value)] = &[
+            ("bare scalar Length",
+             Value::length(0.5)),
+            ("List of 0",
+             Value::List(vec![])),
+            ("List of 1 element",
+             Value::List(vec![Value::length(0.5)])),
+            ("List of 3 elements",
+             Value::List(vec![Value::length(0.5), Value::angle(0.0), Value::angle(0.0)])),
+            ("dim-swapped: [angle, length]",
+             Value::List(vec![Value::angle(0.5), Value::length(0.5)])),
+            ("NaN translation, valid angle",
+             Value::List(vec![Value::Real(f64::NAN), Value::angle(0.0)])),
+            ("zero translation, Inf rotation",
+             Value::List(vec![Value::length(0.0), Value::Real(f64::INFINITY)])),
+        ];
+
+        for (label, motion) in undef_cases {
+            assert!(
+                eval_builtin("transform_at", &[cyl.clone(), motion.clone()]).is_undef(),
+                "transform_at(cyl, {label}) should return Undef but didn't"
+            );
+        }
+
+        // Positive polarity: 2-element Vector container is valid.
+        let vec_motion = Value::Vector(vec![Value::length(0.5), Value::angle(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl.clone(), vec_motion]);
+        assert!(
+            matches!(&result, Value::Transform { .. }),
+            "transform_at(cyl, Vector[length, angle]) must return Transform, got {:?}",
+            result
+        );
+    }
+
     // ── cylindrical constructor: validation surface (step-3) ─────────────────
 
     /// Table-driven validation surface for the cylindrical constructor.
