@@ -512,16 +512,10 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 None => return Some(Value::Undef),
             };
             // Inverse rotation = conjugate (for unit quaternion).
+            // r_n is guaranteed unit by normalize_quat_input; quat_conj of a
+            // unit quaternion is unit, so no renormalize is needed here.
             let r_inv = quat_conj(r_n);
-            // Renormalize to handle the overflow corner: when the input norm_sq
-            // overflows to ∞ (e.g. w=1e200), r_n = q/∞ = (0,0,0,0), and
-            // quat_conj of zeros is zeros — normalize_quaternion rejects this and
-            // we return Undef instead of emitting a zero-norm Orientation.
-            let r_inv_val =
-                match normalize_quaternion(r_inv.0, r_inv.1, r_inv.2, r_inv.3) {
-                    Some(v) => v,
-                    None => return Some(Value::Undef),
-                };
+            let r_inv_val = Value::Orientation { w: r_inv.0, x: r_inv.1, y: r_inv.2, z: r_inv.3 };
             // Inverse translation: t_inv = -R^-1 * t.
             let (rtx, rty, rtz) = quat_rotate(r_inv, t[0], t[1], t[2]);
             Value::Transform {
@@ -2937,13 +2931,9 @@ mod tests {
     ///
     /// Overflow trace:
     /// - `decompose_transform` accepts: every component (1e200, 0, 0, 0) is finite.
-    /// - The `r_norm_sq < 1e-24` gate accepts: `1e200² = ∞` and `∞ < 1e-24` is false.
-    /// - But normalization produces `r_n = (0, 0, 0, 0)` because `1e200 / ∞ = 0.0` in f64.
-    /// - `quat_conj((0, 0, 0, 0)) = (0, 0, 0, 0)`.
-    /// - Without a renormalize, the direct construction emits
-    ///   `Value::Orientation { w:0, x:0, y:0, z:0 }` — a zero-norm Orientation, invalid.
-    /// - With renormalize (the fix), `normalize_quaternion` rejects the zero-norm result
-    ///   and the function returns `Undef`.
+    /// - `normalize_quat_input`: `norm_sq = 1e200² = ∞`. The gate `!norm_sq.is_finite()`
+    ///   fires, returning `None`.
+    /// - `transform_inverse` returns `Undef` immediately, before `quat_conj` is called.
     #[test]
     fn transform_inverse_overflow_quaternion_returns_undef() {
         let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
@@ -2956,11 +2946,9 @@ mod tests {
 
     /// Same overflow corner as above but with a non-zero translation `(1.0, 2.0, 3.0)`.
     ///
-    /// With zero translation the zero-norm rotation cannot independently produce
-    /// non-finite output via `quat_rotate`. This sibling test confirms that the
-    /// rotation-side `normalize_quaternion` short-circuits before `quat_rotate`
-    /// ever sees the collapsed `(0,0,0,0)` rotation — it is the rotation gate
-    /// that saves us, not coincidental zero translation.
+    /// Confirms the rotation gate in `normalize_quat_input` (not coincidental zero
+    /// translation) is what produces Undef. The gate fires before `quat_rotate` ever
+    /// sees the quaternion, so translation magnitude is irrelevant.
     #[test]
     fn transform_inverse_overflow_quaternion_nonzero_translation_returns_undef() {
         let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
