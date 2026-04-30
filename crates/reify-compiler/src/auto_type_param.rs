@@ -461,15 +461,39 @@ pub fn select_candidate(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SelectionResult {
     match feasibility {
-        FeasibilityResult::Empty { rejected: _ } => {
-            // step-2 GREEN: minimal diagnostic just to satisfy the existence
-            // contract. step-10 enriches the message and adds candidates/label.
-            diagnostics.push(
-                Diagnostic::error("auto type parameter has no feasible candidates")
-                    .with_code(DiagnosticCode::AutoTypeParamNoCandidate),
+        FeasibilityResult::Empty { rejected } => {
+            let joined_bounds = bounds.join(" + ");
+            // Per-rejection prose: each candidate paired with its violated
+            // constraint ids. v0.1 encodes per-rejection details as a string;
+            // the structured `candidates` field carries just the FQNs (parity
+            // with AutoTypeParamPoolOverflow). LSP integration (task 2389)
+            // will surface richer per-rejection structure later.
+            let rejection_summary = rejected
+                .iter()
+                .map(|r| {
+                    let ids = r
+                        .violated_constraints
+                        .iter()
+                        .map(|c| format!("{}#{}", c.entity, c.index))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("'{}' rejected by constraint {}", r.name, ids)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let rejected_names: Vec<String> = rejected.iter().map(|r| r.name.clone()).collect();
+            let message = format!(
+                "auto type parameter has no feasible candidates for bound '{bounds_str}': {summary}",
+                bounds_str = joined_bounds,
+                summary = rejection_summary,
             );
-            let _ = bounds;
-            let _ = use_site_span;
+            let label_message = format!("auto type-param bound '{}' here", joined_bounds);
+            diagnostics.push(
+                Diagnostic::error(message)
+                    .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
+                    .with_label(DiagnosticLabel::new(use_site_span, label_message))
+                    .with_candidates(rejected_names),
+            );
             SelectionResult::NoCandidate
         }
         FeasibilityResult::Feasible { accepted, .. } => {
