@@ -2915,6 +2915,27 @@ mod tests {
         assert!(eval_builtin("transform_inverse", &[make_identity_orientation()]).is_undef());
     }
 
+    /// transform_inverse with an overflow-corner quaternion (w = 1e200, x=y=z=0) → Undef.
+    ///
+    /// Overflow trace:
+    /// - `decompose_transform` accepts: every component (1e200, 0, 0, 0) is finite.
+    /// - The `r_norm_sq < 1e-24` gate accepts: `1e200² = ∞` and `∞ < 1e-24` is false.
+    /// - But normalization produces `r_n = (0, 0, 0, 0)` because `1e200 / ∞ = 0.0` in f64.
+    /// - `quat_conj((0, 0, 0, 0)) = (0, 0, 0, 0)`.
+    /// - Without a renormalize, the direct construction emits
+    ///   `Value::Orientation { w:0, x:0, y:0, z:0 }` — a zero-norm Orientation, invalid.
+    /// - With renormalize (the fix), `normalize_quaternion` rejects the zero-norm result
+    ///   and the function returns `Undef`.
+    #[test]
+    fn transform_inverse_overflow_quaternion_returns_undef() {
+        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_t = make_transform(bad_rot, 0.0, 0.0, 0.0);
+        assert!(
+            eval_builtin("transform_inverse", std::slice::from_ref(&bad_t)).is_undef(),
+            "expected Undef for overflow-corner quaternion but got a non-Undef result"
+        );
+    }
+
     // ── transform_log tests (step-19) ────────────────────────────────────────
 
     /// Helper: extract a Vector3's three f64 components from a Map's value at `key`.
