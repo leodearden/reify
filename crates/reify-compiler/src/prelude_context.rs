@@ -21,11 +21,13 @@ use reify_types::EnumDef;
 
 use crate::CompiledModule;
 use crate::compile_builder::enums_phase::flatten_prelude_enum_defs;
+use crate::types::CompiledTypeAlias;
 
 /// An immutable, pre-built cache of prelude module data.
 ///
-/// Caches the flattened `resolution_enums` from a slice of prelude modules so
-/// that the flat_map-then-clone in `enums_phase::build_resolution_enums` is
+/// Caches the flattened `resolution_enums` and `pub_aliases` from a slice of
+/// prelude modules so that the flat_map-then-clone in
+/// `enums_phase::build_resolution_enums` (and the analogous alias pass) is
 /// executed only once (at construction) rather than on every compile call.
 ///
 /// # Typical usage
@@ -44,6 +46,10 @@ pub struct PreludeContext<'a> {
     modules: Vec<&'a CompiledModule>,
     /// Pre-flattened enum definitions from every prelude module, in source order.
     resolution_enums: Vec<EnumDef>,
+    /// Pre-flattened pub type aliases from every prelude module, in source order.
+    /// Only `is_pub == true` entries are included (non-pub aliases are filtered out
+    /// at construction time so callers never need to filter themselves).
+    pub_aliases: Vec<CompiledTypeAlias>,
 }
 
 impl<'a> PreludeContext<'a> {
@@ -59,9 +65,14 @@ impl<'a> PreludeContext<'a> {
     /// values (e.g. `&'static [CompiledModule]` from `load_stdlib()`).
     pub fn new(prelude: &[&'a CompiledModule]) -> Self {
         let resolution_enums = flatten_prelude_enum_defs(prelude);
+        let pub_aliases = prelude
+            .iter()
+            .flat_map(|m| m.type_aliases.iter().filter(|a| a.is_pub).cloned())
+            .collect();
         Self {
             modules: prelude.to_vec(),
             resolution_enums,
+            pub_aliases,
         }
     }
 
@@ -88,6 +99,18 @@ impl<'a> PreludeContext<'a> {
     /// `prelude.iter().flat_map(|m| m.enum_defs.iter().cloned()).collect()`.
     pub fn resolution_enums(&self) -> &[EnumDef] {
         &self.resolution_enums
+    }
+
+    /// The pre-flattened pub type aliases from every prelude module, in source
+    /// order (m[0] pub aliases first, then m[1], …).
+    ///
+    /// Only `is_pub == true` entries are included — non-pub aliases from prelude
+    /// modules are not visible to user modules by design.
+    ///
+    /// This is the cached result of:
+    /// `prelude.iter().flat_map(|m| m.type_aliases.iter().filter(|a| a.is_pub).cloned()).collect()`.
+    pub fn pub_aliases(&self) -> &[CompiledTypeAlias] {
+        &self.pub_aliases
     }
 
     /// The names of every enum in the prelude, in [`resolution_enums`](Self::resolution_enums)
