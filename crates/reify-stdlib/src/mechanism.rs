@@ -1322,8 +1322,9 @@ mod tests {
     // ── duplicate-solid detection ────────────────────────────────────────
 
     /// `body()` calls that try to insert the same solid value twice
-    /// produce an errored Mechanism Map with `error="duplicate_solid"`
-    /// and a non-empty `error_message`.
+    /// produce an errored Mechanism Map with `error="duplicate_solid"`,
+    /// a non-empty `error_message`, and empty-List `error_path1`/`error_path2`
+    /// fields (shape-uniformity with the v0.1 error-Map convention).
     ///
     /// v0.1 detects duplicates by **structural** `Value` equality —
     /// the docs §13.2 spec says "by referential identity" but Reify's
@@ -1358,6 +1359,16 @@ mod tests {
             }
             other => panic!("expected error_message String, got {:?}", other),
         }
+        assert_eq!(
+            map.get(&Value::String("error_path1".to_string())),
+            Some(&Value::List(vec![])),
+            "error_path1 should be an empty List for duplicate_solid"
+        );
+        assert_eq!(
+            map.get(&Value::String("error_path2".to_string())),
+            Some(&Value::List(vec![])),
+            "error_path2 should be an empty List for duplicate_solid"
+        );
     }
 
     // ── body_id_of() lookup ──────────────────────────────────────────────
