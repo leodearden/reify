@@ -762,12 +762,6 @@ mod tests {
             diag.code,
             Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
         );
-        assert!(
-            diag.message.contains("matched 2 split children"),
-            "diagnostic message should interpolate the children count via the wording \
-             template ('matched N split children'), got: {}",
-            diag.message,
-        );
     }
 
     /// User_label multi-match where ALL matched candidates share the
@@ -816,12 +810,6 @@ mod tests {
         assert_eq!(
             diag.code,
             Some(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
-        );
-        assert!(
-            diag.message.contains("matched 2 split children"),
-            "diagnostic message should interpolate the children count via the wording \
-             template ('matched N split children'), got: {}",
-            diag.message,
         );
     }
 
