@@ -59,12 +59,18 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
         "snapshot" => {
             // Validation surface (each guard short-circuits to
             // Value::Undef BEFORE the FK walk):
-            //   args.len() == 2                                → arity guard
+            //   args.len() ∈ {2, 3}                            → arity guard
             //   args[0] is Map with kind="mechanism"           → mechanism guard
             //   args[1] is Value::List                         → bindings guard
+            //   args[2] (when present) is List<List<Real>>     → warm-start
+            //     shape guard (parsed below)                     guard
+            // 3-arg form is the warm-start path (task 2678 step-8):
+            // `snapshot(m, bindings, prev_free_values)` seeds the
+            // loop-closure solver from the previous snapshot's
+            // converged free values via `StartStrategy::WarmStart`.
             // Errored-mechanism short-circuit and per-binding
             // shape validation are layered on in subsequent steps.
-            if args.len() != 2 {
+            if args.len() != 2 && args.len() != 3 {
                 return Some(Value::Undef);
             }
             let mech_map = match &args[0] {
@@ -173,6 +179,53 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 // as open-chain.
                 _ => &[],
             };
+
+            // Warm-start parsing (task 2678 step-8).
+            //
+            // When `args.len() == 3`, parse args[2] as
+            // `Value::List<Value::List<Value::Real>>` matching the
+            // `free_values` shape produced by step-6.  Outer-List length
+            // MUST equal `loop_closures.len()` — defense-in-depth against
+            // a caller threading a stale snapshot's free_values into a
+            // structurally different mechanism.  Per-loop inner-List
+            // length checks land later (need each loop's `free_b.len()`
+            // to validate, which is computed inside the closed-chain
+            // block below).
+            //
+            // Open-chain (loop_closures empty) + 3-arg with empty outer
+            // List is a no-op fast path: the warm-start vec stays empty
+            // and the closed-chain block doesn't run.  This is exactly
+            // what `build_snapshot_list` will do — it threads the prev
+            // snapshot's `free_values` (which is `[]` for open-chain
+            // mechanisms) through every step.
+            let warm_start_seeds: Option<Vec<Vec<f64>>> = if args.len() == 3 {
+                let outer = match &args[2] {
+                    Value::List(l) => l,
+                    _ => return Some(Value::Undef),
+                };
+                if outer.len() != loop_closures.len() {
+                    return Some(Value::Undef);
+                }
+                let mut parsed: Vec<Vec<f64>> = Vec::with_capacity(outer.len());
+                for entry in outer {
+                    let inner = match entry {
+                        Value::List(l) => l,
+                        _ => return Some(Value::Undef),
+                    };
+                    let mut row: Vec<f64> = Vec::with_capacity(inner.len());
+                    for v in inner {
+                        match v {
+                            Value::Real(r) if r.is_finite() => row.push(*r),
+                            _ => return Some(Value::Undef),
+                        }
+                    }
+                    parsed.push(row);
+                }
+                Some(parsed)
+            } else {
+                None
+            };
+
             // Per-loop converged free-variable values, threaded into the
             // Snapshot Map's `free_values` key (task 2678 step-6).  Outer
             // List length == loop_closures.len(); inner List length ==
@@ -200,7 +253,7 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                 // binding — but the ordering stays correct under any
                 // future refactor that loosens that invariant.
                 let mut synth_bindings: Vec<Value> = bindings_list.to_vec();
-                for record in loop_closures {
+                for (loop_idx, record) in loop_closures.iter().enumerate() {
                     let (chain_a, vals_a, chain_b, vals_b_initial, free_b) =
                         match extract_loop_closure_chains(record, bindings_list) {
                             Some(t) => t,
@@ -212,13 +265,32 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                             None => return Some(Value::Undef),
                         };
 
+                    // Pick the strategy: warm-start when the caller supplied
+                    // a 3rd arg with a matching-length seed vector, midpoint
+                    // otherwise.  Per-loop inner-List length (validated here)
+                    // MUST equal this loop's `free_b.len()` — the solver's
+                    // own `validate_loop_closure_inputs` re-enforces it, but
+                    // catching it here surfaces the structural bug at the
+                    // snapshot boundary rather than burying it inside an
+                    // `InvalidInput` outcome.
+                    let strategy = match warm_start_seeds.as_ref() {
+                        Some(seeds) => {
+                            let row = &seeds[loop_idx];
+                            if row.len() != free_b.len() {
+                                return Some(Value::Undef);
+                            }
+                            StartStrategy::WarmStart(row.clone())
+                        }
+                        None => StartStrategy::Midpoint,
+                    };
+
                     let outcome = solve_loop_closure(
                         &chain_a,
                         &vals_a,
                         &chain_b,
                         &vals_b_initial,
                         &free_b,
-                        &StartStrategy::Midpoint,
+                        &strategy,
                         &NewtonConfig::default(),
                     );
 
