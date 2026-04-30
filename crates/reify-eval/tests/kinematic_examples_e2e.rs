@@ -16,7 +16,9 @@ use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    collect_errors, decompose_point3, make_simple_engine, parse_and_compile_with_stdlib, read_f64,
+};
 use reify_types::{ExportFormat, Satisfaction, Value, ValueCellId};
 
 // ── Path constants ────────────────────────────────────────────────────────────
@@ -67,30 +69,6 @@ fn counter_mass_balance_compiles_clean() {
     let _ = cmb_compiled();
 }
 
-/// Read a numeric component (Real, Scalar, or Int) as f64 SI value.
-fn read_f64(v: &Value, label: &str) -> f64 {
-    match v {
-        Value::Real(r) => *r,
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Int(i) => *i as f64,
-        other => panic!("{label}: expected numeric component, got {other:?}"),
-    }
-}
-
-/// Decompose a `Value::Point` of three numeric components into `[f64; 3]` (SI).
-///
-/// Mirrors `decompose_point3` in `forward_kinematics_e2e.rs`.
-fn decompose_point3(v: &Value, label: &str) -> [f64; 3] {
-    let comps = match v {
-        Value::Point(c) if c.len() == 3 => c,
-        other => panic!("{label}: expected Value::Point len=3, got {other:?}"),
-    };
-    [
-        read_f64(&comps[0], &format!("{label}.p[0]")),
-        read_f64(&comps[1], &format!("{label}.p[1]")),
-        read_f64(&comps[2], &format!("{label}.p[2]")),
-    ]
-}
 
 /// `engine.eval()` on `counter_mass_balance.ri` produces:
 ///   - `snap_count == Value::Int(11)`
