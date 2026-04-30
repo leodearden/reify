@@ -543,25 +543,27 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
     );
 
     // At least one diagnostic must exist: the under-constrained pre-check warning.
-    // Using >=1 (rather than ==1) keeps this check independent of the
-    // KinematicSingularity bleed-through assertion below — both carry real weight.
+    // Using is_empty() (rather than len() >= 1) keeps this check idiomatic and
+    // satisfies clippy::len_zero.  The KinematicSingularity bleed-through assertion
+    // below is independent and carries real weight in its own right.
     assert!(
-        report.diagnostics.len() >= 1,
+        !report.diagnostics.is_empty(),
         "expected at least one under-constrained diagnostic, got {:?}",
         report.diagnostics
     );
-    let d = &report.diagnostics[0];
+    // Use .find() rather than indexing [0] so this assertion is order-independent:
+    // a future regression that introduces a second pre-check warning ahead of
+    // KinematicUnderconstrained would not silently break code/severity mismatches.
+    let under = report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::KinematicUnderconstrained))
+        .expect("missing KinematicUnderconstrained diagnostic in diagnostics vec");
     assert_eq!(
-        d.severity,
+        under.severity,
         Severity::Warning,
         "KinematicUnderconstrained must be Warning severity, got {:?}",
-        d.severity
-    );
-    assert_eq!(
-        d.code,
-        Some(DiagnosticCode::KinematicUnderconstrained),
-        "diagnostic code must be KinematicUnderconstrained, got {:?}",
-        d.code
+        under.severity
     );
 
     // Decoupling guarantee: no singularity bleed-through.
@@ -586,9 +588,22 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
     );
 
     // Zero initial residual → Converged in 0 iters.
-    assert!(
-        matches!(report.outcome, NewtonOutcome::Converged { .. }),
-        "expected Converged on identity residual, got {:?}",
-        report.outcome
-    );
+    // Destructure iters explicitly so a future regression that broke the
+    // zero-residual short-circuit (and proceeded to Newton/LDLᵀ) fails with a
+    // clear "expected iters=0, got N" message rather than a silent type mismatch.
+    match &report.outcome {
+        NewtonOutcome::Converged { iters, .. } => {
+            assert_eq!(
+                *iters,
+                0,
+                "zero-residual setup must short-circuit before LDLᵀ runs \
+                 (vals_a == vals_b_initial → identity twist → Converged at iter 0); \
+                 a regression that broke the short-circuit and proceeded to LDLᵀ \
+                 would yield iters >= 1, exposing that the singularity check is \
+                 structurally unreachable for n_free > 6 (JᵀJ rank-deficient by \
+                 construction)",
+            );
+        }
+        other => panic!("expected Converged on identity residual, got {other:?}"),
+    }
 }
