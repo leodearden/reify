@@ -244,7 +244,9 @@ pub fn convert_parse_error(err: &ParseError, source: &str, _uri: &Url) -> lsp_ty
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_test_support::CountingSubscriberBuilder;
     use reify_types::{DiagnosticCode, DiagnosticLabel};
+    use std::sync::atomic::Ordering;
     use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString, Position, Url};
 
     #[test]
@@ -699,6 +701,51 @@ mod tests {
             lsp.data,
             Some(serde_json::json!({"candidates": ["foo::A", "foo::B"]})),
             "data field must contain the FQN candidate list for AutoTypeParamAmbiguous diagnostics"
+        );
+    }
+
+    /// Asserts that `convert_diagnostic` emits exactly one `tracing::debug!` event
+    /// (on the `reify_lsp::auto_type_param` target) for each of the four
+    /// `AutoTypeParam*` diagnostic codes, and zero events for a non-matching code.
+    ///
+    /// This test fails on the `eprintln!`-based code (counter stays at 0) and
+    /// passes once the `tracing::debug!` implementation is in place.
+    #[test]
+    fn convert_diagnostic_emits_tracing_debug_only_for_auto_type_param_codes() {
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .target_prefix("reify_lsp::auto_type_param")
+            .count_level(tracing::Level::DEBUG)
+            .build();
+        let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let source = "auto";
+            // Exercise all four AutoTypeParam codes — each must emit one debug event.
+            for code in [
+                DiagnosticCode::AutoTypeParamPoolOverflow,
+                DiagnosticCode::AutoTypeParamNoCandidate,
+                DiagnosticCode::AutoTypeParamAmbiguous,
+                DiagnosticCode::AutoTypeParamNonUnique,
+            ] {
+                let diag = Diagnostic::error("auto-type-param error")
+                    .with_code(code)
+                    .with_candidates(vec!["A".to_string(), "B".to_string()])
+                    .with_label(DiagnosticLabel::new(SourceSpan::new(0, 4), "x"));
+                let _ = convert_diagnostic(&diag, source, &test_uri());
+            }
+
+            // A non-AutoTypeParam code must NOT emit a debug event on this target.
+            let shadowing_diag = Diagnostic::warning("shadowing warning")
+                .with_code(DiagnosticCode::Shadowing)
+                .with_label(DiagnosticLabel::new(SourceSpan::new(0, 4), "here"));
+            let _ = convert_diagnostic(&shadowing_diag, source, &test_uri());
+        });
+
+        assert_eq!(
+            debug_count.load(Ordering::Acquire),
+            4,
+            "expected exactly 4 debug events (one per AutoTypeParam variant); \
+             non-AutoTypeParam codes must not emit on reify_lsp::auto_type_param"
         );
     }
 }
