@@ -18,6 +18,12 @@
 //! `Bearing<T: Seal>` parameterized template, and a concrete
 //! `sub bearing = Bearing<ORingSeal>()` occurrence inside `BearingAssembly` so
 //! the file compiles cleanly and is auto-discovered by `examples_smoke.rs`.
+//!
+//! Known coverage gap: all determinism assertions exercise a single-bound
+//! list `&["Seal"]`. Multi-bound enumeration (per-bound candidate set
+//! intersection) has its own potential iteration-order hazards but is
+//! out of scope for v0.1's auto-type-param PRD; add follow-up coverage if
+//! multi-bound resolution lands.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -290,6 +296,12 @@ fn bearing_auto_seal_fixture_compiles_with_three_seal_candidates() {
 /// Pins Phase A's alphabetical sort at the integration level using the
 /// example fixture — a regression to source-iteration order or HashMap
 /// iteration order would break this test.
+///
+/// Scope: this exercises only per-iteration registry-HashMap re-randomization
+/// (the cached `compiled()` module's templates Vec is identical in source
+/// order across iterations). Broader cross-compilation determinism — where
+/// independent `parse_and_compile_with_stdlib` calls produce identical output
+/// — is covered by `pipeline_output_is_stable_across_two_independent_compilations`.
 #[test]
 fn enumerate_candidates_pipeline_is_byte_stable_across_50_iterations() {
     let module = compiled();
@@ -393,6 +405,15 @@ fn pipeline_output_is_stable_under_no_candidate_arm() {
         tuple_1.2,
         SelectionResult::NoCandidate,
         "expected NoCandidate when all candidates are Violated"
+    );
+
+    // Explicit diagnostic-code guarantee: a regression that swallowed or
+    // renamed E_AUTO_TYPE_PARAM_NO_CANDIDATE would still satisfy the tuple
+    // equality above, so assert the code's existence directly.
+    assert!(
+        tuple_1.3.contains(&DiagnosticCode::AutoTypeParamNoCandidate),
+        "expected AutoTypeParamNoCandidate (E_AUTO_TYPE_PARAM_NO_CANDIDATE) in emitted diag codes, got: {:?}",
+        tuple_1.3
     );
 }
 
