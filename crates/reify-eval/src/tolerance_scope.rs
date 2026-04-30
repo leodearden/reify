@@ -73,6 +73,7 @@ pub(crate) fn extract_tolerance_bindings(
     bound_entity_ref: &str,
 ) -> Vec<ToleranceBinding> {
     let mut bindings = Vec::new();
+    let mut distinct_subject_params: BTreeSet<&str> = BTreeSet::new();
     for constraint in &purpose.constraints {
         // Match: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1])
         let (function_name, args) = match &constraint.expr.kind {
@@ -113,6 +114,10 @@ pub(crate) fn extract_tolerance_bindings(
         {
             continue;
         }
+        // Track distinct subject param names that pass the membership gate.
+        // Used by the debug_assert after the loop to enforce the single-binding
+        // contract (see function docstring # Single-binding contract).
+        distinct_subject_params.insert(subject_cell_id.entity.as_str());
 
         // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, si_value })
         // where si_value.is_finite() && si_value >= 0.0 — see gate-3 in the
@@ -134,6 +139,16 @@ pub(crate) fn extract_tolerance_bindings(
             si_tolerance: si_value,
         });
     }
+    debug_assert!(
+        distinct_subject_params.len() <= 1,
+        "single-binding contract: extract_tolerance_bindings saw {} distinct \
+         purpose-param subjects ({:?}) but today's activate_purpose API binds \
+         only one entity_ref per purpose; a multi-param-aware producer must \
+         thread param identity into ToleranceBinding rather than collapsing \
+         to bound_entity_ref",
+        distinct_subject_params.len(),
+        distinct_subject_params,
+    );
     bindings
 }
 
