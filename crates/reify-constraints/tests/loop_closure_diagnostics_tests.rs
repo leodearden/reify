@@ -14,6 +14,7 @@
 //! is exercised in `crates/reify-types/src/diagnostics.rs`'s inline test
 //! module — these tests focus on producer-side semantics.
 
+use reify_constraints::{LoopClosureReport, NewtonOutcome};
 use reify_types::{Diagnostic, DiagnosticCode, Severity};
 
 // ── Step-1: DiagnosticCode variants exist and are distinct ──────────────
@@ -62,4 +63,28 @@ fn kinematic_underconstrained_round_trips_via_warning_with_code() {
         .with_code(DiagnosticCode::KinematicUnderconstrained);
     assert_eq!(d.severity, Severity::Warning);
     assert_eq!(d.code, Some(DiagnosticCode::KinematicUnderconstrained));
+}
+
+// ── Step-3: LoopClosureReport public-struct shape ───────────────────────
+
+/// Pins the public shape of `LoopClosureReport`: three publicly accessible
+/// fields (`outcome`, `is_singular`, `diagnostics`) that the
+/// `solve_loop_closure_with_diagnostics` wrapper populates.  Constructing
+/// the struct via a literal and reading every field confirms each one is
+/// `pub` — a future change that demotes any field to private would fail
+/// here.
+#[test]
+fn loop_closure_report_struct_literal_exposes_three_pub_fields() {
+    let report = LoopClosureReport {
+        outcome: NewtonOutcome::Converged {
+            x: vec![0.0],
+            iters: 0,
+            residual_norm: 0.0,
+        },
+        is_singular: false,
+        diagnostics: vec![],
+    };
+    assert!(matches!(report.outcome, NewtonOutcome::Converged { .. }));
+    assert!(!report.is_singular);
+    assert!(report.diagnostics.is_empty());
 }
