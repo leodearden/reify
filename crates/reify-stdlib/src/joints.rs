@@ -4567,10 +4567,13 @@ mod tests {
     // ── cylindrical transform_at: invalid motion-var (step-11) ──────────────
 
     /// Table-driven validation surface for the cylindrical transform_at second
-    /// argument. All listed shapes return Undef. Also includes one positive
-    /// polarity case (a 2-element `Value::List` with the right dims) that
-    /// MUST return a Transform — guards against accidental over-rejection
-    /// of the canonical List container shape.
+    /// argument. All listed shapes return Undef. Also includes two positive
+    /// polarity cases: (1) a 2-element `Value::List` with the right dims that
+    /// MUST return a Transform — guards against accidental over-rejection of
+    /// the canonical List container shape; (2) a bare `Value::Real` pair that
+    /// pins the `length_input`/`trig_input` bare-Real contract — without this,
+    /// a future tightening to require dimensioned Scalars could silently shrink
+    /// cylindrical's accepted input set.
     ///
     /// Container shape is List-only (mirrors the planar arm); a 2-element
     /// `Value::Vector` is rejected as a negative case to keep the joint-zoo
@@ -4617,6 +4620,18 @@ mod tests {
         assert!(
             matches!(&result, Value::Transform { .. }),
             "transform_at(cyl, List[length, angle]) must return Transform, got {:?}",
+            result
+        );
+
+        // Positive polarity: bare-Real motion vars (interpreted as metres/radians).
+        // Locks in that length_input/trig_input accept Value::Real, mirroring the
+        // planar arm. Without this, a future tightening to require dimensioned
+        // Scalars could silently shrink cylindrical's accepted input set.
+        let bare_real_motion = Value::List(vec![Value::Real(0.5), Value::Real(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl.clone(), bare_real_motion]);
+        assert!(
+            matches!(&result, Value::Transform { .. }),
+            "transform_at(cyl, List[Real, Real]) must return Transform, got {:?}",
             result
         );
     }
