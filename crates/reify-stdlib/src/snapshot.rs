@@ -718,13 +718,9 @@ fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
 ///
 /// - `prismatic` → `Value::length(mid_si)` (metres)
 /// - `revolute`  → `Value::angle(mid_si)`  (radians)
-/// - `coupling`  → recurse on the coupling's `parent` (the coupling's
-///   own free-variable dimension is the parent's; `transform_at`
-///   applies `ratio`/`offset` downstream).
 ///
-/// Returns `None` for non-Map joints, missing `kind`, unknown kinds,
-/// or a coupling whose `parent` field is missing/non-Map — symmetric
-/// with `joint_range_midpoint`'s defensive failure modes.
+/// Returns `None` for non-Map joints, missing `kind`, or unknown kinds —
+/// symmetric with `joint_range_midpoint`'s defensive failure modes.
 fn wrap_midpoint_for_joint(joint: &Value, mid_si: f64) -> Option<Value> {
     let map = match joint {
         Value::Map(m) => m,
@@ -737,18 +733,19 @@ fn wrap_midpoint_for_joint(joint: &Value, mid_si: f64) -> Option<Value> {
     match kind {
         "prismatic" => Some(Value::length(mid_si)),
         "revolute" => Some(Value::angle(mid_si)),
-        "coupling" => {
-            let parent = map.get(&Value::String("parent".to_string()))?;
-            wrap_midpoint_for_joint(parent, mid_si)
-        }
+        // Couplings cannot reach this function under the documented call path:
+        // `value_for` short-circuits coupling joints at the Coupling-tracks-parent
+        // arm (lines 642-648) before ever reaching the joint_range_midpoint +
+        // wrap_midpoint_for_joint fallback at lines 650-651.  Any future caller
+        // that violates this precondition is handled harmlessly by `_ => None`.
+        //
         // 3-DOF planar joint: defense-in-depth explicit deferral arm.
         // Today this arm is unreachable from a planar joint: joint_range_midpoint
-        // returns None for planar (step-2's change), and value_for only calls
+        // returns None for planar, and value_for only calls
         // wrap_midpoint_for_joint after joint_range_midpoint returns Some.
         // The explicit arm keeps the dispatch table symmetric across all kinds
-        // in JOINT_KINDS, mirroring step-2's change in joint_range_midpoint,
-        // and is the documented breadcrumb when PRD v0.2 task 2 (#2670) extends
-        // joint_range_midpoint to return per-DOF defaults for planar.
+        // in JOINT_KINDS, and is the documented breadcrumb when PRD v0.2 task 2
+        // (#2670) extends joint_range_midpoint to return per-DOF defaults for planar.
         "planar" => None,
         _ => None,
     }
