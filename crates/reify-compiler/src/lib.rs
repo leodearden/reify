@@ -194,6 +194,11 @@ pub fn compile_with_prelude(
 /// `reify_eval::Engine` uses an unfiltered append that is dispatch-equivalent under
 /// first-match-wins semantics (shadowed prelude entries are unreachable at dispatch time),
 /// but the dedup logic for the filtered case lives here.
+///
+/// **Cross-phase note:** the silent first-wins policy here is the third variant in a set
+/// of three divergent cross-prelude collision policies; see `prelude_context` §
+/// "Cross-prelude collision policy" for the full comparison (units = last-wins/warns;
+/// aliases = first-wins/warns; functions = first-wins/silent).
 pub fn merge_prelude_functions(
     user: &[CompiledFunction],
     prelude: &[CompiledFunction],
@@ -269,6 +274,9 @@ pub fn compile_with_prelude_context(
         // Emit cross-prelude pub alias collision warnings detected at PreludeContext
         // construction time. Mirroring units_phase's 'last-wins' warning for cross-prelude
         // unit collisions, but first-wins here (PreludeContext::new deduplicates eagerly).
+        // See `prelude_context` § "Cross-prelude collision policy" for the full cross-phase
+        // comparison (units = last-wins/warns; aliases = first-wins/warns; functions =
+        // first-wins/silent).
         for (alias_name, first_module, second_module) in ctx.pub_alias_collision_warnings() {
             compile_ctx.diagnostics.push(
                 Diagnostic::warning(format!(

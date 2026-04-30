@@ -7,6 +7,11 @@
 //! duplicates are suppressed here because `compile()` rejects them earlier.
 //! Module-local duplicates produce an error keyed on the original
 //! registration's provenance (stdlib / user-module / module-local).
+//!
+//! **Cross-phase note:** see `prelude_context` § "Cross-prelude collision
+//! policy" for a comparison of all three sibling-phase policies (units =
+//! last-wins/warns; aliases = first-wins/warns; functions =
+//! first-wins/silent).
 
 use reify_syntax::UnitDecl;
 use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};

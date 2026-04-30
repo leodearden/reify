@@ -19,6 +19,15 @@
 //! 2. **Parametric skip** — prelude aliases with non-empty `type_params` are
 //!    skipped (TODO: cross-module parametric propagation requires carrying
 //!    `TypeExpr` across the module boundary, which is deferred).
+//!
+//! **Cross-phase note:** cross-prelude alias collisions (two prelude modules
+//! declaring the same pub alias name) are resolved by `PreludeContext::new`
+//! *before* this phase is called — the `prelude_aliases` slice passed to
+//! `phase_aliases` is already deduplicated (first-wins).  The seed loop below
+//! is therefore idempotent with respect to prelude-vs-prelude duplicates.
+//! See `prelude_context` § "Cross-prelude collision policy" for the full
+//! cross-phase comparison (units = last-wins/warns; aliases =
+//! first-wins/warns; functions = first-wins/silent).
 
 use std::collections::{HashMap, HashSet};
 
