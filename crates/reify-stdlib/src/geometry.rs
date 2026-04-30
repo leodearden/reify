@@ -94,6 +94,11 @@ const INPUT_QUAT_NORM_SQ_MIN: f64 = 1e-24;
 /// `transform_inverse`, and `transform_compose` symmetric on overflow input without
 /// requiring per-site defensive renormalizes.
 ///
+/// `is_finite()` also rejects NaN (defensive): all current call sites pass through
+/// `decompose_transform`'s `quaternion_is_finite` check, so NaN cannot reach this
+/// helper in practice — but future callers that bypass `decompose_transform` are
+/// covered automatically.
+///
 /// Called by `transform_log`, `transform_inverse`, and `transform_compose` for
 /// input-side quaternion normalization, unifying three formerly near-identical blocks.
 fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)> {
@@ -515,6 +520,7 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             // r_n is guaranteed unit by normalize_quat_input; quat_conj of a
             // unit quaternion is unit, so no renormalize is needed here.
             let r_inv = quat_conj(r_n);
+            debug_assert!(quaternion_is_finite(r_inv.0, r_inv.1, r_inv.2, r_inv.3));
             let r_inv_val = Value::Orientation { w: r_inv.0, x: r_inv.1, y: r_inv.2, z: r_inv.3 };
             // Inverse translation: t_inv = -R^-1 * t.
             let (rtx, rty, rtz) = quat_rotate(r_inv, t[0], t[1], t[2]);
@@ -556,6 +562,7 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             // R = R1 * R2 (Hamilton product). r1_n and r2_n are unit by construction;
             // quat_mul of unit quaternions is unit (modulo FP rounding).
             let composed_r = quat_mul(r1_n, r2_n);
+            debug_assert!(quaternion_is_finite(composed_r.0, composed_r.1, composed_r.2, composed_r.3));
             let r_val = Value::Orientation { w: composed_r.0, x: composed_r.1, y: composed_r.2, z: composed_r.3 };
             // t = R1 * t2 + t1.
             let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2[0], t2[1], t2[2]);
