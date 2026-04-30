@@ -367,6 +367,77 @@ mod tests {
         );
     }
 
+    /// Insertion-order independence of `available`: two `HashSet<ReprKind>`
+    /// containing the same reprs (BRep and Sdf) but inserted in different
+    /// orders must produce byte-equal `DispatchPlan`s. Locks the BTreeSet
+    /// seeding fix at `dispatcher.rs:122` and the rationale comment block
+    /// at `dispatcher.rs:113-121`. With this registry shape (kappa: BRep→Mesh,
+    /// lambda: Sdf→Mesh), seeding BRep first yields `[(kappa, BRep, Mesh)]`
+    /// while seeding Sdf first yields `[(lambda, Sdf, Mesh)]`; removing the
+    /// BTreeSet sort would make output sensitive to hash-randomization of the
+    /// input set, manifesting as flaky CI across hash-seed perturbations.
+    #[test]
+    fn dispatch_seeding_order_is_deterministic() {
+        // kappa: converts BRep → Mesh in one step.
+        let kappa = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert { from: ReprKind::BRep },
+                ReprKind::Mesh,
+            )],
+        };
+        // lambda: converts Sdf → Mesh in one step.
+        let lambda = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert { from: ReprKind::Sdf },
+                ReprKind::Mesh,
+            )],
+        };
+        // manifold: runs BooleanUnion on Mesh.
+        let manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("kappa".to_string(), &kappa);
+        registry.insert("lambda".to_string(), &lambda);
+        registry.insert("manifold".to_string(), &manifold);
+
+        // Two HashSets with the same elements, different insertion orders.
+        let mut available_a: HashSet<ReprKind> = HashSet::new();
+        available_a.insert(ReprKind::BRep);
+        available_a.insert(ReprKind::Sdf);
+
+        let mut available_b: HashSet<ReprKind> = HashSet::new();
+        available_b.insert(ReprKind::Sdf);
+        available_b.insert(ReprKind::BRep);
+
+        let plan_a = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available_a);
+        let plan_b = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available_b);
+
+        assert_eq!(
+            plan_a, plan_b,
+            "seeding order must not affect the plan — locks the BTreeSet seeding fix at dispatcher.rs:122",
+        );
+
+        // Positive shape check: BTreeSet order is BRep < Sdf, so BRep is
+        // seeded first and the kappa chain wins over lambda.
+        let plan = plan_a.expect("kappa (BRep→Mesh) path must be findable");
+        assert_eq!(
+            plan.kernel, "manifold",
+            "the final-stage Mesh BooleanUnion must run on manifold, got {plan:?}",
+        );
+        assert_eq!(
+            plan.conversions.len(),
+            1,
+            "exactly one conversion stage (BRep→Mesh via kappa) expected, got {plan:?}",
+        );
+        assert_eq!(
+            plan.conversions[0],
+            ("kappa".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            "the conversion stage must be (kappa, BRep, Mesh) — BRep < Sdf in BTreeSet order, got {:?}",
+            plan.conversions[0],
+        );
+    }
+
     /// Two kernels both directly support the demanded (op, repr) with zero
     /// conversions. The lexicographically smaller kernel name wins.
     ///
