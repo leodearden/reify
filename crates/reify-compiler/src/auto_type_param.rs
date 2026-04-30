@@ -854,8 +854,11 @@ pub fn resolve_auto_type_params(
                 per_param.push((param.name.clone(), selection));
             }
             SelectionResult::NoCandidate | SelectionResult::Ambiguous(_) => {
-                // Phase C already pushed the appropriate diagnostic.
-                // Record the failure and halt — no later param is processed.
+                // Phase C (or Phase A for Overflow) already pushed the
+                // appropriate diagnostic. Record the failure in per_param and
+                // halt — no later param is enumerated, feasibility-checked, or
+                // selected (halt-on-first-failure, v0.1 rule). The failure
+                // entry is intentionally NOT pushed into substitution.
                 per_param.push((param.name.clone(), selection));
                 break;
             }
