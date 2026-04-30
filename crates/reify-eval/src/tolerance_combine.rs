@@ -66,6 +66,80 @@ pub fn combine_demanded_tolerance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::ConstraintNodeData;
+    use reify_types::{
+        CompiledExpr, ConstraintNodeId, ContentHash, DimensionVector, PersistentMap, Type, Value,
+        ValueCellId,
+    };
+
+    /// Build a `(ConstraintNodeId, ConstraintNodeData)` pair carrying the
+    /// canonical `RepresentationWithin(<ValueRef typed StructureRef>,
+    /// <Literal Scalar(LENGTH)>)` shape that `extract_output_tolerance_bound`
+    /// is expected to recognise. Mirrors the
+    /// `tolerance_scope::tests::representation_within_constraint` fixture
+    /// but produces a graph-side `ConstraintNodeData` instead of a
+    /// `CompiledPurpose` constraint.
+    fn representation_within_constraint_node(
+        entity: &str,
+        index: u32,
+        si_value: f64,
+        dimension: DimensionVector,
+    ) -> (ConstraintNodeId, ConstraintNodeData) {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Structure".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar { si_value, dimension },
+            Type::Scalar { dimension },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        let id = ConstraintNodeId::new(entity, index);
+        let data = ConstraintNodeData {
+            id: id.clone(),
+            label: None,
+            expr,
+            content_hash: ContentHash::of_str(&format!("{}#constraint[{}]", entity, index)),
+            optimized_target: None,
+        };
+        (id, data)
+    }
+
+    #[test]
+    fn extract_output_tolerance_bound_returns_min_under_matching_entity() {
+        let mut constraints: PersistentMap<ConstraintNodeId, ConstraintNodeData> =
+            PersistentMap::default();
+
+        // Two matching RepresentationWithin entries under "STEPOutput" — must
+        // be folded via min so the tighter (1e-6) wins.
+        let (id_a, data_a) =
+            representation_within_constraint_node("STEPOutput", 0, 50e-6, DimensionVector::LENGTH);
+        constraints.insert(id_a, data_a);
+        let (id_b, data_b) =
+            representation_within_constraint_node("STEPOutput", 1, 1e-6, DimensionVector::LENGTH);
+        constraints.insert(id_b, data_b);
+
+        // An unrelated constraint under a different entity — must be skipped
+        // by the entity exact-match filter.
+        let (id_c, data_c) = representation_within_constraint_node(
+            "OtherEntity",
+            0,
+            0.5e-6,
+            DimensionVector::LENGTH,
+        );
+        constraints.insert(id_c, data_c);
+
+        assert_eq!(
+            extract_output_tolerance_bound(&constraints, "STEPOutput"),
+            Some(1e-6),
+            "min-fold across the two matching entries must yield the tighter (1e-6); \
+             OtherEntity's tighter 0.5e-6 must be filtered out by entity match"
+        );
+    }
 
     #[test]
     fn combine_returns_min_when_both_some() {
