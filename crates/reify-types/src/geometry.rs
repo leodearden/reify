@@ -99,7 +99,17 @@ pub enum ReprKind {
 ///
 /// Names every operation a geometry kernel might claim to support. The pair
 /// `(Operation, ReprKind)` in [`CapabilityDescriptor::supports`] reads as
-/// "this kernel can perform `Operation` and produce `ReprKind`". Conversions
+/// "this kernel can perform `Operation` and produce `ReprKind`". For every
+/// variant except [`Operation::Convert`], the `ReprKind` in the pair is
+/// **both** the input repr the kernel consumes and the output repr it
+/// produces — i.e. the kernel receives a `repr`-typed input and returns a
+/// `repr`-typed result. This mirrors the dispatcher's `current_repr ==
+/// demanded` final-stage probe in `crates/reify-eval/src/dispatcher.rs`:
+/// the gate fires only when the currently-realised repr already equals
+/// `demanded`, which by this invariant is also the repr the kernel expects
+/// on input. For [`Operation::Convert { from }`] entries, `from` is the
+/// input repr and the second tuple element is the output repr — the only
+/// shape where the two diverge. Conversions
 /// across representation families are modelled here as
 /// [`Operation::Convert { from }`] so that the dispatcher's BFS can expand
 /// across reprs uniformly over a single feasibility table (PRD
@@ -230,7 +240,23 @@ pub enum Operation {
 /// construct descriptors without pulling in dispatch logic.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapabilityDescriptor {
-    /// The pairs `(op, produced_repr)` this kernel claims to support.
+    /// The pairs `(op, repr)` this kernel claims to support.
+    ///
+    /// For every non-[`Operation::Convert`] entry, `repr` is **both** the
+    /// input repr the kernel consumes and the output repr it produces. The
+    /// dispatcher's `current_repr == demanded` gate
+    /// (in `crates/reify-eval/src/dispatcher.rs`) confirms both
+    /// simultaneously: the popped repr must equal `demanded`, and by this
+    /// invariant that same equality also confirms the kernel's expected input
+    /// repr. A kernel that takes `Mesh` input to produce `BRep` for
+    /// [`Operation::SweepLoft`] MUST NOT declare `(SweepLoft, BRep)` — that
+    /// entry reads as BRep→BRep. Model the mesh→brep step as a
+    /// `(Convert { from: Mesh }, BRep)` entry instead.
+    ///
+    /// For [`Operation::Convert { from }`] entries, `from` is the input repr
+    /// and the second tuple element is the output repr — the only shape where
+    /// the two diverge. See the [`Operation::Convert`] variant doc for an
+    /// example.
     pub supports: Vec<(Operation, ReprKind)>,
 }
 
