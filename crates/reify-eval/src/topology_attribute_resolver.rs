@@ -1338,4 +1338,71 @@ mod tests {
             diag.message
         );
     }
+
+    /// Cross-branch override: `user_label` zero-match sets
+    /// `last_count = Some(0)` at line 230; `role_and_index` multi-match
+    /// overwrites it with `last_count = Some(n)` at line 274.  The final
+    /// `emit_attribute_stale_diagnostic` at line 287 must therefore report
+    /// the role/idx count (2), NOT the user_label count (0).
+    ///
+    /// This is the only execution path where the `last_count = Some(0)`
+    /// plumbing changes observable behavior:
+    ///   • unique match → short-circuits before the stale-attribute emission
+    ///   • user_label multi-match without split-cluster → emits its own
+    ///     diagnostic and returns before the role/idx branch fires
+    ///   • role/idx-only queries → user_label branch never sets
+    ///     `last_count` at all
+    ///
+    /// Contrast tests:
+    ///   • `unresolved_with_diagnostic_when_multi_match` — role/idx-only
+    ///     multi-match (no user_label branch), same fixture shape
+    ///   • `user_label_preferred_over_role_and_index_when_both_apply`
+    ///     sub-case b — user_label-zero falls through to a UNIQUE role/idx
+    ///     match (resolved, no diagnostic)
+    #[test]
+    fn user_label_zero_match_role_idx_multi_match_uses_role_idx_count_in_diagnostic() {
+        let boss = FeatureId::new("Boss");
+        let slot = FeatureId::new("Slot");
+        let mut table = TopologyAttributeTable::default();
+        // Distinct feature_ids on the two matched candidates → mixed
+        // parent-keys → cluster check fails → Unresolved.
+        table.record(h(60), attr_for(boss, Role::Side, 0, None));
+        table.record(h(61), attr_for(slot, Role::Side, 0, None));
+        let candidates = [h(60), h(61)];
+        // user_label "missing" matches neither candidate: sets last_count = Some(0).
+        // role_and_index (Role::Side, 0) matches both: sets last_count = Some(2).
+        let query = AttributeQuery {
+            user_label: Some("missing".to_string()),
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+
+        // Neither branch produced a unique match; mixed parent-keys mean
+        // try_cluster_after_split returns None → Unresolved.
+        assert_eq!(result, AttributeResolution::Unresolved);
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, Some(DiagnosticCode::TopologyAttributeStale));
+        // Core override pin: role/idx count (2) must override user_label count (0).
+        assert!(
+            diag.message.contains("matched 2 sub-shapes"),
+            "message should contain 'matched 2 sub-shapes' (role/idx count), got: {}",
+            diag.message
+        );
+        // Regression guard: must NOT report the user_label zero-count.
+        assert!(
+            !diag.message.contains("matched 0 sub-shapes"),
+            "message must NOT report the user_label zero-count, got: {}",
+            diag.message
+        );
+        // Routing guard: mixed parent-keys must NEVER use the split-children sub-form.
+        assert!(
+            !diag.message.contains("split children"),
+            "mixed-parent multi-match must NOT use the split-children sub-form, got: {}",
+            diag.message
+        );
+    }
 }
