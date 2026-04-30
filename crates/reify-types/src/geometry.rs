@@ -61,6 +61,32 @@ pub enum BRepKind {
     Face,
 }
 
+/// Multi-kernel representation family classifier.
+///
+/// Classifies the broad representation family a geometry handle belongs to,
+/// independent of any particular kernel's internal sub-shape hierarchy.
+/// Use this as the outer key of [`crate::RealizationCache`] (together with
+/// `entity_id` and tolerance) to keep per-family caches isolated.
+///
+/// Defined in PRD `docs/prds/v0_2/multi-kernel.md` "Resolved design decisions":
+/// four variants at the kernel-family level. Extensible in non-breaking minor
+/// versions — match arms should always include a catch-all to remain forward-
+/// compatible once this enum is stabilised.
+///
+/// See also [`BRepKind`] for the finer-grained B-rep sub-shape classifier
+/// (Solid / Shell / Wire / Compound / Edge / Face) used by the OCCT kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReprKind {
+    /// Boundary-representation solid (OCCT / OpenCASCADE B-rep kernel).
+    BRep,
+    /// Surface mesh (triangle or quad mesh, e.g. Manifold).
+    Mesh,
+    /// Signed-distance field / implicit surface (e.g. Fidget).
+    Sdf,
+    /// Volumetric voxel grid (e.g. OpenVDB).
+    Voxel,
+}
+
 /// Operations that can be sent to a geometry kernel.
 #[derive(Debug, Clone)]
 pub enum GeometryOp {
