@@ -48,12 +48,14 @@ pub struct DispatchPlan {
 /// not yet visited. BFS termination is guaranteed because the visited set
 /// is keyed on [`ReprKind`] (4 variants → at most 4 expansions).
 ///
-/// **Determinism.** The registry is a [`BTreeMap`] so kernel iteration is
-/// lexicographic on name. Two ties at equal stage-count and equal final
-/// kernel choice are broken by the lexicographic order in which we enqueue
-/// expansions. Selection is therefore deterministic given a fixed
-/// `registry` (PRD `docs/prds/v0_2/multi-kernel.md`: "Selection
-/// deterministic given pinned runtime configuration").
+/// **Tie-break.** Ties at equal stage-count are broken lexicographically on
+/// kernel name; the registry is a [`BTreeMap`] so kernel iteration is
+/// deterministic across BTreeMap iteration order (lexicographic). Selection
+/// is therefore deterministic given a fixed `registry` (PRD
+/// `docs/prds/v0_2/multi-kernel.md`: "Selection deterministic given pinned
+/// runtime configuration"). Ties at equal stage-count and equal final
+/// kernel choice fall through to the order in which we enqueue conversion
+/// expansions, which is itself a BTreeMap-order traversal.
 ///
 /// **`None` returns** in three branches: (a) no path from `available` to
 /// `demanded` exists via declared conversions; (b) no registered kernel
