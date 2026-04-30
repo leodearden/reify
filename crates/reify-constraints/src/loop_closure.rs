@@ -149,6 +149,44 @@ pub enum NewtonOutcome {
     },
 }
 
+/// Outcome of a [`solve_loop_closure_with_diagnostics`] call: the underlying
+/// Newton outcome, a flag indicating whether a rank-deficient Jacobian was
+/// detected, and any [`Diagnostic`]s the wrapper emitted.
+///
+/// The `outcome` field carries the canonical "what happened" enum from
+/// [`solve_loop_closure`]; `is_singular` mirrors
+/// `matches!(outcome, NewtonOutcome::Singular { .. })` for readability at
+/// call sites that consume the report; `diagnostics` collects the typed
+/// [`DiagnosticCode::KinematicSingularity`] / `KinematicOverconstrained` /
+/// `KinematicUnderconstrained` entries the PRD task 9 prose requires
+/// (`docs/prds/v0_2/kinematic-constraints.md` §"Singularity, over/under-constraint
+/// diagnostics").
+///
+/// See [`solve_loop_closure_with_diagnostics`] for the per-variant emission
+/// rules.  Future task 10 (sweep API integration) will be the first consumer
+/// that surfaces these diagnostics through the snapshot-call path.
+///
+/// [`Diagnostic`]: reify_types::Diagnostic
+/// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
+#[derive(Debug, Clone)]
+pub struct LoopClosureReport {
+    /// The Newton solver's canonical outcome (Converged / NotConverged /
+    /// Singular / InvalidInput).  For the over-constrained short-circuit
+    /// path, this is `NotConverged { x, residual_norm: f64::INFINITY }`
+    /// (the solver was not run; see
+    /// [`solve_loop_closure_with_diagnostics`] for the contract).
+    pub outcome: NewtonOutcome,
+    /// `true` iff the wrapper detected a rank-deficient Jacobian during the
+    /// Newton solve (i.e. `outcome` is `NewtonOutcome::Singular`).  This
+    /// mirrors the PRD's `is_singular: true` flag and pairs with the
+    /// `KinematicSingularity` warning entry in `diagnostics`.
+    pub is_singular: bool,
+    /// Typed diagnostic entries the wrapper emitted (over-/under-constrained
+    /// pre-checks and singular post-process).  Empty for a balanced,
+    /// non-singular solve.
+    pub diagnostics: Vec<reify_types::Diagnostic>,
+}
+
 /// Default pivot threshold below which the LDLᵀ factor is treated as
 /// singular.  Used by [`NewtonConfig::default()`] —
 /// [`NewtonConfig::singularity_pivot_eps`] is the user-configurable knob.
