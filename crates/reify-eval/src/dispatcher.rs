@@ -318,4 +318,91 @@ mod tests {
             "edge: empty registry ⇒ None",
         );
     }
+
+    /// Integration: a small registry mirroring the v0.2 planned setup —
+    /// "occt" owns BRep primitives + BRep→Mesh tessellation, "manifold" owns
+    /// Mesh booleans. This locks the contract shape that downstream tasks
+    /// (2642 kernel-registry wiring, 2643 manifold adapter) will consume:
+    ///
+    ///   1. `BooleanUnion → Mesh` from `available = {BRep}` → "manifold" via
+    ///      one conversion stage performed by "occt" (BRep→Mesh).
+    ///   2. `PrimitiveBox → BRep` from `available = {BRep}` → "occt" with
+    ///      zero conversions. Primitives are passed `available = {demanded}`
+    ///      because they produce the demanded repr from non-geometric inputs
+    ///      (size/dimension scalars), so the BFS treats the demanded repr as
+    ///      "trivially in scope" with no conversion required.
+    ///
+    /// No new dispatcher logic is exercised here beyond what step-7's
+    /// single-conversion test and step-9's shortest-chain test already lock;
+    /// this test exists so future kernel-registry refactors break loudly if
+    /// the v0.2 occt+manifold contract regresses.
+    #[test]
+    fn dispatch_uses_capability_descriptor_for_v02_kernels() {
+        // occt: BRep primitives (Box/Cylinder/Sphere) + BRep→Mesh tessellation.
+        let occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::PrimitiveCylinder, ReprKind::BRep),
+                (Operation::PrimitiveSphere, ReprKind::BRep),
+                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+            ],
+        };
+        // manifold: Mesh booleans (Union/Difference/Intersection).
+        let manifold = CapabilityDescriptor {
+            supports: vec![
+                (Operation::BooleanUnion, ReprKind::Mesh),
+                (Operation::BooleanDifference, ReprKind::Mesh),
+                (Operation::BooleanIntersection, ReprKind::Mesh),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &occt);
+        registry.insert("manifold".to_string(), &manifold);
+
+        // Scenario 1: BooleanUnion demanded as Mesh, inputs realised as BRep.
+        // Plan must invoke occt's BRep→Mesh conversion, then manifold's union.
+        let mut available_brep: HashSet<ReprKind> = HashSet::new();
+        available_brep.insert(ReprKind::BRep);
+        let plan_union = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+            &available_brep,
+        )
+        .expect("v0.2 occt+manifold mix must satisfy BRep→Mesh→Union");
+        assert_eq!(
+            plan_union.kernel, "manifold",
+            "Mesh BooleanUnion must run on manifold per v0.2 capability split",
+        );
+        assert_eq!(
+            plan_union.conversions.len(),
+            1,
+            "BRep→Mesh requires exactly one conversion stage, got {plan_union:?}",
+        );
+        assert_eq!(
+            plan_union.conversions[0],
+            ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            "the conversion stage must be (occt, BRep, Mesh), got {:?}",
+            plan_union.conversions[0],
+        );
+
+        // Scenario 2: PrimitiveBox demanded as BRep. Primitives pass
+        // `available = {demanded}` since they produce the demanded repr
+        // without consuming a geometric input. Plan picks occt directly.
+        let plan_box = dispatch(
+            &registry,
+            Operation::PrimitiveBox,
+            ReprKind::BRep,
+            &available_brep,
+        )
+        .expect("v0.2 occt+manifold mix must satisfy PrimitiveBox→BRep");
+        assert_eq!(
+            plan_box.kernel, "occt",
+            "BRep PrimitiveBox must run on occt per v0.2 capability split",
+        );
+        assert!(
+            plan_box.conversions.is_empty(),
+            "PrimitiveBox→BRep requires zero conversions, got {plan_box:?}",
+        );
+    }
 }
