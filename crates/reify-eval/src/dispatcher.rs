@@ -44,6 +44,12 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
+/// Ordered sequence of conversion stages: each entry is
+/// `(kernel_name, from_repr, to_repr)`. Factored as a type alias to keep the
+/// internal BFS frontier type below clippy's `type_complexity` threshold and
+/// to give the conversion-chain shape a single named home.
+type ConversionChain = Vec<(String, ReprKind, ReprKind)>;
+
 /// A concrete plan returned by [`dispatch`]: which kernel runs the final op,
 /// preceded by zero or more conversion stages.
 ///
@@ -57,7 +63,7 @@ pub struct DispatchPlan {
     /// Sequence of conversion stages to perform before invoking `kernel`.
     /// Each tuple = `(kernel_name, from_repr, to_repr)`. Empty when the
     /// demanded repr is already in `available`.
-    pub conversions: Vec<(String, ReprKind, ReprKind)>,
+    pub conversions: ConversionChain,
 }
 
 /// Pick a kernel + conversion chain to perform `op` and produce `demanded`,
@@ -101,8 +107,7 @@ pub fn dispatch(
     available: &HashSet<ReprKind>,
 ) -> Option<DispatchPlan> {
     // BFS state: (currently-realised repr, conversion chain so far).
-    let mut frontier: VecDeque<(ReprKind, Vec<(String, ReprKind, ReprKind)>)> =
-        VecDeque::new();
+    let mut frontier: VecDeque<(ReprKind, ConversionChain)> = VecDeque::new();
     let mut visited: HashSet<ReprKind> = HashSet::new();
 
     // Seed with every available repr in arbitrary HashSet order. BFS by
@@ -132,13 +137,14 @@ pub fn dispatch(
         // (Convert{from: current_repr}, to), enqueue (to, chain + entry).
         for (kernel_name, descriptor) in registry.iter() {
             for &(decl_op, decl_to) in descriptor.supports.iter() {
-                if let Operation::Convert { from } = decl_op {
-                    if from == current_repr && !visited.contains(&decl_to) {
-                        visited.insert(decl_to);
-                        let mut new_chain = chain.clone();
-                        new_chain.push((kernel_name.clone(), current_repr, decl_to));
-                        frontier.push_back((decl_to, new_chain));
-                    }
+                if let Operation::Convert { from } = decl_op
+                    && from == current_repr
+                    && !visited.contains(&decl_to)
+                {
+                    visited.insert(decl_to);
+                    let mut new_chain = chain.clone();
+                    new_chain.push((kernel_name.clone(), current_repr, decl_to));
+                    frontier.push_back((decl_to, new_chain));
                 }
             }
         }
