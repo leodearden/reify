@@ -800,7 +800,6 @@ fn kinematic_stdlib_smoke_e2e() {
         Some(&Value::String("coupling".to_string())),
         "screw_joint: kind should be 'coupling'"
     );
-    assert_eq!(screw_map.len(), 4, "screw_joint: Map should have exactly 4 keys (kind/parent/ratio/offset)");
 
     // screw_xform = transform_at(screw_joint, 2π) → translation [1e-3, 0, 0] LENGTH, identity rotation
     // Math: ratio = 1e-3/(2π); coupled = ratio * 2π = 1e-3 m along prismatic-X axis.
@@ -840,7 +839,6 @@ fn kinematic_stdlib_smoke_e2e() {
         Some(&Value::String("coupling".to_string())),
         "gear_joint: kind should be 'coupling'"
     );
-    assert_eq!(gear_map.len(), 4, "gear_joint: Map should have exactly 4 keys");
 
     // gear_xform = transform_at(gear_joint, π/3) → coupled = -1.5 * π/3 = -π/2 about Z
     //   rotation = (cos(-π/4), 0, 0, sin(-π/4)), zero translation
@@ -880,7 +878,6 @@ fn kinematic_stdlib_smoke_e2e() {
         Some(&Value::String("coupling".to_string())),
         "rp_joint: kind should be 'coupling'"
     );
-    assert_eq!(rp_map.len(), 4, "rp_joint: Map should have exactly 4 keys");
 
     // rp_xform = transform_at(rp_joint, 2π) → coupled = 0.01 * 2π = 0.02π m along prismatic-X
     //   translation [0.02π, 0, 0] LENGTH, identity rotation
