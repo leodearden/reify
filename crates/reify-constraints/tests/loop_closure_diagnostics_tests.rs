@@ -418,12 +418,13 @@ fn solve_loop_closure_with_diagnostics_overconstrained_midpoint_uses_joint_midpo
     }
 }
 
-/// Balanced (free_b.len() == 6) AND non-singular happy path: 3 prismatic
-/// + 3 revolute joints on three orthogonal axes span all 6 components of
-/// the closure-residual twist, so the Jacobian is full-rank.  With
-/// `chain_a == chain_b` at `vals_a == vals_b_initial`, the residual is
-/// identically zero from the first iteration → the solver converges in
-/// 0 iters with no DOF imbalance and no rank-deficiency.
+/// Balanced (free_b.len() == 6) AND non-singular happy path: three
+/// prismatic plus three revolute joints on three orthogonal axes span
+/// all 6 components of the closure-residual twist, so the Jacobian is
+/// full-rank.  With `chain_a == chain_b` at `vals_a == vals_b_initial`,
+/// the residual is identically zero from the first iteration → the
+/// solver converges in 0 iters with no DOF imbalance and no
+/// rank-deficiency.
 ///
 /// Pinning that the wrapper emits NO diagnostics on the balanced
 /// non-singular path complements the singular-balanced test above: a
