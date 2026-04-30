@@ -147,22 +147,20 @@ pub fn convert_severity(severity: Severity) -> DiagnosticSeverity {
 /// any state.
 fn log_auto_type_param_diagnostic(diag: &Diagnostic) {
     #[cfg(debug_assertions)]
-    match diag.code {
-        Some(
-            DiagnosticCode::AutoTypeParamPoolOverflow
-            | DiagnosticCode::AutoTypeParamNoCandidate
-            | DiagnosticCode::AutoTypeParamAmbiguous
-            | DiagnosticCode::AutoTypeParamNonUnique,
-        ) => {
-            eprintln!(
-                "[reify-lsp] auto-type-param diagnostic: code={:?} severity={:?} candidates={} message={:?}",
-                diag.code,
-                diag.severity,
-                diag.candidates.len(),
-                diag.message,
-            );
-        }
-        _ => {}
+    if let Some(
+        DiagnosticCode::AutoTypeParamPoolOverflow
+        | DiagnosticCode::AutoTypeParamNoCandidate
+        | DiagnosticCode::AutoTypeParamAmbiguous
+        | DiagnosticCode::AutoTypeParamNonUnique,
+    ) = diag.code
+    {
+        eprintln!(
+            "[reify-lsp] auto-type-param diagnostic: code={:?} severity={:?} candidates={} message={:?}",
+            diag.code,
+            diag.severity,
+            diag.candidates.len(),
+            diag.message,
+        );
     }
 }
 
