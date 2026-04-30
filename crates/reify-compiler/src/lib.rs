@@ -24,6 +24,7 @@ pub mod geometry_traits;
 pub mod geometry_traits_inference;
 mod guards;
 mod ice;
+mod list_helpers;
 pub mod module_dag;
 mod module_pragmas;
 pub mod prelude_context;
@@ -71,6 +72,7 @@ pub(crate) use traits::*;
 #[allow(unused_imports)]
 pub(crate) use type_compat::*;
 pub(crate) use type_resolution::*;
+pub(crate) use list_helpers::*;
 pub(crate) use units::*;
 pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry};
 
