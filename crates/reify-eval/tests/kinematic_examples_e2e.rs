@@ -25,6 +25,11 @@ const CMB_PATH: &str = concat!(
     "/../../examples/kinematic/counter_mass_balance.ri"
 );
 
+const DP_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/kinematic/dock_pickup.ri"
+);
+
 // ── Cached source + compile helpers for counter_mass_balance ──────────────────
 
 /// Read `examples/kinematic/counter_mass_balance.ri`, caching the result.
@@ -189,4 +194,46 @@ fn counter_mass_balance_constraints_all_satisfied() {
             entry.satisfaction
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// dock_pickup source cache
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Read `examples/kinematic/dock_pickup.ri`, caching the result.
+fn dp_source() -> &'static str {
+    static S: OnceLock<String> = OnceLock::new();
+    S.get_or_init(|| {
+        std::fs::read_to_string(DP_PATH)
+            .unwrap_or_else(|e| panic!("{DP_PATH} should exist: {e}"))
+    })
+    .as_str()
+}
+
+/// Parse and compile `dock_pickup.ri` with stdlib, caching the result.
+fn dp_compiled() -> &'static CompiledModule {
+    static C: OnceLock<CompiledModule> = OnceLock::new();
+    C.get_or_init(|| parse_and_compile_with_stdlib(dp_source()))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// dock_pickup tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The `dock_pickup.ri` file exists and compiles with stdlib without any
+/// Error-severity diagnostics.
+///
+/// Mirrors `counter_mass_balance_compiles_clean`.
+#[test]
+fn dock_pickup_compiles_clean() {
+    // Reading source panics if the file doesn't exist.
+    let source = dp_source();
+    assert!(!source.is_empty(), "dock_pickup.ri should be non-empty");
+
+    let compiled = parse_and_compile_with_stdlib(source);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "dock_pickup.ri should compile with stdlib without errors, got: {errors:#?}"
+    );
 }
