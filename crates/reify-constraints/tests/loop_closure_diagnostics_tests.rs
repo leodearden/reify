@@ -500,10 +500,12 @@ fn solve_loop_closure_with_diagnostics_balanced_full_rank_emits_no_diagnostics()
 /// `chain_a == chain_b` at `vals_a == vals_b_initial` produces an
 /// identically-zero residual at iteration 0.  `newton_solve`'s convergence
 /// check fires BEFORE `JᵀJ` is built or `LDLᵀ` is invoked, so the solver
-/// returns `Converged` in 0
-/// iters.  With `LDLᵀ` never running, `NewtonOutcome::Singular` is
-/// **structurally unreachable** → the wrapper's singularity post-process
-/// cannot fire.
+/// returns `Converged` in 0 iters.  With `LDLᵀ` never running,
+/// `NewtonOutcome::Singular` is **structurally unreachable** → the wrapper's
+/// singularity post-process cannot fire.  The `iters == 0` assertion below
+/// pins this short-circuit explicitly — a future change that broke the
+/// short-circuit and proceeded to Newton iteration would fail there with a
+/// clear `expected iters=0, got N` message.
 ///
 /// ## What this pins
 ///
@@ -512,6 +514,18 @@ fn solve_loop_closure_with_diagnostics_balanced_full_rank_emits_no_diagnostics()
 /// `emits_underconstrained_for_seven_dofs` (because the singularity warning
 /// would still appear), but it would FAIL HERE because the under-constrained
 /// warning would be absent and the diagnostic count would be 0 instead of 1.
+///
+/// **Why no perturbation?**  For `n_free > 6` against a 6-DOF
+/// closure-residual, the Jacobian `J` is `6 × n_free` with at most rank 6.
+/// `JᵀJ` is therefore rank-deficient by construction (rank ≤ 6 in
+/// `n_free × n_free` space) and the `LDLᵀ` pivot guard returns
+/// `NewtonOutcome::Singular` regardless of perturbation magnitude — verified
+/// empirically.  The *(under-constrained × full-rank-J)* cell can only be
+/// exercised by the zero-residual short-circuit under plain Gauss-Newton;
+/// testing the *LDLᵀ-runs-and-succeeds* path against a non-zero residual
+/// would require either a balanced (`n_free == 6`) configuration (covered by
+/// `balanced_full_rank_emits_no_diagnostics`) or LM damping / SVD-based
+/// pseudoinverse in the production solver (out of scope).
 #[test]
 fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jacobian() {
     let chain: Vec<Value> = vec![
@@ -542,32 +556,25 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
         &cfg,
     );
 
-    // At least one diagnostic must exist: the under-constrained pre-check warning.
-    // Using >=1 (rather than ==1) keeps this check independent of the
-    // KinematicSingularity bleed-through assertion below — both carry real weight.
-    assert!(
-        report.diagnostics.len() >= 1,
-        "expected at least one under-constrained diagnostic, got {:?}",
-        report.diagnostics
-    );
-    let d = &report.diagnostics[0];
+    // Use .find() rather than indexing [0] so this assertion is order-independent:
+    // a future regression that introduces a second pre-check warning ahead of
+    // KinematicUnderconstrained would not silently break code/severity mismatches.
+    let under = report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::KinematicUnderconstrained))
+        .expect("missing KinematicUnderconstrained diagnostic in diagnostics vec");
     assert_eq!(
-        d.severity,
+        under.severity,
         Severity::Warning,
         "KinematicUnderconstrained must be Warning severity, got {:?}",
-        d.severity
-    );
-    assert_eq!(
-        d.code,
-        Some(DiagnosticCode::KinematicUnderconstrained),
-        "diagnostic code must be KinematicUnderconstrained, got {:?}",
-        d.code
+        under.severity
     );
 
     // Decoupling guarantee: no singularity bleed-through.
-    // Independent of the >=1 length check above — a regression that caused
-    // KinematicSingularity to co-emit (e.g. if the LDLᵀ path fired) would
-    // fail here even if the under-constrained diagnostic is also present.
+    // A regression that caused KinematicSingularity to co-emit (e.g. if the
+    // LDLᵀ path fired) would fail here even if the under-constrained diagnostic
+    // is also present.
     assert!(
         !report
             .diagnostics
@@ -586,9 +593,22 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
     );
 
     // Zero initial residual → Converged in 0 iters.
-    assert!(
-        matches!(report.outcome, NewtonOutcome::Converged { .. }),
-        "expected Converged on identity residual, got {:?}",
-        report.outcome
-    );
+    // Destructure iters explicitly so a future regression that broke the
+    // zero-residual short-circuit (and proceeded to Newton/LDLᵀ) fails with a
+    // clear "expected iters=0, got N" message rather than a silent type mismatch.
+    match &report.outcome {
+        NewtonOutcome::Converged { iters, .. } => {
+            assert_eq!(
+                *iters,
+                0,
+                "zero-residual setup must short-circuit before LDLᵀ runs \
+                 (vals_a == vals_b_initial → identity twist → Converged at iter 0); \
+                 a regression that broke the short-circuit and proceeded to LDLᵀ \
+                 would yield iters >= 1, exposing that the singularity check is \
+                 structurally unreachable for n_free > 6 (JᵀJ rank-deficient by \
+                 construction)",
+            );
+        }
+        other => panic!("expected Converged on identity residual, got {other:?}"),
+    }
 }
