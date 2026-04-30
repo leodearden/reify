@@ -70,6 +70,15 @@ pub struct EngineSession {
     /// overwritten on every `commit_state` call.  Used by `get_containing_definition`
     /// to skip the O(M) newline scan on every cursor/hover call.
     line_offsets_cache: Option<Vec<usize>>,
+    /// Consumed-idents cache for the terminal-mechanism filter in `get_mechanism_descriptors`.
+    ///
+    /// Keyed by structure name (template name); maps to the set of mechanism member names
+    /// consumed as `mech_in` by `body()` calls within that structure.  Populated lazily on
+    /// the first `get_mechanism_descriptors` call after a successful parse+compile+check cycle.
+    /// Invalidated (set to `None`) in `commit_state` alongside `parsed_cache` so both caches
+    /// share the same lifecycle.  Left `None` when `parsed_cache` is `None` at population time
+    /// — preserves the per-template WARN so fallback regressions remain visible.
+    consumed_idents_cache: Option<HashMap<String, HashSet<String>>>,
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -98,6 +107,7 @@ impl EngineSession {
             def_preview_cache: HashMap::new(),
             parsed_cache: None,
             line_offsets_cache: None,
+            consumed_idents_cache: None,
         }
     }
 
@@ -278,6 +288,9 @@ impl EngineSession {
         // Cache the line-offset table so get_containing_definition can skip the O(M)
         // newline scan on each call.  Unconditionally overwrites any prior value.
         self.line_offsets_cache = Some(build_line_offsets(source));
+        // Invalidate the consumed-idents cache so get_mechanism_descriptors rebuilds
+        // it on the next call for the new module.  Same lifecycle as parsed_cache.
+        self.consumed_idents_cache = None;
     }
 
     /// Export geometry to a file.
@@ -498,11 +511,31 @@ impl EngineSession {
     ///
     /// AST-based driving-param resolution (`driving_param_cell_id`) is added in
     /// step 12 of the task plan. `current_value_si` is populated in step 24.
-    pub fn get_mechanism_descriptors(&self) -> Vec<MechanismDescriptor> {
+    pub fn get_mechanism_descriptors(&mut self) -> Vec<MechanismDescriptor> {
         let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
             (Some(c), Some(k)) => (c, k),
             _ => return Vec::new(),
         };
+
+        // Lazily populate consumed_idents_cache on first call after commit_state.
+        // Only when parsed_cache is Some — if None, the per-template WARN branch
+        // below handles the fallback and the cache is left None so the warning
+        // fires on every call (regression signal).
+        if self.consumed_idents_cache.is_none()
+            && let Some(parsed) = self.parsed_cache.as_ref()
+        {
+            let new_cache: HashMap<String, HashSet<String>> = compiled
+                .templates
+                .iter()
+                .map(|tmpl| {
+                    (
+                        tmpl.name.clone(),
+                        collect_consumed_mechanism_idents(parsed, &tmpl.name),
+                    )
+                })
+                .collect();
+            self.consumed_idents_cache = Some(new_cache);
+        }
 
         let mut descriptors = Vec::new();
         // Cache of seen_joints (joint identity sequence) per mechanism cell_id.
@@ -510,6 +543,11 @@ impl EngineSession {
         // resolve_driving_params_from_ast, avoiding a redundant O(B) body-walk
         // inside the AST resolver for every (bind-pair, descriptor) pair.
         let mut seen_joints_cache: HashMap<String, Vec<Value>> = HashMap::new();
+        // Shared empty-set fallback for the consumed-idents lookup below.
+        // Declared once before the loop so both match arms can return `&HashSet`
+        // without cloning — `consumed_idents` is used only immutably (`.contains`),
+        // so a reference suffices.
+        let empty_consumed: HashSet<String> = HashSet::new();
 
         // This loop emits one descriptor per **terminal** mechanism cell.
         // A mechanism cell is considered intermediate (and dropped) when its
@@ -533,20 +571,24 @@ impl EngineSession {
         // Errored mechanisms (closed-chain etc.) are suppressed via the `error` key
         // check below.
         for template in &compiled.templates {
-            // Collect the set of mechanism member names consumed as mech_in by
-            // body() in this template.  Built once per template, not per cell.
-            let consumed_idents: HashSet<String> =
-                if let Some(parsed) = self.parsed_cache.as_ref() {
-                    collect_consumed_mechanism_idents(parsed, &template.name)
-                } else {
-                    tracing::warn!(
-                        target: "reify_gui::engine",
-                        template = %template.name,
-                        "parsed_cache is None while compiled is Some; \
-                         terminal-mechanism filter inactive — intermediate mechanism \
-                         cells may appear in descriptors"
-                    );
-                    HashSet::new()
+            // Look up the consumed-idents set for this template from the cache.
+            // A reference is returned rather than a clone — `consumed_idents` is
+            // only used for `.contains()` below, so no owned copy is needed.
+            // `empty_consumed` is used as the fallback when the cache has no entry
+            // for this template (or when the cache is None and the WARN fires).
+            let consumed_idents: &HashSet<String> =
+                match self.consumed_idents_cache.as_ref() {
+                    Some(cache) => cache.get(&template.name).unwrap_or(&empty_consumed),
+                    None => {
+                        tracing::warn!(
+                            target: "reify_gui::engine",
+                            template = %template.name,
+                            "parsed_cache is None while compiled is Some; \
+                             terminal-mechanism filter inactive — intermediate mechanism \
+                             cells may appear in descriptors"
+                        );
+                        &empty_consumed
+                    }
                 };
 
             for cell in &template.value_cells {
@@ -1807,6 +1849,31 @@ impl EngineSession {
     /// uses the cached table rather than recomputing it from the source text.
     pub(crate) fn override_line_offsets_cache_for_test(&mut self, offsets: Vec<usize>) {
         self.line_offsets_cache = Some(offsets);
+    }
+
+    /// Return a reference to the cached consumed-idents map, or `None` if the
+    /// cache has not yet been populated (fresh session or just after `commit_state`).
+    ///
+    /// Intended only for tests that need to inspect cache state without widening
+    /// the production API.  Mirrors the style of `parsed_cache_for_test`.
+    pub(crate) fn consumed_idents_cache_for_test(
+        &self,
+    ) -> Option<&HashMap<String, HashSet<String>>> {
+        self.consumed_idents_cache.as_ref()
+    }
+
+    /// Replace the consumed-idents cache with `cache`, for testing purposes.
+    ///
+    /// Used by `get_mechanism_descriptors_reads_from_consumed_idents_cache` to
+    /// inject a deliberately-empty consumed-idents map for "Kinematic" and verify
+    /// that the descriptor build consults the cache (terminal-mechanism filter sees
+    /// zero consumed → emits all mechanism cells) rather than re-walking the AST.
+    /// Mirrors the style of `override_parsed_cache_for_test`.
+    pub(crate) fn override_consumed_idents_cache_for_test(
+        &mut self,
+        cache: HashMap<String, HashSet<String>>,
+    ) {
+        self.consumed_idents_cache = Some(cache);
     }
 
     /// Directly inject a `CompiledModule` as the session's current compiled state,

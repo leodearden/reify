@@ -265,7 +265,7 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
 
 #[test]
 fn get_mechanism_descriptors_returns_empty_when_no_module_loaded() {
-    let session = make_session();
+    let mut session = make_session();
     let descriptors = session.get_mechanism_descriptors();
     assert!(
         descriptors.is_empty(),
@@ -4259,6 +4259,128 @@ fn get_containing_definition_reads_from_line_offsets_cache() {
         "after injecting empty line_offsets_cache, get_containing_definition(2,1) \
          should return None (proves the method uses the cached table)"
     );
+}
+
+/// Lifecycle test for `consumed_idents_cache`:
+/// - starts as `None` on a fresh session,
+/// - remains `None` after load (lazy — populated only on first `get_mechanism_descriptors` call),
+/// - becomes `Some` after the first `get_mechanism_descriptors` call following a load,
+/// - is reset to `None` after `update_source` (invalidated by `commit_state`),
+/// - becomes `Some` again after a second `get_mechanism_descriptors` call on the new module.
+#[test]
+fn consumed_idents_cache_lifecycle() {
+    let mut session = make_session();
+
+    // 1. Fresh session → None.
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "fresh session: consumed_idents_cache should be None"
+    );
+
+    // 2. After load_from_source, still None (lazy — not populated until
+    //    get_mechanism_descriptors is called for the first time).
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load should succeed");
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "after load but before get_mechanism_descriptors: consumed_idents_cache should still be None"
+    );
+
+    // 3. After get_mechanism_descriptors, Some with an entry for the 'Kinematic' structure.
+    //    m0 and m1 are consumed by body() calls; m2 is the terminal cell (not consumed).
+    let _ = session.get_mechanism_descriptors();
+    let cache = session
+        .consumed_idents_cache_for_test()
+        .expect("after get_mechanism_descriptors: consumed_idents_cache should be Some");
+    let kinematic_consumed = cache
+        .get("Kinematic")
+        .expect("cache should contain an entry for the 'Kinematic' structure");
+    let expected_consumed: std::collections::HashSet<String> =
+        ["m0", "m1"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        *kinematic_consumed,
+        expected_consumed,
+        "Kinematic's consumed set should be {{m0, m1}}"
+    );
+
+    // 4. After update_source, the cache is invalidated by commit_state → None again.
+    session
+        .update_source("kinematic.ri", bracket_source())
+        .expect("update_source should succeed");
+    assert!(
+        session.consumed_idents_cache_for_test().is_none(),
+        "after update_source: consumed_idents_cache should be None (invalidated by commit_state)"
+    );
+
+    // 5. After another get_mechanism_descriptors call, Some again — now reflecting the
+    //    new module (bracket_source has no body() calls, so consumed sets are empty).
+    let _ = session.get_mechanism_descriptors();
+    assert!(
+        session.consumed_idents_cache_for_test().is_some(),
+        "after second get_mechanism_descriptors call: consumed_idents_cache should be Some again"
+    );
+}
+
+/// Proves that `get_mechanism_descriptors` reads from `consumed_idents_cache` rather
+/// than re-walking the AST.  Mirrors the `get_containing_definition_reads_from_parsed_cache`
+/// pattern: load → baseline → inject poisoned cache → second call → verify readback.
+///
+/// Poison: replace the cache for "Kinematic" with an empty set (zero consumed mechanisms).
+/// With no consumed idents, the terminal-mechanism filter lets every mechanism cell through.
+/// If the method re-walked the AST it would rebuild {"m0", "m1"} and filter them out,
+/// returning only m2.  The presence of m0 and m1 in the result proves cache use.
+#[test]
+fn get_mechanism_descriptors_reads_from_consumed_idents_cache() {
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+
+    let mut session = make_session();
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load should succeed");
+
+    // Baseline: with the real cache ({m0, m1} consumed), only m2 (the terminal cell)
+    // should appear.
+    let baseline = session.get_mechanism_descriptors();
+    let baseline_names: Vec<&str> = baseline.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        baseline_names,
+        vec!["m2"],
+        "baseline: only m2 (the terminal cell) should appear; got {:?}",
+        baseline_names
+    );
+
+    // Inject a poisoned cache: "Kinematic" maps to an empty consumed set, so the
+    // filter treats every mechanism cell as terminal.
+    let poisoned: HashMap<String, HashSet<String>> =
+        HashMap::from([("Kinematic".to_string(), HashSet::new())]);
+    session.override_consumed_idents_cache_for_test(poisoned);
+
+    // After poisoning, all three mechanism cells should appear.
+    let all = session.get_mechanism_descriptors();
+    let all_names: Vec<&str> = all.iter().map(|d| d.name.as_str()).collect();
+    assert!(
+        all_names.contains(&"m0"),
+        "m0 (0 bodies) should appear when consumed cache is empty; got {:?}",
+        all_names
+    );
+    assert!(
+        all_names.contains(&"m1"),
+        "m1 (1 body) should appear when consumed cache is empty; got {:?}",
+        all_names
+    );
+    assert!(
+        all_names.contains(&"m2"),
+        "m2 (2 bodies) should appear when consumed cache is empty; got {:?}",
+        all_names
+    );
+
+    // Verify bodies_count to confirm the right cells came through.
+    let m0_desc = all.iter().find(|d| d.name == "m0").unwrap();
+    let m1_desc = all.iter().find(|d| d.name == "m1").unwrap();
+    assert_eq!(m0_desc.bodies_count, 0, "m0 should have 0 bodies");
+    assert_eq!(m1_desc.bodies_count, 1, "m1 should have 1 body");
 }
 
 #[test]
