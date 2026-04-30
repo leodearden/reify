@@ -1,7 +1,7 @@
 //! Collection compilation tests (step-29 through step-36).
 
 use reify_test_support::parse_and_compile;
-use reify_types::{CompiledExprKind, Value, ValueMap};
+use reify_types::{CompiledExprKind, Type, Value, ValueMap};
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(
@@ -355,4 +355,22 @@ fn e2e_list_sum() {
 
     let result = reify_expr::eval_expr(s_expr, &reify_expr::EvalContext::simple(&values));
     assert_eq!(result, Value::Int(6), "items.sum should be 6");
+}
+
+// ─── task 2698: type inference for `single` and `flat_map` ───
+
+/// `single(List<T>) -> T`. Without a name-driven branch, the compiler's
+/// `OverloadResolution::NoUserFunctions` arm falls back to the first arg's
+/// type (List<Int>), which is wrong — the inferred result type must unwrap
+/// the list to its element type.
+#[test]
+fn compile_single_infers_element_type() {
+    let compiled = parse_and_compile("structure S { let top = single([42]) }");
+    let expr = get_cell_expr(&compiled, "top");
+    assert_eq!(
+        expr.result_type,
+        Type::Int,
+        "single([Int]) should have result_type Int, got {:?}",
+        expr.result_type
+    );
 }
