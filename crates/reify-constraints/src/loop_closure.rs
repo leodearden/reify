@@ -675,8 +675,23 @@ pub fn solve_loop_closure_with_diagnostics(
         };
     }
 
-    // Balanced (== 6) — or under/singular branches handled in subsequent
-    // task-2677 steps.  Delegate to the existing solver.
+    if free_b.len() > SINGLE_LOOP_RESIDUAL_COUNT {
+        // Under-constrained: Newton still runs (Gauss-Newton with WarmStart
+        // converges to the local minimum closest to the warm-started point —
+        // that IS the PRD's "closest-to-previous config" semantics).  The
+        // warning gives the user a signal that the mechanism is structurally
+        // under-determined and might want an explicit binding.
+        let diag = reify_types::Diagnostic::warning(format!(
+            "kinematic system under-constrained: {} free DOFs vs {} loop residuals; consider adding an explicit binding",
+            free_b.len(),
+            SINGLE_LOOP_RESIDUAL_COUNT
+        ))
+        .with_code(reify_types::DiagnosticCode::KinematicUnderconstrained);
+        diagnostics.push(diag);
+    }
+
+    // Balanced (== 6) or under-constrained (> 6) — singular branch handled
+    // in step-10 of task 2677.  Delegate to the existing solver.
     let outcome = solve_loop_closure(
         chain_a,
         vals_a,
