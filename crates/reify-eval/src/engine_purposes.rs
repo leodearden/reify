@@ -290,14 +290,15 @@ impl Engine {
     /// # Combination rule
     ///
     /// Both bounds are folded by
-    /// [`crate::tolerance_combine::combine_demanded_tolerance`]:
+    /// [`crate::tolerance_combine::combine_demanded_tolerance`]. Each row
+    /// is pinned by an integration test in `tests/tolerance_combine.rs`:
     ///
-    /// | output_bound | purpose_bound | demanded_tolerance_for_output |
-    /// |--------------|---------------|-------------------------------|
-    /// | `Some(o)`    | `Some(p)`     | `Some(o.min(p))`              |
-    /// | `Some(t)`    | `None`        | `Some(t)`                     |
-    /// | `None`       | `Some(t)`     | `Some(t)`                     |
-    /// | `None`       | `None`        | `None`                        |
+    /// | output_bound | purpose_bound | demanded_tolerance_for_output | scenario       | pinned by                                                     |
+    /// |--------------|---------------|-------------------------------|----------------|---------------------------------------------------------------|
+    /// | `Some(o)`    | `Some(p)`     | `Some(o.min(p))`              | both-active    | `engine_demanded_tolerance_for_output_combines_via_min_when_both_active` |
+    /// | `Some(t)`    | `None`        | `Some(t)`                     | output-only    | `engine_demanded_tolerance_for_output_handles_partial_inputs` (a)        |
+    /// | `None`       | `Some(t)`     | `Some(t)`                     | purpose-only   | `engine_demanded_tolerance_for_output_handles_partial_inputs` (b)        |
+    /// | `None`       | `None`        | `None`                        | neither        | `engine_demanded_tolerance_for_output_handles_partial_inputs` (c)        |
     ///
     /// "Tighter satisfies looser" — same partial-order semantics as the
     /// cache-side `tolerance_bucket` `<=` rule and the purpose-side
