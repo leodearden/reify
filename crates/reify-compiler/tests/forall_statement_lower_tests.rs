@@ -23,6 +23,32 @@
 use reify_test_support::{compile_source, errors_only};
 use reify_types::{BinOp, CompiledExprKind, ModulePath, Value};
 
+/// Parse `source`, walk declarations to find the structure named
+/// `structure_name`, locate the first `MemberDecl::ForallConnect`, and invoke
+/// the closure `f` with a reference to the matched `ForallConnectDecl`,
+/// returning whatever the closure returns. Panics if no `ForallConnect` is
+/// found in the named structure.
+fn with_first_forall_connect<R>(
+    source: &str,
+    structure_name: &str,
+    f: impl FnOnce(&reify_syntax::ForallConnectDecl) -> R,
+) -> R {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Structure(s) = decl
+            && s.name == structure_name
+        {
+            for m in &s.members {
+                if let reify_syntax::MemberDecl::ForallConnect(fc) = m {
+                    return f(fc);
+                }
+            }
+        }
+    }
+    panic!("no ForallConnect found in structure {}", structure_name);
+}
+
 /// Recover the `MemberDecl::ForallConstraint` span by re-parsing `source`,
 /// finding the structure named `structure_name`, and returning the span of
 /// the first ForallConstraint member encountered. Panics if not found.
