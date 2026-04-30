@@ -753,11 +753,15 @@ fn write_face_generated_attributes(
 /// (`BRepOffsetAPI_ThruSections`).  For each `face_generated` record:
 ///
 ///   1. Validate `parent_index` is in range for
-///      `section_edge_handles_per_section` (the per-section profile-edge
-///      slice family).  Returns `QueryFailed` mentioning "section" on
-///      out-of-range.
+///      `section_face_handles_per_section` (the per-section profile-face
+///      slice family — face-keyed reads more naturally for a
+///      `face_generated` record; section count is `len()` either way
+///      since faces and edges share section count).  Returns
+///      `QueryFailed` mentioning "section" on out-of-range.
 ///   2. Validate `parent_subshape_index` is in range for the addressed
-///      section's edge slice.
+///      section's edge slice (the kernel emits each lateral face from a
+///      parent profile edge sweep, so the subshape index points into
+///      the edge map).
 ///   3. Validate `result_subshape_index` is in range for
 ///      `result_face_handles`.
 ///   4. Write `(feature_id, Role::LoftedFace, local_index =
@@ -776,16 +780,18 @@ fn write_loft_face_generated_attributes(
     _result_edge_handles: &[GeometryHandleId],
     face_generated: &[HistoryRecord],
 ) -> Result<(), QueryError> {
-    let _ = section_face_handles_per_section; // reserved for future face-level Modified checks
     for (sequential_idx, record) in face_generated.iter().enumerate() {
-        // Step 1: parent_index in range over section count.
+        // Step 1: parent_index in range over section count.  Validate
+        // against the face slice — face-keyed reads more naturally for
+        // a `face_generated` record (section count is shared with the
+        // edge slice, so behaviour is equivalent).
         let parent_idx = record.parent_index as usize;
-        if parent_idx >= section_edge_handles_per_section.len() {
+        if parent_idx >= section_face_handles_per_section.len() {
             return Err(QueryError::QueryFailed(format!(
                 "loft face_generated record has parent_index {} \
                  but loft has only {} section(s)",
                 parent_idx,
-                section_edge_handles_per_section.len()
+                section_face_handles_per_section.len()
             )));
         }
 
