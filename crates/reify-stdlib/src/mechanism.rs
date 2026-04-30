@@ -439,7 +439,10 @@ fn append_body(
     };
     let mut loop_closures = match mech_map.get(&Value::String("loop_closures".to_string())) {
         Some(Value::List(lc)) => lc.clone(),
-        // Forward-compat: old Mechanism Maps without the field start empty.
+        // Defense-in-depth for hand-built Mechanism Maps (e.g. test
+        // fixtures) that omit the field. `make_empty_mechanism` always
+        // emits `loop_closures`, so no Mechanism Map produced by the
+        // v0.2 builder reaches this branch.
         _ => Vec::new(),
     };
 

@@ -540,8 +540,11 @@ pub fn solve_loop_closure(
 /// Mechanism.
 ///
 /// Returns `Some(vec![])` for a valid open-chain Mechanism (no loop closures).
-/// A missing `loop_closures` field is treated as an empty list for
-/// forward-compat with Mechanism Maps that predate the v0.2 field addition.
+/// A missing `loop_closures` field is treated as an empty list as
+/// defense-in-depth against hand-built Mechanism Maps (e.g. test fixtures)
+/// that omit the field. `make_empty_mechanism` always emits the field, so
+/// no Mechanism Map produced by the v0.2 builder will lack it; this branch
+/// is only reachable from external/test callers.
 ///
 /// For each loop-closure record in the `loop_closures` list, extracts
 /// `path_a` and `path_b`, strips the world sentinel from the front of each
@@ -586,7 +589,9 @@ pub fn mechanism_loop_closure_chains(
         return None;
     }
 
-    // Read loop_closures list; treat missing field as empty (forward-compat).
+    // Read loop_closures list; treat missing field as empty as
+    // defense-in-depth for hand-built test Maps (the v0.2 builder always
+    // emits the field).
     let loop_closures: &[Value] = match map.get(&Value::String("loop_closures".to_string())) {
         Some(Value::List(lc)) => lc,
         None => &[],
@@ -1832,10 +1837,12 @@ mod tests {
         );
     }
 
-    /// Forward-compat: a Mechanism Map missing the `loop_closures` field
-    /// entirely (e.g. a v0.1-shaped Map) is treated as having no loop
-    /// closures. Pins `None => &[]` in the dispatch to guard against a
-    /// regression that flipped that branch to `None => return None`.
+    /// Defense-in-depth: a hand-built Mechanism Map that omits the
+    /// `loop_closures` field is treated as having no loop closures (the
+    /// v0.2 builder always emits the field, so this only matters for
+    /// hand-constructed callers). Pins `None => &[]` in the dispatch to
+    /// guard against a regression that flipped that branch to
+    /// `None => return None`.
     #[test]
     fn mechanism_loop_closure_chains_missing_field_returns_empty_vec() {
         use std::collections::BTreeMap;
