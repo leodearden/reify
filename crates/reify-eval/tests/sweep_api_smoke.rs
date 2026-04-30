@@ -17,7 +17,9 @@
 // (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
 #![allow(clippy::mutable_key_type)]
 
-use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    collect_errors, make_simple_engine, parse_and_compile_with_stdlib, read_f64,
+};
 use reify_types::{Value, ValueCellId, ValueMap};
 
 /// Resolve a binding by name from the eval result.
@@ -45,16 +47,6 @@ structure def Kinematic {
     let grid  = sweep_grid(m, [dim(j, 0mm .. 1000mm, 2)])
 }
 "#;
-
-/// Read a numeric component (Real or Scalar) as f64 SI value.
-fn read_f64(v: &Value, label: &str) -> f64 {
-    match v {
-        Value::Real(r) => *r,
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Int(i) => *i as f64,
-        other => panic!("{label}: expected numeric component, got {other:?}"),
-    }
-}
 
 /// Extract a snapshot's body 0 world translation.
 fn body_0_translation(snapshot: &Value, label: &str) -> [f64; 3] {
@@ -135,8 +127,14 @@ fn sweep_api_round_trip_e2e() {
         tx0.abs() < 1e-9,
         "snaps[0] body 0 tx should be 0, got {tx0}"
     );
-    assert!(ty0.abs() < 1e-9, "snaps[0] body 0 ty should be 0, got {ty0}");
-    assert!(tz0.abs() < 1e-9, "snaps[0] body 0 tz should be 0, got {tz0}");
+    assert!(
+        ty0.abs() < 1e-9,
+        "snaps[0] body 0 ty should be 0, got {ty0}"
+    );
+    assert!(
+        tz0.abs() < 1e-9,
+        "snaps[0] body 0 tz should be 0, got {tz0}"
+    );
 
     let [tx10, ty10, tz10] = body_0_translation(&snaps_list[10], "snaps[10]");
     assert!(
