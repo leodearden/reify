@@ -834,7 +834,10 @@ pub fn resolve_auto_type_params(
 
         match selection {
             SelectionResult::Selected(ref name) => {
-                // Record the substitution and continue to the next param.
+                // Selected path (step-4 contract): record in BOTH substitution
+                // (for later type-substitution consumers) AND per_param (for
+                // callers inspecting per-param outcomes), then continue the
+                // loop — do NOT break or return.
                 substitution.push((param.name.clone(), name.clone()));
                 per_param.push((param.name.clone(), selection));
             }
