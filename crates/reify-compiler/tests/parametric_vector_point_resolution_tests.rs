@@ -190,3 +190,42 @@ fn vector3_integer_literal_arg_produces_error() {
 fn point3_integer_literal_arg_produces_error() {
     assert_produces_error("structure def Bad { param v : Point3<3> }");
 }
+
+// ---------------------------------------------------------------------------
+// Bare-name backward compat — with a user-declared same-named structure
+// ---------------------------------------------------------------------------
+
+/// Fixture: two user-declared structures (Vector3 and Point3) plus a use-site
+/// structure that references them by bare name (no type args).
+///
+/// Bare `Vector3` / `Point3` with no type args cannot match the new `Vector3<Q>`
+/// / `Point3<Q>` arms (gated on `type_args.len() == 1`), so they fall through to
+/// `resolve_type_with_aliases`, which finds the user-declared structure name and
+/// returns `Type::StructureRef(...)`. Declaring the structure in the same fixture
+/// is necessary because the stdlib does not include any `.ri` file that defines
+/// `Vector3` or `Point3` as structures.
+const BARE_NAME_FALLBACK_SOURCE: &str = r#"
+structure def Vector3 {}
+structure def Point3 {}
+
+structure def UseBare {
+    param v : Vector3
+    param p : Point3
+}
+"#;
+
+/// With `structure def Vector3 {}` declared, bare `Vector3` (no type args) falls
+/// through `resolve_parameterized_builtin_type` (gated on `type_args.len() == 1`)
+/// and lands on the structure-name path in `resolve_type_with_aliases`, returning
+/// `Type::StructureRef("Vector3")`. This is the pre-#2746 surface contract that
+/// the new `Vector3<Q>` arm preserves; tightening or removing the arm's arity
+/// guard would silently break this regression.
+#[test]
+fn vector3_bare_name_falls_through_to_structure_ref() {
+    assert_param_type(
+        BARE_NAME_FALLBACK_SOURCE,
+        "UseBare",
+        "v",
+        &Type::StructureRef("Vector3".into()),
+    );
+}
