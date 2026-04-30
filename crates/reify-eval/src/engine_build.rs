@@ -220,10 +220,15 @@ fn populate_single_parent_sweep_op(
 ///       per-section `extract_faces` is near-free;
 ///   (b) result-edge extraction is a single call;
 ///   (c) calling `extract_faces` once per section keeps
-///       `section_faces.len() == section_edges.len() == profile_handles.len()`,
-///       which is required by the lockstep `debug_assert_eq!` at the top
-///       of `populate_loft_attributes` (see `topology_attribute_propagation.rs`);
-///       skipping `extract_faces` and passing `&[]` would violate it.
+///       `section_faces.len() == section_edges.len()`, which is the
+///       two-way equality pinned by the lockstep `debug_assert_eq!` at the
+///       top of `populate_loft_attributes` (see `topology_attribute_propagation.rs`);
+///       the additional equality `== profile_handles.len()` is enforced
+///       structurally by the single push-per-iteration loop above (one
+///       `section_faces.push(...)` and one `section_edges.push(...)` per
+///       `profile_handle`).  Skipping `extract_faces` and passing `&[]`
+///       would still violate the assertion (because `section_edges` would
+///       still be populated per-section).
 fn populate_loft_op(
     table: &mut TopologyAttributeTable,
     kernel: &mut dyn GeometryKernel,
