@@ -709,6 +709,15 @@ pub fn select_candidate(
 /// not feasibility-checked, and emit no diagnostics. This is the v0.1
 /// "no cross-param backtracking" rule.
 ///
+/// ## Overflow → Ambiguous mapping
+///
+/// `CandidateEnumeration::Overflow` carries the first
+/// `MAX_AUTO_TYPE_PARAM_CANDIDATES` alphabetically and is modelled as
+/// `SelectionResult::Ambiguous(overflow_vec)` in `per_param`. Both overflow
+/// and strict-ambiguous share the same "≥2 candidates, can't pick one without
+/// user input" shape. Phase A has already pushed the overflow diagnostic before
+/// the orchestrator runs, so no second diagnostic is emitted here.
+///
 /// # Per-param `free` flag
 ///
 /// Each `AutoTypeParam` carries its own `free` flag (strict vs. free
