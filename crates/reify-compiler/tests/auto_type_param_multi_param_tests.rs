@@ -731,3 +731,110 @@ structure def ORingSeal : Seal {
     assert_eq!(diag_ba.len(), 1, "[B,A] order: exactly one diagnostic expected");
     assert_eq!(diag_ba[0].code, Some(DiagnosticCode::AutoTypeParamNoCandidate));
 }
+
+// ─── step-17: per-param `free` flag is honored independently ─────────────────
+
+/// When two params have different `free` flags, the orchestrator uses each
+/// param's own `free` flag independently — it does NOT apply one shared flag
+/// to all params.
+///
+/// Setup:
+/// - T: `free=false` (strict), one feasible candidate (ORingSeal) → `Selected("ORingSeal")`, no diagnostic.
+/// - U: `free=true` (free), two feasible candidates (GraphiteSeal, ORingSeal2) →
+///   `Selected("GraphiteSeal")` (lex-first) + one `AutoTypeParamNonUnique` Warning.
+///
+/// Expected outcome: `per_param == [("T", Selected("ORingSeal")), ("U", Selected("GraphiteSeal"))]`,
+/// `substitution.len() == 2`, exactly one diagnostic with code `AutoTypeParamNonUnique`
+/// and severity `Warning`.
+///
+/// Pins that each param's `free` flag is read independently. A regression that
+/// applied a single `free` value to all params would cause U to emit Ambiguous
+/// (error) instead of NonUnique (warning+selected).
+#[test]
+fn per_param_free_flag_honored_independently() {
+    // T's pool: one Seal structure (ORingSeal).
+    // U's pool: two Polished structures (GraphiteSeal2, ORingSeal2) — lex order: G < O.
+    let source = r#"
+trait Seal {}
+trait Polished {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def GraphiteSeal2 : Polished {
+    param thickness : Real = 2.0
+}
+
+structure def ORingSeal2 : Polished {
+    param diameter : Real = 8.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],     // one candidate → Selected, no diag
+            free: false,                            // strict
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Polished".to_string()],  // two candidates → NonUnique + Selected(lex-first)
+            free: true,                             // free
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diagnostics,
+    );
+
+    // Both params resolve: per_param has 2 Selected entries, substitution has 2 entries.
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+                ("U".to_string(), SelectionResult::Selected("GraphiteSeal2".to_string())),
+            ],
+            substitution: vec![
+                ("T".to_string(), "ORingSeal".to_string()),
+                ("U".to_string(), "GraphiteSeal2".to_string()),
+            ],
+        },
+        "per-param free: T (strict) must select ORingSeal; U (free) must select GraphiteSeal2 (lex-first)"
+    );
+
+    // Exactly one NonUnique warning (for U, not for T).
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one NonUnique warning expected (for U only), got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "NonUnique diagnostic must be a Warning (not Error)"
+    );
+}
