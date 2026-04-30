@@ -529,3 +529,91 @@ structure def AirCooled : Cooled {
         "ambiguous diagnostic must be an error"
     );
 }
+
+// ─── step-13: mid-list failure — first param resolves, second param fails ──
+
+/// When the first param resolves successfully and the second param fails
+/// (NoCandidate), both entries appear in `per_param` (Selected then
+/// NoCandidate), but only the first appears in `substitution`. The
+/// asymmetry is the load-bearing assertion pinning halt-on-first-failure
+/// with correct accumulation.
+///
+/// Pins:
+/// - `per_param.len() == 2` — BOTH entries recorded (success then failure)
+/// - `substitution.len() == 1` — only the resolved param
+/// - exactly one `AutoTypeParamNoCandidate` diagnostic (for the second param)
+/// - order is declared order: T first, U second
+#[test]
+fn mid_list_failure_records_success_then_failure_in_per_param_but_only_success_in_substitution() {
+    // T: Seal → ORingSeal (one candidate, resolves).
+    // U: Cooled → no structures implementing Cooled (NoCandidate).
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()], // one candidate → Selected
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()], // zero candidates → NoCandidate
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+                ("U".to_string(), SelectionResult::NoCandidate),
+            ],
+            substitution: vec![
+                ("T".to_string(), "ORingSeal".to_string()),
+            ],
+        },
+        "mid-list failure: per_param must carry both entries (T:Selected, U:NoCandidate); \
+         substitution must carry only T:ORingSeal"
+    );
+
+    // Exactly one diagnostic: NoCandidate for U.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one no-candidate diagnostic expected (for U only), got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "diagnostic must be AutoTypeParamNoCandidate for U, got: {:?}",
+        diagnostics[0].code
+    );
+}
