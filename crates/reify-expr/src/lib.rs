@@ -2757,6 +2757,99 @@ mod tests {
         assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
+    // ── flat_map function-call interception (task 2698) ───────────────────────
+
+    /// Construct a `Value::Lambda` from param (name, id) pairs, a body
+    /// `CompiledExpr`, and captures.  Mirrors the shape used by
+    /// `make_value_lambda`/`lambda_literal` in
+    /// `crates/reify-expr/tests/collection_eval_tests.rs:518-548`; we
+    /// replicate it here because src/-side test modules cannot import from
+    /// tests/.
+    fn make_lambda(
+        params: Vec<(&str, ValueCellId)>,
+        body: CompiledExpr,
+        captures: ValueMap,
+    ) -> Value {
+        Value::Lambda {
+            params: params
+                .into_iter()
+                .map(|(n, id)| (n.to_string(), id))
+                .collect(),
+            body: Box::new(body),
+            captures,
+        }
+    }
+
+    fn lambda_lit(
+        params: Vec<(&str, ValueCellId)>,
+        body: CompiledExpr,
+        captures: ValueMap,
+    ) -> CompiledExpr {
+        let lambda = make_lambda(params, body, captures);
+        CompiledExpr::literal(
+            lambda,
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Int),
+            },
+        )
+    }
+
+    fn flat_map_call(list_arg: CompiledExpr, lambda_arg: CompiledExpr) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_types::ContentHash::of(&[101]),
+            result_type: Type::List(Box::new(Type::Int)),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "std::flat_map".to_string(),
+                },
+                args: vec![list_arg, lambda_arg],
+            },
+        }
+    }
+
+    #[test]
+    fn function_call_flat_map_basic() {
+        // flat_map([1, 2, 3], |x| [x, x * 2]) -> [1, 2, 2, 4, 3, 6]
+        let x_id = ValueCellId::new("$lambda_flat_map.S", "x");
+        let body = CompiledExpr::list_literal(
+            vec![
+                CompiledExpr::value_ref(x_id.clone(), Type::Int),
+                CompiledExpr::binop(
+                    BinOp::Mul,
+                    CompiledExpr::value_ref(x_id.clone(), Type::Int),
+                    lit(Value::Int(2), Type::Int),
+                    Type::Int,
+                ),
+            ],
+            Type::List(Box::new(Type::Int)),
+        );
+        let lambda = lambda_lit(vec![("x", x_id)], body, ValueMap::new());
+        let list = CompiledExpr::list_literal(
+            vec![
+                lit(Value::Int(1), Type::Int),
+                lit(Value::Int(2), Type::Int),
+                lit(Value::Int(3), Type::Int),
+            ],
+            Type::List(Box::new(Type::Int)),
+        );
+        let expr = flat_map_call(list, lambda);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(2),
+                Value::Int(4),
+                Value::Int(3),
+                Value::Int(6),
+            ])
+        );
+    }
+
     #[test]
     fn eq_scalar_different_dimensions_is_false() {
         // 0.005 LENGTH == 0.005 MASS should be false (different dimensions)
