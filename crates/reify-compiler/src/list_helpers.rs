@@ -12,10 +12,52 @@ use super::*;
 /// - `single(List<T>)` → `T`
 /// - `flat_map(List<A>, (A) → List<B>)` → `List<B>`
 pub(crate) fn infer_list_helper_return_type(
-    _name: &str,
-    _compiled_args: &[CompiledExpr],
+    name: &str,
+    compiled_args: &[CompiledExpr],
 ) -> Option<Type> {
-    None
+    match name {
+        "single" => {
+            // single(List<T>) -> T  (task 2698).
+            //
+            // Unwrap the list element type so downstream cells see T, not
+            // List<T>.  Falls through to the generic first-arg fallback
+            // (returns None here) when the structural pattern doesn't match
+            // (e.g., poisoned type or non-list argument), preserving
+            // anti-cascade.
+            if let Some(arg) = compiled_args.first() {
+                if let Type::List(inner) = &arg.result_type {
+                    return Some((**inner).clone());
+                }
+            }
+            None
+        }
+        "flat_map" => {
+            // flat_map(List<A>, (A) -> List<B>) -> List<B>  (task 2698).
+            //
+            // Read the lambda's return_type, populated by the Lambda
+            // compilation arm at expr.rs:~1741.  The return_type must itself
+            // be `List<_>` for this branch to fire — a non-list lambda body
+            // (e.g. `flat_map([1, 2], |x| x)`) is a runtime type error
+            // (silently propagates as Value::Undef per the task 2698
+            // convention) and would yield a misleading non-list cell type if
+            // we returned it here.
+            //
+            // Falls through to the first-arg fallback (returns None here)
+            // when the structural pattern doesn't match (poisoned types,
+            // wrong arity, second arg not a Function, or lambda body not a
+            // List), preserving anti-cascade and ensuring the cell type stays
+            // List<_>.
+            if compiled_args.len() == 2 {
+                if let Type::Function { return_type, .. } = &compiled_args[1].result_type {
+                    if matches!(**return_type, Type::List(_)) {
+                        return Some((**return_type).clone());
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
