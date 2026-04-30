@@ -1940,4 +1940,180 @@ mod tests {
             s
         );
     }
+
+    // ── Closed-chain snapshot via loop-closure solver (task 2678 step-3) ───
+    //
+    // For closed-chain mechanisms (non-empty `loop_closures`), `snapshot()`
+    // must invoke the Newton solver to drive free joints into a configuration
+    // that closes every recorded loop.  Today's pre-step-4 snapshot ignores
+    // `loop_closures` entirely — for our 4-body fixture below it produces a
+    // `Snapshot Map` whose `bodies[1]` (at=jB) sits at jB's range midpoint
+    // rather than the loop-closure-solved value, leaving body 3's
+    // (closing-edge) world translation inconsistent across paths a and b.
+    // After step-4, the synthesized binding for jB drives both paths to
+    // the same translation within solver tolerance.
+
+    /// Closed-chain mechanism: two prismatic-X joints (`j_a`, `j_b`)
+    /// attached to the world via separate bodies, plus a closing joint
+    /// (`j_x`) that body C anchors to `j_a` (forming the spanning-tree
+    /// edge `j_x → j_a`) and body D anchors to `j_b` (forming the
+    /// closing edge that becomes a `loop_closures` record with
+    /// `path_a=[world,j_a,j_x]` and `path_b=[world,j_b,j_x]`).
+    ///
+    /// `j_a` is bound to 0.5 m (driver value).  The closure constraint
+    /// `j_a + j_x = j_b + j_x` forces `j_b = j_a = 0.5 m`.  Today's
+    /// snapshot ignores `loop_closures` and `j_b` falls back to its
+    /// range midpoint (1.0 m for range 0..2 m) — so body 1's translation
+    /// (1.0, 0, 0) violates the closure, distinguishable from the
+    /// post-step-4 solver-driven (0.5, 0, 0).
+    ///
+    /// The closing-edge body's world translation is asserted to match
+    /// the path-b expectation `(j_b_solved + j_x_value)` within 1e-6 m,
+    /// pinning the round-trip from solver output back into the FK walk.
+    #[test]
+    fn snapshot_solves_closed_chain_via_loop_closure_solver() {
+        // jA on +X with range 0..1m; midpoint = 0.5m.
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        // jB on +X with range 0..2m (DIFFERENT Map by range). Its midpoint
+        // is 1.0m — distinct from jA's 0.5m so today's naive midpoint
+        // fallback for `j_b` produces a translation that violates the
+        // closure constraint and is observable in the test.
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        // jX is a revolute around +Z with range 0..π; pure rotation about
+        // world-Z preserves the +X translation contributions of j_a and j_b
+        // (both project onto the rotated +X), so the closure simplifies to
+        // a 1-DOF translation match with jX's rotation cancelling out of
+        // both paths.
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        // Body A: at=jA, parent=world.  joint_parents = {jA: world}.
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+        );
+        // Body B: at=jB, parent=world.  joint_parents = {jA: world, jB: world}.
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+        );
+        // Body C: at=jX, parent=jA.  joint_parents = {jA: world, jB: world, jX: jA}.
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+        );
+        // Body D: at=jX, parent=jB.  Closing edge — jX is already mapped to jA.
+        // loop_closures records path_a=[world, jA, jX], path_b=[world, jB, jX].
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+        );
+
+        // Sanity: m4 must be a closed-chain mechanism with non-empty loop_closures.
+        match &m4 {
+            Value::Map(map) => {
+                assert!(
+                    !map.contains_key(&Value::String("error".to_string())),
+                    "fixture should not produce an errored mechanism"
+                );
+                let lc = map
+                    .get(&Value::String("loop_closures".to_string()))
+                    .expect("mechanism must carry a loop_closures field");
+                match lc {
+                    Value::List(records) => assert_eq!(
+                        records.len(),
+                        1,
+                        "exactly one loop-closure record expected, got {}",
+                        records.len()
+                    ),
+                    other => panic!("loop_closures must be a List, got {:?}", other),
+                }
+            }
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        }
+
+        // Bind jA = 0.5m.  The closure jA + jX = jB + jX simplifies to
+        // jA = jB → solver should drive jB to 0.5m (NOT jB's midpoint 1.0m).
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a])]);
+
+        // After step-4 the closed-chain snapshot must produce a valid
+        // Snapshot Map (not Undef): the loop-closure-solver wiring runs
+        // during snapshot construction and the FK re-walk yields a
+        // consistent set of body world transforms.
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!(
+                "expected Snapshot Map after closed-chain solve, got {:?}",
+                other
+            ),
+        };
+        assert_eq!(
+            smap.get(&Value::String("kind".to_string())),
+            Some(&Value::String("snapshot".to_string())),
+            "closed-chain snapshot must carry kind='snapshot'"
+        );
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected bodies List, got {:?}", other),
+        };
+        assert_eq!(bodies.len(), 4, "4-body closed-chain mechanism");
+
+        // Body 1 (at=jB, parent=world) — its world translation x must
+        // equal the loop-closure-solved jB value (= 0.5m), not the
+        // naive midpoint (1.0m).  This is the assertion that fails
+        // today (snapshot ignores loop_closures and falls back to
+        // midpoint(jB) = 1.0m).
+        let body_1 = match &bodies[1] {
+            Value::Map(b) => b,
+            other => panic!("expected body 1 record Map, got {:?}", other),
+        };
+        let wt_1 = body_1
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body 1 must carry a world_transform field");
+        let (_, [tx_1, ty_1, tz_1]) = decompose_transform_for_assert(wt_1);
+        assert!(
+            (tx_1 - 0.5).abs() < 1e-6,
+            "body 1 (at=jB) tx must be loop-closure-solved 0.5m (NOT midpoint 1.0m), got {tx_1}"
+        );
+        assert!(ty_1.abs() < 1e-6, "body 1 ty must be 0, got {ty_1}");
+        assert!(tz_1.abs() < 1e-6, "body 1 tz must be 0, got {tz_1}");
+
+        // Body 3 (closing-edge, at=jX, parent=jB): the FK walk uses
+        // joint_parents (which records jX → jA), so its world transform
+        // is computed via path_a (jA + jX).  The closure constraint
+        // demands path_a's value == path_b's value within 1e-6 m;
+        // verify by comparing body 3's stored translation against the
+        // path_b expectation jB_solved + jX_value (with jX projecting
+        // onto +X via its initial frame, the translation contribution
+        // from jX is zero — its contribution is purely rotational).
+        let body_3 = match &bodies[3] {
+            Value::Map(b) => b,
+            other => panic!("expected body 3 record Map, got {:?}", other),
+        };
+        let wt_3 = body_3
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body 3 must carry a world_transform field");
+        let (_, [tx_3, ty_3, tz_3]) = decompose_transform_for_assert(wt_3);
+        // Path-a expectation: jA + jX = 0.5m on +X (jX is pure rotation
+        // about Z and doesn't contribute translation).
+        assert!(
+            (tx_3 - 0.5).abs() < 1e-6,
+            "body 3 (closing-edge) tx must equal path-a/path-b solved 0.5m, got {tx_3}"
+        );
+        assert!(ty_3.abs() < 1e-6, "body 3 ty must be 0, got {ty_3}");
+        assert!(tz_3.abs() < 1e-6, "body 3 tz must be 0, got {tz_3}");
+    }
 }
