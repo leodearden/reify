@@ -55,6 +55,12 @@ impl<V> RealizationCache<V> {
     /// Returns `true` if the entry was inserted, or `false` if an existing entry with
     /// a tighter (or equal) tolerance already satisfies this tolerance — mirroring
     /// [`ToleranceBucket::insert`]'s semantics.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `tol` is NaN, infinite, or negative.
+    /// This forwards [`ToleranceBucket`]'s precondition: `tol` must be finite and
+    /// non-negative (`tol.is_finite() && tol >= 0.0`).
     pub fn insert(&mut self, entity: &str, repr_kind: ReprKind, tol: f64, val: V) -> bool {
         self.buckets
             .entry((entity.to_owned(), repr_kind))
@@ -66,6 +72,12 @@ impl<V> RealizationCache<V> {
     ///
     /// Returns `Some(&val)` for the loosest satisfying entry (`cached_tol ≤ tol`), or
     /// `None` if no entry satisfies.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `tol` is NaN, infinite, or negative.
+    /// This forwards [`ToleranceBucket`]'s precondition: `tol` must be finite and
+    /// non-negative (`tol.is_finite() && tol >= 0.0`).
     pub fn lookup(&self, entity: &str, repr_kind: ReprKind, tol: f64) -> Option<&V> {
         self.buckets
             .get(&(entity.to_owned(), repr_kind))
