@@ -14,6 +14,17 @@ use reify_test_support::builders::{
 use reify_test_support::make_engine;
 use reify_types::{CompiledExpr, DimensionVector, ModulePath, Type, Value, ValueCellId};
 
+/// Core builder for an `STEPOutput`-shaped `TopologyTemplate`. Callers supply
+/// the body `CompiledExpr`; the template name, `"subject"` param, and index-0
+/// constraint slot are fixed — any future change to the template shape only
+/// needs to be made here.
+fn step_output_template_with_body(body: CompiledExpr) -> reify_compiler::TopologyTemplate {
+    TopologyTemplateBuilder::new("STEPOutput")
+        .param("STEPOutput", "subject", Type::StructureRef("Structure".to_string()), None)
+        .constraint("STEPOutput", 0, None, body)
+        .build()
+}
+
 /// Build an `STEPOutput`-shaped `TopologyTemplate` carrying a single
 /// `RepresentationWithin(<ValueRef typed StructureRef>, <length-literal>)`
 /// body constraint at SI `output_tol` metres. The template's name is
@@ -35,36 +46,21 @@ fn step_output_template(output_tol: f64) -> reify_compiler::TopologyTemplate {
             dimension: DimensionVector::LENGTH,
         },
     );
-    let rep_within = CompiledExpr::user_function_call(
+    let body = CompiledExpr::user_function_call(
         "RepresentationWithin".to_string(),
         vec![subject_arg, tol_arg],
         Type::Bool,
     );
-    TopologyTemplateBuilder::new("STEPOutput")
-        .param("STEPOutput", "subject", Type::StructureRef("Structure".to_string()), None)
-        .constraint("STEPOutput", 0, None, rep_within)
-        .build()
+    step_output_template_with_body(body)
 }
 
 /// Build an `STEPOutput`-shaped `TopologyTemplate` whose body constraint is a
-/// non-`RepresentationWithin` shape (top-level `Bool` literal). The constraint
-/// lands in the runtime graph at `(entity = "STEPOutput", index = 0)` and is
-/// silently skipped by `extract_output_tolerance_bound`'s Gate 2 (the outer
-/// `match &data.expr.kind { CompiledExprKind::UserFunctionCall { .. } => ..,
-/// _ => continue }` arm) — pins the realistic "template exists, no tolerance
-/// body" empty-result shape at the integration level.
-///
-/// Mirrors unit-level fixture (h) at `tolerance_combine.rs` (the
-/// `extract_output_tolerance_bound_skips_non_finite_non_length_and_unrelated_entity`
-/// unit test case that uses `CompiledExpr::literal(Value::Bool(true), Type::Bool)`
-/// under `"STEPOutput"`) so the integration test stays in lockstep with unit
-/// coverage.
+/// `Bool` literal rather than a `RepresentationWithin` expression. The
+/// constraint is present in the runtime graph under
+/// `(entity = "STEPOutput", index = 0)` but carries no tolerance value, so
+/// `extract_output_tolerance_bound` returns `None` for this template.
 fn step_output_template_without_rep_within() -> reify_compiler::TopologyTemplate {
-    let body = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-    TopologyTemplateBuilder::new("STEPOutput")
-        .param("STEPOutput", "subject", Type::StructureRef("Structure".to_string()), None)
-        .constraint("STEPOutput", 0, None, body)
-        .build()
+    step_output_template_with_body(CompiledExpr::literal(Value::Bool(true), Type::Bool))
 }
 
 /// Build a `manufacturing`-style `CompiledPurpose` whose sole constraint is
@@ -118,9 +114,8 @@ fn engine_demanded_tolerance_for_output_handles_partial_inputs() {
     // the both-None case (corresponds to the lone-Some / both-None rows of the
     // combiner truth table — see step-4 for the unit-level contract).
     // Scenarios (b) and (d) both exercise the `None + Some(p) = Some(p)` row
-    // but via distinct code paths: (b) reaches output_bound=None through Gate-1
-    // (no STEPOutput entity in graph at all); (d) reaches it through Gate-2
-    // (STEPOutput entity present but body is a non-RepresentationWithin expr).
+    // via distinct shapes: (b) has no STEPOutput template at all; (d) has the
+    // template but its body carries no recognisable tolerance expression.
 
     // (a) Output-only — module contains only the STEPOutput template
     //     (no purpose with RepresentationWithin). Evaluate without
@@ -181,22 +176,16 @@ fn engine_demanded_tolerance_for_output_handles_partial_inputs() {
     }
 
     // (d) Template-present, no RepresentationWithin body — module contains a
-    //     STEPOutput template whose only body constraint is a non-
-    //     `RepresentationWithin` shape (a top-level `Bool` literal), plus a
-    //     manufacturing purpose. The runtime graph DOES hold an entry under
-    //     `(entity = "STEPOutput", index = 0)`, so Gate 1 (entity filter) of
-    //     `extract_output_tolerance_bound` admits it — but Gate 2
-    //     (`UserFunctionCall("RepresentationWithin", _)` outer shape) silently
-    //     skips the Bool-literal expr → output_bound is None. Purpose-side
-    //     contributes Some(50e-6).
+    //     STEPOutput template whose body constraint is a `Bool` literal (not a
+    //     `RepresentationWithin` expression), plus a manufacturing purpose. The
+    //     template IS present in the runtime graph but carries no tolerance
+    //     value, so output_bound is None. Purpose-side contributes Some(50e-6).
     //
-    //     Contrasts with scenario (b): (b) tested the absent-template path
-    //     (Gate-1 filters everything because no STEPOutput entity exists in the
-    //     graph); (d) tests the realistic template-present path (Gate-1 passes,
-    //     Gate-2 filters the non-RepresentationWithin body). Both are valid
-    //     empty-result paths through `extract_output_tolerance_bound`; (d) is
-    //     the more realistic shape because real STEPOutput templates carry body
-    //     constraints — just not necessarily RepresentationWithin ones.
+    //     Contrasts with (b): (b) has no STEPOutput template at all; (d) has
+    //     the template but its body is not a tolerance expression. Both produce
+    //     output_bound = None. (d) is the more realistic shape because real
+    //     STEPOutput templates carry body constraints that aren't always
+    //     tolerance bounds.
     {
         let module = CompiledModuleBuilder::new(ModulePath::new(vec![
             "test_template_present_no_rep_within".to_string(),
@@ -211,9 +200,9 @@ fn engine_demanded_tolerance_for_output_handles_partial_inputs() {
         assert_eq!(
             engine.demanded_tolerance_for_output("STEPOutput", "MyDesign"),
             Some(50e-6),
-            "template-present no RepresentationWithin: STEPOutput entity \
-             exists in graph but its body is non-RepresentationWithin → \
-             output_bound is None via Gate 2 → purpose-side (50e-6) wins"
+            "template-present no RepresentationWithin: STEPOutput template \
+             present but body carries no tolerance value → output_bound is \
+             None → purpose-side (50e-6) wins"
         );
     }
 }
