@@ -296,3 +296,16 @@ fn vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exis
         &Type::StructureRef("Vector3".into()),
     );
 }
+
+/// Parallel to `vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists`
+/// for `Point3`: `Point3<Force, Length>` silently falls through to
+/// `Type::StructureRef("Point3")` when a `structure def Point3 {}` is in scope.
+#[test]
+fn point3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists() {
+    assert_param_type(
+        ARITY_MISMATCH_USER_STRUCTURE_SOURCE,
+        "UseArity",
+        "p",
+        &Type::StructureRef("Point3".into()),
+    );
+}
