@@ -1,4 +1,4 @@
-//! Phases A and B of the `auto` type-parameter resolution algorithm.
+//! Phases A, B, and C of the `auto` type-parameter resolution algorithm.
 //!
 //! # Phase A — Candidate Enumeration
 //!
@@ -38,18 +38,41 @@
 //!    Adding values can only flip `Indeterminate → Satisfied/Violated`, never
 //!    the reverse, preserving the architecture's monotonicity guarantee.
 //!
+//! # Phase C — Selection (strict-vs-free dispatch + lexicographic tiebreak)
+//!
+//! Pure dispatcher over Phase B's [`FeasibilityResult`] that produces one of
+//! three outcomes per PRD §"Phase C". Public surface:
+//!
+//! - [`select_candidate`] — core selection function.
+//! - [`SelectionResult`] — three-arm result enum (`Selected` / `NoCandidate`
+//!   / `Ambiguous`).
+//!
+//! Dispatch table (`accepted.len()` × `free`):
+//!
+//! | feasible | strict (`free=false`)                  | free (`free=true`)                          |
+//! |----------|----------------------------------------|---------------------------------------------|
+//! | 0        | `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error  | `E_AUTO_TYPE_PARAM_NO_CANDIDATE` error      |
+//! | 1        | `Selected(name)`, no diagnostic         | `Selected(name)`, no diagnostic             |
+//! | ≥2       | `E_AUTO_TYPE_PARAM_AMBIGUOUS` error      | `W_AUTO_TYPE_PARAM_NON_UNIQUE` warning      |
+//!
+//! Single-feasible (`accepted.len() == 1`) is always selected directly
+//! regardless of `free` — there is nothing to disambiguate, so emitting
+//! `W_AUTO_TYPE_PARAM_NON_UNIQUE` would be both noise and a contract
+//! violation. The lex-first tiebreak under `auto(free)` uses `accepted[0]`
+//! because Phase B preserves Phase A's alphabetical input order.
+//!
 //! # Common Scope
 //!
-//! Both phases are delivered as **pure utility modules**: the parser does not
-//! yet accept `auto: TraitName` syntax inside `type_arg_list`
+//! All three phases are delivered as **pure utility modules**: the parser
+//! does not yet accept `auto: TraitName` syntax inside `type_arg_list`
 //! (`tree-sitter-reify/grammar.js:601-605` only permits `$.type_expr`), so
 //! end-to-end source-level resolution is impossible until a follow-up parser
 //! task lands the new syntax. Functions in this module are unit-tested against
 //! compiler-built registries; a future task will wire them into the compile
 //! pipeline once the parser/AST learn `auto:` in type-arg position.
 //!
-//! Phases C (selection logic / strict-vs-free) and D (topology trigger) are
-//! explicitly deferred to follow-up tasks.
+//! Phase D (topology trigger / re-resolution on registry change) is
+//! explicitly deferred to a follow-up task.
 
 use std::collections::HashMap;
 
