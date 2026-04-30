@@ -490,6 +490,27 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_AUTO_TYPE_PARAM_AMBIGUOUS`
     /// (see `docs/prds/auto-type-param-resolution.md` §"Phase C").
     AutoTypeParamAmbiguous,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs`
+    /// (Phase C selection logic — `select_candidate`).
+    ///
+    /// Canonical message form:
+    /// `"auto(free) type parameter has multiple feasible candidates for bound '<TraitNames>': <names>; selected lexicographically-first '<lex_first>'"`.
+    ///
+    /// Emitted as `Severity::Warning` when, under `auto(free)` resolution,
+    /// Phase B yields ≥2 feasible candidates. The diagnostic carries every
+    /// feasible FQN in the structured [`Diagnostic::candidates`] field
+    /// (input/alphabetical order) and names the lexicographically-first
+    /// FQN — which Phase C selects — in the human-readable message.
+    /// A single label is attached at the `auto:` use-site span.
+    ///
+    /// Severity is `Warning` (not `Error`) because `auto(free)` semantics
+    /// permit the compiler to choose: the warning surfaces the choice for
+    /// auditability without blocking compilation. This is the load-bearing
+    /// distinction from `AutoTypeParamAmbiguous`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_AUTO_TYPE_PARAM_NON_UNIQUE`
+    /// (see `docs/prds/auto-type-param-resolution.md` §"Phase C").
+    AutoTypeParamNonUnique,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:

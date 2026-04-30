@@ -510,7 +510,27 @@ pub fn select_candidate(
                 );
                 return SelectionResult::Ambiguous(accepted);
             }
-            unimplemented!("≥2-feasible free arm is landed in step-8")
+            // Free (`free=true`) + ≥2 feasible → NON_UNIQUE warning;
+            // select the lexicographically-first candidate. Phase B preserves
+            // Phase A's alphabetical input order, so `accepted[0]` IS the
+            // lex-first FQN.
+            let joined_bounds = bounds.join(" + ");
+            let candidates_join = accepted.join(", ");
+            let lex_first = accepted[0].clone();
+            let message = format!(
+                "auto(free) type parameter has multiple feasible candidates for bound '{bounds_str}': {names}; selected lexicographically-first '{lex_first}'",
+                bounds_str = joined_bounds,
+                names = candidates_join,
+                lex_first = lex_first,
+            );
+            let label_message = format!("auto type-param bound '{}' here", joined_bounds);
+            diagnostics.push(
+                Diagnostic::warning(message)
+                    .with_code(DiagnosticCode::AutoTypeParamNonUnique)
+                    .with_label(DiagnosticLabel::new(use_site_span, label_message))
+                    .with_candidates(accepted),
+            );
+            SelectionResult::Selected(lex_first)
         }
     }
 }
