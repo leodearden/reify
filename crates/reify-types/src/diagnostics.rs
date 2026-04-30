@@ -473,26 +473,30 @@ pub enum DiagnosticCode {
     /// `shadowing_warning_tests.rs::purpose_body_let_shadow_coexists_with_unsupported_let_error_intentional`.
     PurposeLetUnsupported,
     /// Origin: `crates/reify-stdlib/src/mechanism.rs` (task 2528 — `mechanism().body(...)`
-    /// builder). Reserved for the closed-chain detector that rejects mechanisms whose
-    /// joint-parent graph has a conflict (joint J recorded with two different parents)
-    /// or a cycle (DFS reaches J again before reaching the world sentinel).
+    /// builder). Originally reserved for a closed-chain detector that would reject
+    /// mechanisms whose joint-parent graph has a conflict (joint J recorded with two
+    /// different parents) or a cycle (DFS reaches J again before reaching the world
+    /// sentinel).
     ///
-    /// Canonical message form:
-    /// `"closed kinematic chain detected: joint '<J>' has conflicting parents"` (conflict case)
-    /// or `"closed kinematic chain detected: cyclic joint-parent path"` (cycle case).
+    /// **v0.2: not currently emitted — see `docs/prds/v0_2/kinematic-constraints.md`.**
+    /// Closed kinematic chains are no longer treated as errors: the v0.2 mechanism
+    /// builder (task 2671) records each closing edge as a `loop_closure` constraint
+    /// in the Mechanism Map's `loop_closures` field and continues normal construction.
+    /// The Mechanism Map shape no longer carries `error`, `error_path1`, `error_path2`,
+    /// or `error_message` fields for closed-chain detection — closed chains are valid
+    /// v0.2 mechanisms.
     ///
     /// The PRD-prose mnemonic for this code is `E_KINEMATIC_CLOSED_CHAIN`
     /// (see `docs/prds/kinematic-constraints.md` task 3 and
     /// `docs/reify-stdlib-reference.md` §13.2).
     ///
-    /// TODO: wired by the snapshot/eval-pipeline integration in the task family covering
-    /// 2585+. The v0.1 mechanism builder records the error condition (and both joint
-    /// paths) on the returned Mechanism `Value::Map` (`error`, `error_path1`,
-    /// `error_path2`, `error_message` fields); a follow-on integration translates the
-    /// errored Map into a real `Diagnostic` carrying this code via
-    /// `EvalResult.diagnostics`. The variant is reserved now so that downstream tooling
-    /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from the
-    /// moment the diagnostic is emitted, with no further enum churn at integration time.
+    /// The variant is RESERVED for a hypothetical future use case — for example, a
+    /// user-opt-in strict mode (e.g. a purpose annotation rejecting closed chains) or
+    /// a downstream consumer that wants to surface closed-chain detection as a
+    /// diagnostic — but is NOT currently emitted by any path in the v0.2 builder.
+    /// Removing the variant would require a wider refactor across reify-types and
+    /// any downstream tooling (LSP / MCP / IDE error UIs) that pattern-matches on
+    /// it; out of scope for the v0.2 closed-chain → loop-closure migration.
     KinematicClosedChain,
     /// Origin: `crates/reify-stdlib/src/mechanism.rs` (task 2528 — `mechanism().body(...)`
     /// builder). Reserved for the duplicate-solid detector that rejects a `body()` call

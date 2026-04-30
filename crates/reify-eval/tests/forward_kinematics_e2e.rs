@@ -227,25 +227,30 @@ fn forward_kinematics_two_link_chain_e2e() {
     assert!(cz.abs() < 1e-6, "com.z should be 0, got {cz}");
 }
 
-/// Source: an errored mechanism produced by giving the same `at` joint two
-/// distinct parents (closed_chain).  `mechanism::body()` short-circuits the
-/// second-body call to a Map carrying `error="closed_chain"`, and any
-/// downstream `snapshot()` / `transform_of(...)` must surface that as Undef.
+/// Source: an errored mechanism produced by duplicate solid — the same solid
+/// string `"a"` is attached twice with different joints, which makes
+/// `mechanism::body()` short-circuit the second-body call to a Map carrying
+/// `error="duplicate_solid"`.  Any downstream `snapshot()` /
+/// `transform_of(...)` must surface that as Undef.
 ///
-/// This pins that the parse → compile → eval pipeline does NOT collapse the
-/// errored mechanism into a "successful" Snapshot value-cell — Undef must
-/// propagate through the full evaluation, not be silently swallowed.
+/// Migration note: this fixture previously triggered `error="closed_chain"`
+/// via a parent-conflict pattern (j_x reused as `at` with two distinct
+/// parents), but under v0.2 closed kinematic chains are recorded as
+/// loop-closure constraints rather than errored, so the parent-conflict
+/// trigger no longer surfaces an `error` key.  The duplicate-solid trigger
+/// (canonical recipe per crates/reify-stdlib/src/snapshot.rs:1217-1238)
+/// preserves the test contract: an `error` key on m2 forces snapshot() to
+/// short-circuit to Undef through the full parse → compile → eval pipeline.
 const ERRORED_SOURCE: &str = r#"
 structure def KinematicErrored {
     let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
     let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
-    let j_x = revolute(vec3(0, 0, 1), 0rad .. 3.141592653589793rad)
 
     let m0 = mechanism()
-    let m1 = body(m0, "a", j_x, j_a)
-    // Reusing j_x with a different parent (j_b) closes the chain →
-    // m2 carries `error="closed_chain"`.
-    let m2 = body(m1, "b", j_x, j_b)
+    let m1 = body(m0, "a", j_a)
+    // Re-attaching solid "a" with a different joint (j_b) is a duplicate
+    // solid → m2 carries `error="duplicate_solid"`.
+    let m2 = body(m1, "a", j_b)
 
     let s = snapshot(m2, [])
 }
