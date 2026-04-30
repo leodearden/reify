@@ -151,12 +151,30 @@ pub struct EvaluationGraph {
     /// after a parameter edit + revert → same fingerprint → cache reuse).
     /// See arch §6.2 row 5, §6.4, and PRD task 5 criterion 7.
     ///
-    /// **Empty-Vec note:** an empty Vec (the `Default` value) contributes
-    /// `ContentHash(0)` to the bucket via `combine_all([])`'s neutral-element
-    /// semantics, which is then mixed into the seven-bucket `combine_all`.
-    /// The seven-bucket combination still differs from any pre-task-2388
-    /// six-bucket fingerprint: adding a bucket changes the rolled-up output
-    /// regardless of the bucket's content.
+    /// **Empty-Vec note (step-7 back-compat contract):** an empty Vec (the
+    /// `Default` value) preserves bit-equality with `EvaluationGraph::default()`
+    /// at the substitution-bucket level — `combine_all([])` returns
+    /// `ContentHash(0)` (neutral element). However, the seven-bucket
+    /// `combine_all` still differs from any pre-task-2388 six-bucket
+    /// fingerprint: adding a bucket changes the rolled-up output regardless
+    /// of the bucket's content. No special-case branch is needed in
+    /// `topology_fingerprint()`.
+    ///
+    /// **Warm-pool round-trip contract (step-10):** when a substitution is
+    /// reverted (graph_a → graph_b → graph_c with substitution_a ==
+    /// substitution_c), `topology_fingerprint()` is restored to the pre-flip
+    /// value. This allows a `WarmStatePool` keyed by the surviving cells'
+    /// `NodeId`s to checkout previously-donated state via path-based identity
+    /// (arch §6.5). This is the v0.1 minimum for criterion 7's "warm-state
+    /// pool reuses prior cached node results" clause; full engine-level revert
+    /// via `Engine::edit_source` is deferred until the parser accepts
+    /// `auto: TraitName` in type-arg position.
+    ///
+    /// **Cross-crate shape (step-12):** consumes
+    /// `crates/reify-compiler/src/auto_type_param.rs::MultiParamResolutionOutcome
+    /// .substitution` directly without an adapter — the shape is identical
+    /// `Vec<(param_name, template_name)>`, matching the contract documented
+    /// at `auto_type_param.rs:81-87`.
     pub auto_type_substitution: Vec<(String, String)>,
 }
 
@@ -634,18 +652,28 @@ impl EvaluationGraph {
         // domain-separated prefix `"auto:<p>=<t>"`, following the same
         // `"key:value"` convention used by the connections bucket above.
         //
+        // The Vec is sorted by param_name BEFORE per-pair hashing so that
+        // two graphs constructed with the same logical substitution map
+        // but different insertion orders produce identical fingerprints.
+        // Rationale: PRD criterion 7's second half ("same candidate re-selected
+        // after a parameter edit + revert") requires logical map equality to
+        // imply fingerprint equality regardless of Vec assembly order.
+        // Mirrors the per-bucket sort applied by every other bucket above
+        // (value_cells, constraints, realizations, resolutions sort by
+        // ContentHash.0; guarded_groups sort by group ContentHash).
+        // (revert-stable: same logical map → same fingerprint regardless
+        // of source ordering — step-6 rationale for the sort.)
+        //
         // step-3 contract: identical input Vecs (in identical order) produce
         // identical bucket hashes — enforced by ContentHash determinism.
         //
         // step-7 back-compat contract: an empty Vec contributes
         // ContentHash(0) to the bucket via combine_all([])'s neutral-element
         // semantics — no special-case branch is needed.
-        //
-        // NOTE: insertion-order independence (sort-by-param_name) is added in
-        // step-6 so that the step-5 test can first demonstrate the failure.
         let auto_type_sub_hash = {
-            let pair_hashes: Vec<ContentHash> = self
-                .auto_type_substitution
+            let mut sorted = self.auto_type_substitution.clone();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            let pair_hashes: Vec<ContentHash> = sorted
                 .iter()
                 .map(|(p, t)| ContentHash::of_str(&format!("auto:{}={}", p, t)))
                 .collect();
