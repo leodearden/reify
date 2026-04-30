@@ -4136,4 +4136,57 @@ mod tests {
         );
     }
 
+    // ── cylindrical constructor: happy path (step-1) ─────────────────────────
+
+    /// `cylindrical(axis, translation_range, rotation_range)` returns a 4-key Map
+    /// with `kind="cylindrical"` and the three input fields stored verbatim.
+    ///
+    /// PRD task 5: 2-DOF composite of prismatic ⊕ revolute on a single shared
+    /// axis. The Map shape is flat (mirrors prismatic/revolute/planar/spherical):
+    ///   { "axis", "kind", "rotation_range", "translation_range" }
+    /// (alphabetically ordered via `BTreeMap`).
+    #[test]
+    fn cylindrical_returns_map_with_correct_fields() {
+        let axis = axis_z_unit();
+        let translation_range = length_range_0_to_1m();
+        let rotation_range = angle_range_0_to_pi();
+        let result = eval_builtin(
+            "cylindrical",
+            &[axis.clone(), translation_range.clone(), rotation_range.clone()],
+        );
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("cylindrical".to_string())),
+            "kind field should be 'cylindrical'"
+        );
+        assert_eq!(
+            map.get(&Value::String("axis".to_string())),
+            Some(&axis),
+            "axis field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("translation_range".to_string())),
+            Some(&translation_range),
+            "translation_range field should match input"
+        );
+        assert_eq!(
+            map.get(&Value::String("rotation_range".to_string())),
+            Some(&rotation_range),
+            "rotation_range field should match input"
+        );
+        assert_eq!(
+            map.len(),
+            4,
+            "cylindrical joint Map should have exactly 4 keys \
+             (kind, axis, translation_range, rotation_range), got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+    }
+
 }
