@@ -558,28 +558,21 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 r2_q.2 / r2_norm,
                 r2_q.3 / r2_norm,
             );
-            // R = R1 * R2 (Hamilton product); both operands are unit-norm after
-            // the explicit normalization above, so composed_r is unit-norm to
-            // within FP rounding. Direct construction is safe: r1_n and r2_n are
-            // already unit-norm and quat_mul preserves both unit norm and
-            // finiteness. decompose_transform has already verified all components
-            // are finite, so no re-check is needed.
+            // R = R1 * R2 (Hamilton product). Although r1_n and r2_n are explicitly
+            // normalized above, we renormalize composed_r as a release-build safety
+            // net: if a future precondition lift on quat_mul (or an overflow-corner
+            // input that bypasses the r_norm_sq gate) yielded a non-unit or
+            // non-finite result, normalize_quaternion catches it and returns Undef
+            // rather than emitting an invalid Value::Orientation.
             let composed_r = quat_mul(r1_n, r2_n);
-            debug_assert!(
-                (composed_r.0 * composed_r.0
-                    + composed_r.1 * composed_r.1
-                    + composed_r.2 * composed_r.2
-                    + composed_r.3 * composed_r.3
-                    - 1.0)
-                    .abs()
-                    < 1e-10,
-                "composed_r should be ~unit-norm after quat_mul of two unit quaternions"
-            );
-            let r_val = Value::Orientation {
-                w: composed_r.0,
-                x: composed_r.1,
-                y: composed_r.2,
-                z: composed_r.3,
+            let r_val = match normalize_quaternion(
+                composed_r.0,
+                composed_r.1,
+                composed_r.2,
+                composed_r.3,
+            ) {
+                Some(v) => v,
+                None => return Some(Value::Undef),
             };
             // t = R1 * t2 + t1.
             let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2[0], t2[1], t2[2]);
