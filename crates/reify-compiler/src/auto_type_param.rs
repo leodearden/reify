@@ -509,6 +509,11 @@ pub fn select_candidate(
     );
     match feasibility {
         FeasibilityResult::Empty { rejected } => {
+            debug_assert!(
+                !rejected.is_empty(),
+                "FeasibilityResult::Empty must carry at least one rejected candidate; \
+                 otherwise Phase A's empty-pool path would have fired first"
+            );
             let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
             // Per-rejection prose: each candidate paired with its violated
             // constraint ids. v0.1 encodes per-rejection details as a string;
