@@ -305,6 +305,45 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         ])),
                     }
                 }
+                // 2-DOF cylindrical joint: motion variable is a 2-element
+                // `Value::List` or `Value::Vector` of `[Length, Angle]`
+                // (translation distance, rotation angle).
+                //
+                // Composition rationale (single-step construction): translation
+                // along axis n and rotation about the same axis n commute in
+                // SE(3) — for any d, θ, R(n, θ)·(d·n) = d·n (rotation about an
+                // axis preserves vectors along that axis). So `T_p` (translation
+                // d·n, identity rotation) and `T_r` (rotation R(n, θ), zero
+                // translation) compose to the same result regardless of order:
+                // {rotation = R(n, θ), translation = d·n}. We build that result
+                // directly, avoiding the round-trip through `transform_compose`
+                // and the floating-point drift it would introduce.
+                "cylindrical" => {
+                    let [nax, nay, naz] = match unit_axis_from_map(map) {
+                        Some(a) => a,
+                        None => return Some(Value::Undef),
+                    };
+                    let (dist, theta) = match cylindrical_motion_vars(&args[1]) {
+                        Some(pair) => pair,
+                        None => return Some(Value::Undef),
+                    };
+                    // Defense-in-depth: cylindrical_motion_vars uses
+                    // length_input/trig_input which already reject non-finite,
+                    // but mirror the prismatic/revolute arms for symmetry.
+                    if !dist.is_finite() || !theta.is_finite() {
+                        return Some(Value::Undef);
+                    }
+                    let rotation = axis_angle_quaternion(nax, nay, naz, theta);
+                    let translation = Value::Vector(vec![
+                        Value::length(dist * nax),
+                        Value::length(dist * nay),
+                        Value::length(dist * naz),
+                    ]);
+                    Value::Transform {
+                        rotation: Box::new(rotation),
+                        translation: Box::new(translation),
+                    }
+                }
                 "coupling" => {
                     // Extract the three coupling-payload fields (kind already matched
                     // above) with explicit guards. A Map built by a trusted `couple`
@@ -843,6 +882,31 @@ fn length_input(v: &Value) -> Option<f64> {
         Value::Int(i) => Some(*i as f64),
         _ => None,
     }
+}
+
+/// Extract `(dist, theta)` from a cylindrical motion-variable argument.
+///
+/// Accepts a 2-element `Value::List` or `Value::Vector` whose elements are:
+/// - `items[0]`: a length scalar (LENGTH-dim Scalar, or bare Real/Int as metres)
+/// - `items[1]`: an angle scalar (ANGLE-dim Scalar, or bare Real/Int as radians)
+///
+/// Returns `None` if:
+/// - the container is not a 2-element `List` or `Vector`,
+/// - either element fails its dimension/finiteness contract
+///   (`length_input` / `trig_input`, which also reject NaN/Inf and the
+///   wrong-dimension Scalar).
+///
+/// The dim-swap case `[angle, length]` is rejected for free: `length_input`
+/// rejects an angle Scalar (wrong dim) and `trig_input` rejects a length Scalar.
+fn cylindrical_motion_vars(value: &Value) -> Option<(f64, f64)> {
+    let items = match value {
+        Value::List(items) if items.len() == 2 => items,
+        Value::Vector(items) if items.len() == 2 => items,
+        _ => return None,
+    };
+    let dist = length_input(&items[0])?;
+    let theta = trig_input(&items[1])?;
+    Some((dist, theta))
 }
 
 /// Unit-normalise a 3-component array.
