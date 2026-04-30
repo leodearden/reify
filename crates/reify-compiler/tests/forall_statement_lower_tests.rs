@@ -178,7 +178,7 @@ structure def S {{
 /// - (b) Zero CompiledConnections and zero forall@* constraint labels.
 /// - (c) Zero CompiledForallTemplates (early-return path).
 /// - (d) Exactly one `Severity::Info` diagnostic total.
-/// - (e) That diagnostic has a label `{message: "forall connect", span: forall_span}`.
+/// - (e) Exactly one label with message == "forall connect" whose span equals forall_span.
 /// - (f) Per-side label presence/absence **with span pinning**: if
 ///       `expect_left_label`, exactly one `"left port shape not supported"`
 ///       label AND its `span` equals `cd.left.expr.span`; otherwise zero.
@@ -256,14 +256,25 @@ fn assert_unsupported_port_shape_diagnostic(
             ),
         });
 
-    // (e) Primary label with stable construct-kind token and matching span.
-    assert!(
+    // (e) Exactly one primary label with stable construct-kind token and matching span.
+    let primary_labels: Vec<_> = diag
+        .labels
+        .iter()
+        .filter(|l| l.message == "forall connect")
+        .collect();
+    assert_eq!(
+        primary_labels.len(),
+        1,
+        "expected exactly 1 label with message \"forall connect\", got {}; labels = {:?}",
+        primary_labels.len(),
         diag.labels
-            .iter()
-            .any(|l| l.message == "forall connect" && l.span == forall_span),
-        "expected a label {{message: \"forall connect\", span: forall_span}} on the \
-         info diagnostic; labels = {:?}, forall_span = {:?}",
-        diag.labels,
+    );
+    assert_eq!(
+        primary_labels[0].span,
+        forall_span,
+        "primary 'forall connect' label span should equal forall_span; \
+         label span = {:?}, expected = {:?}",
+        primary_labels[0].span,
         forall_span
     );
 
