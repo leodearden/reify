@@ -363,6 +363,23 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
         // `transform_at(spherical, q)` or `joint_jacobian(spherical)` directly,
         // not the chain wrappers.
         "spherical" => None,
+        // 2-DOF cylindrical joint: no f64-scalar motion variable representation.
+        // Cylindrical's motion variable in `transform_at` is a 2-element
+        // `Value::List [translation_length, rotation_angle]` — translation
+        // along the shared axis n combined with rotation about n. The
+        // (translation, rotation) tuple cannot be packed into the single-f64
+        // signature of `value_for_joint`, so this arm returns None and any
+        // chain containing a cylindrical joint short-circuits in
+        // `chain_transform`/`chain_jacobian_fd`. The explicit arm makes the
+        // contract source-visible (rather than relying on the catch-all
+        // `_ => None`) so a future kind addition cannot silently change
+        // cylindrical's behaviour. Multi-DOF chain support (closed-chain
+        // mechanisms with cylindrical joints) is deferred to PRD v0.2
+        // kinematic task 5 / 9 / 10 (taskmaster #2670). Until that lands,
+        // callers needing cylindrical transforms must use
+        // `transform_at(cyl, [d, theta])` or `joint_jacobian(cyl)` directly,
+        // not the chain wrappers.
+        "cylindrical" => None,
         _ => None,
     }
 }
