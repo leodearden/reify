@@ -73,6 +73,7 @@ pub(crate) fn extract_tolerance_bindings(
     bound_entity_ref: &str,
 ) -> Vec<ToleranceBinding> {
     let mut bindings = Vec::new();
+    #[cfg(debug_assertions)]
     let mut distinct_subject_params: BTreeSet<&str> = BTreeSet::new();
     for constraint in &purpose.constraints {
         // Match: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1])
@@ -117,6 +118,10 @@ pub(crate) fn extract_tolerance_bindings(
         // Track distinct subject param names that pass the membership gate.
         // Used by the debug_assert after the loop to enforce the single-binding
         // contract (see function docstring # Single-binding contract).
+        // The insert (and the BTreeSet declaration above) are gated on
+        // debug_assertions so the bookkeeping disappears entirely from
+        // release builds, where the consuming debug_assert! is a no-op.
+        #[cfg(debug_assertions)]
         distinct_subject_params.insert(subject_cell_id.entity.as_str());
 
         // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, si_value })
@@ -139,6 +144,7 @@ pub(crate) fn extract_tolerance_bindings(
             si_tolerance: si_value,
         });
     }
+    #[cfg(debug_assertions)]
     debug_assert!(
         distinct_subject_params.len() <= 1,
         "single-binding contract: extract_tolerance_bindings saw {} distinct \
