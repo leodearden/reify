@@ -84,6 +84,73 @@ fn my_design_template() -> reify_compiler::TopologyTemplate {
 }
 
 #[test]
+fn engine_demanded_tolerance_for_output_handles_partial_inputs() {
+    // Three partial-input scenarios pin the engine wrapper's correct
+    // delegation to `combine_demanded_tolerance`'s None-handling for both
+    // directions and the both-None case (corresponds to the lone-Some / both-
+    // None rows of the combiner truth table — see step-4 for the unit-level
+    // contract).
+
+    // (a) Output-only — module contains only the STEPOutput template
+    //     (no purpose with RepresentationWithin). Evaluate without
+    //     activating any purpose → only the output bound contributes.
+    {
+        let module = CompiledModuleBuilder::new(ModulePath::new(vec!["test_output_only".to_string()]))
+            .template(step_output_template(1e-6))
+            .template(my_design_template())
+            .build();
+        let mut engine = make_engine();
+        engine.eval(&module);
+        // No `activate_purpose` call — purpose-side contributes None.
+        assert_eq!(
+            engine.demanded_tolerance_for_output("STEPOutput", "MyDesign"),
+            Some(1e-6),
+            "output-only: lone output bound (Some(1e-6)) must pass through \
+             when purpose-side is None"
+        );
+    }
+
+    // (b) Purpose-only — module contains only the manufacturing purpose
+    //     and a MyDesign template. NO STEPOutput template at all, so the
+    //     graph holds no STEPOutput-entity constraints → output_bound is None.
+    //     Activate purpose → only the purpose bound contributes.
+    {
+        let module = CompiledModuleBuilder::new(ModulePath::new(vec!["test_purpose_only".to_string()]))
+            .template(my_design_template())
+            .compiled_purpose(manufacturing_purpose("manufacturing", 50e-6))
+            .build();
+        let mut engine = make_engine();
+        engine.eval(&module);
+        engine.activate_purpose("manufacturing", "MyDesign");
+        assert_eq!(
+            engine.demanded_tolerance_for_output("STEPOutput", "MyDesign"),
+            Some(50e-6),
+            "purpose-only: lone purpose bound (Some(50e-6)) must pass through \
+             when output-side is None — no STEPOutput template ⇒ no graph \
+             constraint under that entity"
+        );
+    }
+
+    // (c) Neither — module with no RepresentationWithin anywhere, evaluated
+    //     without any purpose activation. Both contributors are None →
+    //     query returns None.
+    {
+        let module = CompiledModuleBuilder::new(ModulePath::new(vec!["test_neither".to_string()]))
+            .template(my_design_template())
+            .build();
+        let mut engine = make_engine();
+        engine.eval(&module);
+        // No `activate_purpose` call — both contributors are None.
+        assert_eq!(
+            engine.demanded_tolerance_for_output("STEPOutput", "MyDesign"),
+            None,
+            "neither: both contributors None ⇒ result must be None — no \
+             demand contributor exists"
+        );
+    }
+}
+
+#[test]
 fn engine_demanded_tolerance_for_output_combines_via_min_when_both_active() {
     // Two contributors, both Some, output tighter:
     //   STEPOutput template      → output_bound  = Some(1e-6)
