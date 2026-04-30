@@ -1227,6 +1227,7 @@ pub struct SweepOpHistoryRecords {
 ///     `is_solid=true`).
 ///   - `end_cap_face_indices` → `Cap(End)` (last profile section,
 ///     `LastShape()`-derived under `is_solid=true`).
+///
 /// Both lists are empty when the underlying loft is constructed with
 /// `is_solid=false` (open-shell loft) — though task 5b's caller hard-
 /// codes `is_solid=true` to match `GeometryOp::Loft`'s contract today.
