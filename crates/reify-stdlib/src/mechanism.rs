@@ -213,7 +213,7 @@ fn make_empty_mechanism() -> Value {
 /// `kind = "world"`. The sentinel is the implicit ground-frame root of
 /// every Mechanism DAG and the default `parent` argument for `body()`
 /// when omitted (`docs/reify-stdlib-reference.md` §13.2).
-pub(crate) fn make_world_sentinel() -> Value {
+fn make_world_sentinel() -> Value {
     let mut m = BTreeMap::new();
     m.insert(
         Value::String("kind".to_string()),
