@@ -1,17 +1,44 @@
 //! Multi-kernel dispatcher (v0.2): pure-logic plan ranking by
 //! conversion-stage count.
 //!
+//! # What this module does
+//!
 //! Given a registry of kernels (each described by a
-//! [`reify_types::CapabilityDescriptor`]), an [`Operation`] to perform, a
-//! demanded output [`ReprKind`], and a set of currently-available reprs,
-//! picks the kernel + (possibly empty) conversion chain that minimises the
-//! number of conversion stages. PRD reference:
-//! `docs/prds/v0_2/multi-kernel.md` "Resolved design decisions" — selection
-//! by conversion-stage count alone, deterministic given the registered set.
+//! [`reify_types::CapabilityDescriptor`]), an [`reify_types::Operation`] to
+//! perform, a demanded output [`reify_types::ReprKind`], and a set of
+//! currently-available reprs, [`dispatch`] picks the kernel +
+//! (possibly empty) conversion chain that minimises the number of
+//! conversion stages. The result is a [`DispatchPlan`] naming the final
+//! kernel and the ordered conversion stages to perform first.
+//!
+//! # PRD reference
+//!
+//! `docs/prds/v0_2/multi-kernel.md` "Resolved design decisions":
+//! - `CapabilityDescriptor { supports: Vec<(Operation, ReprKind)> }` —
+//!   feasibility table only, no `cost_hint` or `error_factor`.
+//! - Dispatcher ranks candidate (kernel, conversion-chain) plans by
+//!   conversion-stage count alone.
+//! - Selection deterministic given the registered set of kernels.
+//!
+//! # Determinism contract
+//!
+//! 1. Plans are ranked strictly by conversion-stage count (BFS over
+//!    reachable [`reify_types::ReprKind`] states; first hit wins).
+//! 2. Ties at equal stage-count are broken lexicographically on kernel
+//!    name. The `registry` parameter is a [`std::collections::BTreeMap`]
+//!    so kernel iteration order is lexicographic and stable across calls.
+//! 3. The BFS visited set is keyed on [`reify_types::ReprKind`] (4
+//!    variants), so the algorithm terminates after at most 4 expansions.
+//!
+//! # Scope boundary (task 2641)
 //!
 //! This module is pure logic. It does NOT yet wire dispatch into op
-//! execution in `geometry_ops.rs`; that integration is task 2642's
-//! responsibility.
+//! execution in `geometry_ops.rs`; the kernel-registry mechanism + OCCT
+//! adapter migration that consumes [`dispatch`] is task 2642's
+//! responsibility. Subsequent kernel adapter tasks (2643 Manifold, 2644
+//! Fidget, 2645 OpenVDB) consume the [`reify_types::CapabilityDescriptor`]
+//! type defined alongside [`reify_types::Operation`] in the
+//! `reify-types` crate.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
