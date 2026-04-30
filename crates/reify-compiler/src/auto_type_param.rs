@@ -844,6 +844,15 @@ pub fn resolve_auto_type_params(
             )
         };
 
+        // Asymmetry contract (step-14): `per_param` accumulates EVERY
+        // processed param (success or first failure); `substitution` carries
+        // ONLY `Selected` entries. A caller that needs all outcomes inspects
+        // `per_param`; a caller that needs only resolved names inspects
+        // `substitution`. The two vecs have the same declared-order prefix for
+        // all successful params, then `per_param` gains the single failure
+        // entry while `substitution` stops. This asymmetry is load-bearing:
+        // `substitution` is the map consumed by type-substitution mechanics;
+        // feeding it a NoCandidate or Ambiguous entry would corrupt substitution.
         match selection {
             SelectionResult::Selected(ref name) => {
                 // Selected path (step-4 contract): record in BOTH substitution
@@ -858,7 +867,8 @@ pub fn resolve_auto_type_params(
                 // appropriate diagnostic. Record the failure in per_param and
                 // halt — no later param is enumerated, feasibility-checked, or
                 // selected (halt-on-first-failure, v0.1 rule). The failure
-                // entry is intentionally NOT pushed into substitution.
+                // entry is intentionally NOT pushed into substitution (see
+                // asymmetry contract comment above).
                 per_param.push((param.name.clone(), selection));
                 break;
             }
