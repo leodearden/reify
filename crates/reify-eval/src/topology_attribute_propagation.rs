@@ -2599,6 +2599,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(
         expected = "loft section face/edge slice families must be built in lockstep"
     )]
