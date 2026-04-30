@@ -31,15 +31,26 @@ use crate::types::CompiledTypeAlias;
 
 /// Run phase-5 (type aliases).
 ///
-/// Seeds `ctx.alias_registry` with non-parametric pub entries from
-/// `prelude_aliases` (prelude-alias seeding, user shadows prelude), then
-/// builds a name → decl lookup map with duplicate-alias diagnostics (keyed on
-/// `span` so both declared-here locations are pointed at), then DFS-resolves
-/// each user alias into `ctx.alias_registry`. Cycles are caught via the
-/// phase-local `resolving` set.
+/// **Execution order:**
+/// 1. Seed `ctx.alias_registry` with non-parametric pub entries from
+///    `prelude_aliases` (skipping any name already declared by the user module,
+///    so user aliases always shadow prelude aliases without producing a
+///    "duplicate type alias" diagnostic).
+/// 2. Build a name → decl lookup map over user `alias_refs`, emitting
+///    duplicate-alias diagnostics (keyed on `span` so both declared-here
+///    locations are pointed at).
+/// 3. DFS-resolve each user alias into `ctx.alias_registry`.  Cycles are
+///    caught via the phase-local `resolving` set.
+///
+/// **Parametric-alias limitation:** prelude aliases with non-empty `type_params`
+/// are silently skipped (see the module-level doc and the TODO in the seed loop).
+/// `CompiledTypeAlias` deliberately omits `type_expr`, so parameterized prelude
+/// aliases cannot be instantiated cross-module until the module boundary
+/// decision is revisited.
 ///
 /// Pass `&[]` for `prelude_aliases` when the `#no_prelude` pragma is active or
-/// when the caller has no prelude (mirrors the pattern used for enums_phase).
+/// when the caller has no prelude (mirrors the `resolution_enums` gate in
+/// `lib.rs::compile_with_prelude_context`).
 pub(crate) fn phase_aliases(
     ctx: &mut CompilationCtx,
     prelude_aliases: &[CompiledTypeAlias],

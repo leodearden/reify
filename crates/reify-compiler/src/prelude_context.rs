@@ -2,8 +2,20 @@
 //!
 //! Callers that compile many user modules against the same prelude (e.g.
 //! `compile_with_stdlib`) pay the cost of flattening prelude enum definitions
-//! only once — at `PreludeContext` construction time — rather than once per
-//! `compile_with_prelude` call.
+//! and pub type alias lists only once — at `PreludeContext` construction time —
+//! rather than once per `compile_with_prelude` call.
+//!
+//! # Cached fields
+//!
+//! - **`resolution_enums`** — all `EnumDef`s from every prelude module, in
+//!   source order.  Used by `enums_phase::build_resolution_enums_from_cache`
+//!   so the flat_map-then-clone is done once at construction.
+//!
+//! - **`pub_aliases`** — all `CompiledTypeAlias` entries marked `is_pub == true`
+//!   from every prelude module, in source order.  Filtered at construction so
+//!   callers never need to re-apply the `is_pub` predicate.  Used by
+//!   `aliases_phase::phase_aliases` to seed `ctx.alias_registry` before
+//!   resolving user-module aliases (task 2750).
 //!
 //! # Design
 //!
