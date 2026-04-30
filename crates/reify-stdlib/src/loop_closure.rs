@@ -207,6 +207,15 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
         // behaviour. Multi-DOF chain support is deferred to PRD v0.2
         // kinematic task 2 (taskmaster #2670).
         "spherical" => None,
+        // 2-DOF cylindrical joint: no single-scalar midpoint to compute.
+        // Cylindrical has two ranges (translation_range LENGTH,
+        // rotation_range ANGLE), one per DOF, so there is no single f64
+        // midpoint to seed. Callers building initial-guess vectors should
+        // skip cylindrical joints just as they skip fixed/planar/spherical.
+        // The explicit arm makes the contract source-visible (vs. the
+        // catch-all `_ => None`). PRD v0.2 kinematic task 5 / taskmaster
+        // #2670.
+        "cylindrical" => None,
         _ => None,
     }
 }
