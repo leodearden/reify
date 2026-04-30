@@ -256,3 +256,9 @@ fn point3_bare_name_falls_through_to_structure_ref() {
 fn vector3_two_type_args_in_default_stdlib_produces_error() {
     assert_produces_error("structure def Bad { param v : Vector3<Force, Length> }");
 }
+
+/// Parallel to `vector3_two_type_args_in_default_stdlib_produces_error` for `Point3`.
+#[test]
+fn point3_two_type_args_in_default_stdlib_produces_error() {
+    assert_produces_error("structure def Bad { param p : Point3<Force, Length> }");
+}
