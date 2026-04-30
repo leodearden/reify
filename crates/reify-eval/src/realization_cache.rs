@@ -121,4 +121,52 @@ mod tests {
             "tighter request than cached must miss"
         );
     }
+
+    /// Two different `repr_kind`s under the same entity must have independent buckets.
+    ///
+    /// If `repr_kind` were ignored in the cache key, both inserts would land in the same
+    /// `ToleranceBucket`.  The second insert at the same tolerance would then be REJECTED
+    /// (existing entry satisfies it), and `lookup("A", ReprKind::Mesh, 0.01)` would return
+    /// `Some(&1)` instead of `Some(&2)`.  This test guards against that regression.
+    #[test]
+    fn repr_kind_distinguishes_buckets_under_same_entity() {
+        let mut cache = RealizationCache::<u32>::new();
+        cache.insert("A", ReprKind::BRep, 0.01, 1);
+        cache.insert("A", ReprKind::Mesh, 0.01, 2);
+
+        assert_eq!(
+            cache.lookup("A", ReprKind::BRep, 0.01),
+            Some(&1),
+            "BRep bucket should hold value 1"
+        );
+        assert_eq!(
+            cache.lookup("A", ReprKind::Mesh, 0.01),
+            Some(&2),
+            "Mesh bucket must be independent of BRep bucket and hold value 2"
+        );
+    }
+
+    /// Lookups for entities that were never inserted must return `None`.
+    ///
+    /// Tested on both an empty cache and a cache that already has entries for a
+    /// different entity — the miss must not bleed across entity boundaries.
+    #[test]
+    fn lookup_misses_for_unknown_entity() {
+        // Empty cache.
+        let cache = RealizationCache::<u32>::new();
+        assert_eq!(
+            cache.lookup("MissingEntity", ReprKind::BRep, 0.01),
+            None,
+            "empty cache must return None"
+        );
+
+        // Populated cache with a different entity.
+        let mut cache = RealizationCache::<u32>::new();
+        cache.insert("KnownEntity", ReprKind::BRep, 0.01, 99);
+        assert_eq!(
+            cache.lookup("MissingEntity", ReprKind::BRep, 0.01),
+            None,
+            "lookup for unknown entity must not bleed from known entity"
+        );
+    }
 }
