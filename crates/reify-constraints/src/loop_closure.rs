@@ -495,61 +495,24 @@ pub fn solve_loop_closure(
     strategy: &StartStrategy,
     config: &NewtonConfig,
 ) -> NewtonOutcome {
-    // Validate free_b indices against both chain_b and vals_b_initial —
-    // strategy-independent invariant: every free index must address a valid
-    // joint AND a valid initial value.
-    for &i in free_b {
-        if i >= chain_b.len() {
-            let reason = format!(
-                "free_b index {} out of range (chain_b len {})",
-                i,
-                chain_b.len()
-            );
-            tracing::warn!("solve_loop_closure: {reason}");
-            return NewtonOutcome::InvalidInput { reason };
-        }
-        if i >= vals_b_initial.len() {
-            let reason = format!(
-                "free_b index {} out of range (vals_b_initial len {})",
-                i,
-                vals_b_initial.len()
-            );
-            tracing::warn!("solve_loop_closure: {reason}");
-            return NewtonOutcome::InvalidInput { reason };
-        }
+    // Delegate all four input-validity checks to the shared helper.
+    if let Some(reason) = validate_loop_closure_inputs(chain_b, vals_b_initial, free_b, strategy) {
+        tracing::warn!("solve_loop_closure: {reason}");
+        return NewtonOutcome::InvalidInput { reason };
     }
 
-    // Resolve initial x0 from the strategy.
+    // Resolve initial x0 from the strategy.  Inputs are validated above, so
+    // each branch is infallible: WarmStart length == free_b.len() and every
+    // free_b index addresses a valid joint with a queryable range.
     let x0: Vec<f64> = match strategy {
-        StartStrategy::WarmStart(v) => {
-            if v.len() != free_b.len() {
-                let reason = format!(
-                    "WarmStart length {} != free_b length {}",
-                    v.len(),
-                    free_b.len()
-                );
-                tracing::warn!("solve_loop_closure: {reason}");
-                return NewtonOutcome::InvalidInput { reason };
-            }
-            v.clone()
-        }
-        StartStrategy::Midpoint => {
-            let mut out = Vec::with_capacity(free_b.len());
-            for &i in free_b {
-                // chain_b bound already validated above; index is safe.
-                match reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i]) {
-                    Some(m) => out.push(m),
-                    None => {
-                        let reason = format!(
-                            "joint_range_midpoint returned None for free_b[{i}] — joint missing range or malformed"
-                        );
-                        tracing::warn!("solve_loop_closure: {reason}");
-                        return NewtonOutcome::InvalidInput { reason };
-                    }
-                }
-            }
-            out
-        }
+        StartStrategy::WarmStart(v) => v.clone(),
+        StartStrategy::Midpoint => free_b
+            .iter()
+            .map(|&i| {
+                reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i])
+                    .expect("joint_range_midpoint validated above")
+            })
+            .collect(),
     };
 
     // Capture inputs for the closure.  The closure is FnMut over an internal
@@ -566,9 +529,9 @@ pub fn solve_loop_closure(
         }
         // Substitute x into the free entries of vals_b_scratch.
         for (k, &i) in free_b_vec.iter().enumerate() {
-            // Defence-in-depth: `solve_loop_closure` validates every free_b
-            // index against vals_b_initial.len() before building this closure,
-            // so this branch should not be reachable from normal callers.  It
+            // Defence-in-depth: `validate_loop_closure_inputs` validates every
+            // free_b index against vals_b_initial.len() before this closure is
+            // built, so this branch is unreachable from normal callers.  It
             // remains here to keep the closure safe for any direct use.
             if i >= vals_b_scratch.len() {
                 return None;
@@ -787,14 +750,13 @@ pub fn solve_loop_closure_with_diagnostics(
     strategy: &StartStrategy,
     config: &NewtonConfig,
 ) -> LoopClosureReport {
-    // Mirror solve_loop_closure's input validation up front, regardless of
-    // DOF balance.  A caller that passes structurally over-constrained AND
-    // malformed inputs deserves the more accurate `InvalidInput` outcome,
-    // not `KinematicOverconstrained` — and short-circuiting before
-    // validation would also let out-of-range `free_b` indices silently
-    // shrink the returned `x` (length-mismatch contract violation).  We
-    // duplicate (rather than DRY into) `solve_loop_closure`'s checks to
-    // keep this wrapper layer's behaviour change isolated.
+    // Both entry points share `validate_loop_closure_inputs` as their single
+    // validation source of truth.  Running validation BEFORE the DOF-balance
+    // check means a caller that passes structurally over-constrained AND
+    // malformed inputs receives the more accurate `InvalidInput` outcome
+    // rather than `KinematicOverconstrained` — and short-circuiting before
+    // validation would let out-of-range `free_b` indices silently shrink the
+    // returned `x` (a length-mismatch contract violation).
     if let Some(reason) = validate_loop_closure_inputs(chain_b, vals_b_initial, free_b, strategy) {
         tracing::warn!("solve_loop_closure_with_diagnostics: {reason}");
         return build_report(
@@ -897,19 +859,17 @@ pub fn solve_loop_closure_with_diagnostics(
     build_report(outcome, diagnostics)
 }
 
-/// Validate the structural inputs accepted by both [`solve_loop_closure`]
-/// and [`solve_loop_closure_with_diagnostics`].  Returns `Some(reason)`
-/// describing the first failed check, or `None` if every input is well-formed.
+/// Single validation entry point used by both [`solve_loop_closure`] and
+/// [`solve_loop_closure_with_diagnostics`].  Returns `Some(reason)` describing
+/// the first failed check, or `None` if every input is well-formed.
 ///
-/// Mirrors the early-return checks `solve_loop_closure` performs before
-/// initial-guess resolution: every `free_b` index addresses a valid joint
-/// in `chain_b` AND a valid initial value in `vals_b_initial`, the
-/// `WarmStart` vector length matches `free_b.len()`, and `Midpoint`'s
-/// joint-range lookup succeeds for each free joint.  The diagnostic
-/// wrapper short-circuits on DOF balance only AFTER this validation
-/// passes, so a structurally over-constrained AND malformed input
-/// surfaces `InvalidInput` (the more accurate signal) rather than
-/// `KinematicOverconstrained`.
+/// Checks: every `free_b` index addresses a valid joint in `chain_b` AND a
+/// valid initial value in `vals_b_initial`, the `WarmStart` vector length
+/// matches `free_b.len()`, and `Midpoint`'s joint-range lookup succeeds for
+/// each free joint.  The diagnostic wrapper short-circuits on DOF balance only
+/// AFTER this validation passes, so a structurally over-constrained AND
+/// malformed input surfaces `InvalidInput` (the more accurate signal) rather
+/// than `KinematicOverconstrained`.
 fn validate_loop_closure_inputs(
     chain_b: &[reify_types::Value],
     vals_b_initial: &[f64],
