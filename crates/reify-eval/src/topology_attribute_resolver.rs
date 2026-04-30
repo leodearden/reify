@@ -1286,6 +1286,7 @@ mod tests {
     ///   (positive case): ALL `mod_history` values distinct → `AmbiguousAfterSplit`.
     /// - `resolve_keeps_unresolved_when_matches_share_parent_key_and_mod_history`
     ///   (negative case): ALL `mod_history` values identical → `Unresolved`.
+    ///
     /// This test: PARTIALLY duplicate `[A, A, B]` → must also yield `Unresolved`.
     #[test]
     fn resolve_keeps_unresolved_when_partial_duplicate_mod_history() {

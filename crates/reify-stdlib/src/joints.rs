@@ -3999,7 +3999,7 @@ mod tests {
         let cases: &[(&str, &[Value])] = &[
             // (a) wrong arg counts
             ("0 args",  &[]),
-            ("1 arg",   &[ax.clone()]),
+            ("1 arg",   std::slice::from_ref(&ax)),
             ("4 args",  &[ax.clone(), ay.clone(), rx.clone(), ry.clone()]),
             ("6 args",  &[ax.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone(), Value::Real(0.0)]),
             // (b) axis_x invalid variants
@@ -4200,7 +4200,7 @@ mod tests {
     #[test]
     fn spherical_returns_map_with_correct_fields() {
         let range_angle = angle_range_0_to_pi();
-        let result = eval_builtin("spherical", &[range_angle.clone()]);
+        let result = eval_builtin("spherical", std::slice::from_ref(&range_angle));
 
         let map = match result {
             Value::Map(m) => m,

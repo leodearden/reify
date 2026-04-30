@@ -3124,11 +3124,11 @@ mod tests {
             ])),
         };
         assert!(
-            !eval_builtin("transform_log", &[t.clone()]).is_undef(),
+            !eval_builtin("transform_log", std::slice::from_ref(&t)).is_undef(),
             "transform_log must accept r_norm_sq=1e-20 (≥ 1e-24 gate)"
         );
         assert!(
-            !eval_builtin("transform_inverse", &[t.clone()]).is_undef(),
+            !eval_builtin("transform_inverse", std::slice::from_ref(&t)).is_undef(),
             "transform_inverse must accept r_norm_sq=1e-20 (≥ 1e-24 gate)"
         );
         assert!(
@@ -3154,11 +3154,11 @@ mod tests {
             ])),
         };
         assert!(
-            eval_builtin("transform_log", &[t_zero.clone()]).is_undef(),
+            eval_builtin("transform_log", std::slice::from_ref(&t_zero)).is_undef(),
             "transform_log must reject zero-norm quaternion"
         );
         assert!(
-            eval_builtin("transform_inverse", &[t_zero.clone()]).is_undef(),
+            eval_builtin("transform_inverse", std::slice::from_ref(&t_zero)).is_undef(),
             "transform_inverse must reject zero-norm quaternion"
         );
         assert!(
@@ -3195,12 +3195,12 @@ mod tests {
         };
         let label = if expect_undef { "reject" } else { "accept" };
         assert_eq!(
-            eval_builtin("transform_log", &[t.clone()]).is_undef(),
+            eval_builtin("transform_log", std::slice::from_ref(&t)).is_undef(),
             expect_undef,
             "transform_log must {label} r_norm_sq={r_norm_sq:e}"
         );
         assert_eq!(
-            eval_builtin("transform_inverse", &[t.clone()]).is_undef(),
+            eval_builtin("transform_inverse", std::slice::from_ref(&t)).is_undef(),
             expect_undef,
             "transform_inverse must {label} r_norm_sq={r_norm_sq:e}"
         );

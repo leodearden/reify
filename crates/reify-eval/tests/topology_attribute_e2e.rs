@@ -348,8 +348,7 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
             .face_modified
             .iter()
             .chain(history.face_generated.iter())
-            .filter(|rec| rec.result_subshape_index == result_subshape_index)
-            .last()
+            .rfind(|rec| rec.result_subshape_index == result_subshape_index)
             .map(|rec| (rec.parent_index, rec.parent_subshape_index))
             .expect("touched index must originate from at least one record");
         let parent_count = face_child_counts

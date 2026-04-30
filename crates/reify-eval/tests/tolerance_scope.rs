@@ -154,6 +154,7 @@ fn engine_active_tolerance_for_drops_after_deactivate_purpose() {
 /// the non-tightened descendant) plus two purposes:
 ///   - `loose` whose constraint is `RepresentationWithin(subject, loose_tol m)`,
 ///   - `tight` whose constraint is `RepresentationWithin(subject, tight_tol m)`.
+///
 /// Both purposes carry the bare-StructureRef-typed `subject` parameter
 /// recognised by `extract_tolerance_bindings`.
 fn build_module_with_overlapping_purposes(

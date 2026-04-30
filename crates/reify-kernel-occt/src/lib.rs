@@ -2045,6 +2045,7 @@ impl OcctKernel {
     /// exercise a non-rectangular profile with one radial edge (bottom edge
     /// perpendicular to Z) and two slanted edges.  With cy=0, the face lies
     /// in the XZ plane, suitable for revolving about the Z axis.
+    #[allow(clippy::too_many_arguments)] // 3 vertex coords + cy is intrinsic to triangle-face geometry; struct wrapping adds noise.
     pub fn store_triangle_face_at_for_test(
         &mut self,
         x1: f64,

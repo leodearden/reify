@@ -16,6 +16,10 @@
 //! `m10_combined.rs`. Warnings are non-fatal; only Error-severity diagnostics
 //! would fail this test.
 
+// Value::Map uses BTreeMap<Value, Value>; Value's interior-mutable SampledField
+// (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
+#![allow(clippy::mutable_key_type)]
+
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 

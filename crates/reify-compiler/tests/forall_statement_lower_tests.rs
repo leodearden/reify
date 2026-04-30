@@ -1057,7 +1057,7 @@ structure def S {
     let label_spans: Vec<reify_types::SourceSpan> =
         diag.labels.iter().map(|l| l.span).collect();
     assert!(
-        label_spans.iter().any(|s| *s == forall_span),
+        label_spans.contains(&forall_span),
         "expected diagnostic label span to match the source forall span; \
          labels = {:?}, forall_span = {:?}",
         label_spans,

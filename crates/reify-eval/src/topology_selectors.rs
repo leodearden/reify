@@ -1635,7 +1635,7 @@ mod tests {
             GeometryQuery::EdgeLength,
             |id, value| {
                 let x = expect_real("EdgeLength", id, value)?;
-                Ok(x >= 0.0015 && x <= 0.0025)
+                Ok((0.0015..=0.0025).contains(&x))
             },
         )
         .expect("filter_by_value should succeed");

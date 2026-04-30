@@ -331,6 +331,7 @@ fn trait_def_satisfies_eq() {
 // --- Display integration tests (step-6) ---
 
 #[test]
+#[allow(clippy::mutable_key_type)] // Value contains interior-mutable SampledField (AtomicBool); Ord/Hash are by-design.
 fn value_display_via_public_api() {
     use reify_types::Value;
 

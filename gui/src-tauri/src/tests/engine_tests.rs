@@ -257,9 +257,12 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
         "revolute lower bound should be 0.0 rad"
     );
     let upper_rev = revolute.range_upper_si.expect("revolute upper_si should be Some");
+    // Test fixture's .ri source uses the literal 3.14, not std::f64::consts::PI.
+    #[allow(clippy::approx_constant)]
+    let expected_upper = 3.14_f64;
     assert!(
-        (upper_rev - 3.14).abs() < 1e-6,
-        "revolute upper bound should be 3.14 rad, got {upper_rev}"
+        (upper_rev - expected_upper).abs() < 1e-6,
+        "revolute upper bound should be 3.14 rad (per fixture), got {upper_rev}"
     );
 }
 

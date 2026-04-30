@@ -449,7 +449,7 @@ fn full_revolve_triangle_profile_synthesis_regression() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
 
     // Triangle in XZ plane: (15mm,0mm), (25mm,0mm), (20mm,10mm).
     // Bottom edge (e0) is radial; the two slanted edges (e1, e2) are covered

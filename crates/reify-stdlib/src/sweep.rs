@@ -617,6 +617,7 @@ mod tests {
     /// dimension does not match the joint kind:
     /// - prismatic joint requires LENGTH range
     /// - revolute  joint requires ANGLE  range
+    ///
     /// Mirrors `validate_range`'s pattern from joints.rs.
     #[test]
     fn dim_dimension_mismatch_returns_undef() {
@@ -730,8 +731,7 @@ mod tests {
 
         // Each snapshot is a Snapshot Map with kind="snapshot"; body 0
         // sits at world translation (i/10, 0, 0).
-        for i in 0..=10 {
-            let snap = &list[i];
+        for (i, snap) in list.iter().enumerate().take(11) {
             let smap = match snap {
                 Value::Map(m) => m,
                 other => panic!("snap[{}] should be a Map, got {:?}", i, other),

@@ -586,6 +586,7 @@ impl OcctKernelHandle {
     /// Panics if called from within a tokio async execution context, or
     /// if the kernel thread is dead (test-fixture path).
     #[cfg(feature = "test-fixtures")]
+    #[allow(clippy::too_many_arguments)] // 3 vertex coords + cy is intrinsic to triangle-profile geometry; struct wrapping adds noise.
     pub fn make_triangle_profile_at_for_test(
         &self,
         x1: f64,
