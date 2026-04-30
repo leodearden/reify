@@ -583,23 +583,38 @@ pub(crate) fn elaborate_forall_connect(
                     // On the deferred path `compile_connection` is NEVER
                     // invoked, so no resolved-path error can fire here.
                     // Silently skipping would leave the user with no
-                    // connections and no diagnostic — task 2717 fixes this
-                    // by emitting an info diagnostic before the early return.
+                    // connections and no diagnostic — task 2717 adds an
+                    // info diagnostic that labels the offending side(s)
+                    // so users can locate the unsupported expression.
+                    let left_resolved = resolve_port_name(&left_substituted);
+                    let right_resolved = resolve_port_name(&right_substituted);
                     let (left_port_template, right_port_template) =
-                        match (resolve_port_name(&left_substituted), resolve_port_name(&right_substituted)) {
+                        match (left_resolved, right_resolved) {
                             (Some(l), Some(r)) => (l, r),
-                            _ => {
-                                diagnostics.push(
-                                    Diagnostic::info(
-                                        "forall connect with unsupported left/right port shape \
-                                         over deferred-count collections will not re-elaborate \
-                                         at runtime (task 2690 future scope)",
-                                    )
-                                    .with_label(DiagnosticLabel::new(
-                                        decl.span,
-                                        "port shape not supported",
-                                    )),
-                                );
+                            (left, right) => {
+                                let mut diag = Diagnostic::info(
+                                    "forall connect with unsupported port shape over \
+                                     deferred-count collections will not re-elaborate \
+                                     at runtime (task 2717; not yet supported by \
+                                     deferred-count re-elaboration)",
+                                )
+                                .with_label(DiagnosticLabel::new(
+                                    decl.span,
+                                    "forall connect",
+                                ));
+                                if left.is_none() {
+                                    diag = diag.with_label(DiagnosticLabel::new(
+                                        cd.left.expr.span,
+                                        "left port shape not supported",
+                                    ));
+                                }
+                                if right.is_none() {
+                                    diag = diag.with_label(DiagnosticLabel::new(
+                                        cd.right.expr.span,
+                                        "right port shape not supported",
+                                    ));
+                                }
+                                diagnostics.push(diag);
                                 return;
                             }
                         };

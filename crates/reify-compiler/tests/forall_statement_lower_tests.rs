@@ -2264,24 +2264,32 @@ structure S {
 /// `MemberAccess.object` is itself a `MemberAccess`, which `resolve_port_name`
 /// doesn't understand → returns `None`.
 ///
+/// NOTE: The fixture is intentionally synthetic — `v.inner.a` is chosen to force
+/// a doubly-nested `MemberAccess` that hits the `_ => None` arm of
+/// `resolve_port_name`, not to represent a realistic nested sub-component port
+/// access. When nested sub-components gain full port reach, a separate realistic
+/// fixture should be added (TODO).
+///
 /// Pins:
 /// (a) No errors (deferred path bypasses `compile_connection`).
 /// (b) Zero `CompiledConnections` and zero `forall@*` constraint labels.
 /// (c) Zero `CompiledForallTemplates` — early return preserves no-capture semantics.
-/// (d) Exactly one `Severity::Info` diagnostic whose message contains both
-///     `"port shape"` and `"task 2690 future scope"`.
-/// (e) The diagnostic's primary label span equals `find_forall_connect_span(source, "S")`.
+/// (d) Exactly one `Severity::Info` diagnostic total; its message contains both
+///     `"port shape"` and `"task 2717"`.
+/// (e) The diagnostic has a label whose span equals `find_forall_connect_span(source, "S")`.
 #[test]
 fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_info_diagnostic() {
     use reify_types::Severity;
 
-    // `sub inner : Inner` is not valid Reify syntax (sub requires a List<T>
-    // type).  Instead we write `v.inner.a` directly — the parser accepts any
-    // chained member-access expression in a connect body, and the deferred
-    // path never validates port semantics (compile_connection is not called).
+    // `v.inner.a` is a synthetic 3-level dotted access: the parser accepts any
+    // chained member-access expression in a connect body, and the deferred path
+    // never validates port semantics (compile_connection is not called).
     // After substitution v → vents[0], the left side becomes
     // `MemberAccess { object: MemberAccess { IndexAccess(vents,0), "inner" }, "a" }`
-    // which hits the `_ => None` arm of resolve_port_name.
+    // which hits the `_ => None` arm of resolve_port_name because the outer
+    // MemberAccess.object is a MemberAccess (not Ident / IndexAccess).
+    // NOTE: This is NOT a realistic nested-sub port path — it is purely chosen to
+    // trigger the None branch. See the doc-comment TODO for a follow-up fixture.
     let source = r#"
 trait Air { param d : Length }
 structure def Vent {
@@ -2323,13 +2331,31 @@ structure def S {
         template.forall_templates.len()
     );
 
-    // (d) Exactly one info diagnostic whose message contains "port shape" and
-    //     "task 2690 future scope".
+    // (d) Exactly one `Severity::Info` diagnostic total (guards against co-emitted
+    //     info diagnostics slipping through unnoticed), and its message contains
+    //     both "port shape" and "task 2717".
+    let total_info_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .count();
+    assert_eq!(
+        total_info_count,
+        1,
+        "expected exactly 1 info diagnostic total, got {}: {:?}",
+        total_info_count,
+        module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Info)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
     let info_diags: Vec<&reify_types::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
-        .filter(|d| d.message.contains("port shape") && d.message.contains("task 2690 future scope"))
+        .filter(|d| d.message.contains("port shape") && d.message.contains("task 2717"))
         .collect();
     assert_eq!(
         info_diags.len(),
