@@ -3585,13 +3585,13 @@ mod tests {
 
     // ── transform_at for fixed ───────────────────────────────────────────────
 
-    /// `transform_at(fixed_joint, any_value)` returns the identity Transform for
-    /// well-formed second args, and propagates `Value::Undef` when the second arg
-    /// is Undef (so upstream evaluation errors are not masked).
-    ///
-    /// Design decision: type and dimension of the second argument are not validated
-    /// — a 0-DOF joint has no motion variable. Undef is the only case that changes
-    /// the result; all other value types yield the identity Transform.
+    /// `transform_at(fixed_joint, motion_var)` returns the identity Transform when
+    /// the second arg is a numeric/dimensioned scalar (`Real`, `Int`, or `Scalar`
+    /// of any dimension). Returns `Value::Undef` when the second arg is `Undef`
+    /// (Undef propagation) OR any non-numeric variant (`String`, `List`, `Map`,
+    /// `Vector`, `Bool`, etc.). Type-checking mirrors the discipline of every
+    /// other `transform_at` arm; dimension is unconstrained because a 0-DOF joint
+    /// has no motion variable.
     #[test]
     fn transform_at_fixed_returns_identity_transform() {
         let fj = eval_builtin("fixed", &[]);
@@ -3621,14 +3621,12 @@ mod tests {
             "transform_at(fixed, Undef): expected Undef (Undef propagation), got {:?}", undef_result
         );
 
-        // Non-Undef args of various types — all should yield the identity Transform
-        // (type/dimension not validated for 0-DOF joints).
+        // Numeric/dimensioned scalar args — all should yield the identity Transform.
+        // (Dimension is not validated; a 0-DOF joint has no motion variable.)
         for (label, second_arg) in [
-            ("length(2.5)",            Value::length(2.5)),
-            ("angle(1.0)",             Value::angle(1.0)),
-            ("Int(5)",                 Value::Int(5)),
-            ("String(\"foo\")",        Value::String("foo".to_string())),
-            ("List(empty)",            Value::List(vec![])),
+            ("length(2.5)", Value::length(2.5)),
+            ("angle(1.0)",  Value::angle(1.0)),
+            ("Int(5)",      Value::Int(5)),
         ] {
             let r2 = eval_builtin("transform_at", &[fj.clone(), second_arg]);
             assert!(
@@ -3645,6 +3643,32 @@ mod tests {
                 t,
                 &Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]),
                 "zero translation for {label}"
+            );
+        }
+    }
+
+    /// Non-numeric second args to `transform_at(fixed, _)` must return `Undef`.
+    ///
+    /// A 0-DOF joint has no motion variable, but the second arg must still be a
+    /// numeric/dimensioned scalar so that upstream type errors (e.g. a `String`
+    /// accidentally reaching this call) propagate as `Undef` rather than being
+    /// absorbed into a well-formed identity `Transform`. Mirrors the type-checking
+    /// discipline of every other `transform_at` arm.
+    #[test]
+    fn transform_at_fixed_with_non_numeric_second_arg_returns_undef() {
+        use std::collections::BTreeMap;
+        let fj = eval_builtin("fixed", &[]);
+
+        for (label, second_arg) in [
+            ("String(\"foo\")", Value::String("foo".to_string())),
+            ("List(empty)",     Value::List(vec![])),
+            ("Map(empty)",      Value::Map(BTreeMap::new())),
+            ("Vector([0.0])",   Value::Vector(vec![Value::Real(0.0)])),
+            ("Bool(true)",      Value::Bool(true)),
+        ] {
+            assert!(
+                eval_builtin("transform_at", &[fj.clone(), second_arg]).is_undef(),
+                "transform_at(fixed, {label}): expected Undef for non-numeric second arg"
             );
         }
     }
