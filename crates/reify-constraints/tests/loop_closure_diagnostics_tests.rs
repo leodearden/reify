@@ -659,11 +659,15 @@ fn solve_loop_closure_with_diagnostics_invalid_input_precedes_overconstrained() 
         report.outcome
     );
 
-    // The reason string must confirm that the out-of-range check fired.
+    // The reason string must confirm that the chain_b-bounds check fired
+    // (free_b[0]=5 >= chain_b.len()=1 is the first check that triggers).
+    // Using "chain_b len" is more specific than "out of range" because both
+    // the chain_b and vals_b_initial branches include "out of range", while
+    // "chain_b len" pins this to the chain_b-length check specifically.
     if let NewtonOutcome::InvalidInput { reason } = &report.outcome {
         assert!(
-            reason.contains("out of range"),
-            "InvalidInput reason must contain \"out of range\", got {:?}",
+            reason.contains("chain_b len"),
+            "InvalidInput reason must contain \"chain_b len\", got {:?}",
             reason
         );
     }
