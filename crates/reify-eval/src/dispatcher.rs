@@ -13,7 +13,7 @@
 //! execution in `geometry_ops.rs`; that integration is task 2642's
 //! responsibility.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
@@ -37,31 +37,77 @@ pub struct DispatchPlan {
 /// given that the inputs are currently realised in the reprs listed by
 /// `available`.
 ///
-/// Returns `None` when no chain reaches `demanded` from any repr in
-/// `available` via conversions declared by registered kernels, or when no
-/// registered kernel claims to support `op` on `demanded`.
+/// **Algorithm.** BFS over reachable [`ReprKind`] states. The frontier is
+/// seeded with `{(r, vec![]) | r ∈ available}`. At each pop, the current
+/// repr is the *input* repr available to the final-stage op. We probe
+/// every registered kernel for `(op, demanded)`: if any kernel supports
+/// the demanded `(op, output_repr)` pair AND the popped state's repr
+/// equals `demanded`, we return immediately. Otherwise we expand by every
+/// kernel-declared conversion `(Convert{from: popped_repr}, to)`,
+/// enqueuing `(to, chain ++ (kernel_name, popped_repr, to))` for any `to`
+/// not yet visited. BFS termination is guaranteed because the visited set
+/// is keyed on [`ReprKind`] (4 variants → at most 4 expansions).
 ///
-/// **Step-6 scope: zero-conversion only.** This minimal stub returns the
-/// first kernel in lexicographic order whose descriptor declares
-/// `(op, demanded)` AND `demanded ∈ available`. BFS expansion across
-/// conversion stages is added in step 8.
+/// **Determinism.** The registry is a [`BTreeMap`] so kernel iteration is
+/// lexicographic on name. Two ties at equal stage-count and equal final
+/// kernel choice are broken by the lexicographic order in which we enqueue
+/// expansions. Selection is therefore deterministic given a fixed
+/// `registry` (PRD `docs/prds/v0_2/multi-kernel.md`: "Selection
+/// deterministic given pinned runtime configuration").
+///
+/// **`None` returns** in three branches: (a) no path from `available` to
+/// `demanded` exists via declared conversions; (b) no registered kernel
+/// claims to support `op` on `demanded`; (c) the registry is empty.
 pub fn dispatch(
     registry: &BTreeMap<String, &CapabilityDescriptor>,
     op: Operation,
     demanded: ReprKind,
     available: &HashSet<ReprKind>,
 ) -> Option<DispatchPlan> {
-    if !available.contains(&demanded) {
-        return None;
+    // BFS state: (currently-realised repr, conversion chain so far).
+    let mut frontier: VecDeque<(ReprKind, Vec<(String, ReprKind, ReprKind)>)> =
+        VecDeque::new();
+    let mut visited: HashSet<ReprKind> = HashSet::new();
+
+    // Seed with every available repr in arbitrary HashSet order. BFS by
+    // stage-count is preserved because all available reprs sit at distance 0.
+    for &r in available {
+        frontier.push_back((r, vec![]));
+        visited.insert(r);
     }
-    for (name, descriptor) in registry.iter() {
-        if descriptor.supports(op, demanded) {
-            return Some(DispatchPlan {
-                kernel: name.clone(),
-                conversions: vec![],
-            });
+
+    while let Some((current_repr, chain)) = frontier.pop_front() {
+        // Final-stage probe: does any kernel support (op, demanded), AND is
+        // the current repr equal to `demanded` (so the kernel can consume
+        // what we have / will have)? Iterate in BTreeMap order for
+        // lexicographic determinism.
+        if current_repr == demanded {
+            for (name, descriptor) in registry.iter() {
+                if descriptor.supports(op, demanded) {
+                    return Some(DispatchPlan {
+                        kernel: name.clone(),
+                        conversions: chain,
+                    });
+                }
+            }
+        }
+
+        // Expansion step: for every kernel-declared conversion
+        // (Convert{from: current_repr}, to), enqueue (to, chain + entry).
+        for (kernel_name, descriptor) in registry.iter() {
+            for &(decl_op, decl_to) in descriptor.supports.iter() {
+                if let Operation::Convert { from } = decl_op {
+                    if from == current_repr && !visited.contains(&decl_to) {
+                        visited.insert(decl_to);
+                        let mut new_chain = chain.clone();
+                        new_chain.push((kernel_name.clone(), current_repr, decl_to));
+                        frontier.push_back((decl_to, new_chain));
+                    }
+                }
+            }
         }
     }
+
     None
 }
 
