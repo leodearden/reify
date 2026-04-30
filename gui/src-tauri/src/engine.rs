@@ -1557,7 +1557,10 @@ fn collect_consumed_mechanism_idents(
                 }
             });
         }
-        // Stop at the first matching structure; names are unique within a module.
+        // Stop at the first matching structure; structure names are unique within
+        // a module — enforced by
+        // reify_compiler::compile_builder::pre_pass::collect_decl_refs (which
+        // calls record_or_report_duplicate to emit a hard Diagnostic::error).
         break;
     }
 
