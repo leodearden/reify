@@ -156,38 +156,28 @@ fn empty_substitution_yields_back_compat_fingerprint() {
     );
 }
 
-// ─── step-9: warm-pool round-trip survives substitution flip and revert ───────
+// ─── step-9: substitution flip and revert restores topology fingerprint ──────
 
-/// Donate a `NodeId`'s warm state under substitution_a, flip to
-/// substitution_b (different fingerprint), revert to substitution_a
-/// (fingerprint restored), then checkout the donated payload.
+/// Flip `auto_type_substitution` from substitution_a to substitution_b, then
+/// revert to substitution_a; the fingerprint must follow: flip changes it,
+/// revert restores it.
 ///
-/// Pins PRD criterion 7's second half end-to-end at the pool API level:
-/// "Warm-state pool reuses prior cached node results when the same candidate
-/// is re-selected after a parameter edit + revert."
+/// Pins PRD criterion 7's second half: "the same candidate re-selected after
+/// a parameter edit + revert → same fingerprint → cache reuse."
 ///
-/// Mirrors `crates/reify-eval/tests/warm_state_donation.rs::
+/// Note: `WarmStatePool` is keyed purely by `NodeId` (no fingerprint argument
+/// is passed to donate/checkout), so pool survival is independent of this
+/// fingerprint contract and is already covered by
+/// `crates/reify-eval/tests/warm_state_donation.rs::
 /// pool_state_survives_round_trip_when_cache_cannot_consume`.
 #[test]
-fn warm_pool_round_trip_survives_substitution_flip_and_revert() {
-    use reify_eval::cache::NodeId;
-    use reify_eval::warm_pool::WarmStatePool;
-    use reify_types::{OpaqueState, ValueCellId};
-
+fn substitution_flip_and_revert_restores_topology_fingerprint() {
     let template = single_param_template();
 
     // graph_a: substitution_a = ORingSeal.
     let mut graph_a = EvaluationGraph::from_templates(&[template.clone()]);
     graph_a.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
     let fp_a = graph_a.topology_fingerprint();
-
-    // Donate warm state for seal_marker under substitution_a.
-    let seal_marker_node = NodeId::Value(ValueCellId::new("Bearing", "seal_marker"));
-    let mut pool = WarmStatePool::new(2 * 1024 * 1024);
-    pool.donate(
-        seal_marker_node.clone(),
-        OpaqueState::new(0xCAFE_F00Du32, 16),
-    );
 
     // graph_b: substitution_b = GasketSeal (flip).
     let mut graph_b = EvaluationGraph::from_templates(&[template.clone()]);
@@ -205,23 +195,6 @@ fn warm_pool_round_trip_survives_substitution_flip_and_revert() {
     // The revert must restore the original fingerprint.
     assert_eq!(fp_c, fp_a, "substitution revert must restore original fingerprint");
     assert_ne!(fp_c, fp_b, "reverted fingerprint must differ from flipped fingerprint");
-
-    // Checkout the donated payload — must succeed (the pool is keyed by NodeId,
-    // not by fingerprint; the node's path-based identity is stable across flips).
-    let checked_out = pool.checkout(&seal_marker_node);
-    assert!(
-        checked_out.is_some(),
-        "donated warm state must survive substitution flip + revert"
-    );
-    let payload: Option<u32> = checked_out
-        .as_ref()
-        .and_then(|s| s.downcast_ref::<u32>())
-        .copied();
-    assert_eq!(
-        payload,
-        Some(0xCAFE_F00Du32),
-        "donated payload must round-trip through pool unchanged"
-    );
 }
 
 // ─── step-11: MultiParamResolutionOutcome.substitution drives fingerprint ─────
