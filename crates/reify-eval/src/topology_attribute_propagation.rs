@@ -626,6 +626,13 @@ pub fn populate_loft_attributes(
     result_edge_handles: &[GeometryHandleId],
     history: &LoftOpHistoryRecords,
 ) -> Result<(), QueryError> {
+    // Reserved: kept in the public API as the seam for future face-level
+    // Modified records and rail/seam/cap-edge classification — mirroring the
+    // `let _ = profile_face_handles;` reservation in
+    // `write_face_generated_attributes`.
+    let _ = section_face_handles_per_section; // reserved for future face-level Modified records
+    let _ = result_edge_handles; // reserved for future rail/seam/cap-edge classification
+
     write_cap_attributes(
         table,
         feature_id,
@@ -642,14 +649,11 @@ pub fn populate_loft_attributes(
         Role::Cap(CapKind::End),
         "loft end cap",
     )?;
-
     write_loft_face_generated_attributes(
         table,
         feature_id,
-        section_face_handles_per_section,
         section_edge_handles_per_section,
         result_face_handles,
-        result_edge_handles,
         &history.face_generated,
     )?;
 
@@ -753,11 +757,9 @@ fn write_face_generated_attributes(
 /// (`BRepOffsetAPI_ThruSections`).  For each `face_generated` record:
 ///
 ///   1. Validate `parent_index` is in range for
-///      `section_face_handles_per_section` (the per-section profile-face
-///      slice family — face-keyed reads more naturally for a
-///      `face_generated` record; section count is `len()` either way
-///      since faces and edges share section count).  Returns
-///      `QueryFailed` mentioning "section" on out-of-range.
+///      `section_edge_handles_per_section.len()` (the number of loft
+///      sections).  Returns `QueryFailed` mentioning "section" on
+///      out-of-range.
 ///   2. Validate `parent_subshape_index` is in range for the addressed
 ///      section's edge slice (the kernel emits each lateral face from a
 ///      parent profile edge sweep, so the subshape index points into
@@ -770,28 +772,22 @@ fn write_face_generated_attributes(
 /// `local_index` increments sequentially across all sections in the
 /// order records appear in `face_generated` (section 0's edges first,
 /// then section 1's, ...).
-#[allow(clippy::too_many_arguments)] // multi-parent loft fans out per-section parent slices for both faces and edges
 fn write_loft_face_generated_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,
-    section_face_handles_per_section: &[Vec<GeometryHandleId>],
     section_edge_handles_per_section: &[Vec<GeometryHandleId>],
     result_face_handles: &[GeometryHandleId],
-    _result_edge_handles: &[GeometryHandleId],
     face_generated: &[HistoryRecord],
 ) -> Result<(), QueryError> {
     for (sequential_idx, record) in face_generated.iter().enumerate() {
-        // Step 1: parent_index in range over section count.  Validate
-        // against the face slice — face-keyed reads more naturally for
-        // a `face_generated` record (section count is shared with the
-        // edge slice, so behaviour is equivalent).
+        // Step 1: parent_index in range over section count.
         let parent_idx = record.parent_index as usize;
-        if parent_idx >= section_face_handles_per_section.len() {
+        if parent_idx >= section_edge_handles_per_section.len() {
             return Err(QueryError::QueryFailed(format!(
                 "loft face_generated record has parent_index {} \
                  but loft has only {} section(s)",
                 parent_idx,
-                section_face_handles_per_section.len()
+                section_edge_handles_per_section.len()
             )));
         }
 
