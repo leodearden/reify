@@ -24,6 +24,7 @@ mod complex;
 mod geometry;
 mod joints;
 mod linalg;
+mod list;
 pub mod loop_closure;
 mod matrix;
 mod mechanism;
@@ -38,6 +39,9 @@ mod trig;
 /// Returns `Value::Undef` for unknown functions or wrong argument types/counts.
 pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = numeric::eval_numeric(name, args) {
+        return v;
+    }
+    if let Some(v) = list::eval_list(name, args) {
         return v;
     }
     if let Some(v) = trig::eval_trig(name, args) {
