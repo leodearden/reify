@@ -160,6 +160,26 @@ fn assert_produces_error(source: &str) {
     );
 }
 
+/// Compile `source` and assert that at least one Error-severity diagnostic whose
+/// message contains `substring` is emitted. More precise than `assert_produces_error`
+/// when the docstring commits to a specific message shape, preventing a different
+/// unrelated error from silently keeping the test green.
+fn assert_produces_error_containing(source: &str, substring: &str) {
+    let module = compile_with_stdlib_helper(source);
+    let matching: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains(substring))
+        .collect();
+    assert!(
+        !matching.is_empty(),
+        "source must produce at least one Error-severity diagnostic containing {:?}, but got none.\
+         \nAll diagnostics: {:?}\nSource:\n{source}",
+        substring,
+        module.diagnostics
+    );
+}
+
 /// `Vector3<NotADim>` — the quantity type arg is an unknown name; the
 /// `resolve_type_alias_expr_to_dimension` helper must emit a "cannot resolve to a
 /// dimension type" Error before the Vector3 arm returns `None`.
@@ -254,13 +274,19 @@ fn point3_bare_name_falls_through_to_structure_ref() {
 /// caller emits `unresolved type: Vector3<Force, Length>`.
 #[test]
 fn vector3_two_type_args_in_default_stdlib_produces_error() {
-    assert_produces_error("structure def Bad { param v : Vector3<Force, Length> }");
+    assert_produces_error_containing(
+        "structure def Bad { param v : Vector3<Force, Length> }",
+        "unresolved type",
+    );
 }
 
 /// Parallel to `vector3_two_type_args_in_default_stdlib_produces_error` for `Point3`.
 #[test]
 fn point3_two_type_args_in_default_stdlib_produces_error() {
-    assert_produces_error("structure def Bad { param p : Point3<Force, Length> }");
+    assert_produces_error_containing(
+        "structure def Bad { param p : Point3<Force, Length> }",
+        "unresolved type",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +312,7 @@ structure def UseArity {
 /// This silent-fallthrough behavior is consistent with all other parameterized
 /// builtins (List, Set, Map, Option, Scalar, Tensor, Matrix); emitting an explicit
 /// arity-mismatch diagnostic only for Vector3/Point3 was rejected in favor of
-/// cross-builtin consistency. See the design decision in plan.json.
+/// cross-builtin consistency.
 #[test]
 fn vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists() {
     assert_param_type(
