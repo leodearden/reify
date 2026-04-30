@@ -2271,6 +2271,118 @@ fn kernel_pragma_with_occt_sets_kernel_pragma() {
     );
 }
 
+/// `#kernel(manifold)` (a v0.2 known kernel ident per PRD §10.8) sets
+/// `kernel_pragma = Some("manifold")`, emits no errors, and emits no warnings
+/// about expected/ignored/unknown/deferred forms. Locks the v0.2 expansion of
+/// the known-kernel allow-list beyond v0.1's occt-only acceptance. Mirrors
+/// `kernel_pragma_with_occt_sets_kernel_pragma` exactly.
+#[test]
+fn kernel_pragma_with_manifold_sets_kernel_pragma() {
+    let module = compile_source("#kernel(manifold)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.kernel_pragma,
+        Some("manifold".to_string()),
+        "expected kernel_pragma Some(\"manifold\") for #kernel(manifold), got {:?}",
+        module.kernel_pragma
+    );
+
+    let bad_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("#kernel")
+                && (m.contains("expected")
+                    || m.contains("ignored")
+                    || m.contains("unknown")
+                    || m.contains("deferred"))
+        })
+        .collect();
+    assert!(
+        bad_warns.is_empty(),
+        "expected no #kernel expected/ignored/unknown/deferred warnings for #kernel(manifold), got: {:?}",
+        bad_warns
+    );
+}
+
+/// `#kernel(fidget)` (a v0.2 known kernel ident per PRD §10.8) sets
+/// `kernel_pragma = Some("fidget")`, emits no errors, and emits no warnings
+/// about expected/ignored/unknown/deferred forms. Mirrors
+/// `kernel_pragma_with_occt_sets_kernel_pragma`.
+#[test]
+fn kernel_pragma_with_fidget_sets_kernel_pragma() {
+    let module = compile_source("#kernel(fidget)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.kernel_pragma,
+        Some("fidget".to_string()),
+        "expected kernel_pragma Some(\"fidget\") for #kernel(fidget), got {:?}",
+        module.kernel_pragma
+    );
+
+    let bad_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("#kernel")
+                && (m.contains("expected")
+                    || m.contains("ignored")
+                    || m.contains("unknown")
+                    || m.contains("deferred"))
+        })
+        .collect();
+    assert!(
+        bad_warns.is_empty(),
+        "expected no #kernel expected/ignored/unknown/deferred warnings for #kernel(fidget), got: {:?}",
+        bad_warns
+    );
+}
+
+/// `#kernel(openvdb)` (a v0.2 known kernel ident per PRD §10.8) sets
+/// `kernel_pragma = Some("openvdb")`, emits no errors, and emits no warnings
+/// about expected/ignored/unknown/deferred forms. Mirrors
+/// `kernel_pragma_with_occt_sets_kernel_pragma`.
+#[test]
+fn kernel_pragma_with_openvdb_sets_kernel_pragma() {
+    let module = compile_source("#kernel(openvdb)\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.kernel_pragma,
+        Some("openvdb".to_string()),
+        "expected kernel_pragma Some(\"openvdb\") for #kernel(openvdb), got {:?}",
+        module.kernel_pragma
+    );
+
+    let bad_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("#kernel")
+                && (m.contains("expected")
+                    || m.contains("ignored")
+                    || m.contains("unknown")
+                    || m.contains("deferred"))
+        })
+        .collect();
+    assert!(
+        bad_warns.is_empty(),
+        "expected no #kernel expected/ignored/unknown/deferred warnings for #kernel(openvdb), got: {:?}",
+        bad_warns
+    );
+}
+
 /// `#kernel(brep_xyz)` (a non-occt kernel ident) emits exactly one error-level
 /// diagnostic with the literal text per PRD §4 / task acceptance, and stores
 /// the user-declared name verbatim per the storage-reflects-declared design
