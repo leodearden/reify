@@ -903,6 +903,54 @@ fn collect_snapshot_bind_pairs_emits_debug_when_args1_not_listliteral() {
     );
 }
 
+/// `snapshot(m1, [bind(j1, 0mm)])` — non-empty bind list, but the second arg
+/// of `bind` is a dimensional literal (`0mm`), not an `Ident`.  No valid
+/// `bind(Ident, Ident)` pair survives the filter — case (c).  Must emit DEBUG.
+const NON_BIND_LIST_SNAPSHOT_SOURCE: &str = r#"
+structure Kinematic {
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j1)
+    let snap = snapshot(m1, [bind(j1, 0mm)])
+}
+"#;
+
+#[test]
+fn collect_snapshot_bind_pairs_emits_debug_when_list_has_no_valid_binds() {
+    // Regression-pin for case (c): non-empty bind list whose entries all fail
+    // the bind(Ident, Ident) filter must emit exactly 1 DEBUG event.
+    // Should pass after step-2 impl.
+    let mut session = make_session();
+    session
+        .load_from_source(NON_BIND_LIST_SNAPSHOT_SOURCE, "kinematic")
+        .expect("load non-bind-list snapshot source");
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine::snapshot_bind_pairs")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event for snapshot(m1, [bind(j1, 0mm)]) — non-empty list \
+         with no valid bind(Ident,Ident) pairs (case c); got {}",
+        debug_count
+    );
+    assert_eq!(
+        warn_count, 0,
+        "expected 0 WARN events at target reify_gui::engine::snapshot_bind_pairs; got {}",
+        warn_count
+    );
+}
+
 #[test]
 fn resolve_driving_params_emits_debug_for_param_checked_match() {
     // Step 6 RED: SNAPSHOT_PARAM_BIND_SOURCE has bind(y_axis, y_pos) where
