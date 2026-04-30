@@ -575,20 +575,30 @@ pub(crate) fn resolve_type_alias_expr(
             })
         }
         reify_syntax::TypeExprKind::Named { name, type_args } => {
-            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>).
+            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>,
+            // Option<T>, Scalar<Q>, Vector3<Q>, Point3<Q>, Tensor<…>, Matrix<…>).
             // Pass empty structure/trait name sets: this DFS runs before traits and
             // structures are compiled, so trait-name fallback must NOT fire here.
-            if !type_args.is_empty()
-                && let Some(ty) = resolve_parameterized_builtin_type(
+            //
+            // Use a temporary diagnostics vector: during the alias DFS pre-pass,
+            // type args may contain unresolved type params (e.g. `Vector3<Q>` in
+            // `type V<Q> = Vector3<Q>`). If the resolution succeeds we promote the
+            // diagnostics; if it fails we discard them silently — the alias will be
+            // fully resolved at instantiation time via resolve_type_alias_expr_with_subst.
+            if !type_args.is_empty() {
+                let mut tmp_diags = Vec::new();
+                if let Some(ty) = resolve_parameterized_builtin_type(
                     name,
                     type_args,
                     alias_registry,
-                    diagnostics,
+                    &mut tmp_diags,
                     &HashSet::new(),
                     &HashSet::new(),
-                )
-            {
-                return Some(ty);
+                ) {
+                    diagnostics.extend(tmp_diags);
+                    return Some(ty);
+                }
+                // tmp_diags discarded — resolution deferred to instantiation time
             }
             // Check for user-defined parameterized alias instantiation.
             // Use temporary diagnostics: during DFS pre-pass, type args may
@@ -1162,6 +1172,9 @@ fn expect_integer_literal_type_arg(
 /// args are resolved via `resolve_type_alias_expr_with_subst` — which is trait-blind by
 /// design. There is no `structure_names`/`trait_names` parameter here; the plain
 /// alias-DFS resolver is correct for this context.
+///
+/// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Scalar<Q>`, `Vector3<Q>`,
+/// `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`.
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
     type_args: &[reify_syntax::TypeExpr],
@@ -1226,6 +1239,16 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 diagnostics,
             )?;
             Some(Type::Scalar { dimension: dim })
+        }
+        "Vector3" if type_args.len() == 1 => {
+            // Vector3<Q>: resolve Q (with substitutions) to a DimensionVector and wrap.
+            let dim = resolve_type_alias_expr_to_dim_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            Some(Type::vec3(Type::Scalar { dimension: dim }))
         }
         "Tensor" if type_args.len() == 3 => {
             let rank = expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
