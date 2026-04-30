@@ -644,7 +644,7 @@ Point3 query_centroid(const OcctShape& shape);
 
 /// Centroid of a 2D sub-shape (TopoDS_Face), via `BRepGProp::SurfaceProperties`
 /// + `GProp_GProps::CentreOfMass`. Used by the `GeometryQuery::Centroid`
-/// dispatch when the stored `ReprKind` is `Face` (an extracted face has no
+/// dispatch when the stored `BRepKind` is `Face` (an extracted face has no
 /// enclosed volume, so volume-properties would default to the origin).
 Point3 query_face_centroid(const OcctShape& shape);
 

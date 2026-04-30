@@ -4,7 +4,7 @@
 
 use reify_kernel_occt::OcctKernel;
 use reify_kernel_occt::RUST_GUARD_MARKER;
-use reify_types::{GeometryError, GeometryOp, ReprKind};
+use reify_types::{GeometryError, GeometryOp, BRepKind};
 
 // --- LineSegment ---
 
@@ -16,7 +16,7 @@ fn line_segment_creates_wire() {
         x2: 1.0, y2: 0.0, z2: 0.0,
     });
     let handle = result.expect("line_segment should succeed");
-    assert_eq!(handle.repr, ReprKind::Wire);
+    assert_eq!(handle.repr, BRepKind::Wire);
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn arc_quarter_circle_creates_wire() {
         axis: [0.0, 0.0, 1.0],
     });
     let handle = result.expect("arc should succeed");
-    assert_eq!(handle.repr, ReprKind::Wire);
+    assert_eq!(handle.repr, BRepKind::Wire);
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn helix_creates_wire() {
         height: 10.0,
     });
     let handle = result.expect("helix should succeed");
-    assert_eq!(handle.repr, ReprKind::Wire);
+    assert_eq!(handle.repr, BRepKind::Wire);
 }
 
 // --- InterpCurve ---
@@ -99,7 +99,7 @@ fn interp_curve_through_4_points_creates_wire() {
         ],
     });
     let handle = result.expect("interp_curve should succeed");
-    assert_eq!(handle.repr, ReprKind::Wire);
+    assert_eq!(handle.repr, BRepKind::Wire);
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn bezier_curve_4_control_points_creates_wire() {
         ],
     });
     let handle = result.expect("bezier_curve should succeed");
-    assert_eq!(handle.repr, ReprKind::Wire);
+    assert_eq!(handle.repr, BRepKind::Wire);
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn nurbs_curve_valid_creates_wire() {
         degree: 3,
     });
     let handle = result.expect("nurbs_curve should succeed");
-    assert_eq!(handle.repr, ReprKind::Wire);
+    assert_eq!(handle.repr, BRepKind::Wire);
 }
 
 #[test]

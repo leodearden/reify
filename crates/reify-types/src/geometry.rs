@@ -34,12 +34,15 @@ impl GeometryHandleId {
 #[derive(Debug, Clone)]
 pub struct GeometryHandle {
     pub id: GeometryHandleId,
-    pub repr: ReprKind,
+    pub repr: BRepKind,
 }
 
-/// What kind of geometric representation this handle holds.
+/// B-rep sub-shape classifier for geometry handles managed by the OCCT kernel.
+///
+/// Renamed from `ReprKind` (task 2640) to free the `ReprKind` name for the
+/// multi-kernel coarse classifier (`BRep | Mesh | Sdf | Voxel`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReprKind {
+pub enum BRepKind {
     /// B-rep solid.
     Solid,
     /// Shell (open or closed).
@@ -669,7 +672,7 @@ pub trait GeometryKernel: Send + Sync {
     /// Extract the unique edges of a shape, storing each as a new handle.
     ///
     /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
-    /// edge sub-shape (with `ReprKind::Edge`). The ordering follows the
+    /// edge sub-shape (with `BRepKind::Edge`). The ordering follows the
     /// kernel's canonical `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration,
     /// deduplicated by `TopoDS_Shape::IsSame`.
     ///
@@ -688,7 +691,7 @@ pub trait GeometryKernel: Send + Sync {
     /// Extract the unique faces of a shape, storing each as a new handle.
     ///
     /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
-    /// face sub-shape (with `ReprKind::Face`). The ordering follows the
+    /// face sub-shape (with `BRepKind::Face`). The ordering follows the
     /// kernel's canonical `TopExp::MapShapes(.., TopAbs_FACE, ..)` enumeration,
     /// deduplicated by `TopoDS_Shape::IsSame`.
     ///
@@ -1899,28 +1902,28 @@ mod tests {
     }
 
     #[test]
-    fn repr_kind_face_and_edge_variants_exist() {
-        // Construct and pattern-match the new ReprKind::Edge variant.
-        let edge_repr = ReprKind::Edge;
+    fn b_rep_kind_face_and_edge_variants_exist() {
+        // Construct and pattern-match the BRepKind::Edge variant.
+        let edge_repr = BRepKind::Edge;
         match edge_repr {
-            ReprKind::Edge => {}
-            other => panic!("expected ReprKind::Edge, got {:?}", other),
+            BRepKind::Edge => {}
+            other => panic!("expected BRepKind::Edge, got {:?}", other),
         }
 
-        // Construct and pattern-match the new ReprKind::Face variant.
-        let face_repr = ReprKind::Face;
+        // Construct and pattern-match the BRepKind::Face variant.
+        let face_repr = BRepKind::Face;
         match face_repr {
-            ReprKind::Face => {}
-            other => panic!("expected ReprKind::Face, got {:?}", other),
+            BRepKind::Face => {}
+            other => panic!("expected BRepKind::Face, got {:?}", other),
         }
 
         // Edge and Face must be distinguishable from each other and from
         // existing variants (Wire/Shell/Solid/Compound).
-        assert_ne!(ReprKind::Edge, ReprKind::Face);
-        assert_ne!(ReprKind::Edge, ReprKind::Wire);
-        assert_ne!(ReprKind::Face, ReprKind::Shell);
-        assert_ne!(ReprKind::Edge, ReprKind::Solid);
-        assert_ne!(ReprKind::Face, ReprKind::Compound);
+        assert_ne!(BRepKind::Edge, BRepKind::Face);
+        assert_ne!(BRepKind::Edge, BRepKind::Wire);
+        assert_ne!(BRepKind::Face, BRepKind::Shell);
+        assert_ne!(BRepKind::Edge, BRepKind::Solid);
+        assert_ne!(BRepKind::Face, BRepKind::Compound);
 
         // Construct and pattern-match the new GeometryQuery::EdgeLength variant.
         let edge_len = GeometryQuery::EdgeLength(GeometryHandleId(7));
@@ -2378,7 +2381,7 @@ mod tests {
                 self.next_id += 1;
                 Ok(GeometryHandle {
                     id: GeometryHandleId(id),
-                    repr: ReprKind::Solid,
+                    repr: BRepKind::Solid,
                 })
             }
 
@@ -2763,7 +2766,7 @@ mod tests {
                 self.next_id += 1;
                 Ok(GeometryHandle {
                     id: GeometryHandleId(id),
-                    repr: ReprKind::Solid,
+                    repr: BRepKind::Solid,
                 })
             }
 

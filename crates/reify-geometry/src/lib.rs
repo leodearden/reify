@@ -94,7 +94,7 @@ mod tests {
     use reify_test_support::mm3;
     use reify_types::{
         ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
-        GeometryQuery, QueryError, ReprKind, TessError, Value,
+        BRepKind, GeometryQuery, QueryError, TessError, Value,
     };
 
     use super::*;
@@ -147,7 +147,7 @@ mod tests {
         };
         let handle = planner.execute(&op).expect("execute should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
-        assert_eq!(handle.repr, ReprKind::Solid);
+        assert_eq!(handle.repr, BRepKind::Solid);
     }
 
     #[test]
@@ -326,6 +326,6 @@ mod tests {
             .execute(&op)
             .expect("execute through trait object should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
-        assert_eq!(handle.repr, ReprKind::Solid);
+        assert_eq!(handle.repr, BRepKind::Solid);
     }
 }

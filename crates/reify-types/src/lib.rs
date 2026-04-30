@@ -52,7 +52,7 @@ pub use geometry::{
     FeatureId,
     FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, HistoryRecord, LoftOpHistoryRecords, Mesh, ModEntry, QueryError,
-    ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError, TopologyAttribute,
+    BRepKind, Role, StepKind, SweepOpHistoryRecords, TessError, TopologyAttribute,
     TopologyAttributeTable, debug_assert_query_many_invariant,
 };
 pub use hash::ContentHash;
