@@ -799,6 +799,51 @@ mod tests {
         );
     }
 
+    /// Locks the full LSP conversion contract for `AutoTypeParamNonUnique`.
+    ///
+    /// Mirrors the producer site at `auto_type_param.rs:609-614`:
+    /// severity=WARNING (the load-bearing distinction from the three ERROR cases —
+    /// `auto(free)` permits the compiler to choose; the diagnostic surfaces the
+    /// choice for auditability without blocking compilation),
+    /// code="AutoTypeParamNonUnique", message names the lex-first selection,
+    /// data carries the candidate FQNs.
+    #[test]
+    fn convert_diagnostic_auto_type_param_non_unique_full_lsp_contract() {
+        use reify_types::DiagnosticCode;
+        let source = "auto";
+        let diag = Diagnostic::warning(
+            "auto(free) type parameter has multiple feasible candidates for bound 'Seal': ORingSeal, RubberSeal; selected lexicographically-first 'ORingSeal'",
+        )
+        .with_code(DiagnosticCode::AutoTypeParamNonUnique)
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(0, 4),
+            "auto type-param bound 'Seal' here",
+        ))
+        .with_candidates(vec!["ORingSeal".to_string(), "RubberSeal".to_string()]);
+        let lsp = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp.severity,
+            Some(DiagnosticSeverity::WARNING),
+            "NON_UNIQUE must be WARNING severity (not ERROR — auto(free) allows compiler to choose)"
+        );
+        assert_eq!(
+            lsp.code,
+            Some(NumberOrString::String("AutoTypeParamNonUnique".to_string())),
+            "NON_UNIQUE code must wire as 'AutoTypeParamNonUnique'"
+        );
+        assert!(
+            lsp.message
+                .contains("selected lexicographically-first 'ORingSeal'"),
+            "NON_UNIQUE message must name the lex-first selection, got: {:?}",
+            lsp.message
+        );
+        assert_eq!(
+            lsp.data,
+            Some(serde_json::json!({"candidates": ["ORingSeal", "RubberSeal"]})),
+            "NON_UNIQUE data must carry all feasible candidate FQNs"
+        );
+    }
+
     // --- Candidate list → LSP data field (step-1) ---
 
     /// Asserts that `convert_diagnostic` populates the LSP `data` field with a
