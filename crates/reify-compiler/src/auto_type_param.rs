@@ -93,6 +93,22 @@ use crate::types::{CompiledTrait, TopologyTemplate};
 /// alphabetically (by FQN) are reported.
 pub const MAX_AUTO_TYPE_PARAM_CANDIDATES: usize = 10;
 
+/// Render the `bounds` slice for diagnostic display and produce the
+/// matching label-message string in one step.
+///
+/// Used by every diagnostic-emitting site in this module (Phase A's
+/// overflow path and all three Phase C arms) so the rendering convention
+/// (`bounds.join(" + ")` for the bound list, `"auto type-param bound
+/// '<bounds>' here"` for the label) lives in exactly one place. Returns
+/// `(joined_bounds, label_message)` so callers that need the joined-bounds
+/// string a second time (for the main message body) can reuse it without
+/// re-joining.
+fn render_auto_type_param_label(bounds: &[String]) -> (String, String) {
+    let joined_bounds = bounds.join(" + ");
+    let label_message = format!("auto type-param bound '{}' here", joined_bounds);
+    (joined_bounds, label_message)
+}
+
 /// The result of [`enumerate_candidates`].
 ///
 /// Three arms map to three downstream actions for callers:
@@ -215,7 +231,7 @@ pub fn enumerate_candidates(
         CandidateEnumeration::Empty
     } else if collected.len() > MAX_AUTO_TYPE_PARAM_CANDIDATES {
         collected.truncate(MAX_AUTO_TYPE_PARAM_CANDIDATES);
-        let joined_bounds = bounds.join(" + ");
+        let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
         let names_list = collected.join(", ");
         let message = format!(
             "auto type parameter has more than {max} candidates satisfying bound '{bounds_str}'; first {max} alphabetically: {names}",
@@ -223,7 +239,6 @@ pub fn enumerate_candidates(
             bounds_str = joined_bounds,
             names = names_list,
         );
-        let label_message = format!("auto type-param bound '{}' here", joined_bounds);
         diagnostics.push(
             Diagnostic::error(message)
                 .with_code(DiagnosticCode::AutoTypeParamPoolOverflow)
@@ -494,7 +509,7 @@ pub fn select_candidate(
     );
     match feasibility {
         FeasibilityResult::Empty { rejected } => {
-            let joined_bounds = bounds.join(" + ");
+            let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
             // Per-rejection prose: each candidate paired with its violated
             // constraint ids. v0.1 encodes per-rejection details as a string;
             // the structured `candidates` field carries just the FQNs (parity
@@ -519,7 +534,6 @@ pub fn select_candidate(
                 bounds_str = joined_bounds,
                 summary = rejection_summary,
             );
-            let label_message = format!("auto type-param bound '{}' here", joined_bounds);
             diagnostics.push(
                 Diagnostic::error(message)
                     .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
@@ -562,7 +576,7 @@ pub fn select_candidate(
             );
             if !free {
                 // Strict (`free=false`) + ≥2 feasible → AMBIGUOUS error.
-                let joined_bounds = bounds.join(" + ");
+                let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
                 let candidates_join = accepted.join(", ");
                 let lex_first = &accepted[0];
                 let message = format!(
@@ -571,7 +585,6 @@ pub fn select_candidate(
                     names = candidates_join,
                     lex_first = lex_first,
                 );
-                let label_message = format!("auto type-param bound '{}' here", joined_bounds);
                 diagnostics.push(
                     Diagnostic::error(message)
                         .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
@@ -584,7 +597,7 @@ pub fn select_candidate(
             // select the lexicographically-first candidate. Phase B preserves
             // Phase A's alphabetical input order, so `accepted[0]` IS the
             // lex-first FQN.
-            let joined_bounds = bounds.join(" + ");
+            let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
             let candidates_join = accepted.join(", ");
             let lex_first = accepted[0].clone();
             let message = format!(
@@ -593,7 +606,6 @@ pub fn select_candidate(
                 names = candidates_join,
                 lex_first = lex_first,
             );
-            let label_message = format!("auto type-param bound '{}' here", joined_bounds);
             diagnostics.push(
                 Diagnostic::warning(message)
                     .with_code(DiagnosticCode::AutoTypeParamNonUnique)
