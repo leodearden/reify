@@ -98,3 +98,51 @@ fn select_returns_selected_for_single_feasible_candidate_with_no_diagnostic() {
         diagnostics
     );
 }
+
+// ─── step-5: ≥2 feasible under strict — Ambiguous + Error ────────────────
+
+/// When two or more candidates are feasible and `free=false`,
+/// `select_candidate` returns [`SelectionResult::Ambiguous(...)`] carrying
+/// every feasible FQN, and pushes one error diagnostic with the
+/// `AutoTypeParamAmbiguous` code, the use-site-span label, and the
+/// machine-readable candidates list.
+#[test]
+fn select_returns_ambiguous_for_two_strict_feasible_candidates() {
+    let use_site_span = SourceSpan::new(100, 110);
+    let feasibility = FeasibilityResult::Feasible {
+        accepted: vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
+        rejected: vec![],
+    };
+
+    let mut diagnostics = Vec::new();
+    let result = select_candidate(
+        feasibility,
+        &["Seal".to_string()],
+        false,
+        use_site_span,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        result,
+        SelectionResult::Ambiguous(vec![
+            "GraphiteSeal".to_string(),
+            "ORingSeal".to_string()
+        ]),
+        "≥2 feasible under strict must return Ambiguous with all feasible FQNs"
+    );
+    assert_eq!(diagnostics.len(), 1, "exactly one ambiguous diagnostic");
+    let d = &diagnostics[0];
+    assert_eq!(d.severity, Severity::Error);
+    assert_eq!(d.code, Some(DiagnosticCode::AutoTypeParamAmbiguous));
+    assert_eq!(
+        d.candidates,
+        vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
+        "diagnostic.candidates must list every feasible FQN in input order"
+    );
+    assert!(
+        !d.labels.is_empty(),
+        "diagnostic must carry at least one label at the use-site span"
+    );
+    assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
+}
