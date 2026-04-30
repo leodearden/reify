@@ -77,7 +77,8 @@ fn decompose_transform(v: &Value) -> Option<DecomposedTransform> {
 const INPUT_QUAT_NORM_SQ_MIN: f64 = 1e-24;
 
 /// Normalize a quaternion tuple `(w, x, y, z)` to unit length using the shared
-/// `1e-24` squared-norm gate, returning `None` if the quaternion is too small.
+/// `1e-24` squared-norm gate, returning `None` if the quaternion is too small or
+/// if its squared norm is non-finite.
 ///
 /// The `1e-24` threshold (= `(1e-12)²`) is intentionally looser than `f64::EPSILON`
 /// (`~2.22e-16`): it accepts raw input quaternions whose norm is as small as `~1e-12`
@@ -86,12 +87,19 @@ const INPUT_QUAT_NORM_SQ_MIN: f64 = 1e-24;
 /// needlessly strict — dividing by a `1e-12` norm still yields finite, well-scaled unit
 /// components.
 ///
+/// The `!norm_sq.is_finite()` check additionally rejects overflow inputs where
+/// `norm_sq = ±∞` (e.g. `Orientation { w: 1e200, … }` where `1e200² = ∞`). Without
+/// this check the subsequent `q / ∞ = 0.0` collapse would silently emit a zero
+/// quaternion, which is invalid. This is what makes `transform_log`,
+/// `transform_inverse`, and `transform_compose` symmetric on overflow input without
+/// requiring per-site defensive renormalizes.
+///
 /// Called by `transform_log`, `transform_inverse`, and `transform_compose` for
 /// input-side quaternion normalization, unifying three formerly near-identical blocks.
 fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)> {
     let (w, x, y, z) = q;
     let norm_sq = w * w + x * x + y * y + z * z;
-    if norm_sq < INPUT_QUAT_NORM_SQ_MIN {
+    if !norm_sq.is_finite() || norm_sq < INPUT_QUAT_NORM_SQ_MIN {
         return None;
     }
     let norm = norm_sq.sqrt();
