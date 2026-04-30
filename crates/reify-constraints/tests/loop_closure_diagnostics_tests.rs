@@ -27,6 +27,14 @@ fn axis_x() -> Value {
     Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
 }
 
+fn axis_y() -> Value {
+    Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+}
+
+fn axis_z() -> Value {
+    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+}
+
 fn length_range(lo: f64, up: f64) -> Value {
     Value::Range {
         lower: Some(Box::new(Value::length(lo))),
@@ -36,8 +44,46 @@ fn length_range(lo: f64, up: f64) -> Value {
     }
 }
 
+fn angle_range(lo: f64, up: f64) -> Value {
+    Value::Range {
+        lower: Some(Box::new(Value::angle(lo))),
+        upper: Some(Box::new(Value::angle(up))),
+        lower_inclusive: true,
+        upper_inclusive: true,
+    }
+}
+
 fn prismatic_x_0_to_1() -> Value {
     eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)])
+}
+
+fn prismatic_y_0_to_1() -> Value {
+    eval_builtin("prismatic", &[axis_y(), length_range(0.0, 1.0)])
+}
+
+fn prismatic_z_0_to_1() -> Value {
+    eval_builtin("prismatic", &[axis_z(), length_range(0.0, 1.0)])
+}
+
+fn revolute_x_0_to_pi() -> Value {
+    eval_builtin(
+        "revolute",
+        &[axis_x(), angle_range(0.0, std::f64::consts::PI)],
+    )
+}
+
+fn revolute_y_0_to_pi() -> Value {
+    eval_builtin(
+        "revolute",
+        &[axis_y(), angle_range(0.0, std::f64::consts::PI)],
+    )
+}
+
+fn revolute_z_0_to_pi() -> Value {
+    eval_builtin(
+        "revolute",
+        &[axis_z(), angle_range(0.0, std::f64::consts::PI)],
+    )
 }
 
 // ── Step-1: DiagnosticCode variants exist and are distinct ──────────────
@@ -172,10 +218,14 @@ fn solve_loop_closure_with_diagnostics_emits_overconstrained_for_one_dof() {
 ///   * `KinematicSingularity` (Warning) — rank-deficient Jacobian
 ///     post-process.
 ///
-/// Pinning that the wrapped outcome is `Singular` or `Converged` (NOT a
-/// short-circuited `NotConverged` with `f64::INFINITY` residual_norm)
-/// proves the under-constrained branch DELEGATES to the solver rather
-/// than short-circuiting it.
+/// Outcome MUST be `NewtonOutcome::Singular` — that is the LDLᵀ pivot
+/// guard's signal, and it is also the only outcome that produces the
+/// second (singularity) diagnostic this test expects.  Asserting
+/// `Singular` directly proves both that the under-constrained branch
+/// DELEGATES to the solver (rather than short-circuiting) AND that the
+/// singularity post-process fires; a regression that made this rank-1
+/// chain converge would surface as a clear "expected Singular" panic
+/// here, instead of a confusing diagnostic-count mismatch.
 #[test]
 fn solve_loop_closure_with_diagnostics_emits_underconstrained_for_seven_dofs() {
     let chain_a = vec![prismatic_x_0_to_1()];
@@ -221,20 +271,14 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_for_seven_dofs() {
         report.diagnostics
     );
 
-    // Outcome must reflect that the solver was actually invoked — NOT the
-    // over-constrained short-circuit shape (NotConverged with INFINITY
-    // residual_norm).
-    match &report.outcome {
-        NewtonOutcome::Singular { .. } | NewtonOutcome::Converged { .. } => {}
-        NewtonOutcome::NotConverged { residual_norm, .. } if residual_norm.is_finite() => {
-            // Solver ran but didn't converge with finite residual — also OK
-            // proof that the solver wasn't short-circuited.
-        }
-        other => panic!(
-            "expected Singular or Converged (or finite-residual NotConverged) \
-             from under-constrained delegation, got {other:?}"
-        ),
-    }
+    // Outcome must be Singular — required by the LDLᵀ pivot guard on a
+    // rank-1 Jacobian and the only variant that triggers the singularity
+    // post-process (which the diagnostic-count assertion above pins).
+    assert!(
+        matches!(report.outcome, NewtonOutcome::Singular { .. }),
+        "expected NewtonOutcome::Singular from rank-deficient 7-prismatic-x chain, got {:?}",
+        report.outcome
+    );
 }
 
 // ── Step-9: singularity post-process (rank-deficient Jacobian) ──────────
@@ -313,5 +357,124 @@ fn solve_loop_closure_with_diagnostics_emits_singularity_for_rank_one_chain() {
         )),
         "balanced free-DOF count (6) must not emit over/under-constrained diagnostics, got {:?}",
         report.diagnostics
+    );
+}
+
+// ── Coverage gaps surfaced in the amendment review ──────────────────────
+
+/// The over-constrained branch of the wrapper has special-case handling
+/// for `StartStrategy::Midpoint` (post-amendment: query each free joint's
+/// midpoint to populate the returned `x`).  Pinning that the Midpoint
+/// strategy actually drives `x` (not just the WarmStart fallback) means a
+/// regression to the old `filter_map(vals_b_initial[i])` shortcut would
+/// break this assertion: prismatic_x_0_to_1's midpoint is 0.5, which is
+/// distinct from `vals_b_initial[0] = 0.0` here.
+#[test]
+fn solve_loop_closure_with_diagnostics_overconstrained_midpoint_uses_joint_midpoint() {
+    let chain_a = vec![prismatic_x_0_to_1()];
+    let vals_a = vec![0.5];
+    let chain_b = vec![prismatic_x_0_to_1()];
+    let vals_b_initial = vec![0.0];
+    let free_b = vec![0]; // 1 < 6 → over-constrained
+    let strategy = StartStrategy::Midpoint;
+    let cfg = NewtonConfig::default();
+
+    let report = solve_loop_closure_with_diagnostics(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b_initial,
+        &free_b,
+        &strategy,
+        &cfg,
+    );
+
+    assert_eq!(
+        report.diagnostics.len(),
+        1,
+        "expected exactly one over-constrained diagnostic, got {:?}",
+        report.diagnostics
+    );
+    let d = &report.diagnostics[0];
+    assert_eq!(d.severity, Severity::Error);
+    assert_eq!(d.code, Some(DiagnosticCode::KinematicOverconstrained));
+    assert!(!report.is_singular, "no Newton run → is_singular must stay false");
+    match &report.outcome {
+        NewtonOutcome::NotConverged { x, residual_norm } => {
+            assert_eq!(x.len(), 1, "x must align positionally with free_b");
+            assert!(
+                (x[0] - 0.5).abs() < 1e-12,
+                "Midpoint strategy must populate x with joint midpoint (0.5 for 0..1m \
+                 prismatic_x), got {:?}",
+                x[0]
+            );
+            assert!(
+                !residual_norm.is_finite(),
+                "over-constrained short-circuit must signal infeasibility via \
+                 INFINITY residual_norm, got {residual_norm}"
+            );
+        }
+        other => panic!("over-constrained short-circuit must return NotConverged, got {other:?}"),
+    }
+}
+
+/// Balanced (free_b.len() == 6) AND non-singular happy path: 3 prismatic
+/// + 3 revolute joints on three orthogonal axes span all 6 components of
+/// the closure-residual twist, so the Jacobian is full-rank.  With
+/// `chain_a == chain_b` at `vals_a == vals_b_initial`, the residual is
+/// identically zero from the first iteration → the solver converges in
+/// 0 iters with no DOF imbalance and no rank-deficiency.
+///
+/// Pinning that the wrapper emits NO diagnostics on the balanced
+/// non-singular path complements the singular-balanced test above: a
+/// regression that emitted spurious diagnostics on a healthy mechanism
+/// (e.g. a stale check that fired on every `free_b.len() == 6` call)
+/// would surface here.
+#[test]
+fn solve_loop_closure_with_diagnostics_balanced_full_rank_emits_no_diagnostics() {
+    let chain: Vec<Value> = vec![
+        prismatic_x_0_to_1(),
+        prismatic_y_0_to_1(),
+        prismatic_z_0_to_1(),
+        revolute_x_0_to_pi(),
+        revolute_y_0_to_pi(),
+        revolute_z_0_to_pi(),
+    ];
+    let vals = vec![0.5, 0.5, 0.5, 0.0, 0.0, 0.0];
+    let chain_a = chain.clone();
+    let vals_a = vals.clone();
+    let chain_b = chain;
+    let vals_b_initial = vals.clone();
+    let free_b: Vec<usize> = (0..6).collect();
+    let strategy = StartStrategy::WarmStart(vals.clone());
+    let cfg = NewtonConfig::default();
+
+    let report = solve_loop_closure_with_diagnostics(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b_initial,
+        &free_b,
+        &strategy,
+        &cfg,
+    );
+
+    assert!(
+        report.diagnostics.is_empty(),
+        "balanced non-singular path must emit no diagnostics, got {:?}",
+        report.diagnostics
+    );
+    assert!(
+        !report.is_singular,
+        "balanced non-singular path must NOT lift is_singular, got is_singular={} (outcome={:?})",
+        report.is_singular,
+        report.outcome,
+    );
+    // Outcome must be Converged (zero initial residual) — anything else
+    // would mean the solver failed on the trivial identity case.
+    assert!(
+        matches!(report.outcome, NewtonOutcome::Converged { .. }),
+        "expected Converged on identity residual, got {:?}",
+        report.outcome
     );
 }
