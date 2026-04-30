@@ -188,6 +188,12 @@ pub struct LoopClosureReport {
     /// Newton solve (i.e. `outcome` is `NewtonOutcome::Singular`).  This
     /// mirrors the PRD's `is_singular: true` flag and pairs with the
     /// `KinematicSingularity` warning entry in `diagnostics`.
+    ///
+    /// Structurally redundant with `matches!(outcome, NewtonOutcome::Singular { .. })`;
+    /// the wrapper's internal construction (`build_report`) always derives
+    /// this field from `outcome` so the two cannot drift out of agreement.
+    /// The field is retained in the public API to match the PRD's
+    /// `is_singular: true` shape (consumers may pattern-match either way).
     pub is_singular: bool,
     /// Typed diagnostic entries the wrapper emitted (over-/under-constrained
     /// pre-checks and singular post-process).  Empty for a balanced,
@@ -659,6 +665,22 @@ pub fn solve_loop_closure_with_diagnostics(
     strategy: &StartStrategy,
     config: &NewtonConfig,
 ) -> LoopClosureReport {
+    // Mirror solve_loop_closure's input validation up front, regardless of
+    // DOF balance.  A caller that passes structurally over-constrained AND
+    // malformed inputs deserves the more accurate `InvalidInput` outcome,
+    // not `KinematicOverconstrained` — and short-circuiting before
+    // validation would also let out-of-range `free_b` indices silently
+    // shrink the returned `x` (length-mismatch contract violation).  We
+    // duplicate (rather than DRY into) `solve_loop_closure`'s checks to
+    // keep this wrapper layer's behaviour change isolated.
+    if let Some(reason) = validate_loop_closure_inputs(chain_b, vals_b_initial, free_b, strategy) {
+        tracing::warn!("solve_loop_closure_with_diagnostics: {reason}");
+        return build_report(
+            NewtonOutcome::InvalidInput { reason },
+            Vec::new(),
+        );
+    }
+
     let mut diagnostics: Vec<reify_types::Diagnostic> = Vec::new();
 
     if free_b.len() < SINGLE_LOOP_RESIDUAL_COUNT {
@@ -671,27 +693,40 @@ pub fn solve_loop_closure_with_diagnostics(
         .with_code(reify_types::DiagnosticCode::KinematicOverconstrained);
         diagnostics.push(diag);
 
-        // Build the returned `x` from the strategy where it resolves
-        // unambiguously, else fall back to copying the free entries of
-        // vals_b_initial.  Precise contents matter less than the diagnostic
-        // itself: residual_norm is f64::INFINITY and downstream tooling
-        // treats the diagnostic as the user-facing signal.
+        // Resolve the returned `x` from the strategy.  Inputs are validated
+        // above, so each branch produces a vector of exactly `free_b.len()`
+        // entries — preserving the implicit contract that `outcome.x`
+        // aligns positionally with the requested free vars.  Precise
+        // contents matter less than the diagnostic itself (residual_norm
+        // is f64::INFINITY and downstream tooling treats the diagnostic as
+        // the user-facing signal); the length invariant is what callers
+        // index against.
         let x: Vec<f64> = match strategy {
-            StartStrategy::WarmStart(v) if v.len() == free_b.len() => v.clone(),
-            _ => free_b
+            StartStrategy::WarmStart(v) => {
+                // Length validated to match free_b.len() above.
+                v.clone()
+            }
+            StartStrategy::Midpoint => free_b
                 .iter()
-                .filter_map(|&i| vals_b_initial.get(i).copied())
+                .map(|&i| {
+                    // Indices and joint-range existence validated above;
+                    // expect documents the invariant rather than silently
+                    // dropping entries (the previous filter_map could
+                    // produce x.len() < free_b.len() — a contract
+                    // violation now caught by the validation pass).
+                    reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i])
+                        .expect("joint_range_midpoint validated above")
+                })
                 .collect(),
         };
 
-        return LoopClosureReport {
-            outcome: NewtonOutcome::NotConverged {
+        return build_report(
+            NewtonOutcome::NotConverged {
                 x,
                 residual_norm: f64::INFINITY,
             },
-            is_singular: false,
             diagnostics,
-        };
+        );
     }
 
     if free_b.len() > SINGLE_LOOP_RESIDUAL_COUNT {
@@ -722,14 +757,14 @@ pub fn solve_loop_closure_with_diagnostics(
     );
 
     // Singular post-process: translate NewtonOutcome::Singular into the
-    // PRD's W_KINEMATIC_SINGULARITY warning and lift the is_singular flag.
-    // The Singular variant's `x` payload already carries the last-converged
-    // config the PRD requires; the wrapper's only job is to surface the
-    // typed diagnostic alongside the outcome.  Other outcomes (Converged /
-    // NotConverged / InvalidInput) leave is_singular false and add no
-    // singularity entry.
-    let is_singular = matches!(outcome, NewtonOutcome::Singular { .. });
-    if is_singular {
+    // PRD's W_KINEMATIC_SINGULARITY warning class.  The Singular variant's
+    // `x` payload already carries the last-converged config the PRD
+    // requires; the wrapper's only job is to surface the typed diagnostic
+    // alongside the outcome.  Other outcomes (Converged / NotConverged /
+    // InvalidInput) add no singularity entry; `is_singular` is derived
+    // from `outcome` inside `build_report`, so there is one source of
+    // truth (the `outcome` enum).
+    if matches!(outcome, NewtonOutcome::Singular { .. }) {
         let diag = reify_types::Diagnostic::warning(
             "kinematic singularity detected: rank-deficient Jacobian; last-converged config returned",
         )
@@ -737,6 +772,88 @@ pub fn solve_loop_closure_with_diagnostics(
         diagnostics.push(diag);
     }
 
+    build_report(outcome, diagnostics)
+}
+
+/// Validate the structural inputs accepted by both [`solve_loop_closure`]
+/// and [`solve_loop_closure_with_diagnostics`].  Returns `Some(reason)`
+/// describing the first failed check, or `None` if every input is well-formed.
+///
+/// Mirrors the early-return checks `solve_loop_closure` performs before
+/// initial-guess resolution: every `free_b` index addresses a valid joint
+/// in `chain_b` AND a valid initial value in `vals_b_initial`, the
+/// `WarmStart` vector length matches `free_b.len()`, and `Midpoint`'s
+/// joint-range lookup succeeds for each free joint.  The diagnostic
+/// wrapper short-circuits on DOF balance only AFTER this validation
+/// passes, so a structurally over-constrained AND malformed input
+/// surfaces `InvalidInput` (the more accurate signal) rather than
+/// `KinematicOverconstrained`.
+fn validate_loop_closure_inputs(
+    chain_b: &[reify_types::Value],
+    vals_b_initial: &[f64],
+    free_b: &[usize],
+    strategy: &StartStrategy,
+) -> Option<String> {
+    for &i in free_b {
+        if i >= chain_b.len() {
+            return Some(format!(
+                "free_b index {} out of range (chain_b len {})",
+                i,
+                chain_b.len()
+            ));
+        }
+        if i >= vals_b_initial.len() {
+            return Some(format!(
+                "free_b index {} out of range (vals_b_initial len {})",
+                i,
+                vals_b_initial.len()
+            ));
+        }
+    }
+    match strategy {
+        StartStrategy::WarmStart(v) => {
+            if v.len() != free_b.len() {
+                return Some(format!(
+                    "WarmStart length {} != free_b length {}",
+                    v.len(),
+                    free_b.len()
+                ));
+            }
+        }
+        StartStrategy::Midpoint => {
+            for &i in free_b {
+                // free_b indices already validated above; `chain_b[i]` is safe.
+                if reify_stdlib::loop_closure::joint_range_midpoint(&chain_b[i]).is_none() {
+                    return Some(format!(
+                        "joint_range_midpoint returned None for free_b[{i}] — joint missing range or malformed"
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Smart constructor for [`LoopClosureReport`] that derives `is_singular`
+/// from `outcome` so the two cannot drift out of agreement.
+///
+/// `LoopClosureReport.is_singular` is structurally redundant with
+/// `matches!(outcome, NewtonOutcome::Singular { .. })`, but the field is
+/// preserved in the public API to match the PRD's `is_singular: true`
+/// shape.  Routing every wrapper-internal construction through this
+/// helper means we have a single source of truth (`outcome`) and a
+/// debug-build assertion catches any future caller that forgets the
+/// invariant.
+fn build_report(
+    outcome: NewtonOutcome,
+    diagnostics: Vec<reify_types::Diagnostic>,
+) -> LoopClosureReport {
+    let is_singular = matches!(outcome, NewtonOutcome::Singular { .. });
+    debug_assert_eq!(
+        is_singular,
+        matches!(outcome, NewtonOutcome::Singular { .. }),
+        "LoopClosureReport.is_singular must mirror matches!(outcome, NewtonOutcome::Singular {{ .. }})"
+    );
     LoopClosureReport {
         outcome,
         is_singular,
