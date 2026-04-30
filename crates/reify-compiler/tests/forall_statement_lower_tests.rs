@@ -170,6 +170,20 @@ structure def S {{
     )
 }
 
+/// Which sides to expect a per-side label for in
+/// [`assert_unsupported_port_shape_diagnostic`].
+#[derive(Clone, Copy, Debug)]
+struct Sides {
+    left: bool,
+    right: bool,
+}
+
+impl Sides {
+    fn left_only() -> Self { Self { left: true, right: false } }
+    fn right_only() -> Self { Self { left: false, right: true } }
+    fn both() -> Self { Self { left: true, right: true } }
+}
+
 /// Shared structural assertion helper for the three unsupported-port-shape
 /// diagnostic tests (`(None, Some)`, `(Some, None)`, `(None, None)` arms).
 ///
@@ -180,14 +194,13 @@ structure def S {{
 /// - (d) Exactly one `Severity::Info` diagnostic total.
 /// - (e) Exactly one label with message == "forall connect" whose span equals forall_span.
 /// - (f) Per-side label presence/absence **with span pinning**: if
-///       `expect_left_label`, exactly one `"left port shape not supported"`
+///       `sides.left`, exactly one `"left port shape not supported"`
 ///       label AND its `span` equals `cd.left.expr.span`; otherwise zero.
-///       Likewise for `expect_right_label` and `cd.right.expr.span`.
+///       Likewise for `sides.right` and `cd.right.expr.span`.
 fn assert_unsupported_port_shape_diagnostic(
     source: &str,
     structure_name: &str,
-    expect_left_label: bool,
-    expect_right_label: bool,
+    sides: Sides,
 ) {
     use reify_types::Severity;
 
@@ -285,7 +298,7 @@ fn assert_unsupported_port_shape_diagnostic(
         .iter()
         .filter(|l| l.message == "left port shape not supported")
         .collect();
-    let expected_left = usize::from(expect_left_label);
+    let expected_left = usize::from(sides.left);
     assert_eq!(
         left_labels.len(),
         expected_left,
@@ -295,7 +308,7 @@ fn assert_unsupported_port_shape_diagnostic(
         left_labels.len(),
         diag.labels
     );
-    if expect_left_label {
+    if sides.left {
         assert_eq!(
             left_labels[0].span,
             left_expr_span,
@@ -311,7 +324,7 @@ fn assert_unsupported_port_shape_diagnostic(
         .iter()
         .filter(|l| l.message == "right port shape not supported")
         .collect();
-    let expected_right = usize::from(expect_right_label);
+    let expected_right = usize::from(sides.right);
     assert_eq!(
         right_labels.len(),
         expected_right,
@@ -321,7 +334,7 @@ fn assert_unsupported_port_shape_diagnostic(
         right_labels.len(),
         diag.labels
     );
-    if expect_right_label {
+    if sides.right {
         assert_eq!(
             right_labels[0].span,
             right_expr_span,
@@ -2512,7 +2525,7 @@ structure S {
 #[test]
 fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_info_diagnostic() {
     // (None, Some) arm: left unsupported, right resolves fine.
-    assert_unsupported_port_shape_diagnostic(&make_fixture("v.inner.a", "air_channel"), "S", true, false);
+    assert_unsupported_port_shape_diagnostic(&make_fixture("v.inner.a", "air_channel"), "S", Sides::left_only());
 }
 
 /// `(Some, None)` arm of forall-Connect unsupported-port-shape diagnostic:
@@ -2536,7 +2549,7 @@ fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_i
 #[test]
 fn forall_connect_over_undef_count_unsupported_right_port_shape_emits_right_label() {
     // (Some, None) arm: left resolves fine, right unsupported.
-    assert_unsupported_port_shape_diagnostic(&make_fixture("air_channel", "v.inner.a"), "S", false, true);
+    assert_unsupported_port_shape_diagnostic(&make_fixture("air_channel", "v.inner.a"), "S", Sides::right_only());
 }
 
 /// `(None, None)` arm of forall-Connect unsupported-port-shape diagnostic: both
@@ -2568,7 +2581,7 @@ fn forall_connect_over_undef_count_unsupported_right_port_shape_emits_right_labe
 #[test]
 fn forall_connect_over_undef_count_unsupported_both_port_shapes_emits_both_labels() {
     // (None, None) arm: both sides unsupported.
-    assert_unsupported_port_shape_diagnostic(&make_fixture("v.inner.a", "v.inner.b"), "S", true, true);
+    assert_unsupported_port_shape_diagnostic(&make_fixture("v.inner.a", "v.inner.b"), "S", Sides::both());
 }
 
 /// `forall v in vents: connect v.inlet <-> air_channel` over a 3-element
