@@ -437,6 +437,50 @@ mod tests {
         }
     }
 
+    /// Forward-compatibility guard: `extract_tolerance_bindings` must panic in debug
+    /// builds when the purpose has more than one distinct purpose-param subject across
+    /// its matched `RepresentationWithin` constraints.
+    ///
+    /// Under today's single-binding `activate_purpose(name, single_entity_ref)` API,
+    /// exactly one entity-ref is bound per purpose (see the `# Single-binding contract`
+    /// section in the function's docstring).  A future multi-param-aware producer that
+    /// activates a purpose with multiple entity-refs — one per named param — would
+    /// silently misroute tolerances if it called this function as-is: every matched
+    /// constraint's subject would be collapsed onto the single `bound_entity_ref`,
+    /// regardless of which purpose-param the constraint actually names.  The
+    /// `debug_assert!` ensures that such a producer is caught at the call site rather
+    /// than producing a subtle mis-routing bug.
+    ///
+    /// Fixture: purpose with TWO Structure params ("subject" and "other_param"), with
+    /// one `RepresentationWithin` subjecting each — both pass every existing extraction
+    /// gate (StructureRef type, param-membership, finite non-negative LENGTH literal).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "single-binding contract")]
+    fn extract_tolerance_bindings_panics_on_multi_param_subjects_in_debug() {
+        let constraint_subject = representation_within_constraint(
+            "subject",
+            "Bracket",
+            1e-6,
+            DimensionVector::LENGTH,
+        );
+        let constraint_other = representation_within_constraint(
+            "other_param",
+            "Bracket",
+            5e-6,
+            DimensionVector::LENGTH,
+        );
+
+        let purpose = CompiledPurposeBuilder::new("manufacturing")
+            .param("subject", "Structure")
+            .param("other_param", "Structure")
+            .constraint("subject", 0, None, constraint_subject)
+            .constraint("other_param", 1, None, constraint_other)
+            .build();
+
+        extract_tolerance_bindings(&purpose, "MyDesign");
+    }
+
     /// `si_value == 0.0` is the exact lower boundary accepted by the
     /// `si_value >= 0.0` gate. A zero-tolerance `RepresentationWithin` is
     /// semantically valid (it means "exact representation" — a degenerate but
