@@ -581,14 +581,15 @@ impl EvaluationGraph {
                     let pm_hash = ContentHash::combine_all(
                         pm_strs.iter().map(|s| ContentHash::of_str(s)),
                     );
-                    let connector_sub_hash = ContentHash::of_str(&format!(
-                        "connector_sub:{:?}",
-                        c.connector_sub
-                    ));
-                    let frame_constraint_hash = ContentHash::of_str(&format!(
-                        "frame_constraint:{:?}",
-                        c.frame_constraint
-                    ));
+                    let connector_sub_hash = ContentHash::of_str(&match &c.connector_sub {
+                        Some(s) => format!("connector_sub:some:{}", s),
+                        None => "connector_sub:none".to_string(),
+                    });
+                    let frame_constraint_hash =
+                        ContentHash::of_str(&match &c.frame_constraint {
+                            Some(id) => format!("frame_constraint:some:{}", id),
+                            None => "frame_constraint:none".to_string(),
+                        });
                     ContentHash::combine_all([
                         cnid_hash, left_hash, right_hash, op_hash, pm_hash,
                         connector_sub_hash, frame_constraint_hash,
