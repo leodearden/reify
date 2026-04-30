@@ -679,13 +679,13 @@ mod tests {
     //! check that each variant surfaces as `QueryFailed`.
     use reify_types::{
         BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
-        HistoryRecord, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute,
-        TopologyAttributeTable,
+        HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords,
+        TopologyAttribute, TopologyAttributeTable,
     };
 
     use super::{
-        populate_extrude_attributes, populate_revolve_attributes, populate_sweep_attributes,
-        propagate_attributes_via_brepalgoapi_history,
+        populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
+        populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
     };
 
     /// Synthetic FeatureId reused by every split-detection test as the
@@ -2070,6 +2070,340 @@ mod tests {
                 assert!(
                     msg.contains("99"),
                     "error should mention out-of-range parent_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    // -- populate_loft_attributes tests (task 5b / #2619, step-9) --
+    //
+    // Loft is the multi-parent variant: `parent_index` denotes a section
+    // index in `[0, profiles.len())`, and `parent_subshape_index` is the
+    // edge index within that section's edge map. `populate_loft_attributes`
+    // takes per-section profile face/edge slices (`&[Vec<GeometryHandleId>]`)
+    // and validates each `face_generated` record's
+    // `(parent_index, parent_subshape_index)` pair against the addressed
+    // section. Caps reuse `Role::Cap(CapKind::Start)` / `Role::Cap(CapKind::End)`
+    // (loft section 0 = start; loft section N-1 = end under `is_solid=true`).
+    // `face_generated` records emit `Role::LoftedFace` (NOT `SweptFace` /
+    // `RevolvedFace` / `Side` — per-op distinguisher per task-5a/5b design).
+    // `local_index` is sequential across all sections in the order records
+    // appear in `face_generated`.
+
+    /// Layout for a 2-section loft: each section has 1 profile face + 2
+    /// profile edges; result has 6 faces (cap_start + cap_end + 4 lateral)
+    /// and 8 result edges. Sized for the step-9 happy-path fixture.
+    struct LoftLayout {
+        section_faces: Vec<Vec<GeometryHandleId>>,
+        section_edges: Vec<Vec<GeometryHandleId>>,
+        result_faces: Vec<GeometryHandleId>,
+        result_edges: Vec<GeometryHandleId>,
+    }
+
+    fn loft_layout_for_step9() -> LoftLayout {
+        LoftLayout {
+            // Two sections; each has 1 profile face and 2 profile edges.
+            section_faces: vec![
+                vec![GeometryHandleId(701)],
+                vec![GeometryHandleId(702)],
+            ],
+            section_edges: vec![
+                vec![GeometryHandleId(801), GeometryHandleId(802)],
+                vec![GeometryHandleId(803), GeometryHandleId(804)],
+            ],
+            // 6 result faces: indices 0/1 = caps Start/End, 2..=5 = lateral.
+            result_faces: (0..6).map(|i| GeometryHandleId(7000 + i)).collect(),
+            result_edges: (0..8).map(|i| GeometryHandleId(8000 + i)).collect(),
+        }
+    }
+
+    /// Synthetic LoftOpHistoryRecords for the step-9 happy path:
+    /// start_cap = [0], end_cap = [1], face_generated =
+    /// [(0,0,2), (0,1,3), (1,0,4), (1,1,5)] (sequential across sections).
+    fn step9_loft_history() -> LoftOpHistoryRecords {
+        LoftOpHistoryRecords {
+            face_generated: vec![
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 2,
+                },
+                HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 3,
+                },
+                HistoryRecord {
+                    parent_index: 1,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 4,
+                },
+                HistoryRecord {
+                    parent_index: 1,
+                    parent_subshape_index: 1,
+                    result_subshape_index: 5,
+                },
+            ],
+            start_cap_face_indices: vec![0],
+            end_cap_face_indices: vec![1],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn populate_loft_writes_cap_start_for_start_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = step9_loft_history();
+
+        populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-9 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[0])
+            .expect("start_cap_face_indices[0] = 0 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::Start));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_loft_writes_cap_end_for_end_cap_index() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = step9_loft_history();
+
+        populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-9 history is well-formed");
+
+        let attr = table
+            .lookup(layout.result_faces[1])
+            .expect("end_cap_face_indices[0] = 1 should have an entry");
+        assert_eq!(attr.role, Role::Cap(CapKind::End));
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.feature_id, feature_id);
+        assert!(attr.user_label.is_none());
+        assert!(attr.mod_history.is_empty());
+    }
+
+    #[test]
+    fn populate_loft_writes_lofted_face_with_sequential_local_index_across_sections() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = step9_loft_history();
+
+        populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("step-9 history is well-formed");
+
+        // local_index increments sequentially across all sections in the
+        // order face_generated records appear (sections [0][0], [0][1],
+        // [1][0], [1][1] → indices 0,1,2,3).
+        for (sequential_idx, result_face_idx) in [2_usize, 3, 4, 5].iter().enumerate() {
+            let attr = table
+                .lookup(layout.result_faces[*result_face_idx])
+                .unwrap_or_else(|| {
+                    panic!(
+                        "face_generated[{sequential_idx}].result_subshape_index = \
+                         {result_face_idx} should have an entry"
+                    )
+                });
+            assert_eq!(
+                attr.role,
+                Role::LoftedFace,
+                "loft face_generated must use Role::LoftedFace not Role::Side/Sweep/Revolved",
+            );
+            assert_eq!(attr.local_index, sequential_idx as u32);
+            assert_eq!(attr.feature_id, feature_id);
+            assert!(attr.user_label.is_none());
+            assert!(attr.mod_history.is_empty());
+        }
+    }
+
+    #[test]
+    fn populate_loft_empty_history_is_a_noop() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = LoftOpHistoryRecords::default();
+
+        populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect("empty history is a no-op");
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn populate_loft_returns_query_failed_when_parent_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = LoftOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 9, // > sections (2).
+                parent_subshape_index: 0,
+                result_subshape_index: 2,
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range parent_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("9"),
+                    "error should mention out-of-range parent_index, got {msg:?}",
+                );
+                assert!(
+                    msg.to_lowercase().contains("section"),
+                    "error should mention 'section', got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_loft_returns_query_failed_when_parent_subshape_index_out_of_range_for_section() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        // Section 0 has 2 edges; index 7 is out of range.
+        let history = LoftOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 7,
+                result_subshape_index: 2,
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range parent_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("7"),
+                    "error should mention out-of-range parent_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_loft_returns_query_failed_when_face_generated_result_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = LoftOpHistoryRecords {
+            face_generated: vec![HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 99, // > result faces (6).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range result_subshape_index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("99"),
+                    "error should mention out-of-range result_subshape_index, got {msg:?}",
+                );
+            }
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn populate_loft_returns_query_failed_when_start_cap_index_out_of_range() {
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        let history = LoftOpHistoryRecords {
+            start_cap_face_indices: vec![123], // > result faces (6).
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &layout.section_faces,
+            &layout.section_edges,
+            &layout.result_faces,
+            &layout.result_edges,
+            &history,
+        )
+        .expect_err("expected QueryFailed for out-of-range start_cap index");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("123"),
+                    "error should mention out-of-range index, got {msg:?}",
                 );
             }
             other => panic!("expected QueryError::QueryFailed, got {other:?}"),
