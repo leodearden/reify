@@ -612,3 +612,73 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
         other => panic!("expected Converged on identity residual, got {other:?}"),
     }
 }
+
+// ── Task 2739: InvalidInput precedes DOF-balance pre-check ──────────────
+
+/// Pins the wrapper's validation-before-DOF-balance contract: when the input
+/// is BOTH structurally over-constrained (free_b.len() = 1 < 6) AND malformed
+/// (free_b[0] = 5 ≥ chain_b.len() = 1), the wrapper must surface
+/// `NewtonOutcome::InvalidInput` — NOT `KinematicOverconstrained`.
+///
+/// This exercises `validate_loop_closure_inputs` being called BEFORE the
+/// `free_b.len() < SINGLE_LOOP_RESIDUAL_COUNT` guard.  A regression that
+/// reordered the wrapper's validation and DOF-balance checks would produce
+/// `KinematicOverconstrained` instead, failing the first assertion below.
+///
+/// The empty `diagnostics` assertion additionally pins that the wrapper's
+/// `InvalidInput` short-circuit routes through `build_report(InvalidInput,
+/// Vec::new())` — no `KinematicOverconstrained` diagnostic leaks out alongside
+/// the `InvalidInput` outcome.
+#[test]
+fn solve_loop_closure_with_diagnostics_invalid_input_precedes_overconstrained() {
+    // chain_b has 1 joint (len = 1); free_b[0] = 5 is out of range.
+    // free_b.len() = 1 < SINGLE_LOOP_RESIDUAL_COUNT (6) → also over-constrained.
+    // WarmStart length = 1 = free_b.len() → does NOT trigger the length-mismatch check.
+    let chain_a = vec![prismatic_x_0_to_1()];
+    let vals_a = vec![0.0];
+    let chain_b = vec![prismatic_x_0_to_1()]; // len = 1
+    let vals_b_initial = vec![0.0];
+    let free_b = vec![5usize]; // 5 >= chain_b.len() (1) → InvalidInput
+    let strategy = StartStrategy::WarmStart(vec![0.0]); // length matches free_b
+    let cfg = NewtonConfig::default();
+
+    let report = solve_loop_closure_with_diagnostics(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b_initial,
+        &free_b,
+        &strategy,
+        &cfg,
+    );
+
+    // Validation must fire BEFORE the DOF-balance check → InvalidInput, not KinematicOverconstrained.
+    assert!(
+        matches!(report.outcome, NewtonOutcome::InvalidInput { .. }),
+        "expected NewtonOutcome::InvalidInput (validation before DOF balance), got {:?}",
+        report.outcome
+    );
+
+    // The reason string must confirm that the out-of-range check fired.
+    if let NewtonOutcome::InvalidInput { reason } = &report.outcome {
+        assert!(
+            reason.contains("out of range"),
+            "InvalidInput reason must contain \"out of range\", got {:?}",
+            reason
+        );
+    }
+
+    // The InvalidInput short-circuit returns build_report(InvalidInput, Vec::new()),
+    // so no KinematicOverconstrained diagnostic must appear.
+    assert!(
+        report.diagnostics.is_empty(),
+        "InvalidInput short-circuit must emit no diagnostics, got {:?}",
+        report.diagnostics
+    );
+
+    assert!(
+        !report.is_singular,
+        "InvalidInput short-circuit must leave is_singular=false, got is_singular={}",
+        report.is_singular
+    );
+}
