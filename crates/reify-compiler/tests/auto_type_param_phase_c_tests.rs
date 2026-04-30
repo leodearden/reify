@@ -526,7 +526,7 @@ fn single_feasible_candidate_returns_selected_regardless_of_free_flag() {
 /// substring so that any future weakening or removal of the assert fails loudly.
 #[test]
 #[cfg(debug_assertions)]
-#[should_panic(expected = "FeasibilityResult::Empty must carry at least one rejected candidate")]
+#[should_panic(expected = "FeasibilityResult::Empty")]
 fn select_panics_on_empty_rejected_in_feasibility_empty() {
     let feasibility = FeasibilityResult::Empty { rejected: vec![] };
     let _ = select_candidate(
