@@ -4272,6 +4272,56 @@ mod tests {
         );
     }
 
+    // ── is_joint_value recognises cylindrical (step-15) ──────────────────────
+
+    /// `is_joint_value(map)` returns true for both a hand-built
+    /// `{ "kind" → "cylindrical" }` Map and the well-formed Map produced by
+    /// the `cylindrical` constructor. Pins the contract that adding
+    /// `"cylindrical"` to `JOINT_KINDS` (step-16) makes the predicate accept
+    /// cylindrical joints.
+    #[test]
+    fn is_joint_value_recognizes_cylindrical() {
+        use std::collections::BTreeMap;
+
+        // (a) hand-built Map with kind="cylindrical"
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("kind".to_string()), Value::String("cylindrical".to_string()));
+        assert!(
+            is_joint_value(&Value::Map(m)),
+            "Map with kind='cylindrical' should be a joint value once step-16 adds the kind to JOINT_KINDS"
+        );
+
+        // (b) constructor output → Map shape that is_joint_value accepts
+        let cyl = eval_builtin(
+            "cylindrical",
+            &[axis_z_unit(), length_range_0_to_1m(), angle_range_0_to_pi()],
+        );
+        assert!(
+            is_joint_value(&cyl),
+            "cylindrical(...) constructor output should be recognised as a joint value"
+        );
+    }
+
+    // ── JOINT_KINDS membership regression pin for cylindrical (step-15) ──────
+    //
+    // Asserts that `"cylindrical"` is a member of `JOINT_KINDS` so that:
+    //  1. `is_joint_value` accepts cylindrical joints as valid mechanism joints, and
+    //  2. the existing dispatch-coverage tests
+    //     (`transform_at_dispatches_for_every_joint_kind` and
+    //     `joint_jacobian_dispatches_for_every_joint_kind`) iterate over cylindrical.
+    //
+    // This test fails until step-16 appends `"cylindrical"` to `JOINT_KINDS` and
+    // adds the cylindrical arm to `joint_kind_minimal_fixture`.
+    #[test]
+    fn joint_kinds_includes_cylindrical() {
+        assert!(
+            JOINT_KINDS.contains(&"cylindrical"),
+            "\"cylindrical\" must be in JOINT_KINDS so that is_joint_value accepts cylindrical \
+             joints and the dispatch-coverage tests exercise the cylindrical arms in \
+             transform_at and joint_jacobian_value. Add \"cylindrical\" to the JOINT_KINDS const."
+        );
+    }
+
     // ── cylindrical test helpers (local; promoted to test_fixtures in step-16) ──
 
     /// Build a unit-Z cylindrical joint: axis=Z, translation_range=0..1m,
