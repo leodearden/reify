@@ -1174,7 +1174,7 @@ fn expect_integer_literal_type_arg(
 /// alias-DFS resolver is correct for this context.
 ///
 /// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Scalar<Q>`, `Vector3<Q>`,
-/// `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`.
+/// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`.
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
     type_args: &[reify_syntax::TypeExpr],
@@ -1249,6 +1249,16 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 diagnostics,
             )?;
             Some(Type::vec3(Type::Scalar { dimension: dim }))
+        }
+        "Point3" if type_args.len() == 1 => {
+            // Point3<Q>: resolve Q (with substitutions) to a DimensionVector and wrap.
+            let dim = resolve_type_alias_expr_to_dim_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            Some(Type::point3(Type::Scalar { dimension: dim }))
         }
         "Tensor" if type_args.len() == 3 => {
             let rank = expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
