@@ -1445,12 +1445,18 @@ fn walk_function_calls(
 /// caller (`resolve_driving_params_from_ast`) therefore relies on the assumption
 /// that `snapshot`/`bind` are stdlib-only names in well-formed Reify source.
 ///
-/// **Telemetry:** when a `name == "snapshot"` call with `args.len() >= 2` is
-/// found but contributes *zero* bind pairs (empty list or no valid
-/// `bind(Ident, Ident)` entries), a `tracing::debug!` event is emitted at
-/// target `"reify_gui::engine::snapshot_bind_pairs"`.  This surfaces potential
-/// user-shadowed `snapshot` functions or malformed bind lists that would
-/// otherwise silently produce no driving-param resolutions.
+/// **Telemetry:** emits a `tracing::debug!` event at target
+/// `"reify_gui::engine::snapshot_bind_pairs"` for two anomalous sub-cases:
+///
+/// * **(a)** `args[1]` is **not** a `ListLiteral` — likely a user-shadowed
+///   `snapshot` function or a malformed call.
+/// * **(c)** `args[1]` **is** a non-empty `ListLiteral` but none of its
+///   elements are valid `bind(Ident, Ident)` pairs — malformed bind syntax or
+///   user-shadowed `bind`.
+///
+/// Sub-case **(b)** — an empty `ListLiteral` — is **silent**; `snapshot(m, [])`
+/// is valid stdlib usage (a snapshot with no bound parameters) and must not be
+/// flagged as anomalous.
 fn collect_snapshot_bind_pairs(
     expr: &reify_syntax::Expr,
     pairs: &mut Vec<(String, String)>,
@@ -1460,12 +1466,15 @@ fn collect_snapshot_bind_pairs(
         if name != "snapshot" || args.len() < 2 {
             return;
         }
-        // Snapshot the pair count before processing so we can detect
-        // whether this snapshot() call contributed any bind pairs.
-        let pairs_before = pairs.len();
 
-        // Extract bind() entries from the second argument (the bindings list).
         if let ExprKind::ListLiteral(elems) = &args[1].kind {
+            // Case (b): empty list — valid stdlib usage, stay silent.
+            if elems.is_empty() {
+                return;
+            }
+
+            // Case (c) candidate: non-empty list; extract bind pairs.
+            let pairs_before = pairs.len();
             for elem in elems {
                 let (bind_name, bind_args) = match &elem.kind {
                     ExprKind::FunctionCall { name, args } => (name, args),
@@ -1484,19 +1493,23 @@ fn collect_snapshot_bind_pairs(
                 };
                 pairs.push((joint_ident, value_ident));
             }
-        }
 
-        // Telemetry: surface zero-contribution snapshots.  Fires when:
-        // (a) args[1] is not a ListLiteral, or
-        // (b) the list had no valid bind(Ident, Ident) entries.
-        // Helps operators distinguish stdlib snapshot/bind from any
-        // user-defined function that shadows the same name.
-        if pairs.len() == pairs_before {
+            // Case (c): non-empty list but no bind(Ident, Ident) pairs survived.
+            if pairs.len() == pairs_before {
+                tracing::debug!(
+                    target: "reify_gui::engine::snapshot_bind_pairs",
+                    arg_count = args.len(),
+                    "snapshot() bind list contained no resolvable bind(Ident, Ident) pairs \
+                     (malformed bind syntax or user-shadowed bind)"
+                );
+            }
+        } else {
+            // Case (a): args[1] is not a ListLiteral at all.
             tracing::debug!(
                 target: "reify_gui::engine::snapshot_bind_pairs",
                 arg_count = args.len(),
-                "snapshot() textual match contributed zero bind pairs \
-                 (potential user-shadowed snapshot or malformed bind list)"
+                "snapshot() second arg is not a ListLiteral \
+                 (potential user-shadowed snapshot or malformed call)"
             );
         }
     });
