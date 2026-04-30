@@ -1275,18 +1275,28 @@ mod tests {
     //   AND a present `joint`/`value` field             → per-entry guard
     // Any guard failure returns `Value::Undef` BEFORE any FK work.
 
-    /// `snapshot()` with an arity outside {2} returns Undef.
+    /// `snapshot()` with an arity outside {2, 3} returns Undef.  3 args
+    /// is the warm-start form (task 2678 step-8): `snapshot(m, bindings,
+    /// prev_free_values)`.
     #[test]
     fn snapshot_wrong_arity_returns_undef() {
         let m0 = eval_builtin("mechanism", &[]);
-        // 0, 1, 3 args
+        // 0, 1, 4 args
         assert!(eval_builtin("snapshot", &[]).is_undef());
         assert!(eval_builtin("snapshot", std::slice::from_ref(&m0)).is_undef());
-        assert!(eval_builtin(
-            "snapshot",
-            &[m0.clone(), Value::List(vec![]), Value::List(vec![])]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "snapshot",
+                &[
+                    m0.clone(),
+                    Value::List(vec![]),
+                    Value::List(vec![]),
+                    Value::List(vec![])
+                ]
+            )
+            .is_undef(),
+            "4-arg snapshot call must return Undef (arity guard)"
+        );
     }
 
     /// `snapshot(non_mechanism, [])` returns Undef when args[0] is not
@@ -2419,6 +2429,213 @@ mod tests {
             &Value::List(vec![]),
             "open-chain free_values must be an empty List, got {:?}",
             free_values
+        );
+    }
+
+    // ── Warm-start third-arg consumption (task 2678 step-7) ───────────────
+    //
+    // `snapshot()` accepts an optional 3rd arg carrying the previous step's
+    // `free_values` (List<List<Real>> shape from step-6).  When supplied,
+    // the loop-closure solver runs from `StartStrategy::WarmStart(Vec<f64>)`
+    // instead of `Midpoint`.  Sweep's warm-start path threads the previous
+    // step's `free_values` through this arg, producing the same converged
+    // configuration as the cold-start solve when the warm-start seed is the
+    // cold solution itself (round-trip identity).
+
+    /// Closed-chain mechanism: build cold once, then warm-start from the
+    /// cold result's `free_values`.  The warm-start `snapshot()` must
+    /// converge to the same `free_values` (within solver tolerance) and
+    /// the same body world transforms.  Pins both the API surface (3rd
+    /// arg accepted, no Undef) and the cold→warm round-trip identity.
+    #[test]
+    fn snapshot_consumes_warm_start_state_via_optional_third_arg() {
+        // Same step-3 fixture, with jX pinned to keep free_b == [0].
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+        );
+
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(0.0)]);
+        let bindings = Value::List(vec![bind_a, bind_x]);
+
+        // Cold call: 2-arg form, solver runs from Midpoint.
+        let s_cold = eval_builtin("snapshot", &[m4.clone(), bindings.clone()]);
+        let smap_cold = match s_cold {
+            Value::Map(m) => m,
+            other => panic!("expected cold Snapshot Map, got {:?}", other),
+        };
+        let cold_free_values = smap_cold
+            .get(&Value::String("free_values".to_string()))
+            .expect("cold snapshot must carry free_values")
+            .clone();
+        let cold_bodies = smap_cold
+            .get(&Value::String("bodies".to_string()))
+            .expect("cold snapshot must carry bodies")
+            .clone();
+
+        // Warm call: 3-arg form with cold's free_values as the seed.  Step-8
+        // routes this through `StartStrategy::WarmStart`; the solver must
+        // still converge (the seed IS the cold solution, so the residual
+        // is already at tolerance and Newton accepts on iter 0/1).
+        let s_warm = eval_builtin("snapshot", &[m4, bindings, cold_free_values.clone()]);
+        let smap_warm = match s_warm {
+            Value::Map(m) => m,
+            other => panic!(
+                "expected warm Snapshot Map (3-arg form), got {:?} — \
+                 either arity guard or warm-start parser rejected the call",
+                other
+            ),
+        };
+        let warm_free_values = smap_warm
+            .get(&Value::String("free_values".to_string()))
+            .expect("warm snapshot must carry free_values")
+            .clone();
+        let warm_bodies = smap_warm
+            .get(&Value::String("bodies".to_string()))
+            .expect("warm snapshot must carry bodies")
+            .clone();
+
+        // Round-trip identity: warm's free_values match cold's within
+        // solver tolerance (1µm — cold and warm should both converge to
+        // the same minimum).
+        let cold_loops = match &cold_free_values {
+            Value::List(l) => l,
+            other => panic!("cold free_values must be a List, got {:?}", other),
+        };
+        let warm_loops = match &warm_free_values {
+            Value::List(l) => l,
+            other => panic!("warm free_values must be a List, got {:?}", other),
+        };
+        assert_eq!(
+            cold_loops.len(),
+            warm_loops.len(),
+            "cold and warm must agree on loop count"
+        );
+        for (c_loop, w_loop) in cold_loops.iter().zip(warm_loops.iter()) {
+            let c_inner = match c_loop {
+                Value::List(l) => l,
+                other => panic!("cold inner must be a List, got {:?}", other),
+            };
+            let w_inner = match w_loop {
+                Value::List(l) => l,
+                other => panic!("warm inner must be a List, got {:?}", other),
+            };
+            assert_eq!(
+                c_inner.len(),
+                w_inner.len(),
+                "per-loop free var count must agree cold↔warm"
+            );
+            for (c_v, w_v) in c_inner.iter().zip(w_inner.iter()) {
+                let c_f = match c_v {
+                    Value::Real(r) => *r,
+                    other => panic!("cold leaf must be Real, got {:?}", other),
+                };
+                let w_f = match w_v {
+                    Value::Real(r) => *r,
+                    other => panic!("warm leaf must be Real, got {:?}", other),
+                };
+                assert!(
+                    (c_f - w_f).abs() < 1e-6,
+                    "cold↔warm free var must agree within 1µm: cold={c_f}, warm={w_f}"
+                );
+            }
+        }
+
+        // Body world transforms must match cold↔warm: with the same bindings
+        // and a converged solve, the FK re-walk produces the same poses.
+        assert_eq!(
+            cold_bodies, warm_bodies,
+            "cold and warm bodies must match — same converged configuration"
+        );
+    }
+
+    /// Mismatched-length 3rd arg returns Undef.  When the user-supplied
+    /// `prev_free_values` outer-List length disagrees with the mechanism's
+    /// `loop_closures.len()`, the warm-start handler can't pair seeds with
+    /// loops — the call collapses to Undef rather than silently dropping
+    /// or padding seeds (defense-in-depth: the only legal source for the
+    /// 3rd arg is a previous `snapshot()`'s `free_values`, and any length
+    /// mismatch is a structural bug at the caller).
+    #[test]
+    fn snapshot_warm_start_length_mismatch_returns_undef() {
+        // Reuse the closed-chain fixture (one loop_closures record).
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+        );
+        let m4 = eval_builtin(
+            "body",
+            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+        );
+
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(0.0)]);
+        let bindings = Value::List(vec![bind_a, bind_x]);
+
+        // Pass an empty outer List as prev_free_values — mismatches the 1
+        // loop_closures record.  Result must be Undef.
+        let s = eval_builtin(
+            "snapshot",
+            &[m4, bindings, Value::List(vec![])],
+        );
+        assert!(
+            s.is_undef(),
+            "snapshot with mismatched-length warm-start arg must return Undef, got {:?}",
+            s
         );
     }
 }
