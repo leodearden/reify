@@ -762,18 +762,26 @@ mod tests {
                 let _ = convert_diagnostic(&diag, source, &test_uri());
             }
 
+            assert_eq!(
+                debug_count.load(Ordering::Acquire),
+                4,
+                "expected exactly 4 debug events — one per AutoTypeParam variant — before \
+                 processing the Shadowing diagnostic; a missing emission here cannot be \
+                 masked by a spurious Shadowing event later"
+            );
+
             // A non-AutoTypeParam code must NOT emit a debug event on this target.
             let shadowing_diag = Diagnostic::warning("shadowing warning")
                 .with_code(DiagnosticCode::Shadowing)
                 .with_label(DiagnosticLabel::new(SourceSpan::new(0, 4), "here"));
             let _ = convert_diagnostic(&shadowing_diag, source, &test_uri());
-        });
 
-        assert_eq!(
-            debug_count.load(Ordering::Acquire),
-            4,
-            "expected exactly 4 debug events (one per AutoTypeParam variant); \
-             non-AutoTypeParam codes must not emit on reify_lsp::auto_type_param"
-        );
+            assert_eq!(
+                debug_count.load(Ordering::Acquire),
+                4,
+                "Shadowing diagnostic must not emit on reify_lsp::auto_type_param; \
+                 counter must remain 4 after the non-AutoTypeParam code is processed"
+            );
+        });
     }
 }
