@@ -204,6 +204,14 @@ fn populate_single_parent_sweep_op(
 /// result face/edge slices, and dispatches to
 /// `populate_loft_attributes`. Failure semantics preserved (Diagnostic::
 /// warning at the call site, no Failed regression per task-2574).
+///
+/// Duplicate handles in `profile_handles` (legal but unusual — a loft
+/// referencing the same section twice) re-extract on each iteration
+/// rather than memoising; loft profile counts are typically small (2–8)
+/// so the per-call cost is negligible, and a memo would add a HashMap
+/// allocation that is unwarranted for the common path. If real models
+/// surface heavy duplicate-handle lofts a future task can introduce a
+/// `HashMap<GeometryHandleId, Vec<GeometryHandleId>>` cache here.
 fn populate_loft_op(
     table: &mut TopologyAttributeTable,
     kernel: &mut dyn GeometryKernel,
