@@ -626,10 +626,26 @@ pub fn populate_loft_attributes(
     result_edge_handles: &[GeometryHandleId],
     history: &LoftOpHistoryRecords,
 ) -> Result<(), QueryError> {
-    // Reserved: kept in the public API as the seam for future face-level
-    // Modified records and rail/seam/cap-edge classification — mirroring the
-    // `let _ = profile_face_handles;` reservation in
-    // `write_face_generated_attributes`.
+    // Pin the lockstep invariant: `engine_build.rs::populate_loft_op` builds
+    // `section_faces` and `section_edges` in tandem (one push per profile) so
+    // both slices always have `len() == profile_handles.len()`.
+    // `write_loft_face_generated_attributes` range-checks `parent_index` against
+    // `section_edge_handles_per_section.len()`; if the two families diverged, a
+    // `parent_index` valid in the edge family could silently be out-of-range in
+    // the face family (and vice versa once face-level writes land).
+    debug_assert_eq!(
+        section_face_handles_per_section.len(),
+        section_edge_handles_per_section.len(),
+        "loft section face/edge slice families must be built in lockstep \
+         (engine_build.rs::populate_loft_op); write_loft_face_generated_attributes' \
+         parent_index range check uses the edge-slice family"
+    );
+    // Both parameters are reserved at this public-API entry point rather than
+    // being dropped inside the inner helpers:
+    //   • `section_face_handles_per_section` — seam for future face-level
+    //     Modified records (once the loft kernel emits per-section face maps)
+    //   • `result_edge_handles` — seam for future rail/seam/cap-edge
+    //     classification
     let _ = section_face_handles_per_section; // reserved for future face-level Modified records
     let _ = result_edge_handles; // reserved for future rail/seam/cap-edge classification
 
@@ -2575,5 +2591,36 @@ mod tests {
             }
             other => panic!("expected QueryError::QueryFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(
+        expected = "loft section face/edge slice families must be built in lockstep"
+    )]
+    fn populate_loft_panics_when_section_face_and_edge_slice_lengths_differ() {
+        let mut table = TopologyAttributeTable::default();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+        // section_faces has 2 entries; section_edges has 1 — asymmetric input.
+        // populate_loft_attributes must debug_assert that the two families have
+        // equal length (lockstep invariant), so this call must panic in debug.
+        let section_faces = vec![
+            vec![GeometryHandleId(701)],
+            vec![GeometryHandleId(702)],
+        ];
+        let section_edges = vec![vec![GeometryHandleId(801), GeometryHandleId(802)]];
+        let result_faces = vec![GeometryHandleId(7000)];
+        let result_edges: Vec<GeometryHandleId> = vec![];
+        let history = LoftOpHistoryRecords::default();
+
+        let _ = populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &section_faces,
+            &section_edges,
+            &result_faces,
+            &result_edges,
+            &history,
+        );
     }
 }
