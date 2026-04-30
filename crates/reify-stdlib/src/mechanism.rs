@@ -263,6 +263,19 @@ fn identity_transform() -> Value {
 /// Build a body record `Value::Map` with the standard five-key layout:
 /// `at`, `id`, `parent`, `pose`, `solid` (alphabetical, matching `BTreeMap`
 /// iteration). Parallel to `make_joint`/`make_coupling` in `joints.rs`.
+///
+/// **Subtle: `parent` vs spanning-tree on closing edges.** The `parent`
+/// field stored in the body record reflects the user-supplied `parent`
+/// joint from the `body()` call — i.e. user intent. For closing edges
+/// (parent-conflict, joint-graph cycle, or self-loop), the spanning-tree
+/// edge that forward-kinematics uses is recorded in the mechanism's
+/// `joint_parents` map (which retains the first-recorded `at → parent`
+/// edge under v0.2's "first-recorded wins" policy), NOT in the body
+/// record. So for closing-edge bodies, `body.parent` may disagree with
+/// `joint_parents.get(body.at)`. Consumers that compute FK or walk the
+/// spanning tree must read `joint_parents`, not `body.parent`. The
+/// closing edge itself is captured separately in the mechanism's
+/// `loop_closures` list.
 fn make_body_record(id: i64, solid: Value, at: Value, parent: Value, pose: Value) -> Value {
     let mut b = BTreeMap::new();
     b.insert(Value::String("at".to_string()), at);
