@@ -3164,6 +3164,45 @@ mod tests {
         assert!(eval_builtin("transform_log", &[make_identity_orientation()]).is_undef());
     }
 
+    /// transform_log with an overflow-corner quaternion (w = 1e200, x=y=z=0) → Undef.
+    ///
+    /// Overflow trace (pre-fix):
+    /// - `decompose_transform` accepts: every component (1e200, 0, 0, 0) is finite.
+    /// - `normalize_quat_input`: `norm_sq = 1e200² = ∞`, which is NOT `< 1e-24`, so the gate
+    ///   accepts and returns `(1e200/∞, 0/∞, 0/∞, 0/∞) = (0, 0, 0, 0)`.
+    /// - `v_norm = 0 < EPS=1e-12` → Taylor branch → `(wx,wy,wz) = (0,0,0)`, finite.
+    /// - `theta = 0` → small-angle alpha branch → `lx,ly,lz = tx,ty,tz`, finite.
+    /// - Emits `Map { angular=[0,0,0], linear=t }` — a non-Undef result (BUG).
+    ///
+    /// After fix: `normalize_quat_input` additionally rejects non-finite `norm_sq` via
+    /// `!norm_sq.is_finite()`, so the helper returns `None` and `transform_log` returns Undef.
+    #[test]
+    fn transform_log_overflow_quaternion_returns_undef() {
+        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_t = make_transform(bad_rot, 0.0, 0.0, 0.0);
+        assert!(
+            eval_builtin("transform_log", std::slice::from_ref(&bad_t)).is_undef(),
+            "expected Undef for overflow-corner quaternion but got a non-Undef result"
+        );
+    }
+
+    /// Same overflow corner as above but with a non-zero translation `(1.0, 2.0, 3.0)`.
+    ///
+    /// With zero translation the zero-norm rotation cannot independently produce
+    /// non-finite output via the linear part. This sibling test confirms that the
+    /// rotation-side gate in `normalize_quat_input` short-circuits before any linear
+    /// computation sees the collapsed `(0,0,0,0)` rotation — it is the rotation gate
+    /// that produces Undef, not coincidental zero translation.
+    #[test]
+    fn transform_log_overflow_quaternion_nonzero_translation_returns_undef() {
+        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_t = make_transform(bad_rot, 1.0, 2.0, 3.0);
+        assert!(
+            eval_builtin("transform_log", std::slice::from_ref(&bad_t)).is_undef(),
+            "expected Undef for overflow-corner quaternion with non-zero translation"
+        );
+    }
+
     /// Degenerate-quaternion gate boundary: r_norm_sq in [1e-24, f64::EPSILON) is accepted.
     ///
     /// The threshold was bumped from `f64::EPSILON` (~2.22e-16) to `1e-24` so that
