@@ -643,11 +643,12 @@ pub fn populate_loft_attributes(
         "loft end cap",
     )?;
 
-    // Reserved: `section_face_handles_per_section` and `result_edge_handles`
-    // are kept in the public API as the seam for future face-level Modified
-    // records and rail/seam/cap-edge classification — mirroring the
+    // Reserved: kept in the public API as the seam for future face-level
+    // Modified records and rail/seam/cap-edge classification — mirroring the
     // `let _ = profile_face_handles;` reservation in
-    // `write_face_generated_attributes` (line 712).
+    // `write_face_generated_attributes`.
+    let _ = section_face_handles_per_section; // reserved for future face-level Modified records
+    let _ = result_edge_handles; // reserved for future rail/seam/cap-edge classification
     write_loft_face_generated_attributes(
         table,
         feature_id,
