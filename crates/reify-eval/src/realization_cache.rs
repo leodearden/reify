@@ -32,7 +32,9 @@
 //!
 //! `insert` only allocates a new `String` key when an entity first appears under a
 //! given `repr_kind`; that allocation is unavoidable and bounded to at most one per
-//! `(entity, repr_kind)` pair.
+//! `(entity, repr_kind)` pair.  This invariant is enforced by the `get_mut` fast path
+//! in `insert` — do not collapse it back to a single `entry().or_default()` chain,
+//! as that would call `entity.to_owned()` unconditionally on every call.
 //!
 //! This module introduces the data structure with the final `(entity_id, repr_kind, tol)`
 //! keying.  It is *not* wired into `CacheStore` or `NodeId::Realization` —

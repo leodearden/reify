@@ -62,10 +62,14 @@ static GLOBAL: CountingAllocator = CountingAllocator;
 fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     let mut cache = reify_eval::RealizationCache::<u32>::new();
 
-    // Use a long entity name to defeat any potential short-string optimisation
-    // that might skip heap allocation for small strings.
+    // Belt-and-suspenders: use a long entity name so that any future allocator
+    // optimisation for tiny strings (e.g. a hypothetical small-string optimisation
+    // in an alternative allocator) still wouldn't elide this allocation.
+    // Note: std's `String` does NOT implement SSO — every non-empty `String`
+    // heap-allocates regardless of length — but the length guard makes the intent
+    // explicit for future readers.
     let entity = "long_entity_name_to_defeat_any_potential_short_string_optimization_buffer_xxxxx";
-    assert!(entity.len() >= 64, "entity must be ≥64 bytes to force a heap allocation");
+    assert!(entity.len() >= 64, "entity must be ≥64 bytes (belt-and-suspenders guard)");
 
     // Warm-up: the first insert legitimately allocates the entity String key once.
     let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.001, 1u32);
@@ -90,6 +94,13 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     let after = ALLOCATIONS.load(Ordering::Relaxed);
     let delta = after.saturating_sub(before);
 
+    // Safety assumption: `ALLOCATIONS` is process-wide, so an allocation on another
+    // thread between `before` and `after` would cause a spurious failure.  We accept
+    // this risk because (a) this is the only `#[test]` in this integration binary so
+    // libtest spawns no worker threads for other tests, (b) the 256-iteration loop is
+    // fast (no I/O, no syscalls), and (c) empirical CI observation has shown the
+    // assertion stable.  If flakiness is ever observed, a thread-local toggle or a
+    // `delta <= small_constant` bound can be introduced at that time.
     assert_eq!(
         delta, 0,
         "rejected inserts under existing entity must allocate zero times (delta = {delta})"
