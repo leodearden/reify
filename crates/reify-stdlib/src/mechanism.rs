@@ -354,24 +354,18 @@ fn cycle_introduced(
 /// `next_id`, and `kind` fields verbatim and appends `error`,
 /// `error_path1`, `error_path2`, `error_message`.
 ///
-/// Under v0.2 the only caller is the duplicate-solid branch of
-/// `append_body`, which always passes empty `path1`/`path2` Lists since
-/// `duplicate_solid` has no path-shaped diagnostic context (the
-/// `error_path1`/`error_path2` fields are retained as empty Lists for
-/// shape uniformity with the v0.1 error-Map convention). The v0.1
-/// closed-chain conflict path also called this; in v0.2 that path
-/// records a loop closure instead and no longer emits an error Map.
-fn make_error_mechanism(
+/// The sole caller is the duplicate-solid branch of `append_body`.
+/// `error_path1` and `error_path2` are emitted as empty `Value::List`s
+/// for v0.1 error-Map shape uniformity (see module-level doc lines 13-16);
+/// `duplicate_solid` has no path-shaped diagnostic context.
+fn make_duplicate_solid_error(
     mech_map: &BTreeMap<Value, Value>,
-    error_kind: &str,
-    path1: Vec<Value>,
-    path2: Vec<Value>,
     message: String,
 ) -> Value {
     let mut new_map = mech_map.clone();
     new_map.insert(
         Value::String("error".to_string()),
-        Value::String(error_kind.to_string()),
+        Value::String("duplicate_solid".to_string()),
     );
     new_map.insert(
         Value::String("error_message".to_string()),
@@ -379,11 +373,11 @@ fn make_error_mechanism(
     );
     new_map.insert(
         Value::String("error_path1".to_string()),
-        Value::List(path1),
+        Value::List(Vec::new()),
     );
     new_map.insert(
         Value::String("error_path2".to_string()),
-        Value::List(path2),
+        Value::List(Vec::new()),
     );
     Value::Map(new_map)
 }
@@ -482,11 +476,8 @@ fn append_body(
         if let Value::Map(b) = existing
             && b.get(&Value::String("solid".to_string())) == Some(&solid)
         {
-            return make_error_mechanism(
+            return make_duplicate_solid_error(
                 mech_map,
-                "duplicate_solid",
-                Vec::new(),
-                Vec::new(),
                 "duplicate solid: solid value already attached to a body in this mechanism"
                     .to_string(),
             );
