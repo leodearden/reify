@@ -97,4 +97,50 @@ mod tests {
             "zero-conversion path: occt supports (BooleanUnion, BRep) and BRep is available",
         );
     }
+
+    /// Single-conversion chain: input is BRep but the requesting op is a Mesh
+    /// boolean. The plan must invoke occt's BRep→Mesh tessellation, then run
+    /// manifold's BooleanUnion on the resulting Mesh.
+    ///
+    /// This locks BFS's first expansion step — discovering reachable reprs by
+    /// applying any kernel's `Convert{from: ...}` entry.
+    #[test]
+    fn dispatch_single_conversion_chain() {
+        // occt only knows how to tessellate BRep into Mesh.
+        let occt = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert { from: ReprKind::BRep },
+                ReprKind::Mesh,
+            )],
+        };
+        // manifold only knows how to perform BooleanUnion on Mesh.
+        let manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &occt);
+        registry.insert("manifold".to_string(), &manifold);
+
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::BRep);
+
+        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
+            .expect("a single-stage chain BRep→Mesh→Union must be findable");
+
+        assert_eq!(
+            plan.kernel, "manifold",
+            "the final-stage Mesh BooleanUnion must run on manifold"
+        );
+        assert_eq!(
+            plan.conversions.len(),
+            1,
+            "exactly one conversion stage (BRep→Mesh) is required, got {plan:?}",
+        );
+        assert_eq!(
+            plan.conversions[0],
+            ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            "the conversion stage must be (occt, BRep, Mesh), got {:?}",
+            plan.conversions[0],
+        );
+    }
 }
