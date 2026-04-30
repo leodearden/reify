@@ -23,11 +23,32 @@
 use std::collections::HashMap;
 
 use reify_compiler::auto_type_param::{
-    AutoTypeParam, MultiParamResolutionOutcome, SelectionResult, resolve_auto_type_params,
+    AutoTypeParam, MAX_AUTO_TYPE_PARAM_CANDIDATES, MultiParamResolutionOutcome, SelectionResult,
+    resolve_auto_type_params,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 use reify_types::{CompiledFunction, DiagnosticCode, Severity, SourceSpan};
+
+/// Build a Reify source with `trait Seal {}` and `count` structures
+/// `S00`..`S{count-1}` each declaring `: Seal`. Zero-padded to two digits
+/// so alphabetical ordering matches numeric ordering up to S99.
+///
+/// Mirrors `build_n_seal_structures` from `auto_type_param_phase_a_tests.rs`.
+fn build_n_seal_structures(count: usize) -> String {
+    assert!(
+        count <= 100,
+        "build_n_seal_structures: zero-pad width is two digits; max count is 100"
+    );
+    let mut src = String::from("trait Seal {}\n");
+    for i in 0..count {
+        src.push_str(&format!(
+            "structure def S{:02} : Seal {{\n    param x : Real = 1.0\n}}\n",
+            i
+        ));
+    }
+    src
+}
 
 /// Build the `(template_registry, trait_registry)` pair that
 /// `enumerate_candidates` consumes, borrowing from a single compiled module.
@@ -225,5 +246,95 @@ structure def AirCooled : Cooled {
         diagnostics.is_empty(),
         "multi-param happy path must emit zero diagnostics, got: {:?}",
         diagnostics
+    );
+}
+
+// ─── step-7: Phase A overflow on first param halts orchestration ──────────
+
+/// When the first param's bounds match more than `MAX_AUTO_TYPE_PARAM_CANDIDATES`
+/// in-scope structures (overflow), the orchestrator halts after recording the
+/// first param's outcome. The second param is NOT enumerated.
+///
+/// Pins:
+/// - `per_param.len() == 1` — only the first (overflowed) param is recorded
+/// - `substitution.is_empty()` — no successful substitutions
+/// - exactly one `AutoTypeParamPoolOverflow` diagnostic from Phase A
+/// - The first param's `SelectionResult` is `Ambiguous` (overflow maps to Ambiguous)
+/// - No second diagnostic (second param was not enumerated)
+#[test]
+fn overflow_on_first_param_halts_and_does_not_enumerate_second_param() {
+    // MAX+1 Seal structures → overflow on first param.
+    let overflow_source = build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1);
+    let overflow_module = parse_and_compile(&overflow_source);
+    let (template_registry, trait_registry) = build_registries(&overflow_module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    // Second param has a bound "Cooled" that matches nothing — but it should
+    // NOT be enumerated at all (no diagnostic for it).
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diagnostics,
+    );
+
+    // Only first param recorded; it overflowed → Ambiguous.
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "overflow on first param must halt: per_param must have exactly 1 entry, got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(outcome.per_param[0].0, "T", "first per_param entry must be for param 'T'");
+    assert!(
+        matches!(outcome.per_param[0].1, SelectionResult::Ambiguous(_)),
+        "overflow maps to Ambiguous; got: {:?}",
+        outcome.per_param[0].1
+    );
+    assert!(
+        outcome.substitution.is_empty(),
+        "overflow on first param must yield empty substitution, got: {:?}",
+        outcome.substitution
+    );
+
+    // Exactly one diagnostic: the overflow from Phase A (not a second for U).
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one overflow diagnostic expected (second param not enumerated), got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamPoolOverflow),
+        "diagnostic must be AutoTypeParamPoolOverflow, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "overflow diagnostic must be an error"
     );
 }
