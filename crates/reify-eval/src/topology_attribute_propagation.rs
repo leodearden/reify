@@ -626,6 +626,20 @@ pub fn populate_loft_attributes(
     result_edge_handles: &[GeometryHandleId],
     history: &LoftOpHistoryRecords,
 ) -> Result<(), QueryError> {
+    // Pin the lockstep invariant: `engine_build.rs::populate_loft_op` builds
+    // `section_faces` and `section_edges` in tandem (one push per profile) so
+    // both slices always have `len() == profile_handles.len()`.
+    // `write_loft_face_generated_attributes` range-checks `parent_index` against
+    // `section_edge_handles_per_section.len()`; if the two families diverged, a
+    // `parent_index` valid in the edge family could silently be out-of-range in
+    // the face family (and vice versa once face-level writes land).
+    debug_assert_eq!(
+        section_face_handles_per_section.len(),
+        section_edge_handles_per_section.len(),
+        "loft section face/edge slice families must be built in lockstep \
+         (engine_build.rs::populate_loft_op); write_loft_face_generated_attributes' \
+         parent_index range check uses the edge-slice family"
+    );
     // Reserved: kept in the public API as the seam for future face-level
     // Modified records and rail/seam/cap-edge classification — mirroring the
     // `let _ = profile_face_handles;` reservation in
