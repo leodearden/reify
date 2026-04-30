@@ -157,6 +157,14 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             m.insert(Value::String("kind".to_string()), Value::String("fixed".to_string()));
             Value::Map(m)
         }
+        // `transform_at(joint, motion_var?)` — evaluate a joint's rigid-body Transform.
+        //
+        // Arity:
+        //   0 args           → Undef (no joint arg)
+        //   1 arg (fixed)    → identity Transform (canonical 0-DOF ergonomic form, task 2688)
+        //   1 arg (non-fixed) → Undef (other kinds need a real motion variable)
+        //   2 args           → per-kind Transform (chain-machinery path, all kinds)
+        //   3+ args          → Undef (arity error)
         "transform_at" => {
             // 1-arg form is accepted for fixed joints only (0-DOF: identity Transform,
             // no motion variable). 0-arg and 3+-arg calls always return Undef.
