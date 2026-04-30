@@ -17,9 +17,17 @@
 //!   1.0          = driver + solved_jB        (jB range [0, 2]m → midpoint 1.0)
 //!   ⇒ solved_jB = 1.0 − driver
 //!
-//! For driver ∈ [0, 1]m over 11 evenly-spaced steps, solved_jB ∈ [1.0, 0.0]m
-//! — strictly monotonic decreasing, pinning warm-start continuity (a cold-
-//! solver path would risk hitting a secondary minimum on later steps).
+//! For driver ∈ [0, 1]m over 11 evenly-spaced steps, solved_jB ∈ [1.0, 0.0]m.
+//! The solver-fidelity check is assertion (c): each step's solved value
+//! must equal the closed-form prediction `1.0 − driver` within 1e-6 m.
+//! That is what locks in correctness — and for this 1-D linear residual
+//! it would also pass under a cold solver, since Newton has a unique root
+//! for every step.  The monotonic-decreasing assertion (e) is therefore a
+//! continuity *check*, not a continuity *proof*: it pins the trajectory
+//! shape but does not, by itself, distinguish a warm-start path from a
+//! cold-start one.  A non-linear closing residual with an alternate root
+//! per step would be needed to tell them apart end-to-end; that fixture
+//! is out of scope for v0.2 verification.
 //!
 //! Also verifies the open-chain regression in `sweep_api_smoke.rs`: an
 //! open-chain mechanism still produces N snapshots, each with empty
@@ -248,8 +256,12 @@ fn sweep_closed_chain_warm_start_e2e() {
         assert!(tz2.abs() < 1e-6, "snaps[{i}] body 2 tz must be 0, got {tz2}");
 
         // (e) Monotonic-decreasing trajectory across steps.  Strict-
-        // decreasing with a 1µm slack absorbs solver wobble; warm-start
-        // is what keeps consecutive steps on the same continuous branch.
+        // decreasing with a 1µm slack absorbs solver wobble.  This is a
+        // shape check: with a 1-D linear residual the root is unique per
+        // step, so even a cold-start solver would converge to the same
+        // value.  The real solver-fidelity check is (c) above — see the
+        // module-doc note explaining what this assertion does and does
+        // not tell us about warm-start vs cold-start.
         if let Some(p) = prev_solved {
             assert!(
                 solved < p + 1e-6,
