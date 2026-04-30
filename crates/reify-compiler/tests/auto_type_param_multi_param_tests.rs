@@ -617,3 +617,117 @@ structure def ORingSeal : Seal {
         diagnostics[0].code
     );
 }
+
+// ─── step-15: declared-order is observable via reordering (PRD criterion 6) ──
+
+/// Swapping the declared order of two params changes which param's failure
+/// halts the orchestrator, demonstrating declared-order semantics via
+/// short-circuit + per_param-length differences.
+///
+/// Setup: param A (Seal → ORingSeal, one feasible candidate) and param B
+/// (Cooled → no structures, zero candidates). Two runs:
+/// - Order [A, B]: A resolves (Selected), B fails (NoCandidate) → `per_param.len()==2`,
+///   `substitution.len()==1`.
+/// - Order [B, A]: B fails immediately (NoCandidate) → `per_param.len()==1`,
+///   `substitution.len()==0`.
+///
+/// Both runs emit exactly one diagnostic (only one param is ever the "first
+/// failure"); the diagnostic is `AutoTypeParamNoCandidate` in both cases.
+/// This pins PRD acceptance criterion 6: declared order controls which params
+/// are evaluated before the halt point.
+#[test]
+fn reordering_params_changes_halt_point_demonstrating_declared_order_semantics() {
+    // A: Seal → ORingSeal (one candidate). B: Cooled → nothing (zero candidates).
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+
+    let param_a = AutoTypeParam {
+        name: "A".to_string(),
+        bounds: vec!["Seal".to_string()],   // one candidate → Selected
+        free: false,
+        use_site_span: SourceSpan::new(10, 20),
+    };
+    let param_b = AutoTypeParam {
+        name: "B".to_string(),
+        bounds: vec!["Cooled".to_string()], // zero candidates → NoCandidate
+        free: false,
+        use_site_span: SourceSpan::new(30, 40),
+    };
+
+    // ── Run 1: order [A, B] ──────────────────────────────────────────────────
+    let mut diag_ab = Vec::new();
+    let outcome_ab = resolve_auto_type_params(
+        &[param_a.clone(), param_b.clone()],
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diag_ab,
+    );
+
+    // A resolves then B fails: both entries in per_param, only A in substitution.
+    assert_eq!(
+        outcome_ab.per_param.len(),
+        2,
+        "[A,B] order: per_param must have 2 entries (A:Selected, B:NoCandidate), got: {:?}",
+        outcome_ab.per_param
+    );
+    assert_eq!(
+        outcome_ab.substitution.len(),
+        1,
+        "[A,B] order: substitution must have 1 entry (A→ORingSeal), got: {:?}",
+        outcome_ab.substitution
+    );
+    assert_eq!(outcome_ab.per_param[0].0, "A");
+    assert!(matches!(
+        outcome_ab.per_param[0].1,
+        SelectionResult::Selected(_)
+    ));
+    assert_eq!(outcome_ab.per_param[1].0, "B");
+    assert_eq!(outcome_ab.per_param[1].1, SelectionResult::NoCandidate);
+    assert_eq!(diag_ab.len(), 1, "[A,B] order: exactly one diagnostic expected");
+    assert_eq!(diag_ab[0].code, Some(DiagnosticCode::AutoTypeParamNoCandidate));
+
+    // ── Run 2: order [B, A] ──────────────────────────────────────────────────
+    let mut diag_ba = Vec::new();
+    let outcome_ba = resolve_auto_type_params(
+        &[param_b.clone(), param_a.clone()],
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diag_ba,
+    );
+
+    // B fails immediately: only B in per_param, substitution is empty.
+    assert_eq!(
+        outcome_ba.per_param.len(),
+        1,
+        "[B,A] order: per_param must have 1 entry (B:NoCandidate), got: {:?}",
+        outcome_ba.per_param
+    );
+    assert_eq!(
+        outcome_ba.substitution.len(),
+        0,
+        "[B,A] order: substitution must be empty, got: {:?}",
+        outcome_ba.substitution
+    );
+    assert_eq!(outcome_ba.per_param[0].0, "B");
+    assert_eq!(outcome_ba.per_param[0].1, SelectionResult::NoCandidate);
+    assert_eq!(diag_ba.len(), 1, "[B,A] order: exactly one diagnostic expected");
+    assert_eq!(diag_ba[0].code, Some(DiagnosticCode::AutoTypeParamNoCandidate));
+}
