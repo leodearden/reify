@@ -151,6 +151,19 @@ fn twist_map_to_array(twist_map: &Value) -> Option<[f64; 6]> {
 /// motion variable — the coupling's `transform_at` arm applies the ratio
 /// downstream when computing the parent's coupled position.  This is the
 /// joint's own free-variable space, not the coupled output.
+///
+/// **Multi-DOF kinds** (`planar`, `spherical`, `cylindrical` — see
+/// `crate::joints::JOINT_KINDS` for the canonical kind list and the test
+/// module's `MULTI_DOF_KINDS` for the multi-DOF subset) return `None`:
+/// each has more than one motion variable and therefore no single-scalar
+/// midpoint to seed. Callers building initial-guess vectors should skip
+/// these kinds just as they skip `fixed`. Multi-DOF chain support is
+/// deferred to PRD v0.2 kinematic task 2 (taskmaster #2670 — "FD fallback
+/// for spherical, cylindrical, planar"); the explicit per-arm `=> None`
+/// dispatch is retained (rather than relying on the catch-all `_ => None`)
+/// so a future kind addition cannot silently change this behaviour, and
+/// the JOINT_KINDS-iteration partition test in this module's `tests` block
+/// loud-fails any drift.
 pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
     let map = match joint {
         Value::Map(m) => m,
@@ -182,39 +195,11 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
             let parent = map.get(&Value::String("parent".to_string()))?;
             joint_range_midpoint(parent)
         }
-        // 0-DOF joint: empty free-variable space — no midpoint to compute.
-        // Note: callers seeding free-variable start values (e.g. for a
-        // solver initial guess) should skip fixed joints rather than
-        // propagating this None. value_for_joint returns Some(Real(0.0))
-        // for "fixed", so chain_transform/chain_jacobian_fd handle fixed
-        // joints in the chain without special-casing at the call site.
+        // 0-DOF — empty free-variable space; see fn-doc.
         "fixed" => None,
-        // 3-DOF planar joint: no single-scalar midpoint to compute.
-        // Planar's free-variable space is 3-dimensional (x_length, y_length,
-        // theta_angle), so there is no single f64 midpoint to seed. Callers
-        // building initial-guess vectors should skip planar joints just as
-        // they skip fixed joints. Supporting planar's multi-DOF midpoint
-        // requires the refactor scheduled in PRD v0.2 kinematic task 2
-        // (taskmaster #2670 — "FD fallback for spherical, cylindrical, planar").
+        // Multi-DOF — see fn-doc / JOINT_KINDS / MULTI_DOF_KINDS.
         "planar" => None,
-        // 3-DOF spherical joint: no single-scalar midpoint to compute.
-        // Spherical's free-variable space is the unit-quaternion manifold of
-        // SO(3), which cannot be summarised as a single f64 midpoint. Callers
-        // building initial-guess vectors should skip spherical joints just as
-        // they skip fixed and planar joints. The explicit arm makes the
-        // contract source-visible (rather than relying on the catch-all
-        // `_ => None`) so a future kind addition cannot silently change this
-        // behaviour. Multi-DOF chain support is deferred to PRD v0.2
-        // kinematic task 2 (taskmaster #2670).
         "spherical" => None,
-        // 2-DOF cylindrical joint: no single-scalar midpoint to compute.
-        // Cylindrical has two ranges (translation_range LENGTH,
-        // rotation_range ANGLE), one per DOF, so there is no single f64
-        // midpoint to seed. Callers building initial-guess vectors should
-        // skip cylindrical joints just as they skip fixed/planar/spherical.
-        // The explicit arm makes the contract source-visible (vs. the
-        // catch-all `_ => None`). PRD v0.2 kinematic task 5 / taskmaster
-        // #2670.
         "cylindrical" => None,
         _ => None,
     }
@@ -310,6 +295,30 @@ pub fn chain_jacobian_fd(
 /// Coupling joints delegate to their parent's kind.
 ///
 /// Returns `None` for unknown kinds or malformed Maps.
+///
+/// **Single-DOF / 0-DOF coverage**: `prismatic` returns `Some(length(scalar))`,
+/// `revolute` returns `Some(angle(scalar))`, `coupling` delegates to parent
+/// kind, and `fixed` returns `Some(Real(0.0))` (the second arg is ignored by
+/// `transform_at("fixed", _)` — any non-Undef sentinel works; we pick the
+/// conventional zero).
+///
+/// **Multi-DOF kinds** (`planar`, `spherical`, `cylindrical` — see
+/// `crate::joints::JOINT_KINDS` for the canonical kind list and the test
+/// module's `MULTI_DOF_KINDS` for the multi-DOF subset) return `None`
+/// because their motion variables are multi-element values
+/// (`Value::List`/`Value::Orientation`) that cannot be packed into the
+/// single-f64 signature of this function. Returning `None` here causes
+/// `chain_transform` / `chain_jacobian_fd` to short-circuit to `None` for any
+/// chain containing a multi-DOF joint. Multi-DOF chain support is deferred
+/// to PRD v0.2 kinematic task 2 (taskmaster #2670 — "FD fallback for
+/// spherical, cylindrical, planar"), which will refactor the f64-per-joint
+/// signature. Until that lands, callers needing multi-DOF transforms must
+/// use `transform_at(joint, motion_var)` or `joint_jacobian(joint)`
+/// directly, not the chain wrappers. The explicit per-arm `=> None`
+/// dispatch is retained (rather than relying on the catch-all `_ => None`)
+/// so a future kind addition cannot silently change this behaviour, and
+/// the JOINT_KINDS-iteration partition test in this module's `tests` block
+/// loud-fails any drift.
 fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
     let map = match joint {
         Value::Map(m) => m,
@@ -337,57 +346,11 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
                 _ => None,
             }
         }
-        // 0-DOF joint: no free variable; transform_at("fixed", _) ignores the
-        // second argument (any non-Undef Value → identity). Real(0.0) is the
-        // conventional sentinel, mirroring `transform_at(fixed_joint, 0)` in
-        // the kinematic_stdlib_smoke test. Note: joint_range_midpoint returns
-        // None for "fixed" (no free-variable space to seed). Callers building
-        // an initial-guess vector from joint_range_midpoint should skip fixed
-        // joints; chain_transform/chain_jacobian_fd handle them transparently.
+        // 0-DOF — second arg ignored; see fn-doc.
         "fixed" => Some(Value::Real(0.0)),
-        // 3-DOF planar joint: no f64-scalar motion variable representation.
-        // Planar's motion variable in `transform_at` is a 3-element
-        // `Value::List [x_length, y_length, theta_angle]`, which doesn't fit
-        // this function's `(joint, scalar: f64) -> Option<Value>` signature.
-        // Returning None here causes chain_transform and chain_jacobian_fd to
-        // short-circuit to None for any chain containing a planar joint.
-        // Multi-DOF chain support (including planar) is deferred to PRD v0.2
-        // kinematic task 2 (taskmaster #2670 — "FD fallback for spherical,
-        // cylindrical, planar"), which will refactor the f64-per-joint
-        // signature. Until that lands, callers needing planar transforms must
-        // use `transform_at(planar, list)` or `joint_jacobian(planar)` directly,
-        // not the chain wrappers.
+        // Multi-DOF — see fn-doc / JOINT_KINDS / MULTI_DOF_KINDS.
         "planar" => None,
-        // 3-DOF spherical joint: no f64-scalar motion variable representation.
-        // Spherical's motion variable in `transform_at` is a `Value::Orientation`
-        // (unit quaternion), which doesn't fit this function's
-        // `(joint, scalar: f64) -> Option<Value>` signature. The explicit arm
-        // makes the contract source-visible (rather than relying on the
-        // catch-all `_ => None`) so a future kind addition cannot silently
-        // change spherical's behaviour. Returning None here causes
-        // chain_transform and chain_jacobian_fd to short-circuit to None for
-        // any chain containing a spherical joint. Multi-DOF chain support is
-        // deferred to PRD v0.2 kinematic task 2 (taskmaster #2670). Until
-        // that lands, callers needing spherical transforms must use
-        // `transform_at(spherical, q)` or `joint_jacobian(spherical)` directly,
-        // not the chain wrappers.
         "spherical" => None,
-        // 2-DOF cylindrical joint: no f64-scalar motion variable representation.
-        // Cylindrical's motion variable in `transform_at` is a 2-element
-        // `Value::List [translation_length, rotation_angle]` — translation
-        // along the shared axis n combined with rotation about n. The
-        // (translation, rotation) tuple cannot be packed into the single-f64
-        // signature of `value_for_joint`, so this arm returns None and any
-        // chain containing a cylindrical joint short-circuits in
-        // `chain_transform`/`chain_jacobian_fd`. The explicit arm makes the
-        // contract source-visible (rather than relying on the catch-all
-        // `_ => None`) so a future kind addition cannot silently change
-        // cylindrical's behaviour. Multi-DOF chain support (closed-chain
-        // mechanisms with cylindrical joints) is deferred to PRD v0.2
-        // kinematic task 5 / 9 / 10 (taskmaster #2670). Until that lands,
-        // callers needing cylindrical transforms must use
-        // `transform_at(cyl, [d, theta])` or `joint_jacobian(cyl)` directly,
-        // not the chain wrappers.
         "cylindrical" => None,
         _ => None,
     }
