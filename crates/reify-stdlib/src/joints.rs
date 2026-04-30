@@ -115,6 +115,34 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
             make_spherical(args[0].clone())
         }
+        // 2-DOF cylindrical joint: composite of prismatic ⊕ revolute on a single
+        // shared axis. Per PRD v0_2/kinematic-constraints.md §"Decomposition plan"
+        // task 5.
+        //
+        // Signature: cylindrical(axis, translation_range, rotation_range)
+        // where axis is a dimensionless Vector3 (finite, non-zero), translation_range
+        // is a LENGTH range (bounded), and rotation_range is an ANGLE range (bounded).
+        // The raw (unnormalised) axis is stored; normalisation happens at
+        // `transform_at` and `joint_jacobian` time — matching the prismatic /
+        // revolute / planar precedent.
+        "cylindrical" => {
+            if args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            // Validate axis: dimensionless Vector3, finite, non-zero.
+            if validate_axis(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            // Validate translation_range: bounded, LENGTH-dimensioned.
+            if validate_range(&args[1], DimensionVector::LENGTH).is_none() {
+                return Some(Value::Undef);
+            }
+            // Validate rotation_range: bounded, ANGLE-dimensioned.
+            if validate_range(&args[2], DimensionVector::ANGLE).is_none() {
+                return Some(Value::Undef);
+            }
+            make_cylindrical_joint(args[0].clone(), args[1].clone(), args[2].clone())
+        }
         // 0-DOF group-only joint (sub-assembly grouping, clearance-pair filtering).
         // Per PRD v0_2/kinematic-constraints.md §"Decomposition plan" task 7.
         //
@@ -971,6 +999,27 @@ fn make_spherical(range_angle: Value) -> Value {
     let mut m = BTreeMap::new();
     m.insert(Value::String("kind".to_string()), Value::String("spherical".to_string()));
     m.insert(Value::String("range_angle".to_string()), range_angle);
+    Value::Map(m)
+}
+
+/// Build a cylindrical joint `Value::Map` with the four-key layout:
+/// `"axis"`, `"kind"`, `"rotation_range"`, `"translation_range"`.
+///
+/// Keys are in `BTreeMap` alphabetical order, mirroring `make_joint` /
+/// `make_planar` / `make_spherical`.  The raw (unnormalised) axis is
+/// stored; normalisation happens at `transform_at` / `joint_jacobian`
+/// time, matching the prismatic / revolute precedent.
+///
+/// Design intent (PRD task 5): the cylindrical joint is the flat composite
+/// of prismatic ⊕ revolute on a single shared axis.  Storing translation_range
+/// and rotation_range at the top level (rather than nesting prismatic/revolute
+/// children) avoids axis duplication and keeps `joint_axis` working unchanged.
+fn make_cylindrical_joint(axis: Value, translation_range: Value, rotation_range: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("kind".to_string()), Value::String("cylindrical".to_string()));
+    m.insert(Value::String("axis".to_string()), axis);
+    m.insert(Value::String("translation_range".to_string()), translation_range);
+    m.insert(Value::String("rotation_range".to_string()), rotation_range);
     Value::Map(m)
 }
 
