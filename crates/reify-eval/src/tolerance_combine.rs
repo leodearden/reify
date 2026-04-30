@@ -15,6 +15,11 @@
 //! drift between the two recognition sites at the cost of touching
 //! `tolerance_scope.rs`'s public surface (TODO).
 
+use crate::graph::ConstraintNodeData;
+use reify_types::{
+    CompiledExprKind, ConstraintNodeId, DimensionVector, PersistentMap, Type, Value,
+};
+
 /// Combine an output occurrence's tolerance bound with the active purpose's
 /// tolerance bound under partial-order "tighter satisfies looser" semantics.
 ///
@@ -61,6 +66,124 @@ pub fn combine_demanded_tolerance(
         (Some(t), None) | (None, Some(t)) => Some(t),
         (None, None) => None,
     }
+}
+
+/// Extract the tightest `RepresentationWithin` tolerance bound declared on
+/// the named output occurrence's template, by scanning the runtime
+/// constraint graph.
+///
+/// Output occurrences (e.g. `STEPOutput`, see arch §14.5) carry a body
+/// constraint shaped like `RepresentationWithin(subject, 1um)`. When such an
+/// occurrence is sub-instantiated, the constraint stays under its
+/// *template-name* entity scope in the runtime graph (subs duplicate value
+/// cells under scoped entity-refs but do NOT scope-duplicate constraints —
+/// see `crate::graph::EvaluationGraph::from_templates`). So the extractor
+/// scans `constraints` for entries with `id.entity == output_template_name`
+/// regardless of how many times the occurrence was instantiated.
+///
+/// # Recognition gates
+///
+/// Mirrors [`crate::tolerance_scope::extract_tolerance_bindings`] (with the
+/// purpose-param-membership check dropped — output occurrences have a fixed
+/// `param subject : Structure` binding pattern at the template level rather
+/// than per-purpose param identity):
+///
+/// 1. **Entity filter:** `id.entity == output_template_name`. Exact match —
+///    no dot-boundary trickery (that semantic belongs to the descendants
+///    prefix-scan, not template-name lookup).
+/// 2. **Outer shape:** top-level `UserFunctionCall("RepresentationWithin",
+///    [arg0, arg1])`.
+/// 3. **Subject (arg0):** `ValueRef` whose `result_type` is `StructureRef(_)`.
+/// 4. **Tolerance literal (arg1):** `Literal(Value::Scalar { dimension ==
+///    LENGTH, si_value })` where `si_value.is_finite()`.
+///
+/// # Min-fold across multiple matches
+///
+/// A template author may declare multiple `RepresentationWithin` constraints
+/// (e.g. inner vs outer subjects, or a guarded-group split). The extractor
+/// folds via `min` under partial-order "tighter satisfies looser" semantics,
+/// matching [`crate::tolerance_scope::merge_with_min`] and the cache-side
+/// `tolerance_bucket` `<=` rule.
+///
+/// # Silent-skip posture
+///
+/// Non-matching shapes / non-finite literals / non-LENGTH dimensions /
+/// unrelated entities are silently skipped (no panic). This matches the
+/// "activate dormant infrastructure" posture from task 2647 — extraction is
+/// policy-neutral; downstream consumers can layer diagnostics if a missing
+/// or malformed bound is suspicious.
+///
+/// Returns `None` when no matching constraint exists.
+///
+/// # TODO
+///
+/// The recognition gates are duplicated from
+/// [`crate::tolerance_scope::extract_tolerance_bindings`]. A shared helper
+/// would prevent drift between the two extractors but requires touching the
+/// `tolerance_scope` public surface — deferred to keep this task scoped to
+/// the 2650 contract.
+pub fn extract_output_tolerance_bound(
+    constraints: &PersistentMap<ConstraintNodeId, ConstraintNodeData>,
+    output_template_name: &str,
+) -> Option<f64> {
+    let mut tightest: Option<f64> = None;
+    for (id, data) in constraints.iter() {
+        // Gate 1: entity exact-match filter.
+        if id.entity != output_template_name {
+            continue;
+        }
+
+        // Gate 2: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1]).
+        let (function_name, args) = match &data.expr.kind {
+            CompiledExprKind::UserFunctionCall {
+                function_name,
+                args,
+            } => (function_name, args),
+            _ => continue,
+        };
+        if function_name != "RepresentationWithin" {
+            continue;
+        }
+        if args.len() != 2 {
+            continue;
+        }
+
+        // Gate 3: arg0 must be a ValueRef whose result_type is StructureRef(_).
+        // Note: the purpose-param-membership check from
+        // `tolerance_scope::extract_tolerance_bindings` is dropped here —
+        // output occurrences have a fixed `param subject : Structure` binding
+        // pattern at the template level, so the StructureRef type-tag gate
+        // alone is sufficient to identify the subject argument.
+        let subject_arg = &args[0];
+        if !matches!(subject_arg.kind, CompiledExprKind::ValueRef(_)) {
+            continue;
+        }
+        if !matches!(subject_arg.result_type, Type::StructureRef(_)) {
+            continue;
+        }
+
+        // Gate 4: arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. })
+        // with finite si_value. NaN/±Inf would propagate into the bound and
+        // stick (NaN comparisons always evaluate false).
+        let tol_arg = &args[1];
+        let si_value = match &tol_arg.kind {
+            CompiledExprKind::Literal(Value::Scalar {
+                si_value,
+                dimension,
+            }) if *dimension == DimensionVector::LENGTH => *si_value,
+            _ => continue,
+        };
+        if !si_value.is_finite() {
+            continue;
+        }
+
+        // Min-fold under partial-order "tighter satisfies looser" semantics.
+        tightest = Some(match tightest {
+            Some(cur) => cur.min(si_value),
+            None => si_value,
+        });
+    }
+    tightest
 }
 
 #[cfg(test)]
