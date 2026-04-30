@@ -423,3 +423,109 @@ structure def AirCooled : Cooled {
         "no-candidate diagnostic must be an error"
     );
 }
+
+// ─── step-11: Phase C Ambiguous on first param halts orchestration ─────────
+
+/// When the first param has two feasible candidates and `free=false` (strict),
+/// Phase C emits an `Ambiguous` error and the orchestrator halts. The second
+/// param is NOT enumerated.
+///
+/// Pins:
+/// - `per_param == [("T", Ambiguous([lex_first, lex_second]))]` — length 1
+/// - `substitution.is_empty()` — no successful substitutions
+/// - exactly one `AutoTypeParamAmbiguous` diagnostic
+/// - no second diagnostic (second param not enumerated)
+#[test]
+fn ambiguous_on_first_param_strict_halts_and_does_not_enumerate_second_param() {
+    // Two Seal structures (alphabetically GraphiteSeal < ORingSeal) and one
+    // Cooled structure for the second (unharvested) param.
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def GraphiteSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()], // two candidates → Ambiguous under strict
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()], // one candidate; should NOT be enumerated
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diagnostics,
+    );
+
+    // per_param has length 1: the Ambiguous result for T (lex order: GraphiteSeal, ORingSeal).
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "ambiguous on first param must halt: per_param must have exactly 1 entry, got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(outcome.per_param[0].0, "T", "first per_param entry must be for param 'T'");
+    assert_eq!(
+        outcome.per_param[0].1,
+        SelectionResult::Ambiguous(vec![
+            "GraphiteSeal".to_string(),
+            "ORingSeal".to_string(),
+        ]),
+        "strict ≥2 feasible candidates must produce Ambiguous([lex_first, lex_second])"
+    );
+    assert!(
+        outcome.substitution.is_empty(),
+        "ambiguous on first param must yield empty substitution, got: {:?}",
+        outcome.substitution
+    );
+
+    // Exactly one diagnostic: Ambiguous for T (not a second for U).
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one ambiguous diagnostic expected (second param not enumerated), got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamAmbiguous),
+        "diagnostic must be AutoTypeParamAmbiguous, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "ambiguous diagnostic must be an error"
+    );
+}
