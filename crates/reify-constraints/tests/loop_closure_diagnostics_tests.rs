@@ -556,15 +556,6 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
         &cfg,
     );
 
-    // At least one diagnostic must exist: the under-constrained pre-check warning.
-    // Using is_empty() (rather than len() >= 1) keeps this check idiomatic and
-    // satisfies clippy::len_zero.  The KinematicSingularity bleed-through assertion
-    // below is independent and carries real weight in its own right.
-    assert!(
-        !report.diagnostics.is_empty(),
-        "expected at least one under-constrained diagnostic, got {:?}",
-        report.diagnostics
-    );
     // Use .find() rather than indexing [0] so this assertion is order-independent:
     // a future regression that introduces a second pre-check warning ahead of
     // KinematicUnderconstrained would not silently break code/severity mismatches.
@@ -581,9 +572,9 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
     );
 
     // Decoupling guarantee: no singularity bleed-through.
-    // Independent of the >=1 length check above — a regression that caused
-    // KinematicSingularity to co-emit (e.g. if the LDLᵀ path fired) would
-    // fail here even if the under-constrained diagnostic is also present.
+    // A regression that caused KinematicSingularity to co-emit (e.g. if the
+    // LDLᵀ path fired) would fail here even if the under-constrained diagnostic
+    // is also present.
     assert!(
         !report
             .diagnostics
