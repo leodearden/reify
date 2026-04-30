@@ -1,3 +1,30 @@
+//! Types in the Reify type system.
+//!
+//! ## Point / Vector quantity-slot convention
+//!
+//! When `Point3<Q>` / `Vector3<Q>` surface syntax is resolved by the parametric
+//! resolver (`resolve_parameterized_builtin_type` and the substitution path
+//! `resolve_parameterized_builtin_type_with_subst` in
+//! `crates/reify-compiler/src/type_resolution.rs`), the `quantity` slot of
+//! `Type::Point` / `Type::Vector` is **always** `Type::Scalar { dimension: … }`.
+//! The resolver treats `Q` as a *dimension expression* — accepting forms like
+//! `Length`, `kg*m/s^2` — and wraps the resolved [`DimensionVector`] in
+//! `Type::Scalar`.  This convention is asserted by the integration tests in
+//! `crates/reify-compiler/tests/parametric_vector_point_resolution_tests.rs`.
+//!
+//! The variant itself does **not** enforce `Type::Scalar` in the `quantity` slot.
+//! `Value::Point::infer_type()` / `Value::Vector::infer_type()` in
+//! `crates/reify-types/src/value.rs` may produce `Type::Real` or `Type::Int`
+//! quantities for unit-less component vectors; tests in this crate also construct
+//! those forms directly.  `is_scalar_like_leaf` in
+//! `crates/reify-compiler/src/type_compat.rs` treats `Type::Real`, `Type::Int`, and
+//! `Type::Scalar { .. }` symmetrically for compat-rule firing, so the looseness is
+//! intentional.
+//!
+//! Accepting any `Type` in the `Q` position (mirroring `Tensor` / `Matrix`, which
+//! use `resolve_type_expr_with_aliases`) was considered and deferred (task-2767); the
+//! dimension-expression form is the established surface-syntax contract.
+
 use crate::dimension::DimensionVector;
 
 /// Types in the Reify type system (M1 subset).
@@ -51,89 +78,15 @@ pub enum Type {
     Geometry,
     /// N-dimensional point with a quantity type (e.g., `Point3<Scalar[m]>`).
     ///
-    /// # Parametric-resolver convention
-    ///
-    /// When constructed from `Point3<Q>` surface syntax, the `quantity` slot is
-    /// **always** `Type::Scalar { dimension: … }`.  The parametric resolver in
-    /// `crates/reify-compiler/src/type_resolution.rs` resolves `Q` as a
-    /// *dimension expression* (via `resolve_type_alias_expr_to_dimension`,
-    /// lines 1098–1115 and 1247–1265) and wraps the result in `Type::Scalar`.
-    /// Every non-test callsite of `Type::point3` / `Type::point2` passes a
-    /// `Type::Scalar`-producing helper (`Type::length()`, `Type::angle()`,
-    /// `Type::dimensionless_scalar()`).  This convention is pinned by the
-    /// integration tests in
-    /// `crates/reify-compiler/tests/parametric_vector_point_resolution_tests.rs`
-    /// (`point3_length_resolves_to_typed_point`,
-    /// `point3_via_parametric_alias_resolves_through_subst_path`), which assert
-    /// exact equality against `Type::point3(Type::Scalar { dimension: … })`.
-    ///
-    /// # Wider de-facto contract
-    ///
-    /// The variant itself does **not** enforce `Type::Scalar` in the `quantity`
-    /// slot.  `Value::Point::infer_type()` / `try_infer_type()` in
-    /// `crates/reify-types/src/value.rs` build `Type::Point` with `quantity`
-    /// inferred from the first component, which is `Type::Real` or `Type::Int`
-    /// for unit-less component vectors.  In-crate tests likewise construct
-    /// `Type::point3(Type::Real)` and
-    /// `Type::Point { quantity: Box::new(Type::Real) }` directly.  There is no
-    /// `debug_assert!` at construction — the looseness is intentional, not a bug.
-    ///
-    /// # Type-compatibility treatment
-    ///
-    /// `crates/reify-compiler/src/type_compat.rs::is_scalar_like_leaf` (line 36)
-    /// treats `Type::Real`, `Type::Int`, and `Type::Scalar { .. }` symmetrically
-    /// as scalar-like leaves for compat-rule firing, so
-    /// `Point<N, Real>` and `Point<N, Scalar { DIMENSIONLESS }>` are each
-    /// well-formed; the compat layer smooths over the difference where it matters.
-    ///
-    /// # Deferred: uniform-Q parsing (Option B, task-2767)
-    ///
-    /// Accepting any `Type` in the `Q` position (mirroring `Tensor<R,N,Q>` and
-    /// `Matrix<M,N,Q>` which use `resolve_type_expr_with_aliases`) was considered
-    /// and deferred.  The current *dimension-expression* form for `Q`
-    /// (e.g. `Length`, `kg*m/s^2`) is the established surface-syntax contract.
+    /// See the *Point / Vector quantity-slot convention* section in the module
+    /// docs for the parametric-resolver convention, de-facto contract, and
+    /// compat treatment.
     Point { n: usize, quantity: Box<Type> },
     /// N-dimensional vector with a quantity type (e.g., `Vector3<Scalar[m]>`).
     ///
-    /// # Parametric-resolver convention
-    ///
-    /// When constructed from `Vector3<Q>` surface syntax, the `quantity` slot is
-    /// **always** `Type::Scalar { dimension: … }`.  The parametric resolver in
-    /// `crates/reify-compiler/src/type_resolution.rs` resolves `Q` as a
-    /// *dimension expression* (via `resolve_type_alias_expr_to_dimension`,
-    /// lines 1098–1115 and 1247–1265) and wraps the result in `Type::Scalar`.
-    /// Every non-test callsite of `Type::vec3` / `Type::vec2` passes a
-    /// `Type::Scalar`-producing helper (`Type::length()`, `Type::angle()`,
-    /// `Type::dimensionless_scalar()`).  This convention is pinned by the
-    /// integration tests in
-    /// `crates/reify-compiler/tests/parametric_vector_point_resolution_tests.rs`
-    /// (`vector3_force_resolves_to_typed_vector`,
-    /// `vector3_via_parametric_alias_resolves_through_subst_path`), which assert
-    /// exact equality against `Type::vec3(Type::Scalar { dimension: … })`.
-    ///
-    /// # Wider de-facto contract
-    ///
-    /// The variant itself does **not** enforce `Type::Scalar` in the `quantity`
-    /// slot.  `Value::Vector::infer_type()` / `try_infer_type()` in
-    /// `crates/reify-types/src/value.rs` build `Type::Vector` with `quantity`
-    /// inferred from the first component, which is `Type::Real` or `Type::Int`
-    /// for unit-less component vectors.  There is no `debug_assert!` at
-    /// construction — the looseness is intentional, not a bug.
-    ///
-    /// # Type-compatibility treatment
-    ///
-    /// `crates/reify-compiler/src/type_compat.rs::is_scalar_like_leaf` (line 36)
-    /// treats `Type::Real`, `Type::Int`, and `Type::Scalar { .. }` symmetrically
-    /// as scalar-like leaves for compat-rule firing, so
-    /// `Vector<N, Real>` and `Vector<N, Scalar { DIMENSIONLESS }>` are each
-    /// well-formed; the compat layer smooths over the difference where it matters.
-    ///
-    /// # Deferred: uniform-Q parsing (Option B, task-2767)
-    ///
-    /// Accepting any `Type` in the `Q` position (mirroring `Tensor<R,N,Q>` and
-    /// `Matrix<M,N,Q>` which use `resolve_type_expr_with_aliases`) was considered
-    /// and deferred.  The current *dimension-expression* form for `Q`
-    /// (e.g. `Length`, `kg*m/s^2`) is the established surface-syntax contract.
+    /// See the *Point / Vector quantity-slot convention* section in the module
+    /// docs for the parametric-resolver convention, de-facto contract, and
+    /// compat treatment.
     Vector { n: usize, quantity: Box<Type> },
     /// Rank-r tensor with n elements per dimension and a quantity type (e.g., Tensor2x3<Scalar[m]>).
     Tensor {
