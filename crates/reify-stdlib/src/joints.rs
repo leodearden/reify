@@ -953,14 +953,32 @@ fn unit_normalize(comps: [f64; 3]) -> [f64; 3] {
 /// Extract and unit-normalise both `"axis_x"` and `"axis_y"` from a planar joint Map.
 ///
 /// Returns `Some((unit_x, unit_y))` on success, `None` if either field is
-/// missing or fails [`validate_axis`] validation.  Used by the `"planar"` arm
-/// of `transform_at` to avoid duplicating the axis lookup and normalisation logic.
+/// missing, fails [`validate_axis`] validation, or the two axes are not
+/// perpendicular (`|dot(unit_x, unit_y)| >= 1e-9`).
+///
+/// The perpendicularity predicate uses the same tolerance (1e-9) and formula as
+/// the `"planar"` constructor arm of `eval_joints` (joints.rs:67-76), so any Map
+/// the constructor accepts is also accepted here, and any Map this helper rejects
+/// would have been rejected by the constructor.  The check is defence-in-depth:
+/// the constructor rejects non-perpendicular axes before storing a Map, but
+/// hand-built Maps can bypass the constructor and reach `transform_at` directly.
 fn unit_axes_xy_from_planar_map(map: &BTreeMap<Value, Value>) -> Option<([f64; 3], [f64; 3])> {
     let axis_x_val = map.get(&Value::String("axis_x".to_string()))?;
     let axis_y_val = map.get(&Value::String("axis_y".to_string()))?;
     let cx = validate_axis(axis_x_val)?;
     let cy = validate_axis(axis_y_val)?;
-    Some((unit_normalize(cx), unit_normalize(cy)))
+    let unit_x = unit_normalize(cx);
+    let unit_y = unit_normalize(cy);
+    // Perpendicularity guard — mirrors the constructor check at joints.rs:67-76.
+    // Parallel or anti-parallel axes produce a zero cross product, which would
+    // yield a degenerate (all-zero) rotation axis in the `transform_at` planar
+    // arm; return None so the caller propagates Undef instead of silently
+    // producing an identity rotation.
+    let dot = unit_x[0] * unit_y[0] + unit_x[1] * unit_y[1] + unit_x[2] * unit_y[2];
+    if dot.abs() >= 1e-9 {
+        return None;
+    }
+    Some((unit_x, unit_y))
 }
 
 /// Look up the `"axis"` field in a joint map, validate it via [`validate_axis`],
@@ -3924,6 +3942,60 @@ mod tests {
             assert!(
                 eval_builtin("transform_at", &[joint.clone(), motion_vars.clone()]).is_undef(),
                 "transform_at(planar, {label}) should return Undef but didn't"
+            );
+        }
+    }
+
+    // ── transform_at on planar: degenerate (parallel) axes returns Undef ─────
+
+    /// Regression test: a hand-built planar `Value::Map` with parallel or
+    /// anti-parallel axes must cause `transform_at` to return Undef.
+    ///
+    /// The `planar(...)` constructor rejects parallel axes at construction time
+    /// (joints.rs:67-76), but `transform_at` accepts hand-built `Value::Map`
+    /// fixtures.  Without the guard in `unit_axes_xy_from_planar_map`, a parallel
+    /// axis pair (`axis_x = axis_y = [1,0,0]`) produces a zero cross product
+    /// `(0,0,0)`, which `axis_angle_quaternion` silently promotes to an identity
+    /// quaternion — a well-formed Transform that drops the requested rotation
+    /// entirely.  After the fix, `unit_axes_xy_from_planar_map` rejects the pair
+    /// via the perpendicularity guard and the planar arm propagates Undef.
+    #[test]
+    fn transform_at_planar_parallel_axes_returns_undef() {
+        use std::collections::BTreeMap;
+
+        // Build a hand-crafted planar Map that bypasses the constructor's
+        // perpendicularity check.  Mirrors the 6-key layout of `make_planar`
+        // (joints.rs:1079-1088): kind, axis_x, axis_y, range_x, range_y, range_theta.
+        let make_map = |axis_y: Value| -> Value {
+            let mut m = BTreeMap::new();
+            m.insert(Value::String("kind".to_string()),        Value::String("planar".to_string()));
+            m.insert(Value::String("axis_x".to_string()),      Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]));
+            m.insert(Value::String("axis_y".to_string()),      axis_y);
+            m.insert(Value::String("range_x".to_string()),     length_range_0_to_1m());
+            m.insert(Value::String("range_y".to_string()),     length_range_0_to_1m());
+            m.insert(Value::String("range_theta".to_string()), angle_range_0_to_pi());
+            Value::Map(m)
+        };
+
+        // Non-zero theta forces the cross-product / quaternion path.
+        let motion = Value::List(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::angle(std::f64::consts::PI / 2.0),
+        ]);
+
+        let cases: &[(&str, Value)] = &[
+            // axis_x = axis_y = [1,0,0]  →  dot = +1  →  zero cross product
+            ("parallel",      Value::Vector(vec![Value::Real( 1.0), Value::Real(0.0), Value::Real(0.0)])),
+            // axis_x = [1,0,0], axis_y = [-1,0,0]  →  dot = -1  →  zero cross product
+            ("anti-parallel", Value::Vector(vec![Value::Real(-1.0), Value::Real(0.0), Value::Real(0.0)])),
+        ];
+
+        for (label, axis_y) in cases {
+            let joint = make_map(axis_y.clone());
+            assert!(
+                eval_builtin("transform_at", &[joint, motion.clone()]).is_undef(),
+                "transform_at(planar with {label} axes) should return Undef but didn't",
             );
         }
     }
