@@ -211,8 +211,8 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
 
     let descriptors = session.get_mechanism_descriptors();
 
-    // m0 (0 bodies), m1 (1 body), m2 (2 bodies) all appear as mechanism Maps.
-    // Assert at least one descriptor has bodies_count=2.
+    // After the terminal-mechanism filter, only m2 (terminal) appears;
+    // the assertion finds it by bodies_count=2.
     let m2_desc = descriptors
         .iter()
         .find(|d| d.bodies_count == 2)
