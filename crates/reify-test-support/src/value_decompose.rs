@@ -12,8 +12,15 @@ pub fn read_f64(v: &Value, label: &str) -> f64 {
 
 /// Decompose a `Value::Point` of three numeric components into `[f64; 3]` (SI).
 pub fn decompose_point3(v: &Value, label: &str) -> [f64; 3] {
-    let _ = (v, label);
-    unimplemented!()
+    let comps = match v {
+        Value::Point(c) if c.len() == 3 => c,
+        other => panic!("{label}: expected Value::Point len=3, got {other:?}"),
+    };
+    [
+        read_f64(&comps[0], &format!("{label}.p[0]")),
+        read_f64(&comps[1], &format!("{label}.p[1]")),
+        read_f64(&comps[2], &format!("{label}.p[2]")),
+    ]
 }
 
 #[cfg(test)]
