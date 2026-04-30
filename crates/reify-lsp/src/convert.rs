@@ -753,6 +753,52 @@ mod tests {
         );
     }
 
+    /// Locks the full LSP conversion contract for `AutoTypeParamAmbiguous`.
+    ///
+    /// Mirrors the producer site at `auto_type_param.rs:588-593`:
+    /// severity=ERROR, code="AutoTypeParamAmbiguous", message contains the
+    /// explicit-substitution suggestion ("consider an explicit substitution like
+    /// 'ORingSeal' instead of 'auto:'"), data carries candidate FQNs.
+    ///
+    /// The substitution-suggestion substring is pinned so a future producer-side
+    /// message change cannot silently strip the LSP-visible hint.
+    #[test]
+    fn convert_diagnostic_auto_type_param_ambiguous_full_lsp_contract() {
+        use reify_types::DiagnosticCode;
+        let source = "auto";
+        let diag = Diagnostic::error(
+            "auto type parameter has multiple feasible candidates for bound 'Seal': ORingSeal, RubberSeal; consider an explicit substitution like 'ORingSeal' instead of 'auto:'",
+        )
+        .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(0, 4),
+            "auto type-param bound 'Seal' here",
+        ))
+        .with_candidates(vec!["ORingSeal".to_string(), "RubberSeal".to_string()]);
+        let lsp = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp.severity,
+            Some(DiagnosticSeverity::ERROR),
+            "AMBIGUOUS must be ERROR severity"
+        );
+        assert_eq!(
+            lsp.code,
+            Some(NumberOrString::String("AutoTypeParamAmbiguous".to_string())),
+            "AMBIGUOUS code must wire as 'AutoTypeParamAmbiguous'"
+        );
+        assert!(
+            lsp.message
+                .contains("consider an explicit substitution like 'ORingSeal' instead of 'auto:'"),
+            "AMBIGUOUS message must contain the explicit-substitution suggestion, got: {:?}",
+            lsp.message
+        );
+        assert_eq!(
+            lsp.data,
+            Some(serde_json::json!({"candidates": ["ORingSeal", "RubberSeal"]})),
+            "AMBIGUOUS data must carry feasible candidate FQNs"
+        );
+    }
+
     // --- Candidate list → LSP data field (step-1) ---
 
     /// Asserts that `convert_diagnostic` populates the LSP `data` field with a
