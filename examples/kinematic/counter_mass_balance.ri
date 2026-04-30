@@ -30,4 +30,20 @@ structure def CounterMassBalance {
 
     // Sweep head joint over full range → 11 evenly-spaced snapshots
     let snaps = sweep(m2, j_x, 0mm .. 500mm, 11)
+
+    // Center of mass for each snapshot.
+    //
+    // COM-stationarity invariant (PRD task 6 acceptance criterion):
+    //   Because j_cm = couple(j_x, -1.0), the counter-mass displaces exactly
+    //   opposite to the head.  With equal-mass (equal-geometry) bodies the
+    //   system COM remains at the origin for all joint positions.
+    //
+    // Unit-test mirror:
+    //   crates/reify-stdlib/src/snapshot.rs::tests::center_of_mass_counter_mass_balance_stationarity
+    //   proves this invariant holds within 1e-9 m at the Rust level.
+    //   This .ri replays the same scenario through surface syntax.
+    let coms = snaps.map(|s| center_of_mass(s))
+
+    // Count of snapshots (informational — used by constraint and test assertions).
+    let snap_count = snaps.count
 }
