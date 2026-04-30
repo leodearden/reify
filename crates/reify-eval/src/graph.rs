@@ -554,10 +554,12 @@ impl EvaluationGraph {
 
         // Task 2690/2713: connections bucket. Each connection contributes a
         // composite hash over its compatibility-constraint id, both port
-        // names, the operator discriminant, the (sorted) port-mappings, and
-        // connector_sub. The per-connection hashes are sorted by raw `.0`
-        // then combined, mirroring the order-independence treatment used by
-        // the other buckets above.
+        // names, the operator discriminant, the (sorted) port-mappings,
+        // connector_sub, and frame_constraint. Note: span is intentionally
+        // omitted (matching the convention used by other buckets). The
+        // per-connection hashes are sorted by raw `.0` then combined,
+        // mirroring the order-independence treatment used by the other
+        // buckets above.
         let conn_hash = {
             let mut per_conn: Vec<ContentHash> = self
                 .connections
@@ -583,9 +585,13 @@ impl EvaluationGraph {
                         "connector_sub:{:?}",
                         c.connector_sub
                     ));
+                    let frame_constraint_hash = ContentHash::of_str(&format!(
+                        "frame_constraint:{:?}",
+                        c.frame_constraint
+                    ));
                     ContentHash::combine_all([
                         cnid_hash, left_hash, right_hash, op_hash, pm_hash,
-                        connector_sub_hash,
+                        connector_sub_hash, frame_constraint_hash,
                     ])
                 })
                 .collect();
