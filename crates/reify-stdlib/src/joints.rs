@@ -4185,6 +4185,72 @@ mod tests {
         );
     }
 
+    // ── cylindrical constructor: validation surface (step-3) ─────────────────
+
+    /// Table-driven validation surface for the cylindrical constructor.
+    ///
+    /// Every row should produce `Value::Undef`. Covers wrong arg counts, axis
+    /// validation failures (reuses `validate_axis`'s contracts), translation_range
+    /// validation failures (LENGTH-typed bounded `Range`), and rotation_range
+    /// validation failures (ANGLE-typed bounded `Range`). Mirrors the structure
+    /// of `planar_invalid_args_returns_undef` and `spherical_invalid_args_returns_undef`.
+    #[test]
+    fn cylindrical_constructor_validation_table() {
+        let ax = axis_z_unit();
+        let tr = length_range_0_to_1m();
+        let rr = angle_range_0_to_pi();
+
+        // Wrong-dimensioned axis (LENGTH-typed Vector3)
+        let length_axis = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        // 2-component axis
+        let axis2 = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)]);
+        // Non-vector axis
+        let non_vec = Value::Real(1.0);
+        // Zero axis
+        let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        // NaN axis
+        let nan_axis = Value::Vector(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        // Unbounded range (lower=Some, upper=None)
+        let unbounded = Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+        let unbounded_angle = Value::Range {
+            lower: Some(Box::new(Value::angle(0.0))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        };
+
+        let cases: Vec<(&str, Vec<Value>)> = vec![
+            // (a) wrong arg counts
+            ("0 args",  vec![]),
+            ("1 arg",   vec![ax.clone()]),
+            ("2 args",  vec![ax.clone(), tr.clone()]),
+            ("4 args",  vec![ax.clone(), tr.clone(), rr.clone(), Value::Real(0.0)]),
+            // (b) axis invalid variants
+            ("axis: bare Real",          vec![non_vec.clone(), tr.clone(), rr.clone()]),
+            ("axis: 2-component",        vec![axis2.clone(), tr.clone(), rr.clone()]),
+            ("axis: LENGTH-dimensioned", vec![length_axis.clone(), tr.clone(), rr.clone()]),
+            ("axis: zero",               vec![zero_axis.clone(), tr.clone(), rr.clone()]),
+            ("axis: NaN",                vec![nan_axis.clone(), tr.clone(), rr.clone()]),
+            // (c) translation_range invalid
+            ("translation_range: bare Real",  vec![ax.clone(), Value::Real(1.0), rr.clone()]),
+            ("translation_range: unbounded",  vec![ax.clone(), unbounded.clone(), rr.clone()]),
+            ("translation_range: ANGLE-dim",  vec![ax.clone(), angle_range_0_to_pi(), rr.clone()]),
+            // (d) rotation_range invalid
+            ("rotation_range: bare Real",     vec![ax.clone(), tr.clone(), Value::Real(1.0)]),
+            ("rotation_range: unbounded",     vec![ax.clone(), tr.clone(), unbounded_angle.clone()]),
+            ("rotation_range: LENGTH-dim",    vec![ax.clone(), tr.clone(), length_range_0_to_1m()]),
+        ];
+
+        for (label, args) in &cases {
+            assert_builtin_undef("cylindrical", args, label);
+        }
+    }
+
     // ── cylindrical constructor: happy path (step-1) ─────────────────────────
 
     /// `cylindrical(axis, translation_range, rotation_range)` returns a 4-key Map
