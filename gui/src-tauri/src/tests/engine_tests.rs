@@ -211,8 +211,16 @@ fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
 
     let descriptors = session.get_mechanism_descriptors();
 
-    // After the terminal-mechanism filter, only m2 (terminal) appears;
-    // the assertion finds it by bodies_count=2.
+    // After the terminal-mechanism filter, only m2 (terminal) appears.
+    // m0 is consumed by `body(m0, …)` and m1 is consumed by `body(m1, …)`,
+    // so both are non-terminal and must be filtered out.
+    assert_eq!(
+        descriptors.len(),
+        1,
+        "only the terminal mechanism m2 should appear after the terminal-mechanism filter"
+    );
+
+    // Find m2 by bodies_count=2.
     let m2_desc = descriptors
         .iter()
         .find(|d| d.bodies_count == 2)
