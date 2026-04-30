@@ -83,7 +83,7 @@ impl<V> RealizationCache<V> {
     pub fn insert(&mut self, entity: &str, repr_kind: ReprKind, tol: f64, val: V) -> bool {
         self.buckets
             .entry(repr_kind)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .entry(entity.to_owned())
             .or_insert_with(ToleranceBucket::new)
             .insert(tol, val)
