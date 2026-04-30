@@ -556,7 +556,20 @@ pub fn solve_loop_closure(
 ///
 /// Downstream contract: chains terminate at the closing joint (the last
 /// element equals `loop_closure.closing_joint`), world sentinel stripped.
-/// These are ready to feed into `chain_transform` / `solve_loop_closure`.
+///
+/// **Caveat — cycle-case `chain_b` may contain a duplicated closing joint.**
+/// Loop closures recorded by the cycle/self-loop branch of `append_body`
+/// (mechanism.rs) encode `path_b` as `[world, ..., at, ..., at]` — the
+/// closing joint appears once mid-walk (as an ancestor of `parent`) and
+/// once at the end (as the appended closing edge). After world-sentinel
+/// stripping, `chain_b` therefore contains the closing joint twice and
+/// is **not** a valid linear kinematic chain. Such chains cannot be fed
+/// to `chain_transform` / `solve_loop_closure` without further validation
+/// (composing the same joint's transform twice in different positions
+/// is not physically meaningful). Parent-conflict-case chains are
+/// well-formed (no duplicated joints). Callers consuming these pairs
+/// should either filter out cycle-case loop closures or detect the
+/// duplicate-closing-joint shape and handle it explicitly.
 pub fn mechanism_loop_closure_chains(
     mech_map: &reify_types::Value,
 ) -> Option<Vec<(Vec<reify_types::Value>, Vec<reify_types::Value>)>> {
