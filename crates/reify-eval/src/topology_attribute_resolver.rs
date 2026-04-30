@@ -111,9 +111,8 @@ pub enum AttributeResolution {
     /// is in records-encounter order (which matches per-parent
     /// `split_index` ordering written by the propagator). Per PRD line 64,
     /// callers surface this for user disambiguation rather than silently
-    /// rebinding. A `TopologyAttributeStale` diagnostic with the
-    /// "split children" message sub-form has been pushed to the supplied
-    /// `diagnostics` vec.
+    /// rebinding. A `TopologyAttributeAmbiguousAfterSplit` diagnostic has
+    /// been pushed to the supplied `diagnostics` vec.
     AmbiguousAfterSplit { children: Vec<GeometryHandleId> },
 }
 
@@ -416,17 +415,20 @@ fn try_cluster_after_split(
     })
 }
 
-/// Push a `TopologyAttributeStale` Warning describing a `matched n
-/// split children of the same parent` outcome onto `diagnostics`.
+/// Push a `TopologyAttributeAmbiguousAfterSplit` Warning describing a
+/// `matched n split children of the same parent` outcome onto `diagnostics`.
 ///
-/// Sibling of [`emit_attribute_stale_diagnostic`]; both reuse the
-/// `TopologyAttributeStale` code so downstream consumers (LSP/MCP) need
-/// no new case. Message text intentionally diverges so the two sub-forms
-/// remain distinguishable in user-visible output and snapshot tests:
-///   - "matched N sub-shapes" → genuine ambiguity (Unresolved).
+/// Sibling of [`emit_attribute_stale_diagnostic`], which emits
+/// `TopologyAttributeStale` for the genuine-ambiguity / populator-bug path.
+/// This function uses the typed `TopologyAttributeAmbiguousAfterSplit` code
+/// so downstream consumers (LSP/MCP) can distinguish the two outcomes
+/// without substring-parsing the message. The human-readable message wording
+/// is preserved for user-visible output:
+///   - "matched N sub-shapes" → genuine ambiguity (Unresolved,
+///     `TopologyAttributeStale`).
 ///   - "matched N split children of the same parent" → split cluster
-///     (AmbiguousAfterSplit; user can disambiguate via split_by(...)
-///     once vocabulary v2 lands per task 10).
+///     (`AmbiguousAfterSplit`, `TopologyAttributeAmbiguousAfterSplit`; user
+///     can disambiguate via split_by(...) once vocabulary v2 lands per task 10).
 fn emit_split_children_diagnostic(
     selector_span: SourceSpan,
     n: usize,
@@ -437,7 +439,7 @@ fn emit_split_children_diagnostic(
             "topology-attribute selector matched {n} split children of the same parent \
              (disambiguate via split_by(...) selector once vocabulary v2 lands)"
         ))
-        .with_code(DiagnosticCode::TopologyAttributeStale)
+        .with_code(DiagnosticCode::TopologyAttributeAmbiguousAfterSplit)
         .with_label(DiagnosticLabel::new(selector_span, "selector call")),
     );
 }
@@ -719,8 +721,8 @@ mod tests {
     /// `mod_history` (the split-children signature: same parent, different
     /// `ModEntry`s). The role/idx query matches both. Per PRD line 64, the
     /// resolver surfaces the SET of children (rather than silently
-    /// rebinding) via `AmbiguousAfterSplit`, with a TopologyAttributeStale
-    /// diagnostic whose message names "split children" and the count.
+    /// rebinding) via `AmbiguousAfterSplit`, with a
+    /// `TopologyAttributeAmbiguousAfterSplit` diagnostic.
     #[test]
     fn resolve_returns_ambiguous_after_split_when_role_idx_match_clusters_on_parent_key() {
         let mut table = TopologyAttributeTable::default();
