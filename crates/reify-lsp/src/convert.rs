@@ -590,4 +590,38 @@ mod tests {
         assert_eq!(find_word_at_offset(source, 3), None);
         assert_eq!(find_word_at_offset(source, 100), None);
     }
+
+    // --- Candidate list → LSP data field (step-1) ---
+
+    /// Asserts that `convert_diagnostic` populates the LSP `data` field with a
+    /// `{"candidates": [...]}` JSON object when the source `Diagnostic` has a
+    /// non-empty candidate list attached via `with_candidates`.
+    #[test]
+    fn convert_diagnostic_surfaces_candidates_in_lsp_data_field() {
+        let source = "auto";
+        let diag = Diagnostic::error("test")
+            .with_candidates(vec!["A".to_string(), "B".to_string()])
+            .with_label(DiagnosticLabel::new(SourceSpan::new(0, 1), "x"));
+        let lsp = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp.data,
+            Some(serde_json::json!({"candidates": ["A", "B"]})),
+            "convert_diagnostic must populate data.candidates from Diagnostic.candidates"
+        );
+    }
+
+    /// Asserts that `convert_diagnostic` leaves `data` as `None` when the
+    /// source `Diagnostic` has no candidate list (the common case for all
+    /// non-candidate-bearing diagnostic codes).
+    #[test]
+    fn convert_diagnostic_leaves_data_none_when_candidates_empty() {
+        let source = "anything";
+        let diag = Diagnostic::error("x");
+        let lsp = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp.data,
+            None,
+            "convert_diagnostic must leave data as None when no candidates are attached"
+        );
+    }
 }
