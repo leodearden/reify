@@ -147,6 +147,62 @@ fn select_returns_ambiguous_for_two_strict_feasible_candidates() {
     assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
 }
 
+// ─── step-9: NoCandidate diagnostic shape (full contract) ─────────────────
+
+/// Pins the NO_CANDIDATE diagnostic's full contract: rejected FQNs land in
+/// the structured `candidates` field (in input order, alphabetical because
+/// Phase B preserves Phase A's input order), the label sits at the
+/// supplied `use_site_span`, and the message text mentions the bound name.
+#[test]
+fn no_candidate_diagnostic_carries_rejected_fqns_in_candidates_field_and_label_at_use_site() {
+    let cnid_a = ConstraintNodeId::new("Bearing", 0);
+    let cnid_b = ConstraintNodeId::new("Bearing", 1);
+    let use_site_span = SourceSpan::new(100, 110);
+    let feasibility = FeasibilityResult::Empty {
+        rejected: vec![
+            RejectedCandidate {
+                name: "GraphiteSeal".to_string(),
+                violated_constraints: vec![cnid_a],
+            },
+            RejectedCandidate {
+                name: "ORingSeal".to_string(),
+                violated_constraints: vec![cnid_b],
+            },
+        ],
+    };
+
+    let mut diagnostics = Vec::new();
+    let result = select_candidate(
+        feasibility,
+        &["Seal".to_string()],
+        false,
+        use_site_span,
+        &mut diagnostics,
+    );
+
+    assert_eq!(result, SelectionResult::NoCandidate);
+    assert_eq!(diagnostics.len(), 1);
+    let d = &diagnostics[0];
+    assert_eq!(
+        d.candidates,
+        vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
+        "NO_CANDIDATE diagnostic.candidates must contain rejected FQNs in input order"
+    );
+    assert!(
+        !d.labels.is_empty(),
+        "NO_CANDIDATE diagnostic must carry a label at the use-site span"
+    );
+    assert_eq!(
+        d.labels[0].span, use_site_span,
+        "NO_CANDIDATE label span must equal supplied use_site_span"
+    );
+    assert!(
+        d.message.contains("Seal"),
+        "NO_CANDIDATE message must reference the bound name 'Seal'; got: {}",
+        d.message
+    );
+}
+
 // ─── step-7: ≥2 feasible under free — Selected(lex_first) + Warning ──────
 
 /// When two or more candidates are feasible and `free=true`,
