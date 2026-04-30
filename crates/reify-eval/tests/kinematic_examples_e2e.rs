@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{Value, ValueCellId};
+use reify_types::{Satisfaction, Value, ValueCellId};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
@@ -151,6 +151,42 @@ fn counter_mass_balance_eval_produces_eleven_stationary_coms() {
         assert!(
             z.abs() < 1e-9,
             "coms[{i}].z should be ~0 m, got {z} m (COM stationarity violated)"
+        );
+    }
+}
+
+/// `engine.check()` on `counter_mass_balance.ri` produces a non-empty
+/// `constraint_results` list in which every entry is `Satisfaction::Satisfied`.
+///
+/// Pins that the reify-level `constraint snap_count == 11` and
+/// `constraint stationary` assertions are actually evaluated by the constraint
+/// checker — if the .ri had no constraints this test would fail the non-empty
+/// assertion.
+#[test]
+fn counter_mass_balance_constraints_all_satisfied() {
+    let compiled = cmb_compiled();
+
+    let mut engine = make_simple_engine();
+    // eval first so the engine state is populated
+    let eval_result = engine.eval(compiled);
+    let eval_errors = collect_errors(&eval_result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error diagnostics, got: {eval_errors:?}"
+    );
+
+    let check_result = engine.check(compiled);
+    assert!(
+        !check_result.constraint_results.is_empty(),
+        "counter_mass_balance.ri should have at least one constraint (snap_count == 11, stationary)"
+    );
+    for entry in &check_result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
         );
     }
 }
