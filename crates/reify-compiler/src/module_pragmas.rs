@@ -38,6 +38,14 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
 /// specifies the wording template, not a literal version string.
 const COMPILER_SUPPORTED_VERSION: (u16, u16) = (0, 1);
 
+/// Known v0.2 kernel idents accepted by `#kernel(<ident>)` (PRD
+/// `docs/prds/v0_2/multi-kernel.md` §10.8). Sorted alphabetically so the
+/// joined wording in the unknown-kernel error message is deterministic. Adding
+/// a fifth kernel here updates both the happy-path allow-list and the
+/// user-facing error message from a single edit. Truck is intentionally
+/// omitted per the PRD's "Truck dropped from v0.2".
+const KNOWN_V02_KERNELS: &[&str] = &["fidget", "manifold", "occt", "openvdb"];
+
 /// Append the spans of every pragma whose `name` matches `target_name` in
 /// `pragmas` to `out`. Shared by `warn_block_level_precision`,
 /// `warn_block_level_solver`, and `warn_block_level_kernel` so a future
@@ -698,15 +706,17 @@ fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
         first_seen = true;
 
         match pragma.args.as_slice() {
-            // Happy path: `#kernel(occt)` — the only valid v0.1 form.
-            [PragmaArg::Bare(PragmaValue::Ident(name))] if name == "occt" => {
+            // Happy path: any of the v0.2 known-kernel idents per PRD §10.8.
+            [PragmaArg::Bare(PragmaValue::Ident(name))]
+                if KNOWN_V02_KERNELS.contains(&name.as_str()) =>
+            {
                 module.kernel_pragma = Some(name.clone());
             }
-            // Non-occt ident: PRD §4 — error-level (not warning) so the v0.1
-            // limitation is discoverable. Storage still mirrors the user's
-            // verbatim ident, mirroring `apply_version_pragma`'s policy of
-            // writing `module.declared_version` even when emitting an error
-            // for a too-new version.
+            // Unknown ident: error-level (not warning) so an unknown-kernel
+            // typo is discoverable. Storage still mirrors the user's verbatim
+            // ident, mirroring `apply_version_pragma`'s policy of writing
+            // `module.declared_version` even when emitting an error for a
+            // too-new version.
             [PragmaArg::Bare(PragmaValue::Ident(name))] => {
                 module.diagnostics.push(
                     Diagnostic::error(format!(
