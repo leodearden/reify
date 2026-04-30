@@ -748,7 +748,10 @@ pub fn resolve_auto_type_params(
     let mut per_param: Vec<(String, SelectionResult)> = Vec::new();
     let mut substitution: Vec<(String, String)> = Vec::new();
 
-    // declared order — see PRD criterion 6
+    // declared order — see PRD criterion 6.
+    // After a Selected outcome the loop FALLS THROUGH to the next param
+    // (no early return); per_param and substitution both accumulate in
+    // declared order.
     for param in params {
         // Phase A: enumerate candidates.
         let enumeration = enumerate_candidates(
