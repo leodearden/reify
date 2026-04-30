@@ -9,6 +9,8 @@
 
 This document is the complete API reference for the Reify standard library. It is a companion to the Reify Language Specification, which defines the core language. The prelude (automatically imported into every module) is defined in the language specification (Section 7.6). This document covers all `std.*` modules beyond the prelude.
 
+Many standard-library traits (e.g. `Seal`, `Material`, geometry traits in §3.10) appear as bounds on `auto:` type parameters. For the resolution algorithm — per-parameter BFS, cap of 10 candidates, lexicographic tiebreak by FQN, and deferral of cross-parameter backtracking to v0.2 — see `docs/auto-type-param-resolution.md`.
+
 ---
 
 ## Module Overview
