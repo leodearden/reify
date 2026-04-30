@@ -91,3 +91,62 @@ fn empty_params_returns_vacuous_success() {
         diagnostics
     );
 }
+
+// ─── step-3: single-param happy path ──────────────────────────────────────
+
+/// One `AutoTypeParam` whose bounds are satisfied by exactly one in-scope
+/// structure (`ORingSeal : Seal`). Expected outcome: `per_param` has one
+/// entry `("T", Selected("ORingSeal"))`, `substitution` has one entry
+/// `("T", "ORingSeal")`, and zero diagnostics are emitted.
+///
+/// Pins that the orchestrator correctly threads a single param through
+/// Phase A → B → C and produces a `Selected` outcome recorded in both
+/// `per_param` and `substitution`.
+#[test]
+fn single_param_happy_path_returns_selected() {
+    let source = r#"
+trait Seal {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![AutoTypeParam {
+        name: "T".to_string(),
+        bounds: vec!["Seal".to_string()],
+        free: false,
+        use_site_span: SourceSpan::empty(0),
+    }];
+
+    let outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![("T".to_string(), SelectionResult::Selected("ORingSeal".to_string()))],
+            substitution: vec![("T".to_string(), "ORingSeal".to_string())],
+        },
+        "single-param happy path must produce Selected(ORingSeal)"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "single-param happy path must emit zero diagnostics, got: {:?}",
+        diagnostics
+    );
+}
