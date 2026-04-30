@@ -855,6 +855,54 @@ fn collect_snapshot_bind_pairs_stays_silent_for_empty_bind_list() {
     );
 }
 
+/// `snapshot(m1, j1)` — second arg is an `Ident` (a joint cell), not a
+/// `ListLiteral`.  This is case (a): args[1] is not a ListLiteral, which
+/// suggests a user-shadowed `snapshot` or malformed call — must emit DEBUG.
+const NON_LIST_SNAPSHOT_ARG_SOURCE: &str = r#"
+structure Kinematic {
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solid_a", j1)
+    let snap = snapshot(m1, j1)
+}
+"#;
+
+#[test]
+fn collect_snapshot_bind_pairs_emits_debug_when_args1_not_listliteral() {
+    // Regression-pin for case (a): snapshot() with a non-ListLiteral second
+    // arg must emit exactly 1 DEBUG event at the snapshot_bind_pairs target.
+    // Should pass after step-2 impl.
+    let mut session = make_session();
+    session
+        .load_from_source(NON_LIST_SNAPSHOT_ARG_SOURCE, "kinematic")
+        .expect("load non-list-arg snapshot source");
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine::snapshot_bind_pairs")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(Ordering::Acquire);
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event for snapshot(m1, j1) where j1 is not a ListLiteral \
+         (case a — potential user-shadowed snapshot); got {}",
+        debug_count
+    );
+    assert_eq!(
+        warn_count, 0,
+        "expected 0 WARN events at target reify_gui::engine::snapshot_bind_pairs; got {}",
+        warn_count
+    );
+}
+
 #[test]
 fn resolve_driving_params_emits_debug_for_param_checked_match() {
     // Step 6 RED: SNAPSHOT_PARAM_BIND_SOURCE has bind(y_axis, y_pos) where
