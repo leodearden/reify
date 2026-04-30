@@ -710,6 +710,49 @@ mod tests {
         );
     }
 
+    /// Locks the full LSP conversion contract for `AutoTypeParamNoCandidate`.
+    ///
+    /// Mirrors the producer site at `auto_type_param.rs:537-542`:
+    /// severity=ERROR, code="AutoTypeParamNoCandidate", message contains
+    /// "rejected by constraint", data carries the rejected-candidate FQNs.
+    /// Message text round-trip is preserved; rejection reasons remain
+    /// surfaced through the message body per producer convention.
+    #[test]
+    fn convert_diagnostic_auto_type_param_no_candidate_full_lsp_contract() {
+        use reify_types::DiagnosticCode;
+        let source = "auto";
+        let diag = Diagnostic::error(
+            "auto type parameter has no feasible candidates for bound 'Seal': 'X' rejected by constraint Foo#0, 'Y' rejected by constraint Foo#1",
+        )
+        .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(0, 4),
+            "auto type-param bound 'Seal' here",
+        ))
+        .with_candidates(vec!["X".to_string(), "Y".to_string()]);
+        let lsp = convert_diagnostic(&diag, source, &test_uri());
+        assert_eq!(
+            lsp.severity,
+            Some(DiagnosticSeverity::ERROR),
+            "NO_CANDIDATE must be ERROR severity"
+        );
+        assert_eq!(
+            lsp.code,
+            Some(NumberOrString::String("AutoTypeParamNoCandidate".to_string())),
+            "NO_CANDIDATE code must wire as 'AutoTypeParamNoCandidate'"
+        );
+        assert!(
+            lsp.message.contains("rejected by constraint"),
+            "NO_CANDIDATE message must contain 'rejected by constraint', got: {:?}",
+            lsp.message
+        );
+        assert_eq!(
+            lsp.data,
+            Some(serde_json::json!({"candidates": ["X", "Y"]})),
+            "NO_CANDIDATE data must carry rejected candidate FQNs"
+        );
+    }
+
     // --- Candidate list → LSP data field (step-1) ---
 
     /// Asserts that `convert_diagnostic` populates the LSP `data` field with a
