@@ -679,16 +679,17 @@ fn apply_solver_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 
 /// Process the first well-formed module-level `#kernel(<ident>)` pragma: store
 /// the user-declared kernel name on `module.kernel_pragma`. See
-/// `docs/prds/pragmas.md` §4.
+/// `docs/prds/pragmas.md` §4 and `docs/prds/v0_2/multi-kernel.md` §10.8.
 ///
-/// In v0.1, only `#kernel(occt)` is accepted; any other ident emits an
-/// error-level diagnostic ("kernel '<other>' is deferred to v0.2; v0.1
-/// supports only #kernel(occt)") to make the v0.1 limitation discoverable.
-/// Per the storage-reflects-declared design decision, `kernel_pragma` mirrors
-/// the user's verbatim ident regardless of validation outcome — downstream
-/// tooling (doc generator, future kernel-registry lookup) needs the verbatim
-/// name. Only malformed shapes (zero args, key=value-first, non-Ident bare
-/// values) leave the field as None.
+/// v0.2 accepts any ident in `KNOWN_V02_KERNELS` (`{fidget, manifold, occt,
+/// openvdb}`); any other ident emits an error-level diagnostic ("unknown
+/// kernel '<name>'; v0.2 supports {fidget, manifold, occt, openvdb}") so an
+/// unknown-kernel typo is discoverable. Per the storage-reflects-declared
+/// design decision, `kernel_pragma` mirrors the user's verbatim ident
+/// regardless of validation outcome — downstream tooling (doc generator,
+/// future kernel-registry lookup) needs the verbatim name. Only malformed
+/// shapes (zero args, key=value-first, non-Ident bare values) leave the
+/// field as None.
 fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
     let mut first_seen = false;
     for pragma in &parsed.pragmas {
@@ -716,13 +717,16 @@ fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             // typo is discoverable. Storage still mirrors the user's verbatim
             // ident, mirroring `apply_version_pragma`'s policy of writing
             // `module.declared_version` even when emitting an error for a
-            // too-new version.
+            // too-new version. The supported-list wording is derived from
+            // `KNOWN_V02_KERNELS` so a future kernel addition updates the
+            // message from a single source.
             [PragmaArg::Bare(PragmaValue::Ident(name))] => {
+                let supported = KNOWN_V02_KERNELS.join(", ");
                 module.diagnostics.push(
                     Diagnostic::error(format!(
-                        "kernel '{name}' is deferred to v0.2; v0.1 supports only #kernel(occt)"
+                        "unknown kernel '{name}'; v0.2 supports {{{supported}}}"
                     ))
-                    .with_label(DiagnosticLabel::new(pragma.span, "deferred to v0.2")),
+                    .with_label(DiagnosticLabel::new(pragma.span, "unknown kernel")),
                 );
                 module.kernel_pragma = Some(name.clone());
             }
