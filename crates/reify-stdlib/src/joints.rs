@@ -158,7 +158,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             Value::Map(m)
         }
         "transform_at" => {
-            if args.len() != 2 {
+            // 1-arg form is accepted for fixed joints only (0-DOF: identity Transform,
+            // no motion variable). 0-arg and 3+-arg calls always return Undef.
+            // 2-arg form (the chain-machinery path) falls through unchanged.
+            if args.is_empty() || args.len() > 2 {
                 return Some(Value::Undef);
             }
             let map = match &args[0] {
@@ -169,22 +172,35 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 Some(Value::String(s)) => s.as_str(),
                 _ => return Some(Value::Undef),
             };
+            // 1-arg form: only valid for the 0-DOF fixed joint. All other kinds need
+            // a real motion variable (length, angle, orientation, list, etc.) and
+            // return Undef when called with 1 arg. The 2-arg form falls through to
+            // the per-kind match below unchanged (task 2688).
+            if args.len() == 1 {
+                return Some(if kind == "fixed" {
+                    fixed_identity_transform()
+                } else {
+                    Value::Undef
+                });
+            }
             match kind {
                 "prismatic" | "revolute" => transform_at_simple_joint(kind, map, &args[1]),
-                // 0-DOF fixed joint: returns the identity Transform when the second
-                // arg is a numeric/dimensioned scalar (Real, Int, or Scalar of any
-                // dimension). Returns Undef when the second arg is Undef (Undef
-                // propagation) OR any non-numeric variant (String, List, Map,
-                // Vector, Bool, etc.). Type/dimension of the numeric second arg is
-                // otherwise irrelevant — a 0-DOF joint has no motion variable.
-                // Mirrors the type-checking discipline of every other transform_at arm
-                // (task 2687).
+                // 0-DOF fixed joint: the canonical user form is now `transform_at(fixed_joint)`
+                // (1-arg, task 2688); this 2-arg arm is the chain-machinery path used by
+                // `chain_transform` → `value_for_joint` → `transform_at(joint, value)`.
+                // Returns the identity Transform when the second arg is a
+                // numeric/dimensioned scalar (Real, Int, or Scalar of any dimension).
+                // Returns Undef when the second arg is Undef (Undef propagation) OR any
+                // non-numeric variant (String, List, Map, Vector, Bool, etc.).
+                // Type/dimension of the numeric second arg is otherwise irrelevant — a
+                // 0-DOF joint has no motion variable. Mirrors the type-checking discipline
+                // of every other transform_at arm (task 2687).
                 //
                 // NaN/Inf values are intentionally accepted (unlike sibling arms which
-                // enforce is_finite() on the motion variable) because the motion
-                // variable is unused for a 0-DOF joint — NaN/Inf never propagates
-                // into the identity Transform output. A finiteness guard would be a
-                // no-op here and is left out for clarity.
+                // enforce is_finite() on the motion variable) because the motion variable
+                // is unused for a 0-DOF joint — NaN/Inf never propagates into the identity
+                // Transform output. A finiteness guard would be a no-op here and is left
+                // out for clarity.
                 "fixed" => {
                     if args[1].is_undef() {
                         return Some(Value::Undef);
@@ -197,14 +213,7 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     if !matches!(&args[1], Value::Real(_) | Value::Int(_) | Value::Scalar { .. }) {
                         return Some(Value::Undef);
                     }
-                    Value::Transform {
-                        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
-                        translation: Box::new(Value::Vector(vec![
-                            Value::length(0.0),
-                            Value::length(0.0),
-                            Value::length(0.0),
-                        ])),
-                    }
+                    fixed_identity_transform()
                 }
                 // 3-DOF planar joint: motion_vars is a Value::List of 3 elements
                 // [x_length, y_length, theta_angle].
@@ -812,6 +821,27 @@ fn joint_jacobian_value(value: &Value) -> Value {
             scale_jacobian(&parent_jac, ratio_f64)
         }
         _ => Value::Undef,
+    }
+}
+
+/// Construct the canonical identity `Transform` for a 0-DOF fixed joint.
+///
+/// Returns `Value::Transform { rotation: Orientation(w=1, x=0, y=0, z=0),
+/// translation: Vector([length(0.0); 3]) }`.
+///
+/// Shared by the 1-arg ergonomic path (`transform_at(fixed_joint)`, task 2688)
+/// and the 2-arg chain-machinery path (`transform_at(fixed_joint, motion_var)`,
+/// task 2687). Single source of truth — avoids literal drift if the identity
+/// representation ever changes. Mirrors the `make_jacobian` / `make_joint` /
+/// `make_planar` / `make_spherical` helper pattern in this file.
+fn fixed_identity_transform() -> Value {
+    Value::Transform {
+        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
     }
 }
 
