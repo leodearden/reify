@@ -14,7 +14,8 @@ pub fn read_f64(v: &Value, label: &str) -> f64 {
 pub fn decompose_point3(v: &Value, label: &str) -> [f64; 3] {
     let comps = match v {
         Value::Point(c) if c.len() == 3 => c,
-        other => panic!("{label}: expected Value::Point len=3, got {other:?}"),
+        Value::Point(c) => panic!("{label}: expected Value::Point len=3, got len={}", c.len()),
+        other => panic!("{label}: expected Value::Point, got {other:?}"),
     };
     [
         read_f64(&comps[0], &format!("{label}.p[0]")),
