@@ -4389,6 +4389,60 @@ fn get_mechanism_descriptors_reads_from_consumed_idents_cache() {
     assert_eq!(m1_desc.bodies_count, 1, "m1 should have 1 body");
 }
 
+/// Proves that `get_mechanism_descriptors` does NOT re-invoke
+/// `collect_consumed_mechanism_idents` on a cache hit.
+///
+/// Strategy: load HAPPY_MECHANISM_SOURCE, confirm the baseline result is ["m2"]
+/// (cache is populated as a side effect), then inject a stripped ParsedModule
+/// with zero declarations.  A second call must still return ["m2"] — if the
+/// implementation re-walked parsed_cache, the empty declarations would yield an
+/// empty consumed set and m0/m1 would appear in the result (3 cells instead of 1).
+/// Mirrors the `get_containing_definition_reads_from_parsed_cache` pattern.
+#[test]
+fn get_mechanism_descriptors_does_not_reinvoke_collect_on_cache_hit() {
+    let mut session = make_session();
+    session
+        .load_from_source(HAPPY_MECHANISM_SOURCE, "kinematic")
+        .expect("load should succeed");
+
+    // Baseline: with the real cache ({m0, m1} consumed), only m2 (the terminal cell)
+    // should appear.
+    let baseline = session.get_mechanism_descriptors();
+    let baseline_names: Vec<&str> = baseline.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        baseline_names,
+        vec!["m2"],
+        "baseline: only m2 (the terminal cell) should appear; got {:?}",
+        baseline_names
+    );
+
+    // Strip the parsed_cache: inject a ParsedModule with no declarations.
+    // If the implementation re-walked parsed_cache, the empty declarations would
+    // yield an empty consumed set → all three mechanism cells (m0, m1, m2) would
+    // pass the terminal filter → 3 cells instead of 1.
+    let stripped = {
+        let mut p = session
+            .parsed_cache_for_test()
+            .expect("parsed_cache should be Some after load")
+            .clone();
+        p.declarations = Vec::new();
+        p
+    };
+    session.override_parsed_cache_for_test(stripped);
+
+    // Second call must still return only ["m2"] — proves the cache-hit path does
+    // not consult parsed_cache.
+    let second = session.get_mechanism_descriptors();
+    let second_names: Vec<&str> = second.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        second_names,
+        vec!["m2"],
+        "after stripping parsed_cache, get_mechanism_descriptors should still return [\"m2\"] \
+         (proves collect_consumed_mechanism_idents is not re-invoked on cache hits); got {:?}",
+        second_names
+    );
+}
+
 #[test]
 fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
     let checker = SimpleConstraintChecker;
