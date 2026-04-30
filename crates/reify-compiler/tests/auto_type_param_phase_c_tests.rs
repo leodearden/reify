@@ -147,6 +147,42 @@ fn select_returns_ambiguous_for_two_strict_feasible_candidates() {
     assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
 }
 
+// ─── step-11: Ambiguous message — lex-first explicit-substitution hint ──
+
+/// The AMBIGUOUS message must surface the lex-first feasible candidate as
+/// a suggested explicit substitution, not just list it among the
+/// `candidates` structured field. This pins the human-readable surface so
+/// a regression that emits an empty/generic message would fail.
+#[test]
+fn ambiguous_diagnostic_message_includes_lex_first_explicit_substitution_suggestion() {
+    let feasibility = FeasibilityResult::Feasible {
+        accepted: vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
+        rejected: vec![],
+    };
+    let mut diagnostics = Vec::new();
+    let _ = select_candidate(
+        feasibility,
+        &["Seal".to_string()],
+        false,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    let d = &diagnostics[0];
+    assert!(
+        d.message.contains("GraphiteSeal"),
+        "AMBIGUOUS message must contain the lex-first candidate 'GraphiteSeal'; got: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("explicit")
+            || d.message.contains("instead")
+            || d.message.contains("suggested"),
+        "AMBIGUOUS message must convey that 'GraphiteSeal' is a suggested explicit substitution; got: {}",
+        d.message
+    );
+}
+
 // ─── step-9: NoCandidate diagnostic shape (full contract) ─────────────────
 
 /// Pins the NO_CANDIDATE diagnostic's full contract: rejected FQNs land in
