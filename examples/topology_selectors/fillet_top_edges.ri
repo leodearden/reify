@@ -1,0 +1,26 @@
+// Worked example: fillet only top-face edges via topology-relational selectors
+// PRD: docs/prds/topology-selectors.md task 7
+//
+// Demonstrates the topology-relational selectors from §3.9: pick the single
+// upward-facing face of a box, walk its adjacent faces, collect the edges shared
+// with each adjacent face, and fillet only those (the four top-perimeter edges).
+//
+// Coverage:
+//   1. faces_by_normal(solid, direction, tol) + single() → top-face selection
+//   2. flat_map(adjacent_faces(solid, face), |f| shared_edges(face, f)) →
+//      walk topology to collect the perimeter edges of the chosen face
+//   3. fillet(solid, edges, radius) → apply the fillet to the curated edge set
+//
+// `single`, `flat_map`, `faces_by_normal`, `adjacent_faces`, `shared_edges`
+// are pending language-level stdlib bindings (tasks 2698 for the list helpers
+// and 2699 for the topology selectors), so this fixture is exercised parse-only
+// today by crates/reify-eval/tests/topology_selector_smoke_tests.rs.
+// Compile-with-stdlib and runtime-eval coverage will be added in the follow-up
+// smoke-deepening task (2691).
+
+structure def FilletTopEdges {
+    let b = box(50mm, 30mm, 10mm)
+    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))
+    let result = fillet(b, top_edges, 1mm)
+}

@@ -23,7 +23,24 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 ///
 /// Default: empty — all 43 example files compile clean on HEAD after task #2346
 /// (recursive examples_smoke discovery) was merged on 2026-04-26.
-const SKIP_SET: &[(&str, &str)] = &[];
+const SKIP_SET: &[(&str, &str)] = &[
+    (
+        "topology_selectors/block_inertia.ri",
+        "topology-selectors PRD task 7 worked example; \
+         compile_with_stdlib gated on task 2699 (moment_of_inertia language-level wiring) \
+         and task 2696 (Tensor surface-syntax + MomentOfInertia named dim). \
+         Parse-only smoke is in crates/reify-eval/tests/topology_selector_smoke_tests.rs; \
+         full coverage will land via task 2691.",
+    ),
+    (
+        "topology_selectors/fillet_top_edges.ri",
+        "topology-selectors PRD task 7 worked example; \
+         compile_with_stdlib gated on tasks 2698 (single/flat_map list helpers) \
+         and 2699 (faces_by_normal/adjacent_faces/shared_edges language-level wiring). \
+         Parse-only smoke is in crates/reify-eval/tests/topology_selector_smoke_tests.rs; \
+         full coverage will land via task 2691.",
+    ),
+];
 
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
 /// stdlib prelude, accumulate every file that produces an Error-severity
