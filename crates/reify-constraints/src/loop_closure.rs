@@ -580,7 +580,7 @@ pub fn solve_loop_closure(
 /// Returns `None` on any shape error:
 /// - a `loop_closures` entry is not a `Value::Map`
 /// - `path_a` or `path_b` fields are missing or not a `Value::List`
-/// - either path is empty (no world sentinel to strip)
+/// - either path has fewer than 2 elements (the stripped tail would not terminate at a closing joint)
 /// - the first element of a path does not have `kind = "world"`
 ///
 /// Downstream contract: chains terminate at the closing joint (the last
