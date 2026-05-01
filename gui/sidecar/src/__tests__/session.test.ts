@@ -899,6 +899,41 @@ describe('SidecarSession multi-turn streaming', () => {
     // Fixed:  'Let me carefully reason about a much longer-form chain of thought'
     expect(deltaContents).toContain('Let me carefully reason about a much longer-form chain of thought');
   });
+
+  it('handles assistant event without message.id gracefully — no crash, deltas emit correctly', async () => {
+    // Verify the fallback branch (event.message.id absent):
+    // (a) No exception thrown — session completes normally.
+    // (b) Deltas emit correctly for monotonically growing text within a single turn.
+    // (c) Counters do not reset spuriously between partial updates.
+    //
+    // Without message.id the `typeof event.message.id === 'string'` guard never fires,
+    // so lastTextLen accumulates normally (no reset) and only incremental deltas emit.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // No message.id on any event — exercises the fallback path
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } },
+      { type: 'result', session_id: 'sess-no-id' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    // (a) Must complete without throwing
+    await expect(
+      session.handleMessage({ type: 'send_message', id: 'msg-no-id', text: 'Test no id' }),
+    ).resolves.toBeUndefined();
+
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    const deltaContents = textDeltas.map((o) => (o as any).content);
+
+    // (b) Deltas emit correctly: first partial → 'Hello', second partial → ' world' (incremental only)
+    expect(deltaContents).toContain('Hello');
+    expect(deltaContents).toContain(' world');
+
+    // (c) No spurious reset: the full 'Hello world' must NOT appear as a single delta,
+    // proving lastTextLen was NOT zeroed between the two partial events.
+    expect(deltaContents).not.toContain('Hello world');
+  });
 });
 
 describe('SidecarSession reset-boundary tool correlation preservation', () => {
