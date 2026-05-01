@@ -8,6 +8,7 @@ pub mod builders;
 pub mod fixtures;
 pub mod helpers;
 pub mod ignore_hygiene;
+pub mod kernel_assertions;
 pub mod lsp_fixtures;
 pub mod mocks;
 pub mod tolerance_fixtures;
