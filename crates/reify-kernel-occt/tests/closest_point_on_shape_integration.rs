@@ -117,24 +117,25 @@ fn closest_point_when_point_lies_on_face() {
 
 /// Query point (0.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// `BRepExtrema_DistShapeShape` treats the query vertex as having distance 0
-/// to the solid when the vertex is inside it.  In this degenerate case OCCT
-/// reports distance 0 and `PointOnShape1` returns the query point itself —
-/// not a boundary projection onto the nearest face.
+/// Raw `BRepExtrema_DistShapeShape` against the solid reports distance 0 for
+/// interior points and returns the query point itself via `PointOnShape1`.
+/// The C++ wrapper detects this (dist < 1e-10) and re-runs the extrema against
+/// the outer shell so the returned witness lies on the boundary.
 ///
-/// This test locks in that observed contract: the call must succeed without
-/// error (NbSolution ≥ 1) and the returned coordinates must equal the query
-/// point (distance ≈ 0).
+/// This test locks in that observed contract: the call must succeed and the
+/// returned witness must lie on the box surface (distance ≈ 5.0 from the
+/// origin, since each face is 5 units away).
 #[test]
 fn closest_point_for_interior_point_at_origin() {
     let (kernel, box_id) = box_kernel();
     match kernel.closest_point_on_shape(box_id, 0.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
-            // OCCT returns the query point itself for interior queries (dist ≈ 0).
+            // The wrapper projects onto the outer shell, so the witness is on
+            // the box surface at distance ≈ 5.0 from the origin.
             let dist = (x * x + y * y + z * z).sqrt();
             assert!(
-                dist < 1e-6,
-                "expected interior query to return the query point (dist≈0), \
+                (dist - 5.0).abs() < 1e-6,
+                "expected interior query to return a surface witness (dist≈5), \
                  got ({x}, {y}, {z}), dist={dist}"
             );
         }
