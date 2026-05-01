@@ -1247,6 +1247,47 @@ mod tests {
         assert_eq!(results[0].satisfaction, Satisfaction::Violated);
     }
 
+    /// Pins the per-call FIFO response queue contract used by v0.2 DFS
+    /// backtracking tests (task 2659). Each `.check(...)` call pops one
+    /// `Satisfaction` from the queue head and applies it to every constraint
+    /// in that call's input. Once the queue is exhausted, subsequent calls
+    /// fall back to the existing per-id map / default behavior.
+    ///
+    /// Without this contract DFS leaf-iteration tests can't express
+    /// "leaf 1 violated, leaf 2 satisfied" because substitution mechanics
+    /// (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) are deferred
+    /// per the PRD's "implement v0.2 search with full re-check at each
+    /// binding" decision — every leaf would otherwise see an identical
+    /// `ConstraintInput` and receive the same verdict.
+    #[test]
+    fn mock_constraint_checker_call_queue_pops_per_call_then_falls_back_to_default() {
+        let cnid = ConstraintNodeId::new("Bracket", 0);
+        let checker = MockConstraintChecker::new()
+            .with_default(Satisfaction::Satisfied)
+            .with_call_queue(vec![Satisfaction::Violated, Satisfaction::Indeterminate]);
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let make_input = || ConstraintInput {
+            constraints: vec![(cnid.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        // Call 1: queue head is `Violated`.
+        let r1 = checker.check(&make_input());
+        assert_eq!(r1[0].satisfaction, Satisfaction::Violated);
+
+        // Call 2: queue head is `Indeterminate`.
+        let r2 = checker.check(&make_input());
+        assert_eq!(r2[0].satisfaction, Satisfaction::Indeterminate);
+
+        // Call 3: queue exhausted → fall back to `default = Satisfied`.
+        let r3 = checker.check(&make_input());
+        assert_eq!(r3[0].satisfaction, Satisfaction::Satisfied);
+    }
+
     // step-7 (Task 273 — @optimized plumbing): failing tests for MockOptimizedImpl.
     //
     // MockOptimizedImpl mirrors MockConstraintChecker but also records every
