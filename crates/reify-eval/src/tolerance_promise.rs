@@ -488,4 +488,48 @@ mod tests {
     fn is_promise_insufficient_panics_in_debug_on_negative_promise() {
         is_promise_insufficient(1e-6, -1.0e-3);
     }
+
+    /// Pinned by the diagnostic-emission contract: when a downstream demand
+    /// is tighter than an imported-geometry tolerance promise, the runtime
+    /// emits a `Severity::Warning` diagnostic carrying
+    /// `DiagnosticCode::ImportedTolerancePromiseInsufficient` and a message
+    /// naming the input template. PRD: "emit a diagnostic (warn, not error)
+    /// and proceed with the as-imported realization."
+    ///
+    /// Asserts use substring matching on the rendered message rather than
+    /// pinning float-render format — the canonical message format must
+    /// include the input template name and the word "insufficient", but the
+    /// exact float rendering ("5e-5" vs "0.00005" vs "50e-6") is left to
+    /// `format!`'s default behavior.
+    #[test]
+    fn imported_tolerance_promise_diagnostic_builds_warning_with_code_and_template_name() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = imported_tolerance_promise_diagnostic("STEPInput", 1e-6, 50e-6);
+
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning (PRD: warn, not error — \
+             runtime proceeds with as-imported realization)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::ImportedTolerancePromiseInsufficient),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers"
+        );
+        assert!(
+            diag.message.contains("STEPInput"),
+            "message must name the input template so authors can locate the \
+             import site (got: {:?})",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("insufficient"),
+            "canonical message form includes the word \"insufficient\" so \
+             grep-by-text consumers can locate this code path (got: {:?})",
+            diag.message
+        );
+    }
 }
