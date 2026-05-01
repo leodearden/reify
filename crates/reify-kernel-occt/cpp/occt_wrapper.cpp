@@ -2630,12 +2630,27 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
         if (!vertex_maker.IsDone()) {
             throw std::runtime_error("closest_point_on_shape: vertex construction failed");
         }
-        BRepExtrema_DistShapeShape dist(shape.shape, vertex_maker.Vertex());
+        TopoDS_Shape vertex = vertex_maker.Vertex();
+        BRepExtrema_DistShapeShape dist(shape.shape, vertex);
         if (!dist.IsDone()) {
             throw std::runtime_error("closest_point_on_shape: BRepExtrema_DistShapeShape failed");
         }
         if (dist.NbSolution() < 1) {
             throw std::runtime_error("closest_point_on_shape: no solution found");
+        }
+        // When the query point is inside a solid, OCCT reports distance 0 and
+        // PointOnShape1 returns the query point itself — not the nearest surface
+        // point.  In that case re-run the extrema against the outer shell so the
+        // returned witness lies on the boundary.
+        if (dist.Value() < 1e-10) {
+            for (TopExp_Explorer exp(shape.shape, TopAbs_SHELL); exp.More(); exp.Next()) {
+                BRepExtrema_DistShapeShape shell_dist(exp.Current(), vertex);
+                if (shell_dist.IsDone() && shell_dist.NbSolution() >= 1) {
+                    gp_Pnt p = shell_dist.PointOnShape1(1);
+                    return Point3{p.X(), p.Y(), p.Z()};
+                }
+                break; // only need the first (outer) shell
+            }
         }
         gp_Pnt p = dist.PointOnShape1(1);
         return Point3{p.X(), p.Y(), p.Z()};
