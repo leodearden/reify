@@ -690,6 +690,26 @@ mod tests {
         );
     }
 
+    /// Pins the silent-fallback posture for unparseable env values: a
+    /// malformed string (e.g. `"not_a_number"`) must NOT panic and must NOT
+    /// silently use 0ms (which would spam warnings on every long-chain
+    /// plan). The resolver falls back to [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`]
+    /// while emitting a `tracing::warn!` so operators see the misconfig at
+    /// log-level rather than discovering it via a runtime panic. Mirrors
+    /// `warm_pool::from_env_value`'s "Invalid value … falling back to
+    /// default" branch (warm_pool.rs:189-202).
+    #[test]
+    fn long_chain_threshold_from_env_falls_back_when_unparseable() {
+        let resolved = long_chain_threshold_from_env_value(Some("not_a_number"));
+        assert_eq!(
+            resolved,
+            Duration::from_millis(LONG_CHAIN_DEFAULT_THRESHOLD_MS),
+            "unparseable env value must fall back to default ({} ms), got {:?}",
+            LONG_CHAIN_DEFAULT_THRESHOLD_MS,
+            resolved,
+        );
+    }
+
     /// Trivial happy path: one kernel that supports the demanded op directly on
     /// a repr already in `available`. Plan must be `(kernel, no conversions)`.
     /// This locks the zero-conversion code path before BFS expansion is added.
