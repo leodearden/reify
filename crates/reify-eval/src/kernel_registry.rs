@@ -211,7 +211,7 @@ fn build_registry() -> BTreeMap<String, &'static KernelRegistration> {
 //
 //   __a_kernel  — lex-min in the test build; descriptor: PrimitiveBox/BRep
 //   __b_kernel  — second; descriptor: PrimitiveCylinder/BRep
-//   __test_synthetic_kernel — third; descriptor: PrimitiveBox/BRep
+//   __test_synthetic_kernel — third; reuses descriptor_a (PrimitiveBox/BRep, shared with __a_kernel)
 //
 // ASCII sort order: '_' = 0x5F, 'a' = 0x61, 'b' = 0x62, 't' = 0x74.
 // Therefore: __a_kernel < __b_kernel < __test_synthetic_kernel.
@@ -257,15 +257,9 @@ mod test_synthetic_kernel {
 
     // ── __test_synthetic_kernel ────────────────────────────────────────────
     // Original synthetic, kept so the smoke test's contains_key(NAME) assertion
-    // is unaffected. Uses PrimitiveBox/BRep (same as NAME_A); structural
-    // variation lives in NAME_B (PrimitiveCylinder/BRep).
+    // is unaffected. Reuses NAME_A's `descriptor_a` (DRY: shared PrimitiveBox/BRep
+    // capability); structural variation lives in NAME_B (PrimitiveCylinder/BRep).
     pub(super) const NAME: &str = "__test_synthetic_kernel";
-
-    fn synthetic_descriptor() -> CapabilityDescriptor {
-        CapabilityDescriptor {
-            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
-        }
-    }
 
     // ── Shared factory ─────────────────────────────────────────────────────
     // All three synthetics share one unreachable!() factory: the bodies are
@@ -300,7 +294,7 @@ mod test_synthetic_kernel {
     inventory::submit! {
         KernelRegistration {
             name: NAME,
-            descriptor: synthetic_descriptor,
+            descriptor: descriptor_a,
             factory: unreachable_factory,
         }
     }
