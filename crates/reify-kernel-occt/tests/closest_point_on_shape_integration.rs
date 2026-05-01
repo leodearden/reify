@@ -10,6 +10,7 @@
 //! - Off-center interior point at (1,0,0) → OCCT returns query point (1,0,0) at distance 0 (regression sentinel).
 //! - Oblique external (10,10,10) → corner witness (5,5,5) at distance 5√3.
 //! - Non-solid Face sub-shape input → "any TopoDS_Shape" contract holds (Ok with witness on face, distance ≈ 5.0).
+//! - NaN query coords → `Err(QueryError::QueryFailed(_))` (regression sentinel, OCCT rejects NaN vertex).
 //! - Unknown handle → `QueryError::InvalidHandle`.
 
 #![cfg(has_occt)]
@@ -218,6 +219,45 @@ fn closest_point_for_offcenter_interior_point() {
             );
         }
         Err(e) => panic!("expected Ok([1.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Degenerate inputs — regression sentinels
+// ---------------------------------------------------------------------------
+
+/// Regression sentinel for `BRepBuilderAPI_MakeVertex(gp_Pnt(NAN, 0, 0))`
+/// behaviour. See `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:2626-2643`.
+///
+/// OCCT does not validate vertex constructor inputs: a NaN coordinate may
+/// succeed at vertex construction but produce `BRepExtrema_DistShapeShape`
+/// failure (`IsDone() == false` or `NbSolution() < 1`), yielding
+/// `Err(QueryError::QueryFailed(_))` in the Rust wrapper.  The exact observed
+/// outcome is pinned below so a future OCCT/cxx upgrade that flips this
+/// behaviour is caught.
+///
+/// Observed against the OCCT version in use at task 2849.
+#[test]
+fn closest_point_for_nan_query_coords_locks_current_behavior() {
+    let (kernel, box_id) = box_kernel();
+    // Behaviour observed against OCCT at task 2849; flip this assertion when
+    // the upgrade ticket lands.
+    let result = kernel.closest_point_on_shape(box_id, f64::NAN, 0.0, 0.0);
+    eprintln!("NaN query result: {result:?}");
+    match result {
+        Err(QueryError::QueryFailed(ref msg)) if !msg.is_empty() => {
+            // Expected: OCCT rejects the NaN vertex — lock in this branch.
+        }
+        Err(QueryError::QueryFailed(ref msg)) => panic!(
+            "expected non-empty QueryFailed message for NaN query, got empty msg; full: {msg:?}"
+        ),
+        Ok([x, y, z]) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for NaN query coords, \
+             got Ok([{x}, {y}, {z}]) — if OCCT changed behaviour, pin the Ok branch instead"
+        ),
+        Err(e) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for NaN query coords, got Err({e:?})"
+        ),
     }
 }
 
