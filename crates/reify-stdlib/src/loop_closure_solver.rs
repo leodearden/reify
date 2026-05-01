@@ -2216,8 +2216,8 @@ mod tests {
         );
     }
 
-    /// Regression pin for the missing-`closing_joint` guard added in task 2783
-    /// (lines 701-704 of `mechanism_loop_closure_chains`).
+    /// Regression pin for the missing-`closing_joint` guard in
+    /// `mechanism_loop_closure_chains`.
     ///
     /// A loop-closure entry that carries `kind`, `body_id`, `path_a`, `path_b`
     /// but intentionally omits `closing_joint` must cause the whole call to
@@ -2249,6 +2249,8 @@ mod tests {
         });
 
         // Single loop-closure entry: all required fields EXCEPT `closing_joint`.
+        // path_a/path_b are well-formed only to reach the closing_joint check;
+        // the behavior under test is the explicit-field guard, not path validation.
         let mut lc1 = BTreeMap::new();
         lc1.insert(
             Value::String("kind".to_string()),
@@ -2278,17 +2280,17 @@ mod tests {
         assert_eq!(
             super::mechanism_loop_closure_chains(&Value::Map(mech)),
             None,
-            "missing closing_joint field must make the whole call return None (lines 701-704 guard)"
+            "missing closing_joint field must make the whole call return None (missing-closing_joint guard)"
         );
     }
 
-    /// Regression pin for the wrong-type guard at line 676 of
-    /// `mechanism_loop_closure_chains` (the `_ => return None` arm).
+    /// Regression pin for the wrong-type guard in `mechanism_loop_closure_chains`
+    /// (the `_ => return None` arm of the `loop_closures` match).
     ///
     /// This is the read-side counterpart of the write-side test
-    /// `append_body_wrong_typed_loop_closures_returns_undef` in
-    /// `mechanism.rs:1530`.  Both use `Value::Int(0)` as the wrong-type
-    /// sentinel to keep the symmetric guard pair visually aligned.
+    /// `append_body_wrong_typed_loop_closures_returns_undef` in `mechanism.rs`.
+    /// Both use `Value::Int(0)` as the wrong-type sentinel to keep the symmetric
+    /// guard pair visually aligned.
     ///
     /// A Mechanism Map where `loop_closures` is present but has a non-`List`
     /// type must return `None`, not `Some([])` (which would silently swallow
@@ -2311,7 +2313,7 @@ mod tests {
         assert_eq!(
             super::mechanism_loop_closure_chains(&Value::Map(mech)),
             None,
-            "loop_closures present but non-List must return None (line 676 guard)"
+            "loop_closures present but non-List must return None (wrong-typed loop_closures guard)"
         );
     }
 
