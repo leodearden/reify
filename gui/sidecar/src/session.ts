@@ -276,9 +276,20 @@ export class SidecarSession {
    * Emits an error outbound if no matching tool_use_id is found.
    */
   private handleToolResult(toolName: string, result: unknown, id: string): void {
+    // Validate currentStdin BEFORE consuming the FIFO queue. If we shifted first and
+    // then found currentStdin is null, we'd silently drain the queue and corrupt
+    // subsequent matching results.
+    if (this.currentStdin === null) {
+      this.onOutput({
+        type: 'error',
+        id,
+        message: `no pending tool_use for tool_name=${toolName}`,
+      });
+      return;
+    }
     const queue = this.pendingToolUseIds.get(toolName);
     const toolUseId = queue?.shift();
-    if (toolUseId === undefined || this.currentStdin === null) {
+    if (toolUseId === undefined) {
       this.onOutput({
         type: 'error',
         id,
