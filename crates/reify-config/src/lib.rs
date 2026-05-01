@@ -135,9 +135,18 @@ impl Manifest {
             }
             kernels.insert(id, KernelPin { version });
         }
+        // Lift the optional `[auto_type_params]` section into the public
+        // `AutoTypeParamsConfig` shape. Absent section ⇒ `Default::default()`
+        // so callers always get a fully-populated config.
+        let auto_type_params = match raw.auto_type_params {
+            Some(raw_atp) => AutoTypeParamsConfig {
+                max_depth: raw_atp.max_depth,
+            },
+            None => AutoTypeParamsConfig::default(),
+        };
         Ok(Manifest {
             kernels,
-            auto_type_params: AutoTypeParamsConfig::default(),
+            auto_type_params,
         })
     }
 
@@ -263,6 +272,27 @@ impl std::error::Error for ManifestError {
 struct ManifestRaw {
     #[serde(default)]
     kernels: BTreeMap<String, KernelPinRaw>,
+    /// Optional project-level configuration for the `auto:` type-parameter
+    /// resolution algorithm (PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`).
+    /// Absent ⇒ `AutoTypeParamsConfig::default()`.
+    #[serde(default)]
+    auto_type_params: Option<AutoTypeParamsRaw>,
+}
+
+/// On-disk shape for the `[auto_type_params]` section.
+///
+/// `max_depth` defaults to [`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`] so a
+/// declared-but-empty `[auto_type_params]` table still produces the
+/// PRD-decided default. `deny_unknown_fields` lands in step-8 to mirror the
+/// strict-schema convention on `[kernels.<id>]`.
+#[derive(Debug, Deserialize)]
+struct AutoTypeParamsRaw {
+    #[serde(default = "default_max_depth_value")]
+    max_depth: usize,
+}
+
+fn default_max_depth_value() -> usize {
+    DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH
 }
 
 /// Internal serde shape for a single kernel pin.
