@@ -523,7 +523,7 @@ describe('SidecarSession', () => {
     const errors = outputs.filter((o) => o.type === 'error');
     expect(errors).toHaveLength(1);
     expect((errors[0] as any).id).toBe('msg-orphan');
-    expect((errors[0] as any).message).toMatch(/no pending tool_use|no matching tool_use/i);
+    expect((errors[0] as any).message).toMatch(/no in-flight|no pending tool_use|no matching tool_use/i);
 
     // Should NOT have spawned any subprocess
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();

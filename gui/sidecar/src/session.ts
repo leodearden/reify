@@ -288,16 +288,18 @@ export class SidecarSession {
     // then found currentStdin is null, we'd silently drain the queue and corrupt
     // subsequent matching results.
     if (this.currentStdin === null) {
+      // Distinct message: no claude CLI process is running at all.
       this.onOutput({
         type: 'error',
         id,
-        message: `no pending tool_use for tool_name=${toolName}`,
+        message: 'no in-flight claude CLI process',
       });
       return;
     }
     const queue = this.pendingToolUseIds.get(toolName);
     const toolUseId = queue?.shift();
     if (toolUseId === undefined) {
+      // Distinct message: a process is running but this tool_name has no queued id.
       this.onOutput({
         type: 'error',
         id,
