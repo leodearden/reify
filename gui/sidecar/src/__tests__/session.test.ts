@@ -70,6 +70,33 @@ function waitForOutput(
 }
 
 /**
+ * Event-driven helper: resolves when `count` outbounds matching predicate have been emitted.
+ * Hooks session.onOutput, restores the original after the nth match, and resolves with the
+ * last matching message. Decouples match counting from the predicate so the predicate stays
+ * side-effect-free.
+ */
+function waitForOutputs(
+  session: SidecarSession,
+  predicate: (m: OutboundMessage) => boolean,
+  count: number
+): Promise<OutboundMessage> {
+  return new Promise((resolve) => {
+    let matched = 0;
+    const prev = session.onOutput;
+    session.onOutput = (msg: OutboundMessage) => {
+      prev(msg);
+      if (predicate(msg)) {
+        matched++;
+        if (matched >= count) {
+          session.onOutput = prev;
+          resolve(msg);
+        }
+      }
+    };
+  });
+}
+
+/**
  * Event-driven helper: resolves when stdinLines.length reaches at least `count`.
  * Hooks stdin's 'data' event and resolves immediately if the threshold is already met.
  * Must be called AFTER the stdinLines accumulator listener is attached to stdin.
@@ -85,6 +112,56 @@ function waitForStdinLines(stdin: PassThrough, stdinLines: unknown[], count: num
     };
     stdin.on('data', onData);
   });
+}
+
+/**
+ * Create a hand-rolled mock subprocess with a PassThrough trio (stdout/stderr/stdin),
+ * a stdin-line accumulator (attached BEFORE spawn), and a vi.mocked(spawn) setup that
+ * pushes one assistant message with the given content blocks on process.nextTick and
+ * leaves stdout open (caller controls when to close it).
+ *
+ * Use this instead of duplicating the EventEmitter+PassThrough boilerplate in each
+ * describe block. The stdinLines array is pre-wired so it captures all writes including
+ * the initial prompt write.
+ */
+function makeMockProc(assistantContent: object[]): {
+  mockProc: any;
+  stdout: PassThrough;
+  stdinLines: unknown[];
+} {
+  const mockProc = new EventEmitter() as any;
+  const stdout = new PassThrough();
+  mockProc.stdout = stdout;
+  mockProc.stderr = new PassThrough();
+  mockProc.stdin = new PassThrough();
+  mockProc.exitCode = null;
+
+  // Attach stdin accumulator BEFORE spawn-triggering handleMessage call
+  const stdinLines: unknown[] = [];
+  let stdinBuf = '';
+  mockProc.stdin.on('data', (chunk: Buffer | string) => {
+    stdinBuf += chunk.toString();
+    let nlIdx: number;
+    while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
+      stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
+      stdinBuf = stdinBuf.slice(nlIdx + 1);
+    }
+  });
+
+  vi.mocked(spawn).mockImplementation((() => {
+    process.nextTick(() => {
+      stdout.push(
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: assistantContent },
+        }) + '\n'
+      );
+      // Leave stdout open — caller controls when to close it
+    });
+    return mockProc;
+  }) as any);
+
+  return { mockProc, stdout, stdinLines };
 }
 
 /**
@@ -1461,38 +1538,9 @@ describe('close-on-result race', () => {
   });
 
   it('tool_result after result event produces "no in-flight" error, not "stdin write error"', async () => {
-    // Hand-rolled mock subprocess
-    const mockProc = new EventEmitter() as any;
-    const stdout = new PassThrough();
-    mockProc.stdout = stdout;
-    mockProc.stderr = new PassThrough();
-    mockProc.stdin = new PassThrough();
-    mockProc.exitCode = null;
-
-    // Attach stdin data listener BEFORE spawn-triggering handleMessage call
-    const stdinLines: unknown[] = [];
-    let stdinBuf = '';
-    mockProc.stdin.on('data', (chunk: Buffer | string) => {
-      stdinBuf += chunk.toString();
-      let nlIdx: number;
-      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
-        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
-        stdinBuf = stdinBuf.slice(nlIdx + 1);
-      }
-    });
-
-    vi.mocked(spawn).mockImplementation((() => {
-      process.nextTick(() => {
-        stdout.push(JSON.stringify({
-          type: 'assistant',
-          message: { content: [
-            { type: 'tool_use', id: 'toolu_race', name: 'reify_get_diagnostics', input: {} },
-          ] },
-        }) + '\n');
-        // Leave stdout open — we'll push the result line manually below
-      });
-      return mockProc;
-    }) as any);
+    const { mockProc, stdout } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_race', name: 'reify_get_diagnostics', input: {} },
+    ]);
 
     // Set up wait for tool_call BEFORE dispatch
     const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
@@ -1567,39 +1615,9 @@ describe('stdin write error correlation', () => {
   });
 
   it('async stdin error after tool_result write is tagged with tool_result id, not send_message id', async () => {
-    // Hand-rolled mock subprocess with stdout that stays open
-    const mockProc = new EventEmitter() as any;
-    const stdout = new PassThrough();
-    mockProc.stdout = stdout;
-    mockProc.stderr = new PassThrough();
-    mockProc.stdin = new PassThrough();
-    mockProc.exitCode = null;
-
-    // Attach stdin data listener BEFORE the spawn-triggering handleMessage call
-    // (corrected pattern: attach early so no writes are missed)
-    const stdinLines: unknown[] = [];
-    let stdinBuf = '';
-    mockProc.stdin.on('data', (chunk: Buffer | string) => {
-      stdinBuf += chunk.toString();
-      let nlIdx: number;
-      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
-        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
-        stdinBuf = stdinBuf.slice(nlIdx + 1);
-      }
-    });
-
-    vi.mocked(spawn).mockImplementation((() => {
-      process.nextTick(() => {
-        stdout.push(JSON.stringify({
-          type: 'assistant',
-          message: { content: [
-            { type: 'tool_use', id: 'toolu_x', name: 'reify_get_diagnostics', input: {} },
-          ] },
-        }) + '\n');
-        // Leave stdout open — don't push null
-      });
-      return mockProc;
-    }) as any);
+    const { mockProc, stdout } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_x', name: 'reify_get_diagnostics', input: {} },
+    ]);
 
     // Set up wait for tool_call BEFORE dispatch so we don't miss it
     const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
@@ -1681,39 +1699,12 @@ describe('echoed tool_use_id validation', () => {
   /**
    * Shared setup: mock subprocess that emits ONE tool_use (id="toolu_real", name="reify_x")
    * and leaves stdout open. Returns { mockProc, stdout, stdinLines, msgPromise, toolCallWait }.
+   * Uses makeMockProc to avoid boilerplate duplication.
    */
   function setupValidationTest() {
-    const mockProc = new EventEmitter() as any;
-    const stdout = new PassThrough();
-    mockProc.stdout = stdout;
-    mockProc.stderr = new PassThrough();
-    mockProc.stdin = new PassThrough();
-    mockProc.exitCode = null;
-
-    // Attach stdin accumulator BEFORE the spawn-triggering handleMessage call
-    const stdinLines: unknown[] = [];
-    let stdinBuf = '';
-    mockProc.stdin.on('data', (chunk: Buffer | string) => {
-      stdinBuf += chunk.toString();
-      let nlIdx: number;
-      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
-        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
-        stdinBuf = stdinBuf.slice(nlIdx + 1);
-      }
-    });
-
-    vi.mocked(spawn).mockImplementation((() => {
-      process.nextTick(() => {
-        stdout.push(JSON.stringify({
-          type: 'assistant',
-          message: { content: [
-            { type: 'tool_use', id: 'toolu_real', name: 'reify_x', input: {} },
-          ] },
-        }) + '\n');
-        // Leave stdout open
-      });
-      return mockProc;
-    }) as any);
+    const { mockProc, stdout, stdinLines } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_real', name: 'reify_x', input: {} },
+    ]);
 
     // Set up wait for tool_call BEFORE dispatch
     const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
@@ -1753,8 +1744,11 @@ describe('echoed tool_use_id validation', () => {
     expect((errorMsg as any).id).toBe('tool-bogus');
     expect((errorMsg as any).message).toMatch(/unknown.*tool_use_id|invalid.*tool_use_id/i);
 
-    // No tool_result was forwarded to stdin (only the initial prompt write)
-    await waitForStdinLines(mockProc.stdin, stdinLines, 1);
+    // No tool_result was forwarded to stdin (only the initial prompt write).
+    // Yield all pending microtasks so any stray write has time to land in stdinLines
+    // before we assert — waitForStdinLines(1) would be a no-op here because stdinLines
+    // is already at length 1 from the initial prompt write.
+    await new Promise(setImmediate);
     expect(stdinLines.length).toBe(1);
 
     // Cleanup
@@ -1787,11 +1781,16 @@ describe('echoed tool_use_id validation', () => {
 
     // Assertions: structured error with correct id and name-mismatch message
     expect((errorMsg as any).id).toBe('tool-mismatch');
-    // Message should indicate name mismatch (registered name vs provided name)
-    expect((errorMsg as any).message).toMatch(/does not match|mismatch|reify_x|reify_OTHER/i);
+    // Message must indicate a structural name-mismatch (not just incidentally contain a tool name)
+    expect((errorMsg as any).message).toMatch(/does not match tool_name=/);
+    expect((errorMsg as any).message).toContain('reify_OTHER');
+    expect((errorMsg as any).message).toContain('reify_x');
 
-    // No tool_result was forwarded to stdin (only the initial prompt write)
-    await waitForStdinLines(mockProc.stdin, stdinLines, 1);
+    // No tool_result was forwarded to stdin (only the initial prompt write).
+    // Yield all pending microtasks so any stray write has time to land in stdinLines
+    // before we assert — waitForStdinLines(1) would be a no-op here because stdinLines
+    // is already at length 1 from the initial prompt write.
+    await new Promise(setImmediate);
     expect(stdinLines.length).toBe(1);
 
     // Cleanup
@@ -1818,50 +1817,18 @@ describe('FIFO consumption on echoed-id path', () => {
   });
 
   it('echoed-id forward drains its id from both maps; subsequent fallback uses correct remaining id', async () => {
-    // Hand-rolled mock subprocess: emits TWO tool_use blocks with same tool_name, leaves stdout open
-    const mockProc = new EventEmitter() as any;
-    const stdout = new PassThrough();
-    mockProc.stdout = stdout;
-    mockProc.stderr = new PassThrough();
-    mockProc.stdin = new PassThrough();
-    mockProc.exitCode = null;
-
-    // Attach stdin accumulator BEFORE spawn-triggering handleMessage call
-    const stdinLines: unknown[] = [];
-    let stdinBuf = '';
-    mockProc.stdin.on('data', (chunk: Buffer | string) => {
-      stdinBuf += chunk.toString();
-      let nlIdx: number;
-      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
-        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
-        stdinBuf = stdinBuf.slice(nlIdx + 1);
-      }
-    });
-
-    vi.mocked(spawn).mockImplementation((() => {
-      process.nextTick(() => {
-        // Two tool_use blocks with same name, different ids
-        stdout.push(JSON.stringify({
-          type: 'assistant',
-          message: { content: [
-            { type: 'tool_use', id: 'toolu_1', name: 'reify_x', input: {} },
-            { type: 'tool_use', id: 'toolu_2', name: 'reify_x', input: {} },
-          ] },
-        }) + '\n');
-        // Leave stdout open
-      });
-      return mockProc;
-    }) as any);
+    // Two tool_use blocks with same name, different ids — makeMockProc wires up stdin
+    // accumulator before spawn and leaves stdout open.
+    const { mockProc, stdout, stdinLines } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_1', name: 'reify_x', input: {} },
+      { type: 'tool_use', id: 'toolu_2', name: 'reify_x', input: {} },
+    ]);
 
     // Wait for BOTH tool_call outbounds before dispatching any tool_result.
-    // Use a counting predicate so both events (fired synchronously from the same
-    // for-loop iteration) are captured without the chaining issue that would arise
-    // from two sequential waitForOutput calls.
-    let toolCallCount = 0;
-    const bothToolCallsWait = waitForOutput(session, (m) => {
-      if (m.type === 'tool_call') toolCallCount++;
-      return toolCallCount >= 2;
-    });
+    // waitForOutputs decouples the count from the predicate, avoiding the
+    // side-effect-in-predicate pattern that is fragile when non-tool_call
+    // outbounds are interspersed.
+    const bothToolCallsWait = waitForOutputs(session, (m) => m.type === 'tool_call', 2);
 
     // Start send_message (don't await)
     const msgPromise = session.handleMessage({
