@@ -129,38 +129,22 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
-    /// Stub surface-angle probe — always errors because OCCT is unavailable.
-    /// Mirrors the real `OcctKernel::surface_angle` signature so call sites
+    /// Stub point-on-shape membership probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::point_on_shape` signature so call sites
     /// compile under both `has_occt` and `!has_occt`.
-    pub fn surface_angle(
-        &self,
-        _face_a: GeometryHandleId,
-        _face_b: GeometryHandleId,
-    ) -> Result<f64, QueryError> {
-        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
-    }
-
-    /// Stub surface-normal-at probe — always errors because OCCT is unavailable.
-    /// Mirrors the real `OcctKernel::surface_normal_at` signature so call sites
-    /// compile under both `has_occt` and `!has_occt`.
-    pub fn surface_normal_at(
+    ///
+    /// The real implementation uses `BRepExtrema_DistShapeShape(shape, vertex)`
+    /// returning `dist.Value() <= tolerance`. See `lib.rs` for the full contract,
+    /// including the interior-points note and the recommended `Precision::Confusion()`
+    /// (~1e-7) default tolerance convention.
+    pub fn point_on_shape(
         &self,
         _handle: GeometryHandleId,
-        _u: f64,
-        _v: f64,
-    ) -> Result<[f64; 3], QueryError> {
-        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
-    }
-
-    /// Stub curvature-at probe — always errors because OCCT is unavailable.
-    /// Mirrors the real `OcctKernel::curvature_at` signature so call sites
-    /// compile under both `has_occt` and `!has_occt`.
-    pub fn curvature_at(
-        &self,
-        _handle: GeometryHandleId,
-        _u: f64,
-        _v: f64,
-    ) -> Result<Curvature, QueryError> {
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+        _tolerance: f64,
+    ) -> Result<bool, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 }
