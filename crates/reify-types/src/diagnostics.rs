@@ -688,6 +688,34 @@ pub enum DiagnosticCode {
     /// wants to surface these as harder failures can filter by code at the
     /// consumer side.
     ImportedTolerancePromiseInsufficient,
+    /// Origin: `crates/reify-eval/src/tolerance_promise.rs::input_tolerance_promise_is_zero_diagnostic`
+    /// (task 2833 — PRD `docs/prds/v0_2/per-purpose-tolerance.md`
+    /// §"Resolved design decisions" → "Imported geometry promise").
+    ///
+    /// Canonical message form:
+    /// `"imported geometry '<input_template>' carries a zero tolerance promise \
+    /// (`tolerance = 0m`) but downstream demand is <demanded_str>; the zero promise \
+    /// vacuously satisfies any non-negative demand, suppressing the \
+    /// ImportedTolerancePromiseInsufficient warning. Omit the `tolerance` parameter \
+    /// to opt out of making a promise."`.
+    ///
+    /// Emitted as a `Severity::Warning` by `Engine::check_imported_tolerance_promise`
+    /// when the imported-geometry tolerance promise carried by an `Input` occurrence
+    /// template is **exactly `0.0`** AND the demanded tolerance is **strictly positive**
+    /// (`demanded > 0.0`). This surfaces the placeholder-default footgun where
+    /// `param tolerance : Length = 0m` would otherwise silently disable the
+    /// `ImportedTolerancePromiseInsufficient` warning via the strict-`<` rule
+    /// (when `promise == 0.0`, `demanded < 0.0` is false for every `demanded >= 0.0`,
+    /// so the insufficient branch never fires).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_INPUT_TOLERANCE_PROMISE_IS_ZERO`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Mirrors the advisory-warning
+    /// posture of `ImportedTolerancePromiseInsufficient` and `FieldOutOfBounds`:
+    /// the realization proceeds; the warning gives the author visibility so they can
+    /// either remove the `tolerance` parameter (the recommended opt-out — omitting
+    /// it causes `extract_input_tolerance_promise` to return `None` via Gate 1, the
+    /// same path as a missing binding) or replace `0m` with the true measured tolerance.
+    InputTolerancePromiseIsZero,
     /// Origin: `crates/reify-eval/src/dispatcher.rs::long_chain_diagnostic`
     /// (task 2646 — PRDs `docs/prds/v0_2/multi-kernel.md`
     /// §"Resolved design decisions" → "Long-chain diagnostic" and
@@ -1282,6 +1310,38 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::ImportedTolerancePromiseInsufficient)
             .unwrap();
         assert_eq!(s, "\"ImportedTolerancePromiseInsufficient\"");
+    }
+
+    // --- InputTolerancePromiseIsZero tests (task 2833 — W_INPUT_TOLERANCE_PROMISE_IS_ZERO) ---
+    // Pairs with the imported-geometry zero-promise lint in
+    // `crates/reify-eval/src/tolerance_promise.rs::input_tolerance_promise_is_zero_diagnostic`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::InputTolerancePromiseIsZero` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying
+    /// `Some(DiagnosticCode::InputTolerancePromiseIsZero)`.
+    /// Pins the warning-severity contract and variant existence for the
+    /// imported-geometry zero-promise lint (task 2833 — option-(b continuation);
+    /// PRD `docs/prds/v0_2/per-purpose-tolerance.md`
+    /// §"Resolved design decisions" → "Imported geometry promise").
+    #[test]
+    fn diagnostic_code_input_tolerance_promise_is_zero_with_code_round_trips() {
+        let d =
+            Diagnostic::warning("x").with_code(DiagnosticCode::InputTolerancePromiseIsZero);
+        assert_eq!(d.code, Some(DiagnosticCode::InputTolerancePromiseIsZero));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::InputTolerancePromiseIsZero`
+    /// serializes as `"InputTolerancePromiseIsZero"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_input_tolerance_promise_is_zero_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::InputTolerancePromiseIsZero).unwrap();
+        assert_eq!(s, "\"InputTolerancePromiseIsZero\"");
     }
 
     // --- LongChainRealization tests (task 2646 — W_LONG_CHAIN_REALIZATION) ---
