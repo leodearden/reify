@@ -768,35 +768,35 @@ describe('SidecarSession multi-turn streaming', () => {
 
   it('text_delta events emitted for both turns in a multi-turn invocation', async () => {
     // Simulate two assistant turns within a single SDK invocation:
-    // Turn 1: thinking + text + tool_use
-    // Turn 2: new text (starts shorter than turn 1's accumulated text length)
+    // Turn 1: thinking + text + tool_use (message.id = 'msg_t1')
+    // Turn 2: new text, shorter than turn-1 accumulated length (message.id = 'msg_t2')
     //
-    // The bug: lastTextLen carries over from turn 1 (e.g. 12 for "Hello world!").
-    // Turn 2's first text event is "Hi" (length 2), which is < lastTextLen (12),
-    // so the `block.text.length > lastTextLen` check fails and no delta is emitted.
+    // The new-turn boundary is detected by the message.id change: when event.message.id
+    // switches from 'msg_t1' to 'msg_t2', both lastTextLen and lastThinkingLen reset to 0,
+    // so turn-2's first delta emits from offset 0 regardless of relative length.
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // Turn 1 partial events
-      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let' }] } },
-      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me think' }] } },
-      { type: 'assistant', message: { content: [
+      // Turn 1 partial events (message.id = 'msg_t1')
+      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Let' }] } },
+      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Let me think' }] } },
+      { type: 'assistant', message: { id: 'msg_t1', content: [
         { type: 'thinking', thinking: 'Let me think' },
         { type: 'text', text: 'Hello ' },
       ] } },
-      { type: 'assistant', message: { content: [
+      { type: 'assistant', message: { id: 'msg_t1', content: [
         { type: 'thinking', thinking: 'Let me think' },
         { type: 'text', text: 'Hello world!' },
       ] } },
       // Turn 1 completes with tool_use
-      { type: 'assistant', message: { content: [
+      { type: 'assistant', message: { id: 'msg_t1', content: [
         { type: 'thinking', thinking: 'Let me think' },
         { type: 'text', text: 'Hello world!' },
         { type: 'tool_use', id: 'toolu_mt1', name: 'reify_get_source', input: { file: 'f.ri' } },
       ] } },
-      // Turn 2 starts: new text block with shorter initial content
-      { type: 'assistant', message: { content: [
+      // Turn 2 starts: new message.id triggers counter reset
+      { type: 'assistant', message: { id: 'msg_t2', content: [
         { type: 'text', text: 'Hi' },
       ] } },
-      { type: 'assistant', message: { content: [
+      { type: 'assistant', message: { id: 'msg_t2', content: [
         { type: 'text', text: 'Hi there!' },
       ] } },
       { type: 'result', session_id: 'sess-mt' },
@@ -815,9 +815,7 @@ describe('SidecarSession multi-turn streaming', () => {
     expect(deltaContents).toContain('Hello ');
     expect(deltaContents).toContain('world!');
 
-    // Turn 2 should produce: "Hi" then " there!" — proving counters reset
-    // THIS IS THE FAILING PART with the current implementation:
-    // "Hi" (len=2) < lastTextLen (12) so no delta is emitted
+    // Turn 2 should produce: "Hi" then " there!" — proving counters reset on id change
     expect(deltaContents).toContain('Hi');
     expect(deltaContents).toContain(' there!');
   });
@@ -878,11 +876,11 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     vi.mocked(spawn).mockReset();
   });
 
-  it('text-shrink reset-boundary preserves pending tool_use for subsequent tool_result', async () => {
+  it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (text channel)', async () => {
     // Turn 1: long text + tool_use (registers toolu_pending in toolNameById).
-    // Turn 2: shorter text 'Hi' triggers block.text.length < lastTextLen shrink branch.
-    // Bug: the shrink branch clears toolNameById/pendingToolUseIds, causing a subsequent
-    // tool_result for toolu_pending to be rejected with 'unknown tool_use_id'.
+    // Turn 2: new message.id triggers id-change reset (length counters only).
+    // Invariant: the id-change reset must NOT clear toolNameById/pendingToolUseIds,
+    // so a subsequent tool_result for toolu_pending forwards correctly.
     const { mockProc, stdout, stdinLines } = makeMockProc([
       { type: 'text', text: 'Hello world!' },
       { type: 'tool_use', id: 'toolu_pending', name: 'reify_x', input: {} },
@@ -906,12 +904,12 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       (m) => m.type === 'text_delta' && (m as any).content === 'Hi',
     );
 
-    // Push turn 2: shorter text → triggers text-shrink branch (block.text.length < lastTextLen)
+    // Push turn 2: new message.id triggers id-change reset (lastTextLen=0, lastThinkingLen=0)
     stdout.push(
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } }) + '\n',
+      JSON.stringify({ type: 'assistant', message: { id: 'msg_t2', content: [{ type: 'text', text: 'Hi' }] } }) + '\n',
     );
 
-    // Wait for text_delta 'Hi' — guarantees the shrink branch has been processed
+    // Wait for text_delta 'Hi' — guarantees the id-change reset has been processed
     await textDeltaHiWait;
 
     // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
@@ -949,11 +947,11 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     await msgPromise;
   });
 
-  it('thinking-shrink reset-boundary preserves pending tool_use for subsequent tool_result', async () => {
+  it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (thinking channel)', async () => {
     // Turn 1: long thinking + tool_use (registers toolu_th_pending in toolNameById).
-    // Turn 2: shorter thinking 'Hm' triggers block.thinking.length < lastThinkingLen shrink branch.
-    // Bug: the thinking-shrink branch clears toolNameById/pendingToolUseIds, causing a subsequent
-    // tool_result for toolu_th_pending to be rejected with 'unknown tool_use_id'.
+    // Turn 2: new message.id triggers id-change reset (length counters only).
+    // Invariant: the id-change reset must NOT clear toolNameById/pendingToolUseIds,
+    // so a subsequent tool_result for toolu_th_pending forwards correctly.
     const { mockProc, stdout, stdinLines } = makeMockProc([
       { type: 'thinking', thinking: 'Let me reason about this for a while' },
       { type: 'tool_use', id: 'toolu_th_pending', name: 'reify_x', input: {} },
@@ -977,16 +975,15 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       (m) => m.type === 'thinking_delta' && (m as any).content === 'Hm',
     );
 
-    // Push turn 2: shorter thinking → triggers thinking-shrink branch
-    // (block.thinking.length < lastThinkingLen)
+    // Push turn 2: new message.id triggers id-change reset (lastTextLen=0, lastThinkingLen=0)
     stdout.push(
       JSON.stringify({
         type: 'assistant',
-        message: { content: [{ type: 'thinking', thinking: 'Hm' }] },
+        message: { id: 'msg_t2', content: [{ type: 'thinking', thinking: 'Hm' }] },
       }) + '\n',
     );
 
-    // Wait for thinking_delta 'Hm' — guarantees the shrink branch has been processed
+    // Wait for thinking_delta 'Hm' — guarantees the id-change reset has been processed
     await thinkingDeltaHmWait;
 
     // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
