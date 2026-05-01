@@ -921,3 +921,87 @@ pub fn resolve_auto_type_params(
         substitution,
     }
 }
+
+// ─── v0.2 — Backtracking: DFS over cross-product with depth bound ─────────
+//
+// Driving PRD: docs/prds/v0_2/auto-resolution-backtracking.md.
+//
+// `resolve_auto_type_params_with_backtracking` extends v0.1's per-param BFS
+// (`resolve_auto_type_params` above) into a depth-first search over the
+// cross-product of `auto:` candidate sets. At each leaf assignment of the
+// cross-product, `filter_feasible_candidates` is re-invoked (full re-check
+// per the PRD design decision "implement v0.2 search with full re-check at
+// each binding") to determine feasibility; an infeasible leaf triggers
+// backtracking to the next sibling at the deepest open level.
+//
+// Above the depth bound `params.len() > max_depth`, the function emits
+// `AutoTypeParamDepthBoundExceeded` (Severity::Warning) and delegates back
+// to `resolve_auto_type_params` (BFS). The fallback is functionally correct
+// (BFS is sound, just less complete than DFS over cross-product) so the
+// user has a working compile — the warning is for auditability.
+//
+// # Out of scope (sibling tasks layered on top of this foundation)
+//
+// - Backjumping via the "rejected because" channel — task 2660.
+// - `auto(free)` report-all cross-product enumeration with the
+//   `AutoTypeParamNonUnique` warning — task 2661.
+// - Cross-product hard cap of 100k assignments — task 2662.
+// - Rich diagnostic format with smallest infeasibility witness — task 2663.
+// - Comprehensive v0.1 BFS-failure scenario coverage — task 2664.
+// - Type-substitution mechanics
+//   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
+//   deferred per the PRD's "Constraint-feasibility incremental binding
+//   deferred" decision.
+
+/// DFS over the cross-product of `auto:` candidate sets with a depth bound.
+///
+/// See the section header comment above for context, design decisions, and
+/// out-of-scope deferrals to sibling tasks.
+///
+/// `max_depth` is taken as a scalar (not a `&AutoTypeParamsConfig`) per the
+/// design decision: algorithm correctness does not depend on where the value
+/// was sourced, and this keeps the algorithm crate independent of
+/// `reify-config`. The eventual call-site reads
+/// `Manifest::auto_type_params().max_depth` and passes it in directly.
+pub fn resolve_auto_type_params_with_backtracking(
+    params: &[AutoTypeParam],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    parameterized_template: &TopologyTemplate,
+    constraint_checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+    max_depth: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> MultiParamResolutionOutcome {
+    // Vacuous success: empty params slice is a valid no-op (parity with
+    // v0.1 BFS's `resolve_auto_type_params`). In particular, `0` is never
+    // greater than `max_depth` (which `reify-config` already rejects when
+    // `max_depth == 0`), so the depth-bound branch does not fire here.
+    if params.is_empty() {
+        let _ = (
+            template_registry,
+            trait_registry,
+            parameterized_template,
+            constraint_checker,
+            functions,
+            max_depth,
+            diagnostics,
+        );
+        return MultiParamResolutionOutcome {
+            per_param: vec![],
+            substitution: vec![],
+        };
+    }
+
+    // Subsequent branches — depth-bound fallback, Phase A enumeration, the
+    // recursive DFS body, and strict-vs-free dispatch — land in steps 18,
+    // 20, 22, 24, 26, 28, 30, 32 of the plan. They are intentionally not
+    // implemented in step-16 so each subsequent test (steps 17, 19, 21,
+    // 23, 25, 27, 29, 31) can be added as the next failing test in TDD
+    // order.
+    unimplemented!(
+        "resolve_auto_type_params_with_backtracking: only the empty-params \
+         branch is implemented in step-16 of task 2659; subsequent branches \
+         land in steps 18/20/22/24/26/28/30/32"
+    )
+}
