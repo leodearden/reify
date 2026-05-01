@@ -990,13 +990,11 @@ pub fn resolve_auto_type_params_with_backtracking(
     // the cross-product), so the user has a working compile — the warning
     // is for auditability so they know the v0.2 search was bypassed.
     //
-    // Strict `>`: `params.len() == max_depth` still runs DFS; only
-    // `params.len() > max_depth` falls back. Pinned by step-31's boundary
-    // test (`params.len() == max_depth ⇒ DFS, no warning`).
-    //
     // Canonical message form pinned in step-10's diagnostic-code doc-comment:
     // see `DiagnosticCode::AutoTypeParamDepthBoundExceeded` in
     // `crates/reify-types/src/diagnostics.rs`.
+
+    // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
     if params.len() > max_depth {
         let (_joined_bounds, label_message) =
             render_auto_type_param_label(&params[0].bounds);
