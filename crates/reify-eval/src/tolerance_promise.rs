@@ -61,19 +61,38 @@ pub fn extract_input_tolerance_promise(
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     input_template_name: &str,
 ) -> Option<f64> {
-    // Silent-skip audit (locked by `extract_input_tolerance_promise_silent_skip_audit`):
-    //   Gate 1 (cell lookup)         skips entries under different entity
-    //                                or different member name (returns None
-    //                                when the canonical (input, "tolerance")
-    //                                cell is absent)
-    //   Gate 2 (Value::Scalar)       skips Bool / Int / Undef / String etc.
-    //   Gate 3 (LENGTH dimension)    skips DIMENSIONLESS / Money / Force /
-    //                                other non-LENGTH Scalar literals
-    //   Gate 4a (is_finite())        skips NaN / ±Inf tolerance literals
-    //   Gate 4b (>= 0.0)             skips negative finite tolerance
-    //                                literals (contract symmetry with
+    // Silent-skip audit (locked by `extract_input_tolerance_promise_silent_skip_audit`,
+    // mirrors `tolerance_combine::extract_output_tolerance_bound`'s six-gate audit):
+    //   Gate 1 (entity match)        skips entries whose entity name does not
+    //                                equal `input_template_name` — the
+    //                                composite `ValueCellId` key lookup
+    //                                discriminates by entity, so an
+    //                                `OtherInput.tolerance` entry never
+    //                                contributes (covers test case (g))
+    //   Gate 2 (tolerance member)    skips entries under the same entity but
+    //                                a different member name — the composite
+    //                                key lookup also discriminates by
+    //                                member, so e.g. `STEPInput.source` is
+    //                                never confused with the canonical
+    //                                `STEPInput.tolerance` cell (covers test
+    //                                case (h)). Gates 1 + 2 together are
+    //                                realized by a single `values.get(&cell_id)?`
+    //                                because `ValueCellId` is keyed on both.
+    //   Gate 3 (Value::Scalar)       skips Bool / Int / Undef / String etc.
+    //                                Value variants stored at the canonical
+    //                                cell (covers test case (f))
+    //   Gate 4 (LENGTH dimension)    skips DIMENSIONLESS / Money / Force /
+    //                                other non-LENGTH Scalar literals (covers
+    //                                test case (e))
+    //   Gate 5 (is_finite())         skips NaN / ±Inf tolerance literals
+    //                                (covers test cases (a), (b), (c)) — a
+    //                                NaN promise would stick because NaN
+    //                                comparisons always evaluate false
+    //   Gate 6 (>= 0.0)              skips negative finite tolerance
+    //                                literals (covers test case (d)) —
+    //                                contract symmetry with
     //                                `is_promise_insufficient`'s debug-assert
-    //                                `is_finite() && >= 0.0`)
+    //                                `is_finite() && >= 0.0` invariant
     // Every non-match path returns None (or falls through to the trailing
     // None) — no `panic!`, `expect`, or `unwrap` is reachable, so a malformed
     // values map never crashes the engine.
