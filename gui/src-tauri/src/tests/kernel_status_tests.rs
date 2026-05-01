@@ -85,10 +85,15 @@ mod gui_tests {
     /// Regression pin: `EngineSession::with_registered_kernel` boot path
     /// constructs a working session via the inventory-based kernel registry.
     ///
-    /// When OCCT is available, constructs a session, loads a primitive box source,
-    /// and asserts that the load succeeds without errors. The geometry build itself
-    /// is exercised by the CLI pin and the reify-eval kernel_registry_inventory test;
-    /// here we pin only that the production boot path compiles and runs without error.
+    /// When OCCT is available, constructs a session via the inventory-based
+    /// `with_registered_kernel` constructor (the production GUI boot path), loads a
+    /// primitive-box source, invokes a STEP export, and asserts the output file is
+    /// non-empty.  This proves the registered OCCT kernel actually fired through the
+    /// full parse → compile → check → build pipeline, mirroring the CLI sibling pin
+    /// `cli_build_with_primitive_box_produces_step_output`.
+    ///
+    /// Skipped via `eprintln!` in stub mode (`OCCT_AVAILABLE = false`) so CI logs
+    /// make the skip visible.
     #[test]
     fn engine_session_with_registered_kernel_picks_occt_for_primitive_box_build() {
         if !OCCT_AVAILABLE {
@@ -97,13 +102,28 @@ mod gui_tests {
         }
         use crate::engine::EngineSession;
         use reify_constraints::SimpleConstraintChecker;
+        use reify_types::ExportFormat;
         let mut session =
             EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
-        let _ = session
+        session
             .load_from_source(
                 "structure S { let b = box(10mm, 10mm, 10mm) }",
                 "primitive_box_build",
             )
             .expect("load_from_source should succeed with registered OCCT kernel");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("primitive_box.step");
+        let result = session.export(ExportFormat::Step, &path);
+        assert!(
+            result.is_ok(),
+            "export should succeed when OCCT kernel is registered: {:?}",
+            result.err()
+        );
+        let data = std::fs::read(&path).expect("exported STEP file should be readable");
+        assert!(
+            !data.is_empty(),
+            "STEP output must be non-empty — OCCT kernel must have fired through \
+             with_registered_kernel boot path"
+        );
     }
 }
