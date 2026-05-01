@@ -12,6 +12,31 @@
 //! so the `inventory::submit!` in `register.rs` has a factory that compiles.
 //! When the follow-up task lands, the factory can switch to the real impl
 //! behind `cfg(has_manifold)` without changing the registration shape.
+//!
+//! # KernelAttributeHook impl (PRD line 70)
+//!
+//! ManifoldKernel is the first concrete impl of
+//! [`reify_types::KernelAttributeHook`] — see PRD
+//! `docs/prds/v0_2/persistent-naming-v2.md` line 70 ("Multi-kernel
+//! propagation via `KernelAttributeHook` trait"). The
+//! [`GeometryKernel::attribute_hook`] override on `ManifoldKernel` returns
+//! `Some(self)` so the engine-side dispatcher
+//! (`reify_eval::propagate_via_kernel_attribute_hook`) routes Manifold ops
+//! through the hook.
+//!
+//! ## Deferred-FFI stub semantics
+//!
+//! In this v0.2 stub, [`KernelAttributeHook::propagate_attributes`]
+//! unconditionally returns `Ok(KernelAttributeOutcome::Discarded)` and
+//! emits a `tracing::warn!(reason="deferred_ffi", …)` event before
+//! returning. Real Manifold FFI is deferred to a follow-up task, so
+//! attribute propagation is intentionally a no-op until the FFI lands.
+//!
+//! When real Manifold FFI lands, the body switches to walk `MeshGL` merge
+//! vectors + per-triangle `faceID` / `originalID` to copy parent attributes
+//! onto result face handles, returning `Propagated` on success and
+//! `Discarded` (with a `reason="heavy_remeshing"`-flavoured WARN) on lossy
+//! remeshing — the trait surface is stable across that swap.
 
 use reify_types::{
     ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
@@ -103,14 +128,29 @@ impl KernelAttributeHook for ManifoldKernel {
     fn propagate_attributes(
         &self,
         _table: &mut TopologyAttributeTable,
-        _op: &GeometryOp,
-        _parent_handles: &[GeometryHandleId],
+        op: &GeometryOp,
+        parent_handles: &[GeometryHandleId],
         _result_handle: GeometryHandleId,
         _splitting_feature_id: &FeatureId,
     ) -> Result<KernelAttributeOutcome, QueryError> {
-        // v0.2 stub: real Manifold FFI is deferred. Always return Discarded.
-        // The WARN diagnostic that the Discarded contract requires lands in
-        // step 6 of the plan.
+        // v0.2 stub: real Manifold FFI is deferred. Emit a WARN diagnostic
+        // (operator visibility for the intentional attribute-loss path) and
+        // return Discarded. The `KernelAttributeOutcome::Discarded` contract
+        // mandates that hook impls emit their own diagnostic before
+        // returning, so consumers do not need to surface a duplicate.
+        //
+        // `target: "reify_kernel_manifold"` matches the crate name so a
+        // `RUST_LOG=reify_kernel_manifold=warn` operator filter sees the
+        // event. `reason="deferred_ffi"` is the structured-fields key by
+        // which a future `reason="heavy_remeshing"` (when real FFI lands)
+        // can be distinguished.
+        tracing::warn!(
+            target: "reify_kernel_manifold",
+            reason = "deferred_ffi",
+            op = ?op,
+            parents = parent_handles.len(),
+            "Manifold attribute propagation discarded — real FFI deferred (v0.2 stub)"
+        );
         Ok(KernelAttributeOutcome::Discarded)
     }
 }
