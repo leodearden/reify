@@ -53,9 +53,16 @@ function drainStdinFirstLine(mockProc: any): Promise<unknown> {
  * Hooks session.onOutput, restores the original after match, and resolves with the matching message.
  * Set this up BEFORE the action that produces the event.
  *
- * Accepts an optional `options.timeoutMs` (default 2000ms). If the predicate is never
+ * Accepts an optional `options.timeoutMs` (default 5000ms). If the predicate is never
  * satisfied within that window, rejects with a named error and restores session.onOutput
  * so test isolation is preserved.
+ *
+ * The returned promise carries a `.cancel()` method that immediately restores
+ * `session.onOutput` without settling the promise. **After calling `.cancel()`, do not
+ * `await` the returned promise** — it will remain pending until the surrounding test
+ * timeout fires. Use `.cancel()` only when you have already obtained a result via
+ * `Promise.race` and want to release the output hook without waiting for the
+ * default timeout.
  */
 function waitForOutput(
   session: SidecarSession,
@@ -1030,8 +1037,6 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
 
     // Wait for text_delta 'Hi' — guarantees the id-change reset has been processed
     await textDeltaHiWait;
-    // Pin the contract: exactly one text_delta with content 'Hi' is emitted for the new turn.
-    expect(outputs.filter((m) => m.type === 'text_delta' && (m as any).content === 'Hi').length).toBe(1);
 
     // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
     // toolNameById was cleared by the shrink branch; on fixed code it forwards correctly.
@@ -1067,6 +1072,9 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     mockProc.exitCode = 0;
     mockProc.emit('close', 0);
     await msgPromise;
+    // Pin the contract over the full output stream: exactly one text_delta 'Hi' across the
+    // entire turn (guards against duplicate emissions if the streaming loop restarts).
+    expect(outputs.filter((m) => m.type === 'text_delta' && (m as any).content === 'Hi').length).toBe(1);
   });
 
   it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (thinking channel)', async () => {
@@ -1107,8 +1115,6 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
 
     // Wait for thinking_delta 'Hm' — guarantees the id-change reset has been processed
     await thinkingDeltaHmWait;
-    // Pin the contract: exactly one thinking_delta with content 'Hm' is emitted for the new turn.
-    expect(outputs.filter((m) => m.type === 'thinking_delta' && (m as any).content === 'Hm').length).toBe(1);
 
     // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
     // toolNameById was cleared by the thinking-shrink branch; on fixed code it forwards correctly.
@@ -1144,6 +1150,9 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     mockProc.exitCode = 0;
     mockProc.emit('close', 0);
     await msgPromise;
+    // Pin the contract over the full output stream: exactly one thinking_delta 'Hm' across
+    // the entire turn (guards against duplicate emissions if the streaming loop restarts).
+    expect(outputs.filter((m) => m.type === 'thinking_delta' && (m as any).content === 'Hm').length).toBe(1);
   });
 });
 
@@ -2389,17 +2398,13 @@ describe('waitForOutput cancel hook', () => {
   it('cancel() before match restores session.onOutput immediately and keeps the promise pending', async () => {
     const originalOnOutput = session.onOutput;
 
-    // Cast to the intended cancellable type — will be a runtime TypeError until step-2 implements it
-    const cancellable = waitForOutput(
-      session,
-      (m) => m.type === 'text_delta',
-    ) as Promise<OutboundMessage> & { cancel: () => void };
+    const cancellable = waitForOutput(session, (m) => m.type === 'text_delta');
 
     // session.onOutput should be swapped to the wrapped handler
     expect(session.onOutput).not.toBe(originalOnOutput);
 
     // Cancel BEFORE emitting any matching output
-    cancellable.cancel(); // TypeError: cancellable.cancel is not a function (until step-2)
+    cancellable.cancel();
 
     // (b) session.onOutput should be restored immediately after cancel
     expect(session.onOutput).toBe(originalOnOutput);
@@ -2419,11 +2424,7 @@ describe('waitForOutput cancel hook', () => {
   it('cancel() after match is a no-op (idempotent — does not throw, does not re-restore)', async () => {
     const originalOnOutput = session.onOutput;
 
-    const cancellable = waitForOutput(
-      session,
-      (m) => m.type === 'text_delta',
-      { timeoutMs: 2000 },
-    ) as Promise<OutboundMessage> & { cancel: () => void };
+    const cancellable = waitForOutput(session, (m) => m.type === 'text_delta', { timeoutMs: 2000 });
 
     // Emit a matching message so the wait settles via match
     session.onOutput({ type: 'text_delta', content: 'match' } as any);
