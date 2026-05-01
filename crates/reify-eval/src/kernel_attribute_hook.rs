@@ -15,20 +15,48 @@ use reify_types::{
     TopologyAttributeTable,
 };
 
-/// Engine-side dispatcher for `KernelAttributeHook`.
+/// Engine-side dispatcher for [`reify_types::KernelAttributeHook`].
 ///
-/// **Note**: this is currently a `unimplemented!()` stub — step 8 of plan
-/// #2657 replaces the body with the real dispatch logic. The signature is
-/// stable so the step-7 test can compile.
+/// Routes attribute-propagation work to whichever
+/// [`reify_types::KernelAttributeHook`] the active `GeometryKernel`
+/// advertises via [`reify_types::GeometryKernel::attribute_hook`]:
+///
+/// - **`Some(hook)`**: delegates to `hook.propagate_attributes(...)`,
+///   surfacing the hook's outcome (`Propagated` / `Discarded` / runtime
+///   `QueryError`) unchanged. The hook itself emits any required
+///   diagnostics; this dispatcher does not duplicate them.
+/// - **`None`**: returns
+///   [`reify_types::KernelAttributeOutcome::FellThrough`] without writing
+///   to `table`. Step 10 of plan #2657 adds a `tracing::debug!` diagnostic
+///   on this branch to give operators visibility into the no-hook case.
+///
+/// This signature deliberately mirrors
+/// [`reify_types::KernelAttributeHook::propagate_attributes`] so that
+/// reading either makes the other intuitable.
+///
+/// PRD line 70: kernels without a native attribute-tracking channel
+/// (Fidget's SDF reps, OpenVDB's voxel reps) inherit the
+/// [`GeometryKernel::attribute_hook`] default of `None`, so the dispatcher
+/// returns `FellThrough` for them and selectors over those reps fall
+/// through to computed selectors.
 pub fn propagate_via_kernel_attribute_hook(
-    _kernel: &dyn GeometryKernel,
-    _table: &mut TopologyAttributeTable,
-    _op: &GeometryOp,
-    _parent_handles: &[GeometryHandleId],
-    _result_handle: GeometryHandleId,
-    _splitting_feature_id: &FeatureId,
+    kernel: &dyn GeometryKernel,
+    table: &mut TopologyAttributeTable,
+    op: &GeometryOp,
+    parent_handles: &[GeometryHandleId],
+    result_handle: GeometryHandleId,
+    splitting_feature_id: &FeatureId,
 ) -> Result<KernelAttributeOutcome, QueryError> {
-    unimplemented!("step 8 of plan #2657 implements the dispatch body")
+    match kernel.attribute_hook() {
+        Some(hook) => hook.propagate_attributes(
+            table,
+            op,
+            parent_handles,
+            result_handle,
+            splitting_feature_id,
+        ),
+        None => Ok(KernelAttributeOutcome::FellThrough),
+    }
 }
 
 #[cfg(test)]
