@@ -469,6 +469,19 @@ describe('SidecarSession', () => {
     mockProc.stdin = new PassThrough();
     mockProc.exitCode = null;
 
+    // Attach stdin accumulator BEFORE the spawn-triggering handleMessage call so no
+    // writes are missed even if the PassThrough drains before a late listener attaches.
+    const stdinLines: unknown[] = [];
+    let stdinBuf = '';
+    mockProc.stdin.on('data', (chunk: Buffer | string) => {
+      stdinBuf += chunk.toString();
+      let nlIdx: number;
+      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
+        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
+        stdinBuf = stdinBuf.slice(nlIdx + 1);
+      }
+    });
+
     vi.mocked(spawn).mockImplementation((() => {
       process.nextTick(() => {
         stdout.push(JSON.stringify({
@@ -485,6 +498,9 @@ describe('SidecarSession', () => {
     await session.init();
     outputs.length = 0;
 
+    // Set up event-driven wait for tool_call BEFORE the spawn-triggering handleMessage call
+    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+
     // Start message without awaiting it (it will hang until stdin closes)
     const msgPromise = session.handleMessage({
       type: 'send_message',
@@ -492,37 +508,19 @@ describe('SidecarSession', () => {
       text: 'Check diagnostics',
     });
 
-    // Wait for the tool_call outbound to be emitted (500ms deadline)
-    const toolCallDeadline = Date.now() + 500;
-    while (Date.now() < toolCallDeadline) {
-      if (outputs.some((o) => o.type === 'tool_call')) break;
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(outputs.some((o) => o.type === 'tool_call')).toBe(true);
-
-    // Now collect all stdin writes so far, then send tool_result
-    // We'll drain stdin lines in order: first is the user prompt, second will be tool_result
-    const stdinLines: unknown[] = [];
-    let stdinBuf = '';
-    mockProc.stdin.on('data', (chunk: Buffer | string) => {
-      stdinBuf += chunk.toString();
-      let nlIdx: number;
-      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
-        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
-        stdinBuf = stdinBuf.slice(nlIdx + 1);
-      }
-    });
+    // Wait for the tool_call outbound (event-driven, no polling)
+    await toolCallWait;
 
     // Send the tool_result inbound
-    await session.handleMessage({
+    session.handleMessage({
       type: 'tool_result',
       id: 'msg-1',
       tool_name: 'reify_get_diagnostics',
       result: { diagnostics: [] },
     });
 
-    // Give a tick for the write to flush
-    await new Promise((r) => setTimeout(r, 20));
+    // Event-driven wait for the second stdin line (no setTimeout flush wait)
+    await waitForStdinLines(mockProc.stdin, stdinLines, 2);
 
     // Close the process
     stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-tr-fwd' }) + '\n');
