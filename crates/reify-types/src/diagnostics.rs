@@ -688,6 +688,43 @@ pub enum DiagnosticCode {
     /// wants to surface these as harder failures can filter by code at the
     /// consumer side.
     ImportedTolerancePromiseInsufficient,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::long_chain_diagnostic`
+    /// (task 2646 — PRDs `docs/prds/v0_2/multi-kernel.md`
+    /// §"Resolved design decisions" → "Long-chain diagnostic" and
+    /// `docs/prds/v0_2/per-purpose-tolerance.md`
+    /// §"Resolved design decisions" → "Long-chain diagnostic gating").
+    ///
+    /// Canonical message form:
+    /// `"long-chain realization (<N> stages, elapsed <ms>ms > <threshold_ms>ms): \
+    /// <kernel_a>: <from>→<to> → <kernel_b>: <from>→<to> → … → <final_kernel>"`.
+    ///
+    /// Emitted as a `Severity::Warning` when the dispatcher selects a chain
+    /// **longer than 2 conversion stages** (strict `>` 2 ⇒ ≥3 stages) AND
+    /// elapsed realization wall time **exceeds the configured threshold**
+    /// (strict `>`; default 500 ms, override via the `REIFY_LONG_CHAIN_THRESHOLD_MS`
+    /// environment variable). Both gates must hold; short-chain pain is
+    /// self-evident and a sub-threshold long chain is not user-visible budget
+    /// pressure, so suppressing those cases is intentional ergonomics.
+    ///
+    /// The diagnostic NAMES THE CHAIN — each conversion stage's kernel and
+    /// `from→to` repr transition, plus the final-stage kernel — so users can
+    /// see exactly where the conversion budget is going (PRD: "names the
+    /// chain so users can see budget pressure"). Strict-`>` gating mirrors
+    /// the canonical decision in
+    /// [`reify_eval::is_promise_insufficient`](../../reify_eval/fn.is_promise_insufficient.html)
+    /// (task 2651): boundary cases (exactly 2 stages, exactly 500 ms) do
+    /// NOT warn — consistent with the "tighter satisfies looser" partial-order
+    /// vocabulary throughout the tolerance subsystem.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_LONG_CHAIN_REALIZATION`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Mirrors the
+    /// advisory-warning posture established by
+    /// `ImportedTolerancePromiseInsufficient`, `FieldOutOfBounds`, and
+    /// `KinematicSingularity`: the realization completed; the user just
+    /// deserves visibility into budget pressure. Downstream tooling that
+    /// wants to surface this as a harder failure (e.g. CI gate) can filter
+    /// by code at the consumer side.
+    LongChainRealization,
 }
 
 /// A diagnostic message with location and optional labels.
