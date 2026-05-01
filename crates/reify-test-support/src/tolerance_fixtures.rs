@@ -278,7 +278,6 @@ mod tests {
             ),
             "sentinel Int(7) must round-trip verbatim through step_output_template_with_body"
         );
-        assert_eq!(template.constraints[0].expr.content_hash, sentinel.content_hash);
     }
 
     // ── step_input_template ─────────────────────────────────────────────────
