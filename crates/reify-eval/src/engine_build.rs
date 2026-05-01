@@ -286,6 +286,67 @@ impl Engine {
         )
     }
 
+    /// Compare the imported-geometry tolerance promise against the demand
+    /// for a downstream output occurrence; emit a `Severity::Warning`
+    /// diagnostic when the demand is strictly tighter than the promise.
+    ///
+    /// # Truth table
+    ///
+    /// Each row is pinned by an integration test in
+    /// `tests/tolerance_import_promise.rs`. Mirrors the structure of
+    /// [`Engine::demanded_tolerance_for_output`]'s table:
+    ///
+    /// | promise contributor | demand contributor | strict-`<` outcome  | result            | scenario                                                   |
+    /// |---------------------|--------------------|---------------------|-------------------|------------------------------------------------------------|
+    /// | `None`              | (any)              | n/a                 | `None`            | promise absent — silent-skip, nothing to compare           |
+    /// | `Some(p)`           | `None`             | n/a                 | `None`            | demand absent — silent-skip, nothing to compare            |
+    /// | `Some(p)`           | `Some(d)`          | `d >= p`            | `None`            | demand satisfiable by promise (looser or equal — strict <) |
+    /// | `Some(p)`           | `Some(d)`          | `d < p`             | `Some(diagnostic)`| demand strictly tighter than promise — warning emitted    |
+    ///
+    /// # Strict-`<` rationale
+    ///
+    /// A demand exactly equal to the promise IS satisfiable: the promise is
+    /// an upper bound on the as-imported representation error, and a demand
+    /// at the same level can be satisfied by the as-imported realization.
+    /// Mirrors the partial-order "tighter satisfies looser" rule established
+    /// by `tolerance_bucket`'s `cached_tol <= requested_tol` lookup. See
+    /// [`crate::tolerance_promise::is_promise_insufficient`].
+    ///
+    /// # Deferred auto-emission
+    ///
+    /// This method is the public *query* that future build/dispatcher work
+    /// will consume. Auto-emitting from `build()` / `build_snapshot()`
+    /// requires identifying which `module.templates` are `Input`
+    /// occurrences and pairing each Input with its downstream consumers —
+    /// that orchestration is the dispatcher's job (sibling task 2649).
+    /// Wiring is left to a future task to keep this task atomic at the
+    /// public-method boundary, mirroring how 2647 introduced
+    /// `active_tolerance_for(...)` and 2650 introduced
+    /// [`Engine::demanded_tolerance_for_output`] without auto-emitting.
+    ///
+    /// Per PRD `docs/prds/v0_2/per-purpose-tolerance.md` ("Resolved design
+    /// decisions" → "Imported geometry promise"), arch §10.4 / §14.5,
+    /// task 2651.
+    pub fn check_imported_tolerance_promise(
+        &self,
+        input_template_name: &str,
+        subject_entity_ref: &str,
+        output_template_name: &str,
+    ) -> Option<Diagnostic> {
+        let promise = self.imported_tolerance_promise(input_template_name)?;
+        let demanded =
+            self.demanded_tolerance_for_output(output_template_name, subject_entity_ref)?;
+        if crate::tolerance_promise::is_promise_insufficient(demanded, promise) {
+            Some(crate::tolerance_promise::imported_tolerance_promise_diagnostic(
+                input_template_name,
+                demanded,
+                promise,
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Build geometry from the current snapshot values, without re-calling eval().
     ///
     /// Returns `None` if no snapshot exists. Otherwise: checks constraints from
