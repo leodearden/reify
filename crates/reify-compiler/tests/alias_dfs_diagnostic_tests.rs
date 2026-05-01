@@ -16,8 +16,9 @@
 //!   diagnostics.  This test drives the narrowing fix in task #2766.
 //! - `Vector3<Q>` — like Scalar, routes through
 //!   `resolve_type_alias_expr_to_dimension`; the alias-DFS `Propagate` path
-//!   emits `"cannot resolve 'NotADim'..."` which the test now pins via the
-//!   `"NotADim"` fragment check.
+//!   emits `"cannot resolve '...' to a dimension type in alias expression"`,
+//!   which the test pins via the `"dimension type in alias expression"` fragment
+//!   — unique to that helper's error path.
 
 mod common;
 
@@ -113,25 +114,28 @@ fn non_parametric_alias_scalar_unknown_dimension_produces_error() {
 
 /// A non-parametric alias `type Bad = Vector3<NotADim>` paired with a use-site
 /// `structure def Use { param v : Bad }` must produce at least one
-/// Error-severity diagnostic, and that diagnostic must mention `NotADim`.
+/// Error-severity diagnostic whose message contains the fixed phrase
+/// `"dimension type in alias expression"`.
 ///
-/// `Vector3` routes through `resolve_type_alias_expr_to_dimension`
-/// (type_resolution.rs:1281), the same dimension-resolver helper used by
-/// Scalar (line 1272).  When `NotADim` cannot be resolved to a known dimension,
-/// the helper emits `"cannot resolve 'NotADim' to a dimension type in alias
-/// expression"` (type_resolution.rs:~854).  Because the alias has zero type
+/// `Vector3` routes through `resolve_type_alias_expr_to_dimension`, the same
+/// dimension-resolver helper used by Scalar.  When `NotADim` cannot be resolved
+/// to a known dimension, the helper emits `"cannot resolve 'NotADim' to a
+/// dimension type in alias expression"`.  Because the alias has zero type
 /// parameters, `seed_alias_entry` selects `AliasInnerDiagPolicy::Propagate`,
 /// which extends `diagnostics` with the inner-arg error.
 ///
-/// The `NotADim` fragment check pins the assertion to the alias-DFS `Propagate`
-/// path firing — the use-site fallback `"unresolved type: Bad"` does NOT
-/// contain `"NotADim"`, so the assertion will fail if `Propagate` regresses.
+/// The `"dimension type in alias expression"` fragment uniquely identifies the
+/// dimension-resolver helper's error path — the use-site fallback
+/// `"unresolved type: Bad"` does not contain this phrase, and no other code
+/// path currently emits it.  The assertion therefore fails if `Propagate`
+/// regresses or the dimension-resolver is bypassed, without being confused by
+/// any future diagnostic that merely mentions the identifier `NotADim`.
 /// This complements the Scalar test by exercising the second
 /// `resolve_parameterized_builtin_type` branch (the dimension-resolver branch).
 #[test]
 fn non_parametric_alias_vector3_unknown_dimension_produces_error() {
     assert_error_containing(
         "type Bad = Vector3<NotADim>\nstructure def Use { param v : Bad }",
-        "NotADim",
+        "dimension type in alias expression",
     );
 }
