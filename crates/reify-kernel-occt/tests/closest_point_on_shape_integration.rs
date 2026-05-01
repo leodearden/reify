@@ -198,15 +198,20 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
 
 /// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// **OCCT BREP-boundary behavior:** `BRepExtrema_DistShapeShape` has no
-/// inside/outside knowledge.  For a query point strictly inside a solid it
-/// returns the distance to the nearest face on the BREP boundary — NOT zero.
-/// For the box center the six faces are all 5.0 units away, so the returned
-/// witness lies on one of those faces and the distance is ≈5.0.
+/// **OCCT solid-overlap behavior + the shell-recompute compensation:**
+/// when the query vertex is inside a `TopoDS_Solid`, `BRepExtrema_DistShapeShape`
+/// considers the shapes to overlap and reports `dist.Value() = 0` with
+/// `PointOnShape1(1)` returning the query point itself — NOT a witness on the
+/// boundary. To produce a useful witness for interior queries,
+/// `closest_point_on_shape` (occt_wrapper.cpp:2641-2654) detects this overlap
+/// (`dist.Value() < 1e-10`) and re-runs `BRepExtrema_DistShapeShape` against the
+/// outer `TopAbs_SHELL` of the input solid; the shell-vs-vertex extrema then
+/// yields a real boundary witness. For the box center, the six faces are all
+/// 5.0 units away, so the recomputed witness lies on one face and `dist ≈ 5.0`.
 ///
-/// This means `closest_point_on_shape` for an interior query does NOT return
-/// the query point itself; it returns the nearest surface point.  This test
-/// locks in that documented behavior.
+/// This test locks in that the shell-recompute path runs for interior queries
+/// and produces a boundary witness — NOT raw `BRepExtrema_DistShapeShape`
+/// output, which would be the query point at distance 0.
 #[test]
 fn closest_point_for_offcenter_interior_point() {
     let (kernel, box_id) = box_kernel();
@@ -222,7 +227,8 @@ fn closest_point_for_offcenter_interior_point() {
             assert!(
                 (dist - 5.0).abs() < 1e-6,
                 "expected witness on boundary face ~5.0 from origin \
-                 (BRepExtrema has no inside/outside knowledge), \
+                 (closest_point_on_shape's shell-recompute path should run for interior queries — \
+                 BRepExtrema reports dist=0 for solid overlap, then we re-extrema against the outer shell), \
                  got ({x}, {y}, {z}), dist={dist}"
             );
         }
