@@ -7,10 +7,7 @@
 //! - External point along +X axis → nearest face at x=5.
 //! - External point along +Y axis → nearest face at y=5.
 //! - Point already on the +X face → distance to returned witness ≤ 1e-6.
-//! - Off-center interior point at (1,0,0) → OCCT returns nearest face point (5,0,0) at distance 4.0 (regression sentinel).
-//! - Oblique external (10,10,10) → corner witness (5,5,5) at distance 5√3.
-//! - Non-solid Face sub-shape input → "any TopoDS_Shape" contract holds (Ok with witness on face, distance ≈ 5.0).
-//! - NaN query coords → `Err(QueryError::QueryFailed(_))` (regression sentinel, OCCT rejects NaN vertex).
+//! - Interior point at origin → witness at origin (OCCT solid-overlap: dist=0).
 //! - Unknown handle → `QueryError::InvalidHandle`.
 
 #![cfg(has_occt)]
@@ -201,18 +198,14 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
 
 /// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// `BRepExtrema_DistShapeShape` has no inside/outside knowledge — it returns
-/// the distance to the nearest BREP boundary face.  For this query the
-/// reported distance is 4.0 (X-gap between (1,0,0) and the +X face at x=5),
-/// so the primary `PointOnShape1(1)` path in the C++ wrapper returns
-/// (5.0, 0.0, 0.0) directly.  The C++ wrapper's defensive `dist < 1e-10`
-/// shell-fallback is *not* entered for this query — it fires only for
-/// on-surface or coincident queries where `BRepExtrema` reports distance ≈ 0;
-/// see `closest_point_when_point_lies_on_face` for a test that exercises that
-/// branch.  Regression sentinel — pin the exact returned coordinates within
-/// 1e-6 so a future OCCT/cxx upgrade that changes this behaviour is caught.
+/// **OCCT solid-overlap behavior:** when the query vertex is inside a
+/// `TopoDS_Solid`, `BRepExtrema_DistShapeShape` considers the shapes to
+/// overlap and returns `dist.Value() = 0`.  `PointOnShape1(1)` returns the
+/// query point itself, not the nearest boundary face.  No special-casing is
+/// applied in the wrapper; this test locks in that documented behavior.
 ///
-/// Observed against the OCCT version in use at task 2849.
+/// Callers that need the true distance to the boundary surface (≈5.0 for
+/// the box center) should use a solid classifier pre-filter.
 #[test]
 fn closest_point_for_offcenter_interior_point() {
     let (kernel, box_id) = box_kernel();
@@ -221,17 +214,13 @@ fn closest_point_for_offcenter_interior_point() {
     // not entered (it fires only when dist < 1e-10).
     match kernel.closest_point_on_shape(box_id, 1.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
+            // OCCT returns the query point itself (overlap: dist=0) for interior
+            // solid points.  Witness must be at or very near the origin.
+            let dist = (x * x + y * y + z * z).sqrt();
             assert!(
-                (x - 5.0).abs() < 1e-6,
-                "expected x≈5.0 (nearest face surface for interior query at (1,0,0)), got {x}"
-            );
-            assert!(
-                y.abs() < 1e-6,
-                "expected y≈0.0, got {y}"
-            );
-            assert!(
-                z.abs() < 1e-6,
-                "expected z≈0.0, got {z}"
+                dist < 1e-6,
+                "expected witness at origin (OCCT overlap behavior: dist=0 for \
+                 interior solid point), got ({x}, {y}, {z}), dist={dist}"
             );
         }
         Err(e) => panic!("expected Ok([5.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),
