@@ -510,6 +510,41 @@ mod tests {
         );
     }
 
+    /// Pins the PRD-mandated chain-naming requirement at the structural
+    /// level: every stage's kernel name AND the final-stage kernel must
+    /// appear in the diagnostic message so users can see exactly where the
+    /// conversion budget is going. Asserts only `contains()` of each kernel
+    /// name — does NOT pin specific surrounding prose
+    /// ("realization", "elapsed", separator chars), keeping the test
+    /// wording-churn-resistant per the
+    /// `imported_tolerance_promise_diagnostic_builds_warning_with_code_and_template_name`
+    /// precedent.
+    #[test]
+    fn long_chain_diagnostic_message_names_each_chain_kernel_and_final_stage() {
+        let plan = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![
+                ("alpha".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("beta".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                ("gamma".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+            ],
+        };
+        let threshold = Duration::from_millis(500);
+        let elapsed = Duration::from_millis(900);
+
+        let diag = long_chain_diagnostic(&plan, elapsed, threshold)
+            .expect("3 stages + elapsed > threshold must emit a diagnostic");
+
+        for kernel in ["alpha", "beta", "gamma", "manifold"] {
+            assert!(
+                diag.message.contains(kernel),
+                "diagnostic message must name kernel {:?} so users can see budget pressure (got: {:?})",
+                kernel,
+                diag.message,
+            );
+        }
+    }
+
     /// Trivial happy path: one kernel that supports the demanded op directly on
     /// a repr already in `available`. Plan must be `(kernel, no conversions)`.
     /// This locks the zero-conversion code path before BFS expansion is added.
