@@ -1955,6 +1955,64 @@ describe('echoed tool_use_id validation', () => {
     mockProc.emit('close', 0);
     await msgPromise;
   });
+
+  it('stale tool_use_id re-dispatch emits structured error and does not forward a second stdin line', async () => {
+    // This test covers the "toolNameById drain" property through observable behavior:
+    // once a tool_result has been successfully forwarded for a given tool_use_id, the id is
+    // deleted from toolNameById (session.ts:388). Re-dispatching a tool_result with the same
+    // id must hit the unknown-id guard (session.ts:335) and emit a structured error — not
+    // forward a second stdin line.
+    const { mockProc, stdout, stdinLines, msgPromise, toolCallWait } = setupValidationTest();
+
+    // (1) Wait for tool_call outbound — tool_use is now registered in toolNameById
+    await toolCallWait;
+
+    // (2) Dispatch first tool_result — this is a valid forward
+    session.handleMessage({
+      type: 'tool_result',
+      id: 'tr-first',
+      tool_name: 'reify_x',
+      result: 'ok-1',
+      tool_use_id: 'toolu_real',
+    });
+
+    // (3) Wait for stdin line 2 (initial prompt = line 1, forwarded tool_result = line 2)
+    await waitForStdinLines(mockProc.stdin, stdinLines, 2);
+
+    // (4) Assert first forward used the correct tool_use_id
+    expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_real');
+
+    // (5) Set up wait for error outbound BEFORE dispatching the stale re-dispatch
+    const errorWait = waitForOutput(session, (m) => m.type === 'error');
+
+    // (6) Re-dispatch a tool_result with the SAME (already consumed) tool_use_id
+    session.handleMessage({
+      type: 'tool_result',
+      id: 'tr-stale',
+      tool_name: 'reify_x',
+      result: 'ok-2',
+      tool_use_id: 'toolu_real',
+    });
+
+    // (7) Wait for the structured error outbound
+    const errorMsg = await errorWait;
+
+    // (8) Assert correct id and unknown-id error message
+    expect((errorMsg as any).id).toBe('tr-stale');
+    expect((errorMsg as any).message).toMatch(/unknown.*tool_use_id|invalid.*tool_use_id/i);
+
+    // (9) Yield microtasks so any stray write would land in stdinLines before we assert
+    await new Promise(setImmediate);
+
+    // (10) Assert no extra stdin line was written (stale re-dispatch must not forward)
+    expect(stdinLines.length).toBe(2);
+
+    // Cleanup
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
 });
 
 describe('FIFO consumption on echoed-id path', () => {
