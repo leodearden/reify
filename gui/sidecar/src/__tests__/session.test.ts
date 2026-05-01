@@ -52,16 +52,32 @@ function drainStdinFirstLine(mockProc: any): Promise<unknown> {
  * Event-driven helper: resolves when the next outbound matching predicate is emitted.
  * Hooks session.onOutput, restores the original after match, and resolves with the matching message.
  * Set this up BEFORE the action that produces the event.
+ *
+ * Accepts an optional `options.timeoutMs` (default 2000ms). If the predicate is never
+ * satisfied within that window, rejects with a named error and restores session.onOutput
+ * so test isolation is preserved.
  */
 function waitForOutput(
   session: SidecarSession,
-  predicate: (m: OutboundMessage) => boolean
+  predicate: (m: OutboundMessage) => boolean,
+  options: { timeoutMs?: number } = {}
 ): Promise<OutboundMessage> {
-  return new Promise((resolve) => {
-    const prev = session.onOutput;
+  const timeoutMs = options.timeoutMs ?? 2000;
+  const prev = session.onOutput;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      session.onOutput = prev;
+      reject(new Error('waitForOutput timed out waiting for predicate'));
+    }, timeoutMs);
     session.onOutput = (msg: OutboundMessage) => {
       prev(msg);
       if (predicate(msg)) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         session.onOutput = prev;
         resolve(msg);
       }
@@ -74,20 +90,36 @@ function waitForOutput(
  * Hooks session.onOutput, restores the original after the nth match, and resolves with the
  * last matching message. Decouples match counting from the predicate so the predicate stays
  * side-effect-free.
+ *
+ * Accepts an optional `options.timeoutMs` (default 2000ms). If the nth match is never
+ * reached within that window, rejects with a named error and restores session.onOutput
+ * so test isolation is preserved.
  */
 function waitForOutputs(
   session: SidecarSession,
   predicate: (m: OutboundMessage) => boolean,
-  count: number
+  count: number,
+  options: { timeoutMs?: number } = {}
 ): Promise<OutboundMessage> {
-  return new Promise((resolve) => {
+  const timeoutMs = options.timeoutMs ?? 2000;
+  const prev = session.onOutput;
+  return new Promise((resolve, reject) => {
     let matched = 0;
-    const prev = session.onOutput;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      session.onOutput = prev;
+      reject(new Error('waitForOutputs timed out waiting for predicate'));
+    }, timeoutMs);
     session.onOutput = (msg: OutboundMessage) => {
       prev(msg);
       if (predicate(msg)) {
         matched++;
         if (matched >= count) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
           session.onOutput = prev;
           resolve(msg);
         }
