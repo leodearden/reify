@@ -174,3 +174,26 @@ fn non_parametric_alias_scalar_unknown_dimension_leaves_alias_unresolved() {
         bad.resolved_type
     );
 }
+
+/// A use-site `param v : Bad` where `type Bad = Scalar<NotADim>` must produce
+/// an Error-severity diagnostic containing `"unresolved type: Bad"`.
+///
+/// This pins acceptance criterion #2 from task #2841.  After the fix, the
+/// alias entry for `Bad` has `resolved_type: None`.  When `entity.rs` resolves
+/// the param type at line 374-415, it finds no resolved type for `Bad` and
+/// emits `"unresolved type: Bad"` (entity.rs:~409).  Before the fix the alias
+/// entry held `Some(Type::length())`, so `entity.rs` silently typed `v` as
+/// `Length` with no error — a wrong-type cascade.
+///
+/// This test is causally downstream of
+/// `non_parametric_alias_scalar_unknown_dimension_leaves_alias_unresolved` (the
+/// alias must be `None` before the use-site diagnostic can fire), but is kept
+/// as a separate `#[test]` so a future regression is attributable to either
+/// registry state or the use-site diagnostic path independently.
+#[test]
+fn non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic() {
+    assert_error_containing(
+        "type Bad = Scalar<NotADim>\nstructure def Use { param v : Bad }",
+        "unresolved type: Bad",
+    );
+}
