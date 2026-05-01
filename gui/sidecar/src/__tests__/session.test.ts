@@ -420,6 +420,94 @@ describe('SidecarSession', () => {
     });
   });
 
+  it('tool_result inbound is forwarded to claude CLI stdin with the matching tool_use_id', async () => {
+    // Create a process that emits a tool_use block and stays open
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation((() => {
+      process.nextTick(() => {
+        stdout.push(JSON.stringify({
+          type: 'assistant',
+          message: { content: [
+            { type: 'tool_use', id: 'toolu_xyz', name: 'reify_get_diagnostics', input: {} },
+          ] },
+        }) + '\n');
+        // stdout stays open — don't push null yet
+      });
+      return mockProc;
+    }) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    // Start message without awaiting it (it will hang until stdin closes)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-tr-fwd',
+      text: 'Check diagnostics',
+    });
+
+    // Wait for the tool_call outbound to be emitted
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        if (outputs.some((o) => o.type === 'tool_call')) resolve();
+        else setTimeout(check, 5);
+      };
+      check();
+    });
+
+    // Now collect all stdin writes so far, then send tool_result
+    // We'll drain stdin lines in order: first is the user prompt, second will be tool_result
+    const stdinLines: unknown[] = [];
+    let stdinBuf = '';
+    mockProc.stdin.on('data', (chunk: Buffer | string) => {
+      stdinBuf += chunk.toString();
+      let nlIdx: number;
+      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
+        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
+        stdinBuf = stdinBuf.slice(nlIdx + 1);
+      }
+    });
+
+    // Send the tool_result inbound
+    await session.handleMessage({
+      type: 'tool_result',
+      id: 'msg-1',
+      tool_name: 'reify_get_diagnostics',
+      result: { diagnostics: [] },
+    });
+
+    // Give a tick for the write to flush
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Close the process
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-tr-fwd' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+
+    // After the initial user-text message, a second JSON line should have been written
+    // with the tool_result content block
+    expect(stdinLines.length).toBeGreaterThanOrEqual(2);
+    expect(stdinLines[1]).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_xyz',
+          content: { diagnostics: [] },
+        }],
+      },
+    });
+  });
+
   it('invokeSdk uses --input-format stream-json and writes prompt to stdin', async () => {
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
       { type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } },
