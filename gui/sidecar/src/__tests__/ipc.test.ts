@@ -90,6 +90,26 @@ describe('parseInboundMessage', () => {
       result: { ok: true },
     });
   });
+
+  it('throws on tool_result missing id field', () => {
+    const line = JSON.stringify({ type: 'tool_result', tool_name: 'reify_get_diagnostics', result: {} });
+    expect(() => parseInboundMessage(line)).toThrow(/id/i);
+  });
+
+  it('throws on tool_result with empty id', () => {
+    const line = JSON.stringify({ type: 'tool_result', id: '', tool_name: 'reify_get_diagnostics', result: {} });
+    expect(() => parseInboundMessage(line)).toThrow(/id/i);
+  });
+
+  it('throws on tool_result missing tool_name field', () => {
+    const line = JSON.stringify({ type: 'tool_result', id: 'msg-1', result: {} });
+    expect(() => parseInboundMessage(line)).toThrow(/tool_name/i);
+  });
+
+  it('throws on tool_result missing result field', () => {
+    const line = JSON.stringify({ type: 'tool_result', id: 'msg-1', tool_name: 'reify_get_diagnostics' });
+    expect(() => parseInboundMessage(line)).toThrow(/result/i);
+  });
 });
 
 describe('formatOutboundMessage', () => {
