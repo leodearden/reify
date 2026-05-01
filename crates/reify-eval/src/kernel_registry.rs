@@ -263,6 +263,46 @@ mod tests {
     use super::*;
     use reify_types::{Operation, ReprKind};
 
+    /// When `total > 1` (multi-kernel build), `emit_kernel_selection` must emit
+    /// exactly one `INFO`-level event and no `DEBUG`-level events at the
+    /// `reify_eval::kernel_registry` target.
+    ///
+    /// This exercises the multi-kernel INFO branch introduced so that an
+    /// `RUST_LOG=info` operator sees a tie-break notification iff a second
+    /// kernel adapter was actually registered (i.e. the lex-min selection was
+    /// non-trivial). Passing `("foo", 3)` as synthetic args avoids invoking any
+    /// kernel factory — the helper is decoupled from the inventory walk.
+    #[test]
+    fn emit_kernel_selection_emits_info_at_lex_min_target_when_total_above_one() {
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::INFO)
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_eval::kernel_registry")
+            .build();
+        let info_count = counters[&tracing::Level::INFO].clone();
+        let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+        tracing::subscriber::with_default(subscriber, || {
+            emit_kernel_selection("foo", 3);
+        });
+
+        assert_eq!(
+            info_count.load(Ordering::Acquire),
+            1,
+            "emit_kernel_selection(name, total > 1) must emit exactly one INFO event \
+             at reify_eval::kernel_registry — operator visibility when lex-min tie-break fires",
+        );
+        assert_eq!(
+            debug_count.load(Ordering::Acquire),
+            0,
+            "emit_kernel_selection(name, total > 1) must not emit DEBUG events — \
+             mutually-exclusive branches: only INFO fires in the multi-kernel case",
+        );
+    }
+
     /// Smoke pin: the function returns the right type, the result is
     /// deterministic across calls, and the iteration logic is non-trivially
     /// exercised — the cfg(test)-only synthetic registration submitted in
