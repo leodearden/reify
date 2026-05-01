@@ -1135,6 +1135,119 @@ describe('entrypoint wiring', () => {
     expect(msgs[0]).toEqual({ type: 'ready' });
   });
 
+  it('tool_result inbound is accepted end-to-end via entrypoint and forwarded to claude CLI stdin', async () => {
+    // Create a mock process that emits a tool_use and stays open
+    const mockProc = new EventEmitter() as any;
+    const mockStdout = new PassThrough();
+    mockProc.stdout = mockStdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      process.nextTick(() => {
+        // Emit a tool_use event and leave stdout open
+        mockStdout.push(JSON.stringify({
+          type: 'assistant',
+          message: { content: [
+            { type: 'tool_use', id: 'toolu_e2e', name: 'reify_get_diagnostics', input: {} },
+          ] },
+        }) + '\n');
+      });
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          mockStdout.end();
+          mockProc.exitCode = null;
+          mockProc.emit('close', null);
+        });
+      }
+      return mockProc;
+    }) as any);
+
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    // Collect outbound messages as they arrive
+    const receivedMsgs: OutboundMessage[] = [];
+    let outputBuf = '';
+    output.on('data', (chunk: Buffer) => {
+      outputBuf += chunk.toString();
+      let idx: number;
+      while ((idx = outputBuf.indexOf('\n')) !== -1) {
+        const line = outputBuf.slice(0, idx);
+        outputBuf = outputBuf.slice(idx + 1);
+        if (line.length > 0) receivedMsgs.push(JSON.parse(line));
+      }
+    });
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Set up stdin capture BEFORE writing the send_message
+    const stdinLines: unknown[] = [];
+    let stdinBuf = '';
+    mockProc.stdin.on('data', (chunk: Buffer | string) => {
+      stdinBuf += chunk.toString();
+      let nlIdx: number;
+      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
+        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
+        stdinBuf = stdinBuf.slice(nlIdx + 1);
+      }
+    });
+
+    // Send a send_message through the entrypoint input
+    input.write(JSON.stringify({ type: 'send_message', id: 'e2e-tr-1', text: 'Check diagnostics' }) + '\n');
+
+    // Wait for tool_call outbound to arrive (signals tool_use was parsed and pendingToolUseIds populated)
+    const toolCallDeadline = Date.now() + 500;
+    while (Date.now() < toolCallDeadline) {
+      if (receivedMsgs.some((m) => m.type === 'tool_call')) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(receivedMsgs.some((m) => m.type === 'tool_call')).toBe(true);
+
+    // Send tool_result through the entrypoint input (the previous failure mode: parseInboundMessage threw)
+    input.write(JSON.stringify({
+      type: 'tool_result',
+      id: 'e2e-tr-1',
+      tool_name: 'reify_get_diagnostics',
+      result: { diagnostics: [] },
+    }) + '\n');
+
+    // Give time for the write to propagate through the session
+    await new Promise((r) => setTimeout(r, 50));
+
+    // (a) NO outbound error event was emitted
+    const errors = receivedMsgs.filter((m) => m.type === 'error');
+    expect(errors).toHaveLength(0);
+
+    // (b) The mock claude CLI's stdin received the tool_result content block
+    // stdinLines[0] = initial user prompt; stdinLines[1] = tool_result block
+    expect(stdinLines.length).toBeGreaterThanOrEqual(2);
+    expect(stdinLines[1]).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_e2e', content: { diagnostics: [] } }],
+      },
+    });
+
+    // Clean up: close the mock process and end input
+    mockStdout.push(JSON.stringify({ type: 'result', session_id: 'sess-e2e-tr' }) + '\n');
+    mockStdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+
+    await new Promise((r) => setTimeout(r, 50));
+    input.end();
+
+    await Promise.race([mainPromise, new Promise((r) => setTimeout(r, 500))]);
+
+    vi.mocked(spawn).mockReset();
+  });
+
   it('abort message is processed while send_message is in-flight (non-blocking input loop)', async () => {
     // Create a mock process that hangs until the abort signal fires
     const hangingProc = new EventEmitter() as any;
