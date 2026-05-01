@@ -308,6 +308,128 @@ mod tests {
         );
     }
 
+    /// Two-stage chain as winner: the only path from `{BRep}` to
+    /// `(BooleanUnion, Mesh)` is BRep→Sdf (via alpha) then Sdf→Mesh (via
+    /// beta), because no kernel declares `(Convert{BRep}, Mesh)`. Locks BFS
+    /// multi-stage expansion as the *accepted-path winner*, not just the
+    /// rejected-path loser as in `dispatch_prefers_shorter_chain`.
+    #[test]
+    fn dispatch_two_stage_chain_is_shortest() {
+        // alpha: converts BRep → Sdf only. No direct BRep→Mesh anywhere.
+        let alpha = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert { from: ReprKind::BRep },
+                ReprKind::Sdf,
+            )],
+        };
+        // beta: converts Sdf → Mesh only.
+        let beta = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert { from: ReprKind::Sdf },
+                ReprKind::Mesh,
+            )],
+        };
+        // manifold: runs BooleanUnion on Mesh. No conversion edges declared.
+        let manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("alpha".to_string(), &alpha);
+        registry.insert("beta".to_string(), &beta);
+        registry.insert("manifold".to_string(), &manifold);
+
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::BRep);
+
+        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
+            .expect("a 2-stage chain BRep→Sdf→Mesh→Union must be findable");
+
+        assert_eq!(
+            plan.conversions.len(),
+            2,
+            "exactly two conversion stages (BRep→Sdf, Sdf→Mesh) are required, got {plan:?}",
+        );
+        assert_eq!(
+            plan.kernel, "manifold",
+            "the final-stage Mesh BooleanUnion must run on manifold, got {plan:?}",
+        );
+        assert_eq!(
+            plan.conversions[0],
+            ("alpha".to_string(), ReprKind::BRep, ReprKind::Sdf),
+            "first conversion stage must be (alpha, BRep, Sdf), got {:?}",
+            plan.conversions[0],
+        );
+        assert_eq!(
+            plan.conversions[1],
+            ("beta".to_string(), ReprKind::Sdf, ReprKind::Mesh),
+            "second conversion stage must be (beta, Sdf, Mesh), got {:?}",
+            plan.conversions[1],
+        );
+    }
+
+    /// Locks the `seeds: BTreeSet<ReprKind>` seeding step, which canonicalises
+    /// the hash-randomised `HashSet<ReprKind>` input into `Ord`-sorted order
+    /// before the BFS frontier is populated.
+    ///
+    /// Registry shape: kappa converts BRep→Mesh, lambda converts Sdf→Mesh, and
+    /// manifold runs BooleanUnion on Mesh. With both BRep and Sdf available,
+    /// the `seeds` BTreeSet ensures BRep < Sdf in frontier order, so kappa is
+    /// always chosen over lambda. Without the `seeds: BTreeSet<ReprKind>`
+    /// seeding step, the outcome would depend on hash-randomised HashSet
+    /// iteration, making CI output non-deterministic across hash-seed
+    /// perturbations.
+    #[test]
+    fn dispatch_seeding_order_is_deterministic() {
+        // kappa: converts BRep → Mesh in one step.
+        let kappa = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert { from: ReprKind::BRep },
+                ReprKind::Mesh,
+            )],
+        };
+        // lambda: converts Sdf → Mesh in one step.
+        let lambda = CapabilityDescriptor {
+            supports: vec![(
+                Operation::Convert { from: ReprKind::Sdf },
+                ReprKind::Mesh,
+            )],
+        };
+        // manifold: runs BooleanUnion on Mesh.
+        let manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("kappa".to_string(), &kappa);
+        registry.insert("lambda".to_string(), &lambda);
+        registry.insert("manifold".to_string(), &manifold);
+
+        // Both reprs available. The `seeds: BTreeSet<ReprKind>` seeding step
+        // guarantees BRep < Sdf traversal order so kappa always wins over
+        // lambda, irrespective of the HashSet's per-process hash randomisation.
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::BRep);
+        available.insert(ReprKind::Sdf);
+
+        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
+            .expect("kappa (BRep→Mesh) path must be findable");
+
+        assert_eq!(
+            plan.kernel, "manifold",
+            "the final-stage Mesh BooleanUnion must run on manifold, got {plan:?}",
+        );
+        assert_eq!(
+            plan.conversions.len(),
+            1,
+            "exactly one conversion stage (BRep→Mesh via kappa) expected, got {plan:?}",
+        );
+        assert_eq!(
+            plan.conversions[0],
+            ("kappa".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            "conversion stage must be (kappa, BRep, Mesh) — BRep < Sdf in BTreeSet order, got {:?}",
+            plan.conversions[0],
+        );
+    }
+
     /// Two kernels both directly support the demanded (op, repr) with zero
     /// conversions. The lexicographically smaller kernel name wins.
     ///
