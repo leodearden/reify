@@ -22,6 +22,9 @@
 //! - Point within tolerance of surface (5 + 5e-4, 0, 0) with tol=1e-3 → true.
 //! - Point outside tolerance of surface (5 + 2e-3, 0, 0) with tol=1e-3 → false.
 //! - Unknown handle → `QueryError::InvalidHandle`.
+//! - Zero tolerance with exact face point (5,0,0) → true (dist=0 exactly).
+//! - Off-face coplanar point (5,100,100): on plane x=5 but outside face extent → false.
+//! - Non-solid (wire) fixture: point 1 unit off the wire returns false (no OCCT overlap).
 
 #![cfg(has_occt)]
 
@@ -191,5 +194,100 @@ fn point_on_shape_unknown_handle_returns_invalid_handle() {
             unknown, id
         ),
         other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Zero-tolerance test — exact boundary coincidence
+// ---------------------------------------------------------------------------
+
+/// Point (5.0, 0.0, 0.0) lies exactly on the +X face center.
+///
+/// With `tolerance = 0.0`, the test exercises the `dist.Value() <= 0.0` boundary.
+/// For a parameterically-exact BREP boundary point, `BRepExtrema_DistShapeShape`
+/// reports `dist.Value() = 0.0` exactly, so the result should be `true`.
+/// This verifies that callers do not need to pass a positive tolerance just
+/// to handle the "exactly on surface" case.
+#[test]
+fn point_on_shape_zero_tolerance_exact_face_point_returns_true() {
+    let (kernel, box_id) = box_kernel();
+    match kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, 0.0) {
+        Ok(true) => {}
+        Ok(false) => panic!(
+            "expected true for exact face-center point (5,0,0) with tol=0.0, got false"
+        ),
+        Err(e) => panic!("expected Ok(true), got Err({e:?})"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Off-face coplanar point — face extent vs. plane equation
+// ---------------------------------------------------------------------------
+
+/// Point (5.0, 100.0, 100.0) is coplanar with the +X face (plane x=5.0)
+/// but far outside the face's spatial extent (y∈[-5,5], z∈[-5,5]).
+///
+/// The nearest point on the box is the corner (5, 5, 5), at distance
+/// `sqrt((100−5)² + (100−5)²) ≈ 134.4` units.  With tight tolerance (1e-7),
+/// the result must be `false`.
+///
+/// This locks in that `BRepExtrema_DistShapeShape` queries the actual BREP
+/// face geometry — not just the infinite plane containing the face — so a
+/// coplanar-but-off-face point is correctly rejected.
+#[test]
+fn point_on_shape_off_face_coplanar_point_returns_false() {
+    let (kernel, box_id) = box_kernel();
+    match kernel.point_on_shape(box_id, 5.0, 100.0, 100.0, 1e-7) {
+        Ok(false) => {}
+        Ok(true) => panic!(
+            "expected false for coplanar-but-off-face point (5,100,100) with tol=1e-7, got true"
+        ),
+        Err(e) => panic!("expected Ok(false), got Err({e:?})"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Non-solid shape — no OCCT solid-overlap behavior
+// ---------------------------------------------------------------------------
+
+/// Build a kernel with a single line-segment wire from (-5,0,0) to (5,0,0).
+///
+/// A `TopoDS_Wire` is NOT a solid. `BRepExtrema_DistShapeShape` does not
+/// apply the solid-overlap shortcut, so it returns the actual geometric distance.
+fn wire_kernel() -> (OcctKernel, GeometryHandleId) {
+    let mut kernel = OcctKernel::new();
+    let handle = kernel
+        .execute(&GeometryOp::LineSegment {
+            x1: -5.0,
+            y1: 0.0,
+            z1: 0.0,
+            x2: 5.0,
+            y2: 0.0,
+            z2: 0.0,
+        })
+        .expect("line segment creation should succeed");
+    (kernel, handle.id)
+}
+
+/// Query point (0.0, 1.0, 0.0) is 1.0 unit away from the wire (which lies on
+/// the X axis from (−5,0,0) to (5,0,0)).
+///
+/// For a non-solid shape, `BRepExtrema_DistShapeShape` returns the actual
+/// geometric distance — there is no OCCT solid-overlap shortcut.  With
+/// tolerance 1e-7, the result must be `false` (1.0 >> 1e-7).
+///
+/// Contrasts with `point_on_shape_interior_solid_point_returns_true` which
+/// shows that for a `TopoDS_Solid`, interior points return `dist=0` regardless
+/// of geometric distance to the boundary.
+#[test]
+fn point_on_shape_non_solid_off_wire_returns_false() {
+    let (kernel, wire_id) = wire_kernel();
+    // (0, 1, 0): distance to the X-axis wire is 1.0 unit, far above tol=1e-7.
+    match kernel.point_on_shape(wire_id, 0.0, 1.0, 0.0, 1e-7) {
+        Ok(false) => {}
+        Ok(true) => panic!(
+            "expected false for point (0,1,0) 1.0 unit from wire with tol=1e-7, got true"
+        ),
+        Err(e) => panic!("expected Ok(false), got Err({e:?})"),
     }
 }
