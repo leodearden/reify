@@ -339,6 +339,46 @@ mod tests {
         );
     }
 
+    /// Positive-path coverage for [`is_long_chain_realization`]: when both
+    /// gates strictly pass, the predicate returns `true`. Independent from
+    /// the negative-path test (`is_long_chain_realization_returns_false_…`)
+    /// so a regression that breaks one direction (e.g. inverts the
+    /// predicate, or drops one of the two `&&` gates) doesn't mask the
+    /// other.
+    #[test]
+    fn is_long_chain_realization_returns_true_when_both_gates_pass() {
+        let threshold = Duration::from_millis(500);
+
+        // Just-over the boundary on both gates: 3 stages > 2, 501 > 500.
+        let plan_three = DispatchPlan {
+            kernel: "kernel_d".to_string(),
+            conversions: vec![
+                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+            ],
+        };
+        assert!(
+            is_long_chain_realization(&plan_three, Duration::from_millis(501), threshold),
+            "3 stages + 501ms > 500ms threshold: both gates strictly pass ⇒ true",
+        );
+
+        // Larger margin on both gates: 4 stages, elapsed 2s.
+        let plan_four = DispatchPlan {
+            kernel: "kernel_e".to_string(),
+            conversions: vec![
+                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+                ("kernel_d".to_string(), ReprKind::Voxel, ReprKind::Mesh),
+            ],
+        };
+        assert!(
+            is_long_chain_realization(&plan_four, Duration::from_secs(2), threshold),
+            "4 stages + 2s elapsed >> 500ms threshold: both gates pass ⇒ true",
+        );
+    }
+
     /// Trivial happy path: one kernel that supports the demanded op directly on
     /// a repr already in `available`. Plan must be `(kernel, no conversions)`.
     /// This locks the zero-conversion code path before BFS expansion is added.
