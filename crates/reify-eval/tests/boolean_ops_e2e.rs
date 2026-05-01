@@ -42,7 +42,7 @@ fn run_boolean_e2e(source: &str) -> Option<String> {
 
     // Build with real OCCT kernel
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::DispatchPlanner::new();
+    let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
@@ -161,7 +161,7 @@ fn boolean_multi_realization_nested_e2e() {
 
     // Tessellate with real OCCT kernel
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::DispatchPlanner::new();
+    let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
 
@@ -240,7 +240,7 @@ fn boolean_multi_realization_step_index_e2e() {
 
     // Tessellate with real OCCT kernel — tests the realization-local step index path
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::DispatchPlanner::new();
+    let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
 

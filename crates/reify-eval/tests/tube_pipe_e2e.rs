@@ -229,10 +229,10 @@ fn tube_volume_through_full_pipeline_matches_formula() {
         &realization.operations[0]
     );
 
-    // Build with a real OCCT kernel via DispatchPlanner (matches
+    // Build with a real OCCT kernel via SingleKernelHolder (matches
     // boolean_multi_realization_nested_e2e).
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::DispatchPlanner::new();
+    let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
 
@@ -259,9 +259,9 @@ fn tube_volume_through_full_pipeline_matches_formula() {
 
     // Also ensure Step export works through the same pipeline (separate
     // engine; tessellate and build each consume the single registered
-    // kernel handle in DispatchPlanner).
+    // kernel handle in SingleKernelHolder).
     let checker2 = reify_constraints::SimpleConstraintChecker;
-    let mut planner2 = reify_geometry::DispatchPlanner::new();
+    let mut planner2 = reify_geometry::SingleKernelHolder::new();
     planner2.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let mut engine2 = reify_eval::Engine::new(Box::new(checker2), Some(Box::new(planner2)));
     let build_result = engine2.build(&compiled, ExportFormat::Step);
@@ -360,7 +360,7 @@ fn pipe_volume_through_full_pipeline_matches_formula() {
 
     // Build with real OCCT kernel
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::DispatchPlanner::new();
+    let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
 
@@ -387,7 +387,7 @@ fn pipe_volume_through_full_pipeline_matches_formula() {
 
     // Also ensure Step export succeeds.
     let checker2 = reify_constraints::SimpleConstraintChecker;
-    let mut planner2 = reify_geometry::DispatchPlanner::new();
+    let mut planner2 = reify_geometry::SingleKernelHolder::new();
     planner2.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let mut engine2 = reify_eval::Engine::new(Box::new(checker2), Some(Box::new(planner2)));
     let build_result = engine2.build(&compiled, ExportFormat::Step);
@@ -482,7 +482,7 @@ fn tube_inner_greater_than_outer_emits_error_diagnostic() {
     );
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::DispatchPlanner::new();
+    let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
 

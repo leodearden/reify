@@ -3,7 +3,7 @@ name = "reify-geometry"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DispatchPlanner wrapping geometry kernels"
+description = "SingleKernelHolder wrapping a single geometry kernel for tests; production uses Engine::with_registered_kernel"
 
 [dependencies]
 reify-types.workspace = true
