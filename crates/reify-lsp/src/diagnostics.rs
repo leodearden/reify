@@ -1758,7 +1758,6 @@ structure S {
         }
 
         pub fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
-            use reify_syntax::SubDecl;
             MemberDecl::Sub(SubDecl {
                 name: name.to_string(),
                 structure_name: "Foo".to_string(),
@@ -1846,205 +1845,149 @@ structure S {
         }
     }
 
-    /// LSP regression lock (task 2371, step-1): a `param` declaration directly
-    /// inside a specialization-scope body surfaces as exactly one LSP ERROR
-    /// diagnostic with code `"SpecializationForbiddenDecl"`, source `"reify"`,
-    /// a non-zero range (the param's span carried through), and a message
-    /// containing both `'param'` and the param name `'x'`.
+    /// Drive the specialization-scope pipeline for `body` (the contents of a
+    /// `sub scope : Foo { body }` node inside structure S) and assert that the
+    /// resulting LSP diagnostics with code `"SpecializationForbiddenDecl"` match
+    /// `expected` exactly.
     ///
-    /// The test hand-constructs a ParsedModule (the grammar does not yet accept
-    /// `sub name : T { body }` in real source) and drives the post-parse half of
-    /// `compute_diagnostics`: `compile_with_stdlib` → `convert_diagnostic`.
-    #[test]
-    fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_param() {
+    /// For each `(kind, name)` pair the helper asserts:
+    /// - exactly one diagnostic whose message contains both `'kind'` and `'name'`
+    /// - severity `ERROR`, source `"reify"`
+    /// - non-zero range (the declaration's span was carried through the pipeline)
+    ///
+    /// When `expected` has more than one entry the helper additionally asserts
+    /// that all range-start positions are distinct (sibling violations must not
+    /// collapse into the same LSP location).
+    ///
+    /// Pass `expected = &[]` to assert that no such diagnostic is emitted.
+    fn assert_specialization_forbidden(
+        body: Vec<reify_syntax::MemberDecl>,
+        expected: &[(&str, &str)],
+    ) {
         use fixtures::*;
-        use lsp_types::NumberOrString;
+        use lsp_types::{DiagnosticSeverity, NumberOrString};
 
-        let body = vec![make_param("x", param_span())];
-        let parsed =
-            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
-
+        let parsed = parsed_module_with_structure_members(
+            vec![make_sub_with_body("scope", dummy_span(), body)],
+        );
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let source = source_stub();
         let uri = test_uri();
 
-        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
+        let forbidden: Vec<lsp_types::Diagnostic> = compiled
             .diagnostics
             .iter()
-            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
-            .collect();
-
-        let forbidden: Vec<_> = lsp_diags
-            .iter()
+            .map(|d| convert::convert_diagnostic(d, &source, &uri))
             .filter(|d| {
-                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
+                d.code
+                    == Some(NumberOrString::String(
+                        "SpecializationForbiddenDecl".to_string(),
+                    ))
             })
             .collect();
 
         assert_eq!(
             forbidden.len(),
-            1,
-            "expected exactly 1 SpecializationForbiddenDecl diagnostic, got {}: {:#?}",
+            expected.len(),
+            "expected {} SpecializationForbiddenDecl diagnostic(s), got {}: {:#?}",
+            expected.len(),
             forbidden.len(),
-            lsp_diags
+            forbidden
         );
 
-        let diag = forbidden[0];
-        assert_eq!(
-            diag.severity,
-            Some(DiagnosticSeverity::ERROR),
-            "expected ERROR severity, got {:?}",
-            diag.severity
-        );
-        assert_eq!(
-            diag.source.as_deref(),
-            Some("reify"),
-            "expected source 'reify', got {:?}",
-            diag.source
-        );
-        assert_ne!(
-            diag.range.start,
-            diag.range.end,
-            "range must be non-zero (param_span should be carried through convert_diagnostic), \
-             got start={:?} end={:?}",
-            diag.range.start,
-            diag.range.end
-        );
-        assert!(
-            diag.message.contains("'param'"),
-            "message must contain \"'param'\", got: {:?}",
-            diag.message
-        );
-        assert!(
-            diag.message.contains("'x'"),
-            "message must contain \"'x'\", got: {:?}",
-            diag.message
-        );
+        for &(kind, name) in expected {
+            let matched = forbidden
+                .iter()
+                .find(|d| {
+                    d.message.contains(&format!("'{kind}'"))
+                        && d.message.contains(&format!("'{name}'"))
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no SpecializationForbiddenDecl diagnostic for kind='{kind}' \
+                         name='{name}'; got: {:#?}",
+                        forbidden
+                    )
+                });
+            assert_eq!(
+                matched.severity,
+                Some(DiagnosticSeverity::ERROR),
+                "expected ERROR severity for {kind} '{name}'"
+            );
+            assert_eq!(
+                matched.source.as_deref(),
+                Some("reify"),
+                "expected source 'reify' for {kind} '{name}'"
+            );
+            assert_ne!(
+                matched.range.start,
+                matched.range.end,
+                "range must be non-zero for {kind} '{name}'; \
+                 got start={:?} end={:?}",
+                matched.range.start,
+                matched.range.end
+            );
+            assert!(
+                matched.range.start.line > 0 || matched.range.start.character > 0,
+                "range start must not be (0,0) for {kind} '{name}' — \
+                 span was not carried through convert_diagnostic; \
+                 got ({}, {})",
+                matched.range.start.line,
+                matched.range.start.character
+            );
+        }
+
+        // Multiple violations must map to distinct LSP positions.
+        if expected.len() > 1 {
+            let starts: Vec<_> = forbidden
+                .iter()
+                .map(|d| (d.range.start.line, d.range.start.character))
+                .collect();
+            let unique_starts: std::collections::HashSet<_> = starts.iter().collect();
+            assert_eq!(
+                unique_starts.len(),
+                expected.len(),
+                "all violation spans must be distinguishable; got: {starts:?}"
+            );
+        }
+    }
+
+    /// LSP regression lock (task 2371, step-1): a `param` declaration directly
+    /// inside a specialization-scope body surfaces as exactly one LSP ERROR
+    /// diagnostic with code `"SpecializationForbiddenDecl"`, source `"reify"`,
+    /// a non-zero range, and a message containing both `'param'` and `'x'`.
+    ///
+    /// Hand-constructs a ParsedModule (the grammar does not yet accept
+    /// `sub name : T { body }` in real source) and drives the post-parse half of
+    /// `compute_diagnostics` via `assert_specialization_forbidden`.
+    #[test]
+    fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_param() {
+        use fixtures::*;
+        assert_specialization_forbidden(vec![make_param("x", param_span())], &[("param", "x")]);
     }
 
     /// LSP regression lock (task 2371, step-3): a `port` declaration directly
     /// inside a specialization-scope body surfaces as exactly one LSP ERROR
     /// diagnostic with code `"SpecializationForbiddenDecl"`, source `"reify"`,
-    /// a non-zero range (the port's span), and a message containing both
-    /// `'port'` and the port name `'p'`.
+    /// a non-zero range, and a message containing both `'port'` and `'p'`.
     #[test]
     fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_port() {
         use fixtures::*;
-        use lsp_types::NumberOrString;
-
-        let body = vec![make_port("p", port_span())];
-        let parsed =
-            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
-
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-        let source = source_stub();
-        let uri = test_uri();
-
-        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
-            .diagnostics
-            .iter()
-            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
-            .collect();
-
-        let forbidden: Vec<_> = lsp_diags
-            .iter()
-            .filter(|d| {
-                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
-            })
-            .collect();
-
-        assert_eq!(
-            forbidden.len(),
-            1,
-            "expected exactly 1 SpecializationForbiddenDecl diagnostic for port, got {}: {:#?}",
-            forbidden.len(),
-            lsp_diags
-        );
-
-        let diag = forbidden[0];
-        assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
-        assert_eq!(diag.source.as_deref(), Some("reify"));
-        assert_ne!(
-            diag.range.start,
-            diag.range.end,
-            "range must be non-zero (port_span should be carried through), \
-             got start={:?} end={:?}",
-            diag.range.start,
-            diag.range.end
-        );
-        assert!(
-            diag.message.contains("'port'"),
-            "message must contain \"'port'\", got: {:?}",
-            diag.message
-        );
-        assert!(
-            diag.message.contains("'p'"),
-            "message must contain \"'p'\", got: {:?}",
-            diag.message
-        );
+        assert_specialization_forbidden(vec![make_port("p", port_span())], &[("port", "p")]);
     }
 
     /// LSP regression lock (task 2371, step-5): a bare `sub` declaration (body=None)
     /// directly inside a specialization-scope body surfaces as exactly one LSP ERROR
-    /// with code `"SpecializationForbiddenDecl"`, source `"reify"`, non-zero range
-    /// matching `sub_span`, and message containing both `'sub'` and `'child'`.
+    /// with code `"SpecializationForbiddenDecl"`, source `"reify"`, non-zero range,
+    /// and message containing both `'sub'` and `'child'`.
     ///
-    /// Note: the bare sub has no body, so no further violations fire inside it.
+    /// The bare sub has no body so no further violations fire inside it.
     #[test]
     fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_nested_sub() {
         use fixtures::*;
-        use lsp_types::NumberOrString;
-
-        let nested_sub = make_sub_bare("child", sub_span());
-        let body = vec![nested_sub];
-        let parsed =
-            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
-
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-        let source = source_stub();
-        let uri = test_uri();
-
-        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
-            .diagnostics
-            .iter()
-            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
-            .collect();
-
-        let forbidden: Vec<_> = lsp_diags
-            .iter()
-            .filter(|d| {
-                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
-            })
-            .collect();
-
-        assert_eq!(
-            forbidden.len(),
-            1,
-            "expected exactly 1 SpecializationForbiddenDecl diagnostic for nested sub, got {}: {:#?}",
-            forbidden.len(),
-            lsp_diags
-        );
-
-        let diag = forbidden[0];
-        assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
-        assert_eq!(diag.source.as_deref(), Some("reify"));
-        assert_ne!(
-            diag.range.start,
-            diag.range.end,
-            "range must be non-zero (sub_span should be carried through), \
-             got start={:?} end={:?}",
-            diag.range.start,
-            diag.range.end
-        );
-        assert!(
-            diag.message.contains("'sub'"),
-            "message must contain \"'sub'\", got: {:?}",
-            diag.message
-        );
-        assert!(
-            diag.message.contains("'child'"),
-            "message must contain \"'child'\", got: {:?}",
-            diag.message
+        assert_specialization_forbidden(
+            vec![make_sub_bare("child", sub_span())],
+            &[("sub", "child")],
         );
     }
 
@@ -2059,36 +2002,7 @@ structure S {
     fn lsp_compute_diagnostics_emits_no_specialization_forbidden_decl_for_permitted_only_spec_scope(
     ) {
         use fixtures::*;
-        use lsp_types::NumberOrString;
-
-        let body = vec![make_let("m"), make_constraint()];
-        let parsed =
-            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
-
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-        let source = source_stub();
-        let uri = test_uri();
-
-        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
-            .diagnostics
-            .iter()
-            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
-            .collect();
-
-        let forbidden: Vec<_> = lsp_diags
-            .iter()
-            .filter(|d| {
-                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
-            })
-            .collect();
-
-        assert!(
-            forbidden.is_empty(),
-            "permitted-only scope (let + constraint) must produce zero SpecializationForbiddenDecl \
-             diagnostics at the LSP layer; got {}: {:#?}",
-            forbidden.len(),
-            forbidden
-        );
+        assert_specialization_forbidden(vec![make_let("m"), make_constraint()], &[]);
     }
 
     /// LSP regression lock (task 2371, step-9): a specialization scope with three
@@ -2103,76 +2017,13 @@ structure S {
     #[test]
     fn lsp_compute_diagnostics_surfaces_one_specialization_forbidden_decl_per_sibling_violation() {
         use fixtures::*;
-        use lsp_types::NumberOrString;
-
-        let body = vec![
-            make_param("x", param_span()),
-            make_port("p", port_span()),
-            make_sub_bare("child", sub_span()),
-        ];
-        let parsed =
-            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
-
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
-        let source = source_stub();
-        let uri = test_uri();
-
-        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
-            .diagnostics
-            .iter()
-            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
-            .collect();
-
-        let forbidden: Vec<_> = lsp_diags
-            .iter()
-            .filter(|d| {
-                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
-            })
-            .collect();
-
-        assert_eq!(
-            forbidden.len(),
-            3,
-            "expected exactly 3 SpecializationForbiddenDecl diagnostics (one per sibling), \
-             got {}: {:#?}",
-            forbidden.len(),
-            lsp_diags
-        );
-
-        // Each violation kind and name must appear.
-        let has_param_x = forbidden.iter().any(|d| d.message.contains("'param'") && d.message.contains("'x'"));
-        let has_port_p  = forbidden.iter().any(|d| d.message.contains("'port'")  && d.message.contains("'p'"));
-        let has_sub_child = forbidden.iter().any(|d| d.message.contains("'sub'") && d.message.contains("'child'"));
-        assert!(has_param_x,   "expected a diagnostic for 'param' 'x';   got: {:#?}", forbidden);
-        assert!(has_port_p,    "expected a diagnostic for 'port'  'p';    got: {:#?}", forbidden);
-        assert!(has_sub_child, "expected a diagnostic for 'sub'   'child'; got: {:#?}", forbidden);
-
-        // Every diagnostic must be ERROR severity with source "reify".
-        for diag in &forbidden {
-            assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
-            assert_eq!(diag.source.as_deref(), Some("reify"));
-        }
-
-        // All three spans must be distinguishable (non-collapsed).
-        let starts: Vec<_> = forbidden.iter().map(|d| (d.range.start.line, d.range.start.character)).collect();
-        assert_eq!(
-            starts.len(),
-            3,
-            "starts vector must have 3 entries: {starts:?}"
-        );
-        // Each start must be non-zero (not collapsed to (0,0)).
-        for &(line, ch) in &starts {
-            assert!(
-                line > 0 || ch > 0,
-                "span start ({line},{ch}) must not be (0,0) — span was not carried through"
-            );
-        }
-        // All three start positions must be distinct.
-        let unique_starts: std::collections::HashSet<_> = starts.iter().collect();
-        assert_eq!(
-            unique_starts.len(),
-            3,
-            "all three violation spans must be distinguishable; got: {starts:?}"
+        assert_specialization_forbidden(
+            vec![
+                make_param("x", param_span()),
+                make_port("p", port_span()),
+                make_sub_bare("child", sub_span()),
+            ],
+            &[("param", "x"), ("port", "p"), ("sub", "child")],
         );
     }
 
