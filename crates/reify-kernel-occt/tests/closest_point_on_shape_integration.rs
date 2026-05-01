@@ -117,11 +117,13 @@ fn closest_point_when_point_lies_on_face() {
 
 /// Query point (0.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// `BRepExtrema_DistShapeShape` projects the query vertex to the nearest face
-/// of the solid even when the point is interior.  For this box (half-width 5
-/// in every axis) the nearest face is at distance 5.0, so the returned witness
-/// must be on the box surface with exactly one coordinate ≈ ±5.0 and distance
-/// ≈ 5.0 from the origin.  The call must succeed without error (NbSolution ≥ 1).
+/// `BRepExtrema_DistShapeShape` reports distance 0 and the query point
+/// itself when the point is inside a solid.  The C++ wrapper detects this
+/// (dist < 1e-10) and re-runs extrema against the outer shell, returning a
+/// proper boundary witness instead.  This test locks in that contract: the
+/// call must succeed without error and the returned witness must lie on the
+/// box surface at distance ≈ 5.0 from the origin (the nearest face distance
+/// for a box centred at origin with half-width 5).
 #[test]
 fn closest_point_for_interior_point_at_origin() {
     let (kernel, box_id) = box_kernel();
