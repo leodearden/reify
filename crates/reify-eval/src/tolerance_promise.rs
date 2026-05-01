@@ -330,4 +330,115 @@ mod tests {
             "Gate 1 must return None when no (entity, \"tolerance\") cell exists"
         );
     }
+
+    /// Pinned by the strict-`<` design decision (see plan.json
+    /// design_decisions): "A demand exactly equal to the promise IS
+    /// satisfiable: the promise is an upper bound on the as-imported
+    /// representation error, and a demand at that same level can be
+    /// satisfied by the as-imported realization." Mirrors the partial-order
+    /// "tighter satisfies looser" rule established by `tolerance_bucket`'s
+    /// `cached_tol <= requested_tol` lookup — contrapositive `cached_tol >
+    /// requested_tol` (cached strictly looser) cannot satisfy. Same logic
+    /// here: `promise > demand` (i.e. `demand < promise`) is insufficient;
+    /// equal is not insufficient.
+    #[test]
+    fn is_promise_insufficient_returns_true_iff_demanded_strictly_less_than_promise() {
+        // (a) demand tighter than promise — insufficient.
+        assert!(
+            is_promise_insufficient(1e-6, 50e-6),
+            "(a) demand 1µm strictly tighter than promise 50µm — insufficient"
+        );
+
+        // (b) demand looser than promise — sufficient (promise's upper-bound
+        //     guarantee covers the looser demand).
+        assert!(
+            !is_promise_insufficient(50e-6, 1e-6),
+            "(b) demand 50µm looser than promise 1µm — sufficient"
+        );
+
+        // (c) demand equal to promise — sufficient (strict `<`, not `<=`).
+        //     This is the canonical design-decision pin: equal-tolerance is
+        //     NOT insufficient.
+        assert!(
+            !is_promise_insufficient(1e-6, 1e-6),
+            "(c) demand == promise (1µm == 1µm) — strict `<` rules this \
+             sufficient; flipping to `<=` would regress this assertion"
+        );
+
+        // (d) demand zero with positive promise — zero is the tightest
+        //     possible demand, strictly less than any positive promise, so
+        //     insufficient.
+        assert!(
+            is_promise_insufficient(0.0, 1e-6),
+            "(d) demand 0.0 strictly less than promise 1µm — insufficient"
+        );
+
+        // Symmetric edge case: both zero — strict `<` is false, sufficient.
+        assert!(
+            !is_promise_insufficient(0.0, 0.0),
+            "edge: demand == promise == 0.0 — strict `<` rules this sufficient"
+        );
+    }
+
+    // Debug-build NaN/±Inf/negative panic tests. Mirror the
+    // `combine_panics_in_debug_on_*` precedent in
+    // `tolerance_combine.rs:466-505`. Canonical panic message format
+    // ("tolerance must be finite and non-negative") is shared across the
+    // four tolerance_* modules so authoring errors surface with one voice.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn is_promise_insufficient_panics_in_debug_on_nan_demanded() {
+        is_promise_insufficient(f64::NAN, 1e-6);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn is_promise_insufficient_panics_in_debug_on_nan_promise() {
+        is_promise_insufficient(1e-6, f64::NAN);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn is_promise_insufficient_panics_in_debug_on_positive_infinity_demanded() {
+        is_promise_insufficient(f64::INFINITY, 1e-6);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn is_promise_insufficient_panics_in_debug_on_positive_infinity_promise() {
+        is_promise_insufficient(1e-6, f64::INFINITY);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn is_promise_insufficient_panics_in_debug_on_negative_infinity_demanded() {
+        is_promise_insufficient(f64::NEG_INFINITY, 1e-6);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn is_promise_insufficient_panics_in_debug_on_negative_infinity_promise() {
+        is_promise_insufficient(1e-6, f64::NEG_INFINITY);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn is_promise_insufficient_panics_in_debug_on_negative_demanded() {
+        is_promise_insufficient(-1.0e-3, 1e-6);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn is_promise_insufficient_panics_in_debug_on_negative_promise() {
+        is_promise_insufficient(1e-6, -1.0e-3);
+    }
 }
