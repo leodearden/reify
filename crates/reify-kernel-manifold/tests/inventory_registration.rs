@@ -12,7 +12,7 @@
 //!
 //! `crates/reify-kernel-occt/tests/inventory_registration.rs:1-152`.
 
-use reify_types::{Operation, ReprKind};
+use reify_types::{KernelRegistration, Operation, ReprKind};
 
 /// Manifold's capability descriptor must enumerate exactly the three
 /// mesh-Boolean operations Manifold supports.
@@ -50,5 +50,63 @@ fn manifold_capability_descriptor_lists_mesh_booleans() {
     assert!(
         !descriptor.supports(Operation::BooleanUnion, ReprKind::BRep),
         "Manifold must NOT declare (BooleanUnion, BRep) — B-rep Booleans are OCCT's domain",
+    );
+}
+
+/// Manifold submits exactly one `KernelRegistration` named `"manifold"` into
+/// the `inventory::iter::<KernelRegistration>()` set. This is the inventory-
+/// plumbing pin: a missing or incorrectly-gated `inventory::submit!` would be
+/// caught here.
+///
+/// The submitted registration's `descriptor()` must be function-pointer-
+/// identical to `register::manifold_capability_descriptor` — a divergence
+/// would indicate two parallel descriptor sources. Set-equality of the
+/// materialised `supports` is also asserted as defence-in-depth.
+///
+/// # Design template
+///
+/// `crates/reify-kernel-occt/tests/inventory_registration.rs:96-151`.
+#[test]
+fn manifold_kernel_registration_appears_in_inventory_iter() {
+    let manifold_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
+        .into_iter()
+        .filter(|reg| reg.name == "manifold")
+        .collect();
+
+    assert_eq!(
+        manifold_entries.len(),
+        1,
+        "expected exactly one inventory::submit! for kernel name \"manifold\", found {}",
+        manifold_entries.len(),
+    );
+
+    // Pin via function-pointer identity: the intent is "the inventory
+    // submission's `descriptor` field points at the same
+    // `manifold_capability_descriptor` function the rest of the crate uses".
+    // `std::ptr::fn_addr_eq` is the explicit, intent-revealing comparison.
+    let inventory_fn = manifold_entries[0].descriptor;
+    let direct_fn: fn() -> reify_types::CapabilityDescriptor =
+        reify_kernel_manifold::register::manifold_capability_descriptor;
+    assert!(
+        std::ptr::fn_addr_eq(inventory_fn, direct_fn),
+        "the inventory-submitted descriptor must be the same function pointer as \
+         `register::manifold_capability_descriptor` — a divergence indicates two \
+         parallel descriptor sources",
+    );
+
+    // Also pin the materialised result as a HashSet (set equality —
+    // order-insensitive) as defence-in-depth for the case where fn pointers
+    // diverge but happen to produce equivalent content.
+    let inventory_supports: std::collections::HashSet<(Operation, ReprKind)> =
+        (manifold_entries[0].descriptor)().supports.into_iter().collect();
+    let direct_supports: std::collections::HashSet<(Operation, ReprKind)> =
+        reify_kernel_manifold::register::manifold_capability_descriptor()
+            .supports
+            .into_iter()
+            .collect();
+    assert_eq!(
+        inventory_supports, direct_supports,
+        "the inventory descriptor's supports SET must equal the direct call's — \
+         order-insensitive so future literal reordering doesn't trip a false-positive",
     );
 }
