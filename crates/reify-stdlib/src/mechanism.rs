@@ -450,7 +450,11 @@ fn append_body(
         // fixtures) that omit the field. `make_empty_mechanism` always
         // emits `loop_closures`, so no Mechanism Map produced by the
         // v0.2 builder reaches this branch.
-        _ => Vec::new(),
+        None => Vec::new(),
+        // A present-but-wrong-typed value indicates a corrupt mechanism —
+        // reject with Undef, matching the sibling-field guards at lines
+        // 435-446 (bodies, joint_parents, next_id).
+        Some(_) => return Value::Undef,
     };
 
     // Duplicate-solid detection: scan `bodies` for any existing record
@@ -1502,6 +1506,54 @@ mod tests {
             eval_builtin("body", &[bogus_no_kind_map, solid, j]).is_undef(),
             "body() on a Map with no `kind` field must surface Undef even \
              when an 'error' key is present"
+        );
+    }
+
+    // ── loop_closures field type-guard (Part B) ───────────────────────────
+
+    /// A Mechanism Map with a present-but-wrong-typed `loop_closures` field
+    /// must cause `body()` to return `Value::Undef`, matching the type-guard
+    /// contract of the sibling fields `bodies`, `joint_parents`, and `next_id`
+    /// (mechanism.rs:435-446).
+    ///
+    /// This test hand-constructs a structurally valid Mechanism Map except that
+    /// `loop_closures` is bound to `Value::Int(0)` instead of a `Value::List`.
+    /// The v0.2 builder (`make_empty_mechanism`) always emits a `Value::List`,
+    /// so this shape only arises from external/test callers or a corrupted Map.
+    ///
+    /// Before Part B the wildcard `_ => Vec::new()` branch in `append_body`
+    /// silently coerced the wrong-typed field to an empty Vec, causing `body()`
+    /// to proceed and return a Mechanism Map with one body instead of Undef.
+    /// This test regression-proofs against that silent-coercion footgun being
+    /// re-introduced.
+    #[test]
+    fn append_body_wrong_typed_loop_closures_returns_undef() {
+        // Build a valid joint using the standard test helpers.
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solid".to_string());
+
+        // Build the base mechanism via the public builder so the fixture
+        // automatically tracks any future additions to the canonical Mechanism
+        // Map shape; override only the one field under test.
+        let m0 = eval_builtin("mechanism", &[]);
+        let mut map = match m0 {
+            Value::Map(m) => m,
+            _ => panic!("mechanism() must return a Value::Map"),
+        };
+        // Wrong type: Int instead of List.  A present-but-wrong-typed
+        // loop_closures field simulates a corrupt Mechanism Map.
+        map.insert(
+            Value::String("loop_closures".to_string()),
+            Value::Int(0),
+        );
+        let mech = Value::Map(map);
+
+        let result = eval_builtin("body", &[mech, solid, j]);
+        assert!(
+            result.is_undef(),
+            "body() on a Mechanism Map with wrong-typed loop_closures must return \
+             Value::Undef (present-but-wrong-type is a corrupt mechanism), got {:?}",
+            result
         );
     }
 

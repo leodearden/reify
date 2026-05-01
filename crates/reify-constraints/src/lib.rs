@@ -23,7 +23,7 @@ pub use decompose::{SubProblem, decompose_into_components};
 // `reify_constraints::{NewtonConfig, ...}` paths so downstream callers
 // (reify-eval tests, reify-constraints integration tests) compile unchanged.
 pub use reify_stdlib::loop_closure_solver::{
-    LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
+    LoopClosureChain, LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
     mechanism_loop_closure_chains, newton_solve, solve_loop_closure,
     solve_loop_closure_with_diagnostics,
 };
