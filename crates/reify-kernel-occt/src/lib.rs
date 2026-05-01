@@ -539,11 +539,16 @@ impl OcctKernel {
     /// Uses `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is built
     /// from the query point, returning `dist.Value() <= tolerance`.
     ///
-    /// **Interior points return `false`:** `BRepExtrema_DistShapeShape` has NO
-    /// inside/outside knowledge. For a query point strictly inside a solid, OCCT
-    /// returns the distance to the nearest BREP boundary (not 0). This is the
-    /// correct BREP-membership semantic — the surface IS the boundary, and interior
-    /// solid points are not on the surface.
+    /// **Interior solid points return `true` (OCCT overlap behavior):**
+    /// `BRepExtrema_DistShapeShape` has NO inside/outside knowledge. When the query
+    /// vertex is strictly inside a `TopoDS_Solid`, OCCT considers the two shapes to
+    /// overlap and reports `dist.Value() = 0` (NOT the distance to the nearest BREP
+    /// face). Therefore this method returns `Ok(true)` for any interior solid point
+    /// at any positive tolerance, and CANNOT distinguish a point on the BREP surface
+    /// from a point inside the solid for `TopoDS_Solid` inputs. Callers needing strict
+    /// surface-only membership must apply a `BRepClass3d_SolidClassifier` pre-filter;
+    /// the integration test `point_on_shape_interior_solid_point_returns_true` locks
+    /// this contract in. See parent task 2324 for stdlib-level wiring decisions.
     ///
     /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
     /// to match OCCT's default confusion threshold.

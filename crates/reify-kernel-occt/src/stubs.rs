@@ -135,8 +135,9 @@ impl OcctKernel {
     ///
     /// The real implementation uses `BRepExtrema_DistShapeShape(shape, vertex)`
     /// returning `dist.Value() <= tolerance`. See `lib.rs` for the full contract,
-    /// including the interior-points note and the recommended `Precision::Confusion()`
-    /// (~1e-7) default tolerance convention.
+    /// including the OCCT solid-overlap behavior (interior solid points return
+    /// `true` because `dist = 0` under overlap) and the recommended
+    /// `Precision::Confusion()` (~1e-7) default tolerance convention.
     pub fn point_on_shape(
         &self,
         _handle: GeometryHandleId,

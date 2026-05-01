@@ -655,10 +655,12 @@ pub mod ffi {
         /// from the query point, returning `dist.Value() <= tolerance`. Operand ordering
         /// mirrors `closest_point_on_shape` and `min_clearance`.
         ///
-        /// **Interior points return false:** `BRepExtrema_DistShapeShape` has no
-        /// inside/outside knowledge — interior solid points return the distance to the
-        /// nearest BREP boundary (not 0), so `point_on_shape` returns `false` for any
-        /// tolerance below that distance. See the C++ header for the full contract.
+        /// **Interior solid points return `true`:** `BRepExtrema_DistShapeShape` treats
+        /// an interior query vertex as overlapping the solid and reports `dist.Value() = 0`,
+        /// so `point_on_shape` returns `true` for any interior `TopoDS_Solid` point at any
+        /// positive tolerance. The primitive cannot distinguish on-surface from inside-solid
+        /// for solids; see the C++ header for the full contract and the
+        /// `BRepClass3d_SolidClassifier` pre-filter escape hatch.
         ///
         /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`.
         fn point_on_shape(

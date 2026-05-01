@@ -765,13 +765,16 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
 /// `dist.Value() <= tolerance`. Operand ordering mirrors `closest_point_on_shape`
 /// and `min_clearance` (input shape first, query vertex second).
 ///
-/// **Interior points return false:** `BRepExtrema_DistShapeShape` has NO
-/// inside/outside knowledge. For a query point strictly inside a solid, OCCT
-/// returns the distance to the nearest BREP boundary, NOT 0. Therefore
-/// `point_on_shape(interior_point, solid)` returns `false` for any tolerance
-/// below that boundary distance. This is the correct BREP-membership semantic:
-/// the shape's surface IS its boundary; interior solid points are not on the
-/// surface.
+/// **Interior solid points return true (OCCT overlap behavior):**
+/// `BRepExtrema_DistShapeShape` has NO inside/outside knowledge. When the query
+/// vertex is strictly inside a `TopoDS_Solid`, OCCT considers the two shapes to
+/// overlap and reports `dist.Value() = 0` (NOT the distance to the nearest BREP
+/// face). Therefore `point_on_shape` returns `true` for any interior solid point
+/// at any positive tolerance. Consequence: this primitive cannot distinguish a
+/// point on the BREP surface from a point inside the solid for `TopoDS_Solid`
+/// inputs. Callers that need strict surface-only membership must apply a
+/// `BRepClass3d_SolidClassifier` pre-filter before this call (see escalation
+/// esc-2829-6 / parent task 2324 for the documented escape hatch).
 ///
 /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
 /// to match OCCT's default confusion threshold.
