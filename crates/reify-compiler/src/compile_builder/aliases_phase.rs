@@ -80,6 +80,10 @@ pub(crate) fn phase_aliases(
         // TODO: cross-module parametric propagation is deferred; skip for now.
         // Mark unshadowed names for use-site Info emission (shadow guard: user alias wins).
         if !pa.type_params.is_empty() {
+            // Shadowing is name-only — even if the user's alias fails resolution
+            // (e.g. `type Vec = NoSuchType`), it still suppresses the
+            // parametric-prelude Info hint. This matches user-shadows-prelude
+            // precedence applied elsewhere.
             if !user_alias_names.contains(pa.name.as_str()) {
                 ctx.alias_registry.mark_skipped_parametric_prelude(pa.name.clone());
             }
