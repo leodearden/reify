@@ -18,7 +18,11 @@
 //!
 //! 2. **Parametric skip** — prelude aliases with non-empty `type_params` are
 //!    skipped (TODO: cross-module parametric propagation requires carrying
-//!    `TypeExpr` across the module boundary, which is deferred).
+//!    `TypeExpr` across the module boundary, which is deferred).  Skipped names
+//!    that are not shadowed by a user alias are recorded in the registry via
+//!    [`TypeAliasRegistry::mark_skipped_parametric_prelude`]; at every use site
+//!    [`resolve_type_expr_with_aliases`] emits a `Severity::Info` diagnostic
+//!    pointing the user at this cross-module propagation gap.
 //!
 //! **Cross-phase note:** cross-prelude alias collisions (two prelude modules
 //! declaring the same pub alias name) are resolved by `PreludeContext::new`
@@ -52,10 +56,13 @@ use crate::types::CompiledTypeAlias;
 ///    caught via the phase-local `resolving` set.
 ///
 /// **Parametric-alias limitation:** prelude aliases with non-empty `type_params`
-/// are silently skipped (see the module-level doc and the TODO in the seed loop).
-/// `CompiledTypeAlias` deliberately omits `type_expr`, so parameterized prelude
-/// aliases cannot be instantiated cross-module until the module boundary
-/// decision is revisited.
+/// are skipped at seed time (see the module-level doc and the TODO in the seed
+/// loop). `CompiledTypeAlias` deliberately omits `type_expr`, so parameterized
+/// prelude aliases cannot be instantiated cross-module until the module boundary
+/// decision is revisited.  Skipped names (not shadowed by the user) are recorded
+/// in the registry so that `resolve_type_expr_with_aliases` can emit a
+/// `Severity::Info` diagnostic at use sites — see
+/// [`TypeAliasRegistry::is_skipped_parametric_prelude`].
 ///
 /// Pass `&[]` for `prelude_aliases` when the `#no_prelude` pragma is active or
 /// when the caller has no prelude (mirrors the `resolution_enums` gate in
