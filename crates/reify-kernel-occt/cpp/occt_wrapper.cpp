@@ -2803,6 +2803,13 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
 }
 
 bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance) {
+    // Validate tolerance early: negative or non-finite values silently produce wrong results.
+    // Negative → always false (dist >= 0 means dist <= negative is never true).
+    // NaN      → dist.Value() <= NaN is always false (IEEE 754).
+    if (!(std::isfinite(tolerance) && tolerance >= 0.0)) {
+        throw std::runtime_error(
+            "point_on_shape: tolerance must be a non-negative finite value");
+    }
     return wrap_occt_call("point_on_shape", [&]() {
         gp_Pnt query_pnt(px, py, pz);
         BRepBuilderAPI_MakeVertex vertex_maker(query_pnt);
