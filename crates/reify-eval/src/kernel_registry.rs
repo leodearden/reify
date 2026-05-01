@@ -140,11 +140,12 @@ pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
 ///
 /// # Operator-visibility contract
 ///
+/// Preconditions: callers must pass `total >= 1` (enforced via `debug_assert!`).
+///
 /// | `total`  | level emitted                                          |
 /// |----------|--------------------------------------------------------|
 /// | `> 1`    | `INFO` — lex-min tie-break among multiple kernels      |
 /// | `== 1`   | `DEBUG` — single kernel, no tie-break needed           |
-/// | `== 0`   | *(nothing — no kernel available)*                     |
 ///
 /// Branches are mutually exclusive: one event per call, keeping the
 /// signal-to-noise clean for `RUST_LOG=info` operators (who see a tie-break
@@ -168,7 +169,7 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
             "selected kernel from inventory registry",
         );
     }
-    // total == 0: no event (matches doc table)
+    // total == 0: unreachable in debug builds (debug_assert above panics); release-mode no-op.
 }
 
 /// Walk `inventory::iter::<KernelRegistration>()` once and produce the
