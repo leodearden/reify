@@ -161,6 +161,11 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
             total_registered = total,
             "selected kernel via lex-min tie-break",
         );
+    } else {
+        tracing::debug!(
+            picked = %name,
+            "selected kernel from inventory registry",
+        );
     }
 }
 
