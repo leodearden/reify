@@ -8,6 +8,8 @@
 //! - External point along +Y axis → nearest face at y=5.
 //! - Point already on the +X face → distance to returned witness ≤ 1e-6.
 //! - Off-center interior point at (1,0,0) → OCCT returns query point (1,0,0) at distance 0 (regression sentinel).
+//! - Oblique external (10,10,10) → corner witness (5,5,5) at distance 5√3.
+//! - Non-solid Face sub-shape input → "any TopoDS_Shape" contract holds (Ok with witness on face, distance ≈ 5.0).
 //! - Unknown handle → `QueryError::InvalidHandle`.
 
 #![cfg(has_occt)]
@@ -89,6 +91,39 @@ fn closest_point_for_external_point_on_y_axis() {
     }
 }
 
+/// Query point (10.0, 10.0, 10.0) lies along the body-diagonal of the +X+Y+Z
+/// octant outside the centred 10×10×10 box. The unique closest point on the
+/// box is the corner vertex (5.0, 5.0, 5.0) at distance 5·√3 ≈ 8.6602540378
+/// — a corner-witness branch of `BRepExtrema_DistShapeShape` that the
+/// axis-aligned external-point tests do not cover.
+#[test]
+fn closest_point_for_oblique_external_point_resolves_to_corner_witness() {
+    let (kernel, box_id) = box_kernel();
+    match kernel.closest_point_on_shape(box_id, 10.0, 10.0, 10.0) {
+        Ok([x, y, z]) => {
+            assert!(
+                (x - 5.0).abs() < 1e-6,
+                "expected x≈5.0 (corner witness), got {x}"
+            );
+            assert!(
+                (y - 5.0).abs() < 1e-6,
+                "expected y≈5.0 (corner witness), got {y}"
+            );
+            assert!(
+                (z - 5.0).abs() < 1e-6,
+                "expected z≈5.0 (corner witness), got {z}"
+            );
+            let d = ((x - 10.0).powi(2) + (y - 10.0).powi(2) + (z - 10.0).powi(2)).sqrt();
+            assert!(
+                (d - (75.0_f64).sqrt()).abs() < 1e-6,
+                "expected distance 5√3≈{}, got {d}",
+                (75.0_f64).sqrt()
+            );
+        }
+        Err(e) => panic!("expected Ok([5.0, 5.0, 5.0]), got Err({e:?})"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Happy path — point already on the surface
 // ---------------------------------------------------------------------------
@@ -108,6 +143,43 @@ fn closest_point_when_point_lies_on_face() {
             );
         }
         Err(e) => panic!("expected Ok near (5.0, 0.0, 0.0), got Err({e:?})"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Non-solid TopoDS_Shape input
+// ---------------------------------------------------------------------------
+
+/// The C++ wrapper accepts "any TopoDS_Shape" per its docstring — not just
+/// Solid boxes. This test verifies that a `TopoDS_Face` sub-shape extracted
+/// from the box returns a valid witness, exercising the non-solid path.
+///
+/// Query (0.0, 0.0, 0.0) is chosen because every face of a centred 10×10×10
+/// box has its centroid exactly 5 units from the origin. The nearest point
+/// on any face from the origin is at distance 5.0, independent of which face
+/// `MapShapes` returns as `faces[0]`. This keeps the test deterministic
+/// without face-identification logic.
+#[test]
+fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
+    let (mut kernel, box_id) = box_kernel(); // mut required for extract_faces
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces should succeed for a valid box");
+    assert!(!faces.is_empty(), "box should have at least one face");
+
+    match kernel.closest_point_on_shape(faces[0], 0.0, 0.0, 0.0) {
+        Ok([x, y, z]) => {
+            let dist = (x * x + y * y + z * z).sqrt();
+            assert!(
+                (dist - 5.0).abs() < 1e-6,
+                "any face of a centred 10×10×10 box has its centroid 5 units from origin, \
+                 so the closest point on a face from origin is at distance 5.0; got ({x}, {y}, {z}), dist={dist}"
+            );
+        }
+        Err(e) => panic!(
+            "closest_point_on_shape on a Face sub-shape should satisfy the \
+             'any TopoDS_Shape' contract, got Err({e:?})"
+        ),
     }
 }
 
