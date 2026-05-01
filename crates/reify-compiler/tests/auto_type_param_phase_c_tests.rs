@@ -198,8 +198,10 @@ fn ambiguous_diagnostic_message_includes_lex_first_explicit_substitution_suggest
 
 /// The NON_UNIQUE warning must surface the lex-first candidate that was
 /// selected, not just list it among the structured `candidates` field.
-/// This pins the human-readable surface so a regression that emits an
-/// empty/generic warning would fail.
+/// Lex-first correctness is pinned via the structured fields `result` and
+/// `d.candidates[0]`; the prose checks below are looser smoke tests that
+/// guard against an empty/generic-message regression without locking exact
+/// format-string fragments.
 #[test]
 fn non_unique_diagnostic_message_names_chosen_lex_first_candidate() {
     let feasibility = FeasibilityResult::Feasible {
@@ -207,7 +209,7 @@ fn non_unique_diagnostic_message_names_chosen_lex_first_candidate() {
         rejected: vec![],
     };
     let mut diagnostics = Vec::new();
-    let _ = select_candidate(
+    let result = select_candidate(
         feasibility,
         &["Seal".to_string()],
         true,
@@ -215,7 +217,16 @@ fn non_unique_diagnostic_message_names_chosen_lex_first_candidate() {
         &mut diagnostics,
     );
 
+    assert_eq!(
+        result,
+        SelectionResult::Selected("GraphiteSeal".to_string()),
+        "NON_UNIQUE result must be Selected(lex_first)"
+    );
     let d = &diagnostics[0];
+    assert_eq!(
+        d.candidates[0], "GraphiteSeal",
+        "NON_UNIQUE diagnostic.candidates[0] must be the lex-first candidate"
+    );
     assert!(
         d.message.contains("GraphiteSeal"),
         "NON_UNIQUE message must contain the chosen lex-first candidate 'GraphiteSeal'; got: {}",
@@ -226,17 +237,6 @@ fn non_unique_diagnostic_message_names_chosen_lex_first_candidate() {
             || d.message.contains("non-unique")
             || d.message.contains("selected"),
         "NON_UNIQUE message must convey choice-under-non-uniqueness; got: {}",
-        d.message
-    );
-    // Bind the chosen lex-first FQN to the "selected lexicographically-first"
-    // clause as a single contract. "GraphiteSeal" alone already appears in
-    // the candidates list "GraphiteSeal, ORingSeal", so a regression that
-    // swapped the chosen candidate to 'ORingSeal' would still pass the
-    // looser substring checks above. Pinning the bound substring catches
-    // that.
-    assert!(
-        d.message.contains("selected lexicographically-first 'GraphiteSeal'"),
-        "NON_UNIQUE message must bind chosen FQN to the `selected lexicographically-first '<lex_first>'` clause; got: {}",
         d.message
     );
 }
