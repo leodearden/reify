@@ -159,12 +159,27 @@ pub fn extract_input_tolerance_promise(
 ///
 /// # Truth table
 ///
-/// | `demanded` | `promise` | result | reason                                |
-/// |------------|-----------|--------|---------------------------------------|
-/// | `1µm`      | `50µm`    | `true` | demand strictly tighter — insufficient |
-/// | `50µm`     | `1µm`     | `false`| demand looser — promise covers it      |
-/// | `1µm`      | `1µm`     | `false`| equal — strict `<`, not `<=`           |
-/// | `0.0`      | `1µm`     | `true` | zero is the tightest possible demand   |
+/// | `demanded` | `promise` | result  | reason                                              |
+/// |------------|-----------|---------|-----------------------------------------------------|
+/// | `1µm`      | `50µm`    | `true`  | demand strictly tighter — insufficient               |
+/// | `50µm`     | `1µm`     | `false` | demand looser — promise covers it                    |
+/// | `1µm`      | `1µm`     | `false` | equal — strict `<`, not `<=`                         |
+/// | `0.0`      | `1µm`     | `true`  | zero is the tightest possible demand                 |
+/// | `1µm`      | `0.0`     | `false` | promise=0 vacuously satisfies every non-neg demand   |
+///
+/// # Zero-promise edge case
+///
+/// When `promise == 0.0`, the strict-`<` rule evaluates `demanded < 0.0`,
+/// which is false for every `demanded >= 0.0`. A zero promise is therefore the
+/// **loosest satisfiable claim** under this comparator — it vacuously satisfies
+/// every non-negative demand.
+///
+/// See [`extract_input_tolerance_promise`]'s `# Zero-promise interpretation`
+/// subsection for the placeholder-default footgun this enables (`param
+/// tolerance : Length = 0m` silently disables the
+/// [`DiagnosticCode::ImportedTolerancePromiseInsufficient`] warning) and the
+/// recommended opt-out (omit the `tolerance` parameter entirely rather than
+/// defaulting it to `0m`).
 ///
 /// # Panics
 ///
