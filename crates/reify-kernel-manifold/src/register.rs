@@ -80,7 +80,7 @@ use reify_types::{GeometryKernel, KernelRegistration};
 /// `cfg(has_manifold)`, this factory switches to the real implementation
 /// without changing the registration shape.
 #[cfg(feature = "stub_register")]
-fn manifold_factory() -> Box<dyn GeometryKernel> {
+pub fn manifold_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::kernel::ManifoldKernel::new())
 }
 
