@@ -124,6 +124,46 @@ pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
         .collect()
 }
 
+/// Emit a structured tracing event recording which kernel was selected and how
+/// many are registered.
+///
+/// # Why a helper is extracted
+///
+/// `Engine::with_registered_kernel` is not unit-testable for the multi-kernel
+/// INFO path in `cargo test --lib` for `reify-eval`: the cfg(test) synthetics'
+/// factories are all `unreachable!()`, so calling the constructor from a unit
+/// test would panic. This free helper takes `(name, total)` as synthetic args,
+/// letting us drive both branches from unit tests without touching any factory.
+/// The helper also lives next to [`pick_lexmin_kernel`] so the v0.3+ dispatcher
+/// path can reuse it (see module doc-comment: "both `Engine::with_registered_kernel`
+/// and (in v0.3+) any dispatcher selection share the same tie-break helper").
+///
+/// # Operator-visibility contract
+///
+/// | `total`  | level emitted                                          |
+/// |----------|--------------------------------------------------------|
+/// | `> 1`    | `INFO` — lex-min tie-break among multiple kernels      |
+/// | `== 1`   | `DEBUG` — single kernel, no tie-break needed           |
+/// | `== 0`   | *(nothing — no kernel available)*                     |
+///
+/// Branches are mutually exclusive: one event per call, keeping the
+/// signal-to-noise clean for `RUST_LOG=info` operators (who see a tie-break
+/// notification iff a second kernel adapter was actually registered).
+///
+/// # Structured fields
+///
+/// `picked = %name` — name of the selected kernel registration
+/// `total_registered = total` — total count visible in the registry at call time
+pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
+    if total > 1 {
+        tracing::info!(
+            picked = %name,
+            total_registered = total,
+            "selected kernel via lex-min tie-break",
+        );
+    }
+}
+
 /// Walk `inventory::iter::<KernelRegistration>()` once and produce the
 /// `BTreeMap` cached by [`REGISTRY`]. Detects duplicate names and trips a
 /// `debug_assert!` plus a `tracing::warn!` so misconfigurations (e.g. two
