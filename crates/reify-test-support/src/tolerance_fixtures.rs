@@ -377,6 +377,63 @@ mod tests {
         assert_eq!(args[1].result_type, Type::Scalar { dimension: DimensionVector::LENGTH });
     }
 
+    // ── manufacturing_purpose_with_inner_name ───────────────────────────────
+
+    /// Pins that `manufacturing_purpose_with_inner_name` exposes the inner
+    /// StructureRef name: calling with `inner_kind = "Bracket"` must produce
+    /// `arg[0].result_type == StructureRef("Bracket")`, NOT
+    /// `StructureRef("Structure")`. The purpose-side param entity_kind is still
+    /// `"Structure"` (unchanged from `manufacturing_purpose`).
+    #[test]
+    fn manufacturing_purpose_with_inner_name_pins_inner_kind_shape() {
+        let purpose = manufacturing_purpose_with_inner_name("manufacturing", "Bracket", 1e-6);
+
+        assert_eq!(purpose.name, "manufacturing");
+        assert_eq!(purpose.params.len(), 1, "single param");
+        assert_eq!(purpose.params[0].name, "subject");
+        assert_eq!(
+            purpose.params[0].entity_kind, "Structure",
+            "purpose-side entity_kind must remain \"Structure\" regardless of inner_kind"
+        );
+
+        assert_eq!(purpose.constraints.len(), 1, "single constraint");
+        let constraint = &purpose.constraints[0];
+        assert_eq!(
+            constraint.id,
+            ConstraintNodeId::new("subject", 0),
+            "constraint id must be (subject, 0)"
+        );
+
+        let CompiledExprKind::UserFunctionCall { function_name, args } = &constraint.expr.kind else {
+            panic!(
+                "constraint expr must be a UserFunctionCall, got {:?}",
+                constraint.expr.kind
+            );
+        };
+        assert_eq!(function_name, "RepresentationWithin");
+        assert_eq!(args.len(), 2);
+        assert_eq!(constraint.expr.result_type, Type::Bool);
+
+        // arg[0]: value_ref subject.self : StructureRef("Bracket") — the key assertion
+        assert!(
+            matches!(&args[0].kind, CompiledExprKind::ValueRef(id) if *id == ValueCellId::new("subject", "self")),
+            "arg[0] must be ValueRef(subject.self)"
+        );
+        assert_eq!(
+            args[0].result_type,
+            Type::StructureRef("Bracket".to_string()),
+            "arg[0] result_type must be StructureRef(\"Bracket\"), NOT StructureRef(\"Structure\")"
+        );
+
+        // arg[1]: Scalar literal si=1e-6 dim=LENGTH
+        let CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) = &args[1].kind else {
+            panic!("arg[1] must be a Scalar literal, got {:?}", args[1].kind);
+        };
+        assert_eq!(*si_value, 1e-6, "arg[1] si_value must be 1e-6");
+        assert_eq!(*dimension, DimensionVector::LENGTH);
+        assert_eq!(args[1].result_type, Type::Scalar { dimension: DimensionVector::LENGTH });
+    }
+
     // ── my_design_template ──────────────────────────────────────────────────
 
     /// Pins that `my_design_template` builds a `"MyDesign"` template with
