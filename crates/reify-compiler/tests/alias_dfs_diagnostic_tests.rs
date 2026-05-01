@@ -139,3 +139,38 @@ fn non_parametric_alias_vector3_unknown_dimension_produces_error() {
         "dimension type in alias expression",
     );
 }
+
+/// After the alias-DFS pre-pass, the `CompiledTypeAlias` registry entry for
+/// `type Bad = Scalar<NotADim>` must have `resolved_type == None`.
+///
+/// This pins acceptance criterion #1 from task #2841.  `Scalar` has a
+/// `resolve_type_name` default (`Type::Scalar { dimension: LENGTH }`).  Before
+/// the fix, the `AliasInnerDiagPolicy::Propagate` branch in
+/// `resolve_type_alias_expr` propagated `tmp_diags` but then fell through to
+/// the simple-name lookup at the bottom of the match arm, which resolved
+/// `"Scalar"` (no type args) to `Type::length()` and stored that as the alias
+/// entry's `resolved_type`.  Downstream consumers (e.g. `entity.rs` param-type
+/// resolution) then saw a wrong-but-typed alias entry and proceeded without the
+/// expected `"unresolved type: Bad"` diagnostic — producing a wrong-type
+/// cascade.
+///
+/// After the fix (`return None;` gated on `!tmp_diags.is_empty()` inside the
+/// Propagate branch), the alias entry is left with `resolved_type: None`, which
+/// is what this test asserts.
+///
+/// Pre-fix expectation: this assertion FAILS because `resolved_type` is
+/// `Some(Scalar { dimension: LENGTH })` (i.e. `Some(Type::length())`).
+#[test]
+fn non_parametric_alias_scalar_unknown_dimension_leaves_alias_unresolved() {
+    let module = compile_with_stdlib_helper("type Bad = Scalar<NotADim>");
+    let bad = module
+        .type_aliases
+        .iter()
+        .find(|a| a.name == "Bad")
+        .expect("alias 'Bad' not found in module.type_aliases");
+    assert!(
+        bad.resolved_type.is_none(),
+        "expected None, got {:?}",
+        bad.resolved_type
+    );
+}
