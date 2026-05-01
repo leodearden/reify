@@ -21,8 +21,8 @@
 //! diagnostics from stub types like `"Foo"`, `"SomePort"`).
 
 use reify_syntax::{
-    ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParsedModule, ParamDecl,
-    PortDecl, StructureDef, SubDecl,
+    ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl,
+    MatchArmDeclGroupDecl, MemberDecl, ParsedModule, ParamDecl, PortDecl, StructureDef, SubDecl,
 };
 use reify_types::{ContentHash, DiagnosticCode, ModulePath, Severity, SourceSpan};
 
@@ -469,5 +469,105 @@ fn forbidden_decl_in_nested_specialization_scope_body_emits_two_diagnostics() {
         d1.labels[0].span,
         leaf_param_span,
         "second diagnostic span must equal leaf ParamDecl's span"
+    );
+}
+
+// ── match-arm helpers (step-7) ────────────────────────────────────────────────
+
+fn make_match_arm_decl(pattern: &str, member: MemberDecl) -> MatchArmDeclArmDecl {
+    MatchArmDeclArmDecl {
+        patterns: vec![pattern.to_string()],
+        member: Box::new(member),
+        span: zero_span(),
+    }
+}
+
+fn make_match_arm_decl_group(
+    discriminant_name: &str,
+    arms: Vec<MatchArmDeclArmDecl>,
+) -> MemberDecl {
+    MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: Expr {
+            kind: ExprKind::Ident(discriminant_name.to_string()),
+            span: zero_span(),
+        },
+        arms,
+        span: zero_span(),
+        content_hash: dummy_hash(),
+    })
+}
+
+/// PRD scenario 5 (`match`-arm `sub` bodies with forbidden inside):
+/// a `MatchArmDeclGroup` nested inside an outer `sub`-with-body must be walked
+/// by `walk_specialization_scope_members`, which recurses into
+/// `MemberDecl::MatchArmDeclGroup` arms.  A `sub` arm that itself has a body
+/// containing a `param` must produce AT LEAST two diagnostics:
+///   - one for the arm's `sub head : HexHead` (forbidden bare-sub in outer scope), and
+///   - one for the leaf `param x` inside the arm's sub body (forbidden in inner scope).
+///
+/// The test uses `iter().any(...)` rather than positional indexing because the
+/// exact ordering of diagnostics through `MatchArmDeclGroup` traversal is an
+/// internal detail of `walk_members_depth` not pinned by prior tests.
+///
+/// Shape (nested for validator reachability — see design decision):
+/// ```text
+/// structure S {
+///   sub motor : ElectricMotor {
+///     match head_type {
+///       Hex => sub head : HexHead { param x }
+///     }
+///   }
+/// }
+/// ```
+///
+/// The `MatchArmDeclGroup` is nested inside an outer `sub motor`-with-body so
+/// the validator's top-level walker (`find_specialization_scopes`) reaches it.
+/// Placing the match-arm-group at top-level would silently miss the inner
+/// forbidden decls (see design decision for rationale).
+#[test]
+fn forbidden_decl_in_match_arm_sub_body_emits_diagnostic() {
+    let arm_sub_span = sub_span();
+    let leaf_param_span = param_span();
+
+    // Inner arm: `sub head : HexHead { param x }`
+    // The sub has a body → it opens its own specialization scope.
+    let arm_sub = make_sub_with_body("head", arm_sub_span, vec![make_param("x", leaf_param_span)]);
+    let match_group = make_match_arm_decl_group("head_type", vec![make_match_arm_decl("Hex", arm_sub)]);
+
+    // Outer specialization scope: `sub motor : ElectricMotor { <match_group> }`
+    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+        "motor",
+        zero_span(),
+        vec![match_group],
+    )]);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let diags = forbidden_diagnostics(&compiled.diagnostics);
+
+    assert!(
+        diags.len() >= 2,
+        "expected at least two SpecializationForbiddenDecl diagnostics \
+         (arm sub + leaf param), got: {:#?}",
+        diags
+    );
+
+    // One diagnostic must be for the arm's Sub itself (forbidden in outer scope).
+    let has_sub_head = diags.iter().any(|d| {
+        d.message.contains("'sub'") && d.message.contains("'head'")
+    });
+    assert!(
+        has_sub_head,
+        "expected a diagnostic for forbidden 'sub' named 'head', got: {:#?}",
+        diags
+    );
+
+    // One diagnostic must be for the leaf Param inside the arm's sub body.
+    let has_param_x = diags.iter().any(|d| {
+        d.message.contains("'param'") && d.message.contains("'x'")
+    });
+    assert!(
+        has_param_x,
+        "expected a diagnostic for forbidden 'param' named 'x', got: {:#?}",
+        diags
     );
 }
