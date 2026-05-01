@@ -552,32 +552,35 @@ impl OcctKernel {
         Ok((handle, records))
     }
 
-    /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape_id` with the
-    /// given `radius`, returning the modified-result handle alongside the
-    /// per-parent face/edge Modified/Generated/Deleted history records.
+    /// Shared body for `fillet_with_history` and `chamfer_with_history`.
     ///
-    /// Mirrors the defense-in-depth validation of the `GeometryOp::Fillet` arm:
-    /// `radius` must be a finite, strictly positive number. Result handle is
-    /// registered with `BRepKind::Solid`.
+    /// Looks up `shape_id`, calls `build` to run the OCCT algorithm and obtain a
+    /// `LocalFeatureOpHistory`, decodes all six record buffers, then registers the
+    /// result shape with `BRepKind::Solid`.  Error mapping (cxx exceptions →
+    /// `GeometryError::OperationFailed`) is handled here so public callers stay
+    /// concise.
     ///
-    /// `parent_index` in every record is `0` (single parent solid).
-    ///
-    /// Part of v0.2 persistent-naming-v2 (task 2655, step-2).
-    pub fn fillet_with_history(
+    /// `build` receives `&OcctShape` (borrowed from `self`).  The closure must
+    /// return the raw `Result` from the cxx bridge so that the error type's
+    /// `Display` impl can be used to produce a descriptive `OperationFailed`
+    /// message.  Because the `UniquePtr<LocalFeatureOpHistory>` returned by
+    /// `build` does not borrow from the `OcctShape`, the immutable borrow of
+    /// `self` ends as soon as `build` returns, allowing the subsequent
+    /// `store_with_repr` call to take `self` mutably.
+    fn run_local_feature_with_history<F, E>(
         &mut self,
         shape_id: GeometryHandleId,
-        radius: f64,
-    ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Fillet validation in `execute`
-        // so direct callers get the same descriptive errors.
-        if !(radius.is_finite() && radius > 0.0) {
-            return Err(GeometryError::OperationFailed(
-                "fillet radius must be a finite positive value".into(),
-            ));
-        }
+        build: F,
+    ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>
+    where
+        F: FnOnce(
+            &ffi::ffi::OcctShape,
+        ) -> Result<cxx::UniquePtr<ffi::ffi::LocalFeatureOpHistory>, E>,
+        E: std::fmt::Display,
+    {
         let (result_shape, records) = {
             let shape = self.get_shape(shape_id)?;
-            let mut history = ffi::ffi::make_fillet_with_history(shape, radius)
+            let mut history = build(shape)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             let face_modified = decode_history_records(
                 ffi::ffi::local_feature_op_history_face_modified(&history));
@@ -613,6 +616,30 @@ impl OcctKernel {
         Ok((handle, records))
     }
 
+    /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape_id` with the
+    /// given `radius`, returning the modified-result handle alongside the
+    /// per-parent face/edge Modified/Generated/Deleted history records.
+    ///
+    /// Mirrors the defense-in-depth validation of the `GeometryOp::Fillet` arm:
+    /// `radius` must be a finite, strictly positive number. Result handle is
+    /// registered with `BRepKind::Solid`.
+    ///
+    /// `parent_index` in every record is `0` (single parent solid).
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 2655, step-2).
+    pub fn fillet_with_history(
+        &mut self,
+        shape_id: GeometryHandleId,
+        radius: f64,
+    ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
+        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Fillet validation in `execute`
+        // so direct callers get the same descriptive errors.
+        validate_positive_finite(radius, "fillet radius")?;
+        self.run_local_feature_with_history(shape_id, |shape| {
+            ffi::ffi::make_fillet_with_history(shape, radius)
+        })
+    }
+
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
@@ -631,44 +658,10 @@ impl OcctKernel {
     ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
         // DEFENSE-IN-DEPTH: mirror the GeometryOp::Chamfer validation in `execute`
         // so direct callers get the same descriptive errors.
-        if !(distance.is_finite() && distance > 0.0) {
-            return Err(GeometryError::OperationFailed(
-                "chamfer distance must be a finite positive value".into(),
-            ));
-        }
-        let (result_shape, records) = {
-            let shape = self.get_shape(shape_id)?;
-            let mut history = ffi::ffi::make_chamfer_with_history(shape, distance)
-                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            let face_modified = decode_history_records(
-                ffi::ffi::local_feature_op_history_face_modified(&history));
-            let face_generated = decode_history_records(
-                ffi::ffi::local_feature_op_history_face_generated(&history));
-            let face_deleted = decode_deleted_records(
-                ffi::ffi::local_feature_op_history_face_deleted(&history));
-            let edge_modified = decode_history_records(
-                ffi::ffi::local_feature_op_history_edge_modified(&history));
-            let edge_generated = decode_history_records(
-                ffi::ffi::local_feature_op_history_edge_generated(&history));
-            let edge_deleted = decode_deleted_records(
-                ffi::ffi::local_feature_op_history_edge_deleted(&history));
-            let silent_drop_count =
-                ffi::ffi::local_feature_op_history_silent_drop_count(&history);
-            let result_shape =
-                ffi::ffi::local_feature_op_history_take_result_shape(history.pin_mut());
-            let records = LocalFeatureOpHistoryRecords {
-                silent_drop_count,
-                face_modified,
-                face_generated,
-                face_deleted,
-                edge_modified,
-                edge_generated,
-                edge_deleted,
-            };
-            (result_shape, records)
-        };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
-        Ok((handle, records))
+        validate_positive_finite(distance, "chamfer distance")?;
+        self.run_local_feature_with_history(shape_id, |shape| {
+            ffi::ffi::make_chamfer_with_history(shape, distance)
+        })
     }
 
     /// Extrude `profile` along the +Z direction by `distance` metres via
