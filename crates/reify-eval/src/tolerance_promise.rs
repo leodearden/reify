@@ -574,4 +574,35 @@ mod tests {
             diag.message
         );
     }
+
+    /// Verifies that `imported_tolerance_promise_diagnostic` renders tolerance
+    /// values in human-readable unit-prefixed form (`µm`/`mm`/`m`) rather than
+    /// raw SI-metre floats (`0.00005m`, `0.000001m`).
+    ///
+    /// Task 2790: decision — use `tolerance_format::format_tolerance` so all
+    /// four `tolerance_*` diagnostic messages share the same µm/mm/m magnitude
+    /// bands. The regression guard (`!diag.message.contains("0.00005m")`)
+    /// locks out the old raw-f64 interpolation form.
+    #[test]
+    fn imported_tolerance_promise_diagnostic_renders_human_readable_units() {
+        // promise = 50e-6 m → "50µm"; demanded = 1e-6 m → "1µm"
+        let diag = imported_tolerance_promise_diagnostic("STEPInput", 1e-6, 50e-6);
+
+        assert!(
+            diag.message.contains("50µm"),
+            "promise side must render as '50µm' (got: {:?})",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("1µm"),
+            "demanded side must render as '1µm' (got: {:?})",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("0.00005m"),
+            "regression guard: raw SI-metre form '0.00005m' must not appear \
+             in the message (got: {:?})",
+            diag.message
+        );
+    }
 }
