@@ -92,6 +92,14 @@ pub(crate) struct TypeAliasRegistry {
 
 impl TypeAliasRegistry {
     /// Create an empty registry.
+    ///
+    /// A `TypeAliasRegistry` is intended for **single-pass use** — one fresh instance per
+    /// compile invocation.  The `emitted_skipped_parametric_prelude_spans` dedup set grows
+    /// monotonically for the lifetime of the registry; if the registry were ever reused
+    /// across multiple compile passes, spans recorded in an earlier pass would silently
+    /// suppress `Severity::Info` diagnostics in later passes.  If reuse is ever desired,
+    /// clear `emitted_skipped_parametric_prelude_spans` (via a future `reset()` or
+    /// `clear_emitted_spans()` helper) before starting the next pass.
     pub(crate) fn new() -> Self {
         TypeAliasRegistry {
             entries: HashMap::new(),

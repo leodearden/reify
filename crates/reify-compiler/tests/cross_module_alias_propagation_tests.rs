@@ -719,6 +719,18 @@ fn unrelated_unresolved_no_info_emitted() {
 /// Note: unlike the `param p : Vec<Float>` path, the `let ... = none` form does
 /// NOT produce an Error-level diagnostic — `none` is valid as an untyped sentinel
 /// and the annotation is advisory in this context.  Only the Info hint fires.
+///
+/// **Forward-looking guard**: currently only one resolution path runs for this form
+/// (via `fixup_option_none_for_let`; `compile_expr` intercepts `none` before
+/// consulting the annotation, and the entity-let pre-pass registers a placeholder
+/// `Type::Real` without resolving), so the `info_diags.len() == 1` assertion holds
+/// whether or not span-level dedup is active.  The dedup mechanism itself is
+/// exercised by the unit test
+/// `should_emit_skipped_parametric_prelude_info_dedups_per_span` in
+/// `type_resolution.rs`.  This integration test anchors the "exactly one Info per
+/// use site" contract so that any future binding-site pre-pass for lets (mirroring
+/// the existing param pre-pass at entity.rs:574) is caught immediately as a
+/// regression rather than silently producing duplicate diagnostics.
 #[test]
 fn parametric_prelude_let_none_emits_single_info_diagnostic() {
     let vec_alias = make_parametric_pub_alias("Vec", "T");
