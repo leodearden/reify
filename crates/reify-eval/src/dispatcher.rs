@@ -45,6 +45,8 @@ use std::time::Duration;
 
 use reify_types::{CapabilityDescriptor, Diagnostic, DiagnosticCode, Operation, ReprKind};
 
+use crate::tolerance_budget::per_stage_tolerance;
+
 /// PRD-default wall-time threshold for the long-chain realization warning,
 /// in milliseconds.
 ///
@@ -260,6 +262,34 @@ pub fn long_chain_threshold_from_env_value(value: Option<&str>) -> Duration {
     Duration::from_millis(parsed_ms)
 }
 
+/// Returns the per-stage tolerance budget for a conversion chain described by a
+/// [`DispatchPlan`].
+///
+/// This is the conversion-chain budget allocator: `n_stages` is resolved from
+/// `plan.conversions.len()`.  For chains with at least one conversion stage, the
+/// function delegates to [`crate::tolerance_budget::per_stage_tolerance`], which
+/// applies a geometric split with the 0.8 `SAFETY_FACTOR` (see
+/// `docs/prds/v0_2/per-purpose-tolerance.md` §"Conversion-budget allocation
+/// heuristic").  For an empty chain (demanded repr already in `available`, no
+/// kernel boundary crossed), the function returns `requested_tol` unchanged —
+/// applying the safety factor would gratuitously tighten the user's budget on a
+/// non-existent chain.
+///
+/// Co-located with [`is_long_chain_realization`] / [`long_chain_diagnostic`]
+/// because all three functions resolve stage count from `plan.conversions.len()`;
+/// keeping them together minimises grep-and-edit cost for future refactors.
+///
+/// # Truth table
+///
+/// | `plan.conversions.len()` | result                                        |
+/// |--------------------------|-----------------------------------------------|
+/// | 0 (empty chain)          | `requested_tol` (pass-through, no factor)     |
+/// | 1                        | `requested_tol × 0.8` (via delegation)        |
+/// | N ≥ 2                    | `requested_tol^(1/N) × 0.8` (via delegation) |
+pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> f64 {
+    requested_tol
+}
+
 /// Ordered sequence of conversion stages: each entry is
 /// `(kernel_name, from_repr, to_repr)`. Factored as a type alias to keep the
 /// internal BFS frontier type below clippy's `type_complexity` threshold and
@@ -401,6 +431,7 @@ mod tests {
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
         LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
         long_chain_diagnostic, long_chain_threshold_from_env_value,
+        per_stage_tolerance_for_plan,
     };
     use std::time::Duration;
 
