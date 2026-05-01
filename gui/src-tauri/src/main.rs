@@ -1,9 +1,11 @@
 // Tauri application entry point for Reify GUI.
 //
-// Wires the EngineSession with SimpleConstraintChecker + DispatchPlanner (+ OcctKernelHandle
-// when OCCT is available at build time), wraps it in AppState, and starts the Tauri application
-// with all command handlers. After state-mutating commands, diffs old vs new state and emits
-// targeted events.
+// Constructs EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker)); OCCT
+// registration is automatic via the cfg(has_occt)-gated inventory::submit! in
+// reify-kernel-occt::register. The kernel_status::current_kernel_status() call surfaces the
+// build-time OCCT_AVAILABLE constant for the startup banner. Wraps in AppState and starts the
+// Tauri application with all command handlers. After state-mutating commands, diffs old vs new
+// state and emits targeted events.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -13,7 +15,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_geometry::DispatchPlanner;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
 use reify_gui::engine::EngineSession;
@@ -449,12 +450,11 @@ fn get_kernel_status() -> reify_gui::kernel_status::KernelStatus {
 }
 
 fn main() {
-    // Set up the geometry kernel (registers OCCT only when available at build time).
+    // Boot the engine via the inventory-based kernel registry. OCCT is registered automatically
+    // via the cfg(has_occt)-gated inventory::submit! in reify-kernel-occt::register.
     let checker = SimpleConstraintChecker;
-    let mut planner = DispatchPlanner::new();
-    let kernel_status = reify_gui::kernel_status::configure_planner(&mut planner);
-
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(planner)));
+    let kernel_status = reify_gui::kernel_status::current_kernel_status();
+    let session = EngineSession::with_registered_kernel(Box::new(checker));
 
     // Check for initial file from command-line args or environment
     let mut session = session;
