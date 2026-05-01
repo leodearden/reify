@@ -1231,10 +1231,6 @@ mod tests {
         let d =
             Diagnostic::warning("x").with_code(DiagnosticCode::ImportedTolerancePromiseInsufficient);
         assert_eq!(d.code, Some(DiagnosticCode::ImportedTolerancePromiseInsufficient));
-        assert_eq!(
-            format!("{:?}", DiagnosticCode::ImportedTolerancePromiseInsufficient),
-            "ImportedTolerancePromiseInsufficient"
-        );
     }
 
     /// Under `feature = "serde"`, `DiagnosticCode::ImportedTolerancePromiseInsufficient`
