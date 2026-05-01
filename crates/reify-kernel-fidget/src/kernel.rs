@@ -24,8 +24,9 @@ const STUB_MSG: &str = "Fidget SDF kernel not yet implemented; \
 
 /// Stub Fidget kernel — all operations return descriptive errors.
 ///
-/// The `_private: ()` field prevents external construction without [`Self::new`],
-/// matching the OCCT stub pattern in
+/// The `_private: ()` field prevents external struct-literal construction;
+/// callers must go through [`Self::new`] or [`Self::default`].
+/// Matches the OCCT stub pattern in
 /// `crates/reify-kernel-occt/src/stubs.rs:25-27`.
 ///
 /// Trivially `Send + Sync` (no interior mutability, no raw pointers — no
