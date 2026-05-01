@@ -6,7 +6,7 @@
 //! the test binary as no-ops — matching the `cfg(has_occt)` gate on the OCCT
 //! kernel itself in `crates/reify-kernel-occt/src/lib.rs:22-83`.
 
-use reify_types::{Operation, ReprKind};
+use reify_types::{KernelRegistration, Operation, ReprKind};
 
 /// OCCT's capability descriptor must enumerate every operation routed
 /// through `OcctKernelHandle::execute`, paired with `ReprKind::BRep`.
@@ -76,5 +76,44 @@ fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
     assert!(
         !descriptor.supports(Operation::BooleanUnion, ReprKind::Mesh),
         "OCCT must NOT declare (BooleanUnion, Mesh) — see v0.3 manifold story",
+    );
+}
+
+/// OCCT submits exactly one `KernelRegistration` named `"occt"` into the
+/// `inventory::iter::<KernelRegistration>()` set. This is the inventory-
+/// plumbing pin: an `inventory::submit!` that is missing or wrapped in the
+/// wrong cfg gate is caught here.
+///
+/// The submitted registration's `descriptor()` must produce a
+/// `CapabilityDescriptor` byte-equal (modulo `Vec` ordering) to
+/// `register::occt_capability_descriptor()` — both must come from the same
+/// underlying function pointer, so this assertion would only fire if a
+/// future drift introduces two divergent descriptor functions.
+#[test]
+fn occt_kernel_registration_appears_in_inventory_iter() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        return;
+    }
+
+    let occt_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
+        .into_iter()
+        .filter(|reg| reg.name == "occt")
+        .collect();
+
+    assert_eq!(
+        occt_entries.len(),
+        1,
+        "expected exactly one inventory::submit! for kernel name \"occt\", found {}",
+        occt_entries.len(),
+    );
+
+    let inventory_descriptor = (occt_entries[0].descriptor)();
+    let direct_descriptor = reify_kernel_occt::register::occt_capability_descriptor();
+
+    assert_eq!(
+        inventory_descriptor.supports, direct_descriptor.supports,
+        "the inventory-submitted descriptor's supports table must match the \
+         one returned by `register::occt_capability_descriptor()` directly — \
+         a divergence means there are two parallel descriptor sources",
     );
 }
