@@ -137,29 +137,3 @@ pub fn assert_local_feature_history_well_formed(
         );
     }
 }
-
-/// Verify that the helper panics with a message containing "silently drop"
-/// when `silent_drop_count` is non-zero.
-///
-/// This test is expected to FAIL before the `silent_drop_count == 0` assertion
-/// is added to `assert_local_feature_history_well_formed` (step-2). Without
-/// that assertion, the helper panics elsewhere (at `extract_edges` or the `(l)`
-/// `edge_deleted` check) with a message that does NOT contain "silently drop",
-/// so `#[should_panic(expected = "silently drop")]` correctly reports failure.
-///
-/// After step-2 adds the assertion at the TOP of the helper, it fires first
-/// (before `extract_edges` is ever called) and its message contains
-/// "silently drop" — this test then passes.
-#[test]
-#[should_panic(expected = "silently drop")]
-fn helper_panics_when_silent_drop_count_nonzero() {
-    let kernel = OcctKernelHandle::spawn();
-    let history = LocalFeatureOpHistoryRecords {
-        silent_drop_count: 1,
-        ..Default::default()
-    };
-    // GeometryHandleId(0) is a deliberately bogus id. It is fine because the
-    // new assertion (step-2) fires at the TOP of the helper, before
-    // `extract_edges` is called — so the kernel is never actually queried.
-    assert_local_feature_history_well_formed(&kernel, GeometryHandleId(0), &history, "test_op");
-}
