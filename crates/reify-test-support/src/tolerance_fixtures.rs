@@ -6,6 +6,148 @@
 //! all test files — centralising them here ensures a single source of truth
 //! and lets co-located unit tests pin each shape explicitly.
 
+use crate::builders::{CompiledPurposeBuilder, TopologyTemplateBuilder};
+use reify_compiler::{CompiledPurpose, TopologyTemplate};
+use reify_types::{CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+
+/// Core builder for an `STEPOutput`-shaped [`TopologyTemplate`]. Callers
+/// supply the body [`CompiledExpr`]; the template name, `"subject"` param,
+/// and index-0 constraint slot are fixed — any future change to the template
+/// shape only needs to be made here.
+///
+/// The `subject_arg`'s `result_type` uses the param's declared
+/// structure-ref name (`"Structure"`) so the fixture stays robust if a
+/// future hardening of `tolerance_scope`'s recognition gates asserts
+/// inner-name match against the declared param type. Today's matcher only
+/// checks the outer `StructureRef(_)` tag, so the inner string is
+/// informational; aligning it with the declared param insulates the test
+/// from that future tightening. See
+/// `reify_eval::tolerance_combine::extract_output_tolerance_bound` for the
+/// recognition contract.
+pub fn step_output_template_with_body(body: CompiledExpr) -> TopologyTemplate {
+    TopologyTemplateBuilder::new("STEPOutput")
+        .param(
+            "STEPOutput",
+            "subject",
+            Type::StructureRef("Structure".to_string()),
+            None,
+        )
+        .constraint("STEPOutput", 0, None, body)
+        .build()
+}
+
+/// Build an `STEPOutput`-shaped [`TopologyTemplate`] carrying a single
+/// `RepresentationWithin(<ValueRef typed StructureRef("Structure")>,
+/// <length-literal>)` body constraint at SI `output_tol` metres.
+///
+/// The template's name is `"STEPOutput"` so its constraint lands in the
+/// runtime graph at `(entity = "STEPOutput", index = 0)` — see
+/// `reify_eval::tolerance_combine::extract_output_tolerance_bound` for the
+/// recognition contract.
+pub fn step_output_template(output_tol: f64) -> TopologyTemplate {
+    let subject_arg = CompiledExpr::value_ref(
+        ValueCellId::new("subject", "self"),
+        Type::StructureRef("Structure".to_string()),
+    );
+    let tol_arg = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: output_tol,
+            dimension: DimensionVector::LENGTH,
+        },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    let body = CompiledExpr::user_function_call(
+        "RepresentationWithin".to_string(),
+        vec![subject_arg, tol_arg],
+        Type::Bool,
+    );
+    step_output_template_with_body(body)
+}
+
+/// Build an `STEPOutput`-shaped [`TopologyTemplate`] whose body constraint is
+/// a `Bool` literal rather than a `RepresentationWithin` expression.
+///
+/// The constraint is present in the runtime graph under
+/// `(entity = "STEPOutput", index = 0)` but carries no tolerance value, so
+/// `extract_output_tolerance_bound` returns `None` for this template.
+pub fn step_output_template_without_rep_within() -> TopologyTemplate {
+    step_output_template_with_body(CompiledExpr::literal(Value::Bool(true), Type::Bool))
+}
+
+/// Build an `STEPInput`-shaped [`TopologyTemplate`] carrying a single
+/// `param tolerance : Length = promise_tol_si m` declaration.
+///
+/// The template's name is `"STEPInput"` so the post-`eval()` snapshot's
+/// value-cell map contains an entry keyed by
+/// `ValueCellId("STEPInput", "tolerance")` whose value is
+/// `Value::Scalar { si_value == promise_tol_si, dimension == LENGTH }`.
+/// See `reify_eval::tolerance_promise::extract_input_tolerance_promise` for
+/// the recognition contract.
+pub fn step_input_template(promise_tol_si: f64) -> TopologyTemplate {
+    let length_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let default_expr = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: promise_tol_si,
+            dimension: DimensionVector::LENGTH,
+        },
+        length_type.clone(),
+    );
+    TopologyTemplateBuilder::new("STEPInput")
+        .param("STEPInput", "tolerance", length_type, Some(default_expr))
+        .build()
+}
+
+/// Build a purpose whose sole constraint is
+/// `RepresentationWithin(subject, purpose_tol m)`.
+///
+/// The `subject_arg`'s `result_type` uses the param's declared
+/// structure-ref name (`"Structure"`) so the fixture stays robust if a
+/// future hardening of `tolerance_scope`'s recognition gates asserts
+/// inner-name match against the declared param type. Both current callers
+/// (`tolerance_combine`, `tolerance_import_promise`) pass `"Structure"`.
+/// `tolerance_scope.rs` uses different inner names ("Bracket"/"Head")
+/// deliberately and does not share this fixture.
+pub fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> CompiledPurpose {
+    let subject_arg = CompiledExpr::value_ref(
+        ValueCellId::new("subject", "self"),
+        Type::StructureRef("Structure".to_string()),
+    );
+    let tol_arg = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: purpose_tol,
+            dimension: DimensionVector::LENGTH,
+        },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    let rep_within = CompiledExpr::user_function_call(
+        "RepresentationWithin".to_string(),
+        vec![subject_arg, tol_arg],
+        Type::Bool,
+    );
+    CompiledPurposeBuilder::new(purpose_name)
+        .param("subject", "Structure")
+        .constraint("subject", 0, None, rep_within)
+        .build()
+}
+
+/// Build a minimal `MyDesign` template with one `thickness : Real` param
+/// and no constraints.
+///
+/// Carries no `RepresentationWithin` of its own — the purpose's tolerance
+/// scope is what binds to `MyDesign` when a manufacturing purpose is
+/// activated against it.
+pub fn my_design_template() -> TopologyTemplate {
+    TopologyTemplateBuilder::new("MyDesign")
+        .param("MyDesign", "thickness", Type::Real, None)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,7 +267,6 @@ mod tests {
     /// round-trips verbatim.
     #[test]
     fn step_output_template_with_body_passes_through_body() {
-        use reify_types::CompiledExpr;
         let sentinel = CompiledExpr::literal(Value::Int(7), Type::Int);
         let template = step_output_template_with_body(sentinel.clone());
 
