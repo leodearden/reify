@@ -17,3 +17,5 @@ inventory.workspace = true
 # adapter crates without a cycle. As a dev-dep, `reify-eval` is only pulled
 # into the link closure of the `tests/dispatcher_integration.rs` test binary;
 # the production library stays free of the eval dependency.
+[dev-dependencies]
+reify-eval.workspace = true
