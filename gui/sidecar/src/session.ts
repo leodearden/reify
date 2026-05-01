@@ -158,20 +158,22 @@ export class SidecarSession {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    // Attach an error listener so a broken stdin pipe (EPIPE) is handled gracefully
-    // rather than crashing the sidecar process. This is realistic now that stdin stays
-    // open across multiple writes (initial prompt + each tool_result block).
-    proc.stdin?.on('error', (err: Error) => {
-      this.onOutput({ type: 'error', id, message: `stdin write error: ${err.message}` });
-    });
+    // Attach a no-op 'error' listener so an unhandled stream error cannot crash the sidecar
+    // process. Error reporting now flows through per-write callbacks (see writes below) which
+    // capture the correct id for each write rather than the outer send_message id.
+    proc.stdin?.on('error', () => {});
 
     // Write the initial user prompt as a stream-json message line.
     // Stdin is kept open until a 'result' event arrives so tool_result blocks can follow.
+    // Per-write callback captures the send_message id for correct error correlation.
     proc.stdin?.write(
       JSON.stringify({
         type: 'user',
         message: { role: 'user', content: [{ type: 'text', text: prompt }] },
-      }) + '\n'
+      }) + '\n',
+      (err) => {
+        if (err) this.onOutput({ type: 'error', id, message: `stdin write error: ${err.message}` });
+      }
     );
 
     // Register the in-flight stdin so handleToolResult can write to it.
@@ -336,23 +338,20 @@ export class SidecarSession {
       });
       return;
     }
-    try {
-      this.currentStdin.write(
-        JSON.stringify({
-          type: 'user',
-          message: {
-            role: 'user',
-            content: [{ type: 'tool_result', tool_use_id: toolUseId, content: result }],
-          },
-        }) + '\n'
-      );
-    } catch (err: unknown) {
-      this.onOutput({
-        type: 'error',
-        id,
-        message: `stdin write error: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
+    // Per-write callback captures the tool_result id for correct error correlation.
+    // No synchronous try/catch needed: stream-write failures surface via the callback.
+    this.currentStdin.write(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: toolUseId, content: result }],
+        },
+      }) + '\n',
+      (err) => {
+        if (err) this.onOutput({ type: 'error', id, message: `stdin write error: ${err.message}` });
+      }
+    );
   }
 
   /**
