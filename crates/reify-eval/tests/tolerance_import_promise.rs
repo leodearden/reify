@@ -156,6 +156,45 @@ fn engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_
     );
 }
 
+/// Degenerate guard: when both the imported-geometry promise AND the downstream
+/// demand are exactly `0.0`, neither the zero-promise lint
+/// ([`DiagnosticCode::InputTolerancePromiseIsZero`]) nor the insufficient-promise
+/// lint ([`DiagnosticCode::ImportedTolerancePromiseInsufficient`]) should fire.
+///
+/// The zero-promise lint is guarded by `demanded > 0.0` (strict, not `>= 0.0`) —
+/// when both are zero there is no real mismatch and the canonical
+/// `(0.0, 0.0) -> false` truth-table row in `is_promise_insufficient` rules this
+/// sufficient. Loosening the guard to `>= 0.0` would emit the lint in the
+/// degenerate (0, 0) case and contradict the locked truth-table row.
+///
+/// Task 2833 decision: the `demanded > 0.0` strict guard is intentional and must
+/// not be widened to `>= 0.0`.
+#[test]
+fn engine_check_imported_tolerance_promise_returns_none_when_promise_and_demand_both_zero() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_zero_promise_zero_demand".to_string(),
+    ]))
+    .template(step_input_template(0.0))
+    .template(step_output_template(0.0))
+    .template(my_design_template())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 0.0))
+    .build();
+
+    let mut engine = make_engine();
+    engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    assert!(
+        engine
+            .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
+            .is_none(),
+        "with promise=0.0 and demand=0.0 (both zero), neither lint must fire — \
+         the zero-promise lint guard is `demanded > 0.0` (strict), not `>= 0.0`, \
+         and `is_promise_insufficient(0.0, 0.0)` is false by the strict-`<` rule. \
+         Loosening the guard to `>= 0.0` would regress this assertion."
+    );
+}
+
 /// Pinned by the no-op rows of `check_imported_tolerance_promise`'s truth
 /// table. Mirrors the four-block precedent
 /// `engine_demanded_tolerance_for_output_handles_partial_inputs` in
