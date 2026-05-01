@@ -635,6 +635,74 @@ fn bare_name_use_emits_info_diagnostic() {
     );
 }
 
+/// A user module that declares its own `type Vec = Real` (shadowing the prelude's
+/// parametric `pub type Vec<T>`) and references `param p : Vec` must:
+/// (1) compile successfully — user's alias wins, p resolves to Real
+/// (2) produce zero `Severity::Info` diagnostics — the prelude's parametric Vec
+///     is functionally invisible, so Info about cross-module propagation would be
+///     misleading
+///
+/// This is the shadow-guard regression test added in task 2777 step-3.  It
+/// verifies the `!user_alias_names.contains(pa.name.as_str())` guard in
+/// `phase_aliases` prevents the Info from firing when the user has redeclared
+/// the name locally.
+#[test]
+fn user_shadowed_parametric_prelude_alias_emits_no_info_diagnostic() {
+    let vec_alias = make_parametric_pub_alias("Vec", "T");
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("shadow_param_prelude"))
+        .type_alias(vec_alias)
+        .build();
+
+    // User module shadows the parametric prelude Vec with a non-parametric alias.
+    let source = "type Vec = Real\nstructure def S { param p : Vec }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("shadow_param_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    // (1) No Error diagnostics — user's alias resolved correctly.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "user shadow must produce no Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // (1b) The p cell type is Real (user's alias wins over prelude's parametric Vec).
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template `S` not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("value cell `p` not found on `S`");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Real,
+        "param `p : Vec` must resolve to Type::Real via user's shadow alias"
+    );
+
+    // (2) Zero Info diagnostics — no misleading Info about cross-module propagation.
+    let info_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        0,
+        "shadowed parametric prelude alias must emit zero Info diagnostics; got: {:?}",
+        info_diags
+    );
+}
+
 /// A user module that references `NotADeclaredType` (a name NOT in the skipped
 /// parametric prelude set) must produce zero `Severity::Info` diagnostics.
 ///
