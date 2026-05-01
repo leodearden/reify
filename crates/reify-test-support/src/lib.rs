@@ -7,20 +7,20 @@
 pub mod builders;
 pub mod fixtures;
 pub mod helpers;
-pub mod tolerance_fixtures;
 pub mod ignore_hygiene;
 pub mod lsp_fixtures;
 pub mod mocks;
+pub mod tolerance_fixtures;
 pub mod tracing_support;
 pub mod value_decompose;
 pub mod values;
 
 pub use builders::*;
 pub use fixtures::*;
-pub use tolerance_fixtures::*;
 pub use helpers::*;
 pub use lsp_fixtures::*;
 pub use mocks::*;
+pub use tolerance_fixtures::*;
 pub use tracing_support::*;
 pub use value_decompose::*;
 pub use values::*;

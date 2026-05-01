@@ -24,7 +24,7 @@ use reify_types::{CompiledExpr, DimensionVector, Type, Value, ValueCellId};
 /// from that future tightening. See
 /// `reify_eval::tolerance_combine::extract_output_tolerance_bound` for the
 /// recognition contract.
-pub fn step_output_template_with_body(body: CompiledExpr) -> TopologyTemplate {
+pub(crate) fn step_output_template_with_body(body: CompiledExpr) -> TopologyTemplate {
     TopologyTemplateBuilder::new("STEPOutput")
         .param(
             "STEPOutput",
@@ -224,10 +224,7 @@ mod tests {
         let CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) = &arg1.kind else {
             panic!("arg[1] must be a Scalar literal, got {:?}", arg1.kind);
         };
-        assert!(
-            (si_value - 1e-6).abs() < f64::EPSILON,
-            "arg[1] si_value must be 1e-6, got {si_value}"
-        );
+        assert_eq!(*si_value, 1e-6, "arg[1] si_value must be 1e-6");
         assert_eq!(*dimension, DimensionVector::LENGTH, "arg[1] dimension must be LENGTH");
         assert_eq!(
             arg1.result_type,
@@ -320,10 +317,7 @@ mod tests {
                 default_expr.kind
             );
         };
-        assert!(
-            (si_value - 50e-6).abs() < f64::EPSILON,
-            "default si_value must be 50e-6, got {si_value}"
-        );
+        assert_eq!(*si_value, 50e-6, "default si_value must be 50e-6");
         assert_eq!(*dimension, DimensionVector::LENGTH);
         assert_eq!(
             default_expr.result_type,
@@ -379,10 +373,7 @@ mod tests {
         let CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) = &args[1].kind else {
             panic!("arg[1] must be a Scalar literal, got {:?}", args[1].kind);
         };
-        assert!(
-            (si_value - 1e-6).abs() < f64::EPSILON,
-            "arg[1] si_value must be 1e-6, got {si_value}"
-        );
+        assert_eq!(*si_value, 1e-6, "arg[1] si_value must be 1e-6");
         assert_eq!(*dimension, DimensionVector::LENGTH);
         assert_eq!(args[1].result_type, Type::Scalar { dimension: DimensionVector::LENGTH });
     }
