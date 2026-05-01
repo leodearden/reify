@@ -859,6 +859,46 @@ describe('SidecarSession multi-turn streaming', () => {
     // Fixed:  'Hello world this is a much longer turn-2 reply'
     expect(deltaContents).toContain('Hello world this is a much longer turn-2 reply');
   });
+
+  it('thinking_delta counters reset on new message.id even when turn-2 thinking is longer than turn-1', async () => {
+    // Turn 1: short thinking 'Hm' (len 2) + tool_use, under message.id='msg_t1'
+    // Turn 2: longer thinking (len 63) under message.id='msg_t2'
+    //
+    // Bug (shrink heuristic only): turn-2 thinking is LONGER than turn-1 accumulated length,
+    // so `block.thinking.length < lastThinkingLen` never fires. lastThinkingLen stays at 2.
+    // Turn-2 first delta = thinking.slice(2) = 'et me carefully reason about a much longer-form chain of thought'
+    // Fix (id-based reset): message.id change from 'msg_t1' → 'msg_t2' resets lastThinkingLen=0.
+    // Turn-2 first delta = full turn-2 thinking string.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // Turn 1: short thinking + tool_use under msg_t1
+      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Hm' }] } },
+      { type: 'assistant', message: { id: 'msg_t1', content: [
+        { type: 'thinking', thinking: 'Hm' },
+        { type: 'tool_use', id: 'toolu_think_longer1', name: 'reify_get_source', input: { file: 'f.ri' } },
+      ] } },
+      // Turn 2: longer thinking under msg_t2 — no length shrink, only id changes
+      { type: 'assistant', message: { id: 'msg_t2', content: [
+        { type: 'thinking', thinking: 'Let me carefully reason about a much longer-form chain of thought' },
+      ] } },
+      { type: 'result', session_id: 'sess-longer-thinking' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-longer-thinking', text: 'Test longer turn-2 thinking' });
+
+    const thinkingDeltas = outputs.filter((o) => o.type === 'thinking_delta');
+    const deltaContents = thinkingDeltas.map((o) => (o as any).content);
+
+    // Turn 1 delta present
+    expect(deltaContents).toContain('Hm');
+
+    // Turn 2 first delta must be the FULL thinking string — not a slice from offset 2
+    // Broken: 'et me carefully reason about a much longer-form chain of thought'
+    // Fixed:  'Let me carefully reason about a much longer-form chain of thought'
+    expect(deltaContents).toContain('Let me carefully reason about a much longer-form chain of thought');
+  });
 });
 
 describe('SidecarSession reset-boundary tool correlation preservation', () => {
