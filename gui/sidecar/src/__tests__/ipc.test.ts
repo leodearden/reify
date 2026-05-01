@@ -74,6 +74,22 @@ describe('parseInboundMessage', () => {
     const line = JSON.stringify({ type: 'send_message', id: 'msg-1' });
     expect(() => parseInboundMessage(line)).toThrow(/text/i);
   });
+
+  it('correctly parses tool_result inbound message', () => {
+    const line = JSON.stringify({
+      type: 'tool_result',
+      id: 'msg-1',
+      tool_name: 'reify_get_diagnostics',
+      result: { ok: true },
+    });
+    const msg = parseInboundMessage(line);
+    expect(msg).toEqual({
+      type: 'tool_result',
+      id: 'msg-1',
+      tool_name: 'reify_get_diagnostics',
+      result: { ok: true },
+    });
+  });
 });
 
 describe('formatOutboundMessage', () => {
