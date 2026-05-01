@@ -1268,4 +1268,30 @@ mod tests {
             "3-conversion chain must delegate to per_stage_tolerance(req, 3) verbatim",
         );
     }
+
+    /// A single-conversion chain (N=1) must return `requested_tol × SAFETY_FACTOR`
+    /// bit-exactly (the N=1 path in `per_stage_tolerance` short-circuits without
+    /// `powf`, so the result is a simple multiply — `assert_eq!` is valid here).
+    ///
+    /// This is a separate test from the multi-stage case because it pins a
+    /// specific regression: if the empty-vs-non-empty branch were accidentally
+    /// flipped to `if plan.conversions.len() <= 1` the single-conversion case
+    /// would fall into the pass-through branch and return `requested_tol` instead
+    /// of `requested_tol × 0.8`, which step-1 and step-3 alone would not catch.
+    #[test]
+    fn per_stage_tolerance_for_plan_single_conversion_applies_safety_factor() {
+        let plan = DispatchPlan {
+            kernel: "occt".to_string(),
+            conversions: vec![
+                ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            ],
+        };
+        let req = 1e-3_f64;
+        // N=1: no powf, so bit-exact multiply.
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan, req),
+            req * SAFETY_FACTOR,
+            "single-conversion chain must return requested_tol × SAFETY_FACTOR (N=1 short-circuit)",
+        );
+    }
 }
