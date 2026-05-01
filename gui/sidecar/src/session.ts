@@ -268,6 +268,10 @@ export class SidecarSession {
             // are expected after a 'result' event; keeping stdin open would prevent
             // claude CLI from exiting deterministically.
             proc.stdin?.end();
+            // Null currentStdin immediately so any tool_result arriving between this
+            // point and the finally block hits the clean "no in-flight" guard rather
+            // than writing to an already-ended stream (Bug #2: close-on-result race).
+            this.currentStdin = null;
           }
         } catch {
           // Skip unparseable lines
