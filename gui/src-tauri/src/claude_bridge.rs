@@ -71,6 +71,10 @@ pub enum OutboundMessage {
         id: String,
         tool_name: String,
         tool_input: Value,
+        /// The Claude CLI tool_use_id enabling id-based correlation in the sidecar.
+        /// Defaults to empty string when absent (stale sidecar without this field),
+        /// so a missing field degrades gracefully (FIFO-by-tool_name fallback).
+        #[serde(default)]
         tool_use_id: String,
     },
     ToolResult {

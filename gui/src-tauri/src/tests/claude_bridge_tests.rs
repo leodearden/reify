@@ -334,6 +334,32 @@ fn parse_outbound_tool_call() {
 }
 
 #[test]
+fn parse_outbound_tool_call_without_tool_use_id_defaults_to_empty() {
+    // Stale-sidecar payload: ToolCall JSON missing tool_use_id.
+    // After #[serde(default)] is applied, this should parse Ok with tool_use_id == "".
+    let line = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get","tool_input":{"x":1}}"#;
+    let result = parse_outbound(line);
+    match result {
+        Ok(OutboundMessage::ToolCall {
+            id,
+            tool_name,
+            tool_input,
+            tool_use_id,
+        }) => {
+            assert_eq!(id, "msg-1");
+            assert_eq!(tool_name, "reify_get");
+            assert_eq!(tool_input["x"], 1);
+            assert_eq!(
+                tool_use_id, "",
+                "missing tool_use_id must default to empty string"
+            );
+        }
+        Ok(other) => panic!("Expected ToolCall, got {:?}", other),
+        Err(e) => panic!("Expected Ok(ToolCall with empty tool_use_id), got Err: {}", e),
+    }
+}
+
+#[test]
 fn parse_outbound_tool_result() {
     let line = r#"{"type":"tool_result","id":"msg-3","tool_name":"reify_get","result":"done"}"#;
     let msg = parse_outbound(line).unwrap();
