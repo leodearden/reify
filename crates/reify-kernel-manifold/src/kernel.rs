@@ -14,8 +14,9 @@
 //! behind `cfg(has_manifold)` without changing the registration shape.
 
 use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+    ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
+    GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh,
+    QueryError, TessError, TopologyAttributeTable, Value,
 };
 
 const STUB_MSG: &str = "Manifold mesh booleans not yet implemented; \
@@ -71,6 +72,47 @@ impl GeometryKernel for ManifoldKernel {
     }
     // extract_edges, extract_faces, execute_with_history, query_many all use
     // the trait defaults — they error in the standard "not supported" fashion.
+
+    /// Override the trait default to advertise that ManifoldKernel implements
+    /// [`KernelAttributeHook`]. Per PRD line 70, ManifoldKernel is the first
+    /// concrete impl: returning `Some(self)` here is what makes the engine-
+    /// side dispatcher (`reify-eval::propagate_via_kernel_attribute_hook`)
+    /// route attribute propagation to [`Self::propagate_attributes`] rather
+    /// than `KernelAttributeOutcome::FellThrough`.
+    fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
+        Some(self)
+    }
+}
+
+/// First concrete impl of [`KernelAttributeHook`] — see PRD line 70.
+///
+/// In the v0.2 stub, the body unconditionally returns
+/// `Ok(KernelAttributeOutcome::Discarded)`. The `tracing::warn!` diagnostic
+/// (required by the `Discarded` contract) is added in step 6 of the plan;
+/// for now the impl is a pure stub so the structural plumbing
+/// (`attribute_hook() → Some` → `propagate_attributes() → Ok(Discarded)`)
+/// can be tested first.
+///
+/// When real Manifold C++ FFI lands in a follow-up task, the body switches
+/// to walk `MeshGL` merge vectors + per-triangle `faceID` / `originalID`
+/// to copy parent attributes onto result face handles, returning
+/// `Propagated` on success and `Discarded` (with a `reason="heavy_remeshing"`
+/// flavoured WARN) on lossy remeshing — the trait surface is stable across
+/// that swap.
+impl KernelAttributeHook for ManifoldKernel {
+    fn propagate_attributes(
+        &self,
+        _table: &mut TopologyAttributeTable,
+        _op: &GeometryOp,
+        _parent_handles: &[GeometryHandleId],
+        _result_handle: GeometryHandleId,
+        _splitting_feature_id: &FeatureId,
+    ) -> Result<KernelAttributeOutcome, QueryError> {
+        // v0.2 stub: real Manifold FFI is deferred. Always return Discarded.
+        // The WARN diagnostic that the Discarded contract requires lands in
+        // step 6 of the plan.
+        Ok(KernelAttributeOutcome::Discarded)
+    }
 }
 
 #[cfg(test)]
