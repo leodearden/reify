@@ -88,14 +88,21 @@ use reify_types::{
 /// tolerance binding) rather than writing `param tolerance : Length = 0m` as
 /// a placeholder default.
 ///
-/// **Open design question (task 2833):** whether to keep this behavior
-/// (option-(b): accept `0.0` and document), tighten the gate to `> 0.0`
-/// (option-(a): treat `0.0` as "no promise"), or emit a separate diagnostic
-/// code when a zero promise is present and a non-zero demand exists is tracked
-/// in task 2833. Two characterization tests — `extract_input_tolerance_promise_accepts_zero_promise`
-/// and `is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand` —
-/// lock the current behavior so any future option-(a) refactor requires a
-/// deliberate test edit rather than slipping in silently.
+/// **Resolution (task 2833):** option-(b continuation) selected. The gate stays
+/// at `is_finite() && >= 0.0` to preserve cross-extractor symmetry with
+/// `tolerance_scope::extract_tolerance_bindings` and
+/// `tolerance_combine::extract_output_tolerance_bound`. The footgun is surfaced
+/// at runtime via the new [`DiagnosticCode::InputTolerancePromiseIsZero`] lint
+/// emitted by [`crate::engine_tolerance::Engine::check_imported_tolerance_promise`]
+/// when `promise == 0.0 && demanded > 0.0` — see
+/// [`input_tolerance_promise_is_zero_diagnostic`] for the builder and
+/// `tests/tolerance_import_promise.rs::engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_zero_and_demand_positive`
+/// for the integration pin. The two characterization tests added by task 2793
+/// (`extract_input_tolerance_promise_accepts_zero_promise` and
+/// `is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand`)
+/// lock the lower-level extractor + comparator behavior unchanged — they remain
+/// green under this resolution because the gate and the strict-`<` rule are both
+/// preserved.
 pub fn extract_input_tolerance_promise(
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     input_template_name: &str,
@@ -189,6 +196,12 @@ pub fn extract_input_tolerance_promise(
 /// [`DiagnosticCode::ImportedTolerancePromiseInsufficient`] warning) and the
 /// recommended opt-out (omit the `tolerance` parameter entirely rather than
 /// defaulting it to `0m`).
+///
+/// Task 2833 surfaces this footgun at the engine query layer via
+/// [`DiagnosticCode::InputTolerancePromiseIsZero`] (emitted when
+/// `promise == 0.0 && demanded > 0.0`), so the comparator's vacuous-satisfaction
+/// behavior is preserved as a primitive while the engine catches the
+/// placeholder-default footgun at the user-facing query.
 ///
 /// # Panics
 ///
@@ -533,6 +546,14 @@ mod tests {
     /// (tightening the gate from `>= 0.0` to `> 0.0`) requires a deliberate
     /// test edit and conscious review rather than slipping in silently.
     ///
+    /// **Resolution-locked (task 2833):** task 2833 resolved as option-(b continuation)
+    /// — the gate stays at `is_finite() && >= 0.0`. This test remains green under
+    /// the resolution because the extractor gate is unchanged. The placeholder-default
+    /// footgun (`param tolerance : Length = 0m` suppressing the
+    /// `ImportedTolerancePromiseInsufficient` warning) is now surfaced at the engine
+    /// query layer via [`DiagnosticCode::InputTolerancePromiseIsZero`] rather than
+    /// by tightening this gate.
+    ///
     /// `si_value == 0.0` is accepted by Gate 4's `is_finite() && si_value >= 0.0`
     /// check — zero is the lower boundary of that gate, not a rejected value.
     /// This mirrors the precedent set by
@@ -627,6 +648,19 @@ mod tests {
     /// strict-`<` rule in [`is_promise_insufficient`] therefore classifies every
     /// non-negative demand as sufficient when the promise is zero.
     ///
+    /// **Resolution-locked (task 2833):** task 2833 resolved as option-(b continuation).
+    /// This test characterizes the LOWER-LEVEL comparator primitive and remains
+    /// green because `is_promise_insufficient`'s strict-`<` rule is unchanged.
+    /// The placeholder-default footgun (`param tolerance : Length = 0m` vacuously
+    /// satisfying any non-negative demand, thereby suppressing the
+    /// `ImportedTolerancePromiseInsufficient` warning) is now surfaced at the engine
+    /// query layer by [`DiagnosticCode::InputTolerancePromiseIsZero`] (emitted
+    /// when `promise == 0.0 && demanded > 0.0`). This test locks the baseline
+    /// that the engine's new lint operates on top of — a future option-(a)
+    /// refactor that tightens the extractor gate to `> 0.0` would require
+    /// changing `extract_input_tolerance_promise_accepts_zero_promise` first,
+    /// making the semantic change explicit.
+    ///
     /// **Coverage gap filled:** the existing
     /// `is_promise_insufficient_returns_true_iff_demanded_strictly_less_than_promise`
     /// test pins the `(0.0, 0.0) -> false` symmetric edge but does NOT cover
@@ -642,12 +676,6 @@ mod tests {
     /// claim under this comparator — it vacuously satisfies every non-negative
     /// demand — which is why `param tolerance : Length = 0m` silently disables
     /// the `ImportedTolerancePromiseInsufficient` warning.
-    ///
-    /// If a future option-(a) refactor changes the extractor gate to `> 0.0`
-    /// (rejecting `0.0`), this test will still compile and pass because
-    /// `is_promise_insufficient` itself is unchanged — but `step-1`'s
-    /// `extract_input_tolerance_promise_accepts_zero_promise` will fail,
-    /// flagging the semantic change explicitly.
     #[test]
     fn is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand() {
         // (a) demand == 1e-12 (sub-femtometre): positive demand, vacuously
