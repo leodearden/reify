@@ -197,6 +197,27 @@ fn substitution_flip_and_revert_restores_topology_fingerprint() {
     assert_ne!(fp_c, fp_b, "reverted fingerprint must differ from flipped fingerprint");
 }
 
+// ─── producer-bug: uniqueness invariant panics in debug ──────────────────────
+
+/// Supplying duplicate `param_name` entries triggers the `debug_assert!` at
+/// `graph.rs:646-655` with the message "param names must be unique; duplicates
+/// are a producer bug".
+///
+/// This pins the producer-bug invariant enforced by the existing assert. In
+/// release builds the assert is a no-op — behaviour is undefined per the
+/// documented "duplicates are a producer bug" contract and callers must not
+/// rely on any particular outcome.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "param names must be unique")]
+fn duplicate_param_name_panics_in_debug() {
+    let template = single_param_template();
+    let mut graph = EvaluationGraph::from_templates(&[template]);
+    // "T" appears twice — violates the uniqueness invariant.
+    graph.auto_type_substitution = vec![("T".into(), "A".into()), ("T".into(), "B".into())];
+    graph.topology_fingerprint(); // triggers the debug_assert!
+}
+
 // ─── step-11: MultiParamResolutionOutcome.substitution drives fingerprint ─────
 
 /// Feed `MultiParamResolutionOutcome.substitution` from a real
