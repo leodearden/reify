@@ -530,6 +530,33 @@ describe('SidecarSession', () => {
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
   });
 
+  it('tool_result inbound preserves queue entry when no in-flight stdin', async () => {
+    // Simulate stale tool_use carryover: pendingToolUseIds has an entry but currentStdin is null
+    // (no invokeSdk in flight). This tests that handleToolResult does NOT shift the queue
+    // before confirming currentStdin is available.
+    (session as any).pendingToolUseIds.set('reify_get_source', ['toolu_carry']);
+    (session as any).toolNameById.set('toolu_carry', 'reify_get_source');
+    // currentStdin remains null (no invokeSdk active)
+
+    await session.handleMessage({
+      type: 'tool_result',
+      id: 'msg-stale',
+      tool_name: 'reify_get_source',
+      result: 'x',
+    });
+
+    // (a) exactly one outbound error should be emitted with matching id and message
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).id).toBe('msg-stale');
+    expect((errors[0] as any).message).toMatch(/no pending tool_use|no in-flight|no matching/i);
+
+    // (b) CRITICAL: the queue entry must still be present — the shift must NOT have happened
+    // because currentStdin was null. With the current impl (shift before check), this fails.
+    const queue = (session as any).pendingToolUseIds.get('reify_get_source');
+    expect(queue).toEqual(['toolu_carry']);
+  });
+
   it('invokeSdk uses --input-format stream-json and writes prompt to stdin', async () => {
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
       { type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } },
