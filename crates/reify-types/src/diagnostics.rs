@@ -1379,6 +1379,35 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::LongChainRealization).unwrap();
         assert_eq!(s, "\"LongChainRealization\"");
     }
+
+    // --- AutoTypeParamDepthBoundExceeded tests (task 2659 — v0.2 backtracking) ---
+    // Pairs with the depth-bound producer in
+    // `crates/reify-compiler/src/auto_type_param.rs::resolve_auto_type_params_with_backtracking`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // serde wire-form round-trip is added here to lock the LSP/MCP contract.
+
+    /// `DiagnosticCode::AutoTypeParamDepthBoundExceeded` round-trips through
+    /// serde under `feature = "serde"`: the wire form is the PascalCase
+    /// string `"AutoTypeParamDepthBoundExceeded"`, and deserializing that
+    /// string back yields the original variant. Pins both directions of the
+    /// LSP/MCP wire contract — the v0.2 BFS-fallback warning is consumed by
+    /// downstream tooling that match-arms on this exact wire identifier.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_type_param_depth_bound_exceeded_round_trips_via_serde() {
+        let s = serde_json::to_string(&DiagnosticCode::AutoTypeParamDepthBoundExceeded).unwrap();
+        assert_eq!(
+            s, "\"AutoTypeParamDepthBoundExceeded\"",
+            "serde wire form must equal PascalCase identifier"
+        );
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back,
+            DiagnosticCode::AutoTypeParamDepthBoundExceeded,
+            "deserialize must round-trip back to AutoTypeParamDepthBoundExceeded"
+        );
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
