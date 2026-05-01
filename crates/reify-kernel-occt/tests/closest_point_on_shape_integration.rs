@@ -7,7 +7,7 @@
 //! - External point along +X axis → nearest face at x=5.
 //! - External point along +Y axis → nearest face at y=5.
 //! - Point already on the +X face → distance to returned witness ≤ 1e-6.
-//! - Interior point at origin → witness at origin (OCCT solid-overlap: dist=0).
+//! - Interior point at origin → witness on nearest boundary face (dist≈5.0; BRepExtrema has no inside/outside knowledge).
 //! - Unknown handle → `QueryError::InvalidHandle`.
 
 #![cfg(has_occt)]
@@ -198,14 +198,15 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
 
 /// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// **OCCT solid-overlap behavior:** when the query vertex is inside a
-/// `TopoDS_Solid`, `BRepExtrema_DistShapeShape` considers the shapes to
-/// overlap and returns `dist.Value() = 0`.  `PointOnShape1(1)` returns the
-/// query point itself, not the nearest boundary face.  No special-casing is
-/// applied in the wrapper; this test locks in that documented behavior.
+/// **OCCT BREP-boundary behavior:** `BRepExtrema_DistShapeShape` has no
+/// inside/outside knowledge.  For a query point strictly inside a solid it
+/// returns the distance to the nearest face on the BREP boundary — NOT zero.
+/// For the box center the six faces are all 5.0 units away, so the returned
+/// witness lies on one of those faces and the distance is ≈5.0.
 ///
-/// Callers that need the true distance to the boundary surface (≈5.0 for
-/// the box center) should use a solid classifier pre-filter.
+/// This means `closest_point_on_shape` for an interior query does NOT return
+/// the query point itself; it returns the nearest surface point.  This test
+/// locks in that documented behavior.
 #[test]
 fn closest_point_for_offcenter_interior_point() {
     let (kernel, box_id) = box_kernel();
@@ -214,13 +215,15 @@ fn closest_point_for_offcenter_interior_point() {
     // not entered (it fires only when dist < 1e-10).
     match kernel.closest_point_on_shape(box_id, 1.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
-            // OCCT returns the query point itself (overlap: dist=0) for interior
-            // solid points.  Witness must be at or very near the origin.
+            // The nearest boundary face is 5.0 units from the origin.
+            // The witness must lie on a box face (one coordinate ≈ ±5, others
+            // within the face extent).
             let dist = (x * x + y * y + z * z).sqrt();
             assert!(
-                dist < 1e-6,
-                "expected witness at origin (OCCT overlap behavior: dist=0 for \
-                 interior solid point), got ({x}, {y}, {z}), dist={dist}"
+                (dist - 5.0).abs() < 1e-6,
+                "expected witness on boundary face ~5.0 from origin \
+                 (BRepExtrema has no inside/outside knowledge), \
+                 got ({x}, {y}, {z}), dist={dist}"
             );
         }
         Err(e) => panic!("expected Ok([5.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),
