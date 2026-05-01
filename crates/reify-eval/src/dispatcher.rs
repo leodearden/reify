@@ -41,6 +41,7 @@
 //! `reify-types` crate.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::time::Duration;
 
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
@@ -85,6 +86,47 @@ pub const LONG_CHAIN_THRESHOLD_ENV_VAR: &str = "REIFY_LONG_CHAIN_THRESHOLD_MS";
 /// with a single-line change while the predicate semantics remain pinned by
 /// existing tests.
 pub const LONG_CHAIN_MIN_STAGES: usize = 2;
+
+/// Strict-`>` predicate for the long-chain realization warning gate.
+///
+/// Returns `true` iff BOTH gates pass:
+///   - `plan.conversions.len() > LONG_CHAIN_MIN_STAGES` (≥3 stages)
+///   - `elapsed > threshold` (strictly exceeds the wall-time budget)
+///
+/// Mirrors the strict-`<` decision in
+/// [`crate::tolerance_promise::is_promise_insufficient`] (task 2651) — the
+/// "tighter satisfies looser" / "exactly-at-the-line satisfies the
+/// constraint" partial-order vocabulary used throughout the tolerance
+/// subsystem. Boundary cases (exactly 2 stages, exactly the threshold) do
+/// NOT warn: short-chain pain is self-evident and a sub-threshold long
+/// chain is not user-visible budget pressure, so suppressing those cases
+/// is intentional ergonomics (per `docs/prds/v0_2/multi-kernel.md`
+/// §"Long-chain diagnostic" and `docs/prds/v0_2/per-purpose-tolerance.md`
+/// §"Long-chain diagnostic gating").
+///
+/// # Truth table
+///
+/// | stages | elapsed vs threshold | result | reason                         |
+/// |--------|----------------------|--------|--------------------------------|
+/// | 0      | any                  | false  | chain not long                 |
+/// | 1      | any                  | false  | chain not long                 |
+/// | 2      | any                  | false  | boundary; strict `>` on stages |
+/// | 3+     | < threshold          | false  | elapsed gate fails             |
+/// | 3+     | == threshold         | false  | boundary; strict `>` on time   |
+/// | 3+     | > threshold          | true   | both gates pass                |
+///
+/// Decoupling the predicate from [`long_chain_diagnostic`] lets a hot
+/// realization loop check the gate without paying the diagnostic-construction
+/// cost (mirrors the [`crate::tolerance_promise::is_promise_insufficient`] /
+/// [`crate::tolerance_promise::imported_tolerance_promise_diagnostic`]
+/// predicate-plus-builder split established by task 2651).
+pub fn is_long_chain_realization(
+    plan: &DispatchPlan,
+    elapsed: Duration,
+    threshold: Duration,
+) -> bool {
+    plan.conversions.len() > LONG_CHAIN_MIN_STAGES && elapsed > threshold
+}
 
 /// Ordered sequence of conversion stages: each entry is
 /// `(kernel_name, from_repr, to_repr)`. Factored as a type alias to keep the
