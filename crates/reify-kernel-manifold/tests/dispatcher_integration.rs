@@ -41,18 +41,28 @@ use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 /// Manifold's declared input repr for `BooleanUnion`.
 #[test]
 fn manifold_dispatches_for_mesh_boolean_when_only_kernel() {
-    // Linker anchor: an explicit function-pointer reference to a symbol in
-    // `register.rs` forces the linker to include that translation unit from
-    // the `reify-kernel-manifold` rlib.  Without this, the linker dead-strips
-    // the entire manifold rlib — nothing else in this binary references it —
-    // so the `inventory::submit!` `__CTOR` `.init_array` entry never fires
-    // and `kernel_registry::registry()` returns an empty map.
+    // Linker anchor: call `manifold_capability_descriptor` and assert the
+    // result is non-empty.  This serves two purposes:
     //
-    // Compare: `crates/reify-eval/tests/kernel_registry_inventory.rs` uses
-    // `reify_kernel_occt::OCCT_AVAILABLE` as the equivalent anchor for the
-    // OCCT registration.  This is the same pattern, applied to manifold.
-    let _anchor: fn() -> reify_types::CapabilityDescriptor =
-        reify_kernel_manifold::register::manifold_capability_descriptor;
+    // 1. Forces the linker to include `register.rs`'s translation unit from
+    //    the `reify-kernel-manifold` rlib.  Without an observable reference,
+    //    the linker dead-strips the entire rlib — nothing else in this binary
+    //    references it — so the `inventory::submit!` constructor never fires
+    //    and `kernel_registry::registry()` returns an empty map.
+    //
+    // 2. Makes the anchor OBSERVABLE to the optimiser (assigning to a
+    //    never-read binding is weaker and MAY be elided under LTO/release).
+    //    Asserting on the function's output prevents the call from being
+    //    optimised away regardless of the optimisation level.
+    //
+    // Compare: `crates/reify-eval/tests/kernel_registry_inventory.rs` reads
+    // `reify_kernel_occt::OCCT_AVAILABLE` as the equivalent observable anchor.
+    let anchor_descriptor = reify_kernel_manifold::register::manifold_capability_descriptor();
+    assert!(
+        !anchor_descriptor.supports.is_empty(),
+        "manifold_capability_descriptor() must declare at least one capability \
+         (linker anchor sanity check — if empty the registration is broken)",
+    );
 
     let reg = kernel_registry::registry();
 

@@ -75,35 +75,60 @@ impl GeometryKernel for ManifoldKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery};
+
+    /// Compile-time supertraits pin: `fn assert_send_sync` forces a monomorphism
+    /// bound check for `T: Send + Sync`. Calling it with `ManifoldKernel` will
+    /// fail to compile if a non-Send or non-Sync field is ever added to the
+    /// struct — the `Box<dyn GeometryKernel>` check below only catches this
+    /// transitively, but this helper makes the constraint explicit.
+    fn assert_send_sync<T: Send + Sync>() {}
 
     /// Structural pin: `Box<dyn GeometryKernel>` from `ManifoldKernel` must
     /// compile. This fails at compile time if `ManifoldKernel` lacks the
     /// `Send + Sync` supertraits required by the `GeometryKernel` trait object.
+    ///
+    /// `assert_send_sync::<ManifoldKernel>()` makes the `Send + Sync` constraint
+    /// explicit and unambiguous — it cannot be satisfied transitively by accident.
     #[test]
     fn manifold_kernel_implements_geometry_kernel_trait() {
+        assert_send_sync::<ManifoldKernel>();
         let _boxed: Box<dyn GeometryKernel> = Box::new(ManifoldKernel::new());
     }
 
     /// `execute` must return `Err(GeometryError::OperationFailed(msg))` where
-    /// `msg` contains "Manifold" — confirming the stub error message names the
-    /// kernel. A future regression that swallows the kernel name (e.g. by
-    /// returning a generic error) would fail this assertion.
+    /// `msg` contains "Manifold" for ALL three declared Boolean variants
+    /// (`Union`, `Difference`, `Intersection`). Looping over all three prevents
+    /// a regression that special-cases only `Union` from slipping through.
     #[test]
     fn manifold_kernel_returns_descriptive_error_for_mesh_boolean() {
         let mut kernel = ManifoldKernel::new();
-        let result = kernel.execute(&GeometryOp::Union {
-            left: GeometryHandleId(1),
-            right: GeometryHandleId(2),
-        });
-        match result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("Manifold"),
-                    "error message must mention 'Manifold', got: {msg:?}",
-                );
+        let ops = [
+            GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            },
+            GeometryOp::Difference {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            },
+            GeometryOp::Intersection {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            },
+        ];
+        for op in &ops {
+            let result = kernel.execute(op);
+            match result {
+                Err(GeometryError::OperationFailed(msg)) => {
+                    assert!(
+                        msg.contains("Manifold"),
+                        "error message must mention 'Manifold' for op {op:?}, got: {msg:?}",
+                    );
+                }
+                other => panic!(
+                    "expected Err(GeometryError::OperationFailed(_)) for op {op:?}, got {other:?}"
+                ),
             }
-            other => panic!("expected Err(GeometryError::OperationFailed(_)), got {other:?}"),
         }
     }
 

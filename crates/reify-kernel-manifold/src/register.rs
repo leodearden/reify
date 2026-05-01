@@ -66,6 +66,16 @@ fn manifold_factory() -> Box<dyn GeometryKernel> {
 // code. Submitting unconditionally keeps the cross-crate integration test
 // (step-7) clean and lets the dispatcher exercise lex-min tie-break logic with
 // a real two-kernel registry.
+//
+// TODO(has_manifold): When real Manifold C++ FFI lands (follow-up task), flip
+// this submit to `#[cfg(any(has_manifold, test))]` so the stub registers only
+// when Manifold is actually available or within this crate's own tests. Without
+// that gate, any binary that accidentally adds `reify-kernel-manifold` as a
+// non-dev dependency will unconditionally register the stub kernel — which will
+// surface `"manifold" < "occt"` lex-min selection and return descriptive errors
+// for every geometry op. The cross-crate isolation in the test layout (manifold
+// dev-deps on reify-eval, not the reverse) blocks that today, but the gate is
+// the structural enforcement that must land alongside the real FFI.
 inventory::submit! {
     KernelRegistration {
         name: MANIFOLD_KERNEL_NAME,
