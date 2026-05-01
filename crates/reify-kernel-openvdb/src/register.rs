@@ -49,7 +49,7 @@
 //! pattern. Only the kernel name string, supports table contents (Voxel vs
 //! Sdf), the stub error string, and the doc comments' references differ.
 
-use reify_types::CapabilityDescriptor;
+use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
 /// Stable identifier for the OpenVDB kernel in the v0.2 multi-kernel registry.
 ///
@@ -82,6 +82,13 @@ pub const OPENVDB_KERNEL_NAME: &str = "openvdb";
 /// `supports: Vec<...>` field is non-const-constructible — see
 /// `reify_types::KernelRegistration` doc for the full rationale.
 pub fn openvdb_capability_descriptor() -> CapabilityDescriptor {
-    CapabilityDescriptor { supports: vec![] }
+    use Operation::*;
+    let supports = vec![
+        // Voxel Booleans ×3 — OpenVDB's complete capability surface in v0.2.
+        (BooleanUnion, ReprKind::Voxel),
+        (BooleanDifference, ReprKind::Voxel),
+        (BooleanIntersection, ReprKind::Voxel),
+    ];
+    CapabilityDescriptor { supports }
 }
 
