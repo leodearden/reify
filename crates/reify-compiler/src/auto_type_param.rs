@@ -107,6 +107,25 @@
 //!
 //! Phase D (topology trigger / re-resolution on registry change) is
 //! explicitly deferred to a follow-up task.
+//!
+//! # Phase E (v0.2) — Backtracking
+//!
+//! [`resolve_auto_type_params_with_backtracking`] extends the v0.1 per-param
+//! BFS orchestrator above into a depth-first search over the cross-product of
+//! `auto:` candidate sets, with constraint feasibility re-checked at each leaf
+//! assignment per the design decision "implement v0.2 search with full re-check
+//! at each binding". Bounded by a configurable `max_depth` (default 6, sourced
+//! from `reify.toml` `[auto_type_params]`); above the bound, the search falls
+//! back to v0.1 BFS with a [`AutoTypeParamDepthBoundExceeded`] warning for
+//! auditability.
+//!
+//! Driving PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`. The section
+//! header comment immediately above the function delineates the algorithm's
+//! scope and deferrals to sibling tasks 2660 (backjumping), 2661 (free
+//! enumeration), 2662 (100k cap), 2663 (rich diagnostic format), and 2664
+//! (BFS-failure test suite).
+//!
+//! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
 use std::collections::HashMap;
 
