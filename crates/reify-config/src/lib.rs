@@ -57,6 +57,48 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 
+/// Default cap on the cross-product depth of `auto:` type-parameter resolution.
+///
+/// Per `docs/prds/v0_2/auto-resolution-backtracking.md` "Resolved design
+/// decisions": when a definition declares more than `max_depth` `auto:`
+/// type-parameters, the v0.2 DFS-over-cross-product algorithm falls back to
+/// the v0.1 per-parameter BFS with a `W_AUTO_TYPE_PARAM_DEPTH_BOUND_EXCEEDED`
+/// warning. The default of 6 is the load-bearing PRD constant — projects can
+/// override it via `[auto_type_params]\nmax_depth = N` in `reify.toml`.
+///
+/// This constant is the single-source-of-truth: callers (the eventual
+/// compile-pipeline integration) MUST consume it via
+/// [`Manifest::auto_type_params`] rather than embedding the literal `6`
+/// elsewhere.
+pub const DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH: usize = 6;
+
+/// Configuration for the `auto:` type-parameter resolution algorithm
+/// (project-level, declared under `[auto_type_params]` in `reify.toml`).
+///
+/// Fields:
+/// - `max_depth`: cap on how many `auto:` type-parameters the v0.2 DFS
+///   over the cross-product will resolve before falling back to the v0.1
+///   per-parameter BFS. Defaults to [`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`].
+///
+/// `Default::default()` returns `max_depth = DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`
+/// so a manifest without an `[auto_type_params]` table still produces a
+/// fully-populated config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoTypeParamsConfig {
+    /// Cap on the cross-product DFS depth before falling back to BFS.
+    /// Validated `> 0` at parse time; `0` is rejected with
+    /// [`ManifestError::InvalidMaxDepth`].
+    pub max_depth: usize,
+}
+
+impl Default for AutoTypeParamsConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH,
+        }
+    }
+}
+
 /// Parsed project manifest.
 ///
 /// Carries the set of pinned kernels declared by the project. The map is a
@@ -66,6 +108,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Default)]
 pub struct Manifest {
     kernels: BTreeMap<KernelId, KernelPin>,
+    auto_type_params: AutoTypeParamsConfig,
 }
 
 impl Manifest {
@@ -92,7 +135,10 @@ impl Manifest {
             }
             kernels.insert(id, KernelPin { version });
         }
-        Ok(Manifest { kernels })
+        Ok(Manifest {
+            kernels,
+            auto_type_params: AutoTypeParamsConfig::default(),
+        })
     }
 
     /// Read and parse a `reify.toml` document from `path`.
@@ -108,6 +154,17 @@ impl Manifest {
     /// Iterate the pinned kernels in canonical (BTreeMap) order.
     pub fn kernel_pins(&self) -> impl Iterator<Item = (&KernelId, &KernelPin)> {
         self.kernels.iter()
+    }
+
+    /// Read the project's `[auto_type_params]` configuration.
+    ///
+    /// Returns the parsed config when the manifest declared an
+    /// `[auto_type_params]` table, otherwise the [`Default`] value
+    /// (`max_depth = `[`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`]). The eventual
+    /// compile-pipeline integration MUST consume `max_depth` via this
+    /// accessor rather than embedding the literal default elsewhere.
+    pub fn auto_type_params(&self) -> &AutoTypeParamsConfig {
+        &self.auto_type_params
     }
 }
 
