@@ -476,4 +476,12 @@ mod tests {
         let err = result.expect_err("stub query EdgeTangent should error");
         assert_stub_message(&format!("{err:?}"));
     }
+
+    #[test]
+    fn stub_kernel_closest_point_on_shape_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.closest_point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0);
+        let err = result.expect_err("stub closest_point_on_shape should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
 }
