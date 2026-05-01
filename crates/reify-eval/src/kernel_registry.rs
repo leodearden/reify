@@ -211,7 +211,7 @@ fn build_registry() -> BTreeMap<String, &'static KernelRegistration> {
 //
 //   __a_kernel  — lex-min in the test build; descriptor: PrimitiveBox/BRep
 //   __b_kernel  — second; descriptor: PrimitiveCylinder/BRep
-//   __test_synthetic_kernel — third; reuses descriptor_a (PrimitiveBox/BRep, shared with __a_kernel)
+//   __test_synthetic_kernel — third; descriptor: PrimitiveSphere/BRep (unique per synthetic)
 //
 // ASCII sort order: '_' = 0x5F, 'a' = 0x61, 'b' = 0x62, 't' = 0x74.
 // Therefore: __a_kernel < __b_kernel < __test_synthetic_kernel.
@@ -246,7 +246,7 @@ mod test_synthetic_kernel {
     // Second-smallest synthetic. Present so the lex-min test can confirm
     // pick_lexmin_kernel() chose __a_kernel over __b_kernel (not just "first
     // synthetic seen" from an unordered walk). Uses PrimitiveCylinder/BRep
-    // to provide structural variation from NAME_A and NAME's PrimitiveBox/BRep.
+    // to provide structural variation from NAME_A's PrimitiveBox/BRep.
     pub(super) const NAME_B: &str = "__b_kernel";
 
     fn descriptor_b() -> CapabilityDescriptor {
@@ -257,9 +257,16 @@ mod test_synthetic_kernel {
 
     // ── __test_synthetic_kernel ────────────────────────────────────────────
     // Original synthetic, kept so the smoke test's contains_key(NAME) assertion
-    // is unaffected. Reuses NAME_A's `descriptor_a` (DRY: shared PrimitiveBox/BRep
-    // capability); structural variation lives in NAME_B (PrimitiveCylinder/BRep).
+    // is unaffected. Uses a distinct descriptor (PrimitiveSphere/BRep) so that
+    // all three synthetics have structurally-unique descriptors:
+    //   NAME_A → PrimitiveBox/BRep, NAME_B → PrimitiveCylinder/BRep, NAME → PrimitiveSphere/BRep.
     pub(super) const NAME: &str = "__test_synthetic_kernel";
+
+    fn descriptor_name() -> CapabilityDescriptor {
+        CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveSphere, ReprKind::BRep)],
+        }
+    }
 
     // ── Shared factory ─────────────────────────────────────────────────────
     // All three synthetics share one unreachable!() factory: the bodies are
@@ -294,7 +301,7 @@ mod test_synthetic_kernel {
     inventory::submit! {
         KernelRegistration {
             name: NAME,
-            descriptor: descriptor_a,
+            descriptor: descriptor_name,
             factory: unreachable_factory,
         }
     }
@@ -303,6 +310,7 @@ mod test_synthetic_kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::{Operation, ReprKind};
 
     /// When `total > 1` (multi-kernel build), `emit_kernel_selection` must emit
     /// exactly one `INFO`-level event and no `DEBUG`-level events at the
@@ -355,16 +363,18 @@ mod tests {
     /// (d) NAME presence: the cfg(test)-only `__test_synthetic_kernel` appears in the result,
     /// (e) NAME_A / NAME_B descriptor wiring distinctness: the descriptor stored under
     ///     NAME_A has different `.supports` content from the descriptor stored under NAME_B —
-    ///     this pins the production wiring contract that `inventory::submit!` is not crossed
-    ///     between registrations.
+    ///     catches a one-sided wiring regression (NAME_A→`descriptor_b` while NAME_B stays,
+    ///     making both identical). Note: a *paired* swap (NAME_A→`descriptor_b` AND
+    ///     NAME_B→`descriptor_a`) produces still-distinct results and evades this `!=`.
+    /// (f) NAME_A descriptor content: NAME_A's `.supports` equals `[(PrimitiveBox, BRep)]`,
+    ///     asserted using `reify_types` production constants (not cfg(test) fixture literals).
+    ///     This catches the paired-swap blind spot of (e): a paired swap would leave
+    ///     NAME_A returning `PrimitiveCylinder/BRep` instead of `PrimitiveBox/BRep`.
     ///
-    /// The distinct-wiring assertion (e) would surface a regression where NAME_A's
-    /// `inventory::submit!` block accidentally referenced `descriptor_b` (or any
-    /// wiring shuffle swapped the function pointers): such a swap would make both
-    /// descriptors identical, failing the `!=` assertion. It does NOT pin literal
-    /// descriptor content — both the synthetic and the expected value live in the
-    /// same `cfg(test)` module, so a pin against fixture literals would be
-    /// defeated by paired edits.
+    /// Items (e) and (f) together cover all wiring regressions. The RHS in (f) uses
+    /// `Operation::PrimitiveBox` / `ReprKind::BRep` from `reify_types` — production
+    /// enum-variant constants independent of the cfg(test) fixture functions — so this
+    /// is not the "paired-edit defeats" fragility that a fixture-vs-fixture pin would have.
     ///
     /// Without the synthetic, this test would pass by construction (an empty
     /// BTreeMap trivially equals another empty BTreeMap) for any
@@ -405,15 +415,12 @@ mod tests {
             test_synthetic_kernel::NAME,
         );
 
-        // Descriptor-wiring distinctness: assert NAME_A and NAME_B map to *different*
-        // .supports content. This pins the production wiring contract — the
-        // `inventory::submit!` blocks are not crossed between registrations. A
-        // regression that swapped the function pointer in NAME_A's submit to
-        // `descriptor_b` (or any other wiring shuffle) would make both lookups
-        // return identical content, failing this assertion. Pinning literal
-        // descriptor content against fixture literals (both living in the same
-        // cfg(test) module) would be defeated by paired edits; pinning their
-        // *distinctness* is robust to descriptor content changes.
+        // Descriptor-wiring distinctness (one-sided regression guard): NAME_A and NAME_B
+        // must map to *different* .supports content. Catches a one-sided swap (NAME_A's
+        // submit→descriptor_b while NAME_B stays→descriptor_b, making both identical),
+        // but NOT a paired swap (NAME_A→descriptor_b AND NAME_B→descriptor_a) — both
+        // entries remain distinct after a paired swap, so this `!=` still passes.
+        // The content pin below covers the paired-swap blind spot.
         assert_ne!(
             first.get(test_synthetic_kernel::NAME_A).map(|d| &d.supports),
             first.get(test_synthetic_kernel::NAME_B).map(|d| &d.supports),
@@ -422,6 +429,19 @@ mod tests {
              equal content would indicate a wiring regression in inventory::submit!",
             test_synthetic_kernel::NAME_A,
             test_synthetic_kernel::NAME_B,
+        );
+        // NAME_A content pin (paired-swap guard): NAME_A's .supports must equal
+        // [(PrimitiveBox, BRep)]. Uses Operation::PrimitiveBox / ReprKind::BRep from
+        // reify_types — production constants independent of cfg(test) fixture functions.
+        // A paired swap (NAME_A→descriptor_b, NAME_B→descriptor_a) satisfies the `!=`
+        // above (both entries still differ) but fails here: NAME_A would return
+        // PrimitiveCylinder/BRep instead of PrimitiveBox/BRep.
+        assert_eq!(
+            first.get(test_synthetic_kernel::NAME_A).map(|d| &d.supports),
+            Some(&vec![(Operation::PrimitiveBox, ReprKind::BRep)]),
+            "NAME_A descriptor must have supports [(PrimitiveBox, BRep)] — \
+             descriptor_a() must be wired to NAME_A's inventory::submit!; \
+             RHS uses reify_types constants, not cfg(test) fixture literals",
         );
     }
 
@@ -487,16 +507,22 @@ mod tests {
     /// 1. Both synthetics are visible to `registry()` (proving the inventory
     ///    walk captured all submissions, not just the first).
     /// 2. `pick_lexmin_kernel()` returns a name `<= NAME_A` AND `< NAME_B` —
-    ///    bounded to rule out unordered-map / last-wins selection without
-    ///    coupling to the absence of any future lex-smaller registration.
+    ///    bounds the result against known synthetics for human-readable failure
+    ///    messages; a future synthetic lex-smaller than NAME_A would become the
+    ///    new BTreeMap minimum and still satisfy both bounds.
+    /// 3. `pick_lexmin_kernel()` returns the same name as `registry().keys().next()` —
+    ///    pins the actual semantic contract ("lex-min = BTreeMap-minimum key") directly.
+    ///    Future-proof: a future lex-smaller synthetic becomes the new minimum and
+    ///    satisfies this assertion without falsely breaking the test.
     ///
     /// This is NOT tautological: a broken implementation that returns
     /// `registry().values().next()` from a `HashMap` (unordered), or one
     /// that returns the last-inserted entry, would fail assertion (2) (which
     /// requires the result to be strictly less than NAME_B = `"__b_kernel"`).
-    /// A future `cfg(test)` synthetic submitting a name lex-smaller than
-    /// NAME_A (e.g. `"__0_kernel"`) would still satisfy `<= NAME_A` without
-    /// falsely breaking this contract test.
+    /// Assertion (3) pins the strongest form of the contract: the result must
+    /// equal the actual BTreeMap minimum key, independent of any specific
+    /// synthetic name. A future lex-smaller synthetic satisfies both (2) and (3)
+    /// simultaneously — no test breakage from new synthetics.
     #[test]
     fn pick_lexmin_kernel_returns_lex_smaller_of_known_pair() {
         // (1) Both named synthetics must be visible — proves the inventory walk
@@ -539,6 +565,17 @@ mod tests {
              contract is pinned without hard-coupling to NAME_A specifically",
             test_synthetic_kernel::NAME_B,
             lexmin.name,
+        );
+        // Tightest pin: lex-min must equal the BTreeMap's actual first key.
+        // This is the most direct expression of the contract. A future cfg(test)
+        // synthetic lex-smaller than NAME_A becomes the new BTreeMap minimum and
+        // still satisfies this assertion — no false breakage. Catches any
+        // HashMap-/iterator-order implementation that can't guarantee .next() == min.
+        assert_eq!(
+            lexmin.name,
+            registry().keys().next().unwrap().as_str(),
+            "pick_lexmin_kernel must return the BTreeMap-minimum key; \
+             this pins the actual lex-min contract independently of any specific synthetic name",
         );
     }
 }
