@@ -7,7 +7,7 @@
 //! - External point along +X axis → nearest face at x=5.
 //! - External point along +Y axis → nearest face at y=5.
 //! - Point already on the +X face → distance to returned witness ≤ 1e-6.
-//! - Off-center interior point at (1,0,0) → OCCT returns query point (1,0,0) at distance 0 (regression sentinel).
+//! - Off-center interior point at (1,0,0) → OCCT returns nearest face point (5,0,0) at distance 4.0 (regression sentinel).
 //! - Oblique external (10,10,10) → corner witness (5,5,5) at distance 5√3.
 //! - Non-solid Face sub-shape input → "any TopoDS_Shape" contract holds (Ok with witness on face, distance ≈ 5.0).
 //! - NaN query coords → `Err(QueryError::QueryFailed(_))` (regression sentinel, OCCT rejects NaN vertex).
@@ -193,23 +193,22 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
 /// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
 /// When the query vertex is inside the solid, `BRepExtrema_DistShapeShape`
-/// reports distance 0 (the shapes overlap) and places the witness
-/// `PointOnShape1` at the query location itself. This is OCCT's observed
-/// behaviour: the interior of the solid is part of shape1, so the nearest
-/// point on shape1 to the query vertex is the vertex itself. Regression
-/// sentinel — pin the exact returned coordinates within 1e-6 so a future
-/// OCCT/cxx upgrade that changes this behaviour is caught.
+/// returns the nearest point on the **surface** of the solid — not the query
+/// point itself. For (1.0, 0.0, 0.0), the unique nearest face centre is the
+/// +X face at (5.0, 0.0, 0.0), distance 4.0. Regression sentinel — pin the
+/// exact returned coordinates within 1e-6 so a future OCCT/cxx upgrade that
+/// changes this behaviour is caught.
 ///
 /// Observed against the OCCT version in use at task 2849.
 #[test]
 fn closest_point_for_offcenter_interior_point() {
     let (kernel, box_id) = box_kernel();
-    // For an interior query, OCCT returns the query point itself (distance=0).
+    // For an interior query, OCCT returns the nearest surface point (5.0, 0.0, 0.0).
     match kernel.closest_point_on_shape(box_id, 1.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
             assert!(
-                (x - 1.0).abs() < 1e-6,
-                "expected x≈1.0 (query point returned for interior query), got {x}"
+                (x - 5.0).abs() < 1e-6,
+                "expected x≈5.0 (nearest face surface for interior query at (1,0,0)), got {x}"
             );
             assert!(
                 y.abs() < 1e-6,
@@ -220,7 +219,7 @@ fn closest_point_for_offcenter_interior_point() {
                 "expected z≈0.0, got {z}"
             );
         }
-        Err(e) => panic!("expected Ok([1.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),
+        Err(e) => panic!("expected Ok([5.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),
     }
 }
 
