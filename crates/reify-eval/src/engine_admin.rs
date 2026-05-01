@@ -256,18 +256,10 @@ impl Engine {
     ///
     /// # Operator visibility
     ///
-    /// A structured tracing event is emitted via
-    /// [`crate::kernel_registry::emit_kernel_selection`] after the lex-min pick:
-    ///
-    /// | registry size | level   | description                                    |
-    /// |---------------|---------|------------------------------------------------|
-    /// | `> 1`         | `INFO`  | tie-break performed; both kernels were candidates |
-    /// | `== 1`        | `DEBUG` | only one kernel registered; trivial selection  |
-    /// | `== 0`        | *(none)*| no kernel registered; `Engine::new(_, None)` path |
-    ///
-    /// Structured fields: `picked = %name`, `total_registered = n`.
-    /// The event fires only when a [`tracing::Subscriber`] is installed, so bare
-    /// tests and binaries that install no subscriber are unaffected.
+    /// A structured tracing event is emitted after the lex-min pick; see
+    /// [`crate::kernel_registry::emit_kernel_selection`] for the level-selection
+    /// contract. The event fires only when a [`tracing::Subscriber`] is installed,
+    /// so bare tests and binaries that install no subscriber are unaffected.
     pub fn with_registered_kernel(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
         // Centralised lex-min: both this constructor and (in v0.3+) any
         // dispatcher selection share the same tie-break helper, so the
@@ -276,14 +268,11 @@ impl Engine {
         // [`crate::kernel_registry::registry`] BTreeMap, so the inventory walk
         // happens at most once per process even if other call paths
         // (collect_registry, future dispatcher wiring) also hit the registry.
-        let reg = crate::kernel_registry::pick_lexmin_kernel();
-        if let Some(reg) = reg {
-            crate::kernel_registry::emit_kernel_selection(
-                reg.name,
-                crate::kernel_registry::registry().len(),
-            );
+        let picked = crate::kernel_registry::pick_lexmin_kernel();
+        if let Some((reg, total)) = picked {
+            crate::kernel_registry::emit_kernel_selection(reg.name, total);
         }
-        let kernel: Option<Box<dyn GeometryKernel>> = reg.map(|reg| (reg.factory)());
+        let kernel: Option<Box<dyn GeometryKernel>> = picked.map(|(reg, _)| (reg.factory)());
         Self::with_prelude(
             constraint_checker,
             kernel,
