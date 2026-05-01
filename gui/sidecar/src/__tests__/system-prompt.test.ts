@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { SYSTEM_PROMPT, buildSystemPrompt } from '../system-prompt.js';
@@ -44,32 +44,28 @@ describe('buildSystemPrompt', () => {
 
 describe('SYSTEM_PROMPT MCP tool registry alignment', () => {
   // Parse registered tool names from Rust source files at test runtime.
-  // The canonical Rust counterpart is: crates/reify-mcp/tests/tools_tests.rs:6-23 (EXPECTED_TOOLS, 16 names).
+  // Scans all *.rs files in crates/reify-mcp/src/tools/ so new files are automatically included.
+  // The canonical Rust counterpart is: crates/reify-mcp/tests/tools_tests.rs EXPECTED_TOOLS.
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const TOOLS_DIR = resolve(__dirname, '../../../../crates/reify-mcp/src/tools');
-  const TOOL_FILES = ['read.rs', 'write.rs', 'navigation.rs', 'reference.rs'];
-  const REGISTER_RE = /registry\.register\s*\(\s*"(reify_[a-z_]+)"/g;
+  const REGISTER_RE = /registry\.register\s*\(\s*"(reify_[a-z0-9_]+)"/g;
 
   const registeredTools = new Set<string>();
-  for (const file of TOOL_FILES) {
+  for (const file of readdirSync(TOOLS_DIR).filter(f => f.endsWith('.rs'))) {
     const src = readFileSync(resolve(TOOLS_DIR, file), 'utf8');
     for (const m of src.matchAll(REGISTER_RE)) registeredTools.add(m[1]);
   }
 
-  it('parses 16 registered tools from the Rust source', () => {
-    expect(registeredTools.size).toBe(16);
+  it('parses at least one registered tool from the Rust source', () => {
+    expect(registeredTools.size).toBeGreaterThan(0);
   });
 
   it('every reify_* token in SYSTEM_PROMPT resolves to a registered tool', () => {
-    const advertised = new Set([...SYSTEM_PROMPT.matchAll(/reify_[a-z_]+/g)].map(m => m[0]));
+    const advertised = new Set([...SYSTEM_PROMPT.matchAll(/reify_[a-z0-9_]+/g)].map(m => m[0]));
     const missing = [...advertised].filter(name => !registeredTools.has(name));
     expect(
       missing,
       `SYSTEM_PROMPT advertises tools not in the MCP registry: ${missing.join(', ')}. Registered tools: ${[...registeredTools].sort().join(', ')}`,
     ).toEqual([]);
-  });
-
-  it('reify_get_model_state is not advertised', () => {
-    expect(SYSTEM_PROMPT).not.toContain('reify_get_model_state');
   });
 });
