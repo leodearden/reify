@@ -40,6 +40,30 @@ fn assert_produces_error(source: &str) {
     );
 }
 
+/// Compile `source`, assert at least one Error-severity diagnostic is emitted,
+/// and assert that at least one of those Error diagnostics contains `fragment`
+/// in its message.  This pins the assertion to a specific inner-arg error rather
+/// than any unrelated error that might happen to occur in the pipeline.
+fn assert_error_containing(source: &str, fragment: &str) {
+    let module = compile_with_stdlib_helper(source);
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errs.is_empty(),
+        "source must produce at least one Error-severity diagnostic, but got none.\
+         \nAll diagnostics: {:?}\nSource:\n{source}",
+        module.diagnostics
+    );
+    assert!(
+        errs.iter().any(|d| d.message.contains(fragment)),
+        "no Error-severity diagnostic mentions {fragment:?}.\
+         \nErrors: {errs:?}\nSource:\n{source}",
+    );
+}
+
 /// A non-parametric alias `type Bad = List<DefinitelyNotAType>` paired with a
 /// use-site `structure def Use { param v : Bad }` must produce at least one
 /// Error-severity diagnostic.
@@ -62,7 +86,7 @@ fn non_parametric_alias_list_unknown_inner_produces_error() {
 
 /// A non-parametric alias `type Bad = Scalar<NotADim>` paired with a use-site
 /// `structure def Use { param v : Bad }` must produce at least one
-/// Error-severity diagnostic.
+/// Error-severity diagnostic, and that diagnostic must mention `NotADim`.
 ///
 /// This is the primary regression test for task #2766.  `Scalar` DOES have a
 /// `resolve_type_name` default (`Type::Scalar { dimension: LENGTH }`).  Before
@@ -72,12 +96,16 @@ fn non_parametric_alias_list_unknown_inner_produces_error() {
 /// resolved `Bad` → `Type::length()` with zero errors — a silent type
 /// correctness regression.
 ///
-/// After the fix (`caller_is_parametric = false` propagates `tmp_diags` into
-/// `diagnostics`), the Error surfaces during alias-body resolution.
+/// After the fix (`AliasInnerDiagPolicy::Propagate` propagates `tmp_diags`
+/// into `diagnostics`), the Error surfaces during alias-body resolution.
+/// The additional `NotADim` fragment check pins the assertion to the inner-arg
+/// diagnostic specifically, preventing a false pass from any unrelated error
+/// that might be introduced later in the pipeline.
 #[test]
 fn non_parametric_alias_scalar_unknown_dimension_produces_error() {
-    assert_produces_error(
+    assert_error_containing(
         "type Bad = Scalar<NotADim>\nstructure def Use { param v : Bad }",
+        "NotADim",
     );
 }
 

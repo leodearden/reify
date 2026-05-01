@@ -687,6 +687,25 @@ pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_types::EnumDef]) 
     }
 }
 
+/// Controls whether [`resolve_type_alias_expr`] propagates inner-arg
+/// diagnostics from a failed [`resolve_parameterized_builtin_type`] call or
+/// discards them.
+///
+/// - [`Propagate`][AliasInnerDiagPolicy::Propagate]: non-parametric alias body
+///   (e.g. `type Bad = Scalar<NotADim>`); no later instantiation step will
+///   re-emit the errors, so they must surface immediately.
+/// - [`Defer`][AliasInnerDiagPolicy::Defer]: parametric alias body
+///   (e.g. `type Bad<Q> = Scalar<Q>`); the alias body is re-resolved at
+///   instantiation time via `resolve_type_alias_expr_with_subst`, which emits
+///   inner-arg diagnostics on the substituted body.  See task #2766.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AliasInnerDiagPolicy {
+    /// Propagate inner-arg errors — non-parametric alias, no instantiation step.
+    Propagate,
+    /// Discard inner-arg errors — parametric alias, errors re-emitted at instantiation.
+    Defer,
+}
+
 /// Resolve a type alias's RHS `TypeExpr` to a `Type`.
 ///
 /// Handles three cases:
@@ -695,21 +714,14 @@ pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_types::EnumDef]) 
 ///    DimensionVectors, combine with mul/div, return `Type::Scalar { dimension }`
 /// 3. Unknown → returns None
 ///
-/// `caller_is_parametric` controls whether inner-arg errors from
-/// `resolve_parameterized_builtin_type` are propagated into `diagnostics`
-/// when resolution fails:
-/// - `false` (non-parametric alias, e.g. `type Bad = Scalar<NotADim>`):
-///   diagnostics are propagated — there is no later instantiation step that
-///   will re-emit them, so they must surface now.
-/// - `true` (parametric alias, e.g. `type Bad<Q> = Scalar<Q>`): diagnostics
-///   are discarded — the alias body will be fully resolved at instantiation
-///   time via `resolve_type_alias_expr_with_subst`, which emits inner-arg
-///   diagnostics on the substituted body.  See task #2766.
+/// When `resolve_parameterized_builtin_type` returns `None` (failed resolution),
+/// `inner_diag_policy` controls whether inner-arg diagnostics are surfaced —
+/// see [`AliasInnerDiagPolicy`] for the two variants and their rationale.
 pub(crate) fn resolve_type_alias_expr(
     type_expr: &reify_syntax::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
-    caller_is_parametric: bool,
+    inner_diag_policy: AliasInnerDiagPolicy,
 ) -> Option<Type> {
     match &type_expr.kind {
         reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
@@ -732,21 +744,9 @@ pub(crate) fn resolve_type_alias_expr(
             // Pass empty structure/trait name sets: this DFS runs before traits and
             // structures are compiled, so trait-name fallback must NOT fire here.
             //
-            // Use a temporary diagnostics vector: during the alias DFS pre-pass,
-            // type args may contain unresolved type params for ANY parameterized
-            // builtin — e.g. `List<T>`, `Scalar<Q>`, `Vector3<Q>`, `Point3<Q>`
-            // all appear here when their alias body contains a free type param.
-            // If the resolution succeeds we always promote the diagnostics.
-            // If it fails, the discard decision depends on caller_is_parametric:
-            // - Parametric alias (free type params in body): discard tmp_diags —
-            //   the alias is fully resolved at instantiation time via
-            //   resolve_type_alias_expr_with_subst, which re-emits inner-arg
-            //   diagnostics on the substituted body.
-            // - Non-parametric alias (no free type params): propagate tmp_diags —
-            //   there is no later instantiation step; errors must surface now.
-            //   (Task #2766 — previously all failures were silently discarded,
-            //   causing e.g. `type Bad = Scalar<NotADim>` to resolve silently to
-            //   Type::length() via the resolve_type_name("Scalar") default.)
+            // Use a temporary diagnostics vector so failed-resolution inner-arg
+            // errors can be propagated or discarded per inner_diag_policy —
+            // see AliasInnerDiagPolicy for the full rationale.
             if !type_args.is_empty() {
                 let mut tmp_diags = Vec::new();
                 if let Some(ty) = resolve_parameterized_builtin_type(
@@ -760,11 +760,10 @@ pub(crate) fn resolve_type_alias_expr(
                     diagnostics.extend(tmp_diags);
                     return Some(ty);
                 }
-                if !caller_is_parametric {
+                // see AliasInnerDiagPolicy: propagate iff Propagate
+                if inner_diag_policy == AliasInnerDiagPolicy::Propagate {
                     diagnostics.extend(tmp_diags);
                 }
-                // else: discarded — parametric alias bodies re-resolve at
-                // instantiation time via resolve_type_alias_expr_with_subst.
             }
             // Check for user-defined parameterized alias instantiation.
             // Use temporary diagnostics: during DFS pre-pass, type args may
@@ -1608,13 +1607,19 @@ pub(crate) fn resolve_alias_dfs(
     }
 
     // Now resolve this alias (dependencies should be in the registry).
-    // Pass caller_is_parametric so the parameterized-builtin discard fires only
-    // for parametric aliases (those with free type params in the body).
+    // Use Propagate for non-parametric aliases so inner-arg errors surface
+    // immediately; Defer for parametric aliases where the body re-resolves
+    // at instantiation time.
+    let inner_diag_policy = if decl.type_params.is_empty() {
+        AliasInnerDiagPolicy::Propagate
+    } else {
+        AliasInnerDiagPolicy::Defer
+    };
     let resolved = resolve_type_alias_expr(
         &decl.type_expr,
         alias_registry,
         diagnostics,
-        !decl.type_params.is_empty(),
+        inner_diag_policy,
     );
     let type_params = convert_type_params(&decl.type_params);
     let entry = TypeAliasEntry {
