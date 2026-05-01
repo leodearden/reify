@@ -2048,6 +2048,49 @@ structure S {
         );
     }
 
+    /// LSP regression lock (task 2371, step-7): a specialization scope containing
+    /// only permitted declarations (`let` and `constraint`) must produce ZERO LSP
+    /// diagnostics with code `"SpecializationForbiddenDecl"`.
+    ///
+    /// Pins the converse contract at the LSP layer: permitted decls must never
+    /// surface this code, regardless of what unrelated diagnostics the compile
+    /// pipeline emits (those are ignored by the code filter).
+    #[test]
+    fn lsp_compute_diagnostics_emits_no_specialization_forbidden_decl_for_permitted_only_spec_scope(
+    ) {
+        use fixtures::*;
+        use lsp_types::NumberOrString;
+
+        let body = vec![make_let("m"), make_constraint()];
+        let parsed =
+            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
+
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let source = source_stub();
+        let uri = test_uri();
+
+        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
+            .diagnostics
+            .iter()
+            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
+            .collect();
+
+        let forbidden: Vec<_> = lsp_diags
+            .iter()
+            .filter(|d| {
+                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
+            })
+            .collect();
+
+        assert!(
+            forbidden.is_empty(),
+            "permitted-only scope (let + constraint) must produce zero SpecializationForbiddenDecl \
+             diagnostics at the LSP layer; got {}: {:#?}",
+            forbidden.len(),
+            forbidden
+        );
+    }
+
     /// (d) **Separation regression** — constraint-violation source must NOT produce
     /// any `computation-failed` diagnostics; the existing `constraint <id> violated`
     /// diagnostics must still appear.
