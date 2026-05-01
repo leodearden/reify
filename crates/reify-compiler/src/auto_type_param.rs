@@ -796,6 +796,10 @@ pub fn resolve_auto_type_params(
     // (no early return); per_param and substitution both accumulate in
     // declared order.
     for param in params {
+        debug_assert!(
+            !param.bounds.is_empty(),
+            "resolve_auto_type_params: param.bounds must be non-empty (every type would match an empty bound)"
+        );
         // Phase A: enumerate candidates.
         let enumeration = enumerate_candidates(
             &param.bounds,
