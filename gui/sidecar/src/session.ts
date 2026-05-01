@@ -344,11 +344,21 @@ export class SidecarSession {
       }
       // Validation passed: use the echoed id directly — no FIFO consumed, correct for out-of-order results.
       toolUseId = inboundToolUseId;
+      // Drain the matched id from the FIFO (splice, not shift, to preserve other ids at different
+      // positions — out-of-order delivery between distinct ids is the reason echoed-id exists).
+      const queue = this.pendingToolUseIds.get(toolName);
+      if (queue) {
+        const idx = queue.indexOf(inboundToolUseId);
+        if (idx !== -1) queue.splice(idx, 1);
+        if (queue.length === 0) this.pendingToolUseIds.delete(toolName);
+      }
     } else {
       // Fallback path: FIFO queue by tool_name.
       // See the in-order-only CONTRACT documented in invokeSdk's tool_use handler.
       const queue = this.pendingToolUseIds.get(toolName);
       toolUseId = queue?.shift();
+      // Clean up an emptied FIFO entry to avoid stale map entries.
+      if (queue && queue.length === 0) this.pendingToolUseIds.delete(toolName);
     }
 
     if (toolUseId === undefined) {
@@ -360,6 +370,9 @@ export class SidecarSession {
       });
       return;
     }
+    // Remove the consumed id from toolNameById before the write so the maps stay consistent
+    // even if the write fails — the tool_use is "consumed" once we commit to forwarding it.
+    this.toolNameById.delete(toolUseId);
     // Per-write callback captures the tool_result id for correct error correlation.
     // No synchronous try/catch needed: stream-write failures surface via the callback.
     this.currentStdin.write(
