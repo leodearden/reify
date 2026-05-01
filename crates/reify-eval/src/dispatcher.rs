@@ -73,13 +73,13 @@ pub struct DispatchPlan {
 /// **Algorithm.** BFS over reachable [`ReprKind`] states. The frontier is
 /// seeded with `{(r, vec![]) | r ∈ available}`. At each pop, the current
 /// repr is the *input* repr available to the final-stage op. We probe
-/// `descriptor.supports(op, demanded)`, which by the `(op, repr)` invariant
-/// on [`CapabilityDescriptor::supports`] requires the kernel's declared repr
-/// to be **both** the input and output for non-[`Operation::Convert`] ops —
-/// hence the gating `current_repr == demanded` check on the popped state is
-/// sufficient to verify both. [`Operation::Convert { from }`] entries are
-/// the only shape where the second tuple element diverges from the input
-/// repr; those are handled exclusively by the expansion step below. We probe
+/// `descriptor.supports(op, demanded)`. By the input==output invariant on
+/// [`CapabilityDescriptor::supports`] (see its doc), the `current_repr ==
+/// demanded` check on the popped state verifies both the kernel's expected
+/// input repr and its produced output repr in one comparison.
+/// [`Operation::Convert { from }`] entries are the only shape where the
+/// second tuple element diverges from the input repr; those are handled
+/// exclusively by the expansion step below. We probe
 /// every registered kernel for `(op, demanded)`: if any kernel supports
 /// the demanded `(op, output_repr)` pair AND the popped state's repr
 /// equals `demanded`, we return immediately. Otherwise we expand by every
