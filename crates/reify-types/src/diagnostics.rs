@@ -1243,6 +1243,29 @@ mod tests {
             .unwrap();
         assert_eq!(s, "\"ImportedTolerancePromiseInsufficient\"");
     }
+
+    // --- LongChainRealization tests (task 2646 — W_LONG_CHAIN_REALIZATION) ---
+    // Pairs with the dispatcher long-chain diagnostic in
+    // `crates/reify-eval/src/dispatcher.rs::long_chain_diagnostic`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::LongChainRealization` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::LongChainRealization)`.
+    /// Pins the warning-severity contract and variant existence for the
+    /// dispatcher's long-chain realization diagnostic (PRD
+    /// `docs/prds/v0_2/multi-kernel.md` §"Long-chain diagnostic" +
+    /// `docs/prds/v0_2/per-purpose-tolerance.md` §"Long-chain diagnostic gating").
+    #[test]
+    fn diagnostic_code_long_chain_realization_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::LongChainRealization);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::LongChainRealization));
+        assert_eq!(format!("{:?}", DiagnosticCode::LongChainRealization), "LongChainRealization");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
