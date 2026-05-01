@@ -168,8 +168,14 @@ export class SidecarSession {
     // observable via proc.on('close') and the exitCode check below — remains the authoritative
     // failure signal. A host relying on EPIPE detection should check the 'done'/'error' outbound
     // from handleSendMessage instead.
+    let warnedOrphanStdinError = false;
     proc.stdin?.on('error', (err: Error) => {
-      console.warn(`[sidecar] stdin error (orphan, no pending write): ${err.message}`);
+      // One-shot guard (mirrors warnedMissingMessageId below) prevents log spam if the
+      // kernel/Node fires repeated errors on the same stream after an external fd close.
+      if (!warnedOrphanStdinError) {
+        warnedOrphanStdinError = true;
+        console.warn(`[sidecar] stdin error (orphan, no pending write): ${err.message}`);
+      }
     });
 
     // Write the initial user prompt as a stream-json message line.
