@@ -470,6 +470,46 @@ mod tests {
         );
     }
 
+    /// Pins the wire-contract of [`long_chain_diagnostic`] when the predicate
+    /// is true: the emitted [`reify_types::Diagnostic`] carries
+    /// `Severity::Warning` and `Some(DiagnosticCode::LongChainRealization)`.
+    /// This is the load-bearing assertion downstream LSP / MCP consumers
+    /// filter on. Mirrors
+    /// `imported_tolerance_promise_diagnostic_builds_warning_with_code_and_template_name`
+    /// (tolerance_promise.rs:557-580).
+    #[test]
+    fn long_chain_diagnostic_carries_warning_severity_and_code_when_emitted() {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let plan_three = DispatchPlan {
+            kernel: "kernel_d".to_string(),
+            conversions: vec![
+                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+            ],
+        };
+        let threshold = Duration::from_millis(500);
+        let elapsed = Duration::from_millis(750);
+
+        let diag = long_chain_diagnostic(&plan_three, elapsed, threshold)
+            .expect("3 stages + elapsed > threshold must emit a diagnostic");
+
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning (PRD: warn, not error — \
+             realization completed; user just deserves visibility into \
+             budget pressure)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::LongChainRealization),
+            "diagnostic code must round-trip the typed variant for downstream \
+             filter-by-code consumers (LSP / MCP)"
+        );
+    }
+
     /// Trivial happy path: one kernel that supports the demanded op directly on
     /// a repr already in `available`. Plan must be `(kernel, no conversions)`.
     /// This locks the zero-conversion code path before BFS expansion is added.
