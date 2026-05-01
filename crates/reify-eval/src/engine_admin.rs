@@ -254,15 +254,15 @@ impl Engine {
     /// follow-up — see task 2642 design decision "Defer CLI/GUI call-site
     /// migration to a follow-up task".
     pub fn with_registered_kernel(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
-        // Iterate the static linker-collected `KernelRegistration` set and
-        // pick the lexicographically smallest entry by `name`. Iterating the
-        // inventory directly (rather than going through `collect_registry()`,
-        // which materialises descriptors only) lets us reach the registration's
-        // `factory` field — `collect_registry()` discards that on purpose,
-        // since the dispatcher only needs the descriptor side.
-        let kernel: Option<Box<dyn GeometryKernel>> = inventory::iter::<KernelRegistration>()
-            .min_by_key(|reg| reg.name)
-            .map(|reg| (reg.factory)());
+        // Centralised lex-min: both this constructor and (in v0.3+) any
+        // dispatcher selection share the same tie-break helper, so the
+        // "lex-smallest by `name`" invariant lives in one place rather than
+        // being independently re-derived. The helper reads the memoized
+        // [`crate::kernel_registry::registry`] BTreeMap, so the inventory walk
+        // happens at most once per process even if other call paths
+        // (collect_registry, future dispatcher wiring) also hit the registry.
+        let kernel: Option<Box<dyn GeometryKernel>> =
+            crate::kernel_registry::pick_lexmin_kernel().map(|reg| (reg.factory)());
         Self::with_prelude(
             constraint_checker,
             kernel,
