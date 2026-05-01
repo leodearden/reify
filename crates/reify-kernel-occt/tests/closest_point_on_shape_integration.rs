@@ -117,12 +117,11 @@ fn closest_point_when_point_lies_on_face() {
 
 /// Query point (0.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// The C++ header documents that for points inside the solid, OCCT returns
-/// distance 0 and a boundary witness point — no special-casing applied.
-/// This test locks in that contract: the call must succeed without error
-/// (NbSolution ≥ 1), and the witness must be on the box surface at distance
-/// ≈ 5.0 from the origin (the nearest face distance for a box centred at
-/// origin with half-width 5).
+/// `BRepExtrema_DistShapeShape` projects the query vertex to the nearest face
+/// of the solid even when the point is interior.  For this box (half-width 5
+/// in every axis) the nearest face is at distance 5.0, so the returned witness
+/// must be on the box surface with exactly one coordinate ≈ ±5.0 and distance
+/// ≈ 5.0 from the origin.  The call must succeed without error (NbSolution ≥ 1).
 #[test]
 fn closest_point_for_interior_point_at_origin() {
     let (kernel, box_id) = box_kernel();
