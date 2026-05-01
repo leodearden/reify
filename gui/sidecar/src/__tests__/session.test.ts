@@ -508,6 +508,28 @@ describe('SidecarSession', () => {
     });
   });
 
+  it('tool_result inbound with no matching tool_use emits error outbound', async () => {
+    // No send_message dispatched — pendingToolUseIds is empty
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'tool_result',
+      id: 'msg-orphan',
+      tool_name: 'reify_unknown',
+      result: 'x',
+    });
+
+    // Should emit exactly one error with id='msg-orphan' and matching message
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).id).toBe('msg-orphan');
+    expect((errors[0] as any).message).toMatch(/no pending tool_use|no matching tool_use/i);
+
+    // Should NOT have spawned any subprocess
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+  });
+
   it('invokeSdk uses --input-format stream-json and writes prompt to stdin', async () => {
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
       { type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } },
