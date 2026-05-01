@@ -268,6 +268,7 @@ mod tests {
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
         LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
+        long_chain_diagnostic,
     };
     use std::time::Duration;
 
@@ -376,6 +377,46 @@ mod tests {
         assert!(
             is_long_chain_realization(&plan_four, Duration::from_secs(2), threshold),
             "4 stages + 2s elapsed >> 500ms threshold: both gates pass ⇒ true",
+        );
+    }
+
+    /// Pins the `Option<Diagnostic>` return shape's negative branch: when
+    /// the predicate gate is false, the builder must return `None`. The
+    /// gate must short-circuit BEFORE any `Diagnostic` is constructed —
+    /// otherwise an Engine layer that sees `Some(diag)` and forwards
+    /// downstream would log spurious warnings on every short-chain call.
+    #[test]
+    fn long_chain_diagnostic_returns_none_when_predicate_false() {
+        let threshold = Duration::from_millis(500);
+
+        // Stage-count gate fails: 2 conversions (boundary), even though
+        // elapsed >> threshold.
+        let plan_two = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![
+                ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("manifold".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+            ],
+        };
+        assert_eq!(
+            long_chain_diagnostic(&plan_two, Duration::from_secs(60), threshold),
+            None,
+            "2 conversion stages must NOT emit a diagnostic (stage gate fails)",
+        );
+
+        // Elapsed gate fails: 3 conversions but elapsed == threshold (boundary).
+        let plan_three = DispatchPlan {
+            kernel: "kernel_d".to_string(),
+            conversions: vec![
+                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+            ],
+        };
+        assert_eq!(
+            long_chain_diagnostic(&plan_three, threshold, threshold),
+            None,
+            "elapsed exactly == threshold must NOT emit (elapsed gate fails)",
         );
     }
 
