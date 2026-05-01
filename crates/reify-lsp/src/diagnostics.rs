@@ -1984,6 +1984,70 @@ structure S {
         );
     }
 
+    /// LSP regression lock (task 2371, step-5): a bare `sub` declaration (body=None)
+    /// directly inside a specialization-scope body surfaces as exactly one LSP ERROR
+    /// with code `"SpecializationForbiddenDecl"`, source `"reify"`, non-zero range
+    /// matching `sub_span`, and message containing both `'sub'` and `'child'`.
+    ///
+    /// Note: the bare sub has no body, so no further violations fire inside it.
+    #[test]
+    fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_nested_sub() {
+        use fixtures::*;
+        use lsp_types::NumberOrString;
+
+        let nested_sub = make_sub_bare("child", sub_span());
+        let body = vec![nested_sub];
+        let parsed =
+            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
+
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let source = source_stub();
+        let uri = test_uri();
+
+        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
+            .diagnostics
+            .iter()
+            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
+            .collect();
+
+        let forbidden: Vec<_> = lsp_diags
+            .iter()
+            .filter(|d| {
+                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
+            })
+            .collect();
+
+        assert_eq!(
+            forbidden.len(),
+            1,
+            "expected exactly 1 SpecializationForbiddenDecl diagnostic for nested sub, got {}: {:#?}",
+            forbidden.len(),
+            lsp_diags
+        );
+
+        let diag = forbidden[0];
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diag.source.as_deref(), Some("reify"));
+        assert_ne!(
+            diag.range.start,
+            diag.range.end,
+            "range must be non-zero (sub_span should be carried through), \
+             got start={:?} end={:?}",
+            diag.range.start,
+            diag.range.end
+        );
+        assert!(
+            diag.message.contains("'sub'"),
+            "message must contain \"'sub'\", got: {:?}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("'child'"),
+            "message must contain \"'child'\", got: {:?}",
+            diag.message
+        );
+    }
+
     /// (d) **Separation regression** — constraint-violation source must NOT produce
     /// any `computation-failed` diagnostics; the existing `constraint <id> violated`
     /// diagnostics must still appear.
