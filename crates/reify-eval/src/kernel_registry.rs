@@ -186,7 +186,7 @@ mod test_synthetic_kernel {
     // ── __a_kernel ─────────────────────────────────────────────────────────
     // Lex-smallest synthetic in the test build. Used by the lex-min contract
     // test to assert pick_lexmin_kernel() returns the smaller of a known pair.
-    const A_NAME: &str = "__a_kernel";
+    pub(super) const NAME_A: &str = "__a_kernel";
 
     fn descriptor_a() -> CapabilityDescriptor {
         CapabilityDescriptor {
@@ -197,8 +197,9 @@ mod test_synthetic_kernel {
     // ── __b_kernel ─────────────────────────────────────────────────────────
     // Second-smallest synthetic. Present so the lex-min test can confirm
     // pick_lexmin_kernel() chose __a_kernel over __b_kernel (not just "first
-    // synthetic seen" from an unordered walk).
-    const B_NAME: &str = "__b_kernel";
+    // synthetic seen" from an unordered walk). Uses PrimitiveCylinder/BRep
+    // to provide structural variation from NAME_A and NAME's PrimitiveBox/BRep.
+    pub(super) const NAME_B: &str = "__b_kernel";
 
     fn descriptor_b() -> CapabilityDescriptor {
         CapabilityDescriptor {
@@ -208,9 +209,9 @@ mod test_synthetic_kernel {
 
     // ── __test_synthetic_kernel ────────────────────────────────────────────
     // Original synthetic, kept so the smoke test's contains_key(NAME) assertion
-    // is unaffected. Descriptor intentionally distinct from __a_kernel to
-    // guard against accidental descriptor-identity bugs.
-    const SYNTHETIC_KERNEL_NAME: &str = "__test_synthetic_kernel";
+    // is unaffected. Uses PrimitiveBox/BRep (same as NAME_A); structural
+    // variation lives in NAME_B (PrimitiveCylinder/BRep).
+    pub(super) const NAME: &str = "__test_synthetic_kernel";
 
     fn synthetic_descriptor() -> CapabilityDescriptor {
         CapabilityDescriptor {
@@ -234,7 +235,7 @@ mod test_synthetic_kernel {
 
     inventory::submit! {
         KernelRegistration {
-            name: A_NAME,
+            name: NAME_A,
             descriptor: descriptor_a,
             factory: unreachable_factory,
         }
@@ -242,7 +243,7 @@ mod test_synthetic_kernel {
 
     inventory::submit! {
         KernelRegistration {
-            name: B_NAME,
+            name: NAME_B,
             descriptor: descriptor_b,
             factory: unreachable_factory,
         }
@@ -250,29 +251,17 @@ mod test_synthetic_kernel {
 
     inventory::submit! {
         KernelRegistration {
-            name: SYNTHETIC_KERNEL_NAME,
+            name: NAME,
             descriptor: synthetic_descriptor,
             factory: unreachable_factory,
         }
     }
-
-    /// Stable name for the lex-min synthetic (`__a_kernel`). Referenced by
-    /// `pick_lexmin_kernel_returns_lex_smaller_of_known_pair` to pin the
-    /// contract without hard-coded string literals in the test body.
-    pub(super) const NAME_A: &str = A_NAME;
-
-    /// Stable name for the second synthetic (`__b_kernel`). Referenced
-    /// alongside `NAME_A` so the contract test can assert both are present.
-    pub(super) const NAME_B: &str = B_NAME;
-
-    /// Stable name for the original smoke-test synthetic (`__test_synthetic_kernel`).
-    /// Referenced by `collect_registry_returns_typed_btreemap_smoke`.
-    pub(super) const NAME: &str = SYNTHETIC_KERNEL_NAME;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::{Operation, ReprKind};
 
     /// Smoke pin: the function returns the right type, the result is
     /// deterministic across calls, and the iteration logic is non-trivially
@@ -318,19 +307,19 @@ mod tests {
             test_synthetic_kernel::NAME,
         );
 
-        // Descriptor-content pin: assert the `.supports` vec is identical
-        // across two independent collect_registry() calls. This catches any
-        // future regression where the descriptor closure returns a different
-        // vec on each invocation — e.g. nondeterministic ordering from a
-        // HashSet, or a stateful closure that mutates on read. The assertion
-        // passes today because descriptor functions are pure and return
-        // identical vecs; it becomes a guard against future nondeterminism.
+        // Descriptor-content identity pin: assert the .supports vec for the
+        // known synthetic holds exactly the entries we expect. The type system
+        // already rules out nondeterminism (fn() -> CapabilityDescriptor cannot
+        // hold mutable state), so the assertion's value is pinning *which*
+        // content the descriptor returns — a future accidental change to
+        // synthetic_descriptor() (wrong copy-paste, field removal, etc.) would
+        // fail here where a cross-call determinism comparison would not.
+        let expected_supports = vec![(Operation::PrimitiveBox, ReprKind::BRep)];
         assert_eq!(
             first.get(test_synthetic_kernel::NAME).map(|d| &d.supports),
-            second.get(test_synthetic_kernel::NAME).map(|d| &d.supports),
-            "descriptor .supports vec for {:?} must be identical across two \
-             collect_registry() calls — divergence indicates a nondeterministic \
-             or stateful descriptor closure (e.g. HashSet ordering, mutable state)",
+            Some(&expected_supports),
+            "descriptor .supports for {:?} must be exactly [(PrimitiveBox, BRep)] — \
+             update this assertion if the synthetic's descriptor is intentionally changed",
             test_synthetic_kernel::NAME,
         );
     }
