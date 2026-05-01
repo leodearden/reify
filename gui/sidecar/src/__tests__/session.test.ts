@@ -823,6 +823,90 @@ describe('SidecarSession multi-turn streaming', () => {
   });
 });
 
+describe('SidecarSession reset-boundary tool correlation preservation', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('text-shrink reset-boundary preserves pending tool_use for subsequent tool_result', async () => {
+    // Turn 1: long text + tool_use (registers toolu_pending in toolNameById).
+    // Turn 2: shorter text 'Hi' triggers block.text.length < lastTextLen shrink branch.
+    // Bug: the shrink branch clears toolNameById/pendingToolUseIds, causing a subsequent
+    // tool_result for toolu_pending to be rejected with 'unknown tool_use_id'.
+    const { mockProc, stdout, stdinLines } = makeMockProc([
+      { type: 'text', text: 'Hello world!' },
+      { type: 'tool_use', id: 'toolu_pending', name: 'reify_x', input: {} },
+    ]);
+
+    // Set up wait for tool_call BEFORE dispatching so we don't miss the event
+    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'send-rb-text',
+      text: 'Reset boundary text test',
+    });
+
+    // Wait for tool_call outbound — guarantees tool_use is registered in toolNameById
+    await toolCallWait;
+
+    // Set up wait for text_delta 'Hi' BEFORE pushing the turn-2 event
+    const textDeltaHiWait = waitForOutput(
+      session,
+      (m) => m.type === 'text_delta' && (m as any).content === 'Hi',
+    );
+
+    // Push turn 2: shorter text → triggers text-shrink branch (block.text.length < lastTextLen)
+    stdout.push(
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } }) + '\n',
+    );
+
+    // Wait for text_delta 'Hi' — guarantees the shrink branch has been processed
+    await textDeltaHiWait;
+
+    // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
+    // toolNameById was cleared by the shrink branch; on fixed code it forwards correctly.
+    session.handleMessage({
+      type: 'tool_result',
+      id: 'tr-pending',
+      tool_name: 'reify_x',
+      result: 'result-ok',
+      tool_use_id: 'toolu_pending',
+    });
+
+    // Wait for stdin line 2 (initial prompt = line 1, forwarded tool_result = line 2).
+    // On buggy code this never arrives (tool_result is rejected with unknown-id error)
+    // and the test times out — which is the expected TDD failure.
+    await waitForStdinLines(mockProc.stdin, stdinLines, 2);
+
+    // Assert the tool_result was forwarded with the correct tool_use_id
+    expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_pending');
+
+    // Assert no unknown tool_use_id error was emitted for this tool_result
+    const unknownIdErrors = outputs.filter(
+      (o) => o.type === 'error' && /unknown.*tool_use_id/i.test((o as any).message ?? ''),
+    );
+    expect(unknownIdErrors).toHaveLength(0);
+
+    // Cleanup: close stdout so msgPromise can resolve
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-rb-text' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+});
+
 describe('SidecarSession stale-state lifecycle', () => {
   let session: SidecarSession;
   let outputs: OutboundMessage[];
