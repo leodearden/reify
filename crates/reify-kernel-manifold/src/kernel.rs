@@ -78,4 +78,29 @@ mod tests {
     use super::*;
 
     reify_test_support::assert_stub_kernel_errors!(ManifoldKernel::new, "Manifold");
+
+    /// PRD docs/prds/v0_2/persistent-naming-v2.md line 70: ManifoldKernel is
+    /// the first concrete impl of `KernelAttributeHook`. This test pins the
+    /// "ManifoldKernel opts into the hook AND is reachable through the
+    /// trait-object accessor" contract — a regression that loses the override
+    /// (e.g. removed `attribute_hook()` impl on ManifoldKernel) would silently
+    /// fall back to the `None` default and the engine-side dispatcher would
+    /// route Manifold ops to `FellThrough`, defeating the multi-kernel
+    /// propagation pipeline this task builds.
+    ///
+    /// Bound as `&dyn GeometryKernel` (not `&ManifoldKernel`) because the
+    /// engine-side dispatcher invokes the accessor through a trait object —
+    /// asserting via the typed concrete reference would let an accidental
+    /// `&self`/`&dyn` divergence slip through.
+    #[test]
+    fn manifold_kernel_advertises_attribute_hook_via_geometry_kernel_trait() {
+        let kernel = ManifoldKernel::new();
+        let kernel_ref: &dyn reify_types::GeometryKernel = &kernel;
+        assert!(
+            kernel_ref.attribute_hook().is_some(),
+            "ManifoldKernel must override `attribute_hook()` to return Some(self) — \
+             enforces PRD line 70 'first concrete impl of KernelAttributeHook' contract \
+             reachable through the trait-object accessor",
+        );
+    }
 }
