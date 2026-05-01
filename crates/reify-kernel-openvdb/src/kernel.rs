@@ -75,10 +75,9 @@ impl GeometryKernel for OpenVdbKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{
-        ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
-        GeometryQuery, QueryError, TessError,
-    };
+    // `super::*` already brings in all `use reify_types::{...}` items from the
+    // parent module (`ExportError`, `ExportFormat`, `GeometryError`, etc.) —
+    // no separate `use reify_types` import is needed here.
 
     /// Compile-time supertraits pin: `fn assert_send_sync` forces a monomorphism
     /// bound check for `T: Send + Sync`. Calling it with `OpenVdbKernel` will

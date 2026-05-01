@@ -120,6 +120,15 @@ fn openvdb_factory() -> Box<dyn GeometryKernel> {
 // implementation drift. The cross-crate isolation in the test layout (openvdb
 // dev-deps on reify-eval, not the reverse) blocks that today, but the gate is
 // the structural enforcement that must land alongside the real FFI.
+//
+// TODO(registry-uniqueness): File a follow-up to add a debug-time uniqueness
+// assertion in `reify_eval::kernel_registry::collect_registry()` that panics
+// if two kernels claim the same `(Operation, ReprKind)` pair. Currently the
+// lex-min tie-break in the dispatcher silently picks a winner; a
+// `debug_assert!` in the registry collector would surface the conflict at
+// startup (in debug builds) rather than after a regression. This guard should
+// land alongside the real OpenVDB FFI introduction so that the structural
+// enforcement is in place before any `(op, Voxel)` claim can collide.
 inventory::submit! {
     KernelRegistration {
         name: OPENVDB_KERNEL_NAME,
