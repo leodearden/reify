@@ -1841,8 +1841,9 @@ mod tests {
     // ── mechanism_loop_closure_chains tests (step-7) ─────────────────────
 
     /// `mechanism_loop_closure_chains` on a closed-chain mechanism returns
-    /// `Some(vec![(chain_a, chain_b)])` with the world sentinel stripped from
-    /// each path and the chains terminating at the closing joint.
+    /// `Some(vec![LoopClosureChain::WellFormed { chain_a, chain_b }])` with
+    /// the world sentinel stripped from each path and the chains terminating
+    /// at the closing joint.
     ///
     /// Scenario: parent-conflict via `body(m0, solid_a, j_x, j_a)` then
     /// `body(m1, solid_b, j_x, j_b)`. The expected paths are:
@@ -1851,6 +1852,7 @@ mod tests {
     /// After world-sentinel stripping:
     ///   chain_a = [j_a, j_x]
     ///   chain_b = [j_b, j_x]
+    /// j_x appears exactly once in chain_b → WellFormed.
     #[test]
     fn mechanism_loop_closure_chains_extracts_pairs() {
         use crate::eval_builtin;
@@ -1877,7 +1879,10 @@ mod tests {
         let pairs = chains.unwrap();
         assert_eq!(pairs.len(), 1, "one loop-closure pair expected");
 
-        let (chain_a, chain_b) = &pairs[0];
+        let (chain_a, chain_b) = match &pairs[0] {
+            super::LoopClosureChain::WellFormed { chain_a, chain_b } => (chain_a, chain_b),
+            other => panic!("expected WellFormed, got {:?}", other),
+        };
         // chain_a = [j_a, j_x] (world sentinel stripped from [world, j_a, j_x])
         assert_eq!(chain_a.len(), 2, "chain_a should have 2 elements");
         assert_eq!(&chain_a[0], &j_a, "chain_a[0] should be j_a");
@@ -2023,12 +2028,20 @@ mod tests {
         assert_eq!(pairs.len(), 2, "both loop-closure entries must surface");
 
         // First pair: chain_a = [j_a, j_x], chain_b = [j_b, j_x].
-        let (chain_a0, chain_b0) = &pairs[0];
+        // j_x appears exactly once in chain_b → WellFormed.
+        let (chain_a0, chain_b0) = match &pairs[0] {
+            super::LoopClosureChain::WellFormed { chain_a, chain_b } => (chain_a, chain_b),
+            other => panic!("expected WellFormed for first pair, got {:?}", other),
+        };
         assert_eq!(chain_a0, &vec![j_a.clone(), j_x.clone()]);
         assert_eq!(chain_b0, &vec![j_b.clone(), j_x.clone()]);
 
         // Second pair: chain_a = [j_a, j_y], chain_b = [j_b, j_y].
-        let (chain_a1, chain_b1) = &pairs[1];
+        // j_y appears exactly once in chain_b → WellFormed.
+        let (chain_a1, chain_b1) = match &pairs[1] {
+            super::LoopClosureChain::WellFormed { chain_a, chain_b } => (chain_a, chain_b),
+            other => panic!("expected WellFormed for second pair, got {:?}", other),
+        };
         assert_eq!(chain_a1, &vec![j_a.clone(), j_y.clone()]);
         assert_eq!(chain_b1, &vec![j_b.clone(), j_y.clone()]);
     }
@@ -2127,19 +2140,19 @@ mod tests {
         );
     }
 
-    /// Pins that `mechanism_loop_closure_chains` correctly extracts
-    /// `(chain_a, chain_b)` for the cycle/self-loop case, where `path_b`
-    /// contains the closing joint twice.  Specifically:
+    /// Pins that `mechanism_loop_closure_chains` correctly classifies and
+    /// extracts the cycle case as `LoopClosureChain::Cycle { chain_a, chain_b }`,
+    /// where `chain_b` contains the closing joint twice.  Specifically:
     ///
     /// - `chain_a == [j_b]`            (path_a = [world, j_b] stripped)
     /// - `chain_b == [j_b, j_a, j_b]`  (path_b = [world, j_b, j_a, j_b] stripped)
-    /// - both chains terminate at `j_b` (the closing joint)
+    /// - j_b (the closing joint = chain_b.last()) appears twice in chain_b → Cycle
     ///
     /// Both paths have length ≥ 2, so `strip_world_sentinel` accepts them.
     /// Regression-proofs the cycle path's length≥2 invariant against any
     /// future change to `strip_world_sentinel` or the cycle branch of
-    /// `append_body`, and pins the duplicated-closing-joint shape called
-    /// out in `mechanism_loop_closure_chains`'s docstring caveat.
+    /// `append_body`, and pins the duplicated-closing-joint shape that
+    /// triggers `LoopClosureChain::Cycle` classification.
     #[test]
     fn mechanism_loop_closure_chains_extracts_cycle_pair() {
         use crate::eval_builtin;
@@ -2167,10 +2180,14 @@ mod tests {
         let pairs = chains.unwrap();
         assert_eq!(pairs.len(), 1, "one loop-closure pair expected");
 
-        let (chain_a, chain_b) = &pairs[0];
+        let (chain_a, chain_b) = match &pairs[0] {
+            super::LoopClosureChain::Cycle { chain_a, chain_b } => (chain_a, chain_b),
+            other => panic!("expected Cycle, got {:?}", other),
+        };
         // chain_a = [j_b]  (world sentinel stripped from [world, j_b])
         assert_eq!(chain_a, &vec![j_b.clone()], "chain_a should be [j_b]");
         // chain_b = [j_b, j_a, j_b]  (world sentinel stripped from [world, j_b, j_a, j_b])
+        // j_b appears at index 0 and index 2 → closing joint count > 1 → Cycle.
         assert_eq!(
             chain_b,
             &vec![j_b.clone(), j_a.clone(), j_b.clone()],
@@ -2186,6 +2203,65 @@ mod tests {
             chain_b.last(),
             Some(&j_b),
             "chain_b must terminate at j_b (the closing joint)"
+        );
+    }
+
+    /// Pins that a self-loop mechanism (same joint passed as both `at` and
+    /// `parent` to `body()`) produces a `LoopClosureChain::Cycle` entry with:
+    ///
+    /// - `chain_a == [j]`    (path_a = [world, j] stripped)
+    /// - `chain_b == [j, j]` (path_b = [world, j, j] stripped)
+    ///
+    /// j (the closing joint = chain_b.last()) appears twice in chain_b → Cycle.
+    ///
+    /// Complements the raw-record test in `mechanism.rs::self_loop_records_loop_closure_constraint`
+    /// by exercising the full round-trip through the public extractor.  That
+    /// test verifies the stored `path_b = [world, j, j]` shape; this test
+    /// verifies that `mechanism_loop_closure_chains` classifies the stripped
+    /// chain correctly as `Cycle` rather than silently passing it as WellFormed
+    /// (which would be wrong physics — the solver cannot use a chain that
+    /// applies the same joint twice).
+    #[test]
+    fn mechanism_loop_closure_chains_extracts_self_loop_pair() {
+        use crate::eval_builtin;
+
+        let j = prismatic_x_0_to_1();
+        let solid = Value::String("solid".to_string());
+
+        // Self-loop: pass j as both `at` (args[2]) and `parent` (args[3]).
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid, j.clone(), j.clone()]);
+
+        let chains = super::mechanism_loop_closure_chains(&m1);
+        assert!(
+            chains.is_some(),
+            "mechanism_loop_closure_chains must return Some for a self-loop mechanism"
+        );
+        let pairs = chains.unwrap();
+        assert_eq!(pairs.len(), 1, "one loop-closure pair expected for self-loop");
+
+        let (chain_a, chain_b) = match &pairs[0] {
+            super::LoopClosureChain::Cycle { chain_a, chain_b } => (chain_a, chain_b),
+            other => panic!("expected Cycle for self-loop, got {:?}", other),
+        };
+        // chain_a = [j]    (world sentinel stripped from [world, j])
+        assert_eq!(chain_a, &vec![j.clone()], "chain_a should be [j]");
+        // chain_b = [j, j] (world sentinel stripped from [world, j, j])
+        // j appears at index 0 and index 1 → closing joint count > 1 → Cycle.
+        assert_eq!(
+            chain_b,
+            &vec![j.clone(), j.clone()],
+            "chain_b should be [j, j] (closing joint is at=parent, duplicated)"
+        );
+        assert_eq!(
+            chain_a.last(),
+            Some(&j),
+            "chain_a must terminate at j (the closing joint)"
+        );
+        assert_eq!(
+            chain_b.last(),
+            Some(&j),
+            "chain_b must terminate at j (the closing joint)"
         );
     }
 
