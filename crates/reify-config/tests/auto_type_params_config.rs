@@ -16,7 +16,9 @@
 //!   `ManifestError::Parse(_)` (strict schema; mirrors the convention on
 //!   `[kernels]` / `[kernels.<id>]`).
 
-use reify_config::{DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH, Manifest, ManifestError};
+use reify_config::{DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH, Manifest};
+#[allow(unused_imports)]
+use reify_config::ManifestError;
 
 /// When a manifest has no `[auto_type_params]` section, the parsed
 /// `AutoTypeParamsConfig` falls back to the PRD-decided default of 6.
@@ -37,5 +39,20 @@ fn default_max_depth_is_six_when_section_omitted() {
     assert_eq!(
         DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH, 6,
         "DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH constant must equal 6"
+    );
+}
+
+/// A `[auto_type_params]` table with `max_depth = N` overrides the default
+/// of 6. Pins the serde wiring (`AutoTypeParamsRaw` is read into
+/// `AutoTypeParamsConfig`) and that the parsed value flows through to the
+/// public accessor.
+#[test]
+fn custom_max_depth_round_trips() {
+    let manifest = Manifest::from_toml_str("[auto_type_params]\nmax_depth = 8\n")
+        .expect("manifest with auto_type_params section must parse");
+    assert_eq!(
+        manifest.auto_type_params().max_depth,
+        8,
+        "parsed max_depth must override the default of 6"
     );
 }
