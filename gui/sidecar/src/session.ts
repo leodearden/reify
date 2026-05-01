@@ -206,6 +206,9 @@ export class SidecarSession {
     // Track content lengths for delta extraction from partial messages
     let lastTextLen = 0;
     let lastThinkingLen = 0;
+    let currentAssistantMessageId: string | null = null;
+    // One-shot guard: warn at most once per invocation if message.id is absent.
+    let warnedMissingMessageId = false;
 
     // Parse streaming JSON events from stdout
     try {
@@ -214,29 +217,35 @@ export class SidecarSession {
           const event = JSON.parse(line);
 
           if (event.type === 'assistant' && event.message?.content) {
+            // Detect new turn from the streaming envelope's message.id. Each new
+            // assistant turn within a single --print invocation gets a new Message.id;
+            // partial updates within the same turn share the same id. Reset both length
+            // counters deterministically on id change so deltas emit from offset 0 for
+            // the new turn. If event.message.id is absent (malformed mock or future
+            // format change), skip the reset — degrading gracefully to single-turn
+            // behavior. Tool-correlation maps (toolNameById, pendingToolUseIds) are NOT
+            // cleared here — pending tool_uses from a prior turn may still be awaiting
+            // a tool_result from the host. Maps are only cleared at the three lifecycle
+            // boundaries: invokeSdk start, destroy(), and handleClearSession.
+            if (typeof event.message.id === 'string' && event.message.id !== currentAssistantMessageId) {
+              lastTextLen = 0;
+              lastThinkingLen = 0;
+              currentAssistantMessageId = event.message.id;
+            } else if (typeof event.message.id !== 'string' && !warnedMissingMessageId) {
+              warnedMissingMessageId = true;
+              console.error(
+                '[sidecar] assistant event missing message.id — turn-boundary detection disabled for this invocation; ' +
+                'multi-turn delta offsets may be incorrect if accumulated text length is not reset between turns.',
+              );
+            }
             for (const block of event.message.content) {
-              // Detect new turn: if text/thinking length decreased, only the length
-              // counters are reset — they are turn-scoped so deltas emit correctly on
-              // the new turn. Tool-correlation maps (toolNameById, pendingToolUseIds)
-              // are NOT cleared here because pending tool_uses from a prior assistant
-              // turn may still be awaiting a tool_result from the host. Maps are only
-              // cleared at the three lifecycle boundaries: invokeSdk start, destroy(),
-              // and handleClearSession.
               if (block.type === 'text' && block.text) {
-                if (block.text.length < lastTextLen) {
-                  lastTextLen = 0;
-                  lastThinkingLen = 0;
-                }
                 if (block.text.length > lastTextLen) {
                   const delta = block.text.slice(lastTextLen);
                   lastTextLen = block.text.length;
                   this.onOutput({ type: 'text_delta', id, content: delta });
                 }
               } else if (block.type === 'thinking' && block.thinking) {
-                if (block.thinking.length < lastThinkingLen) {
-                  lastTextLen = 0;
-                  lastThinkingLen = 0;
-                }
                 if (block.thinking.length > lastThinkingLen) {
                   const delta = block.thinking.slice(lastThinkingLen);
                   lastThinkingLen = block.thinking.length;

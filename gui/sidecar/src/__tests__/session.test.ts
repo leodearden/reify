@@ -768,35 +768,35 @@ describe('SidecarSession multi-turn streaming', () => {
 
   it('text_delta events emitted for both turns in a multi-turn invocation', async () => {
     // Simulate two assistant turns within a single SDK invocation:
-    // Turn 1: thinking + text + tool_use
-    // Turn 2: new text (starts shorter than turn 1's accumulated text length)
+    // Turn 1: thinking + text + tool_use (message.id = 'msg_t1')
+    // Turn 2: new text, shorter than turn-1 accumulated length (message.id = 'msg_t2')
     //
-    // The bug: lastTextLen carries over from turn 1 (e.g. 12 for "Hello world!").
-    // Turn 2's first text event is "Hi" (length 2), which is < lastTextLen (12),
-    // so the `block.text.length > lastTextLen` check fails and no delta is emitted.
+    // The new-turn boundary is detected by the message.id change: when event.message.id
+    // switches from 'msg_t1' to 'msg_t2', both lastTextLen and lastThinkingLen reset to 0,
+    // so turn-2's first delta emits from offset 0 regardless of relative length.
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // Turn 1 partial events
-      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let' }] } },
-      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me think' }] } },
-      { type: 'assistant', message: { content: [
+      // Turn 1 partial events (message.id = 'msg_t1')
+      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Let' }] } },
+      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Let me think' }] } },
+      { type: 'assistant', message: { id: 'msg_t1', content: [
         { type: 'thinking', thinking: 'Let me think' },
         { type: 'text', text: 'Hello ' },
       ] } },
-      { type: 'assistant', message: { content: [
+      { type: 'assistant', message: { id: 'msg_t1', content: [
         { type: 'thinking', thinking: 'Let me think' },
         { type: 'text', text: 'Hello world!' },
       ] } },
       // Turn 1 completes with tool_use
-      { type: 'assistant', message: { content: [
+      { type: 'assistant', message: { id: 'msg_t1', content: [
         { type: 'thinking', thinking: 'Let me think' },
         { type: 'text', text: 'Hello world!' },
         { type: 'tool_use', id: 'toolu_mt1', name: 'reify_get_source', input: { file: 'f.ri' } },
       ] } },
-      // Turn 2 starts: new text block with shorter initial content
-      { type: 'assistant', message: { content: [
+      // Turn 2 starts: new message.id triggers counter reset
+      { type: 'assistant', message: { id: 'msg_t2', content: [
         { type: 'text', text: 'Hi' },
       ] } },
-      { type: 'assistant', message: { content: [
+      { type: 'assistant', message: { id: 'msg_t2', content: [
         { type: 'text', text: 'Hi there!' },
       ] } },
       { type: 'result', session_id: 'sess-mt' },
@@ -815,11 +815,124 @@ describe('SidecarSession multi-turn streaming', () => {
     expect(deltaContents).toContain('Hello ');
     expect(deltaContents).toContain('world!');
 
-    // Turn 2 should produce: "Hi" then " there!" — proving counters reset
-    // THIS IS THE FAILING PART with the current implementation:
-    // "Hi" (len=2) < lastTextLen (12) so no delta is emitted
+    // Turn 2 should produce: "Hi" then " there!" — proving counters reset on id change
     expect(deltaContents).toContain('Hi');
     expect(deltaContents).toContain(' there!');
+  });
+
+  it('text_delta counters reset on new message.id even when turn-2 text is longer than turn-1', async () => {
+    // Turn 1: short text 'Hi' (len 2) + tool_use, under message.id='msg_t1'
+    // Turn 2: longer text (len 46) under message.id='msg_t2'
+    //
+    // Bug (shrink heuristic only): turn-2 text is LONGER than turn-1 accumulated length,
+    // so `block.text.length < lastTextLen` never fires. lastTextLen stays at 2 from turn-1.
+    // Turn-2 first delta = text.slice(2) = 'llo world this is a much longer turn-2 reply'
+    // Fix (id-based reset): message.id change from 'msg_t1' → 'msg_t2' resets lastTextLen=0.
+    // Turn-2 first delta = full turn-2 text.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // Turn 1: short text + tool_use under msg_t1
+      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'text', text: 'Hi' }] } },
+      { type: 'assistant', message: { id: 'msg_t1', content: [
+        { type: 'text', text: 'Hi' },
+        { type: 'tool_use', id: 'toolu_longer1', name: 'reify_get_source', input: { file: 'f.ri' } },
+      ] } },
+      // Turn 2: longer text under msg_t2 — no length shrink, only id changes
+      { type: 'assistant', message: { id: 'msg_t2', content: [
+        { type: 'text', text: 'Hello world this is a much longer turn-2 reply' },
+      ] } },
+      { type: 'result', session_id: 'sess-longer-text' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-longer-text', text: 'Test longer turn-2' });
+
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    const deltaContents = textDeltas.map((o) => (o as any).content);
+
+    // Turn 1 delta present
+    expect(deltaContents).toContain('Hi');
+
+    // Turn 2 first delta must be the FULL text — not a slice from offset 2
+    // Broken: 'llo world this is a much longer turn-2 reply'
+    // Fixed:  'Hello world this is a much longer turn-2 reply'
+    expect(deltaContents).toContain('Hello world this is a much longer turn-2 reply');
+  });
+
+  it('thinking_delta counters reset on new message.id even when turn-2 thinking is longer than turn-1', async () => {
+    // Turn 1: short thinking 'Hm' (len 2) + tool_use, under message.id='msg_t1'
+    // Turn 2: longer thinking (len 63) under message.id='msg_t2'
+    //
+    // Bug (shrink heuristic only): turn-2 thinking is LONGER than turn-1 accumulated length,
+    // so `block.thinking.length < lastThinkingLen` never fires. lastThinkingLen stays at 2.
+    // Turn-2 first delta = thinking.slice(2) = 'et me carefully reason about a much longer-form chain of thought'
+    // Fix (id-based reset): message.id change from 'msg_t1' → 'msg_t2' resets lastThinkingLen=0.
+    // Turn-2 first delta = full turn-2 thinking string.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // Turn 1: short thinking + tool_use under msg_t1
+      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Hm' }] } },
+      { type: 'assistant', message: { id: 'msg_t1', content: [
+        { type: 'thinking', thinking: 'Hm' },
+        { type: 'tool_use', id: 'toolu_think_longer1', name: 'reify_get_source', input: { file: 'f.ri' } },
+      ] } },
+      // Turn 2: longer thinking under msg_t2 — no length shrink, only id changes
+      { type: 'assistant', message: { id: 'msg_t2', content: [
+        { type: 'thinking', thinking: 'Let me carefully reason about a much longer-form chain of thought' },
+      ] } },
+      { type: 'result', session_id: 'sess-longer-thinking' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-longer-thinking', text: 'Test longer turn-2 thinking' });
+
+    const thinkingDeltas = outputs.filter((o) => o.type === 'thinking_delta');
+    const deltaContents = thinkingDeltas.map((o) => (o as any).content);
+
+    // Turn 1 delta present
+    expect(deltaContents).toContain('Hm');
+
+    // Turn 2 first delta must be the FULL thinking string — not a slice from offset 2
+    // Broken: 'et me carefully reason about a much longer-form chain of thought'
+    // Fixed:  'Let me carefully reason about a much longer-form chain of thought'
+    expect(deltaContents).toContain('Let me carefully reason about a much longer-form chain of thought');
+  });
+
+  it('handles assistant event without message.id gracefully — no crash, deltas emit correctly', async () => {
+    // Verify the fallback branch (event.message.id absent):
+    // (a) No exception thrown — session completes normally.
+    // (b) Deltas emit correctly for monotonically growing text within a single turn.
+    // (c) Counters do not reset spuriously between partial updates.
+    //
+    // Without message.id the `typeof event.message.id === 'string'` guard never fires,
+    // so lastTextLen accumulates normally (no reset) and only incremental deltas emit.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // No message.id on any event — exercises the fallback path
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } },
+      { type: 'result', session_id: 'sess-no-id' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    // (a) Must complete without throwing
+    await expect(
+      session.handleMessage({ type: 'send_message', id: 'msg-no-id', text: 'Test no id' }),
+    ).resolves.toBeUndefined();
+
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    const deltaContents = textDeltas.map((o) => (o as any).content);
+
+    // (b) Deltas emit correctly: first partial → 'Hello', second partial → ' world' (incremental only)
+    expect(deltaContents).toContain('Hello');
+    expect(deltaContents).toContain(' world');
+
+    // (c) No spurious reset: the full 'Hello world' must NOT appear as a single delta,
+    // proving lastTextLen was NOT zeroed between the two partial events.
+    expect(deltaContents).not.toContain('Hello world');
   });
 });
 
@@ -838,11 +951,11 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     vi.mocked(spawn).mockReset();
   });
 
-  it('text-shrink reset-boundary preserves pending tool_use for subsequent tool_result', async () => {
+  it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (text channel)', async () => {
     // Turn 1: long text + tool_use (registers toolu_pending in toolNameById).
-    // Turn 2: shorter text 'Hi' triggers block.text.length < lastTextLen shrink branch.
-    // Bug: the shrink branch clears toolNameById/pendingToolUseIds, causing a subsequent
-    // tool_result for toolu_pending to be rejected with 'unknown tool_use_id'.
+    // Turn 2: new message.id triggers id-change reset (length counters only).
+    // Invariant: the id-change reset must NOT clear toolNameById/pendingToolUseIds,
+    // so a subsequent tool_result for toolu_pending forwards correctly.
     const { mockProc, stdout, stdinLines } = makeMockProc([
       { type: 'text', text: 'Hello world!' },
       { type: 'tool_use', id: 'toolu_pending', name: 'reify_x', input: {} },
@@ -866,12 +979,12 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       (m) => m.type === 'text_delta' && (m as any).content === 'Hi',
     );
 
-    // Push turn 2: shorter text → triggers text-shrink branch (block.text.length < lastTextLen)
+    // Push turn 2: new message.id triggers id-change reset (lastTextLen=0, lastThinkingLen=0)
     stdout.push(
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } }) + '\n',
+      JSON.stringify({ type: 'assistant', message: { id: 'msg_t2', content: [{ type: 'text', text: 'Hi' }] } }) + '\n',
     );
 
-    // Wait for text_delta 'Hi' — guarantees the shrink branch has been processed
+    // Wait for text_delta 'Hi' — guarantees the id-change reset has been processed
     await textDeltaHiWait;
 
     // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
@@ -909,11 +1022,11 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     await msgPromise;
   });
 
-  it('thinking-shrink reset-boundary preserves pending tool_use for subsequent tool_result', async () => {
+  it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (thinking channel)', async () => {
     // Turn 1: long thinking + tool_use (registers toolu_th_pending in toolNameById).
-    // Turn 2: shorter thinking 'Hm' triggers block.thinking.length < lastThinkingLen shrink branch.
-    // Bug: the thinking-shrink branch clears toolNameById/pendingToolUseIds, causing a subsequent
-    // tool_result for toolu_th_pending to be rejected with 'unknown tool_use_id'.
+    // Turn 2: new message.id triggers id-change reset (length counters only).
+    // Invariant: the id-change reset must NOT clear toolNameById/pendingToolUseIds,
+    // so a subsequent tool_result for toolu_th_pending forwards correctly.
     const { mockProc, stdout, stdinLines } = makeMockProc([
       { type: 'thinking', thinking: 'Let me reason about this for a while' },
       { type: 'tool_use', id: 'toolu_th_pending', name: 'reify_x', input: {} },
@@ -937,16 +1050,15 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       (m) => m.type === 'thinking_delta' && (m as any).content === 'Hm',
     );
 
-    // Push turn 2: shorter thinking → triggers thinking-shrink branch
-    // (block.thinking.length < lastThinkingLen)
+    // Push turn 2: new message.id triggers id-change reset (lastTextLen=0, lastThinkingLen=0)
     stdout.push(
       JSON.stringify({
         type: 'assistant',
-        message: { content: [{ type: 'thinking', thinking: 'Hm' }] },
+        message: { id: 'msg_t2', content: [{ type: 'thinking', thinking: 'Hm' }] },
       }) + '\n',
     );
 
-    // Wait for thinking_delta 'Hm' — guarantees the shrink branch has been processed
+    // Wait for thinking_delta 'Hm' — guarantees the id-change reset has been processed
     await thinkingDeltaHmWait;
 
     // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
