@@ -281,6 +281,35 @@ assert "subtask dotted dep with missing subtask fails validator" \
 assert "subtask dotted dep with missing subtask error mentions '200.99' or 'orphan'" \
     bash -c "python3 '$VALIDATOR' --check-subtasks '$SUBTASK_DOTTED_DEP_BAD_SUBTASK' 2>&1 | grep -qE '200\\.99|orphan'"
 
+# -- _validate_subtasks API contract: subtasks_by_parent kwarg is required ------
+# NOTE: this is an intentional SIGNATURE-PINNING test.  It asserts that Python
+# raises TypeError when _validate_subtasks is called without the
+# subtasks_by_parent keyword argument — a structural guard against accidentally
+# restoring a default=None that would silently swallow dotted-form deps.
+#
+# Trade-off: the test references the parameter name "subtasks_by_parent"
+# explicitly.  If the parameter is ever renamed, this test must be updated
+# alongside all call sites.  The business-logic invariant (dotted deps are
+# correctly resolved or rejected) is already covered by the dotted-dep
+# fixture tests above; this test only guards the API shape.
+echo ""
+echo "--- Test: _validate_subtasks API contract (signature-pinning) ---"
+
+KWARG_REQUIRED="$TMPDIR_FIXTURES/kwarg_required.py"
+cat >"$KWARG_REQUIRED" <<EOF
+import sys
+sys.path.insert(0, "$REPO_ROOT/scripts")
+from validate_tasks_json import _validate_subtasks
+try:
+    _validate_subtasks([], set(), "1", [], tag_context="")
+    sys.exit(1)  # call unexpectedly succeeded -- subtasks_by_parent NOT required
+except TypeError:
+    sys.exit(0)  # TypeError raised -- subtasks_by_parent IS required
+EOF
+
+assert "_validate_subtasks raises TypeError when called without subtasks_by_parent kwarg" \
+    python3 "$KWARG_REQUIRED"
+
 # -- Multi-tag support --------------------------------------------------------
 echo ""
 echo "--- Test: multi-tag support ---"

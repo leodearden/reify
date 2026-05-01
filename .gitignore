@@ -44,3 +44,7 @@ tree-sitter-reify/src/.generate.lock.d
 gui/dist/
 gui/sidecar/dist/
 gui/src-tauri/sidecar/reify-sidecar-*
+
+# Python bytecode (CPython __pycache__ directories and .pyc files)
+__pycache__/
+*.pyc

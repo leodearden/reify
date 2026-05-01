@@ -244,10 +244,14 @@ def _validate_subtasks(
     errors: list,
     *,
     tag_context: str = "",
-    subtasks_by_parent: "dict[str, set[str]] | None" = None,
+    subtasks_by_parent: dict[str, set[str]],
 ) -> None:
     """Apply invariants 1-3 to a subtask array (used only with --check-subtasks).
 
+    ``subtasks_by_parent`` is required: it maps each top-level parent task id to
+    the set of its valid subtask ids and is used to resolve dotted
+    ``<parent>.<subtask>`` dep references.  Callers must always pass it (the
+    main loop in ``main()`` supplies the value returned by ``_validate_tasks``).
     Subtask deps may reference sibling subtask IDs, parent-task IDs, or the
     dotted ``<parent>.<subtask>`` form (iff parent is a known top-level id and
     the subtask id exists under that parent).
@@ -304,9 +308,7 @@ def _validate_subtasks(
                 )
             elif dep in allowed_ids:
                 pass  # valid plain dep
-            elif subtasks_by_parent is not None and _dotted_dep_resolves(
-                dep, parent_task_ids, subtasks_by_parent
-            ):
+            elif _dotted_dep_resolves(dep, parent_task_ids, subtasks_by_parent):
                 pass  # valid dotted cross-task subtask ref
             else:
                 errors.append(
