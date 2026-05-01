@@ -1664,3 +1664,142 @@ describe('stdin write error correlation', () => {
     await msgPromise;
   });
 });
+
+describe('echoed tool_use_id validation', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  /**
+   * Shared setup: mock subprocess that emits ONE tool_use (id="toolu_real", name="reify_x")
+   * and leaves stdout open. Returns { mockProc, stdout, stdinLines, msgPromise, toolCallWait }.
+   */
+  function setupValidationTest() {
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    // Attach stdin accumulator BEFORE the spawn-triggering handleMessage call
+    const stdinLines: unknown[] = [];
+    let stdinBuf = '';
+    mockProc.stdin.on('data', (chunk: Buffer | string) => {
+      stdinBuf += chunk.toString();
+      let nlIdx: number;
+      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
+        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
+        stdinBuf = stdinBuf.slice(nlIdx + 1);
+      }
+    });
+
+    vi.mocked(spawn).mockImplementation((() => {
+      process.nextTick(() => {
+        stdout.push(JSON.stringify({
+          type: 'assistant',
+          message: { content: [
+            { type: 'tool_use', id: 'toolu_real', name: 'reify_x', input: {} },
+          ] },
+        }) + '\n');
+        // Leave stdout open
+      });
+      return mockProc;
+    }) as any);
+
+    // Set up wait for tool_call BEFORE dispatch
+    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+
+    // Start send_message (don't await — hangs until stdout closes)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'send-val',
+      text: 'Trigger tool call',
+    });
+
+    return { mockProc, stdout, stdinLines, msgPromise, toolCallWait };
+  }
+
+  it('emits structured error and does not forward when echoed tool_use_id is unknown', async () => {
+    const { stdout, stdinLines, msgPromise, toolCallWait, mockProc } = setupValidationTest();
+
+    // Wait for tool_call outbound (event-driven)
+    await toolCallWait;
+
+    // Set up wait for error outbound BEFORE dispatching the bad tool_result
+    const errorWait = waitForOutput(session, (m) => m.type === 'error');
+
+    // Dispatch tool_result with a BOGUS tool_use_id (not in toolNameById)
+    session.handleMessage({
+      type: 'tool_result',
+      id: 'tool-bogus',
+      tool_name: 'reify_x',
+      result: 'ok',
+      tool_use_id: 'toolu_BOGUS',
+    });
+
+    // Wait for the error outbound
+    const errorMsg = await errorWait;
+
+    // Assertions: structured error with correct id and matching message
+    expect((errorMsg as any).id).toBe('tool-bogus');
+    expect((errorMsg as any).message).toMatch(/unknown.*tool_use_id|invalid.*tool_use_id/i);
+
+    // No tool_result was forwarded to stdin (only the initial prompt write)
+    await waitForStdinLines(mockProc.stdin, stdinLines, 1);
+    expect(stdinLines.length).toBe(1);
+
+    // Cleanup
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+
+  it('emits structured error and does not forward when echoed tool_use_id name does not match tool_name', async () => {
+    const { stdout, stdinLines, msgPromise, toolCallWait, mockProc } = setupValidationTest();
+
+    // Wait for tool_call outbound (event-driven)
+    await toolCallWait;
+
+    // Set up wait for error outbound BEFORE dispatching the mismatched tool_result
+    const errorWait = waitForOutput(session, (m) => m.type === 'error');
+
+    // Dispatch tool_result with the REAL tool_use_id but WRONG tool_name (mismatch)
+    session.handleMessage({
+      type: 'tool_result',
+      id: 'tool-mismatch',
+      tool_name: 'reify_OTHER',  // registered id maps to 'reify_x', not 'reify_OTHER'
+      result: 'ok',
+      tool_use_id: 'toolu_real',
+    });
+
+    // Wait for the error outbound
+    const errorMsg = await errorWait;
+
+    // Assertions: structured error with correct id and name-mismatch message
+    expect((errorMsg as any).id).toBe('tool-mismatch');
+    // Message should indicate name mismatch (registered name vs provided name)
+    expect((errorMsg as any).message).toMatch(/does not match|mismatch|reify_x|reify_OTHER/i);
+
+    // No tool_result was forwarded to stdin (only the initial prompt write)
+    await waitForStdinLines(mockProc.stdin, stdinLines, 1);
+    expect(stdinLines.length).toBe(1);
+
+    // Cleanup
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+});
