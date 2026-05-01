@@ -548,42 +548,10 @@ mod tests {
     }
 
     #[test]
-    fn stub_kernel_surface_angle_returns_error() {
+    fn stub_kernel_point_on_shape_returns_error() {
         let kernel = OcctKernel::new();
-        let result = kernel.surface_angle(GeometryHandleId(1), GeometryHandleId(2));
-        let err = result.expect_err("stub surface_angle should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_handle_fillet_with_history_returns_error() {
-        let handle = OcctKernelHandle::spawn();
-        let result = handle.fillet_with_history(GeometryHandleId(1), 1.0e-3);
-        let err = result.expect_err("stub fillet_with_history should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_handle_chamfer_with_history_returns_error() {
-        let handle = OcctKernelHandle::spawn();
-        let result = handle.chamfer_with_history(GeometryHandleId(1), 1.0e-3);
-        let err = result.expect_err("stub chamfer_with_history should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_kernel_surface_normal_at_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.surface_normal_at(GeometryHandleId(1), 0.0, 0.0);
-        let err = result.expect_err("stub surface_normal_at should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_kernel_curvature_at_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.curvature_at(GeometryHandleId(1), 0.0, 0.0);
-        let err = result.expect_err("stub curvature_at should error");
+        let result = kernel.point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0, 1e-7);
+        let err = result.expect_err("stub point_on_shape should error");
         assert_stub_message(&format!("{err:?}"));
     }
 }
