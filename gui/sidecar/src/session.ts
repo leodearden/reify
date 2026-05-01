@@ -220,8 +220,8 @@ export class SidecarSession {
               // the new turn. Tool-correlation maps (toolNameById, pendingToolUseIds)
               // are NOT cleared here because pending tool_uses from a prior assistant
               // turn may still be awaiting a tool_result from the host. Maps are only
-              // cleared at the three lifecycle boundaries: invokeSdk start (line 139-140),
-              // destroy() (line 56-57), and handleClearSession (line 419-420).
+              // cleared at the three lifecycle boundaries: invokeSdk start, destroy(),
+              // and handleClearSession.
               if (block.type === 'text' && block.text) {
                 if (block.text.length < lastTextLen) {
                   lastTextLen = 0;

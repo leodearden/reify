@@ -884,19 +884,22 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       tool_use_id: 'toolu_pending',
     });
 
-    // Wait for stdin line 2 (initial prompt = line 1, forwarded tool_result = line 2).
-    // On buggy code this never arrives (tool_result is rejected with unknown-id error)
-    // and the test times out — which is the expected TDD failure.
-    await waitForStdinLines(mockProc.stdin, stdinLines, 2);
+    // Race: if the unknown-id error fires before stdin line 2, fail immediately with a
+    // clear message rather than waiting for vitest's default timeout.  On buggy code
+    // (maps cleared at reset boundary) the error fires first; on fixed code the stdin
+    // line arrives first.
+    const unexpectedErrorWait = waitForOutput(
+      session,
+      (m) => m.type === 'error' && /unknown.*tool_use_id/i.test((m as any).message ?? ''),
+    );
+    const winner = await Promise.race([
+      waitForStdinLines(mockProc.stdin, stdinLines, 2).then(() => 'stdin' as const),
+      unexpectedErrorWait.then(() => 'error' as const),
+    ]);
+    expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
 
     // Assert the tool_result was forwarded with the correct tool_use_id
     expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_pending');
-
-    // Assert no unknown tool_use_id error was emitted for this tool_result
-    const unknownIdErrors = outputs.filter(
-      (o) => o.type === 'error' && /unknown.*tool_use_id/i.test((o as any).message ?? ''),
-    );
-    expect(unknownIdErrors).toHaveLength(0);
 
     // Cleanup: close stdout so msgPromise can resolve
     stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-rb-text' }) + '\n');
@@ -956,19 +959,22 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       tool_use_id: 'toolu_th_pending',
     });
 
-    // Wait for stdin line 2 (initial prompt = line 1, forwarded tool_result = line 2).
-    // On buggy code this never arrives (tool_result is rejected with unknown-id error)
-    // and the test times out — which is the expected TDD failure.
-    await waitForStdinLines(mockProc.stdin, stdinLines, 2);
+    // Race: if the unknown-id error fires before stdin line 2, fail immediately with a
+    // clear message rather than waiting for vitest's default timeout.  On buggy code
+    // (maps cleared at reset boundary) the error fires first; on fixed code the stdin
+    // line arrives first.
+    const unexpectedErrorWait = waitForOutput(
+      session,
+      (m) => m.type === 'error' && /unknown.*tool_use_id/i.test((m as any).message ?? ''),
+    );
+    const winner = await Promise.race([
+      waitForStdinLines(mockProc.stdin, stdinLines, 2).then(() => 'stdin' as const),
+      unexpectedErrorWait.then(() => 'error' as const),
+    ]);
+    expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
 
     // Assert the tool_result was forwarded with the correct tool_use_id
     expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_th_pending');
-
-    // Assert no unknown tool_use_id error was emitted for this tool_result
-    const unknownIdErrors = outputs.filter(
-      (o) => o.type === 'error' && /unknown.*tool_use_id/i.test((o as any).message ?? ''),
-    );
-    expect(unknownIdErrors).toHaveLength(0);
 
     // Cleanup: close stdout so msgPromise can resolve
     stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-rb-think' }) + '\n');
@@ -2083,11 +2089,29 @@ describe('FIFO consumption on echoed-id path', () => {
 
     // Verify the fallback used toolu_2 (the remaining id), NOT toolu_1 (already consumed).
     // This proves toolu_1 was drained from the FIFO on the echoed-id forward above.
-    // The toolNameById drain for toolu_2 is proven by the stale-id re-dispatch test in
-    // the 'echoed tool_use_id validation' describe: re-dispatching a consumed id triggers
-    // the unknown-id guard at session.ts:335, which relies on deletion at line 388.
     const line3 = stdinLines[2] as any;
     expect(line3.message.content[0].tool_use_id).toBe('toolu_2');
+
+    // --- Step (c): Prove toolNameById was drained for toolu_2 on the fallback path ---
+    // Re-dispatch an echoed-id tool_result for toolu_2 (already consumed by the FIFO
+    // fallback above). If toolNameById was correctly drained it must hit the unknown-id
+    // guard and emit a structured error with no extra stdin write.
+    const staleIdErrorWait = waitForOutput(
+      session,
+      (m) => m.type === 'error' && /unknown.*tool_use_id/i.test((m as any).message ?? ''),
+    );
+    session.handleMessage({
+      type: 'tool_result',
+      id: 'tr-stale-2',
+      tool_name: 'reify_x',
+      result: 'result-stale',
+      tool_use_id: 'toolu_2',
+    });
+    const staleIdError = await staleIdErrorWait;
+    expect((staleIdError as any).id).toBe('tr-stale-2');
+    // Yield microtasks so any stray write would land before we assert length
+    await new Promise(setImmediate);
+    expect(stdinLines.length).toBe(3); // no extra forward
 
     // Cleanup: close stdout so msgPromise can resolve
     stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-fifo' }) + '\n');
