@@ -404,6 +404,45 @@ mod tests {
         );
     }
 
+    /// When `total == 1` (v0.2 single-kernel build), `emit_kernel_selection`
+    /// must emit exactly one `DEBUG`-level event and no `INFO`-level events at
+    /// the `reify_eval::kernel_registry` target.
+    ///
+    /// This exercises the single-kernel DEBUG branch so that an `RUST_LOG=debug`
+    /// operator always sees a selection event while an `RUST_LOG=info` operator
+    /// only sees events when a lex-min tie-break between multiple kernels
+    /// actually occurred. Passing `("only", 1)` avoids invoking any factory.
+    #[test]
+    fn emit_kernel_selection_emits_debug_only_when_total_is_one() {
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::INFO)
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_eval::kernel_registry")
+            .build();
+        let info_count = counters[&tracing::Level::INFO].clone();
+        let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+        tracing::subscriber::with_default(subscriber, || {
+            emit_kernel_selection("only", 1);
+        });
+
+        assert_eq!(
+            info_count.load(Ordering::Acquire),
+            0,
+            "emit_kernel_selection(name, total == 1) must not emit INFO — \
+             INFO is reserved for the multi-kernel tie-break case (total > 1)",
+        );
+        assert_eq!(
+            debug_count.load(Ordering::Acquire),
+            1,
+            "emit_kernel_selection(name, total == 1) must emit exactly one DEBUG event \
+             at reify_eval::kernel_registry — single-kernel selection always visible at RUST_LOG=debug",
+        );
+    }
+
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
     /// *smaller* kernel when multiple registrations are present.
     ///
