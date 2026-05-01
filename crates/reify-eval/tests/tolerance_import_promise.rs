@@ -12,107 +12,12 @@
 //! `Engine::check_imported_tolerance_promise`'s strict-tighter-than-promise
 //! warning emission and the four no-op rows of its truth table.
 
-use reify_test_support::builders::{
-    CompiledModuleBuilder, CompiledPurposeBuilder, TopologyTemplateBuilder,
+use reify_test_support::builders::CompiledModuleBuilder;
+use reify_test_support::{
+    make_engine, manufacturing_purpose, my_design_template, step_input_template,
+    step_output_template,
 };
-use reify_test_support::make_engine;
-use reify_types::{
-    CompiledExpr, DiagnosticCode, DimensionVector, ModulePath, Severity, Type, Value, ValueCellId,
-};
-
-/// Build an `STEPInput`-shaped `TopologyTemplate` carrying a single
-/// `param tolerance : Length = promise_tol_si m` declaration. The template's
-/// name is `"STEPInput"` so the post-`eval()` snapshot's value-cell map
-/// contains an entry keyed by `ValueCellId("STEPInput", "tolerance")` whose
-/// value is `Value::Scalar { si_value == promise_tol_si, dimension == LENGTH }`.
-/// See `crate::tolerance_promise::extract_input_tolerance_promise` for the
-/// recognition contract.
-fn step_input_template(promise_tol_si: f64) -> reify_compiler::TopologyTemplate {
-    let length_type = Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    };
-    let default_expr = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: promise_tol_si,
-            dimension: DimensionVector::LENGTH,
-        },
-        length_type.clone(),
-    );
-    TopologyTemplateBuilder::new("STEPInput")
-        .param("STEPInput", "tolerance", length_type, Some(default_expr))
-        .build()
-}
-
-/// Build an `STEPOutput`-shaped `TopologyTemplate` carrying a single
-/// `RepresentationWithin(<ValueRef typed StructureRef>, <length-literal>)`
-/// body constraint at SI `output_tol` metres. Mirrors the precedent in
-/// `tests/tolerance_combine.rs::step_output_template`.
-fn step_output_template(output_tol: f64) -> reify_compiler::TopologyTemplate {
-    let subject_arg = CompiledExpr::value_ref(
-        ValueCellId::new("subject", "self"),
-        Type::StructureRef("Structure".to_string()),
-    );
-    let tol_arg = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: output_tol,
-            dimension: DimensionVector::LENGTH,
-        },
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    let body = CompiledExpr::user_function_call(
-        "RepresentationWithin".to_string(),
-        vec![subject_arg, tol_arg],
-        Type::Bool,
-    );
-    TopologyTemplateBuilder::new("STEPOutput")
-        .param(
-            "STEPOutput",
-            "subject",
-            Type::StructureRef("Structure".to_string()),
-            None,
-        )
-        .constraint("STEPOutput", 0, None, body)
-        .build()
-}
-
-/// Build a `manufacturing`-style `CompiledPurpose` whose sole constraint is
-/// `RepresentationWithin(subject, purpose_tol m)`. Mirrors the precedent in
-/// `tests/tolerance_combine.rs::manufacturing_purpose`.
-fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> reify_compiler::CompiledPurpose {
-    let subject_arg = CompiledExpr::value_ref(
-        ValueCellId::new("subject", "self"),
-        Type::StructureRef("Structure".to_string()),
-    );
-    let tol_arg = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: purpose_tol,
-            dimension: DimensionVector::LENGTH,
-        },
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    let rep_within = CompiledExpr::user_function_call(
-        "RepresentationWithin".to_string(),
-        vec![subject_arg, tol_arg],
-        Type::Bool,
-    );
-    CompiledPurposeBuilder::new(purpose_name)
-        .param("subject", "Structure")
-        .constraint("subject", 0, None, rep_within)
-        .build()
-}
-
-/// Build a minimal `MyDesign` template — the subject of the manufacturing
-/// purpose's tolerance scope. Mirrors the precedent in
-/// `tests/tolerance_combine.rs::my_design_template`.
-fn my_design_template() -> reify_compiler::TopologyTemplate {
-    TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
-        .build()
-}
+use reify_types::{DiagnosticCode, ModulePath, Severity};
 
 /// Pinned by the imported-geometry-promise contract: after `eval()`, the
 /// `STEPInput` template's `param tolerance : Length = X m` declaration
