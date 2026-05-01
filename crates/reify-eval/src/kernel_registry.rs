@@ -82,13 +82,8 @@ pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
 }
 
 /// The lexicographically smallest [`KernelRegistration`] in the memoized
-/// registry paired with the total registry size, or `None` if no adapter has
-/// submitted one (e.g. stub-mode build with `cfg(has_occt)` off).
-///
-/// Returns the total count alongside the selected entry so callers can pass
-/// both directly to [`emit_kernel_selection`] without a second [`registry`]
-/// call. The count and the pick are taken from the same snapshot, making their
-/// consistency guaranteed rather than merely assumed.
+/// registry, or `None` if no adapter has submitted one (e.g. stub-mode build
+/// with `cfg(has_occt)` off).
 ///
 /// Centralises the "lex-min on `name`" tie-break used by
 /// [`crate::Engine::with_registered_kernel`] (and, in v0.3+, by any
@@ -96,10 +91,8 @@ pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
 /// every caller through this helper guarantees the tie-break invariant lives
 /// in one place — a future change (e.g. environment-variable-driven default
 /// selection) would only need to update this function.
-pub fn pick_lexmin_kernel() -> Option<(&'static KernelRegistration, usize)> {
-    let reg = registry();
-    let total = reg.len();
-    reg.values().next().copied().map(|r| (r, total))
+pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
+    registry().values().next().copied()
 }
 
 /// Iterate the static linker-collected set of [`KernelRegistration`] records

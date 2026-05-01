@@ -269,10 +269,11 @@ impl Engine {
         // happens at most once per process even if other call paths
         // (collect_registry, future dispatcher wiring) also hit the registry.
         let picked = crate::kernel_registry::pick_lexmin_kernel();
-        if let Some((reg, total)) = picked {
+        if let Some(reg) = picked {
+            let total = crate::kernel_registry::registry().len();
             crate::kernel_registry::emit_kernel_selection(reg.name, total);
         }
-        let kernel: Option<Box<dyn GeometryKernel>> = picked.map(|(reg, _)| (reg.factory)());
+        let kernel: Option<Box<dyn GeometryKernel>> = picked.map(|reg| (reg.factory)());
         Self::with_prelude(
             constraint_checker,
             kernel,
