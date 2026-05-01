@@ -170,3 +170,97 @@ structure def ORingSeal : Seal {
         diagnostics
     );
 }
+
+// ─── step-19: DFS multi-param all-feasible picks lex-first cross-product ───
+
+/// Two `AutoTypeParam`s `[T : Seal, U : Cooled]` where:
+/// - T has two candidates (Seal lex order: `ORingSeal`, `RubberSeal`),
+/// - U has two candidates (Cooled lex order: `AirCooled`, `WaterCooled`).
+///
+/// With a default `MockConstraintChecker` (every leaf ⇒ Satisfied) and
+/// both params `free=true`, DFS must visit the cross-product in
+/// lexicographic order (T outer, U inner) and stop at the first feasible
+/// leaf. Expected outcome: `substitution == [(T, ORingSeal), (U, AirCooled)]`,
+/// `per_param == [(T, Selected(ORingSeal)), (U, Selected(AirCooled))]`,
+/// zero diagnostics (free-mode `NonUnique` warnings are task 2661's scope —
+/// see file-level out-of-scope note).
+///
+/// Strict-Ambiguous over multiple cross-product feasibles is the inverse
+/// of this test and is exercised by `dfs_strict_mode_with_two_feasible_cross_products_returns_ambiguous`
+/// in step-23.
+#[test]
+fn dfs_multi_param_all_feasible_picks_lex_first_cross_product() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+                ("U".to_string(), SelectionResult::Selected("AirCooled".to_string())),
+            ],
+            substitution: vec![
+                ("T".to_string(), "ORingSeal".to_string()),
+                ("U".to_string(), "AirCooled".to_string()),
+            ],
+        },
+        "DFS multi-param all-feasible (free=true on both) must pick the lex-first cross-product (T=ORingSeal, U=AirCooled)"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "DFS multi-param all-feasible free-mode must emit zero diagnostics in 2659 (NonUnique warning is task 2661's scope), got: {:?}",
+        diagnostics
+    );
+}
