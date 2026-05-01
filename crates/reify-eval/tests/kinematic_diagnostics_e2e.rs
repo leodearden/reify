@@ -85,9 +85,9 @@ fn kinematic_diagnostics_e2e_reports_singularity_for_rank_one_six_dof_chain() {
     );
 
     assert!(
-        report.is_singular,
+        report.is_singular(),
         "expected is_singular=true on rank-deficient Jacobian, got is_singular={} (outcome={:?})",
-        report.is_singular, report.outcome,
+        report.is_singular(), report.outcome,
     );
     assert!(
         matches!(report.outcome, NewtonOutcome::Singular { .. }),

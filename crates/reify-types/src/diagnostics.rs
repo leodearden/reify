@@ -605,10 +605,10 @@ pub enum DiagnosticCode {
     ///
     /// Emitted as a `Severity::Warning` when the loop-closure Newton solver
     /// returns [`NewtonOutcome::Singular`](../../reify_stdlib/loop_closure_solver/enum.NewtonOutcome.html#variant.Singular)
-    /// (LDLᵀ pivot below `NewtonConfig::singularity_pivot_eps`). The wrapper sets
-    /// `LoopClosureReport::is_singular = true` and the `Singular` variant's `x`
-    /// field carries the last-converged config the PRD requires the snapshot to
-    /// surface.
+    /// (LDLᵀ pivot below `NewtonConfig::singularity_pivot_eps`).
+    /// `LoopClosureReport::is_singular()` returns `true` (derived from `outcome`)
+    /// and the `Singular` variant's `x` field carries the last-converged config
+    /// the PRD requires the snapshot to surface.
     ///
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_SINGULARITY`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
