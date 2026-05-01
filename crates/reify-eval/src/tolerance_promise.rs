@@ -60,6 +60,33 @@ use reify_types::{
 /// doesn't fire, but the runtime doesn't crash either. This matches the
 /// "activate dormant infrastructure" posture from PRD `docs/prds/v0_2/
 /// per-purpose-tolerance.md` (extraction is policy-neutral).
+///
+/// # Zero-promise interpretation
+///
+/// `si_value == 0.0` is **accepted** — it is the lower boundary of Gate 4's
+/// `is_finite() && >= 0.0` check, not a rejected value. This mirrors the
+/// precedent set by [`crate::tolerance_scope::extract_tolerance_bindings`]'s
+/// `accepts_zero_tolerance_literal` test (which explicitly pins `0.0` as a
+/// valid tolerance literal meaning "exact representation") and
+/// [`crate::tolerance_combine::extract_output_tolerance_bound`]'s identical
+/// `is_finite() && >= 0.0` gate. All three extractors were built in lockstep
+/// and must remain symmetric.
+///
+/// **Semantic reading:** a zero promise claims "imported geometry has zero
+/// deviation from the ideal" — a coherent, if extremely strong, assertion.
+///
+/// **Footgun:** combined with [`is_promise_insufficient`]'s strict-`<` rule,
+/// a zero promise vacuously satisfies *every* non-negative demand (since
+/// `demanded < 0.0` is false for all `demanded >= 0.0`). Consequently, a
+/// `param tolerance : Length = 0m` placeholder default silently disables the
+/// [`DiagnosticCode::ImportedTolerancePromiseInsufficient`] warning: no demand
+/// will ever be flagged as tighter than a promise of `0.0`.
+///
+/// **Correct opt-out:** authors who do *not* want to make a tolerance promise
+/// should **omit the `tolerance` parameter entirely** (so the cell-lookup at
+/// Gate 1 finds no entry and returns `None` — the same path as a missing
+/// tolerance binding) rather than writing `param tolerance : Length = 0m` as
+/// a placeholder default.
 pub fn extract_input_tolerance_promise(
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     input_template_name: &str,
