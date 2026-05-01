@@ -1447,6 +1447,112 @@ describe('entrypoint wiring', () => {
   });
 });
 
+describe('close-on-result race', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('tool_result after result event produces "no in-flight" error, not "stdin write error"', async () => {
+    // Hand-rolled mock subprocess
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    // Attach stdin data listener BEFORE spawn-triggering handleMessage call
+    const stdinLines: unknown[] = [];
+    let stdinBuf = '';
+    mockProc.stdin.on('data', (chunk: Buffer | string) => {
+      stdinBuf += chunk.toString();
+      let nlIdx: number;
+      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
+        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
+        stdinBuf = stdinBuf.slice(nlIdx + 1);
+      }
+    });
+
+    vi.mocked(spawn).mockImplementation((() => {
+      process.nextTick(() => {
+        stdout.push(JSON.stringify({
+          type: 'assistant',
+          message: { content: [
+            { type: 'tool_use', id: 'toolu_race', name: 'reify_get_diagnostics', input: {} },
+          ] },
+        }) + '\n');
+        // Leave stdout open — we'll push the result line manually below
+      });
+      return mockProc;
+    }) as any);
+
+    // Set up wait for tool_call BEFORE dispatch
+    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+
+    // Start send_message (don't await — will hang waiting for stdout to close)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'send-race',
+      text: 'Check diagnostics',
+    });
+
+    // Wait for tool_call outbound (event-driven)
+    await toolCallWait;
+
+    // Push the 'result' event to stdout, but do NOT close stdout yet.
+    // This triggers proc.stdin?.end() inside the for-await loop,
+    // but currentStdin is not nulled until the finally block (Bug #2).
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-race' }) + '\n');
+
+    // Wait for proc.stdin to finish (stdin.end() has been called by the result branch).
+    // This confirms the result branch executed before we send the tool_result.
+    await new Promise<void>((resolve) => {
+      if (mockProc.stdin.writableEnded) {
+        resolve();
+      } else {
+        mockProc.stdin.once('finish', resolve);
+      }
+    });
+
+    // Set up wait for error outbound BEFORE dispatching tool_result
+    const errorWait = waitForOutput(session, (m) => m.type === 'error');
+
+    // Dispatch tool_result AFTER the result event fired (race window).
+    // Bug #2: currentStdin is still non-null (not yet cleared), so the write
+    // proceeds against an ended stream → "stdin write error"
+    // Fix: currentStdin is nulled immediately after proc.stdin?.end() → "no in-flight"
+    session.handleMessage({
+      type: 'tool_result',
+      id: 'tool-race',
+      tool_name: 'reify_get_diagnostics',
+      result: { diagnostics: [] },
+    });
+
+    // Wait for the error outbound
+    const errorMsg = await errorWait;
+
+    // THE KEY ASSERTION: must be the clean "no in-flight" error, NOT "stdin write error"
+    expect((errorMsg as any).message).toMatch(/no in-flight claude CLI process/i);
+    expect((errorMsg as any).message).not.toMatch(/stdin write error/i);
+
+    // Cleanup: close stdout so msgPromise can resolve
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+});
+
 describe('stdin write error correlation', () => {
   let session: SidecarSession;
   let outputs: OutboundMessage[];
