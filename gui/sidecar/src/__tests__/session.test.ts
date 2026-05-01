@@ -707,6 +707,69 @@ describe('SidecarSession multi-turn streaming', () => {
   });
 });
 
+describe('SidecarSession stale-state lifecycle', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('invokeSdk start clears stale maps from a previous turn', async () => {
+    // Pre-populate stale state from a hypothetical prior turn that left data behind
+    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
+    (session as any).toolNameById.set('toolu_stale', 'reify_old');
+
+    // Configure spawn mock to return a process that emits no tool_use (just text + result)
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
+      { type: 'result', session_id: 'sess-clean' },
+    ])) as any);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-fresh', text: 'Hi' });
+
+    // After the invocation completes, the stale entries must have been cleared at start
+    expect((session as any).pendingToolUseIds.has('reify_old')).toBe(false);
+    expect((session as any).toolNameById.has('toolu_stale')).toBe(false);
+  });
+
+  it('destroy() clears toolNameById and pendingToolUseIds maps', () => {
+    // Pre-populate both maps
+    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
+    (session as any).toolNameById.set('toolu_stale', 'reify_old');
+
+    session.destroy();
+
+    expect((session as any).toolNameById.size).toBe(0);
+    expect((session as any).pendingToolUseIds.size).toBe(0);
+  });
+
+  it('clear_session clears toolNameById and pendingToolUseIds maps', async () => {
+    // Pre-populate both maps
+    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
+    (session as any).toolNameById.set('toolu_stale', 'reify_old');
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'clear_session' });
+
+    expect((session as any).toolNameById.size).toBe(0);
+    expect((session as any).pendingToolUseIds.size).toBe(0);
+
+    // Verify the existing handleClearSession contract is preserved: ready is still emitted
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]).toEqual({ type: 'ready' });
+  });
+});
+
 describe('SidecarSession destroy() lifecycle', () => {
   let outputs: OutboundMessage[];
 
