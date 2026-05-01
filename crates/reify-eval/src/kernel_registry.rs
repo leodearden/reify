@@ -455,6 +455,18 @@ mod tests {
         );
     }
 
+    /// The doc table at lines 150-154 declares `total == 0` emits no event.
+    /// The `debug_assert!(total >= 1, …)` enforces this structurally: callers
+    /// must guarantee `total >= 1` so a future v0.3+ dispatcher reuser cannot
+    /// silently call `emit_kernel_selection` with an empty registry and have
+    /// the helper quietly emit a spurious DEBUG event. This test confirms the
+    /// panic fires when `total == 0` (in debug builds, i.e. `cargo test`).
+    #[test]
+    #[should_panic(expected = "emit_kernel_selection requires total >= 1")]
+    fn emit_kernel_selection_panics_when_total_is_zero() {
+        emit_kernel_selection("nothing", 0);
+    }
+
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
     /// *smaller* kernel when multiple registrations are present.
     ///
