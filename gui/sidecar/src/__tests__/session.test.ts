@@ -61,12 +61,22 @@ function waitForOutput(
   session: SidecarSession,
   predicate: (m: OutboundMessage) => boolean,
   options: { timeoutMs?: number } = {}
-): Promise<OutboundMessage> {
+): Promise<OutboundMessage> & { cancel: () => void } {
   const timeoutMs = options.timeoutMs ?? 5000;
   const prev = session.onOutput;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout>;
+
+  const cancel = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    session.onOutput = prev;
+    // The promise is left pending (never resolved or rejected).
+  };
+
+  const promise = new Promise<OutboundMessage>((resolve, reject) => {
+    timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       session.onOutput = prev;
@@ -83,6 +93,8 @@ function waitForOutput(
       }
     };
   });
+
+  return Object.assign(promise, { cancel });
 }
 
 /**
