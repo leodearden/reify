@@ -1,27 +1,32 @@
 //! Human-readable unit-prefix formatter for tolerance diagnostic messages.
 //!
-//! Shared across the four `tolerance_*` modules so all diagnostic messages
-//! use the same `µm / mm / m` magnitude bands.
+//! Intended to be shared across the four `tolerance_*` modules for consistent
+//! `µm / mm / m` magnitude bands in diagnostic messages.
+//!
+//! Currently only `tolerance_promise` calls this helper.
+//! TODO(task-2790-follow-up): migrate `tolerance_combine`, `tolerance_bucket`,
+//! and `tolerance_budget` raw f64-metres format sites to use `format_tolerance`.
 //!
 //! # Band breakpoints
 //!
-//! | Condition            | Unit | Example output |
-//! |----------------------|------|----------------|
-//! | `si < 1e-3` m        | µm   | `50µm`         |
-//! | `1e-3 ≤ si < 1.0` m  | mm   | `5mm`          |
-//! | `si ≥ 1.0` m         | m    | `1.5m`         |
-//! | `si == 0.0`          | m    | `0m`           |
-//! | non-finite / negative | m   | raw fallback   |
+//! | Condition             | Unit | Example output |
+//! |-----------------------|------|----------------|
+//! | `si < 1e-3` m         | µm   | `50µm`         |
+//! | `1e-3 ≤ si < 1.0` m   | mm   | `5mm`          |
+//! | `si ≥ 1.0` m          | m    | `1.5m`         |
+//! | `si == 0.0`           | m    | `0m`           |
+//! | non-finite / negative | —    | `"{x} m"` (space-separated fallback) |
 
 /// Format an SI-metres tolerance value as a human-readable string.
 ///
 /// Uses the µm / mm / m magnitude bands that are already established in
 /// `tolerance_promise`'s truth-table docstring and across the test suite.
-/// Non-finite or negative inputs fall through to a raw `"{x}m"` fallback
+/// Non-finite or negative inputs fall through to a `"{x} m"` fallback
+/// (space-separated to avoid ambiguous strings like `"NaNm"` or `"infm"`)
 /// so the helper never panics even if upstream invariants are broken.
 pub(crate) fn format_tolerance(si_metres: f64) -> String {
     if !si_metres.is_finite() || si_metres < 0.0 {
-        return format!("{si_metres}m");
+        return format!("{si_metres} m");
     }
     if si_metres == 0.0 {
         return "0m".to_string();
@@ -69,5 +74,23 @@ mod tests {
     fn format_tolerance_sub_micron() {
         // sub-µm sanity: 1e-9 m = 0.001 µm
         assert_eq!(format_tolerance(1e-9), "0.001µm");
+    }
+
+    #[test]
+    fn format_tolerance_near_mm_boundary_stays_microns() {
+        // 0.999_999e-3 m is just below the 1e-3 band boundary, so it renders
+        // in µm. Due to f64 arithmetic (`0.999_999e-3 * 1e6` is not exactly
+        // 999.999), the shortest-round-trip Display produces a long decimal:
+        // "999.9989999999999µm". This test pins that actual output so the
+        // formatting choice (no precision spec, raw `{}`) is explicit rather
+        // than assumed to be exact.
+        assert_eq!(format_tolerance(0.999_999e-3), "999.9989999999999µm");
+    }
+
+    #[test]
+    fn format_tolerance_metres_non_integer() {
+        // A value in the m-band that isn't an integer — pins that no
+        // precision spec is applied and the output matches f64 Display.
+        assert_eq!(format_tolerance(1.5), "1.5m");
     }
 }

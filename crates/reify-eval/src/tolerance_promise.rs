@@ -193,11 +193,10 @@ pub fn is_promise_insufficient(demanded: f64, promise: f64) -> bool {
 ///   `"STEPInput"`); appears verbatim in the diagnostic message so authors
 ///   can locate the import site.
 /// - `demanded` — the demanded tolerance in SI metres (the tighter side);
-///   rendered via [`crate::tolerance_format::format_tolerance`] (µm/mm/m by
-///   magnitude).
+///   rendered with µm / mm / m prefixes by magnitude.
 /// - `promise` — the imported-geometry tolerance promise in SI metres
-///   (the looser side; `promise > demanded`); rendered via
-///   [`crate::tolerance_format::format_tolerance`].
+///   (the looser side; `promise > demanded`); rendered with µm / mm / m
+///   prefixes by magnitude.
 pub fn imported_tolerance_promise_diagnostic(
     input_template_name: &str,
     demanded: f64,
