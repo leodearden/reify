@@ -248,6 +248,54 @@ pub fn is_promise_insufficient(demanded: f64, promise: f64) -> bool {
 /// - `promise` — the imported-geometry tolerance promise in SI metres
 ///   (the looser side; `promise > demanded`); rendered with µm / mm / m
 ///   prefixes by magnitude.
+/// Build the `Severity::Warning` diagnostic emitted when the imported-geometry
+/// tolerance promise on an `Input` occurrence template is exactly `0.0` AND
+/// the downstream demand is strictly positive (`demanded > 0.0`).
+///
+/// This surfaces the placeholder-default footgun where `param tolerance : Length = 0m`
+/// silently disables the [`DiagnosticCode::ImportedTolerancePromiseInsufficient`]
+/// warning: when `promise == 0.0`, the strict-`<` rule in
+/// [`is_promise_insufficient`] evaluates `demanded < 0.0`, which is false for
+/// every `demanded >= 0.0`, so the insufficient branch never fires.
+///
+/// # Resolution (task 2833)
+///
+/// Option-(b continuation) was selected: the extractor gate stays at
+/// `is_finite() && >= 0.0` to preserve cross-extractor symmetry, and the
+/// footgun is surfaced at runtime via this diagnostic emitted at the engine
+/// query layer. See [`DiagnosticCode::InputTolerancePromiseIsZero`] for the
+/// full design rationale.
+///
+/// # Canonical message form
+///
+/// `"imported geometry '<input_template>' carries a zero tolerance promise \
+/// (`tolerance = 0m`) but downstream demand is <demanded_str>; …"`.
+///
+/// The recommended opt-out is to **omit the `tolerance` parameter entirely**
+/// rather than writing `param tolerance : Length = 0m` as a placeholder default.
+///
+/// # Arguments
+///
+/// - `input_template_name` — the `Input` occurrence template name (e.g.
+///   `"STEPInput"`); appears verbatim in the message so authors can locate the
+///   import site.
+/// - `demanded` — the demanded tolerance in SI metres; rendered with µm/mm/m
+///   prefixes by magnitude via `tolerance_format::format_tolerance`.
+pub fn input_tolerance_promise_is_zero_diagnostic(
+    input_template_name: &str,
+    demanded: f64,
+) -> Diagnostic {
+    let demanded_str = crate::tolerance_format::format_tolerance(demanded);
+    let message = format!(
+        "imported geometry '{input_template_name}' carries a zero tolerance promise \
+         (`tolerance = 0m`) but downstream demand is {demanded_str}; the zero promise \
+         vacuously satisfies any non-negative demand, suppressing the \
+         ImportedTolerancePromiseInsufficient warning. Omit the `tolerance` parameter \
+         to opt out of making a promise."
+    );
+    Diagnostic::warning(message).with_code(DiagnosticCode::InputTolerancePromiseIsZero)
+}
+
 pub fn imported_tolerance_promise_diagnostic(
     input_template_name: &str,
     demanded: f64,
@@ -687,6 +735,58 @@ mod tests {
     /// Pinned by the diagnostic-emission contract: when a downstream demand
     /// is tighter than an imported-geometry tolerance promise, the runtime
     /// emits a `Severity::Warning` diagnostic carrying
+    /// Verifies that `input_tolerance_promise_is_zero_diagnostic` builds a
+    /// `Severity::Warning` carrying `DiagnosticCode::InputTolerancePromiseIsZero`,
+    /// names the input template in the message, and renders `demanded` in
+    /// human-readable unit-prefixed form (via `tolerance_format::format_tolerance`).
+    ///
+    /// Combines the shape-check (severity + code + template name) and the
+    /// unit-rendering regression guard into a single test since the diagnostic
+    /// has only one side (no `promise` argument to render separately).
+    ///
+    /// The regression guard `!diag.message.contains("0.000001m")` locks out raw
+    /// SI-metre float interpolation — same convention as
+    /// `imported_tolerance_promise_diagnostic_renders_human_readable_units`
+    /// (task 2790).
+    #[test]
+    fn input_tolerance_promise_is_zero_diagnostic_builds_warning_with_code_template_name_and_human_readable_demanded(
+    ) {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = input_tolerance_promise_is_zero_diagnostic("STEPInput", 1e-6);
+
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning (PRD: warn, not error — \
+             runtime proceeds with as-imported realization)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::InputTolerancePromiseIsZero),
+            "diagnostic code must be InputTolerancePromiseIsZero (not \
+             ImportedTolerancePromiseInsufficient) — proves the new variant fires"
+        );
+        assert!(
+            diag.message.contains("STEPInput"),
+            "message must name the input template so authors can locate the \
+             import site (got: {:?})",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("1µm"),
+            "demanded 1e-6 must render as '1µm' via format_tolerance \
+             (got: {:?})",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("0.000001m"),
+            "regression guard: raw SI-metre form '0.000001m' must not appear \
+             in the message (got: {:?})",
+            diag.message
+        );
+    }
+
     /// `DiagnosticCode::ImportedTolerancePromiseInsufficient` and a message
     /// naming the input template. PRD: "emit a diagnostic (warn, not error)
     /// and proceed with the as-imported realization."
