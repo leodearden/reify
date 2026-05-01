@@ -516,3 +516,185 @@ fn cross_prelude_alias_collision_emits_warning() {
         "first-wins: p must resolve to LENGTH (from collision_prelude_a)"
     );
 }
+
+// ─── task 2777: parametric prelude alias Info diagnostics ─────────────────────
+
+/// Build a parametric `pub type <name><param_name>` prelude alias.
+fn make_parametric_pub_alias(name: &str, param_name: &str) -> CompiledTypeAlias {
+    CompiledTypeAlias {
+        name: name.to_string(),
+        resolved_type: None,
+        type_params: vec![TypeParam { name: param_name.to_string(), bounds: vec![], default: None }],
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str(&format!("{}_{}", name, param_name)),
+    }
+}
+
+/// A user module that references `Vec<Float>` (parameterized form) against a
+/// parametric prelude alias `pub type Vec<T>` must receive:
+/// - Exactly one `Severity::Info` diagnostic mentioning both `Vec` and `parametric`
+/// - At least one `Severity::Error` mentioning `Vec` (existing regression guard)
+///
+/// This is the positive test for the use-site Info emission added in task 2777.
+#[test]
+fn parametric_form_use_emits_info_diagnostic() {
+    let vec_alias = make_parametric_pub_alias("Vec", "T");
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("param_info_prelude"))
+        .type_alias(vec_alias)
+        .build();
+
+    // Vec<Float>: Vec is not a recognized builtin or alias — falls through to
+    // the skipped-parametric-prelude Info emission path.
+    let source = "structure def S { param p : Vec<Float> }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("param_info_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    // Regression guard: Error mentioning Vec must still be present.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("Vec"))
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected ≥1 Error mentioning 'Vec'; got diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    // New behavior: exactly one Info diagnostic mentioning 'Vec' and 'parametric'.
+    let info_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 Info diagnostic; got: {:?}",
+        info_diags
+    );
+    assert!(
+        info_diags[0].message.contains("Vec"),
+        "Info diagnostic must mention 'Vec'; got: {}",
+        info_diags[0].message
+    );
+    assert!(
+        info_diags[0].message.contains("parametric"),
+        "Info diagnostic must mention 'parametric'; got: {}",
+        info_diags[0].message
+    );
+}
+
+/// A user module that declares its own `type Vec = Real` (shadowing the prelude's
+/// parametric `pub type Vec<T>`) and references `param p : Vec` must:
+/// (1) compile successfully — user's alias wins, p resolves to Real
+/// (2) produce zero `Severity::Info` diagnostics — the prelude's parametric Vec
+///     is functionally invisible, so Info about cross-module propagation would be
+///     misleading
+///
+/// This is the shadow-guard regression test added in task 2777 step-3.  It
+/// verifies the `!user_alias_names.contains(pa.name.as_str())` guard in
+/// `phase_aliases` prevents the Info from firing when the user has redeclared
+/// the name locally.
+#[test]
+fn user_shadowed_parametric_prelude_alias_emits_no_info_diagnostic() {
+    let vec_alias = make_parametric_pub_alias("Vec", "T");
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("shadow_param_prelude"))
+        .type_alias(vec_alias)
+        .build();
+
+    // User module shadows the parametric prelude Vec with a non-parametric alias.
+    let source = "type Vec = Real\nstructure def S { param p : Vec }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("shadow_param_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    // (1) No Error diagnostics — user's alias resolved correctly.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "user shadow must produce no Error diagnostics; got: {:?}",
+        errors
+    );
+
+    // (1b) The p cell type is Real (user's alias wins over prelude's parametric Vec).
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template `S` not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("value cell `p` not found on `S`");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Real,
+        "param `p : Vec` must resolve to Type::Real via user's shadow alias"
+    );
+
+    // (2) Zero Info diagnostics — no misleading Info about cross-module propagation.
+    let info_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        0,
+        "shadowed parametric prelude alias must emit zero Info diagnostics; got: {:?}",
+        info_diags
+    );
+}
+
+/// A user module that references `NotADeclaredType` (a name NOT in the skipped
+/// parametric prelude set) must produce zero `Severity::Info` diagnostics.
+///
+/// This is the negative test: no false-positive Info for unrelated unresolved names.
+#[test]
+fn unrelated_unresolved_no_info_emitted() {
+    let vec_alias = make_parametric_pub_alias("Vec", "T");
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("noinfo_prelude"))
+        .type_alias(vec_alias)
+        .build();
+
+    let source = "structure def S { param p : NotADeclaredType }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("noinfo_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    // Must have at least one Error for the unresolved name.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected ≥1 Error for unresolved 'NotADeclaredType'; got: {:?}",
+        compiled.diagnostics
+    );
+
+    // Must have zero Info diagnostics — no false-positive for unrelated names.
+    let info_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        0,
+        "expected 0 Info diagnostics for unrelated unresolved name; got: {:?}",
+        info_diags
+    );
+}
