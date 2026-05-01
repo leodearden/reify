@@ -83,6 +83,18 @@ mod tests {
     /// transitively, but this helper makes the constraint explicit.
     fn assert_send_sync<T: Send + Sync>() {}
 
+    /// Assert that a descriptive-error message contains "Manifold".
+    ///
+    /// Used by `manifold_kernel_query_export_tessellate_all_error` to pin the
+    /// substring contract for `query`, `export`, and `tessellate` without
+    /// repeating the `assert!` + format string three times.
+    fn assert_manifold_msg(label: &str, msg: &str) {
+        assert!(
+            msg.contains("Manifold"),
+            "{label} error must mention 'Manifold', got: {msg:?}",
+        );
+    }
+
     /// Structural pin: `Box<dyn GeometryKernel>` from `ManifoldKernel` must
     /// compile. This fails at compile time if `ManifoldKernel` lacks the
     /// `Send + Sync` supertraits required by the `GeometryKernel` trait object.
@@ -142,10 +154,7 @@ mod tests {
 
         let query_result = kernel.query(&GeometryQuery::Volume(GeometryHandleId(1)));
         match query_result {
-            Err(QueryError::QueryFailed(msg)) => assert!(
-                msg.contains("Manifold"),
-                "query error message must mention 'Manifold', got: {msg:?}",
-            ),
+            Err(QueryError::QueryFailed(msg)) => assert_manifold_msg("query", &msg),
             other => panic!(
                 "expected Err(QueryError::QueryFailed(_)) from query, got {other:?}"
             ),
@@ -153,10 +162,7 @@ mod tests {
 
         let export_result = kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut vec![]);
         match export_result {
-            Err(ExportError::FormatError(msg)) => assert!(
-                msg.contains("Manifold"),
-                "export error message must mention 'Manifold', got: {msg:?}",
-            ),
+            Err(ExportError::FormatError(msg)) => assert_manifold_msg("export", &msg),
             other => panic!(
                 "expected Err(ExportError::FormatError(_)) from export, got {other:?}"
             ),
@@ -164,10 +170,7 @@ mod tests {
 
         let tess_result = kernel.tessellate(GeometryHandleId(1), 0.1);
         match tess_result {
-            Err(TessError::TessellationFailed(msg)) => assert!(
-                msg.contains("Manifold"),
-                "tessellate error message must mention 'Manifold', got: {msg:?}",
-            ),
+            Err(TessError::TessellationFailed(msg)) => assert_manifold_msg("tessellate", &msg),
             other => panic!(
                 "expected Err(TessError::TessellationFailed(_)) from tessellate, got {other:?}"
             ),
