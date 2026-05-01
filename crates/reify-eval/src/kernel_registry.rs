@@ -309,7 +309,6 @@ mod test_synthetic_kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{Operation, ReprKind};
 
     /// When `total > 1` (multi-kernel build), `emit_kernel_selection` must emit
     /// exactly one `INFO`-level event and no `DEBUG`-level events at the
@@ -353,8 +352,25 @@ mod tests {
 
     /// Smoke pin: the function returns the right type, the result is
     /// deterministic across calls, and the iteration logic is non-trivially
-    /// exercised — the cfg(test)-only synthetic registration submitted in
-    /// `test_synthetic_kernel` MUST appear in the result.
+    /// exercised. The test pins:
+    ///
+    /// (a) compile-time signature: return type is `BTreeMap<String, CapabilityDescriptor>`,
+    /// (b) cross-call determinism: two consecutive calls produce maps of equal length and
+    ///     identical key sequences,
+    /// (c) lexicographic key ordering: key iteration order is stable across calls,
+    /// (d) NAME presence: the cfg(test)-only `__test_synthetic_kernel` appears in the result,
+    /// (e) NAME_A / NAME_B descriptor wiring distinctness: the descriptor stored under
+    ///     NAME_A has different `.supports` content from the descriptor stored under NAME_B —
+    ///     this pins the production wiring contract that `inventory::submit!` is not crossed
+    ///     between registrations.
+    ///
+    /// The distinct-wiring assertion (e) would surface a regression where NAME_A's
+    /// `inventory::submit!` block accidentally referenced `descriptor_b` (or any
+    /// wiring shuffle swapped the function pointers): such a swap would make both
+    /// descriptors identical, failing the `!=` assertion. It does NOT pin literal
+    /// descriptor content — both the synthetic and the expected value live in the
+    /// same `cfg(test)` module, so a pin against fixture literals would be
+    /// defeated by paired edits.
     ///
     /// Without the synthetic, this test would pass by construction (an empty
     /// BTreeMap trivially equals another empty BTreeMap) for any
@@ -395,20 +411,23 @@ mod tests {
             test_synthetic_kernel::NAME,
         );
 
-        // Descriptor-content identity pin: assert the .supports vec for the
-        // known synthetic holds exactly the entries we expect. The type system
-        // already rules out nondeterminism (fn() -> CapabilityDescriptor cannot
-        // hold mutable state), so the assertion's value is pinning *which*
-        // content the descriptor returns — a future accidental change to
-        // synthetic_descriptor() (wrong copy-paste, field removal, etc.) would
-        // fail here where a cross-call determinism comparison would not.
-        let expected_supports = vec![(Operation::PrimitiveBox, ReprKind::BRep)];
-        assert_eq!(
-            first.get(test_synthetic_kernel::NAME).map(|d| &d.supports),
-            Some(&expected_supports),
-            "descriptor .supports for {:?} must be exactly [(PrimitiveBox, BRep)] — \
-             update this assertion if the synthetic's descriptor is intentionally changed",
-            test_synthetic_kernel::NAME,
+        // Descriptor-wiring distinctness: assert NAME_A and NAME_B map to *different*
+        // .supports content. This pins the production wiring contract — the
+        // `inventory::submit!` blocks are not crossed between registrations. A
+        // regression that swapped the function pointer in NAME_A's submit to
+        // `descriptor_b` (or any other wiring shuffle) would make both lookups
+        // return identical content, failing this assertion. Pinning literal
+        // descriptor content against fixture literals (both living in the same
+        // cfg(test) module) would be defeated by paired edits; pinning their
+        // *distinctness* is robust to descriptor content changes.
+        assert_ne!(
+            first.get(test_synthetic_kernel::NAME_A).map(|d| &d.supports),
+            first.get(test_synthetic_kernel::NAME_B).map(|d| &d.supports),
+            "descriptor .supports for {:?} and {:?} must differ — \
+             they use distinct descriptor functions (descriptor_a vs descriptor_b); \
+             equal content would indicate a wiring regression in inventory::submit!",
+            test_synthetic_kernel::NAME_A,
+            test_synthetic_kernel::NAME_B,
         );
     }
 
