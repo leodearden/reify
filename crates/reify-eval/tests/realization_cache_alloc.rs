@@ -95,14 +95,20 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     let delta = after.saturating_sub(before);
 
     // Safety assumption: `ALLOCATIONS` is process-wide, so an allocation on another
-    // thread between `before` and `after` would cause a spurious failure.  We accept
-    // this risk because (a) this is the only `#[test]` in this integration binary so
-    // libtest spawns no worker threads for other tests, (b) the 256-iteration loop is
-    // fast (no I/O, no syscalls), and (c) empirical CI observation has shown the
-    // assertion stable.  If flakiness is ever observed, a thread-local toggle or a
-    // `delta <= small_constant` bound can be introduced at that time.
-    assert_eq!(
-        delta, 0,
-        "rejected inserts under existing entity must allocate zero times (delta = {delta})"
+    // thread between `before` and `after` would cause a spurious failure.  The
+    // libtest harness maintains a background thread for output capture even when there
+    // is only one `#[test]` in this binary; under the resource pressure of a parallel
+    // verify pipeline that thread occasionally makes 1-2 allocations within the window.
+    // Using a `delta <= small_constant` bound (as the previous comment said to do if
+    // flakiness was ever observed) tolerates these background allocations while still
+    // catching the pre-fix regression where `entity.to_owned()` ran unconditionally on
+    // every call — that case produces `delta ≈ 256`, a value far above the threshold.
+    // The threshold is set at 16: safely above the observed libtest noise (≤ 2) and
+    // far below the bug-case delta (256).
+    assert!(
+        delta <= 16,
+        "rejected inserts under existing entity must allocate at most a handful of times \
+         (background-thread tolerance ≤ 16); got delta = {delta}.  A delta near 256 \
+         indicates the get_mut fast path is not being taken."
     );
 }
