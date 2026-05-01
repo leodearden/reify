@@ -156,7 +156,10 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
                     }
                     Err(e) => {
                         // Cap the payload snippet to avoid log spam from unexpectedly large lines.
-                        let snippet = if line.len() > 200 { &line[..200] } else { &line };
+                        // Use chars().take(200) to truncate on character boundaries rather than raw
+                        // byte index 200, which would panic if a multi-byte UTF-8 codepoint straddles
+                        // that boundary.
+                        let snippet: String = line.chars().take(200).collect();
                         tracing::warn!(
                             error = %e,
                             payload_snippet = %snippet,
