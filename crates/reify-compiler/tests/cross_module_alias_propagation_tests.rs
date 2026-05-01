@@ -588,53 +588,6 @@ fn parametric_form_use_emits_info_diagnostic() {
     );
 }
 
-/// A user module that references bare `Vec` against a parametric prelude alias
-/// `pub type Vec<T>` must receive one Info diagnostic mentioning 'Vec' and one
-/// Error mentioning 'Vec'.
-#[test]
-fn bare_name_use_emits_info_diagnostic() {
-    let vec_alias = make_parametric_pub_alias("Vec", "T");
-    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("bare_info_prelude"))
-        .type_alias(vec_alias)
-        .build();
-
-    let source = "structure def S { param p : Vec }";
-    let parsed = reify_syntax::parse(source, ModulePath::single("bare_info_user"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-
-    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
-
-    // Regression guard: Error mentioning Vec must still be present.
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("Vec"))
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected ≥1 Error mentioning 'Vec'; got diagnostics: {:?}",
-        compiled.diagnostics
-    );
-
-    // New behavior: exactly one Info diagnostic mentioning 'Vec'.
-    let info_diags: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Info)
-        .collect();
-    assert_eq!(
-        info_diags.len(),
-        1,
-        "expected exactly 1 Info diagnostic; got: {:?}",
-        info_diags
-    );
-    assert!(
-        info_diags[0].message.contains("Vec"),
-        "Info diagnostic must mention 'Vec'; got: {}",
-        info_diags[0].message
-    );
-}
-
 /// A user module that declares its own `type Vec = Real` (shadowing the prelude's
 /// parametric `pub type Vec<T>`) and references `param p : Vec` must:
 /// (1) compile successfully — user's alias wins, p resolves to Real

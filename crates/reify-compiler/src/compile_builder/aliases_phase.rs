@@ -77,17 +77,8 @@ pub(crate) fn phase_aliases(
 
     // Seed prelude aliases first (non-parametric only; user names take precedence).
     for pa in prelude_aliases {
-        // Skip parametric aliases — CompiledTypeAlias omits type_expr so they
-        // cannot be instantiated at use sites. TODO: revisit when the module
-        // boundary allows carrying type_expr cross-module.
-        // Mark the name in the registry so that resolve_type_expr_with_aliases
-        // can emit a Severity::Info hint at use sites, pointing the user at the
-        // cross-module propagation limitation.
-        // Shadow guard: only mark when the user has NOT declared their own alias
-        // for this name — if they have, their alias wins at lookup and emitting
-        // Info about cross-module propagation would be misleading.
-        // This guard is verified by the
-        // `user_shadowed_parametric_prelude_alias_emits_no_info_diagnostic` test.
+        // TODO: cross-module parametric propagation is deferred; skip for now.
+        // Mark unshadowed names for use-site Info emission (shadow guard: user alias wins).
         if !pa.type_params.is_empty() {
             if !user_alias_names.contains(pa.name.as_str()) {
                 ctx.alias_registry.mark_skipped_parametric_prelude(pa.name.clone());

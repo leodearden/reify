@@ -102,6 +102,11 @@ impl TypeAliasRegistry {
     /// `Severity::Info` hint when the name fails to resolve — signalling the
     /// cross-module propagation gap rather than leaving the user with only the
     /// generic "unresolved type" Error.
+    ///
+    /// **Caller contract:** resolve each `TypeExpr` through `resolve_type_expr_with_aliases`
+    /// at most once per compile pass; each call emits a new `Info` diagnostic without
+    /// span-level de-duplication, so a double-resolve on the same span would produce
+    /// a duplicate diagnostic.
     pub(crate) fn is_skipped_parametric_prelude(&self, name: &str) -> bool {
         self.skipped_parametric_prelude_names.contains(name)
     }
