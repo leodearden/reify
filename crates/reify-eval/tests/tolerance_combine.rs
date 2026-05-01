@@ -8,109 +8,12 @@
 //! `RepresentationWithin` body constraint, then asserts the combined
 //! demanded tolerance is observable via `Engine::demanded_tolerance_for_output`.
 
-use reify_test_support::builders::{
-    CompiledModuleBuilder, CompiledPurposeBuilder, TopologyTemplateBuilder,
+use reify_test_support::builders::CompiledModuleBuilder;
+use reify_test_support::{
+    make_engine, manufacturing_purpose, my_design_template, step_output_template,
+    step_output_template_without_rep_within,
 };
-use reify_test_support::make_engine;
-use reify_types::{CompiledExpr, DimensionVector, ModulePath, Type, Value, ValueCellId};
-
-/// Core builder for an `STEPOutput`-shaped `TopologyTemplate`. Callers supply
-/// the body `CompiledExpr`; the template name, `"subject"` param, and index-0
-/// constraint slot are fixed — any future change to the template shape only
-/// needs to be made here.
-fn step_output_template_with_body(body: CompiledExpr) -> reify_compiler::TopologyTemplate {
-    TopologyTemplateBuilder::new("STEPOutput")
-        .param(
-            "STEPOutput",
-            "subject",
-            Type::StructureRef("Structure".to_string()),
-            None,
-        )
-        .constraint("STEPOutput", 0, None, body)
-        .build()
-}
-
-/// Build an `STEPOutput`-shaped `TopologyTemplate` carrying a single
-/// `RepresentationWithin(<ValueRef typed StructureRef>, <length-literal>)`
-/// body constraint at SI `output_tol` metres. The template's name is
-/// `"STEPOutput"` so its constraint lands in the runtime graph at
-/// `(entity = "STEPOutput", index = 0)` — see
-/// `crate::tolerance_combine::extract_output_tolerance_bound` for the
-/// recognition contract.
-fn step_output_template(output_tol: f64) -> reify_compiler::TopologyTemplate {
-    let subject_arg = CompiledExpr::value_ref(
-        ValueCellId::new("subject", "self"),
-        Type::StructureRef("Structure".to_string()),
-    );
-    let tol_arg = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: output_tol,
-            dimension: DimensionVector::LENGTH,
-        },
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    let body = CompiledExpr::user_function_call(
-        "RepresentationWithin".to_string(),
-        vec![subject_arg, tol_arg],
-        Type::Bool,
-    );
-    step_output_template_with_body(body)
-}
-
-/// Build an `STEPOutput`-shaped `TopologyTemplate` whose body constraint is a
-/// `Bool` literal rather than a `RepresentationWithin` expression. The
-/// constraint is present in the runtime graph under
-/// `(entity = "STEPOutput", index = 0)` but carries no tolerance value, so
-/// `extract_output_tolerance_bound` returns `None` for this template.
-fn step_output_template_without_rep_within() -> reify_compiler::TopologyTemplate {
-    step_output_template_with_body(CompiledExpr::literal(Value::Bool(true), Type::Bool))
-}
-
-/// Build a `manufacturing`-style `CompiledPurpose` whose sole constraint is
-/// `RepresentationWithin(subject, purpose_tol m)`. Mirrors the helper in
-/// `tests/tolerance_scope.rs::build_module_with_manufacturing_purpose`.
-///
-/// The `subject_arg`'s `result_type` uses the param's declared structure-ref
-/// name (`"Structure"`) so the fixture stays robust if a future hardening of
-/// `tolerance_scope`'s recognition gates asserts inner-name match against the
-/// declared param type. Today's matcher only checks the outer
-/// `StructureRef(_)` tag, so the inner string is informational; aligning it
-/// with the declared param insulates the test from that future tightening.
-fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> reify_compiler::CompiledPurpose {
-    let subject_arg = CompiledExpr::value_ref(
-        ValueCellId::new("subject", "self"),
-        Type::StructureRef("Structure".to_string()),
-    );
-    let tol_arg = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: purpose_tol,
-            dimension: DimensionVector::LENGTH,
-        },
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    let rep_within = CompiledExpr::user_function_call(
-        "RepresentationWithin".to_string(),
-        vec![subject_arg, tol_arg],
-        Type::Bool,
-    );
-    CompiledPurposeBuilder::new(purpose_name)
-        .param("subject", "Structure")
-        .constraint("subject", 0, None, rep_within)
-        .build()
-}
-
-/// Build a minimal `MyDesign` template with one Param cell. Carries no
-/// RepresentationWithin of its own — the purpose's tolerance scope is
-/// what binds to `MyDesign` when `manufacturing` is activated against it.
-fn my_design_template() -> reify_compiler::TopologyTemplate {
-    TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
-        .build()
-}
+use reify_types::ModulePath;
 
 #[test]
 fn engine_demanded_tolerance_for_output_handles_partial_inputs() {
