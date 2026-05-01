@@ -196,6 +196,35 @@ fn render_auto_type_param_label(bounds: &[String]) -> (String, String) {
     (joined_bounds, label_message)
 }
 
+/// Emit an [`AutoTypeParamNoCandidate`] diagnostic for the zero-rejection-summary
+/// case: no candidates at all in the pool (Phase A's empty-pool path) or all
+/// candidates rejected but `rejected` is empty in a release build (Phase C's
+/// release-build fallback).
+///
+/// This is the zero-rejection form of the message — "auto type parameter has no
+/// feasible candidates for bound '{bounds}'" — with no rejection detail appended.
+/// Both call sites previously duplicated this builder chain verbatim; centralising
+/// it here prevents silent wording drift if the message is ever updated.
+///
+/// [`AutoTypeParamNoCandidate`]: reify_types::DiagnosticCode::AutoTypeParamNoCandidate
+fn emit_no_candidate_zero_rejections(
+    bounds: &[String],
+    use_site_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
+    let message = format!(
+        "auto type parameter has no feasible candidates for bound '{}'",
+        joined_bounds,
+    );
+    diagnostics.push(
+        Diagnostic::error(message)
+            .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
+            .with_label(DiagnosticLabel::new(use_site_span, label_message))
+            .with_candidates(Vec::<String>::new()),
+    );
+}
+
 /// The result of [`enumerate_candidates`].
 ///
 /// Three arms map to three downstream actions for callers:
@@ -601,7 +630,6 @@ pub fn select_candidate(
                 "FeasibilityResult::Empty must carry at least one rejected candidate; \
                  otherwise Phase A's empty-pool path would have fired first"
             );
-            let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
             // Per-rejection prose: each candidate paired with its violated
             // constraint ids. v0.1 encodes per-rejection details as a string;
             // the structured `candidates` field carries just the FQNs (parity
@@ -620,29 +648,29 @@ pub fn select_candidate(
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            let rejected_names: Vec<String> = rejected.iter().map(|r| r.name.clone()).collect();
             // In debug builds the assert above fires before this point when
             // `rejected` is empty. In release builds (where `debug_assert!`
-            // is a no-op), guard against the malformed trailing ': ' that
-            // would result from an empty `rejection_summary`.
-            let message = if rejection_summary.is_empty() {
-                format!(
-                    "auto type parameter has no feasible candidates for bound '{bounds_str}'",
-                    bounds_str = joined_bounds,
-                )
+            // is a no-op), the zero-rejection path delegates to the shared
+            // helper so both the Phase A empty-pool path and this release-build
+            // fallback produce the same base message without duplication.
+            if rejection_summary.is_empty() {
+                emit_no_candidate_zero_rejections(bounds, use_site_span, diagnostics);
             } else {
-                format!(
+                let (joined_bounds, label_message) = render_auto_type_param_label(bounds);
+                let rejected_names: Vec<String> =
+                    rejected.iter().map(|r| r.name.clone()).collect();
+                let message = format!(
                     "auto type parameter has no feasible candidates for bound '{bounds_str}': {summary}",
                     bounds_str = joined_bounds,
                     summary = rejection_summary,
-                )
-            };
-            diagnostics.push(
-                Diagnostic::error(message)
-                    .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
-                    .with_label(DiagnosticLabel::new(use_site_span, label_message))
-                    .with_candidates(rejected_names),
-            );
+                );
+                diagnostics.push(
+                    Diagnostic::error(message)
+                        .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
+                        .with_label(DiagnosticLabel::new(use_site_span, label_message))
+                        .with_candidates(rejected_names),
+                );
+            }
             SelectionResult::NoCandidate
         }
         FeasibilityResult::Feasible { accepted, .. } => {
@@ -818,21 +846,7 @@ pub fn resolve_auto_type_params(
             CandidateEnumeration::Empty => {
                 // Phase A found zero in-scope structures satisfying the bound.
                 // Emit NoCandidate directly — no Phase B or C call needed.
-                //
-                // Message matches Phase C's zero-rejection-summary phrasing so
-                // both `AutoTypeParamNoCandidate` paths (empty pool from Phase A;
-                // all-rejected pool from Phase B) produce a consistent base string.
-                let (joined_bounds, label_message) = render_auto_type_param_label(&param.bounds);
-                let message = format!(
-                    "auto type parameter has no feasible candidates for bound '{bounds_str}'",
-                    bounds_str = joined_bounds,
-                );
-                diagnostics.push(
-                    Diagnostic::error(message)
-                        .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
-                        .with_label(DiagnosticLabel::new(param.use_site_span, label_message))
-                        .with_candidates(Vec::<String>::new()),
-                );
+                emit_no_candidate_zero_rejections(&param.bounds, param.use_site_span, diagnostics);
                 SelectionResult::NoCandidate
             }
             CandidateEnumeration::Overflow(overflow_vec) => {
