@@ -1,7 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 import type { InboundMessage, OutboundMessage } from './types.js';
 
-const VALID_INBOUND_TYPES = new Set(['send_message', 'abort', 'clear_session']);
+const VALID_INBOUND_TYPES = new Set(['send_message', 'abort', 'clear_session', 'tool_result']);
 
 /**
  * Parse a JSON line into an InboundMessage.

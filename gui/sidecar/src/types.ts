@@ -21,7 +21,14 @@ export interface ClearSession {
   type: 'clear_session';
 }
 
-export type InboundMessage = SendMessage | Abort | ClearSession;
+export interface InboundToolResult {
+  type: 'tool_result';
+  id: string;
+  tool_name: string;
+  result: unknown;
+}
+
+export type InboundMessage = SendMessage | Abort | ClearSession | InboundToolResult;
 
 // --- Outbound messages (Sidecar -> GUI) ---
 
