@@ -23,6 +23,17 @@ export function parseInboundMessage(line: string): InboundMessage {
       throw new Error('send_message requires a "text" field');
     }
   }
+  if (parsed.type === 'tool_result') {
+    if (typeof parsed.id !== 'string' || !parsed.id) {
+      throw new Error('tool_result requires a non-empty "id" field');
+    }
+    if (typeof parsed.tool_name !== 'string') {
+      throw new Error('tool_result requires a "tool_name" field');
+    }
+    if (!('result' in parsed)) {
+      throw new Error('tool_result requires a "result" field');
+    }
+  }
   return parsed as InboundMessage;
 }
 
