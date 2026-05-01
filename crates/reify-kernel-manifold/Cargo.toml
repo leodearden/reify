@@ -1,0 +1,10 @@
+[package]
+name = "reify-kernel-manifold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Manifold mesh-Boolean kernel adapter"
+
+[dependencies]
+reify-types.workspace = true
+inventory.workspace = true
