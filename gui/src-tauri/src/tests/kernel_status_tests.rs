@@ -57,4 +57,29 @@ mod gui_tests {
         assert_eq!(status.available, OCCT_AVAILABLE);
         assert_eq!(planner.has_kernel(), OCCT_AVAILABLE);
     }
+
+    /// Regression pin: `EngineSession::with_registered_kernel` boot path
+    /// constructs a working session via the inventory-based kernel registry.
+    ///
+    /// When OCCT is available, constructs a session, loads a primitive box source,
+    /// and asserts that the load succeeds without errors. The geometry build itself
+    /// is exercised by the CLI pin and the reify-eval kernel_registry_inventory test;
+    /// here we pin only that the production boot path compiles and runs without error.
+    #[test]
+    fn engine_session_with_registered_kernel_picks_occt_for_primitive_box_build() {
+        if !OCCT_AVAILABLE {
+            eprintln!("Skipping: OCCT not available in this build (stub mode)");
+            return;
+        }
+        use crate::engine::EngineSession;
+        use reify_constraints::SimpleConstraintChecker;
+        let mut session =
+            EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+        let _ = session
+            .load_from_source(
+                "structure S { let b = box(10mm, 10mm, 10mm) }",
+                "primitive_box_build",
+            )
+            .expect("load_from_source should succeed with registered OCCT kernel");
+    }
 }
