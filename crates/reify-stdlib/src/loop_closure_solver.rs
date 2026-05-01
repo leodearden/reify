@@ -563,6 +563,51 @@ pub fn solve_loop_closure(
     newton_solve(x0, closure, config)
 }
 
+/// A typed loop-closure chain pair extracted from a v0.2 Mechanism Map.
+///
+/// The classification is based on the closing joint (the last element of
+/// `chain_b`):
+/// - `WellFormed` — the closing joint appears exactly once in `chain_b`
+///   (its last element only). Produced by the parent-conflict branch of
+///   `append_body`. Valid linear kinematic chain, solver-feedable via
+///   `chain_transform` / `solve_loop_closure` without further filtering.
+/// - `Cycle` — the closing joint appears more than once in `chain_b`
+///   (both at the end and at least once mid-walk). Produced by the
+///   cycle/self-loop branch of `append_body`. **Not** a valid linear
+///   kinematic chain — composing the same joint's transform twice in
+///   different positions is not physically meaningful. Consumers must
+///   not feed `Cycle` chains directly to `chain_transform` /
+///   `solve_loop_closure`.
+///
+/// Both variants carry named fields `chain_a` and `chain_b` (world
+/// sentinel stripped) so consumers can destructure unambiguously:
+///
+/// ```ignore
+/// match chain {
+///     LoopClosureChain::WellFormed { chain_a, chain_b } => { /* feed to solver */ }
+///     LoopClosureChain::Cycle { .. } => { /* skip or handle separately */ }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoopClosureChain {
+    /// `chain_b` contains the closing joint exactly once (its last element).
+    /// Produced by the parent-conflict branch of `append_body`.
+    /// Solver-feedable via `chain_transform` / `solve_loop_closure`.
+    WellFormed {
+        chain_a: Vec<reify_types::Value>,
+        chain_b: Vec<reify_types::Value>,
+    },
+    /// `chain_b` contains the closing joint more than once — at the end
+    /// (the appended closing edge) and once mid-walk (as an ancestor of
+    /// `parent` in the cycle case, or because `at == parent` in the
+    /// self-loop case). NOT a valid linear kinematic chain. Produced by
+    /// the cycle/self-loop branch of `append_body`.
+    Cycle {
+        chain_a: Vec<reify_types::Value>,
+        chain_b: Vec<reify_types::Value>,
+    },
+}
+
 /// Extract loop-closure chain pairs from a v0.2 Mechanism Map.
 ///
 /// Returns `None` if `mech_map` is not a `Value::Map` with
@@ -578,8 +623,15 @@ pub fn solve_loop_closure(
 ///
 /// For each loop-closure record in the `loop_closures` list, extracts
 /// `path_a` and `path_b`, strips the world sentinel from the front of each
-/// path, and collects the `(chain_a, chain_b)` pair.  The world sentinel is
-/// identified by `kind = "world"`.
+/// path, and classifies the resulting chain pair as a [`LoopClosureChain`].
+/// The world sentinel is identified by `kind = "world"`.
+///
+/// **Classification rule:** a chain pair is [`LoopClosureChain::Cycle`] iff
+/// `chain_b` contains its last element (the closing joint) more than once.
+/// This subsumes both the 2-body cycle case (`chain_b = [j_b, j_a, j_b]`,
+/// `j_b` twice) and the self-loop case (`chain_b = [j, j]`, `j` twice).
+/// Parent-conflict pairs (`chain_b`'s last element occurs exactly once)
+/// classify as [`LoopClosureChain::WellFormed`].
 ///
 /// Returns `None` on any shape error:
 /// - a `loop_closures` entry is not a `Value::Map`
@@ -589,23 +641,9 @@ pub fn solve_loop_closure(
 ///
 /// Downstream contract: chains terminate at the closing joint (the last
 /// element equals `loop_closure.closing_joint`), world sentinel stripped.
-///
-/// **Caveat — cycle-case `chain_b` may contain a duplicated closing joint.**
-/// Loop closures recorded by the cycle/self-loop branch of `append_body`
-/// (mechanism.rs) encode `path_b` as `[world, ..., at, ..., at]` — the
-/// closing joint appears once mid-walk (as an ancestor of `parent`) and
-/// once at the end (as the appended closing edge). After world-sentinel
-/// stripping, `chain_b` therefore contains the closing joint twice and
-/// is **not** a valid linear kinematic chain. Such chains cannot be fed
-/// to `chain_transform` / `solve_loop_closure` without further validation
-/// (composing the same joint's transform twice in different positions
-/// is not physically meaningful). Parent-conflict-case chains are
-/// well-formed (no duplicated joints). Callers consuming these pairs
-/// should either filter out cycle-case loop closures or detect the
-/// duplicate-closing-joint shape and handle it explicitly.
 pub fn mechanism_loop_closure_chains(
     mech_map: &reify_types::Value,
-) -> Option<Vec<(Vec<reify_types::Value>, Vec<reify_types::Value>)>> {
+) -> Option<Vec<LoopClosureChain>> {
     use reify_types::Value;
 
     // Validate kind="mechanism".
@@ -646,7 +684,20 @@ pub fn mechanism_loop_closure_chains(
 
         let chain_a = strip_world_sentinel(path_a)?;
         let chain_b = strip_world_sentinel(path_b)?;
-        pairs.push((chain_a, chain_b));
+
+        // Classify: Cycle iff the closing joint (chain_b.last()) appears
+        // more than once in chain_b. strip_world_sentinel guarantees chain_b
+        // is non-empty (length ≥ 1 after stripping the sentinel).
+        let is_cycle = match chain_b.last() {
+            Some(closing) => chain_b.iter().filter(|j| *j == closing).count() > 1,
+            None => unreachable!("strip_world_sentinel rejects empty chains"),
+        };
+        let entry = if is_cycle {
+            LoopClosureChain::Cycle { chain_a, chain_b }
+        } else {
+            LoopClosureChain::WellFormed { chain_a, chain_b }
+        };
+        pairs.push(entry);
     }
 
     Some(pairs)
