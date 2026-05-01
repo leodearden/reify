@@ -1197,6 +1197,17 @@ fn dfs_search(
     stop_after_first_feasible: bool,
 ) -> bool {
     if level == per_param_candidates.len() {
+        // Leaf branch: this cross-product assignment is feasible iff
+        // `dfs_leaf_feasible` returns `true`. The leaf-feasibility predicate
+        // reuses Phase B's `Satisfaction::Violated` discriminator (see
+        // `filter_feasible_candidates`): a leaf is infeasible iff its
+        // single-call constraint check produces a Violated result, and
+        // feasible otherwise. This inherits architecture §2.5's
+        // monotonic-feasible rule — `Indeterminate` counts as feasible
+        // (only `Violated` falsifies). Backtracking is therefore driven by
+        // the same three-arm satisfaction enum that v0.1 BFS uses; the only
+        // change at v0.2 is that infeasibility unwinds to the next sibling
+        // at the deepest open level rather than halting the orchestrator.
         if dfs_leaf_feasible(current, parameterized_template, constraint_checker, functions) {
             feasible_assignments.push(current.clone());
             return stop_after_first_feasible;
