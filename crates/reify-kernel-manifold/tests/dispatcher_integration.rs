@@ -7,15 +7,23 @@
 //!
 //! This test lives in `crates/reify-kernel-manifold/tests/` with `reify-eval`
 //! as a dev-dep on the manifold crate — NOT in `crates/reify-eval/tests/` with
-//! manifold as a dev-dep of reify-eval. Inverting the dep direction is critical:
-//! adding `reify-kernel-manifold` as a dev-dep of `reify-eval` would pull
-//! manifold's `inventory::submit!` into the existing `reify-eval` test binaries.
-//! Because `"manifold" < "occt"` lexicographically, `pick_lexmin_kernel()` would
-//! return the manifold registration, silently breaking the existing
-//! `engine_with_registered_kernel_picks_occt_for_brep_box_build` test in
-//! `crates/reify-eval/tests/kernel_registry_inventory.rs`. Keeping the
-//! dev-dep on manifold's side isolates manifold's link closure to manifold's
-//! own test binaries; the existing OCCT test is unaffected.
+//! manifold as a dev-dep of reify-eval. Inverting the dep direction is a
+//! defensive isolation choice. Today OCCT and Manifold claim entirely disjoint
+//! `(op, repr)` pairs (OCCT: BRep ops only; Manifold: Mesh Boolean ops only —
+//! see `crates/reify-kernel-manifold/src/register.rs:92-98`), so no lex-min
+//! tie-break conflict can fire. That changes once kernels claim overlapping
+//! pairs: when OCCT's supports table gains
+//! `(Operation::Convert { from: BRep }, Mesh)` (the planned v0.3 entry at
+//! `crates/reify-kernel-occt/src/register.rs:27-33`), the dispatcher BFS
+//! exposes a `BRep input → OCCT tessellate → Mesh BooleanUnion` chain — at
+//! that point both kernels serve `(BooleanUnion, Mesh)` and lex-min tie-break
+//! would route by accident if manifold's `inventory::submit!` fired in
+//! `reify-eval` test binaries via dev-dep transitivity. Keeping the dep on
+//! manifold's side isolates its link closure to manifold's own test binaries
+//! and prevents that future drift. The `cfg(has_manifold)` gate described at
+//! `crates/reify-kernel-manifold/src/register.rs:70-78` is the eventual
+//! structural enforcement; dep-direction inversion is the current defensive
+//! isolation until that gate lands.
 //!
 //! # What this test covers
 //!
