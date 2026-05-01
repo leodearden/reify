@@ -12,6 +12,7 @@
 //!
 //! `crates/reify-kernel-fidget/tests/inventory_registration.rs:1-122`.
 
+use reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME;
 use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// OpenVDB's capability descriptor must enumerate exactly the three
@@ -90,13 +91,13 @@ fn openvdb_kernel_registration_appears_in_inventory_iter() {
 
     let openvdb_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
         .into_iter()
-        .filter(|reg| reg.name == "openvdb")
+        .filter(|reg| reg.name == OPENVDB_KERNEL_NAME)
         .collect();
 
     assert_eq!(
         openvdb_entries.len(),
         1,
-        "expected exactly one inventory::submit! for kernel name \"openvdb\", found {}",
+        "expected exactly one inventory::submit! for kernel name {OPENVDB_KERNEL_NAME:?}, found {}",
         openvdb_entries.len(),
     );
 
