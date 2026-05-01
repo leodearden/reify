@@ -1187,6 +1187,41 @@ mod tests {
             serde_json::to_string(&DiagnosticCode::TopologyAttributeAmbiguousAfterSplit).unwrap();
         assert_eq!(s, "\"TopologyAttributeAmbiguousAfterSplit\"");
     }
+
+    // --- ImportedTolerancePromiseInsufficient tests (task 2651 — W_IMPORTED_TOLERANCE_INSUFFICIENT) ---
+    // Pairs with the imported-geometry tolerance-promise checker in
+    // `crates/reify-eval/src/tolerance_promise.rs::imported_tolerance_promise_diagnostic`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::ImportedTolerancePromiseInsufficient` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::ImportedTolerancePromiseInsufficient)`.
+    /// Pins the warning-severity contract and variant existence for the imported-geometry
+    /// tolerance-promise insufficient signal (PRD `docs/prds/v0_2/per-purpose-tolerance.md`
+    /// §"Imported geometry promise"; arch §10.4 / §14.5).
+    #[test]
+    fn diagnostic_code_imported_tolerance_promise_insufficient_with_code_round_trips() {
+        let d =
+            Diagnostic::warning("x").with_code(DiagnosticCode::ImportedTolerancePromiseInsufficient);
+        assert_eq!(d.code, Some(DiagnosticCode::ImportedTolerancePromiseInsufficient));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::ImportedTolerancePromiseInsufficient),
+            "ImportedTolerancePromiseInsufficient"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ImportedTolerancePromiseInsufficient`
+    /// serializes as `"ImportedTolerancePromiseInsufficient"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_imported_tolerance_promise_insufficient_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ImportedTolerancePromiseInsufficient)
+            .unwrap();
+        assert_eq!(s, "\"ImportedTolerancePromiseInsufficient\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
