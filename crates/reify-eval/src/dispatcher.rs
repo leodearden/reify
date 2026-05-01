@@ -1138,4 +1138,46 @@ mod tests {
             "PrimitiveBox→BRep requires zero conversions, got {plan_box:?}",
         );
     }
+
+    /// Empty conversion chain must return `requested_tol` unchanged (bit-exact
+    /// pass-through, no arithmetic applied).
+    ///
+    /// Pins the no-chain-no-allocation contract: when `plan.conversions` is
+    /// empty the demanded repr was already in `available` — no kernel boundary
+    /// is crossed, so the 0.8 `SAFETY_FACTOR` must NOT be applied.  Applying
+    /// it would silently strip 20 % of the user's budget on every direct-
+    /// dispatch path, which the PRD explicitly rules out ("When a request
+    /// crosses kernel boundaries … the orchestrator divides the bound across
+    /// stages" — no boundary ⇒ no division).
+    ///
+    /// Three distinct magnitudes (1e-3, 1e-6, 1.0) demonstrate the pass-
+    /// through is independent of the scale of `requested_tol`.
+    #[test]
+    fn per_stage_tolerance_for_plan_empty_chain_returns_requested_tol_unchanged() {
+        let plan = DispatchPlan {
+            kernel: "occt".to_string(),
+            conversions: vec![],
+        };
+
+        // Bit-exact pass-through: no arithmetic must touch the value.
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan, 1e-3),
+            1e-3,
+            "empty conversion chain must return requested_tol unchanged (bit-exact pass-through)",
+        );
+
+        // Independence of magnitude: pass-through holds for small tolerances.
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan, 1e-6),
+            1e-6,
+            "empty chain pass-through must be independent of requested_tol magnitude (1e-6)",
+        );
+
+        // Independence of magnitude: pass-through holds for unit tolerance.
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan, 1.0),
+            1.0,
+            "empty chain pass-through must be independent of requested_tol magnitude (1.0)",
+        );
+    }
 }
