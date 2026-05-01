@@ -14,7 +14,10 @@
 //! implements `GeometryKernel`, so it can be used anywhere a boxed kernel
 //! is expected.
 
-use crate::{BooleanOpHistoryRecords, LoftOpHistoryRecords, SweepOpHistoryRecords};
+use crate::{
+    BooleanOpHistoryRecords, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
+    SweepOpHistoryRecords,
+};
 use reify_types::{
     AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value,
@@ -65,6 +68,30 @@ enum OcctRequest {
         left: GeometryHandleId,
         right: GeometryHandleId,
         reply: oneshot::Sender<Result<(GeometryHandle, BooleanOpHistoryRecords), GeometryError>>,
+    },
+    /// v0.2 persistent-naming-v2 local-feature history: apply
+    /// `BRepFilletAPI_MakeFillet` to every edge of `shape` with the given
+    /// `radius`, capturing Modified/Generated/Deleted records. Mirrors the
+    /// BooleanFuseWithHistory pattern (dedicated request variant rather than
+    /// routing through ExecuteWithHistory, which would require AttributeHistory
+    /// enum variants in reify-types — out of scope for this FFI-only task).
+    FilletWithHistory {
+        shape: GeometryHandleId,
+        radius: f64,
+        reply: oneshot::Sender<
+            Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>,
+        >,
+    },
+    /// v0.2 persistent-naming-v2 local-feature history: apply
+    /// `BRepFilletAPI_MakeChamfer` to every edge of `shape` with the given
+    /// `distance`, capturing Modified/Generated/Deleted records. Mirrors
+    /// FilletWithHistory.
+    ChamferWithHistory {
+        shape: GeometryHandleId,
+        distance: f64,
+        reply: oneshot::Sender<
+            Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>,
+        >,
     },
     /// v0.2 persistent-naming-v2 sweep history: dispatches per-op to a
     /// kernel-side history-aware primitive (Extrude → `extrude_with_history`,
@@ -303,6 +330,64 @@ impl OcctKernelHandle {
     ) -> Result<(GeometryHandleId, BooleanOpHistoryRecords), GeometryError> {
         let (handle, records) = self.send_request_blocking(
             |reply| OcctRequest::BooleanFuseWithHistory { left, right, reply },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
+    }
+
+    /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape` with the
+    /// given `radius`, returning the modified-result handle id alongside the
+    /// per-parent face/edge history records (Modified / Generated / Deleted)
+    /// emitted by the algorithm.
+    ///
+    /// Mirrors [`OcctKernel::fillet_with_history`] across the kernel-thread
+    /// channel. Result handle is registered with `BRepKind::Solid`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 2655, step-2).
+    pub fn fillet_with_history(
+        &self,
+        shape: GeometryHandleId,
+        radius: f64,
+    ) -> Result<(GeometryHandleId, LocalFeatureOpHistoryRecords), GeometryError> {
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::FilletWithHistory {
+                shape,
+                radius,
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
+    }
+
+    /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape` with the
+    /// given `distance`, returning the modified-result handle id alongside the
+    /// per-parent face/edge history records (Modified / Generated / Deleted)
+    /// emitted by the algorithm.
+    ///
+    /// Mirrors [`OcctKernel::chamfer_with_history`] across the kernel-thread
+    /// channel. Result handle is registered with `BRepKind::Solid`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Part of v0.2 persistent-naming-v2 (task 2655, step-6).
+    pub fn chamfer_with_history(
+        &self,
+        shape: GeometryHandleId,
+        distance: f64,
+    ) -> Result<(GeometryHandleId, LocalFeatureOpHistoryRecords), GeometryError> {
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::ChamferWithHistory {
+                shape,
+                distance,
+                reply,
+            },
             || GeometryError::OperationFailed("kernel thread died".into()),
         )??;
         Ok((handle.id, records))
@@ -688,6 +773,22 @@ impl OcctKernelHandle {
                     }
                     OcctRequest::BooleanFuseWithHistory { left, right, reply } => {
                         let result = kernel.boolean_fuse_with_history(left, right);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::FilletWithHistory {
+                        shape,
+                        radius,
+                        reply,
+                    } => {
+                        let result = kernel.fillet_with_history(shape, radius);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::ChamferWithHistory {
+                        shape,
+                        distance,
+                        reply,
+                    } => {
+                        let result = kernel.chamfer_with_history(shape, distance);
                         let _ = reply.send(result);
                     }
                     OcctRequest::ExecuteWithHistory { op, reply } => {

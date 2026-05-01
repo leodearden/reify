@@ -302,6 +302,57 @@ pub mod ffi {
         /// Face-touching pairs count as intersecting.
         fn shapes_intersect(a: &OcctShape, b: &OcctShape) -> Result<bool>;
 
+        // --- Local-feature op history (v0.2 persistent-naming-v2, task 2655) ---
+
+        /// Opaque container holding the BRepFilletAPI_MakeFillet /
+        /// BRepFilletAPI_MakeChamfer history records (Modified/Generated/Deleted
+        /// for faces and edges) plus the modified result shape. Single-parent
+        /// variant of `BooleanOpHistory` with no cap-face concept. Records are
+        /// materialized eagerly at construction time because the algorithm's
+        /// tracking maps are tied to its lifetime.
+        type LocalFeatureOpHistory;
+
+        /// Run `BRepFilletAPI_MakeFillet` on `shape` with the given `radius`
+        /// applied to every edge, eagerly capturing the per-parent face/edge
+        /// Modified/Generated/Deleted records alongside the modified result shape.
+        fn make_fillet_with_history(
+            shape: &OcctShape,
+            radius: f64,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
+        /// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance`
+        /// applied to every edge, eagerly capturing the per-parent face/edge
+        /// Modified/Generated/Deleted records alongside the modified result shape.
+        fn make_chamfer_with_history(
+            shape: &OcctShape,
+            distance: f64,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
+        /// Move the result shape out of the local-feature-history wrapper for
+        /// registration in the kernel's shape table.
+        fn local_feature_op_history_take_result_shape(
+            history: Pin<&mut LocalFeatureOpHistory>,
+        ) -> UniquePtr<OcctShape>;
+
+        /// Modified records for parent faces (flat groups of 3 u32:
+        /// `parent_index, parent_subshape_index, result_subshape_index`).
+        /// `parent_index` is always 0 (single parent).
+        fn local_feature_op_history_face_modified(history: &LocalFeatureOpHistory) -> Vec<u32>;
+        /// Generated records for parent faces (flat groups of 3).
+        fn local_feature_op_history_face_generated(history: &LocalFeatureOpHistory) -> Vec<u32>;
+        /// Deleted records for parent faces (flat groups of 2 u32:
+        /// `parent_index, parent_subshape_index`).
+        fn local_feature_op_history_face_deleted(history: &LocalFeatureOpHistory) -> Vec<u32>;
+        /// Modified records for parent edges (flat groups of 3).
+        fn local_feature_op_history_edge_modified(history: &LocalFeatureOpHistory) -> Vec<u32>;
+        /// Generated records for parent edges (flat groups of 3).
+        fn local_feature_op_history_edge_generated(history: &LocalFeatureOpHistory) -> Vec<u32>;
+        /// Deleted records for parent edges (flat groups of 2).
+        fn local_feature_op_history_edge_deleted(history: &LocalFeatureOpHistory) -> Vec<u32>;
+        /// Count of Modified/Generated children silently dropped because they could
+        /// not be found in the result map. Zero for a well-formed fillet/chamfer.
+        fn local_feature_op_history_silent_drop_count(history: &LocalFeatureOpHistory) -> u32;
+
         // --- Modifications ---
         fn fillet_all_edges(shape: &OcctShape, radius: f64) -> Result<UniquePtr<OcctShape>>;
         fn chamfer_all_edges(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;

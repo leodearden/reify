@@ -482,6 +482,82 @@ RevolveSynthesisPostSortResult revolve_synthesis_post_sort_for_test(
 /// Tolerance filtering belongs at task 2531's stdlib layer.
 bool shapes_intersect(const OcctShape& a, const OcctShape& b);
 
+// --- Local-feature op history (v0.2 persistent-naming-v2, task 2655) ---
+
+/// Records the per-parent face/edge correspondence emitted by a local-feature
+/// operation (BRepFilletAPI_MakeFillet, BRepFilletAPI_MakeChamfer). Mirrors
+/// `BooleanOpHistory` (single-parent, no caps) — fillet/chamfer have no
+/// FirstShape/LastShape concept and no revolve-synthesis counters.
+///
+/// The `parent_index` field in each record (Modified/Generated/Deleted) is
+/// always `0` because local-feature operations have a single parent solid.
+///
+/// Records are materialized EAGERLY at construction time because the
+/// algorithm's tracking maps (Modified/Generated/IsDeleted) are tied to the
+/// BRepFilletAPI_Make* object's lifetime — once it goes out of scope the maps
+/// are gone.
+///
+/// `result` owns the modified shape; `local_feature_op_history_take_result_shape`
+/// hands it off to the kernel via `std::move`.
+struct LocalFeatureOpHistory {
+    std::unique_ptr<OcctShape> result;
+    /// Count of Modified/Generated children that the algorithm reported but
+    /// that could not be found in the result face_map/edge_map. Should be
+    /// zero for a well-formed fillet/chamfer; non-zero indicates a kernel
+    /// correspondence loss.
+    uint32_t silent_drop_count = 0;
+    std::vector<uint32_t> face_modified;
+    std::vector<uint32_t> face_generated;
+    std::vector<uint32_t> face_deleted;
+    std::vector<uint32_t> edge_modified;
+    std::vector<uint32_t> edge_generated;
+    std::vector<uint32_t> edge_deleted;
+};
+
+/// Run `BRepFilletAPI_MakeFillet` on `shape` with the given `radius` applied
+/// to every edge, materializing the result shape AND the Modified/Generated/Deleted
+/// records for each parent face/edge sub-shape into a single `LocalFeatureOpHistory`.
+///
+/// The fillet algorithm walks every edge of `shape` calling `Add(radius, edge)`,
+/// then calls `Build()`. On success it emits:
+///   (a) face Modified records (parent face → trimmed result face, same-type);
+///   (b) face Generated records (parent EDGE → fillet lateral face, cross-type);
+///   (c) face Deleted records;
+///   (d) edge Modified/Generated/Deleted records analogous.
+///
+/// Result-side indices come from the result shape's cached `face_map()`/`edge_map()`.
+/// Empty result-side lookups (a child reported by the algorithm but not appearing
+/// in the result map) increment `silent_drop_count` and are silently skipped.
+std::unique_ptr<LocalFeatureOpHistory> make_fillet_with_history(
+    const OcctShape& shape, double radius);
+
+/// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance` applied
+/// to every edge, materializing the result shape AND the Modified/Generated/Deleted
+/// records into a single `LocalFeatureOpHistory`. Identical structure to
+/// `make_fillet_with_history`; uses `BRepFilletAPI_MakeChamfer::Add(distance, edge)`.
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
+    const OcctShape& shape, double distance);
+
+/// Move the result shape out of the local-feature-history wrapper for
+/// registration in the kernel's shape table. Subsequent calls observe
+/// an empty `unique_ptr`.
+std::unique_ptr<OcctShape> local_feature_op_history_take_result_shape(
+    LocalFeatureOpHistory& history);
+
+/// Six accessors returning the flat record buffers as `rust::Vec<uint32_t>`
+/// (deep-copied at the FFI boundary). Modified/Generated buffers hold flat groups
+/// of 3 `uint32_t`s `(parent_index, parent_subshape_index, result_subshape_index)`;
+/// Deleted buffers hold groups of 2 `(parent_index, parent_subshape_index)`.
+rust::Vec<uint32_t> local_feature_op_history_face_modified(const LocalFeatureOpHistory& history);
+rust::Vec<uint32_t> local_feature_op_history_face_generated(const LocalFeatureOpHistory& history);
+rust::Vec<uint32_t> local_feature_op_history_face_deleted(const LocalFeatureOpHistory& history);
+rust::Vec<uint32_t> local_feature_op_history_edge_modified(const LocalFeatureOpHistory& history);
+rust::Vec<uint32_t> local_feature_op_history_edge_generated(const LocalFeatureOpHistory& history);
+rust::Vec<uint32_t> local_feature_op_history_edge_deleted(const LocalFeatureOpHistory& history);
+/// Count of Modified/Generated children silently dropped because they could
+/// not be found in the result map. Zero for a well-formed fillet/chamfer.
+uint32_t local_feature_op_history_silent_drop_count(const LocalFeatureOpHistory& history);
+
 // --- Modifications ---
 
 std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius);

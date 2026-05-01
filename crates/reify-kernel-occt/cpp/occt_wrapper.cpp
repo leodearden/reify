@@ -1335,6 +1335,127 @@ bool shapes_intersect(const OcctShape& a, const OcctShape& b) {
     });
 }
 
+// --- Local-feature op history (v0.2 persistent-naming-v2, task 2655) ---
+
+/// Shared implementation for `make_fillet_with_history` and
+/// `make_chamfer_with_history`. Calls the provided `build_fn` to create and
+/// run the OCCT algorithm, then extracts the Modified/Generated/Deleted
+/// records into a `LocalFeatureOpHistory`.
+///
+/// `build_fn` must: (1) accept `const TopoDS_Shape&`, (2) add all edges,
+/// (3) call Build(), (4) throw on !IsDone(), and (5) return the algorithm
+/// object by value so its lifetime covers the record-extraction calls below.
+template <typename BuildFn>
+std::unique_ptr<LocalFeatureOpHistory> make_local_feature_with_history_impl(
+    const OcctShape& shape, BuildFn build_fn) {
+    auto algo = build_fn(shape.shape);
+
+    auto history = std::make_unique<LocalFeatureOpHistory>();
+    history->result = std::make_unique<OcctShape>();
+    history->result->shape = algo.Shape();
+
+    // Build result face/edge maps once via the cached lazy accessors.
+    const auto& result_face_map = history->result->face_map();
+    const auto& result_edge_map = history->result->edge_map();
+
+    // Faces (same-type modified): parent face → trimmed result face.
+    // (IsDeleted records go to face_deleted.)
+    emit_sweep_modified_deleted_for_parent(
+        algo, shape.face_map(), result_face_map,
+        history->face_modified, history->face_deleted);
+
+    // Edges (same-type modified): parent edge → result edge.
+    emit_sweep_modified_deleted_for_parent(
+        algo, shape.edge_map(), result_edge_map,
+        history->edge_modified, history->edge_deleted);
+
+    // Cross-type Generated: parent EDGES generate result FACES (the fillet/chamfer
+    // lateral faces). parent_subshape_index in each face_generated record is
+    // the parent edge index.
+    emit_sweep_generated_cross_type(
+        algo, shape.edge_map(), result_face_map, TopAbs_FACE,
+        history->face_generated);
+
+    // Cross-type Generated: parent VERTICES generate result EDGES (the lateral
+    // edges of the fillet/chamfer surface). parent_subshape_index is the vertex index.
+    TopTools_IndexedMapOfShape shape_vertex_map;
+    TopExp::MapShapes(shape.shape, TopAbs_VERTEX, shape_vertex_map);
+    emit_sweep_generated_cross_type(
+        algo, shape_vertex_map, result_edge_map, TopAbs_EDGE,
+        history->edge_generated);
+
+    return history;
+}
+
+std::unique_ptr<LocalFeatureOpHistory> make_fillet_with_history(
+    const OcctShape& shape, double radius) {
+    return wrap_occt_call("make_fillet_with_history", [&]() {
+        if (!std::isfinite(radius) || radius <= 0.0) {
+            throw std::runtime_error(
+                "make_fillet_with_history: radius must be a finite positive value");
+        }
+        return make_local_feature_with_history_impl(shape, [radius](const TopoDS_Shape& s) {
+            BRepFilletAPI_MakeFillet fillet(s);
+            for (TopExp_Explorer ex(s, TopAbs_EDGE); ex.More(); ex.Next()) {
+                fillet.Add(radius, TopoDS::Edge(ex.Current()));
+            }
+            fillet.Build();
+            if (!fillet.IsDone()) {
+                throw std::runtime_error("BRepFilletAPI_MakeFillet failed");
+            }
+            return fillet;
+        });
+    });
+}
+
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
+    const OcctShape& shape, double distance) {
+    return wrap_occt_call("make_chamfer_with_history", [&]() {
+        if (!std::isfinite(distance) || distance <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_with_history: distance must be a finite positive value");
+        }
+        return make_local_feature_with_history_impl(shape, [distance](const TopoDS_Shape& s) {
+            BRepFilletAPI_MakeChamfer chamfer(s);
+            for (TopExp_Explorer ex(s, TopAbs_EDGE); ex.More(); ex.Next()) {
+                chamfer.Add(distance, TopoDS::Edge(ex.Current()));
+            }
+            chamfer.Build();
+            if (!chamfer.IsDone()) {
+                throw std::runtime_error("BRepFilletAPI_MakeChamfer failed");
+            }
+            return chamfer;
+        });
+    });
+}
+
+std::unique_ptr<OcctShape> local_feature_op_history_take_result_shape(
+    LocalFeatureOpHistory& history) {
+    return std::move(history.result);
+}
+
+rust::Vec<uint32_t> local_feature_op_history_face_modified(const LocalFeatureOpHistory& history) {
+    return to_rust_vec(history.face_modified);
+}
+rust::Vec<uint32_t> local_feature_op_history_face_generated(const LocalFeatureOpHistory& history) {
+    return to_rust_vec(history.face_generated);
+}
+rust::Vec<uint32_t> local_feature_op_history_face_deleted(const LocalFeatureOpHistory& history) {
+    return to_rust_vec(history.face_deleted);
+}
+rust::Vec<uint32_t> local_feature_op_history_edge_modified(const LocalFeatureOpHistory& history) {
+    return to_rust_vec(history.edge_modified);
+}
+rust::Vec<uint32_t> local_feature_op_history_edge_generated(const LocalFeatureOpHistory& history) {
+    return to_rust_vec(history.edge_generated);
+}
+rust::Vec<uint32_t> local_feature_op_history_edge_deleted(const LocalFeatureOpHistory& history) {
+    return to_rust_vec(history.edge_deleted);
+}
+uint32_t local_feature_op_history_silent_drop_count(const LocalFeatureOpHistory& history) {
+    return history.silent_drop_count;
+}
+
 // --- Modifications ---
 
 std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius) {
