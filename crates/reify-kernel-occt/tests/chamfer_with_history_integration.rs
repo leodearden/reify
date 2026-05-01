@@ -43,7 +43,17 @@ fn ten_mm_box_op() -> GeometryOp {
 /// - asserts `face_modified.parent_subshape_index < 6` (box has 6 faces);
 /// - asserts `face_generated.parent_subshape_index < 12` (chamfer lateral faces
 ///   are generated FROM edges; box has 12 edges);
-/// - asserts every `result_subshape_index` is in-range for the result shape.
+/// - asserts every `result_subshape_index` is in-range for the result shape;
+/// - asserts `edge_modified` per-record well-formedness (parent_index == 0,
+///   parent_subshape_index < 12, result_subshape_index < result_edge_count);
+/// - asserts `edge_generated` per-record bounds: parent_index == 0,
+///   parent_subshape_index < 8 (box VERTICES — generated FROM vertices, not edges),
+///   result_subshape_index < result_edge_count (OCCT's chamfer algorithm does not
+///   guarantee vertex-generated edges are populated; bounds-only pin like edge_modified);
+/// - asserts `face_deleted.is_empty()` (chamfer does not consume any parent face);
+/// - asserts `edge_deleted` per-record bounds: parent_index == 0,
+///   parent_subshape_index < 12 (BRepFilletAPI_MakeChamfer marks parent edges as
+///   IsDeleted; bounds-only pin, no emptiness assertion).
 ///
 /// Compilation/linkage of this test pins step-6: it would fail to build
 /// until the FFI primitive + Rust handle method ship (already done in step-2).
@@ -153,6 +163,83 @@ fn chamfer_with_history_reports_face_records() {
             "face record result_subshape_index {} out of range; result has {} faces",
             r.result_subshape_index,
             result_face_count
+        );
+    }
+
+    // (h) Compute result_edge_count for use in the edge-buffer bounds assertions.
+    let result_edges = kernel
+        .extract_edges(result_id)
+        .expect("extract_edges on the chamfer result should succeed");
+    let result_edge_count = result_edges.len() as u32;
+
+    // (i) edge_modified per-record well-formedness.
+    // No non-empty assertion: for a fully-chamfered box OCCT may route parent edges
+    // through Generated/Deleted rather than Modified.
+    for r in &history.edge_modified {
+        assert_eq!(
+            r.parent_index, 0,
+            "chamfer edge_modified records always have parent_index=0, got {}",
+            r.parent_index
+        );
+        assert!(
+            r.parent_subshape_index < 12,
+            "chamfer edge_modified parent_subshape_index {} out of range for a 12-edge box",
+            r.parent_subshape_index
+        );
+        assert!(
+            r.result_subshape_index < result_edge_count,
+            "chamfer edge_modified result_subshape_index {} out of range; result has {} edges",
+            r.result_subshape_index,
+            result_edge_count
+        );
+    }
+
+    // (j) edge_generated per-record well-formedness. No non-empty assertion:
+    // BRepFilletAPI_MakeChamfer::Generated() does not populate vertex-generated
+    // edges for this topology (same conservative treatment as edge_modified).
+    // parent_subshape_index is into the VERTEX map (box has 8 vertices), not
+    // the edge map.
+    for r in &history.edge_generated {
+        assert_eq!(
+            r.parent_index, 0,
+            "chamfer edge_generated records always have parent_index=0, got {}",
+            r.parent_index
+        );
+        assert!(
+            r.parent_subshape_index < 8,
+            "chamfer edge_generated parent_subshape_index {} out of range for an 8-vertex box \
+             (edge_generated is keyed by parent VERTEX, not parent edge)",
+            r.parent_subshape_index
+        );
+        assert!(
+            r.result_subshape_index < result_edge_count,
+            "chamfer edge_generated result_subshape_index {} out of range; result has {} edges",
+            r.result_subshape_index,
+            result_edge_count
+        );
+    }
+
+    // (k) face_deleted must be empty for a clean chamfer on a simple convex box.
+    assert!(
+        history.face_deleted.is_empty(),
+        "clean chamfer must not delete any parent face; got {} face_deleted records",
+        history.face_deleted.len()
+    );
+
+    // (l) edge_deleted per-record bounds. No emptiness assertion: for a fully-chamfered
+    // box, BRepFilletAPI_MakeChamfer marks all parent edges as IsDeleted() (they are
+    // replaced by chamfer surfaces). parent_subshape_index must be in-range for a
+    // 12-edge box; parent_index must be 0 (single parent).
+    for d in &history.edge_deleted {
+        assert_eq!(
+            d.parent_index, 0,
+            "chamfer edge_deleted records always have parent_index=0, got {}",
+            d.parent_index
+        );
+        assert!(
+            d.parent_subshape_index < 12,
+            "chamfer edge_deleted parent_subshape_index {} out of range for a 12-edge box",
+            d.parent_subshape_index
         );
     }
 }
