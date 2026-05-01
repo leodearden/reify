@@ -1030,7 +1030,16 @@ pub fn resolve_auto_type_params_with_backtracking(
             CandidateEnumeration::Overflow(overflow_vec) => {
                 // Phase A already pushed the overflow diagnostic. Mirror
                 // BFS's "Overflow → Ambiguous" mapping in `per_param` so the
-                // outer-shape contract is identical.
+                // outer-shape contract is identical — see the matching arm
+                // in `resolve_auto_type_params` (the v0.1 BFS orchestrator)
+                // which produces `SelectionResult::Ambiguous(overflow_vec)`
+                // and breaks the per-param loop. The DFS analog returns
+                // immediately because no later params have been enumerated
+                // yet (Phase A enumeration is up-front), so the outcome's
+                // per_param/substitution shape is identical to BFS's by
+                // construction. No extra diagnostic emission needed —
+                // `enumerate_candidates` already pushed
+                // `AutoTypeParamPoolOverflow`.
                 return MultiParamResolutionOutcome {
                     per_param: vec![(
                         param.name.clone(),
