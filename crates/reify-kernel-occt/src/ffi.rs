@@ -663,6 +663,11 @@ pub mod ffi {
         /// `BRepClass3d_SolidClassifier` pre-filter escape hatch.
         ///
         /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`.
+        ///
+        /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+        /// Negative or NaN values cause the C++ implementation to throw a
+        /// `std::runtime_error`, which maps to `Err(QueryError::QueryFailed(_))` at the
+        /// Rust call site rather than silently returning a misleading `false`.
         fn point_on_shape(
             shape: &OcctShape,
             px: f64,

@@ -777,7 +777,19 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
 /// esc-2829-6 / parent task 2324 for the documented escape hatch).
 ///
 /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
-/// to match OCCT's default confusion threshold.
+/// to match OCCT's default confusion threshold. Pass 0.0 for exact-coincidence
+/// queries (returns `true` only when `dist.Value()` is exactly 0).
+///
+/// **Tolerance precondition:** `tolerance` must be a non-negative finite value.
+/// Negative or NaN values cause an immediate `std::runtime_error` rather than
+/// silently returning misleading results (negative → always `false` since
+/// `dist.Value() >= 0`; NaN → always `false` via IEEE 754).
+///
+/// **Naming note:** For `TopoDS_Solid` inputs the function returns `true` for
+/// interior points (not just surface points) due to the OCCT overlap behavior
+/// described above. A higher-level wrapper that applies a `BRepClass3d_SolidClassifier`
+/// pre-filter for strict surface-only membership is tracked in escalation esc-2829-6
+/// and parent task 2324.
 bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance);
 
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);

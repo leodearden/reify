@@ -551,7 +551,18 @@ impl OcctKernel {
     /// this contract in. See parent task 2324 for stdlib-level wiring decisions.
     ///
     /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
-    /// to match OCCT's default confusion threshold.
+    /// to match OCCT's default confusion threshold. Pass 0.0 for exact-coincidence
+    /// queries (returns `true` only when `dist.Value()` is exactly 0).
+    ///
+    /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+    /// Negative or NaN values map to `Err(QueryError::QueryFailed(_))` rather than
+    /// silently producing misleading results.
+    ///
+    /// **Naming caveat:** The name `point_on_shape` implies surface membership, but
+    /// for `TopoDS_Solid` inputs this method cannot distinguish "on BREP surface" from
+    /// "inside the solid" (see "Interior solid points" note above). A higher-level
+    /// wrapper that applies a `BRepClass3d_SolidClassifier` pre-filter for strict
+    /// surface-only membership is tracked in escalation esc-2829-6 / parent task 2324.
     ///
     /// Returns `Err(QueryError::InvalidHandle(_))` if `handle` is unknown, or
     /// `Err(QueryError::QueryFailed(_))` if the OCCT computation fails.
