@@ -87,6 +87,15 @@ use reify_types::{
 /// Gate 1 finds no entry and returns `None` — the same path as a missing
 /// tolerance binding) rather than writing `param tolerance : Length = 0m` as
 /// a placeholder default.
+///
+/// **Open design question (task 2833):** whether to keep this behavior
+/// (option-(b): accept `0.0` and document), tighten the gate to `> 0.0`
+/// (option-(a): treat `0.0` as "no promise"), or emit a separate diagnostic
+/// code when a zero promise is present and a non-zero demand exists is tracked
+/// in task 2833. Two characterization tests — `extract_input_tolerance_promise_accepts_zero_promise`
+/// and `is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand` —
+/// lock the current behavior so any future option-(a) refactor requires a
+/// deliberate test edit rather than slipping in silently.
 pub fn extract_input_tolerance_promise(
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     input_template_name: &str,
@@ -572,9 +581,11 @@ mod tests {
     ///
     /// **Coverage gap filled:** the existing
     /// `is_promise_insufficient_returns_true_iff_demanded_strictly_less_than_promise`
-    /// test pins the `(0.0, 0.0) -> false` symmetric edge, but does NOT cover
+    /// test pins the `(0.0, 0.0) -> false` symmetric edge but does NOT cover
     /// the asymmetric `(positive_d, 0.0) -> false` vacuous-satisfaction case
-    /// that is the core footgun documented by this task.
+    /// that is the core footgun documented by this task. The symmetric `(0.0,
+    /// 0.0)` edge is intentionally left to that test rather than duplicated
+    /// here — only the asymmetric `positive_d` cases are new coverage.
     ///
     /// **Design rationale:** see the `# Zero-promise interpretation` subsection
     /// in [`extract_input_tolerance_promise`]'s docstring. When `promise == 0.0`
@@ -591,31 +602,23 @@ mod tests {
     /// flagging the semantic change explicitly.
     #[test]
     fn is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand() {
-        // (a) demand == 0.0: symmetric edge, already pinned by the truth-table
-        //     test above — repeated here for self-contained completeness with a
-        //     comment marking it as the symmetric case.
-        assert!(
-            !is_promise_insufficient(0.0, 0.0),
-            "(a) symmetric edge: demand 0.0 == promise 0.0 — sufficient under strict `<`"
-        );
-
-        // (b) demand == 1e-12 (sub-femtometre): positive demand, vacuously
+        // (a) demand == 1e-12 (sub-femtometre): positive demand, vacuously
         //     satisfied because 1e-12 < 0.0 is false.
         assert!(
             !is_promise_insufficient(1e-12, 0.0),
-            "(b) demand 1e-12 (sub-femtometre) vs promise 0.0 — vacuously satisfied"
+            "(a) demand 1e-12 (sub-femtometre) vs promise 0.0 — vacuously satisfied"
         );
 
-        // (c) demand == 1e-6 (1µm): typical CAD tolerance, vacuously satisfied.
+        // (b) demand == 1e-6 (1µm): typical CAD tolerance, vacuously satisfied.
         assert!(
             !is_promise_insufficient(1e-6, 0.0),
-            "(c) demand 1µm vs promise 0.0 — vacuously satisfied"
+            "(b) demand 1µm vs promise 0.0 — vacuously satisfied"
         );
 
-        // (d) demand == 1.0 (1 metre): coarse demand, vacuously satisfied.
+        // (c) demand == 1.0 (1 metre): coarse demand, vacuously satisfied.
         assert!(
             !is_promise_insufficient(1.0, 0.0),
-            "(d) demand 1.0m vs promise 0.0 — vacuously satisfied"
+            "(c) demand 1.0m vs promise 0.0 — vacuously satisfied"
         );
     }
 
