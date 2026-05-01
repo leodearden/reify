@@ -24,6 +24,7 @@ pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
 pub use engine_eval::is_representable_cell_type;
 mod engine_purposes;
+mod engine_tolerance;
 mod geometry_ops;
 pub mod graph;
 pub mod journal;
