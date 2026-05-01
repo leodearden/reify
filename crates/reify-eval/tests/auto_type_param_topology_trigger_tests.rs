@@ -54,7 +54,7 @@ fn two_param_template() -> reify_compiler::TopologyTemplate {
 #[test]
 fn different_substitution_flips_topology_fingerprint() {
     let template = single_param_template();
-    let mut graph_a = EvaluationGraph::from_templates(&[template.clone()]);
+    let mut graph_a = EvaluationGraph::from_templates(std::slice::from_ref(&template));
     let mut graph_b = EvaluationGraph::from_templates(&[template]);
 
     graph_a.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
@@ -78,7 +78,7 @@ fn different_substitution_flips_topology_fingerprint() {
 #[test]
 fn same_substitution_yields_same_topology_fingerprint() {
     let template = single_param_template();
-    let mut graph_a = EvaluationGraph::from_templates(&[template.clone()]);
+    let mut graph_a = EvaluationGraph::from_templates(std::slice::from_ref(&template));
     let mut graph_b = EvaluationGraph::from_templates(&[template]);
 
     graph_a.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
@@ -103,7 +103,7 @@ fn same_substitution_yields_same_topology_fingerprint() {
 #[test]
 fn substitution_vec_insertion_order_does_not_affect_fingerprint() {
     let template = two_param_template();
-    let mut graph_x = EvaluationGraph::from_templates(&[template.clone()]);
+    let mut graph_x = EvaluationGraph::from_templates(std::slice::from_ref(&template));
     let mut graph_y = EvaluationGraph::from_templates(&[template]);
 
     // Same logical map, different insertion order.
@@ -134,10 +134,10 @@ fn empty_substitution_yields_back_compat_fingerprint() {
     let template = single_param_template();
 
     // Default: auto_type_substitution is never touched (empty Vec from Default).
-    let graph_default = EvaluationGraph::from_templates(&[template.clone()]);
+    let graph_default = EvaluationGraph::from_templates(std::slice::from_ref(&template));
 
     // Explicit empty Vec.
-    let mut graph_explicit_empty = EvaluationGraph::from_templates(&[template.clone()]);
+    let mut graph_explicit_empty = EvaluationGraph::from_templates(std::slice::from_ref(&template));
     graph_explicit_empty.auto_type_substitution = vec![];
 
     // Non-empty substitution.
@@ -175,12 +175,12 @@ fn substitution_flip_and_revert_restores_topology_fingerprint() {
     let template = single_param_template();
 
     // graph_a: substitution_a = ORingSeal.
-    let mut graph_a = EvaluationGraph::from_templates(&[template.clone()]);
+    let mut graph_a = EvaluationGraph::from_templates(std::slice::from_ref(&template));
     graph_a.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
     let fp_a = graph_a.topology_fingerprint();
 
     // graph_b: substitution_b = GasketSeal (flip).
-    let mut graph_b = EvaluationGraph::from_templates(&[template.clone()]);
+    let mut graph_b = EvaluationGraph::from_templates(std::slice::from_ref(&template));
     graph_b.auto_type_substitution = vec![("T".into(), "GasketSeal".into())];
     let fp_b = graph_b.topology_fingerprint();
 
