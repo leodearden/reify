@@ -7,6 +7,7 @@ description = "Shared type vocabulary and trait definitions for Reify"
 
 [dependencies]
 im.workspace = true
+inventory.workspace = true
 xxhash-rust.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 

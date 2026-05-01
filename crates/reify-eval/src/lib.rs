@@ -18,6 +18,7 @@ mod engine_edit;
 mod engine_eval;
 pub mod freshness_walk;
 pub mod gating;
+pub mod kernel_registry;
 #[doc(hidden)]
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
@@ -40,6 +41,7 @@ pub mod topology_selectors;
 mod unfold;
 pub mod warm_pool;
 pub use dispatcher::{DispatchPlan, dispatch};
+pub use kernel_registry::{collect_registry, pick_lexmin_kernel, registry};
 pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use realization_cache::RealizationCache;
 pub use test_runner::{TestResult, TestStatus, run_tests};

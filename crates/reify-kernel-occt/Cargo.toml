@@ -9,6 +9,7 @@ build = "build.rs"
 [dependencies]
 reify-types.workspace = true
 cxx = "1"
+inventory.workspace = true
 tokio = { workspace = true }
 
 [features]

@@ -10,6 +10,7 @@ reify-types.workspace = true
 reify-expr.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
+inventory.workspace = true
 tracing.workspace = true
 
 [features]
