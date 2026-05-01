@@ -120,7 +120,7 @@ pub async fn write_to_sidecar<W: AsyncWrite + Unpin>(
 }
 
 /// Read lines from sidecar stdout, parse each as OutboundMessage, and call callbacks.
-/// Skips lines that fail to parse. Calls on_exit when the stream ends (EOF).
+/// Skips lines that fail to parse (and warns operators). Calls on_exit when the stream ends (EOF).
 pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
     reader: R,
     on_message: impl Fn(OutboundMessage),
@@ -130,8 +130,40 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
     loop {
         match lines.next_line().await {
             Ok(Some(line)) => {
-                if let Ok(msg) = parse_outbound(&line) {
-                    on_message(msg);
+                match parse_outbound(&line) {
+                    Ok(msg) => {
+                        // Warn when a ToolCall arrives without tool_use_id — this is the
+                        // dev-mode version-skew case (stale sidecar pre-dating task #2766).
+                        // The message is still delivered; id-correlation falls back to
+                        // FIFO-by-tool_name in the sidecar TypeScript.
+                        if let OutboundMessage::ToolCall {
+                            ref tool_use_id,
+                            ref id,
+                            ref tool_name,
+                            ..
+                        } = msg
+                        {
+                            if tool_use_id.is_empty() {
+                                tracing::warn!(
+                                    message_id = %id,
+                                    tool_name = %tool_name,
+                                    "sidecar tool_call missing tool_use_id; \
+                                     likely dev-mode version skew between sidecar and Rust binary \
+                                     — id-correlation will fall back to FIFO-by-tool_name"
+                                );
+                            }
+                        }
+                        on_message(msg);
+                    }
+                    Err(e) => {
+                        // Cap the payload snippet to avoid log spam from unexpectedly large lines.
+                        let snippet = if line.len() > 200 { &line[..200] } else { &line };
+                        tracing::warn!(
+                            error = %e,
+                            payload_snippet = %snippet,
+                            "failed to parse sidecar message; dropping line"
+                        );
+                    }
                 }
             }
             Ok(None) => break, // EOF
