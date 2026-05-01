@@ -35,7 +35,7 @@
 use std::collections::HashMap;
 
 use reify_compiler::auto_type_param::{
-    AutoTypeParam, MultiParamResolutionOutcome, SelectionResult,
+    AutoTypeParam, MAX_AUTO_TYPE_PARAM_CANDIDATES, MultiParamResolutionOutcome, SelectionResult,
     resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
@@ -67,6 +67,27 @@ fn build_registries(
         .map(|t| (t.name.clone(), t))
         .collect();
     (template_registry, trait_registry)
+}
+
+/// Build a Reify source string declaring `count` distinct structures all
+/// implementing `trait Seal`. Used by the Phase-A overflow test to drive
+/// the candidate pool above `MAX_AUTO_TYPE_PARAM_CANDIDATES`.
+///
+/// Mirrors `build_n_seal_structures` from `auto_type_param_multi_param_tests.rs`
+/// — lifted verbatim so the backtracking test file remains self-contained.
+fn build_n_seal_structures(count: usize) -> String {
+    assert!(
+        count <= 100,
+        "build_n_seal_structures: zero-pad width is two digits; max count is 100"
+    );
+    let mut src = String::from("trait Seal {}\n");
+    for i in 0..count {
+        src.push_str(&format!(
+            "structure def S{:02} : Seal {{\n    param x : Real = 1.0\n}}\n",
+            i
+        ));
+    }
+    src
 }
 
 // ─── step-15: DFS empty-params is a vacuous success (parity with BFS) ──────
@@ -510,5 +531,104 @@ structure def WaterCooled : Cooled {
         diagnostics[0].severity,
         Severity::Error,
         "AutoTypeParamAmbiguous diagnostic must be an Error severity"
+    );
+}
+
+// ─── step-25: DFS Phase A overflow on first param halts before recursion ───
+
+/// When the first param's bounds match more than `MAX_AUTO_TYPE_PARAM_CANDIDATES`
+/// in-scope structures (overflow), DFS halts after recording the first param's
+/// outcome — the second param is NOT enumerated and the recursion never starts.
+///
+/// Mirrors v0.1 BFS's `overflow_on_first_param_halts_and_does_not_enumerate_second_param`,
+/// exercising the Phase A overflow halt parity through DFS to pin that the
+/// up-front per-param Phase A enumeration phase short-circuits identically.
+///
+/// Pins:
+/// - `per_param.len() == 1` — only the first (overflowed) param is recorded
+/// - `per_param[0].0 == "T"` — the first param's name
+/// - `per_param[0].1` matches `SelectionResult::Ambiguous(_)` (overflow → Ambiguous)
+/// - `substitution.is_empty()` — no successful substitutions
+/// - exactly one `AutoTypeParamPoolOverflow` diagnostic from Phase A
+/// - No second diagnostic (second param was not enumerated)
+#[test]
+fn dfs_phase_a_overflow_on_first_param_halts_before_recursion() {
+    // MAX+1 Seal structures → overflow on first param.
+    let overflow_source = build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1);
+    let overflow_module = parse_and_compile(&overflow_source);
+    let (template_registry, trait_registry) = build_registries(&overflow_module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    // Second param has a bound "Cooled" that matches nothing — but it should
+    // NOT be enumerated at all (no diagnostic for it). Mirrors BFS test.
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // Only first param recorded; it overflowed → Ambiguous.
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "DFS overflow on first param must halt: per_param must have exactly 1 entry, got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(
+        outcome.per_param[0].0, "T",
+        "first per_param entry must be for param 'T'"
+    );
+    assert!(
+        matches!(outcome.per_param[0].1, SelectionResult::Ambiguous(_)),
+        "DFS Phase A overflow maps to Ambiguous; got: {:?}",
+        outcome.per_param[0].1
+    );
+    assert!(
+        outcome.substitution.is_empty(),
+        "DFS overflow on first param must yield empty substitution, got: {:?}",
+        outcome.substitution
+    );
+
+    // Exactly one diagnostic: the overflow from Phase A (not a second for U).
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS exactly one overflow diagnostic expected (second param not enumerated, recursion not entered), got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamPoolOverflow),
+        "DFS diagnostic must be AutoTypeParamPoolOverflow, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "DFS overflow diagnostic must be an error"
     );
 }
