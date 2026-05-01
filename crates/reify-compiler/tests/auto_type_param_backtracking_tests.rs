@@ -40,7 +40,7 @@ use reify_compiler::auto_type_param::{
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
-use reify_types::{CompiledFunction, SourceSpan};
+use reify_types::{CompiledExpr, CompiledFunction, Satisfaction, SourceSpan, Type, Value};
 
 /// Build the `(template_registry, trait_registry)` pair that
 /// `enumerate_candidates` consumes, borrowing from a single compiled module.
@@ -261,6 +261,116 @@ structure def WaterCooled : Cooled {
     assert!(
         diagnostics.is_empty(),
         "DFS multi-param all-feasible free-mode must emit zero diagnostics in 2659 (NonUnique warning is task 2661's scope), got: {:?}",
+        diagnostics
+    );
+}
+
+// ─── step-21: DFS backtracks when first leaf violated, picks second ────────
+
+/// Two `AutoTypeParam`s `[T : Seal, U : Cooled]` with two candidates each
+/// (4 cross-product leaves total: `(ORingSeal, AirCooled)`, `(ORingSeal,
+/// WaterCooled)`, `(RubberSeal, AirCooled)`, `(RubberSeal, WaterCooled)`).
+/// The parameterized template carries one top-level constraint so leaf
+/// verdicts are observable through the constraint-checker queue.
+///
+/// `MockConstraintChecker::with_call_queue(vec![Violated, Satisfied])` makes
+/// the first leaf's check return `Violated` and the second leaf's return
+/// `Satisfied`. Both params are `free=true` so the second feasible found
+/// stops the search (free-mode contract).
+///
+/// Expected DFS visit order:
+/// 1. `(ORingSeal, AirCooled)` → leaf check pops `Violated` → infeasible
+///    → backtrack at the `U`-level.
+/// 2. `(ORingSeal, WaterCooled)` → leaf check pops `Satisfied` → feasible
+///    → record, early-terminate.
+///
+/// Asserts `substitution == [(T, ORingSeal), (U, WaterCooled)]` and
+/// `per_param == [(T, Selected(ORingSeal)), (U, Selected(WaterCooled))]`.
+/// Pins backtracking semantics on the canonical "first leaf rejected" case.
+#[test]
+fn dfs_backtracks_when_first_leaf_violated_then_picks_second_feasible() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Parameterized template carries one top-level constraint so the queue
+    // mock's per-call verdict produces non-empty `ConstraintResult`s in
+    // `filter_feasible_candidates`. The mock ignores expression content;
+    // the literal is only needed so the builder has a value to store.
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    // Leaf 1 check ⇒ Violated (backtrack); Leaf 2 check ⇒ Satisfied (accept).
+    let checker = MockConstraintChecker::new()
+        .with_call_queue(vec![Satisfaction::Violated, Satisfaction::Satisfied]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+            ],
+            substitution: vec![
+                ("T".to_string(), "ORingSeal".to_string()),
+                ("U".to_string(), "WaterCooled".to_string()),
+            ],
+        },
+        "DFS must backtrack from infeasible leaf (ORingSeal, AirCooled) and pick (ORingSeal, WaterCooled) as the next feasible leaf"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "DFS backtracking happy path (free-mode) must emit zero diagnostics, got: {:?}",
         diagnostics
     );
 }
