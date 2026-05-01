@@ -1030,6 +1030,8 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
 
     // Wait for text_delta 'Hi' — guarantees the id-change reset has been processed
     await textDeltaHiWait;
+    // Pin the contract: exactly one text_delta with content 'Hi' is emitted for the new turn.
+    expect(outputs.filter((m) => m.type === 'text_delta' && (m as any).content === 'Hi').length).toBe(1);
 
     // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
     // toolNameById was cleared by the shrink branch; on fixed code it forwards correctly.
