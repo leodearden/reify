@@ -271,6 +271,8 @@ impl Engine {
         let picked = crate::kernel_registry::pick_lexmin_kernel();
         if let Some(reg) = picked {
             let total = crate::kernel_registry::registry().len();
+            // Same `&'static` map as `pick_lexmin_kernel` saw — `registry()` is
+            // `OnceLock`-memoized, so the count cannot disagree with the pick.
             crate::kernel_registry::emit_kernel_selection(reg.name, total);
         }
         let kernel: Option<Box<dyn GeometryKernel>> = picked.map(|reg| (reg.factory)());
