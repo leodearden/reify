@@ -333,7 +333,7 @@ mod tests {
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
         LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
-        long_chain_diagnostic,
+        long_chain_diagnostic, long_chain_threshold_from_env_value,
     };
     use std::time::Duration;
 
@@ -588,6 +588,32 @@ mod tests {
                 diag.message,
             );
         }
+    }
+
+    /// Pins the env-resolver default branch: when the env var is unset
+    /// (i.e. `std::env::var(LONG_CHAIN_THRESHOLD_ENV_VAR)` returns
+    /// `Err(NotPresent)`, modeled by `None` at the test seam) the resolver
+    /// falls back to [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`].
+    ///
+    /// Test mechanics: this codebase deliberately avoids
+    /// `std::env::set_var`/`remove_var` (unsafe in Rust 2024 edition,
+    /// race-prone across parallel tests — see `warm_pool.rs:166-171`).
+    /// Instead, [`long_chain_threshold_from_env_value`] is the public test
+    /// seam mirroring [`crate::warm_pool::WarmStatePool::from_env_value`];
+    /// the production wrapper [`super::long_chain_threshold_from_env`] is a
+    /// one-liner that reads `std::env::var(...)` and delegates here. This
+    /// pins the same parser contract a `remove_var`-driven test would
+    /// without unsafe env mutation.
+    #[test]
+    fn long_chain_threshold_from_env_returns_default_when_unset() {
+        let resolved = long_chain_threshold_from_env_value(None);
+        assert_eq!(
+            resolved,
+            Duration::from_millis(LONG_CHAIN_DEFAULT_THRESHOLD_MS),
+            "unset env var must resolve to the PRD-default threshold ({} ms), got {:?}",
+            LONG_CHAIN_DEFAULT_THRESHOLD_MS,
+            resolved,
+        );
     }
 
     /// Trivial happy path: one kernel that supports the demanded op directly on
