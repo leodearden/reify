@@ -145,4 +145,72 @@ mod tests {
              reachable through the trait-object accessor",
         );
     }
+
+    /// PRD line 70: heavy remeshing within tolerance (and, in this v0.2 stub,
+    /// deferred FFI) discards attributes with a `tracing::warn!` diagnostic.
+    ///
+    /// Three properties are pinned by this test:
+    /// (a) `propagate_attributes` returns `Ok(KernelAttributeOutcome::Discarded)`
+    ///     for the v0.2 stub regardless of inputs — the trait surface model.
+    /// (b) `table` is left unchanged: the stub does not write spurious entries.
+    /// (c) Exactly one WARN-level event fires at the `reify_kernel_manifold`
+    ///     target, matching the `Discarded` contract that hook impls emit
+    ///     their own diagnostic before returning.
+    ///
+    /// Reuses the `CountingSubscriberBuilder` pattern from
+    /// `crates/reify-eval/src/kernel_registry.rs:329-353`. Synthetic op +
+    /// handle slices avoid dragging actual kernel state into the test.
+    #[test]
+    fn manifold_kernel_attribute_hook_returns_discarded_and_emits_warn_diagnostic() {
+        use reify_test_support::CountingSubscriberBuilder;
+        use reify_types::TopologyAttributeTable;
+        use std::sync::atomic::Ordering;
+
+        let kernel = ManifoldKernel::new();
+        let mut table = TopologyAttributeTable::default();
+        let op = GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        };
+        let parents = [GeometryHandleId(1), GeometryHandleId(2)];
+        let result = GeometryHandleId(3);
+        let feature_id = FeatureId::new("test#realization[0]");
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_kernel_manifold")
+            .build();
+        let warn_count = counters[&tracing::Level::WARN].clone();
+
+        let outcome = tracing::subscriber::with_default(subscriber, || {
+            kernel.propagate_attributes(&mut table, &op, &parents, result, &feature_id)
+        });
+
+        // (a) Outcome is Ok(Discarded) for the v0.2 stub.
+        // Match-on-outcome rather than `assert_eq!` because `QueryError` does
+        // not derive `PartialEq` (would require widening reify-types' surface
+        // for a single test assertion).
+        match outcome {
+            Ok(KernelAttributeOutcome::Discarded) => {}
+            other => panic!(
+                "v0.2 Manifold stub must return Ok(Discarded) — real FFI is deferred; got {other:?}"
+            ),
+        }
+
+        // (b) Table is unchanged: stub does not write spurious entries.
+        assert!(
+            table.is_empty(),
+            "Manifold Discarded path must not write to TopologyAttributeTable — \
+             attributes were lost, not propagated",
+        );
+
+        // (c) Exactly one WARN event at the reify_kernel_manifold target.
+        assert_eq!(
+            warn_count.load(Ordering::Acquire),
+            1,
+            "Manifold Discarded path must emit exactly one WARN event at \
+             reify_kernel_manifold target — operator visibility for the \
+             intentional attribute-loss diagnostic per PRD line 70",
+        );
+    }
 }
