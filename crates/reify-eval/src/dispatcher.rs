@@ -193,6 +193,62 @@ pub fn long_chain_diagnostic(
     Some(Diagnostic::warning(message).with_code(DiagnosticCode::LongChainRealization))
 }
 
+/// Resolve the long-chain wall-time threshold from the
+/// [`LONG_CHAIN_THRESHOLD_ENV_VAR`] environment variable, falling back to
+/// [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`] when unset or unparseable.
+///
+/// Production wrapper around [`long_chain_threshold_from_env_value`]. This
+/// function reads the process environment exactly once and delegates the
+/// parse-and-fallback semantics to the test seam — mirroring the
+/// [`crate::warm_pool::WarmStatePool::from_env_or_default`] /
+/// [`crate::warm_pool::WarmStatePool::from_env_value`] split (warm_pool.rs:160-205).
+///
+/// # Why a seam?
+///
+/// `std::env::set_var` and `std::env::remove_var` are `unsafe` in Rust 2024
+/// edition and race-prone across parallel tests. Unit-testing this thin
+/// wrapper directly would require `unsafe` env mutation; instead, the
+/// public seam takes `Option<&str>` (matching `std::env::var(...).ok().as_deref()`'s
+/// shape) so the parser branches can be exercised without touching the
+/// process environment. See `warm_pool.rs:166-171` for the original rationale.
+pub fn long_chain_threshold_from_env() -> Duration {
+    long_chain_threshold_from_env_value(std::env::var(LONG_CHAIN_THRESHOLD_ENV_VAR).ok().as_deref())
+}
+
+/// Test seam for [`long_chain_threshold_from_env`]: the parser-with-fallback
+/// half of the env-var read pipeline.
+///
+/// | `value`              | Result                                              |
+/// |----------------------|-----------------------------------------------------|
+/// | `None`               | [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`] ms (unset env)  |
+/// | `Some("")`           | [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`] ms (shell `VAR=`)|
+/// | `Some(parseable u64)`| `Duration::from_millis(parsed)`                     |
+/// | `Some(other)`        | `tracing::warn!`; [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`]|
+///
+/// Mirrors [`crate::warm_pool::WarmStatePool::from_env_value`]'s
+/// shell-empty-string posture: `VAR=` exports `""` rather than unsetting,
+/// so treat empty the same as absent without emitting a spurious warn.
+pub fn long_chain_threshold_from_env_value(value: Option<&str>) -> Duration {
+    let parsed_ms: u64 = match value {
+        None => LONG_CHAIN_DEFAULT_THRESHOLD_MS,
+        Some("") => LONG_CHAIN_DEFAULT_THRESHOLD_MS,
+        Some(s) => match s.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => {
+                tracing::warn!(
+                    env_var = LONG_CHAIN_THRESHOLD_ENV_VAR,
+                    raw = %s,
+                    default_ms = LONG_CHAIN_DEFAULT_THRESHOLD_MS,
+                    "could not parse long-chain threshold; using default ({} ms)",
+                    LONG_CHAIN_DEFAULT_THRESHOLD_MS,
+                );
+                LONG_CHAIN_DEFAULT_THRESHOLD_MS
+            }
+        },
+    };
+    Duration::from_millis(parsed_ms)
+}
+
 /// Ordered sequence of conversion stages: each entry is
 /// `(kernel_name, from_repr, to_repr)`. Factored as a type alias to keep the
 /// internal BFS frontier type below clippy's `type_complexity` threshold and
