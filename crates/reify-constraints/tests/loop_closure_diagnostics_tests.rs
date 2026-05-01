@@ -161,8 +161,6 @@ fn loop_closure_report_is_singular_accessor_derives_from_outcome() {
         },
         diagnostics: vec![],
     };
-    assert!(matches!(report_converged.outcome, NewtonOutcome::Converged { .. }));
-    assert!(report_converged.diagnostics.is_empty());
     assert!(
         !report_converged.is_singular(),
         "Converged outcome must yield is_singular()=false"
@@ -176,8 +174,6 @@ fn loop_closure_report_is_singular_accessor_derives_from_outcome() {
         },
         diagnostics: vec![],
     };
-    assert!(matches!(report_not_converged.outcome, NewtonOutcome::NotConverged { .. }));
-    assert!(report_not_converged.diagnostics.is_empty());
     assert!(
         !report_not_converged.is_singular(),
         "NotConverged outcome must yield is_singular()=false"
@@ -191,8 +187,6 @@ fn loop_closure_report_is_singular_accessor_derives_from_outcome() {
         },
         diagnostics: vec![],
     };
-    assert!(matches!(report_singular.outcome, NewtonOutcome::Singular { .. }));
-    assert!(report_singular.diagnostics.is_empty());
     assert!(
         report_singular.is_singular(),
         "Singular outcome must yield is_singular()=true"
@@ -205,8 +199,6 @@ fn loop_closure_report_is_singular_accessor_derives_from_outcome() {
         },
         diagnostics: vec![],
     };
-    assert!(matches!(report_invalid.outcome, NewtonOutcome::InvalidInput { .. }));
-    assert!(report_invalid.diagnostics.is_empty());
     assert!(
         !report_invalid.is_singular(),
         "InvalidInput outcome must yield is_singular()=false"

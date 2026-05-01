@@ -764,10 +764,10 @@ pub fn solve_loop_closure_with_diagnostics(
     // returned `x` (a length-mismatch contract violation).
     if let Some(reason) = validate_loop_closure_inputs(chain_b, vals_b_initial, free_b, strategy) {
         tracing::warn!("solve_loop_closure_with_diagnostics: {reason}");
-        return build_report(
-            NewtonOutcome::InvalidInput { reason },
-            Vec::new(),
-        );
+        return LoopClosureReport {
+            outcome: NewtonOutcome::InvalidInput { reason },
+            diagnostics: Vec::new(),
+        };
     }
 
     let mut diagnostics: Vec<reify_types::Diagnostic> = Vec::new();
@@ -809,13 +809,13 @@ pub fn solve_loop_closure_with_diagnostics(
                 .collect(),
         };
 
-        return build_report(
-            NewtonOutcome::NotConverged {
+        return LoopClosureReport {
+            outcome: NewtonOutcome::NotConverged {
                 x,
                 residual_norm: f64::INFINITY,
             },
             diagnostics,
-        );
+        };
     }
 
     if free_b.len() > SINGLE_LOOP_RESIDUAL_COUNT {
@@ -860,7 +860,7 @@ pub fn solve_loop_closure_with_diagnostics(
         diagnostics.push(diag);
     }
 
-    build_report(outcome, diagnostics)
+    LoopClosureReport { outcome, diagnostics }
 }
 
 /// Single validation entry point used by both [`solve_loop_closure`] and
@@ -918,22 +918,6 @@ fn validate_loop_closure_inputs(
         }
     }
     None
-}
-
-/// Bundles `outcome` and `diagnostics` into a [`LoopClosureReport`].
-///
-/// Every wrapper-internal construction goes through this helper for
-/// consistency.  Singularity is not tracked as a separate field — callers
-/// use [`LoopClosureReport::is_singular()`], which derives from the
-/// `outcome` tag and cannot drift by construction.
-fn build_report(
-    outcome: NewtonOutcome,
-    diagnostics: Vec<reify_types::Diagnostic>,
-) -> LoopClosureReport {
-    LoopClosureReport {
-        outcome,
-        diagnostics,
-    }
 }
 
 #[cfg(test)]
