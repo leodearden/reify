@@ -996,3 +996,46 @@ structure def ORingSeal : Seal {
         diagnostics[0].labels[0].span
     );
 }
+
+// ─── debug_assert: empty bounds slice panics at orchestrator level ─────────
+
+/// Passing an `AutoTypeParam` with an empty `bounds` slice to
+/// `resolve_auto_type_params` must panic in debug builds with a message that
+/// names the orchestrator context ("param.bounds must be non-empty").
+///
+/// The orchestrator delegates to `enumerate_candidates` which also carries a
+/// `debug_assert!(!bounds.is_empty(), ...)` of its own — but its message
+/// identifies the *helper* context ("enumerate_candidates: bounds slice must
+/// be non-empty ..."), not the orchestrator. The substring
+/// `"param.bounds must be non-empty"` therefore serves as the discriminating
+/// marker: it passes only when the orchestrator's own assert fires first.
+///
+/// The `#[cfg(debug_assertions)]` gate skips this test in release builds where
+/// `debug_assert!` is a no-op, mirroring the convention used for sibling
+/// assert-coverage tests in this codebase (e.g. the Phase C tests).
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "param.bounds must be non-empty")]
+fn empty_bounds_in_param_panics_in_debug() {
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![AutoTypeParam {
+        name: "T".to_string(),
+        bounds: vec![],
+        free: false,
+        use_site_span: SourceSpan::empty(0),
+    }];
+
+    resolve_auto_type_params(
+        &params,
+        &HashMap::new(),
+        &HashMap::new(),
+        &template,
+        &checker,
+        functions,
+        &mut diagnostics,
+    );
+}
