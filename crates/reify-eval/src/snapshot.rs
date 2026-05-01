@@ -51,6 +51,23 @@ impl Snapshot {
         // bucket reflects the substitution (PRD task 5 criterion 7,
         // tasks 2388/2778). Vec<(String, String)> shape matches verbatim,
         // no adapter needed.
+        //
+        // Invariant (producer guarantee): param names in auto_type_substitution
+        // must be unique. Duplicates would make topology_fingerprint sensitive
+        // to insertion order, defeating criterion 7. The same assert fires
+        // inside topology_fingerprint (graph.rs:647-654) but catching it here
+        // at the API boundary surfaces the bug closer to the producer.
+        debug_assert!(
+            {
+                let mut seen = std::collections::HashSet::new();
+                module
+                    .auto_type_substitution
+                    .iter()
+                    .all(|(p, _)| seen.insert(p.as_str()))
+            },
+            "CompiledModule.auto_type_substitution: param names must be unique; \
+             duplicates are a producer bug (see EvaluationGraph::topology_fingerprint)"
+        );
         graph.auto_type_substitution = module.auto_type_substitution.clone();
         let topology_fingerprint = graph.topology_fingerprint();
 

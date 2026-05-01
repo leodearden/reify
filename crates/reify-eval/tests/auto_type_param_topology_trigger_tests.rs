@@ -225,14 +225,14 @@ fn snapshot_from_compiled_module_propagates_auto_type_substitution_to_graph() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/bearing_auto_seal.ri should exist");
 
-    // Build the resolved module: set auto_type_substitution directly
+    // Compile once; stdlib + example is expensive in an integration test.
+    // The baseline keeps the default empty auto_type_substitution.
+    // The resolved variant is a cheap clone with the substitution injected
     // (bypasses the still-absent `auto:` parser — field is populated here
     // the same way a future parser-lowering task would populate it).
-    let mut module_resolved = parse_and_compile_with_stdlib(&source);
-    module_resolved.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
-
-    // Build the baseline module: auto_type_substitution stays at default empty Vec.
     let module_baseline = parse_and_compile_with_stdlib(&source);
+    let mut module_resolved = module_baseline.clone();
+    module_resolved.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
 
     let snap_resolved = Snapshot::from_compiled_module(&module_resolved);
     let snap_baseline = Snapshot::from_compiled_module(&module_baseline);
