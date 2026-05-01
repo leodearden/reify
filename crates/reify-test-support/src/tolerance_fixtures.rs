@@ -451,6 +451,54 @@ mod tests {
         assert_eq!(args[1].result_type, Type::Scalar { dimension: DimensionVector::LENGTH });
     }
 
+    // ── my_design_template_with_subs ────────────────────────────────────────
+
+    /// Pins three cases of `my_design_template_with_subs`:
+    ///
+    /// (a) Empty slice → identical shape to `my_design_template()`: `"MyDesign"`
+    ///     name, one `thickness : Real` param cell, no constraints, zero
+    ///     sub-components.
+    /// (b) Single-element slice → one sub-component with the supplied name and
+    ///     structure_name, empty args, `is_collection == false`.
+    /// (c) Two-element slice → sub-components appear in declaration order
+    ///     (index 0 = first element, index 1 = second), pinning that the helper
+    ///     does not sort or reorder.
+    #[test]
+    fn my_design_template_with_subs_pins_sub_components_shape() {
+        // (a) empty slice — must match my_design_template()
+        let template = my_design_template_with_subs(&[]);
+        assert_eq!(template.name, "MyDesign");
+        assert_eq!(template.value_cells.len(), 1, "exactly one value cell");
+        assert_eq!(template.value_cells[0].id, ValueCellId::new("MyDesign", "thickness"));
+        assert_eq!(template.value_cells[0].cell_type, Type::Real);
+        assert!(template.value_cells[0].default_expr.is_none());
+        assert_eq!(template.constraints.len(), 0, "no constraints");
+        assert_eq!(template.sub_components.len(), 0, "zero sub-components for empty slice");
+
+        // (b) single sub
+        let template = my_design_template_with_subs(&[("head", "Head")]);
+        assert_eq!(template.sub_components.len(), 1, "one sub-component");
+        let sub = &template.sub_components[0];
+        assert_eq!(sub.name, "head");
+        assert_eq!(sub.structure_name, "Head");
+        assert!(sub.args.is_empty(), "args must be empty");
+        assert!(!sub.is_collection, "is_collection must be false");
+
+        // (c) two subs — order preserved
+        let template = my_design_template_with_subs(&[("head", "Head"), ("tail", "Head")]);
+        assert_eq!(template.sub_components.len(), 2, "two sub-components");
+        assert_eq!(
+            template.sub_components[0].name, "head",
+            "first sub must be 'head' (declaration order preserved)"
+        );
+        assert_eq!(
+            template.sub_components[1].name, "tail",
+            "second sub must be 'tail' (declaration order preserved)"
+        );
+        assert_eq!(template.sub_components[0].structure_name, "Head");
+        assert_eq!(template.sub_components[1].structure_name, "Head");
+    }
+
     // ── my_design_template ──────────────────────────────────────────────────
 
     /// Pins that `my_design_template` builds a `"MyDesign"` template with
