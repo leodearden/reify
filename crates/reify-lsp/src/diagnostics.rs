@@ -1683,6 +1683,245 @@ structure S {
         );
     }
 
+    // ── specialization-scope LSP regression locks (task 2371) ──────────────
+    //
+    // AST-builder helpers for hand-constructed ParsedModules are collected in
+    // `mod fixtures` below.  The helpers mirror the fixtures in
+    // `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs::tests`
+    // (lines 178-305) — kept here as a private sub-module to avoid crossing
+    // crate boundaries.
+    //
+    // Each test builds a ParsedModule with a specialization scope
+    // (`MemberDecl::Sub { body: Some(_) }`), drives it through
+    // `reify_compiler::compile_with_stdlib`, converts every compiler diagnostic
+    // through `convert::convert_diagnostic` (mirroring the post-parse half of
+    // `compute_diagnostics`), then filters to
+    // `code == "SpecializationForbiddenDecl"` before asserting.
+
+    mod fixtures {
+        use reify_syntax::{
+            ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl,
+            PortDecl, StructureDef, SubDecl,
+        };
+        use reify_types::{ContentHash, ModulePath, SourceSpan};
+
+        pub fn dummy_span() -> SourceSpan {
+            SourceSpan::new(10, 20)
+        }
+
+        pub fn param_span() -> SourceSpan {
+            SourceSpan::new(30, 50)
+        }
+
+        pub fn port_span() -> SourceSpan {
+            SourceSpan::new(60, 80)
+        }
+
+        pub fn sub_span() -> SourceSpan {
+            SourceSpan::new(90, 110)
+        }
+
+        pub fn dummy_hash() -> ContentHash {
+            ContentHash(0)
+        }
+
+        pub fn dummy_expr() -> Expr {
+            Expr {
+                kind: ExprKind::BoolLiteral(true),
+                span: dummy_span(),
+            }
+        }
+
+        pub fn make_param(name: &str, span: SourceSpan) -> MemberDecl {
+            MemberDecl::Param(ParamDecl {
+                name: name.to_string(),
+                doc: None,
+                type_expr: None,
+                default: None,
+                where_clause: None,
+                annotations: Vec::new(),
+                span,
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
+            MemberDecl::Port(PortDecl {
+                name: name.to_string(),
+                direction: None,
+                type_name: "SomePort".to_string(),
+                members: Vec::new(),
+                frame_expr: None,
+                span,
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
+            use reify_syntax::SubDecl;
+            MemberDecl::Sub(SubDecl {
+                name: name.to_string(),
+                structure_name: "Foo".to_string(),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                is_collection: false,
+                where_clause: None,
+                body: None,
+                span,
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_sub_with_body(
+            name: &str,
+            span: SourceSpan,
+            body: Vec<MemberDecl>,
+        ) -> MemberDecl {
+            MemberDecl::Sub(SubDecl {
+                name: name.to_string(),
+                structure_name: "Foo".to_string(),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                is_collection: false,
+                where_clause: None,
+                body: Some(body),
+                span,
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_let(name: &str) -> MemberDecl {
+            MemberDecl::Let(LetDecl {
+                name: name.to_string(),
+                doc: None,
+                is_pub: false,
+                type_expr: None,
+                value: dummy_expr(),
+                where_clause: None,
+                annotations: Vec::new(),
+                span: dummy_span(),
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_constraint() -> MemberDecl {
+            MemberDecl::Constraint(ConstraintDecl {
+                label: None,
+                expr: dummy_expr(),
+                where_clause: None,
+                span: dummy_span(),
+                content_hash: dummy_hash(),
+            })
+        }
+
+        /// Build a ParsedModule with a single Structure named "S" whose
+        /// top-level members are the supplied `members`.
+        pub fn parsed_module_with_structure_members(
+            members: Vec<MemberDecl>,
+        ) -> reify_syntax::ParsedModule {
+            reify_syntax::ParsedModule {
+                path: ModulePath::single("test"),
+                declarations: vec![Declaration::Structure(StructureDef {
+                    name: "S".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    type_params: Vec::new(),
+                    trait_bounds: Vec::new(),
+                    members,
+                    span: dummy_span(),
+                    content_hash: dummy_hash(),
+                    pragmas: Vec::new(),
+                    annotations: Vec::new(),
+                })],
+                errors: Vec::new(),
+                content_hash: dummy_hash(),
+                pragmas: Vec::new(),
+            }
+        }
+
+        /// A source stub long enough for all span offsets (up to sub_span end=110)
+        /// to produce non-zero LSP positions when passed to `convert_diagnostic`.
+        pub fn source_stub() -> String {
+            " ".repeat(120)
+        }
+    }
+
+    /// LSP regression lock (task 2371, step-1): a `param` declaration directly
+    /// inside a specialization-scope body surfaces as exactly one LSP ERROR
+    /// diagnostic with code `"SpecializationForbiddenDecl"`, source `"reify"`,
+    /// a non-zero range (the param's span carried through), and a message
+    /// containing both `'param'` and the param name `'x'`.
+    ///
+    /// The test hand-constructs a ParsedModule (the grammar does not yet accept
+    /// `sub name : T { body }` in real source) and drives the post-parse half of
+    /// `compute_diagnostics`: `compile_with_stdlib` → `convert_diagnostic`.
+    #[test]
+    fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_param() {
+        use fixtures::*;
+        use lsp_types::NumberOrString;
+
+        let body = vec![make_param("x", param_span())];
+        let parsed =
+            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
+
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let source = source_stub();
+        let uri = test_uri();
+
+        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
+            .diagnostics
+            .iter()
+            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
+            .collect();
+
+        let forbidden: Vec<_> = lsp_diags
+            .iter()
+            .filter(|d| {
+                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
+            })
+            .collect();
+
+        assert_eq!(
+            forbidden.len(),
+            1,
+            "expected exactly 1 SpecializationForbiddenDecl diagnostic, got {}: {:#?}",
+            forbidden.len(),
+            lsp_diags
+        );
+
+        let diag = forbidden[0];
+        assert_eq!(
+            diag.severity,
+            Some(DiagnosticSeverity::ERROR),
+            "expected ERROR severity, got {:?}",
+            diag.severity
+        );
+        assert_eq!(
+            diag.source.as_deref(),
+            Some("reify"),
+            "expected source 'reify', got {:?}",
+            diag.source
+        );
+        assert_ne!(
+            diag.range.start,
+            diag.range.end,
+            "range must be non-zero (param_span should be carried through convert_diagnostic), \
+             got start={:?} end={:?}",
+            diag.range.start,
+            diag.range.end
+        );
+        assert!(
+            diag.message.contains("'param'"),
+            "message must contain \"'param'\", got: {:?}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("'x'"),
+            "message must contain \"'x'\", got: {:?}",
+            diag.message
+        );
+    }
+
     /// (d) **Separation regression** — constraint-violation source must NOT produce
     /// any `computation-failed` diagnostics; the existing `constraint <id> violated`
     /// diagnostics must still appear.
