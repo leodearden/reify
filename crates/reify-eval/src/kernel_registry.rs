@@ -162,18 +162,20 @@ pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
 /// `picked = %name` — name of the selected kernel registration
 /// `total_registered = total` — total count visible in the registry at call time
 pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
+    debug_assert!(total >= 1, "emit_kernel_selection requires total >= 1");
     if total > 1 {
         tracing::info!(
             picked = %name,
             total_registered = total,
             "selected kernel via lex-min tie-break",
         );
-    } else {
+    } else if total == 1 {
         tracing::debug!(
             picked = %name,
             "selected kernel from inventory registry",
         );
     }
+    // total == 0: no event (matches doc table)
 }
 
 /// Walk `inventory::iter::<KernelRegistration>()` once and produce the
