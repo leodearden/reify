@@ -15,16 +15,30 @@
 //! | `1e-3 ≤ si < 1.0` m   | mm   | `5mm`          |
 //! | `si ≥ 1.0` m          | m    | `1.5m`         |
 //! | `si == 0.0`           | m    | `0m`           |
-//! | non-finite / negative | —    | `"{x} m"` (space-separated fallback) |
+//! | non-finite / negative | —    | `"{x} m"` (release fallback; debug-asserts) |
 
 /// Format an SI-metres tolerance value as a human-readable string.
 ///
 /// Uses the µm / mm / m magnitude bands that are already established in
 /// `tolerance_promise`'s truth-table docstring and across the test suite.
-/// Non-finite or negative inputs fall through to a `"{x} m"` fallback
+///
+/// # Panics
+///
+/// In debug builds, panics via `debug_assert!` if `si_metres` is non-finite
+/// (NaN or ±∞) or negative — the upstream `promise > demanded > 0` invariant
+/// (enforced by `is_promise_insufficient` and the silent-skip extractors) makes
+/// these inputs unreachable in practice, so the assert is a development
+/// tripwire, not a runtime check.
+///
+/// In release builds, the same inputs fall through to a `"{x} m"` fallback
 /// (space-separated to avoid ambiguous strings like `"NaNm"` or `"infm"`)
-/// so the helper never panics even if upstream invariants are broken.
+/// so the helper never panics in production even if upstream invariants
+/// are broken.
 pub(crate) fn format_tolerance(si_metres: f64) -> String {
+    debug_assert!(
+        si_metres.is_finite() && si_metres >= 0.0,
+        "format_tolerance invariant violated: si_metres={si_metres}",
+    );
     if !si_metres.is_finite() || si_metres < 0.0 {
         return format!("{si_metres} m");
     }
