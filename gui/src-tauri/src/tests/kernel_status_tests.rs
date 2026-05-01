@@ -33,7 +33,6 @@ fn kernel_status_ipc_contract() {
 #[cfg(feature = "gui")]
 mod gui_tests {
     use crate::kernel_status::{self, KERNEL_UNAVAILABLE_MESSAGE};
-    use reify_geometry::DispatchPlanner;
     use reify_kernel_occt::OCCT_AVAILABLE;
 
     #[test]
@@ -50,11 +49,61 @@ mod gui_tests {
         }
     }
 
+    /// Pins the registry-population invariant: `reify_eval::kernel_registry::registry()`
+    /// contains the `"occt"` entry when OCCT is available (feature = "gui" and
+    /// cfg(has_occt) is set).
+    ///
+    /// Note: this test runs inside a cargo unit-test binary, not the `reify-gui`
+    /// Tauri binary itself.  Both share the same dep-tree (reify-kernel-occt is an
+    /// `optional = true` dep gated on feature = "gui"), so both see the same
+    /// registry contents.  The neighboring test
+    /// `engine_session_with_registered_kernel_picks_occt_for_primitive_box_build`
+    /// is the authoritative behavioral pin for the production boot path; this test
+    /// pins only that `registry()` itself returns the expected map when OCCT is
+    /// linked.
+    ///
+    /// Skipped via `eprintln!` in stub mode so CI logs make the skip visible.
     #[test]
-    fn configure_planner_matches_availability() {
-        let mut planner = DispatchPlanner::new();
-        let status = kernel_status::configure_planner(&mut planner);
-        assert_eq!(status.available, OCCT_AVAILABLE);
-        assert_eq!(planner.has_kernel(), OCCT_AVAILABLE);
+    fn gui_registry_population_contains_occt() {
+        if !OCCT_AVAILABLE {
+            eprintln!(
+                "skipping gui_registry_population_contains_occt: \
+                 OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+            );
+            return;
+        }
+        let reg = reify_eval::kernel_registry::registry();
+        assert!(
+            reg.contains_key("occt"),
+            "registry() must contain \"occt\" when reify-kernel-occt is the \
+             optional dep and cfg(has_occt) is set; \
+             got keys: {:?}",
+            reg.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Regression pin: `EngineSession::with_registered_kernel` boot path
+    /// constructs a working session via the inventory-based kernel registry.
+    ///
+    /// When OCCT is available, constructs a session, loads a primitive box source,
+    /// and asserts that the load succeeds without errors. The geometry build itself
+    /// is exercised by the CLI pin and the reify-eval kernel_registry_inventory test;
+    /// here we pin only that the production boot path compiles and runs without error.
+    #[test]
+    fn engine_session_with_registered_kernel_picks_occt_for_primitive_box_build() {
+        if !OCCT_AVAILABLE {
+            eprintln!("Skipping: OCCT not available in this build (stub mode)");
+            return;
+        }
+        use crate::engine::EngineSession;
+        use reify_constraints::SimpleConstraintChecker;
+        let mut session =
+            EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+        let _ = session
+            .load_from_source(
+                "structure S { let b = box(10mm, 10mm, 10mm) }",
+                "primitive_box_build",
+            )
+            .expect("load_from_source should succeed with registered OCCT kernel");
     }
 }

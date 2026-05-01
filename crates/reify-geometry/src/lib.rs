@@ -3,38 +3,39 @@ use reify_types::{
     GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
 };
 
-/// A dispatch planner that wraps an optional geometry kernel.
+/// A single-kernel holder that wraps an optional geometry kernel.
 ///
-/// For M1, holds a single optional kernel and delegates all
-/// `GeometryKernel` calls to it. When no kernel is registered,
-/// each method returns the appropriate error.
+/// Holds a single optional kernel and delegates all `GeometryKernel` calls to
+/// it. When no kernel is registered, each method returns the appropriate error.
 ///
-/// `DispatchPlanner` implements [`GeometryKernel`] itself, so it can be
+/// `SingleKernelHolder` implements [`GeometryKernel`] itself, so it can be
 /// used as a transparent drop-in wherever `Box<dyn GeometryKernel>` is
-/// expected (e.g., the `reify-eval` [`Engine`]).
-pub struct DispatchPlanner {
+/// expected (e.g., the `reify-eval` test suite). Production binaries use
+/// [`Engine::with_registered_kernel`](reify_eval::Engine::with_registered_kernel)
+/// instead of constructing a `SingleKernelHolder` directly.
+pub struct SingleKernelHolder {
     kernel: Option<Box<dyn GeometryKernel>>,
 }
 
-// Compile-time check: DispatchPlanner is Send + Sync (required by GeometryKernel).
+// Compile-time check: SingleKernelHolder is Send + Sync (required by GeometryKernel).
 const _: fn() = || {
     fn must_be_send_sync<T: Send + Sync>() {}
-    must_be_send_sync::<DispatchPlanner>();
+    must_be_send_sync::<SingleKernelHolder>();
 };
 
-impl Default for DispatchPlanner {
+impl Default for SingleKernelHolder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DispatchPlanner {
-    /// Create a new `DispatchPlanner` with no kernel registered.
+impl SingleKernelHolder {
+    /// Create a new `SingleKernelHolder` with no kernel registered.
     pub fn new() -> Self {
         Self { kernel: None }
     }
 
-    /// Register a geometry kernel for dispatch.
+    /// Register a geometry kernel.
     pub fn register_kernel(&mut self, kernel: Box<dyn GeometryKernel>) {
         self.kernel = Some(kernel);
     }
@@ -45,7 +46,7 @@ impl DispatchPlanner {
     }
 }
 
-impl GeometryKernel for DispatchPlanner {
+impl GeometryKernel for SingleKernelHolder {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         match self.kernel.as_mut() {
             Some(k) => k.execute(op),
@@ -100,14 +101,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_planner_has_no_kernel() {
-        let planner = DispatchPlanner::new();
+    fn new_holder_has_no_kernel() {
+        let planner = SingleKernelHolder::new();
         assert!(!planner.has_kernel());
     }
 
     #[test]
     fn register_kernel_sets_has_kernel_true() {
-        let mut planner = DispatchPlanner::new();
+        let mut planner = SingleKernelHolder::new();
         let mock = MockGeometryKernel::new();
         planner.register_kernel(Box::new(mock));
         assert!(planner.has_kernel());
@@ -115,7 +116,7 @@ mod tests {
 
     #[test]
     fn execute_no_kernel_returns_error() {
-        let mut planner = DispatchPlanner::new();
+        let mut planner = SingleKernelHolder::new();
         let op = GeometryOp::Box {
             width: Value::length(0.01),
             height: Value::length(0.01),
@@ -137,7 +138,7 @@ mod tests {
 
     #[test]
     fn execute_delegates_to_registered_kernel() {
-        let mut planner = DispatchPlanner::new();
+        let mut planner = SingleKernelHolder::new();
         planner.register_kernel(Box::new(MockGeometryKernel::new()));
 
         let op = GeometryOp::Box {
@@ -152,7 +153,7 @@ mod tests {
 
     #[test]
     fn query_no_kernel_returns_error() {
-        let planner = DispatchPlanner::new();
+        let planner = SingleKernelHolder::new();
         let query = GeometryQuery::Volume(GeometryHandleId(1));
         let result = planner.query(&query);
         assert!(result.is_err());
@@ -170,7 +171,7 @@ mod tests {
 
     #[test]
     fn query_delegates_to_registered_kernel() {
-        let mut planner = DispatchPlanner::new();
+        let mut planner = SingleKernelHolder::new();
         let expected_volume = mm3(1000.0); // 1000 mm³
         let mock = MockGeometryKernel::new()
             .with_query_result(GeometryHandleId(1), expected_volume.clone());
@@ -191,7 +192,7 @@ mod tests {
 
     #[test]
     fn export_no_kernel_returns_error() {
-        let planner = DispatchPlanner::new();
+        let planner = SingleKernelHolder::new();
         let mut buf = Vec::new();
         let result = planner.export(GeometryHandleId(1), ExportFormat::Step, &mut buf);
         assert!(result.is_err());
@@ -209,7 +210,7 @@ mod tests {
 
     #[test]
     fn export_delegates_to_registered_kernel() {
-        let mut planner = DispatchPlanner::new();
+        let mut planner = SingleKernelHolder::new();
         planner.register_kernel(Box::new(MockGeometryKernel::new()));
 
         // Execute an op to create a handle
@@ -229,7 +230,7 @@ mod tests {
 
     #[test]
     fn tessellate_no_kernel_returns_error() {
-        let planner = DispatchPlanner::new();
+        let planner = SingleKernelHolder::new();
         let result = planner.tessellate(GeometryHandleId(1), 0.1);
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -246,7 +247,7 @@ mod tests {
 
     #[test]
     fn tessellate_delegates_to_registered_kernel() {
-        let mut planner = DispatchPlanner::new();
+        let mut planner = SingleKernelHolder::new();
         planner.register_kernel(Box::new(MockGeometryKernel::new()));
 
         // Execute an op to create a handle
@@ -273,7 +274,7 @@ mod tests {
         let mock = MockGeometryKernel::new();
         let ops_ref = mock.operations_ref();
 
-        let mut planner = DispatchPlanner::new();
+        let mut planner = SingleKernelHolder::new();
         planner.register_kernel(Box::new(mock));
 
         // Create a box
@@ -309,9 +310,9 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_planner_usable_as_boxed_geometry_kernel() {
+    fn single_kernel_holder_usable_as_boxed_geometry_kernel() {
         let mock = MockGeometryKernel::new();
-        let mut planner = DispatchPlanner::new();
+        let mut planner = SingleKernelHolder::new();
         planner.register_kernel(Box::new(mock));
 
         // Box the planner as a trait object — this is how reify-eval uses it

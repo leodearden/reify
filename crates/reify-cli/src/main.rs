@@ -4,9 +4,15 @@ use std::sync::Arc;
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::TestStatus;
 
+// Ensure reify_kernel_occt's object files are included in the link so its
+// cfg(has_occt)-gated `inventory::submit!` fires and populates the global
+// kernel registry used by `Engine::with_registered_kernel`.  An `extern crate`
+// reference is more durable than a const read (which rustc may inline without
+// emitting a symbol reference into the rlib); the linker passes the rlib
+// unconditionally when the crate appears in `extern crate` position.
+extern crate reify_kernel_occt as _;
+
 mod mcp_context;
-use reify_geometry::DispatchPlanner;
-use reify_kernel_occt::OcctKernelHandle;
 use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
 
 fn main() -> ExitCode {
@@ -222,10 +228,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
-    let mut planner = DispatchPlanner::new();
-    planner.register_kernel(Box::new(OcctKernelHandle::spawn()));
-
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
     let result = engine.build(&compiled, format);
 
     let outcome = report_eval_output(

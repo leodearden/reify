@@ -249,10 +249,8 @@ impl Engine {
     /// `Engine::new` and `Engine::with_prelude` remain unchanged: ~70
     /// integration tests across `crates/reify-eval/tests/` and the
     /// `reify-cli` / `gui-tauri` binaries pass kernels they constructed
-    /// themselves (e.g. `MockGeometryKernel`, `DispatchPlanner`). Migrating
-    /// CLI/GUI call sites to `with_registered_kernel` is a separate
-    /// follow-up — see task 2642 design decision "Defer CLI/GUI call-site
-    /// migration to a follow-up task".
+    /// themselves (e.g. `MockGeometryKernel`, `SingleKernelHolder`). The
+    /// CLI/GUI call sites now use `with_registered_kernel` — see task 2808.
     ///
     /// # Operator visibility
     ///
