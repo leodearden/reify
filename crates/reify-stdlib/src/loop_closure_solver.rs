@@ -2216,6 +2216,105 @@ mod tests {
         );
     }
 
+    /// Regression pin for the missing-`closing_joint` guard added in task 2783
+    /// (lines 701-704 of `mechanism_loop_closure_chains`).
+    ///
+    /// A loop-closure entry that carries `kind`, `body_id`, `path_a`, `path_b`
+    /// but intentionally omits `closing_joint` must cause the whole call to
+    /// return `None`.
+    ///
+    /// # Warning
+    /// Do NOT change the guard to `closing_joint = chain_b.last().cloned()`.
+    /// `chain_b.last()` is a partial function — it would return `None` on an
+    /// empty chain and silently mis-classify cycles.  The explicit `closing_joint`
+    /// field is the single source of truth; absence signals a malformed record.
+    #[test]
+    fn mechanism_loop_closure_chains_missing_closing_joint_returns_none() {
+        use std::collections::BTreeMap;
+
+        let world = crate::eval_builtin("world", &[]);
+        let j_a = prismatic_x_0_to_1();
+        let j_b = revolute_z_0_to_pi();
+        let j_x = Value::Map({
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String("joint".to_string()),
+            );
+            m.insert(
+                Value::String("tag".to_string()),
+                Value::String("x".to_string()),
+            );
+            m
+        });
+
+        // Single loop-closure entry: all required fields EXCEPT `closing_joint`.
+        let mut lc1 = BTreeMap::new();
+        lc1.insert(
+            Value::String("kind".to_string()),
+            Value::String("loop_closure".to_string()),
+        );
+        lc1.insert(Value::String("body_id".to_string()), Value::Int(1));
+        // NOTE: `closing_joint` is intentionally omitted.
+        lc1.insert(
+            Value::String("path_a".to_string()),
+            Value::List(vec![world.clone(), j_a.clone(), j_x.clone()]),
+        );
+        lc1.insert(
+            Value::String("path_b".to_string()),
+            Value::List(vec![world.clone(), j_b.clone(), j_x.clone()]),
+        );
+
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("loop_closures".to_string()),
+            Value::List(vec![Value::Map(lc1)]),
+        );
+
+        assert_eq!(
+            super::mechanism_loop_closure_chains(&Value::Map(mech)),
+            None,
+            "missing closing_joint field must make the whole call return None (lines 701-704 guard)"
+        );
+    }
+
+    /// Regression pin for the wrong-type guard at line 676 of
+    /// `mechanism_loop_closure_chains` (the `_ => return None` arm).
+    ///
+    /// This is the read-side counterpart of the write-side test
+    /// `append_body_wrong_typed_loop_closures_returns_undef` in
+    /// `mechanism.rs:1530`.  Both use `Value::Int(0)` as the wrong-type
+    /// sentinel to keep the symmetric guard pair visually aligned.
+    ///
+    /// A Mechanism Map where `loop_closures` is present but has a non-`List`
+    /// type must return `None`, not `Some([])` (which would silently swallow
+    /// the corrupt record).
+    #[test]
+    fn mechanism_loop_closure_chains_wrong_typed_loop_closures_returns_none() {
+        use std::collections::BTreeMap;
+
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        // `loop_closures` present but wrong type — mirrors mechanism.rs:1547.
+        mech.insert(
+            Value::String("loop_closures".to_string()),
+            Value::Int(0),
+        );
+
+        assert_eq!(
+            super::mechanism_loop_closure_chains(&Value::Map(mech)),
+            None,
+            "loop_closures present but non-List must return None (line 676 guard)"
+        );
+    }
+
     /// Pins that `mechanism_loop_closure_chains` correctly classifies and
     /// extracts the cycle case as `LoopClosureChain::Cycle { chain_a, chain_b }`,
     /// where `chain_b` contains the closing joint twice.  Specifically:
