@@ -58,6 +58,39 @@ mod gui_tests {
         assert_eq!(planner.has_kernel(), OCCT_AVAILABLE);
     }
 
+    /// Regression pin: `reify_eval::kernel_registry::registry()` visible from
+    /// inside the GUI's link closure contains the `"occt"` entry when OCCT
+    /// is available (feature = "gui" and cfg(has_occt)).
+    ///
+    /// Protects against accidental future removal of `reify-kernel-occt` as the
+    /// GUI's optional dep (or mis-gating the gui feature), which would silently
+    /// empty the registry and leave `EngineSession::with_registered_kernel`
+    /// constructing a no-kernel engine.
+    ///
+    /// Skipped via `eprintln!` in stub mode so CI logs make the skip visible.
+    #[test]
+    fn gui_link_closure_registry_contains_occt() {
+        if !OCCT_AVAILABLE {
+            eprintln!(
+                "skipping gui_link_closure_registry_contains_occt: \
+                 OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+            );
+            return;
+        }
+        let reg = reify_eval::kernel_registry::registry();
+        assert!(
+            reg.contains_key("occt"),
+            "registry() in the GUI's link closure must contain \"occt\" when \
+             reify-kernel-occt is the optional dep and cfg(has_occt) is set; \
+             got keys: {:?}",
+            reg.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            reg.len() >= 1,
+            "registry() must have at least one entry when OCCT is available"
+        );
+    }
+
     /// Regression pin: `EngineSession::with_registered_kernel` boot path
     /// constructs a working session via the inventory-based kernel registry.
     ///
