@@ -132,19 +132,45 @@ mod tests {
         }
     }
 
-    /// `query`, `export`, and `tessellate` must all return `Err(...)` for any
-    /// input, locking the all-error stub contract.
+    /// `query`, `export`, and `tessellate` must all return descriptive errors
+    /// whose message contains "Manifold" (matching the loop in
+    /// `manifold_kernel_returns_descriptive_error_for_mesh_boolean`), locking
+    /// the all-error stub contract for query/export/tessellate.
     #[test]
     fn manifold_kernel_query_export_tessellate_all_error() {
         let kernel = ManifoldKernel::new();
 
         let query_result = kernel.query(&GeometryQuery::Volume(GeometryHandleId(1)));
-        assert!(query_result.is_err(), "query must return Err(...)");
+        match query_result {
+            Err(QueryError::QueryFailed(msg)) => assert!(
+                msg.contains("Manifold"),
+                "query error message must mention 'Manifold', got: {msg:?}",
+            ),
+            other => panic!(
+                "expected Err(QueryError::QueryFailed(_)) from query, got {other:?}"
+            ),
+        }
 
         let export_result = kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut vec![]);
-        assert!(export_result.is_err(), "export must return Err(...)");
+        match export_result {
+            Err(ExportError::FormatError(msg)) => assert!(
+                msg.contains("Manifold"),
+                "export error message must mention 'Manifold', got: {msg:?}",
+            ),
+            other => panic!(
+                "expected Err(ExportError::FormatError(_)) from export, got {other:?}"
+            ),
+        }
 
         let tess_result = kernel.tessellate(GeometryHandleId(1), 0.1);
-        assert!(tess_result.is_err(), "tessellate must return Err(...)");
+        match tess_result {
+            Err(TessError::TessellationFailed(msg)) => assert!(
+                msg.contains("Manifold"),
+                "tessellate error message must mention 'Manifold', got: {msg:?}",
+            ),
+            other => panic!(
+                "expected Err(TessError::TessellationFailed(_)) from tessellate, got {other:?}"
+            ),
+        }
     }
 }
