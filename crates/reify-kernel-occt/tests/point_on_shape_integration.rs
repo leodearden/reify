@@ -4,12 +4,12 @@
 //! Algorithm: `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is
 //! built from the query point.  Returns `dist.Value() <= tolerance`.
 //!
-//! **Interior points:** `BRepExtrema_DistShapeShape` has NO inside/outside
-//! knowledge.  For a query point strictly inside a solid, OCCT returns the
-//! distance to the nearest BREP boundary (not 0), so `point_on_shape` returns
-//! `false` for any tolerance below that boundary distance.  This is the correct
-//! BREP-membership semantic: the shape's surface IS its boundary; interior
-//! points are not on the surface.
+//! **Interior solid points — OCCT overlap behavior:** when the query vertex is
+//! inside a `TopoDS_Solid`, `BRepExtrema_DistShapeShape` considers the shapes to
+//! overlap and returns `dist.Value() = 0` (not the distance to the nearest
+//! boundary face).  Therefore `point_on_shape` returns `true` for interior solid
+//! points with any positive tolerance.  This means the primitive cannot distinguish
+//! on-surface from inside-solid for `TopoDS_Solid` shapes; see escalation esc-2829-6.
 //!
 //! Fixture: a 10×10×10 box centered at the origin (x∈[-5,5], y∈[-5,5], z∈[-5,5]).
 //!
@@ -18,7 +18,7 @@
 //! - Edge midpoint (5,5,0) → true.
 //! - Corner vertex (5,5,5) → true.
 //! - External point (10,0,0) → false.
-//! - Interior point (0,0,0) with tolerance 1e-3 → false (nearest face is 5.0 away).
+//! - Interior point (0,0,0) with tolerance 1e-3 → true (OCCT dist=0 for solid interior).
 //! - Point within tolerance of surface (5 + 5e-4, 0, 0) with tol=1e-3 → true.
 //! - Point outside tolerance of surface (5 + 2e-3, 0, 0) with tol=1e-3 → false.
 //! - Unknown handle → `QueryError::InvalidHandle`.
@@ -107,25 +107,35 @@ fn point_on_shape_external_point_returns_false() {
 }
 
 // ---------------------------------------------------------------------------
-// Interior point — BRepExtrema no-inside-knowledge regression lock-in
+// Interior point — BRepExtrema solid-overlap behavior regression lock-in
 // ---------------------------------------------------------------------------
 
 /// Query point (0.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// `BRepExtrema_DistShapeShape` has NO inside/outside knowledge — it returns
-/// the distance to the nearest BREP boundary (5.0 for the origin in this box),
-/// NOT 0.  Therefore `point_on_shape` returns `false` for any tolerance below
-/// 5.0.  This test locks in that contract with tolerance 1e-3 (far below 5.0).
+/// **Regression lock-in for OCCT solid-overlap behavior:** when the query vertex
+/// is inside a `TopoDS_Solid`, `BRepExtrema_DistShapeShape` considers the shapes
+/// to overlap and returns `dist.Value() = 0` (not the distance to the nearest
+/// boundary face).  Therefore `point_on_shape` returns `true` for interior solid
+/// points, because `0.0 <= tolerance` for any positive tolerance.
+///
+/// This behavior means `point_on_shape` **cannot distinguish between a point on
+/// the BREP surface and a point inside the solid** when the shape is a
+/// `TopoDS_Solid`.  Callers that need strict surface-only membership should apply
+/// a solid-classifier pre-filter (e.g. `BRepClass3d_SolidClassifier`) — that is
+/// out of scope for this FFI primitive.  See escalation esc-2829-6 and parent
+/// task 2324 for stdlib wiring decisions.
 #[test]
-fn point_on_shape_interior_point_returns_false_for_strict_tol() {
+fn point_on_shape_interior_solid_point_returns_true() {
     let (kernel, box_id) = box_kernel();
+    // OCCT returns dist.Value() = 0 for interior solid points (overlap).
+    // 0.0 <= 1e-3 → true.
     match kernel.point_on_shape(box_id, 0.0, 0.0, 0.0, 1e-3) {
-        Ok(false) => {}
-        Ok(true) => panic!(
-            "expected false for interior point (0,0,0) with tol=1e-3 \
-             (BRepExtrema distance-to-boundary is 5.0, not 0), got true"
+        Ok(true) => {}
+        Ok(false) => panic!(
+            "expected true for interior solid point (0,0,0) with tol=1e-3 \
+             (OCCT BRepExtrema returns dist=0 for solid interior, not 5.0), got false"
         ),
-        Err(e) => panic!("expected Ok(false), got Err({e:?})"),
+        Err(e) => panic!("expected Ok(true), got Err({e:?})"),
     }
 }
 

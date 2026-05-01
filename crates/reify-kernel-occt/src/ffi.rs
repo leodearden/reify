@@ -648,6 +648,27 @@ pub mod ffi {
         fn closest_point_on_shape(shape: &OcctShape, px: f64, py: f64, pz: f64)
             -> Result<Point3>;
 
+        /// Test whether the query point `(px, py, pz)` lies on the BREP boundary
+        /// (face/edge/vertex) of `shape` within `tolerance`.
+        ///
+        /// Uses `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is built
+        /// from the query point, returning `dist.Value() <= tolerance`. Operand ordering
+        /// mirrors `closest_point_on_shape` and `min_clearance`.
+        ///
+        /// **Interior points return false:** `BRepExtrema_DistShapeShape` has no
+        /// inside/outside knowledge — interior solid points return the distance to the
+        /// nearest BREP boundary (not 0), so `point_on_shape` returns `false` for any
+        /// tolerance below that distance. See the C++ header for the full contract.
+        ///
+        /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`.
+        fn point_on_shape(
+            shape: &OcctShape,
+            px: f64,
+            py: f64,
+            pz: f64,
+            tolerance: f64,
+        ) -> Result<bool>;
+
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
 
         /// Compute the full 3×3 inertia tensor (kg·m²) about the centroid.

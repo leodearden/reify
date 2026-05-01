@@ -756,6 +756,27 @@ double min_clearance(const OcctShape& a, const OcctShape& b);
 /// than coinciding with the query point.
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
 
+/// Test whether the query point (px, py, pz) lies on the BREP boundary
+/// (face/edge/vertex) of `shape` within `tolerance`.
+///
+/// Algorithm: build a `TopoDS_Vertex` from the query point via
+/// `BRepBuilderAPI_MakeVertex(gp_Pnt(px, py, pz))`, run
+/// `BRepExtrema_DistShapeShape(shape, vertex)`, and return
+/// `dist.Value() <= tolerance`. Operand ordering mirrors `closest_point_on_shape`
+/// and `min_clearance` (input shape first, query vertex second).
+///
+/// **Interior points return false:** `BRepExtrema_DistShapeShape` has NO
+/// inside/outside knowledge. For a query point strictly inside a solid, OCCT
+/// returns the distance to the nearest BREP boundary, NOT 0. Therefore
+/// `point_on_shape(interior_point, solid)` returns `false` for any tolerance
+/// below that boundary distance. This is the correct BREP-membership semantic:
+/// the shape's surface IS its boundary; interior solid points are not on the
+/// surface.
+///
+/// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
+/// to match OCCT's default confusion threshold.
+bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance);
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
 /// Compute the full 3×3 inertia tensor about the shape's centroid,

@@ -2802,6 +2802,24 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
     });
 }
 
+bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance) {
+    return wrap_occt_call("point_on_shape", [&]() {
+        gp_Pnt query_pnt(px, py, pz);
+        BRepBuilderAPI_MakeVertex vertex_maker(query_pnt);
+        if (!vertex_maker.IsDone()) {
+            throw std::runtime_error("point_on_shape: vertex construction failed");
+        }
+        BRepExtrema_DistShapeShape dist(shape.shape, vertex_maker.Vertex());
+        if (!dist.IsDone()) {
+            throw std::runtime_error("point_on_shape: BRepExtrema_DistShapeShape failed");
+        }
+        if (dist.NbSolution() < 1) {
+            throw std::runtime_error("point_on_shape: no solution found");
+        }
+        return dist.Value() <= tolerance;
+    });
+}
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
     return wrap_occt_call("query_moment_of_inertia", [&]() {
         GProp_GProps props;

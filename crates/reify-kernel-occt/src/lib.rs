@@ -533,111 +533,36 @@ impl OcctKernel {
         Ok([p.x, p.y, p.z])
     }
 
-    /// Angle between the outward normals of the two faces (in radians),
-    /// sampled at each face's surface centroid.
+    /// Test whether the query point `(px, py, pz)` lies on the BREP boundary
+    /// (face/edge/vertex) of the shape identified by `handle`, within `tolerance`.
     ///
-    /// Algorithm: `acos(clamp(n_a · n_b, -1, 1))` where each `n` is the
-    /// face's unit outward normal sampled at its centroid via
-    /// `BRepAdaptor_Surface::D1`. Honours `TopAbs_REVERSED` orientation
-    /// (same semantics as `query_face_normal`). The dot clamp guards against
-    /// FP rounding outside `acos`'s domain for parallel/antiparallel inputs.
+    /// Uses `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is built
+    /// from the query point, returning `dist.Value() <= tolerance`.
     ///
-    /// Note: this is the angle between outward normals, not a classical
-    /// dihedral angle (which requires a shared edge). For adjacent convex
-    /// faces this equals the exterior angle; for disjoint faces the value
-    /// is still geometrically meaningful.
+    /// **Interior points return `false`:** `BRepExtrema_DistShapeShape` has NO
+    /// inside/outside knowledge. For a query point strictly inside a solid, OCCT
+    /// returns the distance to the nearest BREP boundary (not 0). This is the
+    /// correct BREP-membership semantic — the surface IS the boundary, and interior
+    /// solid points are not on the surface.
     ///
-    /// Both handles must name `BRepKind::Face` shapes — the `TopAbs_FACE`
-    /// check is performed on the C++ side so errors flow through
-    /// `QueryFailed(e.to_string())` with a recognizable prefix.
+    /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
+    /// to match OCCT's default confusion threshold.
     ///
-    /// Returns radians in `[0, π]`.
-    ///
-    /// # Errors
-    ///
-    /// - `QueryError::InvalidHandle` — if either handle is unknown.
-    /// - `QueryError::QueryFailed` — if either shape is not a face, has no
-    ///   underlying surface, yields a degenerate normal, or any OCCT call fails.
-    pub fn surface_angle(
+    /// Returns `Err(QueryError::InvalidHandle(_))` if `handle` is unknown, or
+    /// `Err(QueryError::QueryFailed(_))` if the OCCT computation fails.
+    pub fn point_on_shape(
         &self,
-        face_a: GeometryHandleId,
-        face_b: GeometryHandleId,
-    ) -> Result<f64, QueryError> {
-        let s1 = self
-            .get_shape(face_a)
-            .map_err(|_| QueryError::InvalidHandle(face_a))?;
-        let s2 = self
-            .get_shape(face_b)
-            .map_err(|_| QueryError::InvalidHandle(face_b))?;
-        ffi::ffi::surface_angle(s1, s2)
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        tolerance: f64,
+    ) -> Result<bool, QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        ffi::ffi::point_on_shape(s, px, py, pz, tolerance)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
-    }
-
-    /// Unit outward normal at the parametric point `(u, v)` on `face`.
-    ///
-    /// Algorithm: `BRepAdaptor_Surface::D1(u, v)` → `Du × Dv` → magnitude
-    /// check → `TopAbs_REVERSED` orientation flip → normalize.
-    ///
-    /// The return type is `[f64; 3]` rather than the FFI-internal `Point3`
-    /// struct: `Point3` is a cxx-bridge type unavailable in stub builds
-    /// (`!has_occt`), so the public API uses a plain array for both paths
-    /// (same convention as `closest_point_on_shape`).
-    ///
-    /// # Errors
-    ///
-    /// - `QueryError::InvalidHandle` — if the handle is unknown.
-    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
-    ///   underlying surface, yields a degenerate normal, or any OCCT call fails.
-    pub fn surface_normal_at(
-        &self,
-        handle: GeometryHandleId,
-        u: f64,
-        v: f64,
-    ) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
-        let p = ffi::ffi::surface_normal_at(s, u, v)
-            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-        Ok([p.x, p.y, p.z])
-    }
-
-    /// Gaussian, mean, and principal curvatures at the parametric point
-    /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
-    ///
-    /// Uses `GeomLProp_SLProps`. Sign convention for `mean` and the principal
-    /// curvatures follows the outward normal (negated for `TopAbs_REVERSED`
-    /// faces); Gaussian curvature `K = κ₁·κ₂` is invariant.
-    ///
-    /// The return type is `Curvature` — a plain Rust struct with `f64` and
-    /// `[f64; 3]` fields defined in both `has_occt` and `!has_occt` builds so
-    /// callers compile under either mode.
-    ///
-    /// # Errors
-    ///
-    /// - `QueryError::InvalidHandle` — if the handle is unknown.
-    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
-    ///   underlying surface, curvature is undefined at `(u, v)`, or any OCCT
-    ///   call fails.
-    pub fn curvature_at(
-        &self,
-        handle: GeometryHandleId,
-        u: f64,
-        v: f64,
-    ) -> Result<Curvature, QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
-        let c = ffi::ffi::curvature_at(s, u, v)
-            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-        Ok(Curvature {
-            gaussian: c.gaussian,
-            mean: c.mean,
-            kappa_min: c.kappa_min,
-            kappa_max: c.kappa_max,
-            dir_min: [c.dir_min.x, c.dir_min.y, c.dir_min.z],
-            dir_max: [c.dir_max.x, c.dir_max.y, c.dir_max.z],
-        })
     }
 
     /// Fuse `left` and `right` via `BRepAlgoAPI_Fuse` and return the
