@@ -978,30 +978,115 @@ pub fn resolve_auto_type_params_with_backtracking(
     // greater than `max_depth` (which `reify-config` already rejects when
     // `max_depth == 0`), so the depth-bound branch does not fire here.
     if params.is_empty() {
-        let _ = (
-            template_registry,
-            trait_registry,
-            parameterized_template,
-            constraint_checker,
-            functions,
-            max_depth,
-            diagnostics,
-        );
+        let _ = max_depth;
         return MultiParamResolutionOutcome {
             per_param: vec![],
             substitution: vec![],
         };
     }
 
-    // Subsequent branches — depth-bound fallback, Phase A enumeration, the
-    // recursive DFS body, and strict-vs-free dispatch — land in steps 18,
-    // 20, 22, 24, 26, 28, 30, 32 of the plan. They are intentionally not
-    // implemented in step-16 so each subsequent test (steps 17, 19, 21,
-    // 23, 25, 27, 29, 31) can be added as the next failing test in TDD
-    // order.
+    // Phase A enumeration runs ONCE per param up front (before recursion),
+    // producing a `Vec<Vec<String>>` of per-param candidate vectors. This
+    // hoists Phase A out of the DFS body — Phase A depends only on the
+    // trait-bound + template registry, not on already-bound params (the
+    // deferred substitution mechanics are the only piece that would couple
+    // them; that refactor point is documented in the design decision).
+    //
+    // Phase A failure modes (`Empty` / `Overflow`) on any param halt the
+    // whole search before recursion begins, with the same per_param /
+    // substitution shape as v0.1 BFS's halt-on-first-failure rule.
+    let mut per_param_candidates: Vec<Vec<String>> = Vec::with_capacity(params.len());
+    for param in params {
+        // Shadow `enumerate_candidates`' own non-empty-bounds assert with
+        // orchestrator-level wording so failures point at the caller of
+        // `resolve_auto_type_params_with_backtracking` rather than its delegate.
+        debug_assert!(
+            !param.bounds.is_empty(),
+            "resolve_auto_type_params_with_backtracking: param.bounds must be non-empty (every type would match an empty bound)"
+        );
+        let enumeration = enumerate_candidates(
+            &param.bounds,
+            template_registry,
+            trait_registry,
+            param.use_site_span,
+            diagnostics,
+        );
+        match enumeration {
+            CandidateEnumeration::Empty => {
+                // Phase A found zero in-scope structures satisfying the bound.
+                // Mirrors `resolve_auto_type_params`'s identical handling at
+                // the empty-pool arm: emit NoCandidate directly with the
+                // zero-rejections message form.
+                emit_no_candidate_zero_rejections(
+                    &param.bounds,
+                    param.use_site_span,
+                    diagnostics,
+                );
+                return MultiParamResolutionOutcome {
+                    per_param: vec![(param.name.clone(), SelectionResult::NoCandidate)],
+                    substitution: vec![],
+                };
+            }
+            CandidateEnumeration::Overflow(overflow_vec) => {
+                // Phase A already pushed the overflow diagnostic. Mirror
+                // BFS's "Overflow → Ambiguous" mapping in `per_param` so the
+                // outer-shape contract is identical.
+                return MultiParamResolutionOutcome {
+                    per_param: vec![(
+                        param.name.clone(),
+                        SelectionResult::Ambiguous(overflow_vec),
+                    )],
+                    substitution: vec![],
+                };
+            }
+            CandidateEnumeration::Found(candidates) => {
+                per_param_candidates.push(candidates);
+            }
+        }
+    }
+
+    // Single-param degenerate path: with exactly one param, the cross-product
+    // collapses to a flat enumeration of that param's candidates and the
+    // recursion is degenerate. Route through the existing Phase B / Phase C
+    // helpers verbatim — the result is identical to BFS's single-param
+    // pipeline. Multi-param recursion is wired in step-20 of task 2659.
+    if params.len() == 1 {
+        let param = &params[0];
+        let candidates = &per_param_candidates[0];
+        let feasibility = filter_feasible_candidates(
+            candidates,
+            parameterized_template,
+            constraint_checker,
+            functions,
+        );
+        let selection = select_candidate(
+            feasibility,
+            &param.bounds,
+            param.free,
+            param.use_site_span,
+            diagnostics,
+        );
+        let mut per_param = Vec::with_capacity(1);
+        let mut substitution = Vec::with_capacity(1);
+        match selection {
+            SelectionResult::Selected(ref name) => {
+                substitution.push((param.name.clone(), name.clone()));
+                per_param.push((param.name.clone(), selection));
+            }
+            SelectionResult::NoCandidate | SelectionResult::Ambiguous(_) => {
+                per_param.push((param.name.clone(), selection));
+            }
+        }
+        return MultiParamResolutionOutcome {
+            per_param,
+            substitution,
+        };
+    }
+
+    // Multi-param DFS over the cross-product lands in step-20.
     unimplemented!(
-        "resolve_auto_type_params_with_backtracking: only the empty-params \
-         branch is implemented in step-16 of task 2659; subsequent branches \
-         land in steps 18/20/22/24/26/28/30/32"
+        "resolve_auto_type_params_with_backtracking: multi-param DFS body \
+         lands in step-20 of task 2659. Single-param path (params.len() == 1) \
+         and Phase A halt parity (Empty / Overflow on any param) are wired."
     )
 }
