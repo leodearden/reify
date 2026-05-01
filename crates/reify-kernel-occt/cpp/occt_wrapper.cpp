@@ -2623,6 +2623,25 @@ double min_clearance(const OcctShape& a, const OcctShape& b) {
     });
 }
 
+Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz) {
+    return wrap_occt_call("closest_point_on_shape", [&]() {
+        gp_Pnt query_pnt(px, py, pz);
+        BRepBuilderAPI_MakeVertex vertex_maker(query_pnt);
+        if (!vertex_maker.IsDone()) {
+            throw std::runtime_error("closest_point_on_shape: vertex construction failed");
+        }
+        BRepExtrema_DistShapeShape dist(shape.shape, vertex_maker.Vertex());
+        if (!dist.IsDone()) {
+            throw std::runtime_error("closest_point_on_shape: BRepExtrema_DistShapeShape failed");
+        }
+        if (dist.NbSolution() < 1) {
+            throw std::runtime_error("closest_point_on_shape: no solution found");
+        }
+        gp_Pnt p = dist.PointOnShape1(1);
+        return Point3{p.X(), p.Y(), p.Z()};
+    });
+}
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
     return wrap_occt_call("query_moment_of_inertia", [&]() {
         GProp_GProps props;

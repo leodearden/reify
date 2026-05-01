@@ -586,6 +586,14 @@ pub mod ffi {
         /// site (task 2531; see PRD task 7).
         fn min_clearance(a: &OcctShape, b: &OcctShape) -> Result<f64>;
 
+        /// Return the closest point on `shape` to the query point (px, py, pz).
+        ///
+        /// Uses `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is
+        /// built from the query point. Returns `PointOnShape1(1)` — the witness on
+        /// the input shape. Operand ordering matches `min_clearance` / `query_distance`.
+        fn closest_point_on_shape(shape: &OcctShape, px: f64, py: f64, pz: f64)
+            -> Result<Point3>;
+
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
 
         /// Compute the full 3×3 inertia tensor (kg·m²) about the centroid.

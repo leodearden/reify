@@ -112,6 +112,19 @@ impl OcctKernel {
     ) -> Result<f64, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
+
+    /// Stub closest-point probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::closest_point_on_shape` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn closest_point_on_shape(
+        &self,
+        _handle: GeometryHandleId,
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
 }
 
 impl Default for OcctKernel {
@@ -461,6 +474,14 @@ mod tests {
         let result =
             kernel.query(&reify_types::GeometryQuery::EdgeTangent(GeometryHandleId(1)));
         let err = result.expect_err("stub query EdgeTangent should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_closest_point_on_shape_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.closest_point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0);
+        let err = result.expect_err("stub closest_point_on_shape should error");
         assert_stub_message(&format!("{err:?}"));
     }
 }
