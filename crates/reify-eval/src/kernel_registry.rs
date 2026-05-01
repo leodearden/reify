@@ -450,7 +450,8 @@ mod tests {
         );
     }
 
-    /// The doc table at lines 150-154 declares `total == 0` emits no event.
+    /// The Operator-visibility contract table on `emit_kernel_selection`
+    /// declares `total == 0` emits no event.
     /// The `debug_assert!(total >= 1, …)` enforces this structurally: callers
     /// must guarantee `total >= 1` so a future v0.3+ dispatcher reuser cannot
     /// silently call `emit_kernel_selection` with an empty registry and have
