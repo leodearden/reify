@@ -30,7 +30,7 @@
 //! # Feature-gated `inventory::submit!` decision (`stub_register`)
 //!
 //! The `inventory::submit!` and its helper `manifold_factory()` are gated on
-//! `#[cfg(any(test, feature = "stub_register"))]` for production safety:
+//! `#[cfg(feature = "stub_register")]` for production safety:
 //!
 //! **Production builds** (no `stub_register` feature) — the submit is a
 //! no-op; Manifold contributes no entry to
@@ -39,14 +39,19 @@
 //! routing geometry ops through an unimplemented stub kernel when no
 //! operator has explicitly requested Manifold.
 //!
-//! **Test builds** (`cfg(test)` for in-crate `cargo test --lib`, or
-//! `feature = "stub_register"` for cross-crate integration test binaries
-//! in `tests/`) — the submit fires so the registry exercised by the
-//! integration tests includes the Manifold entry. The `stub_register`
-//! feature is activated for test binaries via a self-dev-dep in
-//! `[dev-dependencies]` (see `Cargo.toml`) because integration test
-//! binaries are SEPARATE compilation units that do not inherit `cfg(test)`
-//! from the parent crate.
+//! **Test builds** (`feature = "stub_register"`) — the submit fires so
+//! the registry exercised by the integration tests includes the Manifold
+//! entry.  The `stub_register` feature is activated for ALL test builds
+//! (both `cargo test --lib` in-crate and cross-crate integration test
+//! binaries in `tests/`) via the self-dev-dep in `[dev-dependencies]`
+//! (see `Cargo.toml`).  Integration test binaries are SEPARATE
+//! compilation units that do not inherit `cfg(test)` from the parent
+//! crate, so the self-dev-dep is the only reliable activation path.
+//! Note: `cfg(test)` is NOT used here — the `compile_error!` guard in
+//! each integration test binary (see `tests/common/feature_guard.rs`)
+//! provides an actionable compile-time message if the self-dev-dep
+//! activation is ever removed, making `cfg(test)` as a fallback
+//! unnecessary.
 //!
 //! When real Manifold C++ FFI ships, rename `stub_register` to
 //! `has_manifold` (matching OCCT's `has_occt` build.rs gate) and replace
@@ -62,27 +67,32 @@
 
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
-#[cfg(any(test, feature = "stub_register"))]
+#[cfg(feature = "stub_register")]
 use reify_types::{GeometryKernel, KernelRegistration};
 
 /// Factory invoked by the engine once at startup, returning the stub
 /// [`ManifoldKernel`](crate::kernel::ManifoldKernel).
 ///
-/// Gated on `cfg(any(test, feature = "stub_register"))` together with the
+/// Gated on `cfg(feature = "stub_register")` together with the
 /// `inventory::submit!` below — the factory is only called from the submit,
 /// so leaving it ungated in non-feature builds would emit a dead-code
 /// warning. When real Manifold C++ FFI ships and the gate becomes
 /// `cfg(has_manifold)`, this factory switches to the real implementation
 /// without changing the registration shape.
-#[cfg(any(test, feature = "stub_register"))]
+#[cfg(feature = "stub_register")]
 fn manifold_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::kernel::ManifoldKernel::new())
 }
 
 // Feature-gated submit — see "Feature-gated `inventory::submit!` decision"
-// in the module doc.  `cfg(test)` covers in-crate `cargo test --lib`;
-// `feature = "stub_register"` covers integration test binaries in `tests/`
-// (separate compilation units that don't see the parent crate's `cfg(test)`).
+// in the module doc.  `feature = "stub_register"` covers all test builds:
+// both in-crate `cargo test --lib` (via Cargo's self-dev-dep feature
+// unification) and cross-crate integration test binaries in `tests/`
+// (separate compilation units that don't see the parent crate's
+// `cfg(test)`).  A `cfg(test)` fallback is intentionally omitted to
+// match OCCT's gate shape — the `compile_error!` guard in
+// `tests/common/feature_guard.rs` provides an actionable compile-time
+// error if the self-dev-dep activation is ever removed.
 //
 // Both items are gated together: `manifold_factory` is only called from this
 // submit, so a dead-code warning would fire if the factory were ungated while
@@ -91,9 +101,9 @@ fn manifold_factory() -> Box<dyn GeometryKernel> {
 // TODO(has_manifold): When real Manifold C++ FFI lands, rename `stub_register`
 // to `has_manifold` (matching OCCT's `has_occt` build.rs gate) and replace
 // the self-dev-dep in `Cargo.toml` with the build.rs detection mechanism.
-// The gate shape — `#[cfg(any(test, has_manifold))]` on both items — stays
-// identical to what it is today.
-#[cfg(any(test, feature = "stub_register"))]
+// The gate shape — `#[cfg(has_manifold)]` on both items — stays identical
+// to what it is today.
+#[cfg(feature = "stub_register")]
 inventory::submit! {
     KernelRegistration {
         name: MANIFOLD_KERNEL_NAME,
