@@ -12,6 +12,7 @@
 //!
 //! `crates/reify-kernel-manifold/tests/inventory_registration.rs:1-112`.
 
+use reify_kernel_fidget::register::FIDGET_KERNEL_NAME;
 use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Fidget's capability descriptor must enumerate exactly the three
@@ -90,13 +91,13 @@ fn fidget_kernel_registration_appears_in_inventory_iter() {
 
     let fidget_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
         .into_iter()
-        .filter(|reg| reg.name == "fidget")
+        .filter(|reg| reg.name == FIDGET_KERNEL_NAME)
         .collect();
 
     assert_eq!(
         fidget_entries.len(),
         1,
-        "expected exactly one inventory::submit! for kernel name \"fidget\", found {}",
+        "expected exactly one inventory::submit! for kernel name {FIDGET_KERNEL_NAME:?}, found {}",
         fidget_entries.len(),
     );
 
