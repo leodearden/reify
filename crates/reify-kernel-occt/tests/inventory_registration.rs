@@ -6,6 +6,7 @@
 //! the test binary as no-ops — matching the `cfg(has_occt)` gate on the OCCT
 //! kernel itself in `crates/reify-kernel-occt/src/lib.rs:22-83`.
 
+use reify_kernel_occt::register::OCCT_KERNEL_NAME;
 use reify_types::{KernelRegistration, Operation, ReprKind};
 
 /// OCCT's capability descriptor must enumerate every operation routed
@@ -105,13 +106,13 @@ fn occt_kernel_registration_appears_in_inventory_iter() {
 
     let occt_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
         .into_iter()
-        .filter(|reg| reg.name == "occt")
+        .filter(|reg| reg.name == OCCT_KERNEL_NAME)
         .collect();
 
     assert_eq!(
         occt_entries.len(),
         1,
-        "expected exactly one inventory::submit! for kernel name \"occt\", found {}",
+        "expected exactly one inventory::submit! for kernel name {OCCT_KERNEL_NAME:?}, found {}",
         occt_entries.len(),
     );
 
