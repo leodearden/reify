@@ -236,8 +236,6 @@ export class SidecarSession {
                 if (block.thinking.length < lastThinkingLen) {
                   lastTextLen = 0;
                   lastThinkingLen = 0;
-                  this.toolNameById.clear();
-                  this.pendingToolUseIds.clear();
                 }
                 if (block.thinking.length > lastThinkingLen) {
                   const delta = block.thinking.slice(lastThinkingLen);
