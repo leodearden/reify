@@ -55,7 +55,14 @@ pub fn propagate_via_kernel_attribute_hook(
             result_handle,
             splitting_feature_id,
         ),
-        None => Ok(KernelAttributeOutcome::FellThrough),
+        None => {
+            tracing::debug!(
+                target: "reify_eval::kernel_attribute_hook",
+                outcome = "fell_through",
+                "kernel does not advertise a KernelAttributeHook — selectors over this kernel's reps will fall through to computed selectors"
+            );
+            Ok(KernelAttributeOutcome::FellThrough)
+        }
     }
 }
 
