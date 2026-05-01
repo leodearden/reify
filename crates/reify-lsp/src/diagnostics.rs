@@ -1698,6 +1698,12 @@ structure S {
     // `compute_diagnostics`), then filters to
     // `code == "SpecializationForbiddenDecl"` before asserting.
 
+    // TODO: The helpers below duplicate ~125 lines from
+    // `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs::tests`
+    // (lines 178-305).  Any change to `MemberDecl`/`SubDecl`/`ParamDecl` field
+    // shapes must be applied to BOTH copies.  When that next happens, converge
+    // them into a shared `reify-test-fixtures` dev-dep crate, or expose them
+    // from `reify-syntax` behind a `test-utils` feature flag.
     mod fixtures {
         use reify_syntax::{
             ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl,
@@ -1850,8 +1856,15 @@ structure S {
     /// resulting LSP diagnostics with code `"SpecializationForbiddenDecl"` match
     /// `expected` exactly.
     ///
-    /// For each `(kind, name)` pair the helper asserts:
-    /// - exactly one diagnostic whose message contains both `'kind'` and `'name'`
+    /// For each `(kind, name)` pair the helper asserts the full canonical
+    /// compiler message:
+    /// `"'{kind}' declaration '{name}' is not permitted in a specialization scope (spec §8.7)"`
+    ///
+    /// Both sides are sorted before comparison so the check is
+    /// order-independent and robust against accidental false-positive matches
+    /// that `find()`-based substring lookups can silently pass.
+    ///
+    /// Additionally asserts for every forbidden diagnostic:
     /// - severity `ERROR`, source `"reify"`
     /// - non-zero range (the declaration's span was carried through the pipeline)
     ///
@@ -1895,45 +1908,54 @@ structure S {
             forbidden
         );
 
-        for &(kind, name) in expected {
-            let matched = forbidden
-                .iter()
-                .find(|d| {
-                    d.message.contains(&format!("'{kind}'"))
-                        && d.message.contains(&format!("'{name}'"))
-                })
-                .unwrap_or_else(|| {
-                    panic!(
-                        "no SpecializationForbiddenDecl diagnostic for kind='{kind}' \
-                         name='{name}'; got: {:#?}",
-                        forbidden
-                    )
-                });
+        // Assert full canonical messages.  Sorting both sides makes the
+        // comparison order-independent and rules out silent false-positives
+        // from short-token substring matches (e.g. 'x' in an unrelated part
+        // of the message) or find()-based first-match aliasing.
+        let mut expected_msgs: Vec<String> = expected
+            .iter()
+            .map(|&(kind, name)| {
+                format!(
+                    "'{kind}' declaration '{name}' is not permitted \
+                     in a specialization scope (spec §8.7)"
+                )
+            })
+            .collect();
+        expected_msgs.sort();
+        let mut actual_msgs: Vec<String> =
+            forbidden.iter().map(|d| d.message.clone()).collect();
+        actual_msgs.sort();
+        assert_eq!(
+            actual_msgs,
+            expected_msgs,
+            "SpecializationForbiddenDecl messages do not match the canonical compiler format"
+        );
+
+        // Structural properties — asserted on every forbidden diagnostic.
+        for d in &forbidden {
             assert_eq!(
-                matched.severity,
+                d.severity,
                 Some(DiagnosticSeverity::ERROR),
-                "expected ERROR severity for {kind} '{name}'"
+                "expected ERROR severity; diagnostic: {d:#?}"
             );
             assert_eq!(
-                matched.source.as_deref(),
+                d.source.as_deref(),
                 Some("reify"),
-                "expected source 'reify' for {kind} '{name}'"
+                "expected source 'reify'; diagnostic: {d:#?}"
             );
             assert_ne!(
-                matched.range.start,
-                matched.range.end,
-                "range must be non-zero for {kind} '{name}'; \
-                 got start={:?} end={:?}",
-                matched.range.start,
-                matched.range.end
+                d.range.start,
+                d.range.end,
+                "range must be non-zero; got start={:?} end={:?}",
+                d.range.start,
+                d.range.end
             );
             assert!(
-                matched.range.start.line > 0 || matched.range.start.character > 0,
-                "range start must not be (0,0) for {kind} '{name}' — \
-                 span was not carried through convert_diagnostic; \
-                 got ({}, {})",
-                matched.range.start.line,
-                matched.range.start.character
+                d.range.start.line > 0 || d.range.start.character > 0,
+                "range start must not be (0,0) — span was not carried through \
+                 convert_diagnostic; got ({}, {})",
+                d.range.start.line,
+                d.range.start.character
             );
         }
 
@@ -1950,45 +1972,6 @@ structure S {
                 "all violation spans must be distinguishable; got: {starts:?}"
             );
         }
-    }
-
-    /// LSP regression lock (task 2371, step-1): a `param` declaration directly
-    /// inside a specialization-scope body surfaces as exactly one LSP ERROR
-    /// diagnostic with code `"SpecializationForbiddenDecl"`, source `"reify"`,
-    /// a non-zero range, and a message containing both `'param'` and `'x'`.
-    ///
-    /// Hand-constructs a ParsedModule (the grammar does not yet accept
-    /// `sub name : T { body }` in real source) and drives the post-parse half of
-    /// `compute_diagnostics` via `assert_specialization_forbidden`.
-    #[test]
-    fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_param() {
-        use fixtures::*;
-        assert_specialization_forbidden(vec![make_param("x", param_span())], &[("param", "x")]);
-    }
-
-    /// LSP regression lock (task 2371, step-3): a `port` declaration directly
-    /// inside a specialization-scope body surfaces as exactly one LSP ERROR
-    /// diagnostic with code `"SpecializationForbiddenDecl"`, source `"reify"`,
-    /// a non-zero range, and a message containing both `'port'` and `'p'`.
-    #[test]
-    fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_port() {
-        use fixtures::*;
-        assert_specialization_forbidden(vec![make_port("p", port_span())], &[("port", "p")]);
-    }
-
-    /// LSP regression lock (task 2371, step-5): a bare `sub` declaration (body=None)
-    /// directly inside a specialization-scope body surfaces as exactly one LSP ERROR
-    /// with code `"SpecializationForbiddenDecl"`, source `"reify"`, non-zero range,
-    /// and message containing both `'sub'` and `'child'`.
-    ///
-    /// The bare sub has no body so no further violations fire inside it.
-    #[test]
-    fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_nested_sub() {
-        use fixtures::*;
-        assert_specialization_forbidden(
-            vec![make_sub_bare("child", sub_span())],
-            &[("sub", "child")],
-        );
     }
 
     /// LSP regression lock (task 2371, step-7): a specialization scope containing
