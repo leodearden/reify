@@ -53,6 +53,8 @@ export class SidecarSession {
     this.destroyed = true;
     this.abortController?.abort();
     this.sessionId = null;
+    this.toolNameById.clear();
+    this.pendingToolUseIds.clear();
   }
 
   /**
@@ -131,6 +133,12 @@ export class SidecarSession {
    * Invoke Claude Code CLI in streaming JSON mode and emit events.
    */
   private async invokeSdk(id: string, prompt: string): Promise<void> {
+    // Clear correlation state from any prior invocation before building args.
+    // This guarantees a fresh start regardless of how the previous invocation ended
+    // (normal exit, error, abort, or stream-error path).
+    this.toolNameById.clear();
+    this.pendingToolUseIds.clear();
+
     const args = [
       '--print',
       '--output-format', 'stream-json',
@@ -322,6 +330,8 @@ export class SidecarSession {
    */
   private handleClearSession(): void {
     this.sessionId = null;
+    this.toolNameById.clear();
+    this.pendingToolUseIds.clear();
     this.onOutput({ type: 'ready' });
   }
 }
