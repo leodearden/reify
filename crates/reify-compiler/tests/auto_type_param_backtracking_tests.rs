@@ -35,10 +35,37 @@
 use std::collections::HashMap;
 
 use reify_compiler::auto_type_param::{
-    MultiParamResolutionOutcome, resolve_auto_type_params_with_backtracking,
+    AutoTypeParam, MultiParamResolutionOutcome, SelectionResult,
+    resolve_auto_type_params_with_backtracking,
 };
-use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder};
-use reify_types::CompiledFunction;
+use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
+use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
+use reify_types::{CompiledFunction, SourceSpan};
+
+/// Build the `(template_registry, trait_registry)` pair that
+/// `enumerate_candidates` consumes, borrowing from a single compiled module.
+///
+/// Mirrors `build_registries` from `auto_type_param_multi_param_tests.rs` /
+/// `auto_type_param_phase_a_tests.rs`. Lifted verbatim so tests in this
+/// file are self-contained.
+fn build_registries(
+    module: &CompiledModule,
+) -> (
+    HashMap<String, &TopologyTemplate>,
+    HashMap<String, &CompiledTrait>,
+) {
+    let template_registry: HashMap<String, &TopologyTemplate> = module
+        .templates
+        .iter()
+        .map(|t| (t.name.clone(), t))
+        .collect();
+    let trait_registry: HashMap<String, &CompiledTrait> = module
+        .trait_defs
+        .iter()
+        .map(|t| (t.name.clone(), t))
+        .collect();
+    (template_registry, trait_registry)
+}
 
 // ─── step-15: DFS empty-params is a vacuous success (parity with BFS) ──────
 
@@ -77,6 +104,69 @@ fn dfs_empty_params_returns_vacuous_success() {
     assert!(
         diagnostics.is_empty(),
         "DFS with empty params must emit zero diagnostics (no depth-bound warning), got: {:?}",
+        diagnostics
+    );
+}
+
+// ─── step-17: DFS single-param parity with BFS happy path ─────────────────
+
+/// One `AutoTypeParam` `[T : Seal]` whose bounds are satisfied by exactly
+/// one in-scope structure (`ORingSeal : Seal`). DFS at `max_depth = 6`
+/// must produce the same outcome as v0.1 BFS's
+/// `single_param_happy_path_returns_selected`: `per_param` =
+/// `[("T", Selected("ORingSeal"))]`, `substitution` =
+/// `[("T", "ORingSeal")]`, zero diagnostics.
+///
+/// Sanity: DFS must not regress the trivial single-param case. With one
+/// candidate the cross-product is a single leaf and the recursion is
+/// degenerate, so this is the smallest non-empty exercise of the
+/// Phase A → leaf-feasibility → select pipeline through DFS.
+#[test]
+fn dfs_single_param_one_candidate_selects_lex_first() {
+    let source = r#"
+trait Seal {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![AutoTypeParam {
+        name: "T".to_string(),
+        bounds: vec!["Seal".to_string()],
+        free: false,
+        use_site_span: SourceSpan::empty(0),
+    }];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![("T".to_string(), SelectionResult::Selected("ORingSeal".to_string()))],
+            substitution: vec![("T".to_string(), "ORingSeal".to_string())],
+        },
+        "DFS single-param one-candidate must produce Selected(ORingSeal) — parity with BFS happy path"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "DFS single-param happy path must emit zero diagnostics, got: {:?}",
         diagnostics
     );
 }
