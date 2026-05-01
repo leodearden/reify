@@ -982,6 +982,15 @@ pub fn resolve_auto_type_params(
 /// was sourced, and this keeps the algorithm crate independent of
 /// `reify-config`. The eventual call-site reads
 /// `Manifest::auto_type_params().max_depth` and passes it in directly.
+//
+// `#[allow(clippy::too_many_arguments)]`: this signature mirrors v0.1's
+// `resolve_auto_type_params` (already at clippy's 7-arg ceiling) plus the
+// scalar `max_depth` that the algorithm needs but cannot derive. Bundling
+// these into a context struct would obscure the intentional parallel with the
+// BFS orchestrator's signature; the ambient convention across this crate
+// (35+ call sites) is to allow the lint on orchestration entry points where
+// the parameter list is the API contract itself.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_auto_type_params_with_backtracking(
     params: &[AutoTypeParam],
     template_registry: &HashMap<String, &TopologyTemplate>,
@@ -1338,6 +1347,16 @@ fn dfs_leaf_feasible(
 /// `max_feasible_to_collect = 2` (strict-mode), the search continues past
 /// the first feasible leaf and stops once two are found — enough to encode
 /// `Ambiguous` without enumerating the entire cross-product.
+//
+// `#[allow(clippy::too_many_arguments)]`: this recursive helper threads
+// recursion state (`level`, `current`, `feasible_assignments`) alongside
+// shared search context (`per_param_candidates`, `parameterized_template`,
+// `constraint_checker`, `functions`, `max_feasible_to_collect`). Wrapping the
+// shared context in a struct would force every recursive call site to deref
+// through the wrapper for what is effectively a flat parameter pack; the
+// ambient crate convention (see `resolve_auto_type_params_with_backtracking`
+// above and the 35+ other sites) is to allow the lint here.
+#[allow(clippy::too_many_arguments)]
 fn dfs_search(
     level: usize,
     per_param_candidates: &[Vec<String>],

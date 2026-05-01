@@ -131,19 +131,6 @@ fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplat
     );
 }
 
-/// Recover the left and right `Expr` spans from the first
-/// `ForallConnectBody::Connect` body in the named structure.
-/// Panics if no `ForallConnect` is found or if its body is not `Connect`.
-fn find_forall_connect_body_spans(
-    source: &str,
-    structure_name: &str,
-) -> (reify_types::SourceSpan, reify_types::SourceSpan) {
-    with_first_forall_connect(source, structure_name, |f| match &f.body {
-        reify_syntax::ForallConnectBody::Connect(cd) => (cd.left.expr.span, cd.right.expr.span),
-        _ => panic!("ForallConnect body is not a Connect variant in {}", structure_name),
-    })
-}
-
 /// Build the boilerplate source fixture for the three unsupported-port-shape
 /// tests, interpolating `left` and `right` into the connect line.
 ///
@@ -194,9 +181,9 @@ impl Sides {
 /// - (d) Exactly one `Severity::Info` diagnostic total.
 /// - (e) Exactly one label with message == "forall connect" whose span equals forall_span.
 /// - (f) Per-side label presence/absence **with span pinning**: if
-///       `sides.left`, exactly one `"left port shape not supported"`
-///       label AND its `span` equals `cd.left.expr.span`; otherwise zero.
-///       Likewise for `sides.right` and `cd.right.expr.span`.
+///   `sides.left`, exactly one `"left port shape not supported"`
+///   label AND its `span` equals `cd.left.expr.span`; otherwise zero.
+///   Likewise for `sides.right` and `cd.right.expr.span`.
 fn assert_unsupported_port_shape_diagnostic(
     source: &str,
     structure_name: &str,
