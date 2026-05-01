@@ -1,4 +1,4 @@
-//! Stub `FidgetKernel` — scaffold for v0.2 task 2644.
+//! Stub `FidgetKernel` — all operations return descriptive errors.
 //!
 //! # Design templates
 //!
@@ -8,16 +8,21 @@
 //!
 //! # v0.2 scope
 //!
-//! Real Fidget Rust JIT FFI is deferred to a follow-up task. The `GeometryKernel`
-//! impl (all-error stub) arrives in step-4; this pre-1 scaffold provides only
-//! the struct and constructors so the crate compiles.
+//! Real Fidget Rust JIT FFI is deferred to a follow-up task. This stub exists
+//! so the `inventory::submit!` in `register.rs` has a factory that compiles.
+//! When the follow-up task lands, the factory can switch to the real impl
+//! behind `cfg(has_fidget)` without changing the registration shape.
 
 use reify_types::{
-    ExportError, ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
-    Mesh, TessError,
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
+    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
 };
 
-/// Stub Fidget kernel — scaffold for v0.2 multi-kernel registration.
+const STUB_MSG: &str = "Fidget SDF kernel not yet implemented; \
+    reify-kernel-fidget is a registration-only scaffold for v0.2 task 2644. \
+    Real Fidget Rust JIT FFI is a follow-up.";
+
+/// Stub Fidget kernel — all operations return descriptive errors.
 ///
 /// The `_private: ()` field prevents external construction without [`Self::new`],
 /// matching the OCCT stub pattern in
@@ -40,6 +45,31 @@ impl Default for FidgetKernel {
     fn default() -> Self {
         Self::new()
     }
+}
+
+impl GeometryKernel for FidgetKernel {
+    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(STUB_MSG.into()))
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Err(QueryError::QueryFailed(STUB_MSG.into()))
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        Err(ExportError::FormatError(STUB_MSG.into()))
+    }
+
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        Err(TessError::TessellationFailed(STUB_MSG.into()))
+    }
+    // extract_edges, extract_faces, execute_with_history, query_many all use
+    // the trait defaults — they error in the standard "not supported" fashion.
 }
 
 #[cfg(test)]
