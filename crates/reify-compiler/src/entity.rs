@@ -2299,19 +2299,14 @@ fn arm_member_type(
         reify_syntax::MemberDecl::Sub(s) => Type::StructureRef(s.structure_name.clone()),
         reify_syntax::MemberDecl::Param(p) => {
             // The param was registered in the pre-pass; resolve its type from scope.
+            // The per-arm loop at entity.rs:2125-2133 currently `continue`s past
+            // non-Sub arms before calling this helper — this branch is unreachable
+            // from user source today. ICE path: resolution failure means the pass-1
+            // registration invariant was violated, which is a compiler bug.
             scope
                 .resolve(&p.name)
                 .map(|(_, ty)| ty.clone())
-                .unwrap_or_else(|| {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "could not resolve type for match-arm param '{}'",
-                            p.name
-                        ))
-                        .with_label(DiagnosticLabel::new(span, "unresolved param")),
-                    );
-                    Type::Real
-                })
+                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &p.name, span, diagnostics))
         }
         reify_syntax::MemberDecl::Let(l) => {
             // The let was registered in the pre-pass; resolve its type from scope.
@@ -2319,22 +2314,12 @@ fn arm_member_type(
             // entity.rs:2125-2133 currently `continue`s past non-Sub arms before
             // calling this helper, and the pre-pass at entity.rs:528-549 already
             // rejects non-Sub arm members with a separate diagnostic — so this
-            // branch is unreachable from user source today. The diagnostic exists
-            // so that future work which lifts the Sub-only restriction does not
-            // regress to silently producing Type::Real.
+            // branch is unreachable from user source today. ICE path: resolution
+            // failure means the pass-1 registration invariant was violated.
             scope
                 .resolve(&l.name)
                 .map(|(_, ty)| ty.clone())
-                .unwrap_or_else(|| {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "could not resolve type for match-arm let '{}'",
-                            l.name
-                        ))
-                        .with_label(DiagnosticLabel::new(span, "unresolved let")),
-                    );
-                    Type::Real
-                })
+                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &l.name, span, diagnostics))
         }
         _ => {
             // suggestion 7: emit a diagnostic for any unhandled MemberDecl variant
@@ -2959,12 +2944,52 @@ mod tests {
             diagnostics
         );
 
-        // The message must contain the expected substring and the name.
+        // Severity must be Error and one span label must be attached.
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert_eq!(diagnostics[0].labels.len(), 1);
+
+        // The message must identify the offending name.
         let msg = &diagnostics[0].message;
-        assert!(
-            msg.contains("could not resolve type for match-arm let"),
-            "unexpected message: {msg}"
-        );
         assert!(msg.contains("'x'"), "message should mention 'x': {msg}");
+    }
+
+    #[test]
+    fn arm_member_type_param_emits_ice_when_unresolved() {
+        // Symmetric coverage for the Param arm: both Param and Let are unreachable
+        // from user source today (the per-arm loop continues past non-Sub arms
+        // before calling this helper). Resolution failure is therefore a compiler
+        // bug; both arms route through emit_ice_unresolved.
+        let scope = CompilationScope::new("TestEntity");
+        let span = SourceSpan::new(0, 0);
+        let member = reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+            name: "y".to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: vec![],
+            span,
+            content_hash: reify_types::ContentHash(0),
+        });
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let ty = arm_member_type(&member, &scope, &mut diagnostics, span);
+
+        // Fallback type is retained.
+        assert_eq!(ty, Type::Real);
+
+        // Exactly one ICE diagnostic, Error severity, one label.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic, got: {:?}",
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert_eq!(diagnostics[0].labels.len(), 1);
+
+        // The message must identify the offending name.
+        let msg = &diagnostics[0].message;
+        assert!(msg.contains("'y'"), "message should mention 'y': {msg}");
     }
 }
