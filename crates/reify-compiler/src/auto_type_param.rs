@@ -1014,9 +1014,17 @@ pub fn resolve_auto_type_params_with_backtracking(
         match enumeration {
             CandidateEnumeration::Empty => {
                 // Phase A found zero in-scope structures satisfying the bound.
-                // Mirrors `resolve_auto_type_params`'s identical handling at
-                // the empty-pool arm: emit NoCandidate directly with the
-                // zero-rejections message form.
+                // Mirrors `resolve_auto_type_params`'s identical empty-pool arm
+                // (the BFS orchestrator above): both call
+                // `emit_no_candidate_zero_rejections` for the zero-rejections
+                // message form (bound mentioned, no "rejected by constraint"
+                // suffix — that suffix only fires from Phase C's all-rejected
+                // path) and produce `per_param=[(name, NoCandidate)]` with
+                // empty substitution. The DFS analog returns immediately
+                // because no later params have been enumerated yet (Phase A
+                // enumeration is up-front), so the outcome's
+                // per_param/substitution shape is identical to BFS's by
+                // construction. Step-27's test pins the contract.
                 emit_no_candidate_zero_rejections(
                     &param.bounds,
                     param.use_site_span,
