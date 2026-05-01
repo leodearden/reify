@@ -43,7 +43,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::time::Duration;
 
-use reify_types::{CapabilityDescriptor, Operation, ReprKind};
+use reify_types::{CapabilityDescriptor, Diagnostic, DiagnosticCode, Operation, ReprKind};
 
 /// PRD-default wall-time threshold for the long-chain realization warning,
 /// in milliseconds.
@@ -126,6 +126,58 @@ pub fn is_long_chain_realization(
     threshold: Duration,
 ) -> bool {
     plan.conversions.len() > LONG_CHAIN_MIN_STAGES && elapsed > threshold
+}
+
+/// Build the `Severity::Warning` diagnostic emitted when the dispatcher
+/// selects a chain longer than 2 conversion stages AND elapsed realization
+/// wall time exceeds the configured threshold.
+///
+/// Returns `None` when the predicate
+/// [`is_long_chain_realization`] is false — short-chain pain is
+/// self-evident and a sub-threshold long chain is not user-visible budget
+/// pressure, so neither case warrants a warning. When `Some(diag)` is
+/// returned the diagnostic carries
+/// [`DiagnosticCode::LongChainRealization`] for filter-by-code downstream
+/// consumers (LSP / IDE / batch pipelines) and a human-readable message
+/// naming the chain so users can see exactly where the conversion budget
+/// is going (per PRD `docs/prds/v0_2/multi-kernel.md` §"Long-chain
+/// diagnostic": "names the chain so users can see budget pressure").
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_2/multi-kernel.md` §"Resolved design decisions" →
+/// "Long-chain diagnostic" and `docs/prds/v0_2/per-purpose-tolerance.md`
+/// §"Resolved design decisions" → "Long-chain diagnostic gating": the
+/// runtime emits a *warning* (not error) — the realization completed; the
+/// user just deserves visibility into budget pressure. Mirrors the
+/// advisory-warning posture of `ImportedTolerancePromiseInsufficient`,
+/// `FieldOutOfBounds`, and `KinematicSingularity` — downstream tooling
+/// that wants to surface this as a harder failure (e.g. a CI gate) can
+/// filter by code at the consumer side.
+///
+/// # Arguments
+///
+/// - `plan` — the [`DispatchPlan`] returned by [`dispatch`]; the chain's
+///   conversion stages and final-stage kernel are rendered into the
+///   diagnostic message verbatim.
+/// - `elapsed` — measured realization wall time, in [`Duration`].
+/// - `threshold` — the configured warn threshold; typically obtained from
+///   [`long_chain_threshold_from_env`] or set explicitly by the caller.
+pub fn long_chain_diagnostic(
+    plan: &DispatchPlan,
+    elapsed: Duration,
+    threshold: Duration,
+) -> Option<Diagnostic> {
+    if !is_long_chain_realization(plan, elapsed, threshold) {
+        return None;
+    }
+    let message = format!(
+        "long-chain realization: {} stages, elapsed {}ms exceeds {}ms threshold",
+        plan.conversions.len(),
+        elapsed.as_millis(),
+        threshold.as_millis(),
+    );
+    Some(Diagnostic::warning(message).with_code(DiagnosticCode::LongChainRealization))
 }
 
 /// Ordered sequence of conversion stages: each entry is
@@ -398,9 +450,8 @@ mod tests {
                 ("manifold".to_string(), ReprKind::Mesh, ReprKind::Sdf),
             ],
         };
-        assert_eq!(
-            long_chain_diagnostic(&plan_two, Duration::from_secs(60), threshold),
-            None,
+        assert!(
+            long_chain_diagnostic(&plan_two, Duration::from_secs(60), threshold).is_none(),
             "2 conversion stages must NOT emit a diagnostic (stage gate fails)",
         );
 
@@ -413,9 +464,8 @@ mod tests {
                 ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
             ],
         };
-        assert_eq!(
-            long_chain_diagnostic(&plan_three, threshold, threshold),
-            None,
+        assert!(
+            long_chain_diagnostic(&plan_three, threshold, threshold).is_none(),
             "elapsed exactly == threshold must NOT emit (elapsed gate fails)",
         );
     }
