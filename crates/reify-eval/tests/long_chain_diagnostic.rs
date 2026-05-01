@@ -69,19 +69,14 @@ fn lib_re_exports_long_chain_api() {
         Duration::from_millis(LONG_CHAIN_DEFAULT_THRESHOLD_MS),
         "seam re-export must resolve unset to default",
     );
-    // Production wrapper smoke: under normal test execution the env var is
-    // not set, so this returns the default. The point is to prove the
-    // symbol is callable through the crate root — not to test the env-read
-    // path (the seam tests cover the parser branches without unsafe env
-    // mutation; see dispatcher.rs::tests).
-    let resolved = long_chain_threshold_from_env();
-    // Either the env var is unset (most CI cases) or set to a parseable
-    // value (a developer override). In both legitimate cases the resolved
-    // duration is non-zero — a panic / 0ms would indicate a regression in
-    // the wrapper. This stays robust to a developer running the test with
-    // `REIFY_LONG_CHAIN_THRESHOLD_MS=1000` set.
-    assert!(
-        resolved > Duration::ZERO,
-        "long_chain_threshold_from_env() must return a non-zero Duration, got {resolved:?}",
-    );
+    // Production wrapper smoke: prove the symbol is callable through the
+    // crate root. We deliberately do NOT assert anything about the
+    // returned `Duration` because the env state isn't test-controlled —
+    // a developer running with `REIFY_LONG_CHAIN_THRESHOLD_MS=0` (an
+    // explicit override, however unusual) would fail an `> ZERO`
+    // assertion despite no regression. The deterministic parser branches
+    // (None / "" / parseable / unparseable) are pinned by the seam tests
+    // in `dispatcher.rs::tests`; this call only verifies that the
+    // wrapper compiles and runs without panicking.
+    let _resolved = long_chain_threshold_from_env();
 }
