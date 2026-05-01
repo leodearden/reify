@@ -68,6 +68,7 @@ pub enum OutboundMessage {
         id: String,
         tool_name: String,
         tool_input: Value,
+        tool_use_id: String,
     },
     ToolResult {
         id: String,
@@ -262,6 +263,7 @@ impl SidecarHandle {
                             id,
                             tool_name,
                             tool_input,
+                            ..
                         } = &msg
                             && tool_name.starts_with("reify_")
                         {
@@ -785,9 +787,10 @@ pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
             id,
             tool_name,
             tool_input,
+            tool_use_id,
         } => (
             "claude-tool-call".to_string(),
-            serde_json::json!({ "id": id, "tool_name": tool_name, "tool_input": tool_input }),
+            serde_json::json!({ "id": id, "tool_name": tool_name, "tool_input": tool_input, "tool_use_id": tool_use_id }),
         ),
         OutboundMessage::ToolResult {
             id,

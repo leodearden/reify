@@ -516,7 +516,7 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
 
     // Inject a reify_ tool_call from simulated sidecar stdout
     let tool_call =
-        r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_diagnostics","tool_input":{}}"#;
+        r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-diag"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -598,7 +598,7 @@ async fn from_parts_with_mcp_threads_selection_into_tool_result() {
 
     // Inject a reify_get_selection tool_call
     let tool_call =
-        r#"{"type":"tool_call","id":"msg-sel","tool_name":"reify_get_selection","tool_input":{}}"#;
+        r#"{"type":"tool_call","id":"msg-sel","tool_name":"reify_get_selection","tool_input":{},"tool_use_id":"tu-sel"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -689,7 +689,7 @@ async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
 
     // Inject a reify_focus_entity tool_call from simulated sidecar stdout
     let tool_call =
-        r#"{"type":"tool_call","id":"msg-focus","tool_name":"reify_focus_entity","tool_input":{"entity_path":"Bracket"}}"#;
+        r#"{"type":"tool_call","id":"msg-focus","tool_name":"reify_focus_entity","tool_input":{"entity_path":"Bracket"},"tool_use_id":"tu-focus"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -773,7 +773,7 @@ async fn tool_result_write_failure_emits_claude_error_event() {
     // The MCP handler will try to write the tool_result back to stdin_writer,
     // which will fail because stdin_reader was dropped.
     let tool_call =
-        r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{}}"#;
+        r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-fail"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
