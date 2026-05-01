@@ -47,6 +47,15 @@ use reify_types::{GeometryKernel, KernelRegistration};
 /// or `"fidget"`, so when OCCT and another kernel both claim the same
 /// `(Op, BRep)` pair, the alphabetically earlier kernel wins per the
 /// dispatcher's tie-break rule.
+///
+/// # Stub-mode behavior
+///
+/// When compiled without `cfg(has_occt)`, this name is informational only.
+/// No `inventory::submit!` fires in stub mode, so `reify_eval::collect_registry()`
+/// will not contain an `"occt"` entry and the OCCT kernel cannot be instantiated.
+/// Callers using this constant for runtime capability inspection should also
+/// check `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` (or the
+/// equivalent `collect_registry()` lookup) before assuming OCCT is dispatchable.
 pub const OCCT_KERNEL_NAME: &str = "occt";
 
 /// Construct the OCCT [`CapabilityDescriptor`].
@@ -59,6 +68,15 @@ pub const OCCT_KERNEL_NAME: &str = "occt";
 /// Owned return (`CapabilityDescriptor` by value) because the descriptor's
 /// `supports: Vec<...>` field is non-const-constructible — see
 /// `reify_types::KernelRegistration` doc for the full rationale.
+///
+/// # Stub-mode behavior
+///
+/// When compiled without `cfg(has_occt)`, this descriptor is informational only.
+/// No `inventory::submit!` fires in stub mode, so `reify_eval::collect_registry()`
+/// will not contain an `"occt"` entry and the OCCT kernel cannot be instantiated.
+/// Callers using this descriptor for runtime capability inspection should also
+/// check `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` (or the
+/// equivalent `collect_registry()` lookup) before assuming OCCT is dispatchable.
 pub fn occt_capability_descriptor() -> CapabilityDescriptor {
     use Operation::*;
     let supports = vec![
