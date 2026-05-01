@@ -1,0 +1,130 @@
+//! Integration tests for the OpenVDB v0.2 multi-kernel adapter registration.
+//!
+//! Pins the OpenVDB [`CapabilityDescriptor`] (step-1/step-2) and the
+//! `inventory::submit!` plumbing (step-5/step-6).
+//!
+//! Unlike the OCCT counterpart (`crates/reify-kernel-occt/tests/inventory_registration.rs`),
+//! these tests are NOT gated on an `OCCT_AVAILABLE`-style flag — the openvdb
+//! adapter submits unconditionally in this v0.2 scaffold task (no
+//! `cfg(has_openvdb)` gate; see design decisions in `src/register.rs`).
+//!
+//! # Design template
+//!
+//! `crates/reify-kernel-fidget/tests/inventory_registration.rs:1-122`.
+
+use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
+
+/// OpenVDB's capability descriptor must enumerate exactly the three
+/// Voxel-Boolean operations OpenVDB supports.
+///
+/// Positive pins: `(BooleanUnion/Difference/Intersection, Voxel)` — the
+/// complete set of Voxel-native Booleans OpenVDB can execute.
+///
+/// Negative pins: `(BooleanUnion, BRep)`, `(BooleanUnion, Mesh)`, and
+/// `(BooleanUnion, Sdf)` must all return `false`. This enforces the
+/// OpenVDB/OCCT/Manifold/Fidget roles split: OpenVDB is the Voxel
+/// specialist, B-rep Booleans belong to OCCT, Mesh Booleans belong to
+/// Manifold, SDF Booleans belong to Fidget. A future regression adding
+/// B-rep, Mesh, or SDF claims to OpenVDB's descriptor would be caught at
+/// test time, preventing the dispatcher from routing those Booleans into
+/// a stub that cannot perform them.
+#[test]
+fn openvdb_capability_descriptor_lists_voxel_booleans() {
+    let descriptor = reify_kernel_openvdb::register::openvdb_capability_descriptor();
+
+    // Positive pins — Voxel Booleans ×3.
+    assert!(
+        descriptor.supports(Operation::BooleanUnion, ReprKind::Voxel),
+        "OpenVDB must declare (BooleanUnion, Voxel)",
+    );
+    assert!(
+        descriptor.supports(Operation::BooleanDifference, ReprKind::Voxel),
+        "OpenVDB must declare (BooleanDifference, Voxel)",
+    );
+    assert!(
+        descriptor.supports(Operation::BooleanIntersection, ReprKind::Voxel),
+        "OpenVDB must declare (BooleanIntersection, Voxel)",
+    );
+
+    // Negative pin — OpenVDB does NOT handle B-rep Booleans.
+    assert!(
+        !descriptor.supports(Operation::BooleanUnion, ReprKind::BRep),
+        "OpenVDB must NOT declare (BooleanUnion, BRep) — B-rep Booleans are OCCT's domain",
+    );
+
+    // Negative pin — OpenVDB does NOT handle Mesh Booleans.
+    assert!(
+        !descriptor.supports(Operation::BooleanUnion, ReprKind::Mesh),
+        "OpenVDB must NOT declare (BooleanUnion, Mesh) — Mesh Booleans are Manifold's domain",
+    );
+
+    // Negative pin — OpenVDB does NOT handle SDF Booleans.
+    assert!(
+        !descriptor.supports(Operation::BooleanUnion, ReprKind::Sdf),
+        "OpenVDB must NOT declare (BooleanUnion, Sdf) — SDF Booleans are Fidget's domain",
+    );
+}
+
+/// OpenVDB submits exactly one `KernelRegistration` named `"openvdb"` into
+/// the `inventory::iter::<KernelRegistration>()` set. This is the inventory-
+/// plumbing pin: a missing or incorrectly-gated `inventory::submit!` would be
+/// caught here.
+///
+/// The submitted registration's `descriptor()` must be function-pointer-
+/// identical to `register::openvdb_capability_descriptor` — a divergence
+/// would indicate two parallel descriptor sources. Set-equality of the
+/// materialised `supports` is also asserted as defence-in-depth.
+///
+/// # Design template
+///
+/// `crates/reify-kernel-fidget/tests/inventory_registration.rs:74-122`.
+#[test]
+fn openvdb_kernel_registration_appears_in_inventory_iter() {
+    // Linker anchor: referencing `openvdb_capability_descriptor` here (before
+    // the `inventory::iter` call below) mirrors the pattern in
+    // `dispatcher_integration.rs` — an observable reference to a symbol in
+    // `register.rs` forces the linker to keep the entire compilation unit,
+    // including the `inventory::submit!` constructor.
+    let direct_fn: fn() -> CapabilityDescriptor =
+        reify_kernel_openvdb::register::openvdb_capability_descriptor;
+
+    let openvdb_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
+        .into_iter()
+        .filter(|reg| reg.name == "openvdb")
+        .collect();
+
+    assert_eq!(
+        openvdb_entries.len(),
+        1,
+        "expected exactly one inventory::submit! for kernel name \"openvdb\", found {}",
+        openvdb_entries.len(),
+    );
+
+    // Pin via function-pointer identity: the intent is "the inventory
+    // submission's `descriptor` field points at the same
+    // `openvdb_capability_descriptor` function the rest of the crate uses".
+    // `std::ptr::fn_addr_eq` is the explicit, intent-revealing comparison.
+    let inventory_fn = openvdb_entries[0].descriptor;
+    assert!(
+        std::ptr::fn_addr_eq(inventory_fn, direct_fn),
+        "the inventory-submitted descriptor must be the same function pointer as \
+         `register::openvdb_capability_descriptor` — a divergence indicates two \
+         parallel descriptor sources",
+    );
+
+    // Also pin the materialised result as a HashSet (set equality —
+    // order-insensitive) as defence-in-depth for the case where fn pointers
+    // diverge but happen to produce equivalent content.
+    let inventory_supports: std::collections::HashSet<(Operation, ReprKind)> =
+        (openvdb_entries[0].descriptor)().supports.into_iter().collect();
+    let direct_supports: std::collections::HashSet<(Operation, ReprKind)> =
+        reify_kernel_openvdb::register::openvdb_capability_descriptor()
+            .supports
+            .into_iter()
+            .collect();
+    assert_eq!(
+        inventory_supports, direct_supports,
+        "the inventory descriptor's supports SET must equal the direct call's — \
+         order-insensitive so future literal reordering doesn't trip a false-positive",
+    );
+}

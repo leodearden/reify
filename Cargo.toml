@@ -13,6 +13,7 @@ members = [
     "crates/reify-kernel-fidget",
     "crates/reify-kernel-manifold",
     "crates/reify-kernel-occt",
+    "crates/reify-kernel-openvdb",
     "crates/reify-config",
     "crates/reify-runtime",
     "crates/reify-stdlib",
@@ -42,6 +43,7 @@ reify-geometry = { path = "crates/reify-geometry" }
 reify-kernel-fidget = { path = "crates/reify-kernel-fidget" }
 reify-kernel-manifold = { path = "crates/reify-kernel-manifold" }
 reify-kernel-occt = { path = "crates/reify-kernel-occt" }
+reify-kernel-openvdb = { path = "crates/reify-kernel-openvdb" }
 reify-config = { path = "crates/reify-config" }
 reify-runtime = { path = "crates/reify-runtime" }
 reify-stdlib = { path = "crates/reify-stdlib" }

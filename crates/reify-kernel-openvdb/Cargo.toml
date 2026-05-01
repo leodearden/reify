@@ -1,0 +1,21 @@
+[package]
+name = "reify-kernel-openvdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenVDB voxel-Boolean kernel adapter"
+
+[dependencies]
+reify-types.workspace = true
+inventory.workspace = true
+
+# `reify-eval` is a dev-dependency (not a normal dep) for the same reason the
+# OCCT, Manifold, and Fidget adapters exclude it from production deps: adapter
+# crates depend on `reify-types` for the dependency-inverted `GeometryKernel`
+# trait but deliberately NOT on `reify-eval` — keeping the adapter → eval dep
+# direction inverted preserves the layering that lets `reify-eval` depend on
+# adapter crates without a cycle. As a dev-dep, `reify-eval` is only pulled
+# into the link closure of the `tests/dispatcher_integration.rs` test binary;
+# the production library stays free of the eval dependency.
+[dev-dependencies]
+reify-eval.workspace = true
