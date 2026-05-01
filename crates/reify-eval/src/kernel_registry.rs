@@ -503,7 +503,7 @@ mod tests {
         // (2) pick_lexmin_kernel must return the lex-smaller of the two
         //     synthetics. NAME_A = "__a_kernel" < NAME_B = "__b_kernel" in
         //     ASCII order, so __a_kernel must win.
-        let (lexmin, _total) = pick_lexmin_kernel().expect(
+        let lexmin = pick_lexmin_kernel().expect(
             "registry must contain at least the cfg(test) synthetic kernels — \
              see test_synthetic_kernel module",
         );
