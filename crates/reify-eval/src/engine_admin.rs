@@ -8,7 +8,7 @@ use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, FeatureTagTable,
-    GeometryKernel, OptimizedImpl, TopologyAttributeTable,
+    GeometryKernel, KernelRegistration, OptimizedImpl, TopologyAttributeTable,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -209,6 +209,63 @@ impl Engine {
         Self::with_prelude(
             constraint_checker,
             geometry_kernel,
+            reify_compiler::stdlib_loader::load_stdlib(),
+        )
+    }
+
+    /// Construct an Engine using the inventory-driven multi-kernel registry
+    /// (v0.2 entry point per `docs/prds/v0_2/multi-kernel.md` "Resolved
+    /// design decisions").
+    ///
+    /// Reads the static linker-collected set of [`KernelRegistration`] records
+    /// once at startup, picks the lexicographically smallest entry by `name`
+    /// (matching the dispatcher's tie-break contract and the `collect_registry`
+    /// BTreeMap key ordering), invokes its `factory` to instantiate a
+    /// [`GeometryKernel`], and forwards to [`Engine::with_prelude`] with the
+    /// embedded stdlib.
+    ///
+    /// # v0.2 single-kernel scope
+    ///
+    /// In v0.2 OCCT is the only adapter that submits a registration (gated on
+    /// `cfg(has_occt)` in `crates/reify-kernel-occt/src/register.rs`), so the
+    /// lex-smallest pick is unambiguous. In v0.3 once additional adapters
+    /// (`reify-kernel-manifold`, `-fidget`, `-openvdb`) ship, the per-op
+    /// dispatch decision moves into [`crate::dispatcher::dispatch`] — which
+    /// already accepts a `&BTreeMap<String, &CapabilityDescriptor>`
+    /// borrowed from `collect_registry()`'s output — and this constructor
+    /// will become a multi-kernel engine builder rather than a startup-time
+    /// single-kernel picker.
+    ///
+    /// # Empty-registry semantics
+    ///
+    /// When no adapter has submitted a registration (e.g. stub-mode build with
+    /// `cfg(has_occt)` off, or a binary that links no `reify-kernel-*` crate
+    /// at all), `kernel` is forwarded as `None`, matching `Engine::new(checker,
+    /// None)`. The existing build-path error surface ("no geometry kernel
+    /// registered") fires cleanly without a non-functional stub kernel.
+    ///
+    /// # Why additive (not a replacement)
+    ///
+    /// `Engine::new` and `Engine::with_prelude` remain unchanged: ~70
+    /// integration tests across `crates/reify-eval/tests/` and the
+    /// `reify-cli` / `gui-tauri` binaries pass kernels they constructed
+    /// themselves (e.g. `MockGeometryKernel`, `DispatchPlanner`). Migrating
+    /// CLI/GUI call sites to `with_registered_kernel` is a separate
+    /// follow-up — see task 2642 design decision "Defer CLI/GUI call-site
+    /// migration to a follow-up task".
+    pub fn with_registered_kernel(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
+        // Iterate the static linker-collected `KernelRegistration` set and
+        // pick the lexicographically smallest entry by `name`. Iterating the
+        // inventory directly (rather than going through `collect_registry()`,
+        // which materialises descriptors only) lets us reach the registration's
+        // `factory` field — `collect_registry()` discards that on purpose,
+        // since the dispatcher only needs the descriptor side.
+        let kernel: Option<Box<dyn GeometryKernel>> = inventory::iter::<KernelRegistration>()
+            .min_by_key(|reg| reg.name)
+            .map(|reg| (reg.factory)());
+        Self::with_prelude(
+            constraint_checker,
+            kernel,
             reify_compiler::stdlib_loader::load_stdlib(),
         )
     }

@@ -91,14 +91,27 @@ fn engine_with_registered_kernel_picks_occt_for_brep_box_build() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
 
-    let result = engine.build(&compiled, ExportFormat::Stl);
+    // STEP rather than STL: OCCT's `OcctKernelHandle::export` returns
+    // `unsupported export format: Stl` for `ExportFormat::Stl` (see
+    // `export_unsupported_format_returns_error` in
+    // `crates/reify-kernel-occt/src/handle.rs:1301`). STEP is the only
+    // BRep-native export format OCCT supports; the round-trip pin needs
+    // a format that actually round-trips, so we use STEP and rely on the
+    // `> 0 bytes` assertion below to confirm the registered factory was
+    // invoked and the kernel produced real output.
+    let result = engine.build(&compiled, ExportFormat::Step);
 
-    let output = result
-        .geometry_output
-        .expect("Engine::with_registered_kernel must instantiate the registered OCCT factory and produce STL output");
+    let output = result.geometry_output.unwrap_or_else(|| {
+        panic!(
+            "Engine::with_registered_kernel must instantiate the registered OCCT factory \
+             and produce STEP output. Diagnostics: {:?}\nrealizations on first template: {}",
+            result.diagnostics,
+            compiled.templates[0].realizations.len(),
+        )
+    });
     assert!(
         !output.is_empty(),
-        "STL geometry_output must be non-empty — empty output indicates the registered kernel \
+        "STEP geometry_output must be non-empty — empty output indicates the registered kernel \
          was not actually instantiated and execute() was never called",
     );
 }
