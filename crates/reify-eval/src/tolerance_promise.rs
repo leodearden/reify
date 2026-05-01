@@ -227,41 +227,6 @@ pub fn is_promise_insufficient(demanded: f64, promise: f64) -> bool {
     demanded < promise
 }
 
-/// Build the `Severity::Warning` diagnostic emitted when a downstream
-/// demand is strictly tighter than the imported-geometry tolerance promise
-/// declared on an `Input` occurrence.
-///
-/// The diagnostic carries
-/// [`DiagnosticCode::ImportedTolerancePromiseInsufficient`] for filter-by-code
-/// downstream consumers (LSP / IDE / batch pipelines) and a canonical
-/// human-readable message naming the input template, the demanded
-/// tolerance, and the promised tolerance.
-///
-/// # Severity rationale
-///
-/// PRD `docs/prds/v0_2/per-purpose-tolerance.md` ("Resolved design
-/// decisions" → "Imported geometry promise"): "When a downstream demand
-/// is tighter than the import promise, emit a diagnostic (warn, not error)
-/// and proceed with the as-imported realization. Users opt into explicit
-/// re-meshing/healing through a stdlib helper rather than the runtime
-/// silently doing it." Warning matches the established convention for
-/// similar advisory codes (`FieldOutOfBounds`, `TraitUserAsserted`,
-/// `TopologyTagStale`) where downstream tooling can choose to surface as
-/// harder failures via filter-by-code at the consumer side. The PRD
-/// explicitly rejects silent re-meshing — the user must opt in via a
-/// stdlib helper.
-///
-/// # Arguments
-///
-/// - `input_template_name` — the `Input` occurrence template name (e.g.
-///   `"STEPInput"`); appears verbatim in the diagnostic message so authors
-///   can locate the import site.
-/// - `demanded` — the demanded tolerance in SI metres (the tighter side);
-///   rendered with µm / mm / m prefixes by magnitude.
-/// - `promise` — the imported-geometry tolerance promise in SI metres
-///   (the looser side; `promise > demanded`); rendered with µm / mm / m
-///   prefixes by magnitude.
-///
 /// Build the `Severity::Warning` diagnostic emitted when the imported-geometry
 /// tolerance promise on an `Input` occurrence template is exactly `0.0` AND
 /// the downstream demand is strictly positive (`demanded > 0.0`).
@@ -310,6 +275,40 @@ pub fn input_tolerance_promise_is_zero_diagnostic(
     Diagnostic::warning(message).with_code(DiagnosticCode::InputTolerancePromiseIsZero)
 }
 
+/// Build the `Severity::Warning` diagnostic emitted when a downstream
+/// demand is strictly tighter than the imported-geometry tolerance promise
+/// declared on an `Input` occurrence.
+///
+/// The diagnostic carries
+/// [`DiagnosticCode::ImportedTolerancePromiseInsufficient`] for filter-by-code
+/// downstream consumers (LSP / IDE / batch pipelines) and a canonical
+/// human-readable message naming the input template, the demanded
+/// tolerance, and the promised tolerance.
+///
+/// # Severity rationale
+///
+/// PRD `docs/prds/v0_2/per-purpose-tolerance.md` ("Resolved design
+/// decisions" → "Imported geometry promise"): "When a downstream demand
+/// is tighter than the import promise, emit a diagnostic (warn, not error)
+/// and proceed with the as-imported realization. Users opt into explicit
+/// re-meshing/healing through a stdlib helper rather than the runtime
+/// silently doing it." Warning matches the established convention for
+/// similar advisory codes (`FieldOutOfBounds`, `TraitUserAsserted`,
+/// `TopologyTagStale`) where downstream tooling can choose to surface as
+/// harder failures via filter-by-code at the consumer side. The PRD
+/// explicitly rejects silent re-meshing — the user must opt in via a
+/// stdlib helper.
+///
+/// # Arguments
+///
+/// - `input_template_name` — the `Input` occurrence template name (e.g.
+///   `"STEPInput"`); appears verbatim in the diagnostic message so authors
+///   can locate the import site.
+/// - `demanded` — the demanded tolerance in SI metres (the tighter side);
+///   rendered with µm / mm / m prefixes by magnitude.
+/// - `promise` — the imported-geometry tolerance promise in SI metres
+///   (the looser side; `promise > demanded`); rendered with µm / mm / m
+///   prefixes by magnitude.
 pub fn imported_tolerance_promise_diagnostic(
     input_template_name: &str,
     demanded: f64,
@@ -761,9 +760,6 @@ mod tests {
         is_promise_insufficient(1e-6, -1.0e-3);
     }
 
-    /// Pinned by the diagnostic-emission contract: when a downstream demand
-    /// is tighter than an imported-geometry tolerance promise, the runtime
-    /// emits a `Severity::Warning` diagnostic carrying
     /// Verifies that `input_tolerance_promise_is_zero_diagnostic` builds a
     /// `Severity::Warning` carrying `DiagnosticCode::InputTolerancePromiseIsZero`,
     /// names the input template in the message, and renders `demanded` in
@@ -816,6 +812,9 @@ mod tests {
         );
     }
 
+    /// Pinned by the diagnostic-emission contract: when a downstream demand
+    /// is tighter than an imported-geometry tolerance promise, the runtime
+    /// emits a `Severity::Warning` diagnostic carrying
     /// `DiagnosticCode::ImportedTolerancePromiseInsufficient` and a message
     /// naming the input template. PRD: "emit a diagnostic (warn, not error)
     /// and proceed with the as-imported realization."
