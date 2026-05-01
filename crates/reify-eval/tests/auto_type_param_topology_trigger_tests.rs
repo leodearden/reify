@@ -197,6 +197,64 @@ fn substitution_flip_and_revert_restores_topology_fingerprint() {
     assert_ne!(fp_c, fp_b, "reverted fingerprint must differ from flipped fingerprint");
 }
 
+// ─── snapshot propagation: CompiledModule.auto_type_substitution → ───────────
+//                           EvaluationGraph via Snapshot::from_compiled_module
+
+/// `Snapshot::from_compiled_module` must propagate
+/// `CompiledModule.auto_type_substitution` verbatim into
+/// `EvaluationGraph.auto_type_substitution` AND the substitution must flip
+/// `topology_fingerprint` end-to-end through the production pipeline.
+///
+/// PRD task 5, acceptance criterion 7 (production path closure).
+///
+/// Cross-reference: test #11
+/// (`multi_param_resolution_outcome_substitution_drives_topology_fingerprint`)
+/// pins the by-hand graph-level assignment path; this test pins the
+/// *production-pipeline* propagation from `CompiledModule` through
+/// `Snapshot::from_compiled_module`.
+#[test]
+fn snapshot_from_compiled_module_propagates_auto_type_substitution_to_graph() {
+    use reify_eval::snapshot::Snapshot;
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    const EXAMPLE_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/bearing_auto_seal.ri"
+    );
+
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/bearing_auto_seal.ri should exist");
+
+    // Build the resolved module: set auto_type_substitution directly
+    // (bypasses the still-absent `auto:` parser — field is populated here
+    // the same way a future parser-lowering task would populate it).
+    let mut module_resolved = parse_and_compile_with_stdlib(&source);
+    module_resolved.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
+
+    // Build the baseline module: auto_type_substitution stays at default empty Vec.
+    let module_baseline = parse_and_compile_with_stdlib(&source);
+
+    let snap_resolved = Snapshot::from_compiled_module(&module_resolved);
+    let snap_baseline = Snapshot::from_compiled_module(&module_baseline);
+
+    // The field must propagate through the production wiring.
+    assert_eq!(
+        snap_resolved.graph.auto_type_substitution,
+        vec![("T".to_string(), "ORingSeal".to_string())],
+        "auto_type_substitution must propagate from CompiledModule to \
+         EvaluationGraph via Snapshot::from_compiled_module"
+    );
+
+    // The substitution must flip the fingerprint end-to-end through the
+    // production path (PRD task 5 acceptance criterion 7).
+    assert_ne!(
+        snap_resolved.topology_fingerprint,
+        snap_baseline.topology_fingerprint,
+        "auto_type_substitution must flip topology_fingerprint end-to-end \
+         through Snapshot::from_compiled_module"
+    );
+}
+
 // ─── step-11: MultiParamResolutionOutcome.substitution drives fingerprint ─────
 
 /// Feed `MultiParamResolutionOutcome.substitution` from a real
