@@ -143,6 +143,17 @@ pub fn is_long_chain_realization(
 /// is going (per PRD `docs/prds/v0_2/multi-kernel.md` §"Long-chain
 /// diagnostic": "names the chain so users can see budget pressure").
 ///
+/// # Integration status
+///
+/// TODO(task-2642): wire this builder into the realization timing loop
+/// in `geometry_ops.rs` once the kernel-registry mechanism + OCCT adapter
+/// migration lands. Until then, `long_chain_diagnostic` is scaffolding
+/// — public API with no in-tree caller — exactly mirroring the scope
+/// boundary already documented at the module level (see "Scope boundary
+/// (task 2641)" docblock above). Greppable callout intentionally
+/// duplicated here so a future cleanup pass on the wiring task can
+/// locate the seam without re-reading the module docs.
+///
 /// # Severity rationale
 ///
 /// PRD `docs/prds/v0_2/multi-kernel.md` §"Resolved design decisions" →
