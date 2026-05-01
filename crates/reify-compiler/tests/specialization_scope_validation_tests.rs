@@ -36,6 +36,14 @@ fn param_span() -> SourceSpan {
     SourceSpan::new(30, 50)
 }
 
+fn port_span() -> SourceSpan {
+    SourceSpan::new(60, 80)
+}
+
+fn sub_span() -> SourceSpan {
+    SourceSpan::new(90, 110)
+}
+
 // ── AST construction helpers ──────────────────────────────────────────────────
 
 fn dummy_hash() -> ContentHash {
@@ -201,5 +209,49 @@ fn param_inside_specialization_scope_emits_forbidden_decl_diagnostic() {
         d.labels[0].span,
         p_span,
         "primary label span must equal the ParamDecl's span"
+    );
+}
+
+/// PRD acceptance criterion 2: a `port` declaration directly inside a
+/// specialization-scope body must produce exactly one Error diagnostic with
+/// `DiagnosticCode::SpecializationForbiddenDecl`, a message containing `'port'`
+/// and the port name, and a primary label whose span equals the `PortDecl`'s span.
+///
+/// Shape: `structure S { sub scope : Foo { port p : SomePort } }`
+#[test]
+fn port_inside_specialization_scope_emits_forbidden_decl_diagnostic() {
+    let p_span = port_span();
+    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+        "scope",
+        zero_span(),
+        vec![make_port("p", p_span)],
+    )]);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let diags = forbidden_diagnostics(&compiled.diagnostics);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one SpecializationForbiddenDecl diagnostic, got: {:#?}",
+        diags
+    );
+    let d = diags[0];
+    assert_eq!(d.severity, Severity::Error, "diagnostic must be Error severity");
+    assert!(
+        d.message.contains("'port'"),
+        "message must contain \"'port'\", got: {:?}",
+        d.message
+    );
+    assert!(
+        d.message.contains("'p'"),
+        "message must contain \"'p'\", got: {:?}",
+        d.message
+    );
+    assert!(!d.labels.is_empty(), "diagnostic must have at least one label");
+    assert_eq!(
+        d.labels[0].span,
+        p_span,
+        "primary label span must equal the PortDecl's span"
     );
 }
