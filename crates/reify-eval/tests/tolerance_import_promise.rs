@@ -194,3 +194,118 @@ fn engine_check_imported_tolerance_promise_emits_warning_when_demand_strictly_ti
         diag.message
     );
 }
+
+/// Pinned by the no-op rows of `check_imported_tolerance_promise`'s truth
+/// table. Mirrors the four-block precedent
+/// `engine_demanded_tolerance_for_output_handles_partial_inputs` in
+/// `tests/tolerance_combine.rs:115-215`. Each scoped sub-block exercises
+/// a distinct path that must return `None`:
+///
+/// - (a) Promise absent (no STEPInput template) — silent-skip on the
+///   promise-side `?` early-return.
+/// - (b) Demand absent (no STEPOutput template, no purpose) — silent-skip
+///   on the demand-side `?` early-return.
+/// - (c) Demand looser than promise — `is_promise_insufficient` returns
+///   false, so the diagnostic does not fire.
+/// - (d) Demand equal to promise — strict `<` is false, so the diagnostic
+///   does not fire (this branch pins the strict-vs-non-strict design
+///   decision; flipping `<` to `<=` would regress this assertion).
+#[test]
+fn engine_check_imported_tolerance_promise_returns_none_in_no_op_cases() {
+    // (a) No Input template — module has only MyDesign, no STEPInput.
+    //     The promise contributor is None, so the `?` short-circuits to None.
+    {
+        let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+            "test_no_input_template".to_string(),
+        ]))
+        .template(my_design_template())
+        .build();
+        let mut engine = make_engine();
+        engine.eval(&module);
+        assert!(
+            engine
+                .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
+                .is_none(),
+            "(a) no STEPInput template ⇒ promise contributor is None ⇒ check \
+             must return None (no diagnostic to emit)"
+        );
+    }
+
+    // (b) No demand — module has STEPInput(50e-6) and MyDesign but no
+    //     STEPOutput template and no active purpose. Promise contributor is
+    //     Some(50e-6), but the demand contributor is None, so the second `?`
+    //     short-circuits to None.
+    {
+        let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+            "test_no_demand_contributor".to_string(),
+        ]))
+        .template(step_input_template(50e-6))
+        .template(my_design_template())
+        .build();
+        let mut engine = make_engine();
+        engine.eval(&module);
+        // No `activate_purpose` call — demand-side contributes None.
+        assert!(
+            engine
+                .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
+                .is_none(),
+            "(b) no demand contributor (no STEPOutput template + no active \
+             purpose) ⇒ check must return None even though promise is \
+             Some(50e-6)"
+        );
+    }
+
+    // (c) Demand looser than promise — STEPInput(1e-6 promise) +
+    //     STEPOutput(50e-6 output bound) + MyDesign + manufacturing(50e-6).
+    //     After activation, demand = min(50e-6, 50e-6) = 50e-6, which is
+    //     LOOSER than the 1e-6 promise. The promise's upper-bound guarantee
+    //     covers the looser demand → no diagnostic.
+    {
+        let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+            "test_demand_looser_than_promise".to_string(),
+        ]))
+        .template(step_input_template(1e-6))
+        .template(step_output_template(50e-6))
+        .template(my_design_template())
+        .compiled_purpose(manufacturing_purpose("manufacturing", 50e-6))
+        .build();
+        let mut engine = make_engine();
+        engine.eval(&module);
+        engine.activate_purpose("manufacturing", "MyDesign");
+        assert!(
+            engine
+                .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
+                .is_none(),
+            "(c) demand 50µm looser than promise 1µm ⇒ promise covers it ⇒ \
+             check must return None (no diagnostic)"
+        );
+    }
+
+    // (d) Demand equal to promise — STEPInput(10e-6) + STEPOutput(10e-6) +
+    //     MyDesign + manufacturing(10e-6). After activation, demand =
+    //     min(10e-6, 10e-6) = 10e-6, which is EQUAL to the 10e-6 promise.
+    //     Strict `<` is false → no diagnostic. This is the canonical
+    //     strict-vs-non-strict design-decision pin: flipping the comparator
+    //     from `<` to `<=` would regress this assertion.
+    {
+        let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+            "test_demand_equal_to_promise".to_string(),
+        ]))
+        .template(step_input_template(10e-6))
+        .template(step_output_template(10e-6))
+        .template(my_design_template())
+        .compiled_purpose(manufacturing_purpose("manufacturing", 10e-6))
+        .build();
+        let mut engine = make_engine();
+        engine.eval(&module);
+        engine.activate_purpose("manufacturing", "MyDesign");
+        assert!(
+            engine
+                .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
+                .is_none(),
+            "(d) demand 10µm == promise 10µm ⇒ strict `<` rules this \
+             sufficient ⇒ check must return None; flipping `<` to `<=` \
+             would regress this assertion"
+        );
+    }
+}
