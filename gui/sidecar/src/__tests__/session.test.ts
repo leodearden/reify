@@ -452,14 +452,13 @@ describe('SidecarSession', () => {
       text: 'Check diagnostics',
     });
 
-    // Wait for the tool_call outbound to be emitted
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        if (outputs.some((o) => o.type === 'tool_call')) resolve();
-        else setTimeout(check, 5);
-      };
-      check();
-    });
+    // Wait for the tool_call outbound to be emitted (500ms deadline)
+    const toolCallDeadline = Date.now() + 500;
+    while (Date.now() < toolCallDeadline) {
+      if (outputs.some((o) => o.type === 'tool_call')) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(outputs.some((o) => o.type === 'tool_call')).toBe(true);
 
     // Now collect all stdin writes so far, then send tool_result
     // We'll drain stdin lines in order: first is the user prompt, second will be tool_result
@@ -551,8 +550,10 @@ describe('SidecarSession', () => {
     expect((errors[0] as any).id).toBe('msg-stale');
     expect((errors[0] as any).message).toMatch(/no pending tool_use|no in-flight|no matching/i);
 
-    // (b) CRITICAL: the queue entry must still be present — the shift must NOT have happened
-    // because currentStdin was null. With the current impl (shift before check), this fails.
+    // (b) CRITICAL: the queue entry must still be present — currentStdin was null so
+    // handleToolResult must return early WITHOUT consuming (shifting) the FIFO queue.
+    // This is a regression guard: if the check order is ever reverted to shift-before-check,
+    // this assertion will fail because the queue will be empty.
     const queue = (session as any).pendingToolUseIds.get('reify_get_source');
     expect(queue).toEqual(['toolu_carry']);
   });
