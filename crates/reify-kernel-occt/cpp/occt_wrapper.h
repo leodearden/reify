@@ -745,9 +745,9 @@ double min_clearance(const OcctShape& a, const OcctShape& b);
 /// query vertex — uninteresting). This ordering mirrors `query_distance` and
 /// `min_clearance` for call-site consistency.
 ///
-/// When the query point lies on or inside the shape, OCCT returns distance 0
-/// and a boundary witness point. No special-casing is applied — the returned
-/// point is whatever OCCT's solver picks for the degenerate case.
+/// When the query point lies on or inside the shape, `BRepExtrema_DistShapeShape`
+/// reports distance 0 and `PointOnShape1` returns the query point itself —
+/// not a boundary projection. No special-casing is applied.
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
 
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
