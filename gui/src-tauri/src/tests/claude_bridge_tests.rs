@@ -1257,9 +1257,12 @@ async fn read_sidecar_output_warns_on_parse_failure() {
 
     let (_guard, warn_counter) = reify_test_support::warn_counting_guard();
 
-    // Same invalid-JSON input as read_sidecar_output_skips_invalid_json_lines
-    // (for consistency in the invalid-input space).
-    let data = b"not-json\n";
+    // Structurally-invalid OutboundMessage (unknown discriminant) — distinct from
+    // `read_sidecar_output_skips_invalid_json_lines`, which feeds raw `not-json`.
+    // Both shapes route through the same `parse_outbound -> Err` branch, so the
+    // WARN behavior we assert below is the same; the goal here is to widen
+    // invalid-input coverage.
+    let data = b"{\"type\":\"unknown_kind\"}\n";
     let reader = BufReader::new(&data[..]);
     let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
     let received_clone = Arc::clone(&received);
