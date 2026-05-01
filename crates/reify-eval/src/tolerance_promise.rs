@@ -261,6 +261,7 @@ pub fn is_promise_insufficient(demanded: f64, promise: f64) -> bool {
 /// - `promise` — the imported-geometry tolerance promise in SI metres
 ///   (the looser side; `promise > demanded`); rendered with µm / mm / m
 ///   prefixes by magnitude.
+///
 /// Build the `Severity::Warning` diagnostic emitted when the imported-geometry
 /// tolerance promise on an `Input` occurrence template is exactly `0.0` AND
 /// the downstream demand is strictly positive (`demanded > 0.0`).
