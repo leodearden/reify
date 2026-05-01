@@ -16,9 +16,7 @@
 //!   `ManifestError::Parse(_)` (strict schema; mirrors the convention on
 //!   `[kernels]` / `[kernels.<id>]`).
 
-use reify_config::{DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH, Manifest};
-#[allow(unused_imports)]
-use reify_config::ManifestError;
+use reify_config::{DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH, Manifest, ManifestError};
 
 /// When a manifest has no `[auto_type_params]` section, the parsed
 /// `AutoTypeParamsConfig` falls back to the PRD-decided default of 6.
@@ -55,4 +53,24 @@ fn custom_max_depth_round_trips() {
         8,
         "parsed max_depth must override the default of 6"
     );
+}
+
+/// `max_depth = 0` is semantically meaningless: every search must visit at
+/// least one parameter. Pin the typed `ManifestError::InvalidMaxDepth(0)`
+/// rejection at parse time so misconfiguration cannot ship as a silent
+/// no-op (DFS would never run, BFS would always run for any param count).
+#[test]
+fn zero_max_depth_rejected_with_typed_error() {
+    let err = Manifest::from_toml_str("[auto_type_params]\nmax_depth = 0\n")
+        .expect_err("max_depth = 0 must be rejected");
+    match err {
+        ManifestError::InvalidMaxDepth(n) => assert_eq!(
+            n, 0,
+            "InvalidMaxDepth payload must carry the offending value"
+        ),
+        other => panic!(
+            "expected ManifestError::InvalidMaxDepth(0), got {:?}",
+            other
+        ),
+    }
 }
