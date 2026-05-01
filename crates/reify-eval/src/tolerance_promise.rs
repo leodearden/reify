@@ -64,38 +64,37 @@ pub fn extract_input_tolerance_promise(
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     input_template_name: &str,
 ) -> Option<f64> {
-    // Silent-skip audit (locked by `extract_input_tolerance_promise_silent_skip_audit`,
-    // mirrors `tolerance_combine::extract_output_tolerance_bound`'s six-gate audit):
-    //   Gate 1 (entity match)        skips entries whose entity name does not
-    //                                equal `input_template_name` — the
-    //                                composite `ValueCellId` key lookup
-    //                                discriminates by entity, so an
-    //                                `OtherInput.tolerance` entry never
-    //                                contributes (covers test case (g))
-    //   Gate 2 (tolerance member)    skips entries under the same entity but
-    //                                a different member name — the composite
-    //                                key lookup also discriminates by
-    //                                member, so e.g. `STEPInput.source` is
-    //                                never confused with the canonical
-    //                                `STEPInput.tolerance` cell (covers test
-    //                                case (h)). Gates 1 + 2 together are
-    //                                realized by a single `values.get(&cell_id)?`
-    //                                because `ValueCellId` is keyed on both.
-    //   Gate 3 (Value::Scalar)       skips Bool / Int / Undef / String etc.
-    //                                Value variants stored at the canonical
-    //                                cell (covers test case (f))
-    //   Gate 4 (LENGTH dimension)    skips DIMENSIONLESS / Money / Force /
-    //                                other non-LENGTH Scalar literals (covers
-    //                                test case (e))
-    //   Gate 5 (is_finite())         skips NaN / ±Inf tolerance literals
-    //                                (covers test cases (a), (b), (c)) — a
-    //                                NaN promise would stick because NaN
-    //                                comparisons always evaluate false
-    //   Gate 6 (>= 0.0)              skips negative finite tolerance
-    //                                literals (covers test case (d)) —
-    //                                contract symmetry with
-    //                                `is_promise_insufficient`'s debug-assert
-    //                                `is_finite() && >= 0.0` invariant
+    // Silent-skip audit (locked by `extract_input_tolerance_promise_silent_skip_audit`):
+    // four runtime gates, one per line of the function body. Contrast with
+    // `tolerance_combine::extract_output_tolerance_bound`, which performs a
+    // six-gate scan over a constraint vector — here we have a direct
+    // composite-key map lookup, so entity match and member match collapse
+    // into a single gate.
+    //   Gate 1 (composite-key lookup) `values.get(&cell_id)?` discriminates
+    //                                 simultaneously on entity name and on
+    //                                 member name (`ValueCellId` is keyed on
+    //                                 both), so `OtherInput.tolerance` (test
+    //                                 case (g)) and `STEPInput.source` (test
+    //                                 case (h)) are both rejected by this
+    //                                 single line. A None result here short-
+    //                                 circuits with `?`.
+    //   Gate 2 (Value::Scalar)        the `match value` arm skips Bool / Int
+    //                                 / Undef / String etc. Value variants
+    //                                 stored at the canonical cell (covers
+    //                                 test case (f)).
+    //   Gate 3 (LENGTH dimension)     `dimension != DimensionVector::LENGTH`
+    //                                 skips DIMENSIONLESS / Money / Force /
+    //                                 other non-LENGTH Scalar literals
+    //                                 (covers test case (e)).
+    //   Gate 4 (finite & non-negative) `!si_value.is_finite() || si_value < 0.0`
+    //                                 skips NaN / ±Inf (covers (a)/(b)/(c))
+    //                                 and negative finite (covers (d)). NaN
+    //                                 must be rejected because NaN
+    //                                 comparisons always evaluate false; the
+    //                                 `>= 0.0` half mirrors
+    //                                 `is_promise_insufficient`'s debug-
+    //                                 assert `is_finite() && >= 0.0`
+    //                                 invariant.
     // Every non-match path returns None (or falls through to the trailing
     // None) — no `panic!`, `expect`, or `unwrap` is reachable, so a malformed
     // values map never crashes the engine.
@@ -544,11 +543,12 @@ mod tests {
     /// naming the input template. PRD: "emit a diagnostic (warn, not error)
     /// and proceed with the as-imported realization."
     ///
-    /// Asserts use substring matching on the rendered message rather than
-    /// pinning float-render format — the canonical message format must
-    /// include the input template name and the word "insufficient", but the
-    /// exact float rendering ("5e-5" vs "0.00005" vs "50e-6") is left to
-    /// `format!`'s default behavior.
+    /// Asserts pin functional contract only — severity, code, and the
+    /// template name in the message — not the surrounding English prose.
+    /// Downstream consumers filter by `DiagnosticCode`, not by substrings of
+    /// the rendered message, so locking specific words ("insufficient",
+    /// "proceeding with", etc.) creates wording-churn maintenance without
+    /// protecting any real consumer contract.
     #[test]
     fn imported_tolerance_promise_diagnostic_builds_warning_with_code_and_template_name() {
         use reify_types::{DiagnosticCode, Severity};
@@ -571,12 +571,6 @@ mod tests {
             diag.message.contains("STEPInput"),
             "message must name the input template so authors can locate the \
              import site (got: {:?})",
-            diag.message
-        );
-        assert!(
-            diag.message.contains("insufficient"),
-            "canonical message form includes the word \"insufficient\" so \
-             grep-by-text consumers can locate this code path (got: {:?})",
             diag.message
         );
     }

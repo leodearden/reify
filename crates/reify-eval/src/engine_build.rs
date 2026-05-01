@@ -252,32 +252,15 @@ fn populate_loft_op(
 impl Engine {
     /// Look up the imported-geometry tolerance promise carried by the
     /// `param tolerance : Length = X` declaration on an `Input` occurrence
-    /// template (e.g. `STEPInput` / `STLInput`).
+    /// template (e.g. `STEPInput` / `STLInput`); returns `Some(si_value)`
+    /// in metres or `None` when no `eval_state` exists or the cell is
+    /// absent/malformed.
     ///
-    /// Returns `Some(si_value)` (in metres) when the post-`eval()`
-    /// `Snapshot.values` map contains a well-formed entry at
-    /// `ValueCellId(input_template_name, "tolerance")`, otherwise `None`
-    /// (silent-skip on every malformed shape — see
-    /// [`crate::tolerance_promise::extract_input_tolerance_promise`]'s
-    /// six-gate audit).
-    ///
-    /// Pre-`eval()` (no `eval_state`) returns `None` directly. After
-    /// `eval()`, this is a thin delegator to
-    /// [`crate::tolerance_promise::extract_input_tolerance_promise`] over
-    /// the snapshot's value-cell map.
-    ///
-    /// # Sibling queries
-    ///
-    /// - [`Engine::demanded_tolerance_for_output`] (engine_purposes.rs) —
-    ///   the demand-side query, returning the tightest tolerance demanded
-    ///   by output occurrences and active purposes.
-    /// - [`Engine::check_imported_tolerance_promise`] — combines the two
-    ///   sides and emits a `Severity::Warning` diagnostic when a demand is
-    ///   strictly tighter than this promise.
-    ///
-    /// Per PRD `docs/prds/v0_2/per-purpose-tolerance.md` ("Resolved design
-    /// decisions" → "Imported geometry promise"), arch §10.4 / §14.5,
-    /// task 2651.
+    /// Thin delegator to
+    /// [`crate::tolerance_promise::extract_input_tolerance_promise`] — see
+    /// that function for the recognition shape, the silent-skip gate audit,
+    /// and the PRD cross-references. Sibling demand-side query is
+    /// [`Engine::demanded_tolerance_for_output`].
     pub fn imported_tolerance_promise(&self, input_template_name: &str) -> Option<f64> {
         let state = self.eval_state.as_ref()?;
         crate::tolerance_promise::extract_input_tolerance_promise(
@@ -287,46 +270,20 @@ impl Engine {
     }
 
     /// Compare the imported-geometry tolerance promise against the demand
-    /// for a downstream output occurrence; emit a `Severity::Warning`
-    /// diagnostic when the demand is strictly tighter than the promise.
+    /// for a downstream output occurrence; return
+    /// `Some(Severity::Warning)` diagnostic when the demand is strictly
+    /// tighter than the promise, otherwise `None`.
     ///
-    /// # Truth table
-    ///
-    /// Each row is pinned by an integration test in
-    /// `tests/tolerance_import_promise.rs`. Mirrors the structure of
-    /// [`Engine::demanded_tolerance_for_output`]'s table:
-    ///
-    /// | promise contributor | demand contributor | strict-`<` outcome  | result            | scenario                                                   |
-    /// |---------------------|--------------------|---------------------|-------------------|------------------------------------------------------------|
-    /// | `None`              | (any)              | n/a                 | `None`            | promise absent — silent-skip, nothing to compare           |
-    /// | `Some(p)`           | `None`             | n/a                 | `None`            | demand absent — silent-skip, nothing to compare            |
-    /// | `Some(p)`           | `Some(d)`          | `d >= p`            | `None`            | demand satisfiable by promise (looser or equal — strict <) |
-    /// | `Some(p)`           | `Some(d)`          | `d < p`             | `Some(diagnostic)`| demand strictly tighter than promise — warning emitted    |
-    ///
-    /// # Strict-`<` rationale
-    ///
-    /// A demand exactly equal to the promise IS satisfiable: the promise is
-    /// an upper bound on the as-imported representation error, and a demand
-    /// at the same level can be satisfied by the as-imported realization.
-    /// Mirrors the partial-order "tighter satisfies looser" rule established
-    /// by `tolerance_bucket`'s `cached_tol <= requested_tol` lookup. See
-    /// [`crate::tolerance_promise::is_promise_insufficient`].
-    ///
-    /// # Deferred auto-emission
-    ///
-    /// This method is the public *query* that future build/dispatcher work
-    /// will consume. Auto-emitting from `build()` / `build_snapshot()`
-    /// requires identifying which `module.templates` are `Input`
-    /// occurrences and pairing each Input with its downstream consumers —
-    /// that orchestration is the dispatcher's job (sibling task 2649).
-    /// Wiring is left to a future task to keep this task atomic at the
-    /// public-method boundary, mirroring how 2647 introduced
-    /// `active_tolerance_for(...)` and 2650 introduced
-    /// [`Engine::demanded_tolerance_for_output`] without auto-emitting.
-    ///
-    /// Per PRD `docs/prds/v0_2/per-purpose-tolerance.md` ("Resolved design
-    /// decisions" → "Imported geometry promise"), arch §10.4 / §14.5,
-    /// task 2651.
+    /// Thin chain over
+    /// [`Engine::imported_tolerance_promise`] +
+    /// [`Engine::demanded_tolerance_for_output`] +
+    /// [`crate::tolerance_promise::is_promise_insufficient`] +
+    /// [`crate::tolerance_promise::imported_tolerance_promise_diagnostic`]
+    /// — see [`crate::tolerance_promise`] for the strict-`<` rationale, the
+    /// truth table (pinned by `tests/tolerance_import_promise.rs`), and the
+    /// PRD cross-references. Auto-emission from `build()` / `build_snapshot()`
+    /// is deferred to the dispatcher (sibling task 2649); this method is
+    /// the public query single-entry-point.
     pub fn check_imported_tolerance_promise(
         &self,
         input_template_name: &str,
