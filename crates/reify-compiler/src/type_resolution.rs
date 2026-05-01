@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 /// Internal type alias entry — stored in the registry during compilation.
@@ -76,6 +77,17 @@ pub(crate) struct TypeAliasRegistry {
     /// emit a `Severity::Info` hint at use sites so users know the limitation is a
     /// cross-module propagation gap rather than a missing declaration.
     skipped_parametric_prelude_names: HashSet<String>,
+    /// Spans on which a `Severity::Info` "parametric prelude alias not propagated"
+    /// diagnostic has already been emitted in this compile pass.  Populated by
+    /// [`TypeAliasRegistry::should_emit_skipped_parametric_prelude_info`] so that
+    /// double-resolves of the same `TypeExpr` (e.g. when both a binding-site
+    /// pre-pass and a later fixup — such as `fixup_option_none_for_let` — re-resolve
+    /// the annotation) yield only one Info per span.  `RefCell` is required because
+    /// `resolve_type_expr_with_aliases` takes `&TypeAliasRegistry`; switching to
+    /// `&mut` would cascade through every type-resolution helper.  Mirrors the
+    /// interior-mutability pattern in `RealizationLetEnv::in_flight`
+    /// (conformance/mod.rs:551).
+    emitted_skipped_parametric_prelude_spans: RefCell<HashSet<SourceSpan>>,
 }
 
 impl TypeAliasRegistry {
@@ -85,6 +97,7 @@ impl TypeAliasRegistry {
             entries: HashMap::new(),
             seeded_names: HashSet::new(),
             skipped_parametric_prelude_names: HashSet::new(),
+            emitted_skipped_parametric_prelude_spans: RefCell::new(HashSet::new()),
         }
     }
 
@@ -98,17 +111,45 @@ impl TypeAliasRegistry {
 
     /// Return `true` if `name` is a parametric prelude alias that was skipped at seed time.
     ///
-    /// Used by `resolve_type_expr_with_aliases` to decide whether to emit a
-    /// `Severity::Info` hint when the name fails to resolve — signalling the
-    /// cross-module propagation gap rather than leaving the user with only the
-    /// generic "unresolved type" Error.
+    /// Used by `resolve_type_expr_with_aliases` (transitively, via
+    /// [`Self::should_emit_skipped_parametric_prelude_info`]) to decide whether to
+    /// emit a `Severity::Info` hint when the name fails to resolve — signalling
+    /// the cross-module propagation gap rather than leaving the user with only
+    /// the generic "unresolved type" Error.
     ///
-    /// **Caller contract:** resolve each `TypeExpr` through `resolve_type_expr_with_aliases`
-    /// at most once per compile pass; each call emits a new `Info` diagnostic without
-    /// span-level de-duplication, so a double-resolve on the same span would produce
-    /// a duplicate diagnostic.
+    /// This method is a pure check with no side effects.  Callers that emit the
+    /// `Info` diagnostic and need span-level deduplication (so that a `TypeExpr`
+    /// resolved through multiple call sites — e.g. a binding-site pre-pass plus
+    /// `fixup_option_none_for_let` — yields exactly one Info per span) MUST use
+    /// [`Self::should_emit_skipped_parametric_prelude_info`] instead, which records
+    /// the span on first emission.
     pub(crate) fn is_skipped_parametric_prelude(&self, name: &str) -> bool {
         self.skipped_parametric_prelude_names.contains(name)
+    }
+
+    /// Decide whether to emit a `Severity::Info` "parametric prelude alias not propagated"
+    /// diagnostic for `name` at `span`.  Returns `true` exactly once per `(name, span)`
+    /// pair that satisfies "name is a skipped parametric prelude alias"; subsequent
+    /// calls with the same span return `false`, providing span-level de-duplication
+    /// across the multiple call sites of `resolve_type_expr_with_aliases`.
+    ///
+    /// Returns `false` (without recording the span) when `name` is not a skipped
+    /// parametric prelude alias — non-skipped names cannot pollute the dedup set.
+    ///
+    /// Has a side effect: records `span` in the emitted-spans set on the first
+    /// "true" return.  Uses interior mutability via `RefCell` because callers
+    /// hold `&self`.
+    pub(crate) fn should_emit_skipped_parametric_prelude_info(
+        &self,
+        name: &str,
+        span: SourceSpan,
+    ) -> bool {
+        if !self.skipped_parametric_prelude_names.contains(name) {
+            return false;
+        }
+        self.emitted_skipped_parametric_prelude_spans
+            .borrow_mut()
+            .insert(span)
     }
 
     /// Register a type alias entry. Returns `Err(entry)` if the name is already registered.
