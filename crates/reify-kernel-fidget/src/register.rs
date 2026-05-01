@@ -2,8 +2,8 @@
 //!
 //! Declares Fidget's [`CapabilityDescriptor`] (the feasibility table that
 //! enumerates every `(Operation, ReprKind)` pair Fidget supports) and
-//! will submit a [`KernelRegistration`] via `inventory::submit!` that the
-//! engine collects via `reify_eval::kernel_registry::registry()` at startup.
+//! submits a [`KernelRegistration`] via `inventory::submit!` that the engine
+//! collects via `reify_eval::kernel_registry::registry()` at startup.
 //!
 //! # PRD reference
 //!
@@ -48,7 +48,43 @@
 //! pattern. Only the kernel name string, supports table contents (Sdf vs Mesh),
 //! the stub error string, and the doc comments' references differ.
 
-use reify_types::CapabilityDescriptor;
+use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
+
+/// Factory invoked by the engine once at startup, returning the stub
+/// [`FidgetKernel`](crate::kernel::FidgetKernel).
+///
+/// Real Fidget Rust JIT FFI is deferred to a follow-up task; this stub factory
+/// ensures the `inventory::submit!` below compiles and the registration
+/// materialises in `reify_eval::kernel_registry::registry()`. When the
+/// follow-up task adds real FFI, this function can switch behind
+/// `cfg(has_fidget)` without changing the registration shape.
+fn fidget_factory() -> Box<dyn GeometryKernel> {
+    Box::new(crate::kernel::FidgetKernel::new())
+}
+
+// Unconditional submit — no `cfg(has_fidget)` gate (see design decisions in
+// the module doc). Fidget has only a stub in this v0.2 task, so a
+// `cfg(has_fidget)` gate would never fire and the registration would be dead
+// code. Submitting unconditionally keeps the cross-crate integration test
+// (step-7) clean and gives the dispatcher BFS a third real registered kernel
+// to exercise on the Sdf repr family.
+//
+// TODO(has_fidget): When real Fidget Rust JIT FFI lands (follow-up task), flip
+// this submit to `#[cfg(any(has_fidget, test))]` so the stub registers only
+// when Fidget is actually available or within this crate's own tests. Without
+// that gate, any binary that adds `reify-kernel-fidget` as a non-dev dep will
+// unconditionally register the stub kernel — which will, lex-min-wise, win over
+// manifold/occt for any future `(op, Sdf)` claim added during implementation
+// drift. The cross-crate isolation in the test layout (fidget dev-deps on
+// reify-eval, not the reverse) blocks that today, but the gate is the
+// structural enforcement that must land alongside the real FFI.
+inventory::submit! {
+    KernelRegistration {
+        name: FIDGET_KERNEL_NAME,
+        descriptor: fidget_capability_descriptor,
+        factory: fidget_factory,
+    }
+}
 
 /// Stable identifier for the Fidget kernel in the v0.2 multi-kernel registry.
 ///
@@ -79,12 +115,12 @@ pub const FIDGET_KERNEL_NAME: &str = "fidget";
 /// `supports: Vec<...>` field is non-const-constructible — see
 /// `reify_types::KernelRegistration` doc for the full rationale.
 pub fn fidget_capability_descriptor() -> CapabilityDescriptor {
-    use reify_types::Operation::*;
+    use Operation::*;
     let supports = vec![
         // SDF Booleans ×3 — Fidget's complete capability surface in v0.2.
-        (BooleanUnion, reify_types::ReprKind::Sdf),
-        (BooleanDifference, reify_types::ReprKind::Sdf),
-        (BooleanIntersection, reify_types::ReprKind::Sdf),
+        (BooleanUnion, ReprKind::Sdf),
+        (BooleanDifference, ReprKind::Sdf),
+        (BooleanIntersection, ReprKind::Sdf),
     ];
     CapabilityDescriptor { supports }
 }
