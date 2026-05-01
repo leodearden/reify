@@ -12,7 +12,7 @@
 //!
 //! `crates/reify-kernel-manifold/tests/inventory_registration.rs:1-112`.
 
-use reify_types::{KernelRegistration, Operation, ReprKind};
+use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Fidget's capability descriptor must enumerate exactly the three
 /// SDF-Boolean operations Fidget supports.
@@ -54,5 +54,63 @@ fn fidget_capability_descriptor_lists_sdf_booleans() {
     assert!(
         !descriptor.supports(Operation::BooleanUnion, ReprKind::Mesh),
         "Fidget must NOT declare (BooleanUnion, Mesh) — Mesh Booleans are Manifold's domain",
+    );
+}
+
+/// Fidget submits exactly one `KernelRegistration` named `"fidget"` into
+/// the `inventory::iter::<KernelRegistration>()` set. This is the inventory-
+/// plumbing pin: a missing or incorrectly-gated `inventory::submit!` would be
+/// caught here.
+///
+/// The submitted registration's `descriptor()` must be function-pointer-
+/// identical to `register::fidget_capability_descriptor` — a divergence
+/// would indicate two parallel descriptor sources. Set-equality of the
+/// materialised `supports` is also asserted as defence-in-depth.
+///
+/// # Design template
+///
+/// `crates/reify-kernel-manifold/tests/inventory_registration.rs:69-112`.
+#[test]
+fn fidget_kernel_registration_appears_in_inventory_iter() {
+    let fidget_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
+        .into_iter()
+        .filter(|reg| reg.name == "fidget")
+        .collect();
+
+    assert_eq!(
+        fidget_entries.len(),
+        1,
+        "expected exactly one inventory::submit! for kernel name \"fidget\", found {}",
+        fidget_entries.len(),
+    );
+
+    // Pin via function-pointer identity: the intent is "the inventory
+    // submission's `descriptor` field points at the same
+    // `fidget_capability_descriptor` function the rest of the crate uses".
+    // `std::ptr::fn_addr_eq` is the explicit, intent-revealing comparison.
+    let inventory_fn = fidget_entries[0].descriptor;
+    let direct_fn: fn() -> CapabilityDescriptor =
+        reify_kernel_fidget::register::fidget_capability_descriptor;
+    assert!(
+        std::ptr::fn_addr_eq(inventory_fn, direct_fn),
+        "the inventory-submitted descriptor must be the same function pointer as \
+         `register::fidget_capability_descriptor` — a divergence indicates two \
+         parallel descriptor sources",
+    );
+
+    // Also pin the materialised result as a HashSet (set equality —
+    // order-insensitive) as defence-in-depth for the case where fn pointers
+    // diverge but happen to produce equivalent content.
+    let inventory_supports: std::collections::HashSet<(Operation, ReprKind)> =
+        (fidget_entries[0].descriptor)().supports.into_iter().collect();
+    let direct_supports: std::collections::HashSet<(Operation, ReprKind)> =
+        reify_kernel_fidget::register::fidget_capability_descriptor()
+            .supports
+            .into_iter()
+            .collect();
+    assert_eq!(
+        inventory_supports, direct_supports,
+        "the inventory descriptor's supports SET must equal the direct call's — \
+         order-insensitive so future literal reordering doesn't trip a false-positive",
     );
 }
