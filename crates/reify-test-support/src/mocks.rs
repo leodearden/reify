@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,9 +37,23 @@ pub fn single_auto_param(cell_id: ValueCellId) -> AutoParam {
 }
 
 /// Mock constraint checker that returns predetermined results.
+///
+/// Three configuration channels, applied in priority order on each `check`:
+/// 1. **Call queue (FIFO)** — `with_call_queue(...)` populates an ordered
+///    queue. Each `check(...)` invocation pops one `Satisfaction` from the
+///    head and applies it to every constraint in that call's input. Once the
+///    queue is exhausted, subsequent calls fall through to the per-id map.
+///    Used by v0.2 DFS backtracking tests to express
+///    "leaf 1 violated, leaf 2 satisfied" without needing real
+///    type-substitution mechanics (which are deferred per the PRD).
+/// 2. **Per-id results** — `with_result(id, satisfaction)` overrides for a
+///    specific `ConstraintNodeId`.
+/// 3. **Default** — `with_default(satisfaction)` is the fallback for ids not
+///    in the per-id map.
 pub struct MockConstraintChecker {
     results: HashMap<ConstraintNodeId, Satisfaction>,
     default: Satisfaction,
+    call_queue: Arc<Mutex<VecDeque<Satisfaction>>>,
 }
 
 impl MockConstraintChecker {
@@ -47,6 +61,7 @@ impl MockConstraintChecker {
         Self {
             results: HashMap::new(),
             default: Satisfaction::Satisfied,
+            call_queue: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -61,6 +76,31 @@ impl MockConstraintChecker {
         self.default = satisfaction;
         self
     }
+
+    /// Configure a per-call FIFO response queue.
+    ///
+    /// Each `check(...)` invocation pops one `Satisfaction` from the queue
+    /// head and applies it to every constraint in that call's input. Once the
+    /// queue is exhausted, subsequent calls fall through to the per-id map
+    /// (`with_result`) and `default` (`with_default`) channels — i.e. the
+    /// existing behavior is fully preserved when the queue is unused or
+    /// drained.
+    ///
+    /// This is the minimal extension that lets v0.2 DFS leaf-iteration tests
+    /// express a sequence of verdicts without requiring substitution
+    /// mechanics. The `ConstraintChecker` trait and `ConstraintInput` shape
+    /// remain unchanged.
+    pub fn with_call_queue(self, queue: Vec<Satisfaction>) -> Self {
+        {
+            let mut guard = self
+                .call_queue
+                .lock()
+                .expect("MockConstraintChecker::with_call_queue: mutex poisoned");
+            guard.clear();
+            guard.extend(queue);
+        }
+        self
+    }
 }
 
 impl Default for MockConstraintChecker {
@@ -71,6 +111,30 @@ impl Default for MockConstraintChecker {
 
 impl ConstraintChecker for MockConstraintChecker {
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+        // Priority 1: pop one verdict from the call-queue head, if any. When
+        // present, apply it uniformly to every constraint in this call's
+        // input — this is what makes the queue "per-call" rather than
+        // "per-constraint", which is the semantic that DFS backtracking
+        // tests need (one leaf check ⇒ one verdict).
+        let queued = self
+            .call_queue
+            .lock()
+            .expect("MockConstraintChecker::check: mutex poisoned")
+            .pop_front();
+        if let Some(satisfaction) = queued {
+            return input
+                .constraints
+                .iter()
+                .map(|(id, _)| ConstraintResult {
+                    id: id.clone(),
+                    satisfaction,
+                    diagnostics: ConstraintDiagnostics::default(),
+                })
+                .collect();
+        }
+
+        // Priority 2 + 3: existing per-id map → default fallback. Unchanged
+        // for callers that never populate the queue.
         input
             .constraints
             .iter()
