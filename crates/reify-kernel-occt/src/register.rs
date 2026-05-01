@@ -32,6 +32,17 @@
 //! the dispatcher's BFS chain `BRep input → OCCT tessellate → Mesh
 //! BooleanUnion` automatically without duplicating the union logic in
 //! OCCT.
+//!
+//! # Stub-mode behavior
+//!
+//! When compiled without `cfg(has_occt)`, the `inventory::submit!` at the
+//! bottom of this module does not fire: `reify_eval::collect_registry()`
+//! returns an empty set, and the OCCT kernel cannot be instantiated.
+//! [`OCCT_KERNEL_NAME`] and [`occt_capability_descriptor`] remain publicly
+//! reachable so diagnostic surfaces (e.g. `gui/src-tauri/src/kernel_status.rs`)
+//! can display capability information without OCCT linked. Before treating
+//! either as evidence of runtime dispatchability, callers must also check
+//! `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)`.
 
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
@@ -50,12 +61,9 @@ use reify_types::{GeometryKernel, KernelRegistration};
 ///
 /// # Stub-mode behavior
 ///
-/// When compiled without `cfg(has_occt)`, this name is informational only.
-/// No `inventory::submit!` fires in stub mode, so `reify_eval::collect_registry()`
-/// will not contain an `"occt"` entry and the OCCT kernel cannot be instantiated.
-/// Callers using this constant for runtime capability inspection should also
-/// check `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` (or the
-/// equivalent `collect_registry()` lookup) before assuming OCCT is dispatchable.
+/// In stub mode (no `cfg(has_occt)`), no `inventory::submit!` fires; check
+/// `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` before assuming
+/// OCCT is dispatchable — see the [module-level stub-mode note](self).
 pub const OCCT_KERNEL_NAME: &str = "occt";
 
 /// Construct the OCCT [`CapabilityDescriptor`].
@@ -71,12 +79,9 @@ pub const OCCT_KERNEL_NAME: &str = "occt";
 ///
 /// # Stub-mode behavior
 ///
-/// When compiled without `cfg(has_occt)`, this descriptor is informational only.
-/// No `inventory::submit!` fires in stub mode, so `reify_eval::collect_registry()`
-/// will not contain an `"occt"` entry and the OCCT kernel cannot be instantiated.
-/// Callers using this descriptor for runtime capability inspection should also
-/// check `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` (or the
-/// equivalent `collect_registry()` lookup) before assuming OCCT is dispatchable.
+/// In stub mode (no `cfg(has_occt)`), no `inventory::submit!` fires; check
+/// `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` before assuming
+/// OCCT is dispatchable — see the [module-level stub-mode note](self).
 pub fn occt_capability_descriptor() -> CapabilityDescriptor {
     use Operation::*;
     let supports = vec![
