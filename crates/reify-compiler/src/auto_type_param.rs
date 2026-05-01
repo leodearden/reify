@@ -1083,10 +1083,142 @@ pub fn resolve_auto_type_params_with_backtracking(
         };
     }
 
-    // Multi-param DFS over the cross-product lands in step-20.
+    // Multi-param DFS over the cross-product. The recursive helper visits
+    // leaves in declared-order × lexicographic-within-param order (T outer,
+    // U inner, …). For step-20 we run in "stop at first feasible" mode —
+    // free-mode behavior. Strict-vs-free dispatch lands in step-24, which
+    // will continue searching past the first feasible leaf to detect ≥2
+    // (Ambiguous).
+    let mut current: Vec<String> = Vec::with_capacity(params.len());
+    let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
+    dfs_search(
+        0,
+        &per_param_candidates,
+        &mut current,
+        &mut feasible_assignments,
+        parameterized_template,
+        constraint_checker,
+        functions,
+        /* stop_after_first_feasible: */ true,
+    );
+
+    if let Some(first_feasible) = feasible_assignments.into_iter().next() {
+        // Build per_param + substitution from the first feasible cross-product
+        // assignment, in declared order. Each entry pairs `params[i].name`
+        // with the candidate selected at level `i`. The asymmetry contract
+        // mirrors v0.1 BFS: per_param carries Selected entries, substitution
+        // carries (param_name, candidate) pairs — both in declared order.
+        let per_param: Vec<(String, SelectionResult)> = params
+            .iter()
+            .zip(first_feasible.iter())
+            .map(|(p, name)| (p.name.clone(), SelectionResult::Selected(name.clone())))
+            .collect();
+        let substitution: Vec<(String, String)> = params
+            .iter()
+            .zip(first_feasible.iter())
+            .map(|(p, name)| (p.name.clone(), name.clone()))
+            .collect();
+        return MultiParamResolutionOutcome {
+            per_param,
+            substitution,
+        };
+    }
+
+    // No feasible cross-product assignment. Strict-vs-free dispatch and the
+    // NoCandidate / Ambiguous diagnostic encoding land in step-24. Until
+    // then, this branch is unreachable from any current test (step-19 and
+    // step-21 both have at least one feasible leaf by construction).
     unimplemented!(
-        "resolve_auto_type_params_with_backtracking: multi-param DFS body \
-         lands in step-20 of task 2659. Single-param path (params.len() == 1) \
-         and Phase A halt parity (Empty / Overflow on any param) are wired."
+        "resolve_auto_type_params_with_backtracking: zero-feasible cross-product \
+         encoding (NoCandidate diagnostic + per_param shape) lands in step-24 \
+         of task 2659."
     )
+}
+
+// ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
+
+/// True iff the current cross-product leaf assignment is feasible.
+///
+/// Synthesizes a single-element placeholder vec for `filter_feasible_candidates`
+/// so exactly one `constraint_checker.check()` call fires per leaf. With
+/// deferred substitution mechanics (see the Phase B scope cut), the
+/// candidate name does not affect the verdict — it serves only as a stable
+/// label if a future task (e.g. 2663's rich diagnostic format) lifts the
+/// leaf verdict into per-leaf diagnostic structure.
+///
+/// The "single check per leaf" shape is what makes the
+/// [`reify_test_support::MockConstraintChecker::with_call_queue`] FIFO model
+/// useful for backtracking tests: one queue pop drives one leaf verdict.
+///
+/// Inherits Phase B's monotonic-feasible rule (architecture §2.5):
+/// `Indeterminate` counts as feasible — only `Satisfaction::Violated` on the
+/// single-candidate input maps to [`FeasibilityResult::Empty`].
+fn dfs_leaf_feasible(
+    current: &[String],
+    parameterized_template: &TopologyTemplate,
+    constraint_checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+) -> bool {
+    let leaf_label = current.join(",");
+    let placeholder = vec![leaf_label];
+    let feasibility = filter_feasible_candidates(
+        &placeholder,
+        parameterized_template,
+        constraint_checker,
+        functions,
+    );
+    matches!(feasibility, FeasibilityResult::Feasible { .. })
+}
+
+/// Recursive DFS over the cross-product of per-param Phase A candidate vectors.
+///
+/// Visits leaves in declared-order × lexicographic-within-param order: at
+/// `level`, iterates `per_param_candidates[level]` in the order Phase A
+/// produced (alphabetical FQN), pushes the candidate onto `current`,
+/// recurses, then pops. At the leaf (`level == per_param_candidates.len()`),
+/// calls [`dfs_leaf_feasible`]; if feasible, pushes the leaf into
+/// `feasible_assignments`.
+///
+/// Returns `true` when the caller should early-terminate (unwind out of the
+/// recursion immediately). The leaf branch returns `stop_after_first_feasible`
+/// when it records a feasible leaf. With `stop_after_first_feasible = true`
+/// (free-mode in step-20), the first feasible leaf halts the search; with
+/// `stop_after_first_feasible = false` (strict-mode in step-24), the search
+/// continues past the first feasible leaf so the caller can detect ≥2
+/// (Ambiguous).
+fn dfs_search(
+    level: usize,
+    per_param_candidates: &[Vec<String>],
+    current: &mut Vec<String>,
+    feasible_assignments: &mut Vec<Vec<String>>,
+    parameterized_template: &TopologyTemplate,
+    constraint_checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+    stop_after_first_feasible: bool,
+) -> bool {
+    if level == per_param_candidates.len() {
+        if dfs_leaf_feasible(current, parameterized_template, constraint_checker, functions) {
+            feasible_assignments.push(current.clone());
+            return stop_after_first_feasible;
+        }
+        return false;
+    }
+    for candidate in &per_param_candidates[level] {
+        current.push(candidate.clone());
+        let early = dfs_search(
+            level + 1,
+            per_param_candidates,
+            current,
+            feasible_assignments,
+            parameterized_template,
+            constraint_checker,
+            functions,
+            stop_after_first_feasible,
+        );
+        current.pop();
+        if early {
+            return true;
+        }
+    }
+    false
 }
