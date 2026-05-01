@@ -19,3 +19,4 @@ inventory.workspace = true
 # the production library stays free of the eval dependency.
 [dev-dependencies]
 reify-eval.workspace = true
+reify-test-support.workspace = true

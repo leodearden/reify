@@ -194,18 +194,21 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
 
 /// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// When the query vertex is inside the solid, `BRepExtrema_DistShapeShape`
-/// returns the nearest point on the **surface** of the solid — not the query
-/// point itself. For (1.0, 0.0, 0.0), the unique nearest point is the
-/// perpendicular foot on the +X face at (5.0, 0.0, 0.0), distance 4.0. Regression sentinel — pin the
-/// exact returned coordinates within 1e-6 so a future OCCT/cxx upgrade that
-/// changes this behaviour is caught.
+/// `BRepExtrema_DistShapeShape` reports distance 0 and the query point
+/// itself when the point is inside a solid.  The C++ wrapper detects this
+/// (dist < 1e-10) and re-runs extrema against the outer shell, returning a
+/// proper boundary witness instead.  For (1.0, 0.0, 0.0), the unique nearest
+/// boundary point is the perpendicular foot on the +X face at (5.0, 0.0, 0.0),
+/// distance 4.0.  Regression sentinel — pin the exact returned coordinates
+/// within 1e-6 so a future OCCT/cxx upgrade that changes this behaviour is
+/// caught.
 ///
 /// Observed against the OCCT version in use at task 2849.
 #[test]
 fn closest_point_for_offcenter_interior_point() {
     let (kernel, box_id) = box_kernel();
-    // For an interior query, OCCT returns the nearest surface point (5.0, 0.0, 0.0).
+    // For an interior query, the C++ wrapper's shell-search detour returns the
+    // nearest surface point (5.0, 0.0, 0.0) instead of the query vertex itself.
     match kernel.closest_point_on_shape(box_id, 1.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
             assert!(
