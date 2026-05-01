@@ -144,7 +144,7 @@ impl TypeAliasRegistry {
         name: &str,
         span: SourceSpan,
     ) -> bool {
-        if !self.skipped_parametric_prelude_names.contains(name) {
+        if !self.is_skipped_parametric_prelude(name) {
             return false;
         }
         self.emitted_skipped_parametric_prelude_spans
