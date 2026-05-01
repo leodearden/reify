@@ -73,7 +73,13 @@ pub(crate) fn phase_aliases(
         // Skip parametric aliases — CompiledTypeAlias omits type_expr so they
         // cannot be instantiated at use sites. TODO: revisit when the module
         // boundary allows carrying type_expr cross-module.
+        // Mark the name in the registry (guarded by the shadow check) so that
+        // resolve_type_expr_with_aliases can emit a Severity::Info hint at use
+        // sites, pointing the user at the cross-module propagation limitation.
         if !pa.type_params.is_empty() {
+            if !user_alias_names.contains(pa.name.as_str()) {
+                ctx.alias_registry.mark_skipped_parametric_prelude(pa.name.clone());
+            }
             continue;
         }
         // Skip if user declared their own alias with this name (user wins).

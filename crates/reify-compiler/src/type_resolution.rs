@@ -67,6 +67,15 @@ pub(crate) struct TypeAliasRegistry {
     /// mirroring the units pattern (`ctx.compiled_units` only contains user-declared
     /// units, not prelude-seeded ones).
     seeded_names: HashSet<String>,
+    /// Names of parametric prelude aliases that were skipped during seeding
+    /// (because `CompiledTypeAlias` omits `type_expr`, parametric prelude aliases
+    /// cannot be instantiated cross-module).
+    ///
+    /// Purely diagnostic-side metadata — excluded from `iter()`, `into_compiled()`,
+    /// and content-hash computation.  Used by `resolve_type_expr_with_aliases` to
+    /// emit a `Severity::Info` hint at use sites so users know the limitation is a
+    /// cross-module propagation gap rather than a missing declaration.
+    skipped_parametric_prelude_names: HashSet<String>,
 }
 
 impl TypeAliasRegistry {
@@ -75,7 +84,26 @@ impl TypeAliasRegistry {
         TypeAliasRegistry {
             entries: HashMap::new(),
             seeded_names: HashSet::new(),
+            skipped_parametric_prelude_names: HashSet::new(),
         }
+    }
+
+    /// Record that a parametric prelude alias was skipped during seeding.
+    ///
+    /// Called by `phase_aliases` for each prelude entry with non-empty `type_params`
+    /// that is NOT shadowed by a user-module alias declaration.  Idempotent.
+    pub(crate) fn mark_skipped_parametric_prelude(&mut self, name: String) {
+        self.skipped_parametric_prelude_names.insert(name);
+    }
+
+    /// Return `true` if `name` is a parametric prelude alias that was skipped at seed time.
+    ///
+    /// Used by `resolve_type_expr_with_aliases` to decide whether to emit a
+    /// `Severity::Info` hint when the name fails to resolve — signalling the
+    /// cross-module propagation gap rather than leaving the user with only the
+    /// generic "unresolved type" Error.
+    pub(crate) fn is_skipped_parametric_prelude(&self, name: &str) -> bool {
+        self.skipped_parametric_prelude_names.contains(name)
     }
 
     /// Register a type alias entry. Returns `Err(entry)` if the name is already registered.
@@ -836,6 +864,23 @@ pub(crate) fn resolve_type_expr_with_aliases(
             0,
             structure_names,
             trait_names,
+        );
+    }
+
+    // If the name is a parametric prelude alias that was skipped at seed time,
+    // emit a Severity::Info hint so the user sees the cross-module propagation
+    // limitation alongside the "unresolved type" Error that the caller will emit.
+    if alias_registry.is_skipped_parametric_prelude(name) {
+        diagnostics.push(
+            Diagnostic::info(format!(
+                "type '{}' is a parametric prelude alias whose cross-module propagation \
+                 is not yet implemented; declare the alias in this module to use it locally",
+                name
+            ))
+            .with_label(DiagnosticLabel::new(
+                type_expr.span,
+                "parametric prelude alias not propagated",
+            )),
         );
     }
 
