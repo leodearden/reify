@@ -215,14 +215,17 @@ export class SidecarSession {
 
           if (event.type === 'assistant' && event.message?.content) {
             for (const block of event.message.content) {
-              // Detect new turn: if text/thinking length decreased, counters
-              // from the previous turn carry over — reset them so deltas emit correctly.
+              // Detect new turn: if text/thinking length decreased, only the length
+              // counters are reset — they are turn-scoped so deltas emit correctly on
+              // the new turn. Tool-correlation maps (toolNameById, pendingToolUseIds)
+              // are NOT cleared here because pending tool_uses from a prior assistant
+              // turn may still be awaiting a tool_result from the host. Maps are only
+              // cleared at the three lifecycle boundaries: invokeSdk start (line 139-140),
+              // destroy() (line 56-57), and handleClearSession (line 419-420).
               if (block.type === 'text' && block.text) {
                 if (block.text.length < lastTextLen) {
                   lastTextLen = 0;
                   lastThinkingLen = 0;
-                  this.toolNameById.clear();
-                  this.pendingToolUseIds.clear();
                 }
                 if (block.text.length > lastTextLen) {
                   const delta = block.text.slice(lastTextLen);
