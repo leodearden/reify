@@ -1803,3 +1803,126 @@ describe('echoed tool_use_id validation', () => {
     await msgPromise;
   });
 });
+
+describe('FIFO consumption on echoed-id path', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('echoed-id forward drains its id from both maps; subsequent fallback uses correct remaining id', async () => {
+    // Hand-rolled mock subprocess: emits TWO tool_use blocks with same tool_name, leaves stdout open
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    // Attach stdin accumulator BEFORE spawn-triggering handleMessage call
+    const stdinLines: unknown[] = [];
+    let stdinBuf = '';
+    mockProc.stdin.on('data', (chunk: Buffer | string) => {
+      stdinBuf += chunk.toString();
+      let nlIdx: number;
+      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
+        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
+        stdinBuf = stdinBuf.slice(nlIdx + 1);
+      }
+    });
+
+    vi.mocked(spawn).mockImplementation((() => {
+      process.nextTick(() => {
+        // Two tool_use blocks with same name, different ids
+        stdout.push(JSON.stringify({
+          type: 'assistant',
+          message: { content: [
+            { type: 'tool_use', id: 'toolu_1', name: 'reify_x', input: {} },
+            { type: 'tool_use', id: 'toolu_2', name: 'reify_x', input: {} },
+          ] },
+        }) + '\n');
+        // Leave stdout open
+      });
+      return mockProc;
+    }) as any);
+
+    // Wait for BOTH tool_call outbounds before dispatching any tool_result.
+    // Use a counting predicate so both events (fired synchronously from the same
+    // for-loop iteration) are captured without the chaining issue that would arise
+    // from two sequential waitForOutput calls.
+    let toolCallCount = 0;
+    const bothToolCallsWait = waitForOutput(session, (m) => {
+      if (m.type === 'tool_call') toolCallCount++;
+      return toolCallCount >= 2;
+    });
+
+    // Start send_message (don't await)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'send-fifo',
+      text: 'Trigger two tool calls',
+    });
+
+    await bothToolCallsWait;
+
+    // --- Step (a): Dispatch tool_result with ECHOED tool_use_id toolu_1 ---
+    session.handleMessage({
+      type: 'tool_result',
+      id: 'tr-1',
+      tool_name: 'reify_x',
+      result: 'result-1',
+      tool_use_id: 'toolu_1',
+    });
+
+    // Wait for the second stdin line (initial prompt = line 1, this = line 2)
+    await waitForStdinLines(mockProc.stdin, stdinLines, 2);
+
+    // Verify correct tool_use_id was forwarded
+    const line2 = stdinLines[1] as any;
+    expect(line2.message.content[0].tool_use_id).toBe('toolu_1');
+
+    // (c) After echoed forward: toolu_1 must be removed from both maps
+    // FIFO should now be ["toolu_2"] (toolu_1 spliced out)
+    const queueAfterA = (session as any).pendingToolUseIds.get('reify_x');
+    expect(queueAfterA).toEqual(['toolu_2']);
+    // toolNameById should no longer have toolu_1
+    expect((session as any).toolNameById.has('toolu_1')).toBe(false);
+
+    // --- Step (b): Dispatch tool_result WITHOUT tool_use_id (fallback path) ---
+    session.handleMessage({
+      type: 'tool_result',
+      id: 'tr-2',
+      tool_name: 'reify_x',
+      result: 'result-2',
+      // no tool_use_id — fallback to FIFO
+    });
+
+    // Wait for the third stdin line
+    await waitForStdinLines(mockProc.stdin, stdinLines, 3);
+
+    // Verify the fallback used toolu_2 (the remaining id), NOT toolu_1 (already consumed)
+    const line3 = stdinLines[2] as any;
+    expect(line3.message.content[0].tool_use_id).toBe('toolu_2');
+
+    // (c) After fallback forward: both maps should be fully drained
+    const queueAfterB = (session as any).pendingToolUseIds.get('reify_x');
+    expect(queueAfterB === undefined || queueAfterB.length === 0).toBe(true);
+    expect((session as any).toolNameById.has('toolu_2')).toBe(false);
+
+    // Cleanup: close stdout so msgPromise can resolve
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-fifo' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+});
