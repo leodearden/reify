@@ -1229,7 +1229,8 @@ pub(crate) fn resolve_parameterized_builtin_type(
     trait_names: &HashSet<String>,
 ) -> Option<Type> {
     let empty_type_params = HashSet::new();
-    match name {
+    let pre_diag_len = diagnostics.len();
+    let result = match name {
         "List" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
@@ -1337,8 +1338,27 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::matrix(m, n, quantity))
         }
-        _ => None,
-    }
+        // Name did not match any known builtin parametric pattern.
+        // Early-return here so the debug_assert below never fires for the
+        // unmatched case: the assert only needs to hold when a named arm ran.
+        _ => return None,
+    };
+    // Contract: if a named arm matched but inner-arg resolution failed (returns
+    // None via `?`), at least one diagnostic must have been pushed.  Without
+    // this, the call site's `!tmp_diags.is_empty()` guard (task #2841) cannot
+    // distinguish "name matched a builtin but failed" from "name not a builtin
+    // at all", causing it to fall through to a wrong-type default (e.g.
+    // `Scalar` → `Type::length()`).  Any future arm that silently returns None
+    // must push an explicit diagnostic first.
+    debug_assert!(
+        result.is_some() || diagnostics.len() > pre_diag_len,
+        "resolve_parameterized_builtin_type: arm for '{}' (arity {}) returned None \
+         without pushing a diagnostic — add an explicit error before returning None \
+         from any matched arm so the caller can infer match-state from diagnostics",
+        name,
+        type_args.len()
+    );
+    result
 }
 
 /// Pull an unsigned integer out of a type-arg position that requires one

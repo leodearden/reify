@@ -25,6 +25,18 @@ mod common;
 use common::compile_with_stdlib_helper;
 use reify_types::Severity;
 
+/// Shared source for the two Scalar-with-use-site regression tests below.
+///
+/// Both `non_parametric_alias_scalar_unknown_dimension_produces_error` (task
+/// #2766, pinning the inner-arg "NotADim" diagnostic) and
+/// `non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic`
+/// (task #2841, pinning the downstream "unresolved type: Bad" diagnostic)
+/// compile the same source but assert different message fragments.  Factoring
+/// into a const eliminates the duplication and makes a future rename of the
+/// alias or the structure visible in exactly one place.
+const SCALAR_BAD_WITH_USE_SITE: &str =
+    "type Bad = Scalar<NotADim>\nstructure def Use { param v : Bad }";
+
 /// Compile `source` and assert that at least one Error-severity diagnostic is
 /// emitted.  Panics with the full diagnostic list on failure so the test output
 /// makes the regression immediately visible.
@@ -106,10 +118,7 @@ fn non_parametric_alias_list_unknown_inner_produces_error() {
 /// that might be introduced later in the pipeline.
 #[test]
 fn non_parametric_alias_scalar_unknown_dimension_produces_error() {
-    assert_error_containing(
-        "type Bad = Scalar<NotADim>\nstructure def Use { param v : Bad }",
-        "NotADim",
-    );
+    assert_error_containing(SCALAR_BAD_WITH_USE_SITE, "NotADim");
 }
 
 /// A non-parametric alias `type Bad = Vector3<NotADim>` paired with a use-site
@@ -192,8 +201,5 @@ fn non_parametric_alias_scalar_unknown_dimension_leaves_alias_unresolved() {
 /// registry state or the use-site diagnostic path independently.
 #[test]
 fn non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic() {
-    assert_error_containing(
-        "type Bad = Scalar<NotADim>\nstructure def Use { param v : Bad }",
-        "unresolved type: Bad",
-    );
+    assert_error_containing(SCALAR_BAD_WITH_USE_SITE, "unresolved type: Bad");
 }
