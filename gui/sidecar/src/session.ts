@@ -23,6 +23,13 @@ export class SidecarSession {
   private abortController: AbortController | null = null;
   private destroyed = false;
 
+  /** Maps tool_use_id → tool_name for outbound tool_result rendering. */
+  private toolNameById: Map<string, string> = new Map();
+  /** Maps tool_name → FIFO queue of pending tool_use_ids for correlation. */
+  private pendingToolUseIds: Map<string, string[]> = new Map();
+  /** The stdin of the currently in-flight claude CLI process, if any. */
+  private currentStdin: NodeJS.WritableStream | null = null;
+
   /** Called when the session produces an outbound message. */
   onOutput: (msg: OutboundMessage) => void = () => {};
 
@@ -63,6 +70,9 @@ export class SidecarSession {
         break;
       case 'clear_session':
         this.handleClearSession();
+        break;
+      case 'tool_result':
+        this.handleToolResult(msg.tool_name, msg.result, msg.id);
         break;
     }
   }
@@ -149,6 +159,9 @@ export class SidecarSession {
       }) + '\n'
     );
 
+    // Register the in-flight stdin so handleToolResult can write to it.
+    this.currentStdin = proc.stdin ?? null;
+
     // Start timeout timer
     const timeoutMs = this.config.timeoutMs ?? 300_000;
     const timeoutId = setTimeout(() => {
@@ -169,8 +182,6 @@ export class SidecarSession {
     // Track content lengths for delta extraction from partial messages
     let lastTextLen = 0;
     let lastThinkingLen = 0;
-    // Maps tool_use_id → tool_name so tool_result blocks can emit the correct name
-    const toolNameById = new Map<string, string>();
 
     // Parse streaming JSON events from stdout
     try {
@@ -186,7 +197,8 @@ export class SidecarSession {
                 if (block.text.length < lastTextLen) {
                   lastTextLen = 0;
                   lastThinkingLen = 0;
-                  toolNameById.clear();
+                  this.toolNameById.clear();
+                  this.pendingToolUseIds.clear();
                 }
                 if (block.text.length > lastTextLen) {
                   const delta = block.text.slice(lastTextLen);
@@ -197,15 +209,20 @@ export class SidecarSession {
                 if (block.thinking.length < lastThinkingLen) {
                   lastTextLen = 0;
                   lastThinkingLen = 0;
-                  toolNameById.clear();
+                  this.toolNameById.clear();
+                  this.pendingToolUseIds.clear();
                 }
                 if (block.thinking.length > lastThinkingLen) {
                   const delta = block.thinking.slice(lastThinkingLen);
                   lastThinkingLen = block.thinking.length;
                   this.onOutput({ type: 'thinking_delta', id, content: delta });
                 }
-              } else if (block.type === 'tool_use' && block.id && !toolNameById.has(block.id)) {
-                toolNameById.set(block.id, block.name);
+              } else if (block.type === 'tool_use' && block.id && !this.toolNameById.has(block.id)) {
+                this.toolNameById.set(block.id, block.name);
+                // Push to FIFO queue so tool_result inbound can pop the matching id
+                const queue = this.pendingToolUseIds.get(block.name) ?? [];
+                queue.push(block.id);
+                this.pendingToolUseIds.set(block.name, queue);
                 this.onOutput({
                   type: 'tool_call',
                   id,
@@ -216,7 +233,7 @@ export class SidecarSession {
                 this.onOutput({
                   type: 'tool_result',
                   id,
-                  tool_name: toolNameById.get(block.tool_use_id) ?? '',
+                  tool_name: this.toolNameById.get(block.tool_use_id) ?? '',
                   result: block.content,
                 });
               }
@@ -230,6 +247,7 @@ export class SidecarSession {
       }
     } finally {
       clearTimeout(timeoutId);
+      this.currentStdin = null;
     }
 
     // Wait for process exit and check exit code
@@ -250,6 +268,33 @@ export class SidecarSession {
     } else {
       this.onOutput({ type: 'done', id });
     }
+  }
+
+  /**
+   * Forward a tool_result inbound from the host to the in-flight claude CLI's stdin.
+   * Correlates tool_name → tool_use_id using the FIFO pendingToolUseIds queue.
+   * Emits an error outbound if no matching tool_use_id is found.
+   */
+  private handleToolResult(toolName: string, result: unknown, id: string): void {
+    const queue = this.pendingToolUseIds.get(toolName);
+    const toolUseId = queue?.shift();
+    if (toolUseId === undefined || this.currentStdin === null) {
+      this.onOutput({
+        type: 'error',
+        id,
+        message: `no pending tool_use for tool_name=${toolName}`,
+      });
+      return;
+    }
+    this.currentStdin.write(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: toolUseId, content: result }],
+        },
+      }) + '\n'
+    );
   }
 
   /**
