@@ -43,7 +43,11 @@ pub mod topology_attribute_resolver;
 pub mod topology_selectors;
 mod unfold;
 pub mod warm_pool;
-pub use dispatcher::{DispatchPlan, dispatch};
+pub use dispatcher::{
+    DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
+    LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization, long_chain_diagnostic,
+    long_chain_threshold_from_env, long_chain_threshold_from_env_value,
+};
 pub use kernel_registry::{collect_registry, pick_lexmin_kernel, registry};
 pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use realization_cache::RealizationCache;
