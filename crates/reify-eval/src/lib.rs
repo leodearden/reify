@@ -19,6 +19,7 @@ mod engine_eval;
 mod engine_helpers;
 pub mod freshness_walk;
 pub mod gating;
+pub mod kernel_attribute_hook;
 pub mod kernel_registry;
 #[doc(hidden)]
 pub use engine_eval::ASSERT_MSG_PREFIX;
