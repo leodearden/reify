@@ -37,6 +37,38 @@ pub(crate) fn step_output_template_with_body(body: CompiledExpr) -> TopologyTemp
         .build()
 }
 
+/// Private helper that constructs a
+/// `RepresentationWithin(value_ref subject.self : StructureRef(inner_kind),
+/// Scalar{si=tol_si, dim=LENGTH})` user-function call expression.
+///
+/// Used by both [`step_output_template`] and
+/// [`manufacturing_purpose_with_inner_name`] to avoid duplicating the
+/// expression-building pattern. The two callers only differ in how they
+/// wrap the resulting [`CompiledExpr`]:
+/// - `step_output_template` passes it into `step_output_template_with_body`.
+/// - `manufacturing_purpose_with_inner_name` passes it into
+///   `CompiledPurposeBuilder::constraint`.
+fn representation_within_call(inner_kind: &str, tol_si: f64) -> CompiledExpr {
+    let subject_arg = CompiledExpr::value_ref(
+        ValueCellId::new("subject", "self"),
+        Type::StructureRef(inner_kind.to_string()),
+    );
+    let tol_arg = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: tol_si,
+            dimension: DimensionVector::LENGTH,
+        },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    CompiledExpr::user_function_call(
+        "RepresentationWithin".to_string(),
+        vec![subject_arg, tol_arg],
+        Type::Bool,
+    )
+}
+
 /// Build an `STEPOutput`-shaped [`TopologyTemplate`] carrying a single
 /// `RepresentationWithin(<ValueRef typed StructureRef("Structure")>,
 /// <length-literal>)` body constraint at SI `output_tol` metres.
@@ -46,25 +78,7 @@ pub(crate) fn step_output_template_with_body(body: CompiledExpr) -> TopologyTemp
 /// `reify_eval::tolerance_combine::extract_output_tolerance_bound` for the
 /// recognition contract.
 pub fn step_output_template(output_tol: f64) -> TopologyTemplate {
-    let subject_arg = CompiledExpr::value_ref(
-        ValueCellId::new("subject", "self"),
-        Type::StructureRef("Structure".to_string()),
-    );
-    let tol_arg = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: output_tol,
-            dimension: DimensionVector::LENGTH,
-        },
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    let body = CompiledExpr::user_function_call(
-        "RepresentationWithin".to_string(),
-        vec![subject_arg, tol_arg],
-        Type::Bool,
-    );
-    step_output_template_with_body(body)
+    step_output_template_with_body(representation_within_call("Structure", output_tol))
 }
 
 /// Build an `STEPOutput`-shaped [`TopologyTemplate`] whose body constraint is
@@ -116,24 +130,7 @@ pub fn manufacturing_purpose_with_inner_name(
     inner_kind: &str,
     purpose_tol: f64,
 ) -> CompiledPurpose {
-    let subject_arg = CompiledExpr::value_ref(
-        ValueCellId::new("subject", "self"),
-        Type::StructureRef(inner_kind.to_string()),
-    );
-    let tol_arg = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: purpose_tol,
-            dimension: DimensionVector::LENGTH,
-        },
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    let rep_within = CompiledExpr::user_function_call(
-        "RepresentationWithin".to_string(),
-        vec![subject_arg, tol_arg],
-        Type::Bool,
-    );
+    let rep_within = representation_within_call(inner_kind, purpose_tol);
     CompiledPurposeBuilder::new(purpose_name)
         .param("subject", "Structure")
         .constraint("subject", 0, None, rep_within)
