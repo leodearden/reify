@@ -821,6 +821,46 @@ describe('SidecarSession multi-turn streaming', () => {
     expect(deltaContents).toContain('Hi');
     expect(deltaContents).toContain(' there!');
   });
+
+  it('text_delta counters reset on new message.id even when turn-2 text is longer than turn-1', async () => {
+    // Turn 1: short text 'Hi' (len 2) + tool_use, under message.id='msg_t1'
+    // Turn 2: longer text (len 46) under message.id='msg_t2'
+    //
+    // Bug (shrink heuristic only): turn-2 text is LONGER than turn-1 accumulated length,
+    // so `block.text.length < lastTextLen` never fires. lastTextLen stays at 2 from turn-1.
+    // Turn-2 first delta = text.slice(2) = 'llo world this is a much longer turn-2 reply'
+    // Fix (id-based reset): message.id change from 'msg_t1' → 'msg_t2' resets lastTextLen=0.
+    // Turn-2 first delta = full turn-2 text.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // Turn 1: short text + tool_use under msg_t1
+      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'text', text: 'Hi' }] } },
+      { type: 'assistant', message: { id: 'msg_t1', content: [
+        { type: 'text', text: 'Hi' },
+        { type: 'tool_use', id: 'toolu_longer1', name: 'reify_get_source', input: { file: 'f.ri' } },
+      ] } },
+      // Turn 2: longer text under msg_t2 — no length shrink, only id changes
+      { type: 'assistant', message: { id: 'msg_t2', content: [
+        { type: 'text', text: 'Hello world this is a much longer turn-2 reply' },
+      ] } },
+      { type: 'result', session_id: 'sess-longer-text' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-longer-text', text: 'Test longer turn-2' });
+
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    const deltaContents = textDeltas.map((o) => (o as any).content);
+
+    // Turn 1 delta present
+    expect(deltaContents).toContain('Hi');
+
+    // Turn 2 first delta must be the FULL text — not a slice from offset 2
+    // Broken: 'llo world this is a much longer turn-2 reply'
+    // Fixed:  'Hello world this is a much longer turn-2 reply'
+    expect(deltaContents).toContain('Hello world this is a much longer turn-2 reply');
+  });
 });
 
 describe('SidecarSession reset-boundary tool correlation preservation', () => {
