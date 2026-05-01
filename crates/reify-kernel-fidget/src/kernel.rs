@@ -4,7 +4,7 @@
 //!
 //! `crates/reify-kernel-occt/src/stubs.rs` — `OcctKernel` stub pattern
 //! (`_private: ()` field, `new()` constructor, all-error trait impl).
-//! `crates/reify-test-support/src/mocks.rs:889` — `FailingMockGeometryKernel`.
+//! `crates/reify-test-support/src/mocks.rs` — `FailingMockGeometryKernel`.
 //!
 //! # v0.2 scope
 //!
@@ -75,7 +75,7 @@ impl GeometryKernel for FidgetKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{GeometryError, GeometryHandleId};
+    use reify_types::{ExportError, GeometryError, GeometryHandleId, QueryError, TessError};
 
     /// Compile-time supertraits pin: `fn assert_send_sync` forces a monomorphism
     /// bound check for `T: Send + Sync`. Calling it with `FidgetKernel` will
@@ -133,19 +133,41 @@ mod tests {
         }
     }
 
-    /// `query`, `export`, and `tessellate` must all return `Err(...)` for any
-    /// input, locking the all-error stub contract.
+    /// `query`, `export`, and `tessellate` must all return `Err(...)` with the
+    /// specific error variant and a message mentioning "Fidget", locking the
+    /// all-error stub contract symmetrically with `fidget_kernel_returns_descriptive_error_for_sdf_boolean`.
     #[test]
     fn fidget_kernel_query_export_tessellate_all_error() {
         let kernel = FidgetKernel::new();
 
-        let query_result = kernel.query(&GeometryQuery::Volume(GeometryHandleId(1)));
-        assert!(query_result.is_err(), "query must return Err(...)");
+        match kernel.query(&GeometryQuery::Volume(GeometryHandleId(1))) {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains("Fidget"),
+                    "query error message must mention 'Fidget', got: {msg:?}",
+                );
+            }
+            other => panic!("expected Err(QueryError::QueryFailed(_)), got {other:?}"),
+        }
 
-        let export_result = kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut vec![]);
-        assert!(export_result.is_err(), "export must return Err(...)");
+        match kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut vec![]) {
+            Err(ExportError::FormatError(msg)) => {
+                assert!(
+                    msg.contains("Fidget"),
+                    "export error message must mention 'Fidget', got: {msg:?}",
+                );
+            }
+            other => panic!("expected Err(ExportError::FormatError(_)), got {other:?}"),
+        }
 
-        let tess_result = kernel.tessellate(GeometryHandleId(1), 0.1);
-        assert!(tess_result.is_err(), "tessellate must return Err(...)");
+        match kernel.tessellate(GeometryHandleId(1), 0.1) {
+            Err(TessError::TessellationFailed(msg)) => {
+                assert!(
+                    msg.contains("Fidget"),
+                    "tessellate error message must mention 'Fidget', got: {msg:?}",
+                );
+            }
+            other => panic!("expected Err(TessError::TessellationFailed(_)), got {other:?}"),
+        }
     }
 }

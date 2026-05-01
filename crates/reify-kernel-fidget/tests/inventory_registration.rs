@@ -72,6 +72,14 @@ fn fidget_capability_descriptor_lists_sdf_booleans() {
 /// `crates/reify-kernel-manifold/tests/inventory_registration.rs:69-112`.
 #[test]
 fn fidget_kernel_registration_appears_in_inventory_iter() {
+    // Linker anchor: referencing `fidget_capability_descriptor` here (before
+    // the `inventory::iter` call below) mirrors the pattern in
+    // `dispatcher_integration.rs` — an observable reference to a symbol in
+    // `register.rs` forces the linker to keep the entire compilation unit,
+    // including the `inventory::submit!` constructor.
+    let direct_fn: fn() -> CapabilityDescriptor =
+        reify_kernel_fidget::register::fidget_capability_descriptor;
+
     let fidget_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
         .into_iter()
         .filter(|reg| reg.name == "fidget")
@@ -89,8 +97,6 @@ fn fidget_kernel_registration_appears_in_inventory_iter() {
     // `fidget_capability_descriptor` function the rest of the crate uses".
     // `std::ptr::fn_addr_eq` is the explicit, intent-revealing comparison.
     let inventory_fn = fidget_entries[0].descriptor;
-    let direct_fn: fn() -> CapabilityDescriptor =
-        reify_kernel_fidget::register::fidget_capability_descriptor;
     assert!(
         std::ptr::fn_addr_eq(inventory_fn, direct_fn),
         "the inventory-submitted descriptor must be the same function pointer as \

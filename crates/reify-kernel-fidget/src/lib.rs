@@ -28,7 +28,7 @@
 //! `crates/reify-kernel-manifold/` — canonical template for this adapter.
 //! `crates/reify-kernel-occt/src/register.rs` — OCCT's registration pattern.
 //! `crates/reify-kernel-occt/src/stubs.rs` — stub kernel pattern.
-//! `crates/reify-test-support/src/mocks.rs:889` — `FailingMockGeometryKernel`.
+//! `crates/reify-test-support/src/mocks.rs` — `FailingMockGeometryKernel`.
 
 pub mod kernel;
 pub mod register;
