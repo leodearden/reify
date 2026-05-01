@@ -37,7 +37,7 @@
 pub(crate) fn format_tolerance(si_metres: f64) -> String {
     debug_assert!(
         si_metres.is_finite() && si_metres >= 0.0,
-        "format_tolerance invariant violated: si_metres={si_metres}",
+        "tolerance must be finite and non-negative: si_metres={si_metres}",
     );
     if !si_metres.is_finite() || si_metres < 0.0 {
         return format!("{si_metres} m");
@@ -108,40 +108,62 @@ mod tests {
         assert_eq!(format_tolerance(1.5), "1.5m");
     }
 
-    // Debug-build NaN/+Inf/negative panic tests. Mirror the
+    // Debug-build NaN/±Inf/negative panic tests. Mirror the
     // `is_promise_insufficient_panics_in_debug_on_*` precedent in
-    // `tolerance_promise.rs:487-540`. The `expected` string is the static
-    // prefix of the canonical message — substring matching avoids depending
-    // on the dynamic interpolated `si_metres` value.
+    // `tolerance_promise.rs:487-540`. The `expected` substring
+    // `"tolerance must be finite and non-negative"` is the canonical prefix
+    // shared across the four `tolerance_*` modules so authoring errors
+    // surface with one voice (see `tolerance_promise.rs:484-485`).
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "format_tolerance invariant violated")]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
     fn format_tolerance_panics_in_debug_on_negative() {
         format_tolerance(-1e-5);
     }
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "format_tolerance invariant violated")]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
     fn format_tolerance_panics_in_debug_on_nan() {
         format_tolerance(f64::NAN);
     }
 
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "format_tolerance invariant violated")]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
     fn format_tolerance_panics_in_debug_on_positive_infinity() {
         format_tolerance(f64::INFINITY);
     }
 
-    // Release-mode regression guard: pins that the fallback for non-finite /
-    // negative inputs is space-separated (`"-0.00001 m"`, not `"-0.00001m"`).
-    // This test is excluded from default `cargo test` (debug mode) but runs
-    // under `cargo test --release`, exercising the production code path.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tolerance must be finite and non-negative")]
+    fn format_tolerance_panics_in_debug_on_negative_infinity() {
+        format_tolerance(f64::NEG_INFINITY);
+    }
+
+    // Release-mode regression guards: pin that the fallback for non-finite /
+    // negative inputs is space-separated (e.g. `"-0.00001 m"`, `"NaN m"`,
+    // `"inf m"`) — the space avoids ambiguous strings like `"NaNm"` or `"infm"`
+    // that the module docstring motivates. These tests are excluded from default
+    // `cargo test` (debug mode) but run under `cargo test --release`, exercising
+    // the production code path.
     #[cfg(not(debug_assertions))]
     #[test]
     fn format_tolerance_negative_release_fallback_is_space_separated() {
         assert_eq!(format_tolerance(-1e-5), "-0.00001 m");
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn format_tolerance_nan_release_fallback_is_space_separated() {
+        assert_eq!(format_tolerance(f64::NAN), "NaN m");
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn format_tolerance_positive_infinity_release_fallback_is_space_separated() {
+        assert_eq!(format_tolerance(f64::INFINITY), "inf m");
     }
 }
