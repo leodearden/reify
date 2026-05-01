@@ -1789,4 +1789,50 @@ mod tests {
             "diagnostic.candidates does not exactly match NAMED_DIMENSIONS + Dimensionless"
         );
     }
+
+    #[test]
+    fn should_emit_skipped_parametric_prelude_info_dedups_per_span() {
+        let mut reg = TypeAliasRegistry::new();
+        reg.mark_skipped_parametric_prelude("Vec".to_string());
+
+        let span_a = reify_types::SourceSpan::new(10, 20);
+        let span_b = reify_types::SourceSpan::new(30, 40);
+
+        // First call with span_a → true (newly inserted).
+        assert!(
+            reg.should_emit_skipped_parametric_prelude_info("Vec", span_a),
+            "first call on span_a should return true"
+        );
+
+        // Second call with the same span_a → false (already emitted on this span).
+        assert!(
+            !reg.should_emit_skipped_parametric_prelude_info("Vec", span_a),
+            "second call on span_a should return false (per-span dedup)"
+        );
+
+        // Different span_b → true (dedup is per-span, not per-name).
+        assert!(
+            reg.should_emit_skipped_parametric_prelude_info("Vec", span_b),
+            "first call on span_b should return true even though 'Vec' was already emitted on span_a"
+        );
+
+        // Name not in skipped set → false regardless of span.
+        assert!(
+            !reg.should_emit_skipped_parametric_prelude_info("NotSkipped", span_a),
+            "non-skipped name should return false"
+        );
+
+        // Non-skipped names must NOT pollute the emitted-spans set: a fresh span
+        // (50..60) passed for "NotSkipped" must not prevent "Vec" from emitting
+        // on that same span.
+        let span_c = reify_types::SourceSpan::new(50, 60);
+        assert!(
+            !reg.should_emit_skipped_parametric_prelude_info("NotSkipped", span_c),
+            "non-skipped name on span_c returns false"
+        );
+        assert!(
+            reg.should_emit_skipped_parametric_prelude_info("Vec", span_c),
+            "Vec on span_c should return true — non-skipped name must not pollute emitted-spans set"
+        );
+    }
 }
