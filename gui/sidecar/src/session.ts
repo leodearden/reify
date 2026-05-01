@@ -324,7 +324,25 @@ export class SidecarSession {
     let toolUseId: string | undefined;
     if (inboundToolUseId !== undefined) {
       // Preferred path: host echoed back the tool_use_id from the tool_call outbound.
-      // Direct id-based lookup — no FIFO consumed, correct for out-of-order results.
+      // Validate it before accepting: the id must be registered AND match the tool_name.
+      if (!this.toolNameById.has(inboundToolUseId)) {
+        this.onOutput({
+          type: 'error',
+          id,
+          message: `unknown tool_use_id=${inboundToolUseId} for tool_name=${toolName}`,
+        });
+        return;
+      }
+      const registeredName = this.toolNameById.get(inboundToolUseId);
+      if (registeredName !== toolName) {
+        this.onOutput({
+          type: 'error',
+          id,
+          message: `tool_use_id=${inboundToolUseId} does not match tool_name=${toolName} (registered as ${registeredName})`,
+        });
+        return;
+      }
+      // Validation passed: use the echoed id directly — no FIFO consumed, correct for out-of-order results.
       toolUseId = inboundToolUseId;
     } else {
       // Fallback path: FIFO queue by tool_name.
