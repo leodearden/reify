@@ -153,16 +153,31 @@ pub fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> CompiledPu
     manufacturing_purpose_with_inner_name(purpose_name, "Structure", purpose_tol)
 }
 
+/// Core builder for a `MyDesign` template with one `thickness : Real` param.
+/// Callers supply a slice of `(sub_name, structure_name)` pairs; each pair is
+/// appended as a sub-component with empty args in declaration order.
+///
+/// `my_design_template()` delegates here with an empty slice. Mirrors the
+/// `step_output_template_with_body` / `step_output_template` delegation
+/// precedent used elsewhere in this file.
+pub fn my_design_template_with_subs(subs: &[(&str, &str)]) -> TopologyTemplate {
+    let mut builder = TopologyTemplateBuilder::new("MyDesign")
+        .param("MyDesign", "thickness", Type::Real, None);
+    for (name, kind) in subs {
+        builder = builder.sub_component(*name, *kind, Vec::new());
+    }
+    builder.build()
+}
+
 /// Build a minimal `MyDesign` template with one `thickness : Real` param
 /// and no constraints.
 ///
 /// Carries no `RepresentationWithin` of its own — the purpose's tolerance
 /// scope is what binds to `MyDesign` when a manufacturing purpose is
-/// activated against it.
+/// activated against it. For variants with sub-components see
+/// [`my_design_template_with_subs`].
 pub fn my_design_template() -> TopologyTemplate {
-    TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
-        .build()
+    my_design_template_with_subs(&[])
 }
 
 #[cfg(test)]
