@@ -23,7 +23,7 @@
 use reify_compiler::auto_type_param::*;
 use reify_types::{ConstraintNodeId, DiagnosticCode, Severity, SourceSpan};
 
-// ─── step-1: NoCandidate arm — Empty feasibility → error + NoCandidate ────
+// ─── NoCandidate arm — Empty feasibility → error + NoCandidate ────
 
 /// When `FeasibilityResult::Empty` is supplied, `select_candidate` returns
 /// [`SelectionResult::NoCandidate`] and pushes one error diagnostic carrying
@@ -65,7 +65,7 @@ fn select_returns_no_candidate_and_emits_error_when_feasibility_is_empty() {
     );
 }
 
-// ─── step-3: single-feasible — Selected, no diagnostic ───────────────────
+// ─── single-feasible — Selected, no diagnostic ───────────────────
 
 /// When `FeasibilityResult::Feasible` carries exactly one accepted candidate,
 /// `select_candidate` returns [`SelectionResult::Selected(name)`] and emits
@@ -99,7 +99,7 @@ fn select_returns_selected_for_single_feasible_candidate_with_no_diagnostic() {
     );
 }
 
-// ─── step-5: ≥2 feasible under strict — Ambiguous + Error ────────────────
+// ─── ≥2 feasible under strict — Ambiguous + Error ────────────────
 
 /// When two or more candidates are feasible and `free=false`,
 /// `select_candidate` returns [`SelectionResult::Ambiguous(...)`] carrying
@@ -147,7 +147,7 @@ fn select_returns_ambiguous_for_two_strict_feasible_candidates() {
     assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
 }
 
-// ─── step-11: Ambiguous message — lex-first explicit-substitution hint ──
+// ─── Ambiguous message — lex-first explicit-substitution hint ──
 
 /// The AMBIGUOUS message must surface the lex-first feasible candidate as
 /// a suggested explicit substitution, not just list it among the
@@ -193,7 +193,7 @@ fn ambiguous_diagnostic_message_includes_lex_first_explicit_substitution_suggest
     );
 }
 
-// ─── step-13: NonUnique message — names chosen lex-first candidate ──────
+// ─── NonUnique message — names chosen lex-first candidate ──────
 
 /// The NON_UNIQUE warning must surface the lex-first candidate that was
 /// selected, not just list it among the structured `candidates` field.
@@ -240,7 +240,7 @@ fn non_unique_diagnostic_message_names_chosen_lex_first_candidate() {
     );
 }
 
-// ─── step-15: composite-bound rendering parity across all three arms ─────
+// ─── composite-bound rendering parity across all three arms ─────
 
 /// All three Phase C diagnostics must render composite bounds with
 /// `bounds.join(" + ")`, mirroring Phase A's overflow diagnostic
@@ -319,7 +319,7 @@ fn composite_bound_diagnostics_join_bounds_with_plus_separator() {
     }
 }
 
-// ─── step-9: NoCandidate diagnostic shape (full contract) ─────────────────
+// ─── NoCandidate diagnostic shape (full contract) ─────────────────
 
 /// Pins the NO_CANDIDATE diagnostic's full contract: rejected FQNs land in
 /// the structured `candidates` field (in input order, alphabetical because
@@ -390,7 +390,7 @@ fn no_candidate_diagnostic_carries_rejected_fqns_in_candidates_field_and_label_a
     );
 }
 
-// ─── step-7: ≥2 feasible under free — Selected(lex_first) + Warning ──────
+// ─── ≥2 feasible under free — Selected(lex_first) + Warning ──────
 
 /// When two or more candidates are feasible and `free=true`,
 /// `select_candidate` returns [`SelectionResult::Selected(lex_first)`] — the
@@ -419,7 +419,7 @@ fn select_returns_lex_first_for_two_free_feasible_candidates_and_emits_warning()
     assert_eq!(
         result,
         SelectionResult::Selected("GraphiteSeal".to_string()),
-        "≥2 feasible under auto(free) must Selected(lex_first)"
+        "≥2 feasible under auto(free) must return Selected(lex_first)"
     );
     assert_eq!(diagnostics.len(), 1, "exactly one non-unique diagnostic");
     let d = &diagnostics[0];
@@ -441,7 +441,7 @@ fn select_returns_lex_first_for_two_free_feasible_candidates_and_emits_warning()
     assert_eq!(d.labels[0].span, use_site_span, "label span = use-site span");
 }
 
-// ─── step-17: single-feasible is independent of `free` flag ──────────────
+// ─── single-feasible is independent of `free` flag ──────────────
 
 /// Pins the design decision that a single-feasible candidate is selected
 /// directly without consulting the `free` flag and without emitting any
@@ -506,7 +506,7 @@ fn single_feasible_candidate_returns_selected_regardless_of_free_flag() {
     }
 }
 
-// ─── step-19: Empty.rejected must be non-empty (debug_assert!) ───────────
+// ─── Empty.rejected must be non-empty (debug_assert!) ───────────
 
 /// Passing `FeasibilityResult::Empty { rejected: vec![] }` to
 /// `select_candidate` is a caller bug per the invariant established in
