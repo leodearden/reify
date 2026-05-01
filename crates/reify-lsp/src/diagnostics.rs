@@ -2091,6 +2091,91 @@ structure S {
         );
     }
 
+    /// LSP regression lock (task 2371, step-9): a specialization scope with three
+    /// sibling forbidden declarations (param, port, bare sub) surfaces exactly THREE
+    /// distinct LSP ERROR diagnostics with code `"SpecializationForbiddenDecl"` —
+    /// one per violation — each with a distinguishable non-zero range.
+    ///
+    /// Mirrors the compiler-side test
+    /// `validate_module_emits_one_diagnostic_per_sibling_forbidden_decl_in_same_body`
+    /// and locks the per-violation 1-LSP-diagnostic contract end-to-end: the LSP
+    /// wire form must NOT collapse sibling violations.
+    #[test]
+    fn lsp_compute_diagnostics_surfaces_one_specialization_forbidden_decl_per_sibling_violation() {
+        use fixtures::*;
+        use lsp_types::NumberOrString;
+
+        let body = vec![
+            make_param("x", param_span()),
+            make_port("p", port_span()),
+            make_sub_bare("child", sub_span()),
+        ];
+        let parsed =
+            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
+
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let source = source_stub();
+        let uri = test_uri();
+
+        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
+            .diagnostics
+            .iter()
+            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
+            .collect();
+
+        let forbidden: Vec<_> = lsp_diags
+            .iter()
+            .filter(|d| {
+                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
+            })
+            .collect();
+
+        assert_eq!(
+            forbidden.len(),
+            3,
+            "expected exactly 3 SpecializationForbiddenDecl diagnostics (one per sibling), \
+             got {}: {:#?}",
+            forbidden.len(),
+            lsp_diags
+        );
+
+        // Each violation kind and name must appear.
+        let has_param_x = forbidden.iter().any(|d| d.message.contains("'param'") && d.message.contains("'x'"));
+        let has_port_p  = forbidden.iter().any(|d| d.message.contains("'port'")  && d.message.contains("'p'"));
+        let has_sub_child = forbidden.iter().any(|d| d.message.contains("'sub'") && d.message.contains("'child'"));
+        assert!(has_param_x,   "expected a diagnostic for 'param' 'x';   got: {:#?}", forbidden);
+        assert!(has_port_p,    "expected a diagnostic for 'port'  'p';    got: {:#?}", forbidden);
+        assert!(has_sub_child, "expected a diagnostic for 'sub'   'child'; got: {:#?}", forbidden);
+
+        // Every diagnostic must be ERROR severity with source "reify".
+        for diag in &forbidden {
+            assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
+            assert_eq!(diag.source.as_deref(), Some("reify"));
+        }
+
+        // All three spans must be distinguishable (non-collapsed).
+        let starts: Vec<_> = forbidden.iter().map(|d| (d.range.start.line, d.range.start.character)).collect();
+        assert_eq!(
+            starts.len(),
+            3,
+            "starts vector must have 3 entries: {starts:?}"
+        );
+        // Each start must be non-zero (not collapsed to (0,0)).
+        for &(line, ch) in &starts {
+            assert!(
+                line > 0 || ch > 0,
+                "span start ({line},{ch}) must not be (0,0) — span was not carried through"
+            );
+        }
+        // All three start positions must be distinct.
+        let unique_starts: std::collections::HashSet<_> = starts.iter().collect();
+        assert_eq!(
+            unique_starts.len(),
+            3,
+            "all three violation spans must be distinguishable; got: {starts:?}"
+        );
+    }
+
     /// (d) **Separation regression** — constraint-violation source must NOT produce
     /// any `computation-failed` diagnostics; the existing `constraint <id> violated`
     /// diagnostics must still appear.
