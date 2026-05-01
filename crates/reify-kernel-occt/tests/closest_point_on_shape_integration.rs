@@ -7,7 +7,7 @@
 //! - External point along +X axis → nearest face at x=5.
 //! - External point along +Y axis → nearest face at y=5.
 //! - Point already on the +X face → distance to returned witness ≤ 1e-6.
-//! - Interior point at origin → witness coincides with query point, dist=0.
+//! - Interior point at origin → witness on box surface at distance ≈ 5.0.
 //! - Unknown handle → `QueryError::InvalidHandle`.
 
 #![cfg(has_occt)]
@@ -117,26 +117,32 @@ fn closest_point_when_point_lies_on_face() {
 
 /// Query point (0.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// For an interior query, `BRepExtrema_DistShapeShape` returns distance 0
-/// and `PointOnShape1(1)` is the query point itself — OCCT does not search
-/// for a boundary witness when the minimum distance is already zero. This
-/// test locks in that observed contract: the call must succeed without error
-/// and the returned witness must coincide with the query point at distance
-/// 0. (If a boundary witness is ever needed for interior queries, that is
-/// a behaviour change requiring an explicit `BRepClass3d_SolidClassifier`
-/// detour or a surface-only extrema; see lib.rs docstring.)
+/// `BRepExtrema_DistShapeShape` reports distance 0 and the query point
+/// itself when the point is inside a solid.  The C++ wrapper detects this
+/// (dist < 1e-10) and re-runs extrema against the outer shell, returning a
+/// proper boundary witness instead.  This test locks in that contract: the
+/// call must succeed without error and the returned witness must lie on the
+/// box surface at distance ≈ 5.0 from the origin (the nearest face distance
+/// for a box centred at origin with half-width 5).
 #[test]
 fn closest_point_for_interior_point_at_origin() {
     let (kernel, box_id) = box_kernel();
     match kernel.closest_point_on_shape(box_id, 0.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
-            // For an interior point, OCCT returns the query point itself
-            // with distance 0 — not a boundary witness.
+            // Witness must land on the nearest face (distance 5.0 from origin).
             let dist = (x * x + y * y + z * z).sqrt();
             assert!(
-                dist < 1e-6,
-                "expected witness coincident with query point (dist≈0), \
+                (dist - 5.0).abs() < 1e-6,
+                "expected witness at distance ≈5.0 from origin (nearest box face), \
                  got ({x}, {y}, {z}), dist={dist}"
+            );
+            // At least one coordinate ≈ ±5.0 confirms the witness is on a face.
+            let on_face = (x.abs() - 5.0).abs() < 1e-6
+                || (y.abs() - 5.0).abs() < 1e-6
+                || (z.abs() - 5.0).abs() < 1e-6;
+            assert!(
+                on_face,
+                "expected one coord ≈ ±5.0 (witness on a box face), got ({x}, {y}, {z})"
             );
         }
         Err(e) => panic!("expected Ok for interior query at origin, got Err({e:?})"),
