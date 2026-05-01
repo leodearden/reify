@@ -282,12 +282,18 @@ assert "subtask dotted dep with missing subtask error mentions '200.99' or 'orph
     bash -c "python3 '$VALIDATOR' --check-subtasks '$SUBTASK_DOTTED_DEP_BAD_SUBTASK' 2>&1 | grep -qE '200\\.99|orphan'"
 
 # -- _validate_subtasks API contract: subtasks_by_parent kwarg is required ------
-# Calling _validate_subtasks without the subtasks_by_parent keyword arg must
-# raise TypeError.  On a version with the default=None foot-gun the call
-# silently succeeds and the try-block exits 1 (test FAILS); once the default
-# is removed the TypeError is raised and the driver exits 0 (test PASSES).
+# NOTE: this is an intentional SIGNATURE-PINNING test.  It asserts that Python
+# raises TypeError when _validate_subtasks is called without the
+# subtasks_by_parent keyword argument — a structural guard against accidentally
+# restoring a default=None that would silently swallow dotted-form deps.
+#
+# Trade-off: the test references the parameter name "subtasks_by_parent"
+# explicitly.  If the parameter is ever renamed, this test must be updated
+# alongside all call sites.  The business-logic invariant (dotted deps are
+# correctly resolved or rejected) is already covered by the dotted-dep
+# fixture tests above; this test only guards the API shape.
 echo ""
-echo "--- Test: _validate_subtasks API contract ---"
+echo "--- Test: _validate_subtasks API contract (signature-pinning) ---"
 
 KWARG_REQUIRED="$TMPDIR_FIXTURES/kwarg_required.py"
 cat >"$KWARG_REQUIRED" <<EOF
