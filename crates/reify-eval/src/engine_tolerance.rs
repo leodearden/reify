@@ -24,20 +24,47 @@ impl Engine {
     }
 
     /// Compare the imported-geometry tolerance promise against the demand
-    /// for a downstream output occurrence; return
-    /// `Some(Severity::Warning)` diagnostic when the demand is strictly
-    /// tighter than the promise, otherwise `None`.
+    /// for a downstream output occurrence; return a `Some(Severity::Warning)`
+    /// diagnostic when a mismatch is detected, otherwise `None`.
     ///
-    /// Thin chain over
-    /// [`Engine::imported_tolerance_promise`] +
-    /// [`Engine::demanded_tolerance_for_output`] +
-    /// [`crate::tolerance_promise::is_promise_insufficient`] +
-    /// [`crate::tolerance_promise::imported_tolerance_promise_diagnostic`]
-    /// — see [`crate::tolerance_promise`] for the strict-`<` rationale, the
-    /// truth table (pinned by `tests/tolerance_import_promise.rs`), and the
-    /// PRD cross-references. Auto-emission from `build()` / `build_snapshot()`
-    /// is deferred to the dispatcher (sibling task 2649); this method is
-    /// the public query single-entry-point.
+    /// ## Dispatch order (task 2833 — mutual exclusivity)
+    ///
+    /// Two branches fire in priority order:
+    ///
+    /// 1. **Zero-promise lint** ([`DiagnosticCode::InputTolerancePromiseIsZero`]):
+    ///    fires when `promise == 0.0 && demanded > 0.0`. Surfaces the
+    ///    placeholder-default footgun where `param tolerance : Length = 0m`
+    ///    silently disables the insufficient-promise warning. Builder:
+    ///    [`crate::tolerance_promise::input_tolerance_promise_is_zero_diagnostic`].
+    ///
+    /// 2. **Insufficient-promise lint** ([`DiagnosticCode::ImportedTolerancePromiseInsufficient`]):
+    ///    fires when `demanded < promise` (strict-`<`). Builder:
+    ///    [`crate::tolerance_promise::imported_tolerance_promise_diagnostic`].
+    ///
+    /// The two branches are **mutually exclusive**: when `promise == 0.0`,
+    /// `is_promise_insufficient(demanded, 0.0)` evaluates `demanded < 0.0`,
+    /// which is false for every `demanded >= 0.0`. The strict-`<` branch
+    /// therefore never fires when promise is zero, so a single `Option<Diagnostic>`
+    /// return remains correct — no caller needs updating.
+    ///
+    /// Placing the zero-promise check BEFORE the strict-`<` check ensures it
+    /// fires on the `(0.0, positive)` row. Placing it after would still be
+    /// functionally equivalent (due to mutual exclusivity) but would obscure
+    /// dispatch intent.
+    ///
+    /// ## Degenerate case
+    ///
+    /// When `promise == 0.0 && demanded == 0.0` (both zero), neither branch
+    /// fires — `demanded > 0.0` is false, so the zero-promise guard rejects
+    /// the case, and `demanded < 0.0` is false, so the strict-`<` guard also
+    /// rejects. Returns `None`. This matches the canonical `(0.0, 0.0) -> false`
+    /// row of `is_promise_insufficient`'s truth table ("both zero → sufficient").
+    ///
+    /// See [`crate::tolerance_promise`] for the strict-`<` rationale, the full
+    /// truth table (pinned by `tests/tolerance_import_promise.rs`), and PRD
+    /// cross-references. Auto-emission from `build()` / `build_snapshot()` is
+    /// deferred to the dispatcher (sibling task 2649); this method is the public
+    /// query single-entry-point.
     pub fn check_imported_tolerance_promise(
         &self,
         input_template_name: &str,
@@ -47,6 +74,18 @@ impl Engine {
         let promise = self.imported_tolerance_promise(input_template_name)?;
         let demanded =
             self.demanded_tolerance_for_output(output_template_name, subject_entity_ref)?;
+        // Zero-promise lint (task 2833, option-b continuation): checked BEFORE the
+        // strict-`<` insufficient branch. The `f64 == 0.0` comparison is intentional —
+        // the upstream extractor's gate already rejects NaN / ±Inf / negative values,
+        // so any `f64` reaching this point is finite and >= 0.0; equality is well-defined.
+        if promise == 0.0 && demanded > 0.0 {
+            return Some(
+                crate::tolerance_promise::input_tolerance_promise_is_zero_diagnostic(
+                    input_template_name,
+                    demanded,
+                ),
+            );
+        }
         if crate::tolerance_promise::is_promise_insufficient(demanded, promise) {
             Some(crate::tolerance_promise::imported_tolerance_promise_diagnostic(
                 input_template_name,
