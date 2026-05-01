@@ -52,8 +52,10 @@ export interface ToolCall {
   type: 'tool_call';
   id: string;
   /** The Claude CLI tool_use_id. The host should echo this back as InboundToolResult.tool_use_id
-   * to enable id-based correlation and avoid the FIFO-by-tool_name in-order-only contract. */
-  tool_use_id: string;
+   * to enable id-based correlation and avoid the FIFO-by-tool_name in-order-only contract.
+   * Optional: the Rust Tauri bridge does not yet forward this field, so GUI consumers
+   * may not receive it. */
+  tool_use_id?: string;
   tool_name: string;
   tool_input: Record<string, unknown>;
 }
