@@ -192,17 +192,22 @@ pub fn is_promise_insufficient(demanded: f64, promise: f64) -> bool {
 /// - `input_template_name` — the `Input` occurrence template name (e.g.
 ///   `"STEPInput"`); appears verbatim in the diagnostic message so authors
 ///   can locate the import site.
-/// - `demanded` — the demanded tolerance in SI metres (the tighter side).
+/// - `demanded` — the demanded tolerance in SI metres (the tighter side);
+///   rendered via [`crate::tolerance_format::format_tolerance`] (µm/mm/m by
+///   magnitude).
 /// - `promise` — the imported-geometry tolerance promise in SI metres
-///   (the looser side; `promise > demanded`).
+///   (the looser side; `promise > demanded`); rendered via
+///   [`crate::tolerance_format::format_tolerance`].
 pub fn imported_tolerance_promise_diagnostic(
     input_template_name: &str,
     demanded: f64,
     promise: f64,
 ) -> Diagnostic {
+    let promise_str = crate::tolerance_format::format_tolerance(promise);
+    let demanded_str = crate::tolerance_format::format_tolerance(demanded);
     let message = format!(
-        "imported geometry '{input_template_name}' tolerance promise {promise}m is \
-         insufficient for downstream demand {demanded}m; proceeding with \
+        "imported geometry '{input_template_name}' tolerance promise {promise_str} is \
+         insufficient for downstream demand {demanded_str}; proceeding with \
          as-imported realization"
     );
     Diagnostic::warning(message).with_code(DiagnosticCode::ImportedTolerancePromiseInsufficient)
