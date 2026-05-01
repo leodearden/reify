@@ -317,6 +317,22 @@ mod tests {
              ({:?}): collect_registry's iteration logic is not being exercised",
             test_synthetic_kernel::NAME,
         );
+
+        // Descriptor-content pin: assert the `.supports` vec is identical
+        // across two independent collect_registry() calls. This catches any
+        // future regression where the descriptor closure returns a different
+        // vec on each invocation — e.g. nondeterministic ordering from a
+        // HashSet, or a stateful closure that mutates on read. The assertion
+        // passes today because descriptor functions are pure and return
+        // identical vecs; it becomes a guard against future nondeterminism.
+        assert_eq!(
+            first.get(test_synthetic_kernel::NAME).map(|d| &d.supports),
+            second.get(test_synthetic_kernel::NAME).map(|d| &d.supports),
+            "descriptor .supports vec for {:?} must be identical across two \
+             collect_registry() calls — divergence indicates a nondeterministic \
+             or stateful descriptor closure (e.g. HashSet ordering, mutable state)",
+            test_synthetic_kernel::NAME,
+        );
     }
 
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
