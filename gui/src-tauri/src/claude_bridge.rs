@@ -142,16 +142,15 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
                             ref tool_name,
                             ..
                         } = msg
+                            && tool_use_id.is_empty()
                         {
-                            if tool_use_id.is_empty() {
-                                tracing::warn!(
-                                    message_id = %id,
-                                    tool_name = %tool_name,
-                                    "sidecar tool_call missing tool_use_id; \
-                                     likely dev-mode version skew between sidecar and Rust binary \
-                                     — id-correlation will fall back to FIFO-by-tool_name"
-                                );
-                            }
+                            tracing::warn!(
+                                message_id = %id,
+                                tool_name = %tool_name,
+                                "sidecar tool_call missing tool_use_id; \
+                                 likely dev-mode version skew between sidecar and Rust binary \
+                                 — id-correlation will fall back to FIFO-by-tool_name"
+                            );
                         }
                         on_message(msg);
                     }
