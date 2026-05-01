@@ -1505,6 +1505,61 @@ mod tests {
         );
     }
 
+    // ── loop_closures field type-guard (Part B) ───────────────────────────
+
+    /// A Mechanism Map with a present-but-wrong-typed `loop_closures` field
+    /// must cause `body()` to return `Value::Undef`, matching the type-guard
+    /// contract of the sibling fields `bodies`, `joint_parents`, and `next_id`
+    /// (mechanism.rs:435-446).
+    ///
+    /// This test hand-constructs a structurally valid Mechanism Map except that
+    /// `loop_closures` is bound to `Value::Int(0)` instead of a `Value::List`.
+    /// The v0.2 builder (`make_empty_mechanism`) always emits a `Value::List`,
+    /// so this shape only arises from external/test callers or a corrupted Map.
+    ///
+    /// Before Part B the wildcard `_ => Vec::new()` branch in `append_body`
+    /// silently coerced the wrong-typed field to an empty Vec, causing `body()`
+    /// to proceed and return a Mechanism Map with one body instead of Undef.
+    /// This test regression-proofs against that silent-coercion footgun being
+    /// re-introduced.
+    #[test]
+    fn append_body_wrong_typed_loop_closures_returns_undef() {
+        // Build a valid joint using the standard test helpers.
+        let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let solid = Value::String("solid".to_string());
+
+        // Hand-construct a Mechanism Map with canonical shape but wrong-typed
+        // loop_closures field.
+        let mut map = BTreeMap::new();
+        map.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        map.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![]),
+        );
+        map.insert(
+            Value::String("joint_parents".to_string()),
+            Value::Map(BTreeMap::new()),
+        );
+        map.insert(Value::String("next_id".to_string()), Value::Int(0));
+        // Wrong type: Int instead of List.
+        map.insert(
+            Value::String("loop_closures".to_string()),
+            Value::Int(0),
+        );
+        let mech = Value::Map(map);
+
+        let result = eval_builtin("body", &[mech, solid, j]);
+        assert!(
+            result.is_undef(),
+            "body() on a Mechanism Map with wrong-typed loop_closures must return \
+             Value::Undef (present-but-wrong-type is a corrupt mechanism), got {:?}",
+            result
+        );
+    }
+
     /// 5-arg body() with a non-Transform pose argument returns Undef.
     #[test]
     fn body_five_args_non_transform_pose_returns_undef() {
