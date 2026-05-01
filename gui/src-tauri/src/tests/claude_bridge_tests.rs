@@ -1201,6 +1201,94 @@ async fn read_sidecar_output_skips_invalid_json_lines() {
     assert_eq!(msgs[0], OutboundMessage::Ready);
 }
 
+// --- read_sidecar_output warn tests (task-2819) ---
+
+/// A stale sidecar that omits `tool_use_id` from a ToolCall event must still
+/// deliver the message to `on_message` (not silently drop it), AND must emit
+/// exactly one WARN so operators know to rebuild the sidecar.
+#[tokio::test(flavor = "current_thread")]
+async fn read_sidecar_output_warns_when_tool_call_missing_tool_use_id() {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::BufReader;
+
+    let (_guard, warn_counter) = reify_test_support::warn_counting_guard();
+
+    // Stale-sidecar payload: ToolCall without tool_use_id.
+    let data = b"{\"type\":\"tool_call\",\"id\":\"msg-1\",\"tool_name\":\"reify_get\",\"tool_input\":{}}\n";
+    let reader = BufReader::new(&data[..]);
+    let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
+    let received_clone = Arc::clone(&received);
+
+    read_sidecar_output(
+        reader,
+        move |msg| {
+            received_clone.lock().unwrap().push(msg);
+        },
+        || {},
+    )
+    .await;
+
+    // (a) Message was delivered (not silently dropped).
+    let msgs = received.lock().unwrap();
+    assert_eq!(msgs.len(), 1, "stale ToolCall must be delivered to on_message");
+    assert!(
+        matches!(
+            &msgs[0],
+            OutboundMessage::ToolCall { tool_use_id, .. } if tool_use_id.is_empty()
+        ),
+        "expected ToolCall with empty tool_use_id, got {:?}",
+        msgs[0]
+    );
+
+    // (b) Exactly one WARN must be emitted for the version-skew.
+    reify_test_support::assert_warn_count(
+        &warn_counter,
+        1,
+        "missing tool_use_id must emit exactly one WARN",
+    );
+}
+
+/// Parse failures (e.g. invalid JSON) must emit a WARN and NOT deliver a
+/// message to `on_message`.
+#[tokio::test(flavor = "current_thread")]
+async fn read_sidecar_output_warns_on_parse_failure() {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::BufReader;
+
+    let (_guard, warn_counter) = reify_test_support::warn_counting_guard();
+
+    // Same invalid-JSON input as read_sidecar_output_skips_invalid_json_lines
+    // (for consistency in the invalid-input space).
+    let data = b"not-json\n";
+    let reader = BufReader::new(&data[..]);
+    let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
+    let received_clone = Arc::clone(&received);
+
+    read_sidecar_output(
+        reader,
+        move |msg| {
+            received_clone.lock().unwrap().push(msg);
+        },
+        || {},
+    )
+    .await;
+
+    // (a) No message delivered (existing drop-on-parse-failure behavior preserved).
+    let msgs = received.lock().unwrap();
+    assert_eq!(
+        msgs.len(),
+        0,
+        "invalid JSON must not be delivered to on_message"
+    );
+
+    // (b) Exactly one WARN must be emitted so operators can diagnose the failure.
+    reify_test_support::assert_warn_count(
+        &warn_counter,
+        1,
+        "parse failure must emit exactly one WARN",
+    );
+}
+
 // --- outbound_to_event tests (step-7) ---
 
 #[test]
