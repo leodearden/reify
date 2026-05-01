@@ -745,9 +745,10 @@ double min_clearance(const OcctShape& a, const OcctShape& b);
 /// query vertex — uninteresting). This ordering mirrors `query_distance` and
 /// `min_clearance` for call-site consistency.
 ///
-/// When the query point lies on or inside the shape, `BRepExtrema_DistShapeShape`
-/// reports distance 0 and `PointOnShape1` returns the query point itself —
-/// not a boundary projection. No special-casing is applied.
+/// When the distance is < 1e-10 (interior or on-boundary query) the wrapper
+/// detects the degenerate `PointOnShape1 == query` case and re-runs the
+/// extrema against the outer `TopAbs_SHELL`, so the returned witness is on
+/// the shape's boundary rather than coinciding with the query point.
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
 
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
