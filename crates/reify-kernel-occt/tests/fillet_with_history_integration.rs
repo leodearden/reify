@@ -53,7 +53,7 @@ fn fillet_with_history_reports_face_records() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
 
     let box_handle = kernel
         .execute(&ten_mm_box_op())
