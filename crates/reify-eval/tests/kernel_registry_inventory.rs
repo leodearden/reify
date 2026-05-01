@@ -21,10 +21,26 @@ use reify_types::{ExportFormat, ModulePath, Operation, ReprKind};
 ///
 /// Skipped in stub mode: with `cfg(has_occt)` off, the OCCT submit
 /// doesn't fire, so the registry is correctly empty and there's nothing
-/// to assert.
+/// to assert. The skip is announced via `eprintln!` so stub-mode CI
+/// produces an observable signal — silent no-op early-returns would let a
+/// regression that drops the OCCT submit (e.g. an accidental cfg gate
+/// widening) hide in green logs on dev machines where OCCT *is* available
+/// while CI silently skips.
 #[test]
 fn collect_registry_finds_occt_entry_with_brep_primitive_support() {
+    // Always-runnable shape pin (independent of OCCT availability): the
+    // function returns the documented type and is callable without panic.
+    // This catches regressions to `collect_registry`'s signature or its
+    // inner inventory walk even in stub-mode CI builds, where the OCCT-
+    // specific assertions below are skipped.
+    let _shape_pin: std::collections::BTreeMap<String, reify_types::CapabilityDescriptor> =
+        reify_eval::collect_registry();
+
     if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping collect_registry_finds_occt_entry_with_brep_primitive_support: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
         return;
     }
 
@@ -60,6 +76,10 @@ fn collect_registry_finds_occt_entry_with_brep_primitive_support() {
 #[test]
 fn engine_with_registered_kernel_picks_occt_for_brep_box_build() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping engine_with_registered_kernel_picks_occt_for_brep_box_build: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
         return;
     }
 

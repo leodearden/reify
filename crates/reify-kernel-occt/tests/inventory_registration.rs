@@ -16,6 +16,10 @@ use reify_types::{KernelRegistration, Operation, ReprKind};
 #[test]
 fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping occt_capability_descriptor_lists_brep_primitives_and_booleans: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
         return;
     }
 
@@ -92,6 +96,10 @@ fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
 #[test]
 fn occt_kernel_registration_appears_in_inventory_iter() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping occt_kernel_registration_appears_in_inventory_iter: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
         return;
     }
 
@@ -107,13 +115,37 @@ fn occt_kernel_registration_appears_in_inventory_iter() {
         occt_entries.len(),
     );
 
-    let inventory_descriptor = (occt_entries[0].descriptor)();
-    let direct_descriptor = reify_kernel_occt::register::occt_capability_descriptor();
+    // Pin via function-pointer identity rather than Vec equality: the
+    // intent is "the inventory submission's `descriptor` field points at
+    // the same `occt_capability_descriptor` function the rest of the crate
+    // uses" — Vec equality would also pass that check today, but is
+    // order-sensitive and would spuriously break if the descriptor's
+    // literal entries get reordered while still calling the same fn.
+    // `std::ptr::fn_addr_eq` is the explicit, intent-revealing comparison.
+    let inventory_fn = occt_entries[0].descriptor;
+    let direct_fn: fn() -> reify_types::CapabilityDescriptor =
+        reify_kernel_occt::register::occt_capability_descriptor;
+    assert!(
+        std::ptr::fn_addr_eq(inventory_fn, direct_fn),
+        "the inventory-submitted descriptor must be the same function pointer as \
+         `register::occt_capability_descriptor` — a divergence indicates two \
+         parallel descriptor sources",
+    );
 
+    // Also pin the materialised result as a HashSet (set equality —
+    // order-insensitive) as a defence-in-depth check for the case where
+    // the fn pointers diverge but happen to produce equivalent content.
+    let inventory_supports: std::collections::HashSet<(Operation, ReprKind)> =
+        (occt_entries[0].descriptor)().supports.into_iter().collect();
+    let direct_supports: std::collections::HashSet<(Operation, ReprKind)> =
+        reify_kernel_occt::register::occt_capability_descriptor()
+            .supports
+            .into_iter()
+            .collect();
     assert_eq!(
-        inventory_descriptor.supports, direct_descriptor.supports,
-        "the inventory-submitted descriptor's supports table must match the \
-         one returned by `register::occt_capability_descriptor()` directly — \
-         a divergence means there are two parallel descriptor sources",
+        inventory_supports, direct_supports,
+        "the inventory descriptor's supports SET must equal the direct call's — \
+         this is order-insensitive on purpose so future literal reordering of \
+         occt_capability_descriptor's vec doesn't trip a false-positive",
     );
 }
