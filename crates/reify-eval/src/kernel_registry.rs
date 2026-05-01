@@ -486,12 +486,17 @@ mod tests {
     /// The test asserts:
     /// 1. Both synthetics are visible to `registry()` (proving the inventory
     ///    walk captured all submissions, not just the first).
-    /// 2. `pick_lexmin_kernel()` returns `__a_kernel`, not `__b_kernel` —
-    ///    the lex-smaller name wins.
+    /// 2. `pick_lexmin_kernel()` returns a name `<= NAME_A` AND `< NAME_B` —
+    ///    bounded to rule out unordered-map / last-wins selection without
+    ///    coupling to the absence of any future lex-smaller registration.
     ///
     /// This is NOT tautological: a broken implementation that returns
     /// `registry().values().next()` from a `HashMap` (unordered), or one
-    /// that returns the last-inserted entry, would fail assertion (2).
+    /// that returns the last-inserted entry, would fail assertion (2) (which
+    /// requires the result to be strictly less than NAME_B = `"__b_kernel"`).
+    /// A future `cfg(test)` synthetic submitting a name lex-smaller than
+    /// NAME_A (e.g. `"__0_kernel"`) would still satisfy `<= NAME_A` without
+    /// falsely breaking this contract test.
     #[test]
     fn pick_lexmin_kernel_returns_lex_smaller_of_known_pair() {
         // (1) Both named synthetics must be visible — proves the inventory walk
@@ -509,19 +514,30 @@ mod tests {
             test_synthetic_kernel::NAME_B,
         );
 
-        // (2) pick_lexmin_kernel must return the lex-smaller of the two
-        //     synthetics. NAME_A = "__a_kernel" < NAME_B = "__b_kernel" in
-        //     ASCII order, so __a_kernel must win.
+        // (2) pick_lexmin_kernel must return a name bounded by [lex-min, NAME_B).
+        //     NAME_A = "__a_kernel" < NAME_B = "__b_kernel" in ASCII order.
+        //     The two-assertion pair rules out HashMap-/last-wins implementations
+        //     without coupling to the absence of any future lex-smaller synthetic.
         let lexmin = pick_lexmin_kernel().expect(
             "registry must contain at least the cfg(test) synthetic kernels — \
              see test_synthetic_kernel module",
         );
-        assert_eq!(
+        assert!(
+            lexmin.name <= test_synthetic_kernel::NAME_A,
+            "pick_lexmin_kernel must return a name <= NAME_A ({:?}), but got {:?}; \
+             a future cfg(test) synthetic with a lex-smaller name (e.g. __0_kernel) \
+             would still satisfy this bound — it remains meaningful as new synthetics \
+             are added",
+            test_synthetic_kernel::NAME_A,
             lexmin.name,
-            test_synthetic_kernel::NAME_A,
-            "pick_lexmin_kernel must return the lex-smallest registered name \
-             ({:?}), but got {:?}",
-            test_synthetic_kernel::NAME_A,
+        );
+        assert!(
+            lexmin.name < test_synthetic_kernel::NAME_B,
+            "pick_lexmin_kernel must return a name strictly < NAME_B ({:?}), but got {:?}; \
+             this rules out HashMap-/last-wins implementations: any value at NAME_B-or-later \
+             fails here. Combined with the previous assertion, the lex-min ordering \
+             contract is pinned without hard-coupling to NAME_A specifically",
+            test_synthetic_kernel::NAME_B,
             lexmin.name,
         );
     }
