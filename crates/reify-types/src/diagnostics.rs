@@ -663,6 +663,31 @@ pub enum DiagnosticCode {
     /// (snapshot evaluator integration). Reserved now for typed-code matching
     /// at the moment the diagnostic is first emitted.
     KinematicUnderconstrained,
+    /// Origin: `crates/reify-eval/src/tolerance_promise.rs::imported_tolerance_promise_diagnostic`
+    /// (task 2651 — PRD `docs/prds/v0_2/per-purpose-tolerance.md`
+    /// §"Resolved design decisions" → "Imported geometry promise"; arch §10.4 / §14.5).
+    ///
+    /// Canonical message form:
+    /// `"imported geometry '<input_template>' tolerance promise <promise_si>m is insufficient for downstream demand <demanded_si>m; proceeding with as-imported realization"`.
+    ///
+    /// Emitted as a `Severity::Warning` when the tolerance promise carried by an
+    /// `Input` occurrence template (via its `param tolerance : Length = …`
+    /// declaration) is strictly looser than the demanded tolerance computed by
+    /// `Engine::demanded_tolerance_for_output` (output-bound + active-purpose
+    /// combined under "tighter satisfies looser" min-fold). The runtime cannot
+    /// verify the imported representation error for arbitrary STEP/STL input,
+    /// so the contract is a *promise*: the runtime emits a warning (not an
+    /// error) and proceeds with the as-imported realization. Users opt into
+    /// explicit re-meshing/healing through a stdlib helper rather than the
+    /// runtime silently doing it.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_IMPORTED_TOLERANCE_INSUFFICIENT`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Mirrors the
+    /// advisory-warning posture established by `FieldOutOfBounds`,
+    /// `TraitUserAsserted`, and `TopologyTagStale`: downstream tooling that
+    /// wants to surface these as harder failures can filter by code at the
+    /// consumer side.
+    ImportedTolerancePromiseInsufficient,
 }
 
 /// A diagnostic message with location and optional labels.
