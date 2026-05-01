@@ -27,55 +27,70 @@
 //! - `(BooleanDifference, Mesh)`
 //! - `(BooleanIntersection, Mesh)`
 //!
-//! # Unconditional `inventory::submit!` decision
+//! # Feature-gated `inventory::submit!` decision (`stub_register`)
 //!
-//! OCCT gates its `inventory::submit!` on `cfg(has_occt)` because OCCT has
-//! both a stub and a real impl and the gate selects between them. Manifold
-//! has only a stub in this v0.2 task, so a `cfg(has_manifold)` gate would
-//! never fire — the registration would be dead code, defeating the point of
-//! "first integration". Submitting unconditionally keeps the cross-crate
-//! integration test (step-7) clean and lets the dispatcher exercise lex-min
-//! tie-break logic with a real two-kernel registry. A follow-up task
-//! introducing real Manifold FFI can add `cfg(has_manifold)` gating to
-//! switch the factory without changing the registration shape.
+//! The `inventory::submit!` and its helper `manifold_factory()` are gated on
+//! `#[cfg(any(test, feature = "stub_register"))]` for production safety:
+//!
+//! **Production builds** (no `stub_register` feature) — the submit is a
+//! no-op; Manifold contributes no entry to
+//! `reify_eval::kernel_registry::registry()`. This prevents the
+//! lexicographic tie-break rule (`"manifold" < "occt"`) from silently
+//! routing geometry ops through an unimplemented stub kernel when no
+//! operator has explicitly requested Manifold.
+//!
+//! **Test builds** (`cfg(test)` for in-crate `cargo test --lib`, or
+//! `feature = "stub_register"` for cross-crate integration test binaries
+//! in `tests/`) — the submit fires so the registry exercised by the
+//! integration tests includes the Manifold entry. The `stub_register`
+//! feature is activated for test binaries via a self-dev-dep in
+//! `[dev-dependencies]` (see `Cargo.toml`) because integration test
+//! binaries are SEPARATE compilation units that do not inherit `cfg(test)`
+//! from the parent crate.
+//!
+//! When real Manifold C++ FFI ships, rename `stub_register` to
+//! `has_manifold` (matching OCCT's `has_occt` build.rs gate) and replace
+//! the self-dev-dep with the build.rs detection mechanism, making the gate
+//! structurally identical to OCCT's.
 //!
 //! # Design template
 //!
 //! `crates/reify-kernel-occt/src/register.rs` — same `KERNEL_NAME` const,
 //! `*_capability_descriptor()` factory, `*_factory()`, and `inventory::submit!`
 //! pattern. Only the kernel name string, supports table contents, and the
-//! dropped `cfg` gate differ.
+//! cfg-key (`has_occt` vs `stub_register`) differ.
 
 use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// Factory invoked by the engine once at startup, returning the stub
 /// [`ManifoldKernel`](crate::kernel::ManifoldKernel).
 ///
-/// Real Manifold C++ FFI is deferred to a follow-up task; this stub factory
-/// ensures the `inventory::submit!` below compiles and the registration
-/// materialises in `reify_eval::kernel_registry::registry()`. When the
-/// follow-up task adds real FFI, this function can switch behind
-/// `cfg(has_manifold)` without changing the registration shape.
+/// Gated on `cfg(any(test, feature = "stub_register"))` together with the
+/// `inventory::submit!` below — the factory is only called from the submit,
+/// so leaving it ungated in non-feature builds would emit a dead-code
+/// warning. When real Manifold C++ FFI ships and the gate becomes
+/// `cfg(has_manifold)`, this factory switches to the real implementation
+/// without changing the registration shape.
+#[cfg(any(test, feature = "stub_register"))]
 fn manifold_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::kernel::ManifoldKernel::new())
 }
 
-// Unconditional submit — no `cfg(has_manifold)` gate (see design decisions in
-// the module doc). Manifold has only a stub in this v0.2 task, so a
-// `cfg(has_manifold)` gate would never fire and the registration would be dead
-// code. Submitting unconditionally keeps the cross-crate integration test
-// (step-7) clean and lets the dispatcher exercise lex-min tie-break logic with
-// a real two-kernel registry.
+// Feature-gated submit — see "Feature-gated `inventory::submit!` decision"
+// in the module doc.  `cfg(test)` covers in-crate `cargo test --lib`;
+// `feature = "stub_register"` covers integration test binaries in `tests/`
+// (separate compilation units that don't see the parent crate's `cfg(test)`).
 //
-// TODO(has_manifold): When real Manifold C++ FFI lands (follow-up task), flip
-// this submit to `#[cfg(any(has_manifold, test))]` so the stub registers only
-// when Manifold is actually available or within this crate's own tests. Without
-// that gate, any binary that accidentally adds `reify-kernel-manifold` as a
-// non-dev dependency will unconditionally register the stub kernel — which will
-// surface `"manifold" < "occt"` lex-min selection and return descriptive errors
-// for every geometry op. The cross-crate isolation in the test layout (manifold
-// dev-deps on reify-eval, not the reverse) blocks that today, but the gate is
-// the structural enforcement that must land alongside the real FFI.
+// Both items are gated together: `manifold_factory` is only called from this
+// submit, so a dead-code warning would fire if the factory were ungated while
+// the submit were absent in non-feature builds.
+//
+// TODO(has_manifold): When real Manifold C++ FFI lands, rename `stub_register`
+// to `has_manifold` (matching OCCT's `has_occt` build.rs gate) and replace
+// the self-dev-dep in `Cargo.toml` with the build.rs detection mechanism.
+// The gate shape — `#[cfg(any(test, has_manifold))]` on both items — stays
+// identical to what it is today.
+#[cfg(any(test, feature = "stub_register"))]
 inventory::submit! {
     KernelRegistration {
         name: MANIFOLD_KERNEL_NAME,
