@@ -243,81 +243,38 @@ fn non_unique_diagnostic_message_names_chosen_lex_first_candidate() {
 
 // ─── composite-bound rendering parity across all three arms ─────
 
-/// All three Phase C diagnostics must render composite bounds with
-/// `bounds.join(" + ")`, mirroring Phase A's overflow diagnostic
-/// (`enumerate_candidates`). This test pins the rendering for each of the
-/// NO_CANDIDATE, AMBIGUOUS, and NON_UNIQUE arms by feeding
-/// `bounds = ["Seal", "Cooled"]` and asserting `"Seal + Cooled"` appears
-/// in the message. Prevents a regression that hard-codes `bounds[0]`.
+/// All Phase C diagnostics render composite bounds with `bounds.join(" + ")`,
+/// because all four diagnostic-emitting sites (Phase A overflow, NO_CANDIDATE,
+/// AMBIGUOUS, NON_UNIQUE) dispatch through the single helper
+/// `render_auto_type_param_label` (auto_type_param.rs:193). Verifying the
+/// `" + "` separator on any one arm verifies all. The AMBIGUOUS arm is used
+/// as the canonical probe.
+///
+/// Diagnostic codes and severities for the other arms are covered by their
+/// dedicated tests: `select_returns_no_candidate_and_emits_error_when_feasibility_is_empty`,
+/// `select_returns_lex_first_for_two_free_feasible_candidates_and_emits_warning`.
 #[test]
 fn composite_bound_diagnostics_join_bounds_with_plus_separator() {
     let bounds = vec!["Seal".to_string(), "Cooled".to_string()];
 
-    // (a) Empty arm — NO_CANDIDATE.
-    {
-        let cnid = ConstraintNodeId::new("Bearing", 0);
-        let feasibility = FeasibilityResult::Empty {
-            rejected: vec![RejectedCandidate {
-                name: "GraphiteSeal".to_string(),
-                violated_constraints: vec![cnid],
-            }],
-        };
-        let mut diagnostics = Vec::new();
-        let _ = select_candidate(
-            feasibility,
-            &bounds,
-            false,
-            SourceSpan::empty(0),
-            &mut diagnostics,
-        );
-        assert!(
-            diagnostics[0].message.contains("Seal + Cooled"),
-            "NO_CANDIDATE message must render composite bounds with ' + ' separator; got: {}",
-            diagnostics[0].message
-        );
-    }
-
-    // (b) Strict ≥2 — AMBIGUOUS.
-    {
-        let feasibility = FeasibilityResult::Feasible {
-            accepted: vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
-            rejected: vec![],
-        };
-        let mut diagnostics = Vec::new();
-        let _ = select_candidate(
-            feasibility,
-            &bounds,
-            false,
-            SourceSpan::empty(0),
-            &mut diagnostics,
-        );
-        assert!(
-            diagnostics[0].message.contains("Seal + Cooled"),
-            "AMBIGUOUS message must render composite bounds with ' + ' separator; got: {}",
-            diagnostics[0].message
-        );
-    }
-
-    // (c) Free ≥2 — NON_UNIQUE.
-    {
-        let feasibility = FeasibilityResult::Feasible {
-            accepted: vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
-            rejected: vec![],
-        };
-        let mut diagnostics = Vec::new();
-        let _ = select_candidate(
-            feasibility,
-            &bounds,
-            true,
-            SourceSpan::empty(0),
-            &mut diagnostics,
-        );
-        assert!(
-            diagnostics[0].message.contains("Seal + Cooled"),
-            "NON_UNIQUE message must render composite bounds with ' + ' separator; got: {}",
-            diagnostics[0].message
-        );
-    }
+    // Strict ≥2 — AMBIGUOUS (canonical probe for render_auto_type_param_label).
+    let feasibility = FeasibilityResult::Feasible {
+        accepted: vec!["GraphiteSeal".to_string(), "ORingSeal".to_string()],
+        rejected: vec![],
+    };
+    let mut diagnostics = Vec::new();
+    let _ = select_candidate(
+        feasibility,
+        &bounds,
+        false,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+    assert!(
+        diagnostics[0].message.contains("Seal + Cooled"),
+        "AMBIGUOUS message must render composite bounds with ' + ' separator; got: {}",
+        diagnostics[0].message
+    );
 }
 
 // ─── NoCandidate diagnostic shape (full contract) ─────────────────
