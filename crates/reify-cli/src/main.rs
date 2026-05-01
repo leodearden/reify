@@ -4,6 +4,14 @@ use std::sync::Arc;
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::TestStatus;
 
+// Ensure reify_kernel_occt's object files are included in the link so its
+// cfg(has_occt)-gated `inventory::submit!` fires and populates the global
+// kernel registry used by `Engine::with_registered_kernel`.  An `extern crate`
+// reference is more durable than a const read (which rustc may inline without
+// emitting a symbol reference into the rlib); the linker passes the rlib
+// unconditionally when the crate appears in `extern crate` position.
+extern crate reify_kernel_occt as _;
+
 mod mcp_context;
 use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
 
@@ -220,12 +228,6 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
-    // Explicit reference to reify_kernel_occt: ensures the crate's object files
-    // are included in the link so its `cfg(has_occt)`-gated `inventory::submit!`
-    // fires and registers the OCCT kernel with the global registry.  Without this
-    // reference the linker may dead-strip the crate entirely (no other symbol in
-    // cmd_build now references it after the SingleKernelHolder migration).
-    let _kernel_available = reify_kernel_occt::OCCT_AVAILABLE;
     let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
     let result = engine.build(&compiled, format);
 

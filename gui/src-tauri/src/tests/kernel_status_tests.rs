@@ -49,21 +49,25 @@ mod gui_tests {
         }
     }
 
-    /// Regression pin: `reify_eval::kernel_registry::registry()` visible from
-    /// inside the GUI's link closure contains the `"occt"` entry when OCCT
-    /// is available (feature = "gui" and cfg(has_occt)).
+    /// Pins the registry-population invariant: `reify_eval::kernel_registry::registry()`
+    /// contains the `"occt"` entry when OCCT is available (feature = "gui" and
+    /// cfg(has_occt) is set).
     ///
-    /// Protects against accidental future removal of `reify-kernel-occt` as the
-    /// GUI's optional dep (or mis-gating the gui feature), which would silently
-    /// empty the registry and leave `EngineSession::with_registered_kernel`
-    /// constructing a no-kernel engine.
+    /// Note: this test runs inside a cargo unit-test binary, not the `reify-gui`
+    /// Tauri binary itself.  Both share the same dep-tree (reify-kernel-occt is an
+    /// `optional = true` dep gated on feature = "gui"), so both see the same
+    /// registry contents.  The neighboring test
+    /// `engine_session_with_registered_kernel_picks_occt_for_primitive_box_build`
+    /// is the authoritative behavioral pin for the production boot path; this test
+    /// pins only that `registry()` itself returns the expected map when OCCT is
+    /// linked.
     ///
     /// Skipped via `eprintln!` in stub mode so CI logs make the skip visible.
     #[test]
-    fn gui_link_closure_registry_contains_occt() {
+    fn gui_registry_population_contains_occt() {
         if !OCCT_AVAILABLE {
             eprintln!(
-                "skipping gui_link_closure_registry_contains_occt: \
+                "skipping gui_registry_population_contains_occt: \
                  OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
             );
             return;
@@ -71,14 +75,10 @@ mod gui_tests {
         let reg = reify_eval::kernel_registry::registry();
         assert!(
             reg.contains_key("occt"),
-            "registry() in the GUI's link closure must contain \"occt\" when \
-             reify-kernel-occt is the optional dep and cfg(has_occt) is set; \
+            "registry() must contain \"occt\" when reify-kernel-occt is the \
+             optional dep and cfg(has_occt) is set; \
              got keys: {:?}",
             reg.keys().collect::<Vec<_>>()
-        );
-        assert!(
-            reg.len() >= 1,
-            "registry() must have at least one entry when OCCT is available"
         );
     }
 

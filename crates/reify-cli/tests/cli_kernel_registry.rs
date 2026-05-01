@@ -1,16 +1,15 @@
 mod common;
 
-/// Regression pin: `reify_eval::kernel_registry::registry()` visible from inside
-/// the CLI's link closure contains the `"occt"` entry when OCCT is available.
+/// Pins the registry-population invariant: `reify_eval::kernel_registry::registry()`
+/// contains the `"occt"` entry when OCCT is available (cfg(has_occt) is set).
 ///
-/// This pin protects against accidental future removal of `reify-kernel-occt`
-/// as a direct CLI dependency (which would cause the inventory::submit! to stop
-/// firing in the binary's static section and the registry to go empty).
-///
-/// The assertion passes both before and after the boot-path migration (step-4),
-/// because the `[dependencies]` section in `crates/reify-cli/Cargo.toml` already
-/// includes `reify-kernel-occt` — the registry is populated regardless of whether
-/// the binary uses the planner-based or the inventory-based boot path.
+/// Note: this test runs inside a cargo integration-test binary, not the `reify`
+/// CLI binary itself.  Both share the same dep-tree (reify-kernel-occt is a
+/// `[dependencies]` entry in reify-cli/Cargo.toml), so both see the same
+/// registry contents.  The behavioral pin below
+/// (`cli_build_with_primitive_box_produces_step_output`) is the authoritative
+/// regression guard for the production binary's boot path; this test pins only
+/// that `registry()` itself returns the expected map when OCCT is linked.
 ///
 /// Skipped via `eprintln!` in stub mode (OCCT_AVAILABLE = false) so CI logs
 /// make the skip visible rather than producing a silent no-op.
@@ -26,14 +25,10 @@ fn cli_link_closure_registry_contains_occt() {
     let reg = reify_eval::kernel_registry::registry();
     assert!(
         reg.contains_key("occt"),
-        "registry() in the CLI's link closure must contain \"occt\" when \
-         reify-kernel-occt is a [dependencies] entry and cfg(has_occt) is set; \
+        "registry() must contain \"occt\" when reify-kernel-occt is a \
+         [dependencies] entry and cfg(has_occt) is set; \
          got keys: {:?}",
         reg.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        reg.len() >= 1,
-        "registry() must have at least one entry when OCCT is available"
     );
 }
 
