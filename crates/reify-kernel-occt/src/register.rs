@@ -35,6 +35,9 @@
 
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
+#[cfg(has_occt)]
+use reify_types::{GeometryKernel, KernelRegistration};
+
 /// Stable identifier for the OCCT kernel in the v0.2 multi-kernel registry.
 ///
 /// Used as both the `KernelRegistration::name` and the BTreeMap key in the
@@ -103,4 +106,32 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (CurveNurbsCurve, ReprKind::BRep),
     ];
     CapabilityDescriptor { supports }
+}
+
+/// Factory invoked by `Engine::with_registered_kernel` once at startup.
+///
+/// Spawns the dedicated OCCT actor thread via [`crate::OcctKernelHandle::spawn`]
+/// — preserving the single-threaded actor pattern that ensures OCCT's
+/// process-global state stays on one OS thread (per CLAUDE.md and the
+/// `gui/src-tauri/src/kernel_status.rs` "register only when available"
+/// pattern this submit mirrors).
+#[cfg(has_occt)]
+fn occt_factory() -> Box<dyn GeometryKernel> {
+    Box::new(crate::OcctKernelHandle::spawn())
+}
+
+// `cfg(has_occt)` is the deliberate gate, mirroring the existing
+// `gui/src-tauri/src/kernel_status.rs:48-57` "register only when available"
+// pattern. When OCCT C++ libs are absent, the submit doesn't fire — the
+// `reify_eval::collect_registry()` set is left empty and the engine surfaces
+// "no geometry kernel registered" cleanly via the existing error paths,
+// strictly preferable to a non-functional stub registration that would
+// error on every operation while still appearing in the registry.
+#[cfg(has_occt)]
+inventory::submit! {
+    KernelRegistration {
+        name: OCCT_KERNEL_NAME,
+        descriptor: occt_capability_descriptor,
+        factory: occt_factory,
+    }
 }
