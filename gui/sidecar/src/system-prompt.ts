@@ -72,7 +72,6 @@ You have access to these MCP tools for interacting with the Reify workspace:
 - **reify_get_parameters** — List all parameters with current values and types
 - **reify_set_parameter** — Change a parameter value
 - **reify_language_reference** — Get detailed language reference for a topic (Layer 2 reference). Topics: types, expressions, declarations, constraints, geometry, traits, enums, modules, units, functions
-- **reify_get_model_state** — Get current model evaluation state (solved values, geometry)
 
 ## Guidelines
 
