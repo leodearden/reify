@@ -13,7 +13,9 @@
 //! collect target) would break this test even though each crate's own
 //! unit / integration tests stay green.
 
+use reify_test_support::CountingSubscriberBuilder;
 use reify_types::{ExportFormat, ModulePath, Operation, ReprKind};
+use std::sync::atomic::Ordering;
 
 /// `collect_registry()` must surface the OCCT submission with a descriptor
 /// that supports `(PrimitiveBox, BRep)` — a minimal proof that the
@@ -133,5 +135,54 @@ fn engine_with_registered_kernel_picks_occt_for_brep_box_build() {
         !output.is_empty(),
         "STEP geometry_output must be non-empty — empty output indicates the registered kernel \
          was not actually instantiated and execute() was never called",
+    );
+}
+
+/// Integration pin for the tracing emission from `Engine::with_registered_kernel`:
+/// the constructor must fire exactly one selection event (INFO when multiple
+/// kernels are registered, DEBUG when only one is) per call at the
+/// `reify_eval::kernel_registry` target.
+///
+/// Asserts `info_count + debug_count == 1` rather than pinning the specific
+/// level, so that a v0.3+ build registering a second kernel adapter (which
+/// causes INFO to fire instead of DEBUG) does not trigger a spurious failure
+/// here. The unit tests in `kernel_registry.rs` already cover the branch logic
+/// exhaustively with synthetic inputs.
+///
+/// Skipped in stub mode: with `cfg(has_occt)` off the registry is empty and
+/// `with_registered_kernel` forwards `None` for the kernel — the selection
+/// helper is not reached, so there is nothing to assert. The skip is announced
+/// via `eprintln!` so stub-mode CI produces an observable signal.
+#[test]
+fn engine_with_registered_kernel_emits_one_selection_event() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping engine_with_registered_kernel_emits_one_selection_event: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::INFO)
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_eval::kernel_registry")
+        .build();
+    let info_count = counters[&tracing::Level::INFO].clone();
+    let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let checker = reify_constraints::SimpleConstraintChecker;
+        let _engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    });
+
+    let info_c = info_count.load(Ordering::Acquire);
+    let debug_c = debug_count.load(Ordering::Acquire);
+    assert_eq!(
+        info_c + debug_c,
+        1,
+        "Engine::with_registered_kernel must emit exactly one selection event at \
+         reify_eval::kernel_registry per construction (INFO when registry().len() > 1, \
+         DEBUG when == 1). Got: info={info_c}, debug={debug_c}",
     );
 }

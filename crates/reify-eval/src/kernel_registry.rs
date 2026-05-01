@@ -82,8 +82,13 @@ pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
 }
 
 /// The lexicographically smallest [`KernelRegistration`] in the memoized
-/// registry, or `None` if no adapter has submitted one (e.g. stub-mode build
-/// with `cfg(has_occt)` off).
+/// registry paired with the total registry size, or `None` if no adapter has
+/// submitted one (e.g. stub-mode build with `cfg(has_occt)` off).
+///
+/// Returns the total count alongside the selected entry so callers can pass
+/// both directly to [`emit_kernel_selection`] without a second [`registry`]
+/// call. The count and the pick are taken from the same snapshot, making their
+/// consistency guaranteed rather than merely assumed.
 ///
 /// Centralises the "lex-min on `name`" tie-break used by
 /// [`crate::Engine::with_registered_kernel`] (and, in v0.3+, by any
@@ -91,8 +96,10 @@ pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
 /// every caller through this helper guarantees the tie-break invariant lives
 /// in one place — a future change (e.g. environment-variable-driven default
 /// selection) would only need to update this function.
-pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
-    registry().values().next().copied()
+pub fn pick_lexmin_kernel() -> Option<(&'static KernelRegistration, usize)> {
+    let reg = registry();
+    let total = reg.len();
+    reg.values().next().copied().map(|r| (r, total))
 }
 
 /// Iterate the static linker-collected set of [`KernelRegistration`] records
@@ -122,6 +129,51 @@ pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
         .iter()
         .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
         .collect()
+}
+
+/// Emit a structured tracing event recording which kernel was selected and how
+/// many are registered.
+///
+/// # Why a helper is extracted
+///
+/// `Engine::with_registered_kernel` is not unit-testable for the multi-kernel
+/// INFO path in `cargo test --lib` for `reify-eval`: the cfg(test) synthetics'
+/// factories are all `unreachable!()`, so calling the constructor from a unit
+/// test would panic. This free helper takes `(name, total)` as synthetic args,
+/// letting us drive both branches from unit tests without touching any factory.
+/// The helper also lives next to [`pick_lexmin_kernel`] so the v0.3+ dispatcher
+/// path can reuse it (see module doc-comment: "both `Engine::with_registered_kernel`
+/// and (in v0.3+) any dispatcher selection share the same tie-break helper").
+///
+/// # Operator-visibility contract
+///
+/// | `total`  | level emitted                                          |
+/// |----------|--------------------------------------------------------|
+/// | `> 1`    | `INFO` — lex-min tie-break among multiple kernels      |
+/// | `== 1`   | `DEBUG` — single kernel, no tie-break needed           |
+/// | `== 0`   | *(nothing — no kernel available)*                     |
+///
+/// Branches are mutually exclusive: one event per call, keeping the
+/// signal-to-noise clean for `RUST_LOG=info` operators (who see a tie-break
+/// notification iff a second kernel adapter was actually registered).
+///
+/// # Structured fields
+///
+/// `picked = %name` — name of the selected kernel registration
+/// `total_registered = total` — total count visible in the registry at call time
+pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
+    if total > 1 {
+        tracing::info!(
+            picked = %name,
+            total_registered = total,
+            "selected kernel via lex-min tie-break",
+        );
+    } else {
+        tracing::debug!(
+            picked = %name,
+            "selected kernel from inventory registry",
+        );
+    }
 }
 
 /// Walk `inventory::iter::<KernelRegistration>()` once and produce the
@@ -263,6 +315,46 @@ mod tests {
     use super::*;
     use reify_types::{Operation, ReprKind};
 
+    /// When `total > 1` (multi-kernel build), `emit_kernel_selection` must emit
+    /// exactly one `INFO`-level event and no `DEBUG`-level events at the
+    /// `reify_eval::kernel_registry` target.
+    ///
+    /// This exercises the multi-kernel INFO branch introduced so that an
+    /// `RUST_LOG=info` operator sees a tie-break notification iff a second
+    /// kernel adapter was actually registered (i.e. the lex-min selection was
+    /// non-trivial). Passing `("foo", 3)` as synthetic args avoids invoking any
+    /// kernel factory — the helper is decoupled from the inventory walk.
+    #[test]
+    fn emit_kernel_selection_emits_info_at_lex_min_target_when_total_above_one() {
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::INFO)
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_eval::kernel_registry")
+            .build();
+        let info_count = counters[&tracing::Level::INFO].clone();
+        let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+        tracing::subscriber::with_default(subscriber, || {
+            emit_kernel_selection("foo", 3);
+        });
+
+        assert_eq!(
+            info_count.load(Ordering::Acquire),
+            1,
+            "emit_kernel_selection(name, total > 1) must emit exactly one INFO event \
+             at reify_eval::kernel_registry — operator visibility when lex-min tie-break fires",
+        );
+        assert_eq!(
+            debug_count.load(Ordering::Acquire),
+            0,
+            "emit_kernel_selection(name, total > 1) must not emit DEBUG events — \
+             mutually-exclusive branches: only INFO fires in the multi-kernel case",
+        );
+    }
+
     /// Smoke pin: the function returns the right type, the result is
     /// deterministic across calls, and the iteration logic is non-trivially
     /// exercised — the cfg(test)-only synthetic registration submitted in
@@ -324,6 +416,45 @@ mod tests {
         );
     }
 
+    /// When `total == 1` (v0.2 single-kernel build), `emit_kernel_selection`
+    /// must emit exactly one `DEBUG`-level event and no `INFO`-level events at
+    /// the `reify_eval::kernel_registry` target.
+    ///
+    /// This exercises the single-kernel DEBUG branch so that an `RUST_LOG=debug`
+    /// operator always sees a selection event while an `RUST_LOG=info` operator
+    /// only sees events when a lex-min tie-break between multiple kernels
+    /// actually occurred. Passing `("only", 1)` avoids invoking any factory.
+    #[test]
+    fn emit_kernel_selection_emits_debug_only_when_total_is_one() {
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::INFO)
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_eval::kernel_registry")
+            .build();
+        let info_count = counters[&tracing::Level::INFO].clone();
+        let debug_count = counters[&tracing::Level::DEBUG].clone();
+
+        tracing::subscriber::with_default(subscriber, || {
+            emit_kernel_selection("only", 1);
+        });
+
+        assert_eq!(
+            info_count.load(Ordering::Acquire),
+            0,
+            "emit_kernel_selection(name, total == 1) must not emit INFO — \
+             INFO is reserved for the multi-kernel tie-break case (total > 1)",
+        );
+        assert_eq!(
+            debug_count.load(Ordering::Acquire),
+            1,
+            "emit_kernel_selection(name, total == 1) must emit exactly one DEBUG event \
+             at reify_eval::kernel_registry — single-kernel selection always visible at RUST_LOG=debug",
+        );
+    }
+
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
     /// *smaller* kernel when multiple registrations are present.
     ///
@@ -358,7 +489,7 @@ mod tests {
         // (2) pick_lexmin_kernel must return the lex-smaller of the two
         //     synthetics. NAME_A = "__a_kernel" < NAME_B = "__b_kernel" in
         //     ASCII order, so __a_kernel must win.
-        let lexmin = pick_lexmin_kernel().expect(
+        let (lexmin, _total) = pick_lexmin_kernel().expect(
             "registry must contain at least the cfg(test) synthetic kernels — \
              see test_synthetic_kernel module",
         );
