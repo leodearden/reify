@@ -1987,6 +1987,66 @@ describe('stdin write error correlation', () => {
   });
 });
 
+describe('stdin orphan-error diagnostic', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it("orphan stdin 'error' event (no pending write callback) emits console.warn diagnostic with [sidecar] prefix", async () => {
+    const { mockProc, stdout } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_orphan', name: 'reify_x', input: {} },
+    ]);
+
+    // Suppress and capture console.warn calls
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Set up wait for tool_call BEFORE dispatch so we don't miss it
+    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+
+    // Start send_message (don't await — hangs waiting for stdout to close)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'send-orphan',
+      text: 'Hi',
+    });
+
+    // Await tool_call — proves the prompt has been written to stdin and the 'error' listener is attached
+    await toolCallWait;
+
+    // Synthesize an orphan EPIPE: emits to the 'error' listener but no per-write callback is in flight.
+    mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE'));
+
+    // Allow the current tick to flush any synchronous handler side-effects
+    await new Promise(setImmediate);
+
+    // Assert console.warn was called with [sidecar] prefix and the error message
+    expect(warnSpy).toHaveBeenCalled();
+    const allCallArgs = warnSpy.mock.calls.map((args) => args.join(' '));
+    const matchingCall = allCallArgs.find(
+      (s) => s.includes('[sidecar]') && s.includes('synthetic orphan EPIPE')
+    );
+    expect(matchingCall).toBeDefined();
+
+    // Cleanup
+    warnSpy.mockRestore();
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-orphan' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+});
+
 describe('echoed tool_use_id validation', () => {
   let session: SidecarSession;
   let outputs: OutboundMessage[];
