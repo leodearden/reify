@@ -36,7 +36,7 @@ use std::collections::HashMap;
 
 use reify_compiler::auto_type_param::{
     AutoTypeParam, MAX_AUTO_TYPE_PARAM_CANDIDATES, MultiParamResolutionOutcome, SelectionResult,
-    resolve_auto_type_params_with_backtracking,
+    resolve_auto_type_params, resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
@@ -736,5 +736,121 @@ structure def AirCooled : Cooled {
         !diagnostics[0].message.contains("rejected by constraint"),
         "DFS no-candidate (zero-rejections form) must NOT mention 'rejected by constraint'; got: {:?}",
         diagnostics[0].message
+    );
+}
+
+// ─── step-29: DFS above max_depth emits warning + falls back to BFS ────────
+
+/// Seven `AutoTypeParam`s (one per distinct trait with one matching structure
+/// each). Calling DFS with `max_depth = 6` triggers the depth-bound fallback:
+/// the orchestrator emits `AutoTypeParamDepthBoundExceeded` (Warning) and
+/// delegates back to `resolve_auto_type_params` (v0.1 BFS).
+///
+/// Pins:
+/// - DFS outcome equals what BFS would have returned for the same inputs
+///   (every param `Selected` lex-first, declared-order substitution, length 7).
+/// - Exactly one extra diagnostic compared to BFS's clean run, with code
+///   `AutoTypeParamDepthBoundExceeded` (Warning) and message containing both
+///   "7" (params count) and "6" (max_depth).
+/// - The depth-bound check uses strict `>`: 7 > 6 ⇒ fallback fires; the
+///   boundary case 6 == 6 is exercised in step-31.
+#[test]
+fn dfs_above_max_depth_emits_warning_and_falls_back_to_bfs() {
+    // Seven distinct traits, each with a single implementing structure.
+    // Trait names are ordered alphabetically so the canonical name lookup
+    // is stable; ditto structure names.
+    let source = r#"
+trait T1 {}
+trait T2 {}
+trait T3 {}
+trait T4 {}
+trait T5 {}
+trait T6 {}
+trait T7 {}
+
+structure def S1 : T1 { param x : Real = 1.0 }
+structure def S2 : T2 { param x : Real = 2.0 }
+structure def S3 : T3 { param x : Real = 3.0 }
+structure def S4 : T4 { param x : Real = 4.0 }
+structure def S5 : T5 { param x : Real = 5.0 }
+structure def S6 : T6 { param x : Real = 6.0 }
+structure def S7 : T7 { param x : Real = 7.0 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+
+    let params: Vec<AutoTypeParam> = (1..=7)
+        .map(|i| AutoTypeParam {
+            name: format!("P{}", i),
+            bounds: vec![format!("T{}", i)],
+            free: false,
+            use_site_span: SourceSpan::new(10 * i, 10 * i + 5),
+        })
+        .collect();
+
+    // Capture BFS's outcome on the same inputs for parity comparison.
+    let mut bfs_diagnostics = Vec::new();
+    let bfs_outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut bfs_diagnostics,
+    );
+
+    // Now run DFS with `max_depth = 6` (7 params > 6 ⇒ fallback fires).
+    let mut dfs_diagnostics = Vec::new();
+    let dfs_outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut dfs_diagnostics,
+    );
+
+    // Outcome parity: DFS-with-fallback must match BFS exactly.
+    assert_eq!(
+        dfs_outcome, bfs_outcome,
+        "DFS above max_depth must delegate to BFS — outcome must match BFS's identical-input outcome. DFS: {:?}, BFS: {:?}",
+        dfs_outcome, bfs_outcome
+    );
+
+    // Diagnostic delta: DFS emits one EXTRA `AutoTypeParamDepthBoundExceeded`
+    // Warning beyond BFS's diagnostics (BFS itself emits zero diagnostics on
+    // a clean 7-param happy path).
+    assert_eq!(
+        dfs_diagnostics.len(),
+        bfs_diagnostics.len() + 1,
+        "DFS above max_depth must emit exactly one extra diagnostic beyond BFS. DFS diagnostics: {:?}, BFS diagnostics: {:?}",
+        dfs_diagnostics, bfs_diagnostics
+    );
+    let extra = dfs_diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded))
+        .expect("DFS must emit exactly one AutoTypeParamDepthBoundExceeded diagnostic when params.len() > max_depth");
+    assert_eq!(
+        extra.severity,
+        Severity::Warning,
+        "AutoTypeParamDepthBoundExceeded must be a Warning severity, got: {:?}",
+        extra.severity
+    );
+    assert!(
+        extra.message.contains("7"),
+        "depth-bound diagnostic must mention the params count '7'; got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("6"),
+        "depth-bound diagnostic must mention the max_depth '6'; got: {:?}",
+        extra.message
     );
 }
