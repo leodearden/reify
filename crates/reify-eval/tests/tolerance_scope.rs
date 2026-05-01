@@ -6,11 +6,9 @@
 //! shape, then asserts the propagated tolerance scope is observable via
 //! `Engine::active_tolerance_for`.
 
-use reify_test_support::builders::{
-    CompiledModuleBuilder, CompiledPurposeBuilder, TopologyTemplateBuilder,
-};
-use reify_test_support::make_engine;
-use reify_types::{CompiledExpr, DimensionVector, ModulePath, Type, Value, ValueCellId};
+use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::{make_engine, manufacturing_purpose_with_inner_name, my_design_template_with_subs};
+use reify_types::{ModulePath, Type};
 
 /// Build a minimal CompiledModule with templates `MyDesign` (sub `head: Head`)
 /// and `Head`, plus a `manufacturing` purpose whose sole constraint is
@@ -25,38 +23,13 @@ fn build_module_with_manufacturing_purpose(
         .build();
 
     // Template "MyDesign": one Param cell on entity "MyDesign" + sub "head" → Head.
-    let my_design_template = TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
-        .sub_component("head", "Head", Vec::new())
-        .build();
+    let my_design_template = my_design_template_with_subs(&[("head", "Head")]);
 
     // Purpose: RepresentationWithin(subject, si_tolerance m). The subject arg
     // is a ValueRef typed StructureRef("Bracket") (the "bare-purpose-param"
     // shape recognised by `extract_tolerance_bindings` in
-    // `crates/reify-eval/src/tolerance_scope.rs`). The literal arg is a
-    // Scalar with LENGTH dimension.
-    let subject_arg = CompiledExpr::value_ref(
-        ValueCellId::new("subject", "self"),
-        Type::StructureRef("Bracket".to_string()),
-    );
-    let tol_arg = CompiledExpr::literal(
-        Value::Scalar {
-            si_value: si_tolerance,
-            dimension: DimensionVector::LENGTH,
-        },
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    let rep_within = CompiledExpr::user_function_call(
-        "RepresentationWithin".to_string(),
-        vec![subject_arg, tol_arg],
-        Type::Bool,
-    );
-    let purpose = CompiledPurposeBuilder::new(purpose_name)
-        .param("subject", "Structure")
-        .constraint("subject", 0, None, rep_within)
-        .build();
+    // `crates/reify-eval/src/tolerance_scope.rs`).
+    let purpose = manufacturing_purpose_with_inner_name(purpose_name, "Bracket", si_tolerance);
 
     CompiledModuleBuilder::new(ModulePath::new(vec!["test".to_string()]))
         .template(head_template)
@@ -168,38 +141,11 @@ fn build_module_with_overlapping_purposes(
         .build();
     // Two siblings so `loose`'s descendant propagation reaches BOTH `head`
     // and `tail`, while `tight` overrides only `head`.
-    let my_design_template = TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
-        .sub_component("head", "Head", Vec::new())
-        .sub_component("tail", "Head", Vec::new())
-        .build();
+    let my_design_template =
+        my_design_template_with_subs(&[("head", "Head"), ("tail", "Head")]);
 
-    let make_purpose = |name: &str, kind: &str, si_value: f64| {
-        let subject_arg = CompiledExpr::value_ref(
-            ValueCellId::new("subject", "self"),
-            Type::StructureRef(kind.to_string()),
-        );
-        let tol_arg = CompiledExpr::literal(
-            Value::Scalar {
-                si_value,
-                dimension: DimensionVector::LENGTH,
-            },
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
-        );
-        let rep_within = CompiledExpr::user_function_call(
-            "RepresentationWithin".to_string(),
-            vec![subject_arg, tol_arg],
-            Type::Bool,
-        );
-        CompiledPurposeBuilder::new(name)
-            .param("subject", "Structure")
-            .constraint("subject", 0, None, rep_within)
-            .build()
-    };
-    let loose = make_purpose(loose_name, "Bracket", loose_tol);
-    let tight = make_purpose(tight_name, "Head", tight_tol);
+    let loose = manufacturing_purpose_with_inner_name(loose_name, "Bracket", loose_tol);
+    let tight = manufacturing_purpose_with_inner_name(tight_name, "Head", tight_tol);
 
     CompiledModuleBuilder::new(ModulePath::new(vec!["test".to_string()]))
         .template(head_template)
