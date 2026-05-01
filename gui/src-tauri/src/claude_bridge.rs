@@ -119,6 +119,31 @@ pub async fn write_to_sidecar<W: AsyncWrite + Unpin>(
         .map_err(|e| format!("write_to_sidecar: {}", e))
 }
 
+/// Emit a WARN when a ToolCall arrives without a `tool_use_id` field.
+///
+/// This is the dev-mode version-skew case: a stale sidecar (pre-dating task #2766)
+/// omits `tool_use_id` from ToolCall events.  The message is still delivered to
+/// `on_message`; id-correlation falls back to FIFO-by-tool_name in the sidecar
+/// TypeScript.  All other `OutboundMessage` variants are silently ignored.
+pub(crate) fn warn_if_stale_tool_call(msg: &OutboundMessage) {
+    if let OutboundMessage::ToolCall {
+        tool_use_id,
+        id,
+        tool_name,
+        ..
+    } = msg
+        && tool_use_id.is_empty()
+    {
+        tracing::warn!(
+            message_id = %id,
+            tool_name = %tool_name,
+            "sidecar tool_call missing tool_use_id; \
+             likely dev-mode version skew between sidecar and Rust binary \
+             — id-correlation will fall back to FIFO-by-tool_name"
+        );
+    }
+}
+
 /// Read lines from sidecar stdout, parse each as OutboundMessage, and call callbacks.
 /// Skips lines that fail to parse (and warns operators). Calls on_exit when the stream ends (EOF).
 pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
@@ -132,26 +157,7 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
             Ok(Some(line)) => {
                 match parse_outbound(&line) {
                     Ok(msg) => {
-                        // Warn when a ToolCall arrives without tool_use_id — this is the
-                        // dev-mode version-skew case (stale sidecar pre-dating task #2766).
-                        // The message is still delivered; id-correlation falls back to
-                        // FIFO-by-tool_name in the sidecar TypeScript.
-                        if let OutboundMessage::ToolCall {
-                            ref tool_use_id,
-                            ref id,
-                            ref tool_name,
-                            ..
-                        } = msg
-                            && tool_use_id.is_empty()
-                        {
-                            tracing::warn!(
-                                message_id = %id,
-                                tool_name = %tool_name,
-                                "sidecar tool_call missing tool_use_id; \
-                                 likely dev-mode version skew between sidecar and Rust binary \
-                                 — id-correlation will fall back to FIFO-by-tool_name"
-                            );
-                        }
+                        warn_if_stale_tool_call(&msg);
                         on_message(msg);
                     }
                     Err(e) => {
