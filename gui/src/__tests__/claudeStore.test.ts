@@ -91,6 +91,7 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: state.currentMessageId!,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: {},
       } as OutboundMessage);
@@ -104,6 +105,7 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: {},
       } as OutboundMessage);
@@ -213,12 +215,14 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box1' },
       } as OutboundMessage);
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box2' },
       } as OutboundMessage);
@@ -252,6 +256,7 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box1' },
       } as OutboundMessage);
@@ -284,12 +289,14 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: {},
       } as OutboundMessage);
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: {},
       } as OutboundMessage);
@@ -307,18 +314,21 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box1' },
       } as OutboundMessage);
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_update_source',
         tool_input: { code: 'x' },
       } as OutboundMessage);
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box2' },
       } as OutboundMessage);
