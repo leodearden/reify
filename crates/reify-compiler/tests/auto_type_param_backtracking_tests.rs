@@ -376,3 +376,139 @@ structure def WaterCooled : Cooled {
         diagnostics
     );
 }
+
+// ─── step-23: DFS strict-mode ≥2 feasible cross-products → Ambiguous ───────
+
+/// Two `AutoTypeParam`s `[T : Seal, U : Cooled]` with two candidates each
+/// (4 cross-product leaves total). With the default `MockConstraintChecker`
+/// (no constraints on the parameterized template ⇒ every leaf trivially
+/// feasible) and **both params `free=false` (strict)**, DFS must NOT stop
+/// at the first feasible leaf — it must continue searching to detect ≥2
+/// feasible cross-products and produce a single `Ambiguous` outcome.
+///
+/// The strict-mode contract here is the cross-product analog of v0.1's
+/// per-param strict-Ambiguous arm: ≥2 feasibles means the user must pick
+/// (no automatic disambiguation), so Phase C surfaces the witnesses for
+/// the diagnostic and halts substitution.
+///
+/// Asserts the loose-witness contract (witnesses.len() ≥ 2, no exact
+/// witness format) so this test stays decoupled from the witness-string
+/// formatting decision pinned in step-24. Richer per-witness format with
+/// the smallest-infeasibility witness is task 2663's scope.
+///
+/// Pins:
+/// - `per_param.len() == 1` (single Ambiguous entry on the FIRST param's name)
+/// - `per_param[0].0 == "T"` (Ambiguous attaches to params[0].name)
+/// - `per_param[0].1` matches `SelectionResult::Ambiguous(_)` with ≥2 witnesses
+/// - `substitution.is_empty()` (no successful substitutions on Ambiguous)
+/// - exactly one `AutoTypeParamAmbiguous` diagnostic
+#[test]
+fn dfs_strict_mode_with_two_feasible_cross_products_returns_ambiguous() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // No constraints on the template ⇒ every leaf is trivially feasible
+    // (filter_feasible_candidates returns Feasible for every cross-product
+    // assignment with default Satisfied checker).
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Satisfied);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // Ambiguous attaches to the FIRST param's name (one per_param entry only),
+    // mirroring the BFS contract for halt-on-first-failure: substitution stops
+    // at the first failure, so per_param does too.
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "DFS strict-mode ≥2 feasible cross-products must produce exactly one per_param entry (the Ambiguous on params[0]), got: {:?}",
+        outcome.per_param,
+    );
+    assert_eq!(
+        outcome.per_param[0].0, "T",
+        "Ambiguous outcome must attach to the first param's name (declared-order halt parity with BFS)"
+    );
+    match &outcome.per_param[0].1 {
+        SelectionResult::Ambiguous(witnesses) => {
+            assert!(
+                witnesses.len() >= 2,
+                "DFS strict-mode Ambiguous must carry ≥2 witnesses (lex-first two cross-product summaries), got: {:?}",
+                witnesses,
+            );
+        }
+        other => panic!(
+            "DFS strict-mode ≥2 feasible cross-products must produce SelectionResult::Ambiguous, got: {:?}",
+            other,
+        ),
+    }
+    assert!(
+        outcome.substitution.is_empty(),
+        "DFS strict-mode Ambiguous must yield empty substitution (no successful resolutions), got: {:?}",
+        outcome.substitution,
+    );
+
+    // Exactly one Ambiguous diagnostic emitted by step-24's strict dispatch.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS strict-mode Ambiguous must emit exactly one diagnostic, got: {:?}",
+        diagnostics,
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamAmbiguous),
+        "DFS strict-mode diagnostic must be AutoTypeParamAmbiguous, got: {:?}",
+        diagnostics[0].code,
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "AutoTypeParamAmbiguous diagnostic must be an Error severity"
+    );
+}
