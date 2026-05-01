@@ -161,6 +161,13 @@ export class SidecarSession {
     // Attach a no-op 'error' listener so an unhandled stream error cannot crash the sidecar
     // process. Error reporting now flows through per-write callbacks (see writes below) which
     // capture the correct id for each write rather than the outer send_message id.
+    //
+    // Intentional: orphan stream errors (fired to the 'error' listener without a pending write
+    // callback) are dropped rather than emitted with a potentially-wrong id. This is acceptable
+    // because the close path — observable via proc.on('close') and the exitCode check below —
+    // provides the authoritative signal that the CLI exited unexpectedly. A host relying solely
+    // on the 'error' event for EPIPE detection should check the 'done'/'error' outbound from
+    // handleSendMessage instead.
     proc.stdin?.on('error', () => {});
 
     // Write the initial user prompt as a stream-json message line.
@@ -370,8 +377,14 @@ export class SidecarSession {
       });
       return;
     }
-    // Remove the consumed id from toolNameById before the write so the maps stay consistent
-    // even if the write fails — the tool_use is "consumed" once we commit to forwarding it.
+    // Remove the consumed id from toolNameById BEFORE the write so the maps stay consistent
+    // regardless of write outcome — the tool_use is "consumed" once we commit to forwarding it.
+    //
+    // Contract: each emitted tool_use_id is valid for exactly one tool_result forward. If the
+    // write fails (EPIPE reported via the per-write callback below), the host should treat the
+    // original send_message as failed and retry as a new send_message rather than re-dispatching
+    // the same tool_result. Retrying a tool_result with a consumed id will hit the 'unknown
+    // tool_use_id' validation guard and produce a clean structured error.
     this.toolNameById.delete(toolUseId);
     // Per-write callback captures the tool_result id for correct error correlation.
     // No synchronous try/catch needed: stream-write failures surface via the callback.
