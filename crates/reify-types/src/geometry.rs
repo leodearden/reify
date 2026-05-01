@@ -286,6 +286,66 @@ impl CapabilityDescriptor {
     }
 }
 
+/// Static registration record for a v0.2 multi-kernel adapter.
+///
+/// Per the PRD `docs/prds/v0_2/multi-kernel.md` "Resolved design decisions",
+/// each kernel adapter crate (`reify-kernel-occt`, future `-manifold`,
+/// `-fidget`, `-openvdb`) submits one of these via `inventory::submit!{ ... }`.
+/// At engine startup, `reify_eval::collect_registry()` iterates
+/// [`inventory::iter::<KernelRegistration>`] and materialises a
+/// `BTreeMap<String, CapabilityDescriptor>` whose lexicographic key order
+/// matches the dispatcher's tie-break contract
+/// (see `crates/reify-eval/src/dispatcher.rs`).
+///
+/// # Field shapes
+///
+/// - `name: &'static str` — the kernel's stable identifier, used as the
+///   BTreeMap key in the dispatcher registry. Lexicographic ordering of
+///   `name` provides the deterministic tie-break required by the PRD's
+///   "Selection deterministic given pinned runtime configuration" contract.
+/// - `descriptor: fn() -> CapabilityDescriptor` — a function pointer that
+///   builds the kernel's feasibility table on demand. Returns by value
+///   (owned) because `CapabilityDescriptor::supports` is `Vec<...>` and
+///   `Vec::push` is non-const, so a `&'static CapabilityDescriptor` would
+///   require `LazyLock` indirection. Called once per `collect_registry()`
+///   invocation (at engine startup), not per geometry op.
+/// - `factory: fn() -> Box<dyn GeometryKernel>` — instantiates a fresh
+///   kernel handle. The new
+///   `Engine::with_registered_kernel(checker)` constructor calls this
+///   exactly once, after iterating the registry.
+///
+/// # Co-location rationale
+///
+/// Co-located with [`CapabilityDescriptor`] (and [`GeometryKernel`]) for the
+/// same dependency-inversion reason: kernel adapter crates depend on
+/// `reify-types` for the trait/types they implement, but deliberately NOT
+/// on `reify-compiler` or `reify-eval`. Placing the registration record
+/// here lets adapters `inventory::submit!` without taking an upward dep on
+/// `reify-eval` (which is the consumer of the collected set).
+///
+/// # Determinism
+///
+/// `inventory::iter::<KernelRegistration>()` does NOT guarantee link order;
+/// the consumer (`reify_eval::collect_registry`) materialises into a
+/// `BTreeMap` keyed on `name` so iteration becomes lexicographic
+/// regardless of link ordering. Two adapters submitting with the same
+/// `name` would alias-collide on the BTreeMap key — the v0.2 design
+/// expects unique names per registered kernel.
+pub struct KernelRegistration {
+    /// Stable identifier used as the BTreeMap key in the dispatcher
+    /// registry; also the lexicographic tie-break key per the PRD.
+    pub name: &'static str,
+    /// Builds the kernel's feasibility table on demand. Owned return
+    /// avoids const-Vec construction issues — see struct doc for the full
+    /// rationale.
+    pub descriptor: fn() -> CapabilityDescriptor,
+    /// Instantiates a fresh kernel handle. Called by
+    /// `Engine::with_registered_kernel` exactly once.
+    pub factory: fn() -> Box<dyn GeometryKernel>,
+}
+
+inventory::collect!(KernelRegistration);
+
 /// Operations that can be sent to a geometry kernel.
 #[derive(Debug, Clone)]
 pub enum GeometryOp {
