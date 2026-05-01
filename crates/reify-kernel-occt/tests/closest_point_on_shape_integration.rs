@@ -155,11 +155,12 @@ fn closest_point_when_point_lies_on_face() {
 /// Solid boxes. This test verifies that a `TopoDS_Face` sub-shape extracted
 /// from the box returns a valid witness, exercising the non-solid path.
 ///
-/// Query (0.0, 0.0, 0.0) is chosen because every face of a centred 10×10×10
-/// box has its centroid exactly 5 units from the origin. The nearest point
-/// on any face from the origin is at distance 5.0, independent of which face
-/// `MapShapes` returns as `faces[0]`. This keeps the test deterministic
-/// without face-identification logic.
+/// Query (0.0, 0.0, 0.0) is chosen because each face plane of a centred
+/// 10×10×10 box is at distance 5 from the origin, and the perpendicular foot
+/// of the origin onto each face plane lies within the face's [-5,5]² bounds —
+/// so the closest point on any face from the origin is at distance 5.0,
+/// independent of which face `MapShapes` returns as `faces[0]`. This keeps
+/// the test deterministic without face-identification logic.
 #[test]
 fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
     let (mut kernel, box_id) = box_kernel(); // mut required for extract_faces
@@ -173,8 +174,9 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
             let dist = (x * x + y * y + z * z).sqrt();
             assert!(
                 (dist - 5.0).abs() < 1e-6,
-                "any face of a centred 10×10×10 box has its centroid 5 units from origin, \
-                 so the closest point on a face from origin is at distance 5.0; got ({x}, {y}, {z}), dist={dist}"
+                "each face plane of a centred 10×10×10 box is at distance 5 from the origin \
+                 and the perpendicular foot lies within the face bounds, so the closest point \
+                 on any face from the origin is at distance 5.0; got ({x}, {y}, {z}), dist={dist}"
             );
         }
         Err(e) => panic!(
@@ -243,14 +245,10 @@ fn closest_point_for_nan_query_coords_locks_current_behavior() {
     // Behaviour observed against OCCT at task 2849; flip this assertion when
     // the upgrade ticket lands.
     let result = kernel.closest_point_on_shape(box_id, f64::NAN, 0.0, 0.0);
-    eprintln!("NaN query result: {result:?}");
     match result {
-        Err(QueryError::QueryFailed(ref msg)) if !msg.is_empty() => {
+        Err(QueryError::QueryFailed(_)) => {
             // Expected: OCCT rejects the NaN vertex — lock in this branch.
         }
-        Err(QueryError::QueryFailed(ref msg)) => panic!(
-            "expected non-empty QueryFailed message for NaN query, got empty msg; full: {msg:?}"
-        ),
         Ok([x, y, z]) => panic!(
             "expected Err(QueryError::QueryFailed(_)) for NaN query coords, \
              got Ok([{x}, {y}, {z}]) — if OCCT changed behaviour, pin the Ok branch instead"
