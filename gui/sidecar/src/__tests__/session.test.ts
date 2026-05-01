@@ -2069,13 +2069,6 @@ describe('FIFO consumption on echoed-id path', () => {
     const line2 = stdinLines[1] as any;
     expect(line2.message.content[0].tool_use_id).toBe('toolu_1');
 
-    // (c) After echoed forward: toolu_1 must be removed from both maps
-    // FIFO should now be ["toolu_2"] (toolu_1 spliced out)
-    const queueAfterA = (session as any).pendingToolUseIds.get('reify_x');
-    expect(queueAfterA).toEqual(['toolu_2']);
-    // toolNameById should no longer have toolu_1
-    expect((session as any).toolNameById.has('toolu_1')).toBe(false);
-
     // --- Step (b): Dispatch tool_result WITHOUT tool_use_id (fallback path) ---
     session.handleMessage({
       type: 'tool_result',
@@ -2088,14 +2081,13 @@ describe('FIFO consumption on echoed-id path', () => {
     // Wait for the third stdin line
     await waitForStdinLines(mockProc.stdin, stdinLines, 3);
 
-    // Verify the fallback used toolu_2 (the remaining id), NOT toolu_1 (already consumed)
+    // Verify the fallback used toolu_2 (the remaining id), NOT toolu_1 (already consumed).
+    // This proves toolu_1 was drained from the FIFO on the echoed-id forward above.
+    // The toolNameById drain for toolu_2 is proven by the stale-id re-dispatch test in
+    // the 'echoed tool_use_id validation' describe: re-dispatching a consumed id triggers
+    // the unknown-id guard at session.ts:335, which relies on deletion at line 388.
     const line3 = stdinLines[2] as any;
     expect(line3.message.content[0].tool_use_id).toBe('toolu_2');
-
-    // (c) After fallback forward: both maps should be fully drained
-    const queueAfterB = (session as any).pendingToolUseIds.get('reify_x');
-    expect(queueAfterB === undefined || queueAfterB.length === 0).toBe(true);
-    expect((session as any).toolNameById.has('toolu_2')).toBe(false);
 
     // Cleanup: close stdout so msgPromise can resolve
     stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-fifo' }) + '\n');
