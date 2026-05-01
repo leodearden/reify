@@ -206,6 +206,11 @@ fn render_auto_type_param_label(bounds: &[String]) -> (String, String) {
 /// Both call sites previously duplicated this builder chain verbatim; centralising
 /// it here prevents silent wording drift if the message is ever updated.
 ///
+/// In the Phase-C release fallback, `rejected.is_empty()` is implied by
+/// `rejection_summary.is_empty()` (the join cannot produce an empty string from a
+/// non-empty rejection list), so emitting `with_candidates(Vec::new())` here matches
+/// the previous behaviour.
+///
 /// [`AutoTypeParamNoCandidate`]: reify_types::DiagnosticCode::AutoTypeParamNoCandidate
 fn emit_no_candidate_zero_rejections(
     bounds: &[String],
@@ -824,6 +829,9 @@ pub fn resolve_auto_type_params(
     // (no early return); per_param and substitution both accumulate in
     // declared order.
     for param in params {
+        // Shadows enumerate_candidates' own non-empty-bounds assert with
+        // orchestrator-level wording so failures point at the caller of
+        // resolve_auto_type_params rather than its delegate.
         debug_assert!(
             !param.bounds.is_empty(),
             "resolve_auto_type_params: param.bounds must be non-empty (every type would match an empty bound)"
