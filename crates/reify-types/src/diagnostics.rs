@@ -1303,6 +1303,19 @@ mod tests {
         assert_eq!(d.code, Some(DiagnosticCode::LongChainRealization));
         assert_eq!(format!("{:?}", DiagnosticCode::LongChainRealization), "LongChainRealization");
     }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::LongChainRealization`
+    /// serializes as `"LongChainRealization"` (PascalCase, from the existing
+    /// `rename_all = "PascalCase"` derive on the enum). Pins the wire-format
+    /// contract for downstream consumers (LSP / MCP) so a future variant
+    /// rename is caught at the wire boundary, not buried in a downstream
+    /// integration test.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_long_chain_realization_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::LongChainRealization).unwrap();
+        assert_eq!(s, "\"LongChainRealization\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
