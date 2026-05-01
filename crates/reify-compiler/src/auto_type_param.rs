@@ -985,6 +985,45 @@ pub fn resolve_auto_type_params_with_backtracking(
         };
     }
 
+    // Depth-bound guard: above the bound, fall back to v0.1 BFS with a
+    // Warning diagnostic. BFS is sound (just less complete than DFS over
+    // the cross-product), so the user has a working compile — the warning
+    // is for auditability so they know the v0.2 search was bypassed.
+    //
+    // Strict `>`: `params.len() == max_depth` still runs DFS; only
+    // `params.len() > max_depth` falls back. Pinned by step-31's boundary
+    // test (`params.len() == max_depth ⇒ DFS, no warning`).
+    //
+    // Canonical message form pinned in step-10's diagnostic-code doc-comment:
+    // see `DiagnosticCode::AutoTypeParamDepthBoundExceeded` in
+    // `crates/reify-types/src/diagnostics.rs`.
+    if params.len() > max_depth {
+        let (_joined_bounds, label_message) =
+            render_auto_type_param_label(&params[0].bounds);
+        let message = format!(
+            "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm)",
+            n = params.len(),
+            m = max_depth,
+        );
+        diagnostics.push(
+            Diagnostic::warning(message)
+                .with_code(DiagnosticCode::AutoTypeParamDepthBoundExceeded)
+                .with_label(DiagnosticLabel::new(
+                    params[0].use_site_span,
+                    label_message,
+                )),
+        );
+        return resolve_auto_type_params(
+            params,
+            template_registry,
+            trait_registry,
+            parameterized_template,
+            constraint_checker,
+            functions,
+            diagnostics,
+        );
+    }
+
     // Phase A enumeration runs ONCE per param up front (before recursion),
     // producing a `Vec<Vec<String>>` of per-param candidate vectors. This
     // hoists Phase A out of the DFS body — Phase A depends only on the
