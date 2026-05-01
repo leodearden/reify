@@ -255,3 +255,48 @@ fn port_inside_specialization_scope_emits_forbidden_decl_diagnostic() {
         "primary label span must equal the PortDecl's span"
     );
 }
+
+/// PRD acceptance criterion 3: a bare `sub` declaration (body=None) directly
+/// inside a specialization-scope body must produce exactly one Error diagnostic
+/// with `DiagnosticCode::SpecializationForbiddenDecl`, a message containing
+/// `'sub'` and the sub name, and a primary label whose span equals the
+/// `SubDecl`'s span.
+///
+/// Shape: `structure S { sub scope : Foo { sub child : Foo } }`
+#[test]
+fn bare_sub_inside_specialization_scope_emits_forbidden_decl_diagnostic() {
+    let s = sub_span();
+    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+        "scope",
+        zero_span(),
+        vec![make_sub_bare("child", s)],
+    )]);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let diags = forbidden_diagnostics(&compiled.diagnostics);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one SpecializationForbiddenDecl diagnostic, got: {:#?}",
+        diags
+    );
+    let d = diags[0];
+    assert_eq!(d.severity, Severity::Error, "diagnostic must be Error severity");
+    assert!(
+        d.message.contains("'sub'"),
+        "message must contain \"'sub'\", got: {:?}",
+        d.message
+    );
+    assert!(
+        d.message.contains("'child'"),
+        "message must contain \"'child'\", got: {:?}",
+        d.message
+    );
+    assert!(!d.labels.is_empty(), "diagnostic must have at least one label");
+    assert_eq!(
+        d.labels[0].span,
+        s,
+        "primary label span must equal the inner SubDecl's span"
+    );
+}
