@@ -74,3 +74,18 @@ fn zero_max_depth_rejected_with_typed_error() {
         ),
     }
 }
+
+/// Unknown keys inside `[auto_type_params]` are surfaced as
+/// `ManifestError::Parse(_)` rather than silently dropped. Pins the
+/// strict-schema convention shared with `[kernels.<id>]` (the v0.2
+/// determinism load-bearer cannot tolerate silent typos like `min_depth`
+/// being parsed as the default).
+#[test]
+fn unknown_field_in_auto_type_params_rejected() {
+    let err = Manifest::from_toml_str("[auto_type_params]\nmax_depth = 6\nfoo = 1\n")
+        .expect_err("unknown field in auto_type_params must be rejected");
+    match err {
+        ManifestError::Parse(_) => {}
+        other => panic!("expected ManifestError::Parse(_), got {:?}", other),
+    }
+}
