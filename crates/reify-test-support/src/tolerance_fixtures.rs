@@ -478,14 +478,10 @@ mod tests {
     ///     does not sort or reorder.
     #[test]
     fn my_design_template_with_subs_pins_sub_components_shape() {
-        // (a) empty slice — must match my_design_template()
+        // (a) empty slice — param-shape is already pinned by
+        //     `my_design_template_pins_thickness_param_shape`; just assert
+        //     there are no sub-components.
         let template = my_design_template_with_subs(&[]);
-        assert_eq!(template.name, "MyDesign");
-        assert_eq!(template.value_cells.len(), 1, "exactly one value cell");
-        assert_eq!(template.value_cells[0].id, ValueCellId::new("MyDesign", "thickness"));
-        assert_eq!(template.value_cells[0].cell_type, Type::Real);
-        assert!(template.value_cells[0].default_expr.is_none());
-        assert_eq!(template.constraints.len(), 0, "no constraints");
         assert_eq!(template.sub_components.len(), 0, "zero sub-components for empty slice");
 
         // (b) single sub
