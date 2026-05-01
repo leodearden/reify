@@ -1085,10 +1085,18 @@ pub fn resolve_auto_type_params_with_backtracking(
 
     // Multi-param DFS over the cross-product. The recursive helper visits
     // leaves in declared-order × lexicographic-within-param order (T outer,
-    // U inner, …). For step-20 we run in "stop at first feasible" mode —
-    // free-mode behavior. Strict-vs-free dispatch lands in step-24, which
-    // will continue searching past the first feasible leaf to detect ≥2
-    // (Ambiguous).
+    // U inner, …).
+    //
+    // Strict-vs-free dispatch (step-24): if any param is strict
+    // (`free=false`), the search must continue past the first feasible leaf
+    // so the orchestrator can detect ≥2 feasibles ⇒ Ambiguous. We only need
+    // to find TWO feasibles to know "≥2"; further leaves cannot change the
+    // Ambiguous outcome. Free-mode (`every param free=true`) stops at the
+    // FIRST feasible leaf and selects it lex-first — the v0.2 free-mode
+    // contract; richer report-all enumeration is task 2661's scope.
+    let any_strict = params.iter().any(|p| !p.free);
+    let max_feasible_to_collect: usize = if any_strict { 2 } else { 1 };
+
     let mut current: Vec<String> = Vec::with_capacity(params.len());
     let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
     dfs_search(
@@ -1099,40 +1107,110 @@ pub fn resolve_auto_type_params_with_backtracking(
         parameterized_template,
         constraint_checker,
         functions,
-        /* stop_after_first_feasible: */ true,
+        max_feasible_to_collect,
     );
 
-    if let Some(first_feasible) = feasible_assignments.into_iter().next() {
-        // Build per_param + substitution from the first feasible cross-product
-        // assignment, in declared order. Each entry pairs `params[i].name`
-        // with the candidate selected at level `i`. The asymmetry contract
-        // mirrors v0.1 BFS: per_param carries Selected entries, substitution
-        // carries (param_name, candidate) pairs — both in declared order.
-        let per_param: Vec<(String, SelectionResult)> = params
-            .iter()
-            .zip(first_feasible.iter())
-            .map(|(p, name)| (p.name.clone(), SelectionResult::Selected(name.clone())))
-            .collect();
-        let substitution: Vec<(String, String)> = params
-            .iter()
-            .zip(first_feasible.iter())
-            .map(|(p, name)| (p.name.clone(), name.clone()))
-            .collect();
-        return MultiParamResolutionOutcome {
-            per_param,
-            substitution,
-        };
+    match feasible_assignments.len() {
+        0 => {
+            // Zero feasible cross-product assignments. v0.1 parity: emit a
+            // zero-rejections NoCandidate on params[0] and halt. Richer
+            // rejection summaries (smallest infeasibility witness across the
+            // cross-product) is task 2663's scope; here we surface the
+            // bare-bones NoCandidate so the user has a working diagnostic.
+            emit_no_candidate_zero_rejections(
+                &params[0].bounds,
+                params[0].use_site_span,
+                diagnostics,
+            );
+            MultiParamResolutionOutcome {
+                per_param: vec![(params[0].name.clone(), SelectionResult::NoCandidate)],
+                substitution: vec![],
+            }
+        }
+        1 => {
+            // Exactly one feasible cross-product assignment. Two paths reach
+            // here:
+            // - free-mode: `max_feasible_to_collect = 1` stopped the search
+            //   at the first feasible leaf, lex-first by construction.
+            // - strict-mode: the search exhausted with a single feasible
+            //   leaf — uniquely determined, no Ambiguous needed.
+            // Both paths produce a full per_param/substitution Vec mapping
+            // each param to its bound candidate, in declared order.
+            let first_feasible = feasible_assignments
+                .into_iter()
+                .next()
+                .expect("len==1 by match arm");
+            let per_param: Vec<(String, SelectionResult)> = params
+                .iter()
+                .zip(first_feasible.iter())
+                .map(|(p, name)| (p.name.clone(), SelectionResult::Selected(name.clone())))
+                .collect();
+            let substitution: Vec<(String, String)> = params
+                .iter()
+                .zip(first_feasible.iter())
+                .map(|(p, name)| (p.name.clone(), name.clone()))
+                .collect();
+            MultiParamResolutionOutcome {
+                per_param,
+                substitution,
+            }
+        }
+        _ => {
+            // ≥2 feasible cross-product assignments. Only reachable in strict
+            // mode by construction: free-mode requested
+            // `max_feasible_to_collect = 1`, so the DFS would have early-
+            // terminated at the first feasible leaf and produced exactly one
+            // entry above. (Free-mode "≥2 feasibles ⇒ NonUnique warning +
+            // lex-first" is task 2661's scope, not 2659.)
+            debug_assert!(
+                any_strict,
+                "≥2 feasibles must only arise in strict mode (free-mode \
+                 max_feasible_to_collect=1 stops earlier)"
+            );
+            // Compact per-leaf witness summaries: "T=ORingSeal,U=AirCooled".
+            // Richer formatting (with trait bounds, smallest witness, etc.)
+            // is deferred to task 2663.
+            let witnesses: Vec<String> = feasible_assignments
+                .iter()
+                .map(|leaf| {
+                    params
+                        .iter()
+                        .zip(leaf.iter())
+                        .map(|(p, c)| format!("{}={}", p.name, c))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .collect();
+            // Diagnostic: emit one AutoTypeParamAmbiguous (Error). The label
+            // anchors on params[0].use_site_span — same convention as v0.1
+            // BFS strict-Ambiguous on the first-failing param. Mirrors the
+            // canonical "consider an explicit substitution like '<lex_first>'
+            // instead of 'auto:'" suffix from v0.1's per-param Ambiguous.
+            let (_joined_bounds, label_message) =
+                render_auto_type_param_label(&params[0].bounds);
+            let witnesses_join = witnesses.join("; ");
+            let lex_first_witness = witnesses[0].clone();
+            let message = format!(
+                "auto type-parameters have multiple feasible cross-product assignments: {witnesses_join}; consider an explicit substitution like '{lex_first_witness}' instead of 'auto:'",
+            );
+            diagnostics.push(
+                Diagnostic::error(message)
+                    .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
+                    .with_label(DiagnosticLabel::new(
+                        params[0].use_site_span,
+                        label_message,
+                    ))
+                    .with_candidates(witnesses.clone()),
+            );
+            MultiParamResolutionOutcome {
+                per_param: vec![(
+                    params[0].name.clone(),
+                    SelectionResult::Ambiguous(witnesses),
+                )],
+                substitution: vec![],
+            }
+        }
     }
-
-    // No feasible cross-product assignment. Strict-vs-free dispatch and the
-    // NoCandidate / Ambiguous diagnostic encoding land in step-24. Until
-    // then, this branch is unreachable from any current test (step-19 and
-    // step-21 both have at least one feasible leaf by construction).
-    unimplemented!(
-        "resolve_auto_type_params_with_backtracking: zero-feasible cross-product \
-         encoding (NoCandidate diagnostic + per_param shape) lands in step-24 \
-         of task 2659."
-    )
 }
 
 // ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
@@ -1180,12 +1258,13 @@ fn dfs_leaf_feasible(
 /// `feasible_assignments`.
 ///
 /// Returns `true` when the caller should early-terminate (unwind out of the
-/// recursion immediately). The leaf branch returns `stop_after_first_feasible`
-/// when it records a feasible leaf. With `stop_after_first_feasible = true`
-/// (free-mode in step-20), the first feasible leaf halts the search; with
-/// `stop_after_first_feasible = false` (strict-mode in step-24), the search
-/// continues past the first feasible leaf so the caller can detect ≥2
-/// (Ambiguous).
+/// recursion immediately). The leaf branch returns `true` when, after
+/// recording a feasible leaf, `feasible_assignments.len() >=
+/// max_feasible_to_collect`. With `max_feasible_to_collect = 1` (free-mode),
+/// the first feasible leaf halts the search; with
+/// `max_feasible_to_collect = 2` (strict-mode), the search continues past
+/// the first feasible leaf and stops once two are found — enough to encode
+/// `Ambiguous` without enumerating the entire cross-product.
 fn dfs_search(
     level: usize,
     per_param_candidates: &[Vec<String>],
@@ -1194,7 +1273,7 @@ fn dfs_search(
     parameterized_template: &TopologyTemplate,
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
-    stop_after_first_feasible: bool,
+    max_feasible_to_collect: usize,
 ) -> bool {
     if level == per_param_candidates.len() {
         // Leaf branch: this cross-product assignment is feasible iff
@@ -1210,7 +1289,10 @@ fn dfs_search(
         // at the deepest open level rather than halting the orchestrator.
         if dfs_leaf_feasible(current, parameterized_template, constraint_checker, functions) {
             feasible_assignments.push(current.clone());
-            return stop_after_first_feasible;
+            // Early-terminate once the requested feasible count is reached:
+            // free-mode (max=1) stops at the first feasible; strict-mode
+            // (max=2) stops once Ambiguous is provable.
+            return feasible_assignments.len() >= max_feasible_to_collect;
         }
         return false;
     }
@@ -1224,7 +1306,7 @@ fn dfs_search(
             parameterized_template,
             constraint_checker,
             functions,
-            stop_after_first_feasible,
+            max_feasible_to_collect,
         );
         current.pop();
         if early {
