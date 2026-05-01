@@ -261,26 +261,47 @@ mod tests {
         );
     }
 
-    /// Centralised lex-min helper must agree with the BTreeMap's natural
-    /// iteration order: `pick_lexmin_kernel()` returns the same registration
-    /// that `registry().values().next()` would produce. Pinning this keeps
-    /// the tie-break invariant living in one place
-    /// ([`pick_lexmin_kernel`]) rather than being independently re-derived
-    /// at each call site (e.g. `Engine::with_registered_kernel`).
+    /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
+    /// *smaller* kernel when multiple registrations are present.
+    ///
+    /// Two `cfg(test)`-only synthetic kernels are registered in
+    /// `test_synthetic_kernel`: `__a_kernel` (sorts before `__b_kernel`).
+    /// The test asserts:
+    /// 1. Both synthetics are visible to `registry()` (proving the inventory
+    ///    walk captured all submissions, not just the first).
+    /// 2. `pick_lexmin_kernel()` returns `__a_kernel`, not `__b_kernel` —
+    ///    the lex-smaller name wins.
+    ///
+    /// This is NOT tautological: a broken implementation that returns
+    /// `registry().values().next()` from a `HashMap` (unordered), or one
+    /// that returns the last-inserted entry, would fail assertion (2).
     #[test]
-    fn pick_lexmin_kernel_matches_registry_iteration_order() {
-        let lexmin = pick_lexmin_kernel().expect(
-            "registry must contain at least the cfg(test) synthetic kernel — \
-             see test_synthetic_kernel module",
+    fn pick_lexmin_kernel_returns_lex_smaller_of_known_pair() {
+        // (1) Both named synthetics must be visible — proves the inventory walk
+        //     captured all submissions rather than stopping at the first.
+        assert!(
+            registry().contains_key("__a_kernel"),
+            "registry must contain synthetic kernel \"__a_kernel\" — \
+             step-2 adds test_synthetic_kernel::NAME_A registration",
         );
-        let first_via_registry: &&KernelRegistration = registry().values().next().expect(
-            "registry must contain at least the cfg(test) synthetic kernel — \
+        assert!(
+            registry().contains_key("__b_kernel"),
+            "registry must contain synthetic kernel \"__b_kernel\" — \
+             step-2 adds test_synthetic_kernel::NAME_B registration",
+        );
+
+        // (2) pick_lexmin_kernel must return the lex-smaller of the two
+        //     synthetics. "__a_kernel" < "__b_kernel" in ASCII order,
+        //     so __a_kernel must win.
+        let lexmin = pick_lexmin_kernel().expect(
+            "registry must contain at least the cfg(test) synthetic kernels — \
              see test_synthetic_kernel module",
         );
         assert_eq!(
-            lexmin.name, first_via_registry.name,
-            "pick_lexmin_kernel and registry().values().next() must agree on the \
-             lex-smallest entry — divergence indicates two parallel tie-break impls",
+            lexmin.name, "__a_kernel",
+            "pick_lexmin_kernel must return the lex-smallest registered name \
+             (\"__a_kernel\"), but got {:?}",
+            lexmin.name,
         );
     }
 }
