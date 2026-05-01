@@ -14,13 +14,38 @@ import { main } from '../index.js';
 
 /**
  * Extract the constructed prompt from the most recent spawn() call.
- * Finds the argument after '--' in the spawn args, which is the prompt text
- * passed to the Claude CLI.
+ * Reads the first JSON line written to the spawned process's stdin PassThrough,
+ * parses it as a stream-json user message, and returns the text content.
  */
-function getBuiltPrompt(callIndex = 0): string {
-  const callArgs = vi.mocked(spawn).mock.calls[callIndex]?.[1] as string[];
-  const dashIdx = callArgs.indexOf('--');
-  return callArgs[dashIdx + 1];
+async function getBuiltPrompt(callIndex = 0): Promise<string> {
+  const mockProc = vi.mocked(spawn).mock.results[callIndex]?.value as any;
+  const parsed = await drainStdinFirstLine(mockProc);
+  return (parsed as any).message.content[0].text as string;
+}
+
+/**
+ * Drain the first JSON line written to a spawned process's stdin PassThrough.
+ * Returns the parsed object.
+ */
+function drainStdinFirstLine(mockProc: any): Promise<unknown> {
+  const stdin = mockProc?.stdin as PassThrough;
+  if (!stdin) throw new Error('No stdin on mock process');
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    const onData = (chunk: Buffer | string) => {
+      buf += chunk.toString();
+      const nlIdx = buf.indexOf('\n');
+      if (nlIdx !== -1) {
+        stdin.removeListener('data', onData);
+        try {
+          resolve(JSON.parse(buf.slice(0, nlIdx)));
+        } catch (e) {
+          reject(e);
+        }
+      }
+    };
+    stdin.on('data', onData);
+  });
 }
 
 /**
@@ -139,6 +164,7 @@ describe('SidecarSession', () => {
     expect(toolCalls[0]).toEqual({
       type: 'tool_call',
       id: 'msg-tc',
+      tool_use_id: 'tu-1',
       tool_name: 'reify_get_source',
       tool_input: { file: 'main.ri' },
     });
@@ -308,7 +334,7 @@ describe('SidecarSession', () => {
         context: { current_file: 'src/main.ri' },
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).toContain('Explain this');
       expect(prompt).toContain('Current file: src/main.ri');
@@ -323,7 +349,7 @@ describe('SidecarSession', () => {
         context: { attached_contexts: ['file: lib.ri\nfn add(a, b) = a + b', 'file: util.ri\nfn clamp(v) = max(0, v)'] },
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).toContain('Help me');
       expect(prompt).toContain('[Context]');
@@ -344,7 +370,7 @@ describe('SidecarSession', () => {
         },
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).toContain('Full context');
       expect(prompt).toContain('[Context]');
@@ -374,7 +400,7 @@ describe('SidecarSession', () => {
         context: {},
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).not.toContain('[Context]');
       expect(prompt).toBe('Some text');
@@ -388,10 +414,189 @@ describe('SidecarSession', () => {
         context: { current_file: '' },
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).not.toContain('[Context]');
       expect(prompt).not.toContain('Current file:');
+    });
+  });
+
+  it('tool_result inbound is forwarded to claude CLI stdin with the matching tool_use_id', async () => {
+    // Create a process that emits a tool_use block and stays open
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation((() => {
+      process.nextTick(() => {
+        stdout.push(JSON.stringify({
+          type: 'assistant',
+          message: { content: [
+            { type: 'tool_use', id: 'toolu_xyz', name: 'reify_get_diagnostics', input: {} },
+          ] },
+        }) + '\n');
+        // stdout stays open — don't push null yet
+      });
+      return mockProc;
+    }) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    // Start message without awaiting it (it will hang until stdin closes)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-tr-fwd',
+      text: 'Check diagnostics',
+    });
+
+    // Wait for the tool_call outbound to be emitted (500ms deadline)
+    const toolCallDeadline = Date.now() + 500;
+    while (Date.now() < toolCallDeadline) {
+      if (outputs.some((o) => o.type === 'tool_call')) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(outputs.some((o) => o.type === 'tool_call')).toBe(true);
+
+    // Now collect all stdin writes so far, then send tool_result
+    // We'll drain stdin lines in order: first is the user prompt, second will be tool_result
+    const stdinLines: unknown[] = [];
+    let stdinBuf = '';
+    mockProc.stdin.on('data', (chunk: Buffer | string) => {
+      stdinBuf += chunk.toString();
+      let nlIdx: number;
+      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
+        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
+        stdinBuf = stdinBuf.slice(nlIdx + 1);
+      }
+    });
+
+    // Send the tool_result inbound
+    await session.handleMessage({
+      type: 'tool_result',
+      id: 'msg-1',
+      tool_name: 'reify_get_diagnostics',
+      result: { diagnostics: [] },
+    });
+
+    // Give a tick for the write to flush
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Close the process
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-tr-fwd' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+
+    // After the initial user-text message, a second JSON line should have been written
+    // with the tool_result content block
+    expect(stdinLines.length).toBeGreaterThanOrEqual(2);
+    expect(stdinLines[1]).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_xyz',
+          content: { diagnostics: [] },
+        }],
+      },
+    });
+  });
+
+  it('tool_result inbound with no matching tool_use emits error outbound', async () => {
+    // No send_message dispatched — pendingToolUseIds is empty
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'tool_result',
+      id: 'msg-orphan',
+      tool_name: 'reify_unknown',
+      result: 'x',
+    });
+
+    // Should emit exactly one error with id='msg-orphan' and matching message
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).id).toBe('msg-orphan');
+    expect((errors[0] as any).message).toMatch(/no in-flight|no pending tool_use|no matching tool_use/i);
+
+    // Should NOT have spawned any subprocess
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+  });
+
+  it('tool_result inbound preserves queue entry when no in-flight stdin', async () => {
+    // Simulate stale tool_use carryover: pendingToolUseIds has an entry but currentStdin is null
+    // (no invokeSdk in flight). This tests that handleToolResult does NOT shift the queue
+    // before confirming currentStdin is available.
+    (session as any).pendingToolUseIds.set('reify_get_source', ['toolu_carry']);
+    (session as any).toolNameById.set('toolu_carry', 'reify_get_source');
+    // currentStdin remains null (no invokeSdk active)
+
+    await session.handleMessage({
+      type: 'tool_result',
+      id: 'msg-stale',
+      tool_name: 'reify_get_source',
+      result: 'x',
+    });
+
+    // (a) exactly one outbound error should be emitted with matching id and message
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).id).toBe('msg-stale');
+    expect((errors[0] as any).message).toMatch(/no pending tool_use|no in-flight|no matching/i);
+
+    // (b) CRITICAL: the queue entry must still be present — currentStdin was null so
+    // handleToolResult must return early WITHOUT consuming (shifting) the FIFO queue.
+    // This is a regression guard: if the check order is ever reverted to shift-before-check,
+    // this assertion will fail because the queue will be empty.
+    const queue = (session as any).pendingToolUseIds.get('reify_get_source');
+    expect(queue).toEqual(['toolu_carry']);
+  });
+
+  it('invokeSdk uses --input-format stream-json and writes prompt to stdin', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } },
+      { type: 'result', session_id: 'sess-sj' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-x',
+      text: 'Hello',
+    });
+
+    // Drain stdin BEFORE awaiting the message (so we capture before proc closes)
+    const mockProc = vi.mocked(spawn).mock.results[0]?.value as any;
+    const stdinMsg = drainStdinFirstLine(mockProc);
+
+    await msgPromise;
+
+    // (a) spawn args include --input-format stream-json
+    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
+    const inputFormatIdx = callArgs.indexOf('--input-format');
+    expect(inputFormatIdx).toBeGreaterThanOrEqual(0);
+    expect(callArgs[inputFormatIdx + 1]).toBe('stream-json');
+
+    // (b) spawn args do NOT contain prompt text as argv tail
+    expect(callArgs[callArgs.length - 1]).not.toBe('Hello');
+
+    // (c) stdin received the prompt as a stream-json user message
+    const parsed = await stdinMsg;
+    expect(parsed).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Hello' }],
+      },
     });
   });
 
@@ -501,6 +706,69 @@ describe('SidecarSession multi-turn streaming', () => {
     // "Hi" (len=2) < lastTextLen (12) so no delta is emitted
     expect(deltaContents).toContain('Hi');
     expect(deltaContents).toContain(' there!');
+  });
+});
+
+describe('SidecarSession stale-state lifecycle', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('invokeSdk start clears stale maps from a previous turn', async () => {
+    // Pre-populate stale state from a hypothetical prior turn that left data behind
+    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
+    (session as any).toolNameById.set('toolu_stale', 'reify_old');
+
+    // Configure spawn mock to return a process that emits no tool_use (just text + result)
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
+      { type: 'result', session_id: 'sess-clean' },
+    ])) as any);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-fresh', text: 'Hi' });
+
+    // After the invocation completes, the stale entries must have been cleared at start
+    expect((session as any).pendingToolUseIds.has('reify_old')).toBe(false);
+    expect((session as any).toolNameById.has('toolu_stale')).toBe(false);
+  });
+
+  it('destroy() clears toolNameById and pendingToolUseIds maps', () => {
+    // Pre-populate both maps
+    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
+    (session as any).toolNameById.set('toolu_stale', 'reify_old');
+
+    session.destroy();
+
+    expect((session as any).toolNameById.size).toBe(0);
+    expect((session as any).pendingToolUseIds.size).toBe(0);
+  });
+
+  it('clear_session clears toolNameById and pendingToolUseIds maps', async () => {
+    // Pre-populate both maps
+    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
+    (session as any).toolNameById.set('toolu_stale', 'reify_old');
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'clear_session' });
+
+    expect((session as any).toolNameById.size).toBe(0);
+    expect((session as any).pendingToolUseIds.size).toBe(0);
+
+    // Verify the existing handleClearSession contract is preserved: ready is still emitted
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]).toEqual({ type: 'ready' });
   });
 });
 
@@ -957,6 +1225,119 @@ describe('entrypoint wiring', () => {
     // The first message should be 'ready'
     expect(msgs.length).toBeGreaterThanOrEqual(1);
     expect(msgs[0]).toEqual({ type: 'ready' });
+  });
+
+  it('tool_result inbound is accepted end-to-end via entrypoint and forwarded to claude CLI stdin', async () => {
+    // Create a mock process that emits a tool_use and stays open
+    const mockProc = new EventEmitter() as any;
+    const mockStdout = new PassThrough();
+    mockProc.stdout = mockStdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      process.nextTick(() => {
+        // Emit a tool_use event and leave stdout open
+        mockStdout.push(JSON.stringify({
+          type: 'assistant',
+          message: { content: [
+            { type: 'tool_use', id: 'toolu_e2e', name: 'reify_get_diagnostics', input: {} },
+          ] },
+        }) + '\n');
+      });
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          mockStdout.end();
+          mockProc.exitCode = null;
+          mockProc.emit('close', null);
+        });
+      }
+      return mockProc;
+    }) as any);
+
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    // Collect outbound messages as they arrive
+    const receivedMsgs: OutboundMessage[] = [];
+    let outputBuf = '';
+    output.on('data', (chunk: Buffer) => {
+      outputBuf += chunk.toString();
+      let idx: number;
+      while ((idx = outputBuf.indexOf('\n')) !== -1) {
+        const line = outputBuf.slice(0, idx);
+        outputBuf = outputBuf.slice(idx + 1);
+        if (line.length > 0) receivedMsgs.push(JSON.parse(line));
+      }
+    });
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Set up stdin capture BEFORE writing the send_message
+    const stdinLines: unknown[] = [];
+    let stdinBuf = '';
+    mockProc.stdin.on('data', (chunk: Buffer | string) => {
+      stdinBuf += chunk.toString();
+      let nlIdx: number;
+      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
+        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
+        stdinBuf = stdinBuf.slice(nlIdx + 1);
+      }
+    });
+
+    // Send a send_message through the entrypoint input
+    input.write(JSON.stringify({ type: 'send_message', id: 'e2e-tr-1', text: 'Check diagnostics' }) + '\n');
+
+    // Wait for tool_call outbound to arrive (signals tool_use was parsed and pendingToolUseIds populated)
+    const toolCallDeadline = Date.now() + 500;
+    while (Date.now() < toolCallDeadline) {
+      if (receivedMsgs.some((m) => m.type === 'tool_call')) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(receivedMsgs.some((m) => m.type === 'tool_call')).toBe(true);
+
+    // Send tool_result through the entrypoint input (the previous failure mode: parseInboundMessage threw)
+    input.write(JSON.stringify({
+      type: 'tool_result',
+      id: 'e2e-tr-1',
+      tool_name: 'reify_get_diagnostics',
+      result: { diagnostics: [] },
+    }) + '\n');
+
+    // Give time for the write to propagate through the session
+    await new Promise((r) => setTimeout(r, 50));
+
+    // (a) NO outbound error event was emitted
+    const errors = receivedMsgs.filter((m) => m.type === 'error');
+    expect(errors).toHaveLength(0);
+
+    // (b) The mock claude CLI's stdin received the tool_result content block
+    // stdinLines[0] = initial user prompt; stdinLines[1] = tool_result block
+    expect(stdinLines.length).toBeGreaterThanOrEqual(2);
+    expect(stdinLines[1]).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_e2e', content: { diagnostics: [] } }],
+      },
+    });
+
+    // Clean up: close the mock process and end input
+    mockStdout.push(JSON.stringify({ type: 'result', session_id: 'sess-e2e-tr' }) + '\n');
+    mockStdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+
+    await new Promise((r) => setTimeout(r, 50));
+    input.end();
+
+    await Promise.race([mainPromise, new Promise((r) => setTimeout(r, 500))]);
+
+    vi.mocked(spawn).mockReset();
   });
 
   it('abort message is processed while send_message is in-flight (non-blocking input loop)', async () => {
