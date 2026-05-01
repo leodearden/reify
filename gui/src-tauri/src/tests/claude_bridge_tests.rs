@@ -170,17 +170,19 @@ fn outbound_thinking_delta_deserializes() {
 
 #[test]
 fn outbound_tool_call_deserializes() {
-    let json_str = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_shape","tool_input":{"name":"cube1"}}"#;
+    let json_str = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_shape","tool_input":{"name":"cube1"},"tool_use_id":"tu-9"}"#;
     let msg: OutboundMessage = serde_json::from_str(json_str).unwrap();
     match msg {
         OutboundMessage::ToolCall {
             id,
             tool_name,
             tool_input,
+            tool_use_id,
         } => {
             assert_eq!(id, "msg-1");
             assert_eq!(tool_name, "reify_get_shape");
             assert_eq!(tool_input["name"], "cube1");
+            assert_eq!(tool_use_id, "tu-9");
         }
         _ => panic!("Expected ToolCall"),
     }
@@ -313,17 +315,19 @@ fn parse_outbound_thinking_delta() {
 
 #[test]
 fn parse_outbound_tool_call() {
-    let line = r#"{"type":"tool_call","id":"msg-3","tool_name":"reify_get","tool_input":{"x":1}}"#;
+    let line = r#"{"type":"tool_call","id":"msg-3","tool_name":"reify_get","tool_input":{"x":1},"tool_use_id":"tu-9"}"#;
     let msg = parse_outbound(line).unwrap();
     match msg {
         OutboundMessage::ToolCall {
             id,
             tool_name,
             tool_input,
+            tool_use_id,
         } => {
             assert_eq!(id, "msg-3");
             assert_eq!(tool_name, "reify_get");
             assert_eq!(tool_input["x"], 1);
+            assert_eq!(tool_use_id, "tu-9");
         }
         _ => panic!("Expected ToolCall"),
     }
@@ -512,7 +516,7 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
 
     // Inject a reify_ tool_call from simulated sidecar stdout
     let tool_call =
-        r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_diagnostics","tool_input":{}}"#;
+        r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-diag"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -550,6 +554,8 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
         written
     );
     assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
+    assert_eq!(json_val["tool_use_id"], "tu-diag",
+        "tool_use_id must be echoed from the tool_call outbound");
 
     drop(stdout_writer);
 }
@@ -594,7 +600,7 @@ async fn from_parts_with_mcp_threads_selection_into_tool_result() {
 
     // Inject a reify_get_selection tool_call
     let tool_call =
-        r#"{"type":"tool_call","id":"msg-sel","tool_name":"reify_get_selection","tool_input":{}}"#;
+        r#"{"type":"tool_call","id":"msg-sel","tool_name":"reify_get_selection","tool_input":{},"tool_use_id":"tu-sel"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -620,6 +626,8 @@ async fn from_parts_with_mcp_threads_selection_into_tool_result() {
         written
     );
     assert_eq!(json_val["tool_name"], "reify_get_selection");
+    assert_eq!(json_val["tool_use_id"], "tu-sel",
+        "tool_use_id must be echoed from the tool_call outbound");
 
     let selection_result = &json_val["result"];
     assert_eq!(
@@ -685,7 +693,7 @@ async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
 
     // Inject a reify_focus_entity tool_call from simulated sidecar stdout
     let tool_call =
-        r#"{"type":"tool_call","id":"msg-focus","tool_name":"reify_focus_entity","tool_input":{"entity_path":"Bracket"}}"#;
+        r#"{"type":"tool_call","id":"msg-focus","tool_name":"reify_focus_entity","tool_input":{"entity_path":"Bracket"},"tool_use_id":"tu-focus"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -769,7 +777,7 @@ async fn tool_result_write_failure_emits_claude_error_event() {
     // The MCP handler will try to write the tool_result back to stdin_writer,
     // which will fail because stdin_reader was dropped.
     let tool_call =
-        r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{}}"#;
+        r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-fail"}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await
@@ -1199,12 +1207,14 @@ fn outbound_to_event_tool_call() {
         id: "msg-3".to_string(),
         tool_name: "reify_list".to_string(),
         tool_input: json!({"filter": "all"}),
+        tool_use_id: "tu-payload".to_string(),
     };
     let (name, payload) = outbound_to_event(&msg);
     assert_eq!(name, "claude-tool-call");
     assert_eq!(payload["id"], "msg-3");
     assert_eq!(payload["tool_name"], "reify_list");
     assert_eq!(payload["tool_input"]["filter"], "all");
+    assert_eq!(payload["tool_use_id"], "tu-payload");
 }
 
 #[test]
@@ -1586,6 +1596,24 @@ fn format_inbound_send_message_with_context_includes_context() {
     assert!(line.ends_with('\n'));
     let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     assert_eq!(json_val["context"]["selected_entity"], "box1");
+}
+
+#[test]
+fn format_inbound_tool_result_includes_tool_use_id() {
+    let msg = InboundMessage::ToolResult {
+        id: "msg-tr1".to_string(),
+        tool_name: "reify_get_diagnostics".to_string(),
+        result: serde_json::json!([]),
+        tool_use_id: "tu-echo-1".to_string(),
+    };
+    let line = format_inbound(&msg);
+    assert!(line.ends_with('\n'), "Should end with newline");
+    let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "tool_result");
+    assert_eq!(json_val["id"], "msg-tr1");
+    assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
+    assert_eq!(json_val["tool_use_id"], "tu-echo-1",
+        "tool_use_id must be echoed so the sidecar can use id-based correlation");
 }
 
 // --- shutdown_sidecar edge-case tests (task-353/step-1) ---

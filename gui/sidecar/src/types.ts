@@ -25,8 +25,11 @@ export interface InboundToolResult {
   type: 'tool_result';
   id: string;
   /** The Claude CLI tool_use_id from the corresponding tool_call outbound message.
-   * When present the sidecar uses id-based correlation (preferred, correct for
-   * out-of-order results). When absent it falls back to FIFO-by-tool_name. */
+   * The Rust host always echoes this field (InboundMessage::ToolResult.tool_use_id
+   * is required on the wire). When present the sidecar uses id-based correlation
+   * (preferred, correct for out-of-order results). When absent it falls back to
+   * FIFO-by-tool_name (kept optional here to allow sidecar tests that exercise
+   * the fallback path without an echoed id). */
   tool_use_id?: string;
   tool_name: string;
   result: unknown;
@@ -52,10 +55,8 @@ export interface ToolCall {
   type: 'tool_call';
   id: string;
   /** The Claude CLI tool_use_id. The host should echo this back as InboundToolResult.tool_use_id
-   * to enable id-based correlation and avoid the FIFO-by-tool_name in-order-only contract.
-   * Optional because the Tauri bridge layer does not yet forward this field from the sidecar
-   * stdout JSON to the Tauri event payload; hosts that receive it should still echo it back. */
-  tool_use_id?: string;
+   * to enable id-based correlation and avoid the FIFO-by-tool_name in-order-only contract. */
+  tool_use_id: string;
   tool_name: string;
   tool_input: Record<string, unknown>;
 }

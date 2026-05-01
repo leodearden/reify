@@ -75,6 +75,7 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box1' },
       } as OutboundMessage);
@@ -90,6 +91,7 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: state.currentMessageId!,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: {},
       } as OutboundMessage);
@@ -103,6 +105,7 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: {},
       } as OutboundMessage);
@@ -208,16 +211,18 @@ describe('claudeStore', () => {
       sendMessage('hello', {});
       const msgId = state.currentMessageId!;
 
-      // Two tool_call events with the same tool_name
+      // Two tool_call events with the same tool_name but distinct tool_use_ids
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box1' },
       } as OutboundMessage);
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-2',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box2' },
       } as OutboundMessage);
@@ -251,6 +256,7 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box1' },
       } as OutboundMessage);
@@ -283,12 +289,14 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: {},
       } as OutboundMessage);
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-2',
         tool_name: 'reify_get_parameters',
         tool_input: {},
       } as OutboundMessage);
@@ -302,22 +310,25 @@ describe('claudeStore', () => {
       sendMessage('hello', {});
       const msgId = state.currentMessageId!;
 
-      // Send: A, B, A
+      // Send: A, B, A — each with a unique tool_use_id
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box1' },
       } as OutboundMessage);
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-2',
         tool_name: 'reify_update_source',
         tool_input: { code: 'x' },
       } as OutboundMessage);
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-3',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box2' },
       } as OutboundMessage);

@@ -49,6 +49,9 @@ pub enum InboundMessage {
         id: String,
         tool_name: String,
         result: Value,
+        /// The Claude CLI tool_use_id echoed from the corresponding ToolCall outbound.
+        /// Enables id-based correlation in the sidecar (avoids FIFO-by-tool_name fallback).
+        tool_use_id: String,
     },
 }
 
@@ -68,6 +71,7 @@ pub enum OutboundMessage {
         id: String,
         tool_name: String,
         tool_input: Value,
+        tool_use_id: String,
     },
     ToolResult {
         id: String,
@@ -262,6 +266,7 @@ impl SidecarHandle {
                             id,
                             tool_name,
                             tool_input,
+                            tool_use_id,
                         } = &msg
                             && tool_name.starts_with("reify_")
                         {
@@ -269,6 +274,7 @@ impl SidecarHandle {
                             let err_id = id.clone();
                             let tool_name = tool_name.clone();
                             let tool_input = tool_input.clone();
+                            let tool_use_id = tool_use_id.clone();
                             let engine_clone = Arc::clone(&mcp.engine);
                             let selection_clone = Arc::clone(&mcp.selection);
                             let stdin_clone = Arc::clone(&stdin_for_reader);
@@ -295,6 +301,7 @@ impl SidecarHandle {
                                     id,
                                     tool_name,
                                     result: result_val,
+                                    tool_use_id,
                                 };
                                 let mut writer = stdin_clone.lock().await;
                                 if let Err(err) =
@@ -785,9 +792,10 @@ pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
             id,
             tool_name,
             tool_input,
+            tool_use_id,
         } => (
             "claude-tool-call".to_string(),
-            serde_json::json!({ "id": id, "tool_name": tool_name, "tool_input": tool_input }),
+            serde_json::json!({ "id": id, "tool_name": tool_name, "tool_input": tool_input, "tool_use_id": tool_use_id }),
         ),
         OutboundMessage::ToolResult {
             id,

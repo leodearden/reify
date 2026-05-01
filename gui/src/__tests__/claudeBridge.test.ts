@@ -342,12 +342,13 @@ describe('subscribeToClaudeEvents', () => {
     const listener = await setup(handler);
 
     listener({
-      payload: { id: 'msg-2', tool_name: 'edit_file', tool_input: { path: 'main.ri' } },
+      payload: { id: 'msg-2', tool_use_id: 'tu-2a', tool_name: 'edit_file', tool_input: { path: 'main.ri' } },
     });
 
     expect(handler).toHaveBeenCalledWith({
       type: 'tool_call',
       id: 'msg-2',
+      tool_use_id: 'tu-2a',
       tool_name: 'edit_file',
       tool_input: { path: 'main.ri' },
     });
@@ -438,6 +439,7 @@ describe('subscribeToClaudeEvents', () => {
     listener({
       payload: {
         id: 'tc1',
+        tool_use_id: 'tu-tc1',
         tool_name: 'read',
         tool_input: { path: '/f' },
         _debug: true,
@@ -447,6 +449,7 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith({
       type: 'tool_call',
       id: 'tc1',
+      tool_use_id: 'tu-tc1',
       tool_name: 'read',
       tool_input: { path: '/f' },
     });
@@ -467,6 +470,7 @@ describe('subscribeToClaudeEvents', () => {
     listener({
       payload: {
         id: 'tc-complex',
+        tool_use_id: 'tu-complex',
         tool_name: 'edit_file',
         tool_input: complexInput,
         _trace_id: 'abc-123',
@@ -477,6 +481,7 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith({
       type: 'tool_call',
       id: 'tc-complex',
+      tool_use_id: 'tu-complex',
       tool_name: 'edit_file',
       tool_input: complexInput,
     });
@@ -776,9 +781,9 @@ describe('subscribeToClaudeEvents', () => {
         const { setup } = captureListener('claude-tool-call');
         const handler = vi.fn();
         const listener = await setup(handler);
-        listener({ payload: { id: 'tc1', tool_name: 'edit', tool_input: null } });
+        listener({ payload: { id: 'tc1', tool_use_id: 'tu-tc1', tool_name: 'edit', tool_input: null } });
         expect(handler).toHaveBeenCalledWith({
-          type: 'tool_call', id: 'tc1', tool_name: 'edit', tool_input: {},
+          type: 'tool_call', id: 'tc1', tool_use_id: 'tu-tc1', tool_name: 'edit', tool_input: {},
         });
         expect(warnSpy).not.toHaveBeenCalled();
       });
@@ -787,9 +792,9 @@ describe('subscribeToClaudeEvents', () => {
         const { setup } = captureListener('claude-tool-call');
         const handler = vi.fn();
         const listener = await setup(handler);
-        listener({ payload: { id: 'tc2', tool_name: 'read', tool_input: [1, 2, 3] } });
+        listener({ payload: { id: 'tc2', tool_use_id: 'tu-tc2', tool_name: 'read', tool_input: [1, 2, 3] } });
         expect(handler).toHaveBeenCalledWith({
-          type: 'tool_call', id: 'tc2', tool_name: 'read', tool_input: {},
+          type: 'tool_call', id: 'tc2', tool_use_id: 'tu-tc2', tool_name: 'read', tool_input: {},
         });
         expect(warnSpy).not.toHaveBeenCalled();
       });
@@ -798,9 +803,9 @@ describe('subscribeToClaudeEvents', () => {
         const { setup } = captureListener('claude-tool-call');
         const handler = vi.fn();
         const listener = await setup(handler);
-        listener({ payload: { id: 'tc3', tool_name: 'write', tool_input: undefined } });
+        listener({ payload: { id: 'tc3', tool_use_id: 'tu-tc3', tool_name: 'write', tool_input: undefined } });
         expect(handler).toHaveBeenCalledWith({
-          type: 'tool_call', id: 'tc3', tool_name: 'write', tool_input: {},
+          type: 'tool_call', id: 'tc3', tool_use_id: 'tu-tc3', tool_name: 'write', tool_input: {},
         });
         expect(warnSpy).not.toHaveBeenCalled();
       });
@@ -809,9 +814,9 @@ describe('subscribeToClaudeEvents', () => {
         const { setup } = captureListener('claude-tool-call');
         const handler = vi.fn();
         const listener = await setup(handler);
-        listener({ payload: { id: 'tc4', tool_name: 'run', tool_input: 'bad' } });
+        listener({ payload: { id: 'tc4', tool_use_id: 'tu-tc4', tool_name: 'run', tool_input: 'bad' } });
         expect(handler).toHaveBeenCalledWith({
-          type: 'tool_call', id: 'tc4', tool_name: 'run', tool_input: {},
+          type: 'tool_call', id: 'tc4', tool_use_id: 'tu-tc4', tool_name: 'run', tool_input: {},
         });
         expect(warnSpy).not.toHaveBeenCalled();
       });
@@ -820,9 +825,9 @@ describe('subscribeToClaudeEvents', () => {
         const { setup } = captureListener('claude-tool-call');
         const handler = vi.fn();
         const listener = await setup(handler);
-        listener({ payload: { id: 'tc-absent', tool_name: 'exec' } });
+        listener({ payload: { id: 'tc-absent', tool_use_id: 'tu-tc5', tool_name: 'exec' } });
         expect(handler).toHaveBeenCalledWith({
-          type: 'tool_call', id: 'tc-absent', tool_name: 'exec', tool_input: {},
+          type: 'tool_call', id: 'tc-absent', tool_use_id: 'tu-tc5', tool_name: 'exec', tool_input: {},
         });
         expect(warnSpy).not.toHaveBeenCalled();
       });
@@ -831,9 +836,9 @@ describe('subscribeToClaudeEvents', () => {
         const { setup } = captureListener('claude-tool-call');
         const handler = vi.fn();
         const listener = await setup(handler);
-        listener({ payload: { id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' } } });
+        listener({ payload: { id: 'tc5', tool_use_id: 'tu-tc6', tool_name: 'edit', tool_input: { path: '/f' } } });
         expect(handler).toHaveBeenCalledWith({
-          type: 'tool_call', id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' },
+          type: 'tool_call', id: 'tc5', tool_use_id: 'tu-tc6', tool_name: 'edit', tool_input: { path: '/f' },
         });
         expect(warnSpy).not.toHaveBeenCalled();
       });
@@ -919,7 +924,7 @@ type _AssertMapReturnType = AssertTrue<Equals<ReturnType<typeof mapContextToWire
 // If a field is added/removed/renamed in types.ts, tsc will fail here.
 type _AssertTextDeltaPayload = AssertTrue<Equals<Omit<TextDelta, 'type'>, { id: string; content: string }>>;
 type _AssertThinkingDeltaPayload = AssertTrue<Equals<Omit<ThinkingDelta, 'type'>, { id: string; content: string }>>;
-type _AssertToolCallPayload = AssertTrue<Equals<Omit<ToolCall, 'type'>, { id: string; tool_use_id?: string; tool_name: string; tool_input: Record<string, unknown> }>>;
+type _AssertToolCallPayload = AssertTrue<Equals<Omit<ToolCall, 'type'>, { id: string; tool_use_id: string; tool_name: string; tool_input: Record<string, unknown> }>>;
 type _AssertToolResultPayload = AssertTrue<Equals<Omit<ToolResult, 'type'>, { id: string; tool_name: string; result: unknown }>>;
 type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>;
 type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;

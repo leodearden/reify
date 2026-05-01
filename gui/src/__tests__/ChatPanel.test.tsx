@@ -142,7 +142,7 @@ describe('ChatPanel', () => {
     const store = makeStore();
     store.sendMessage('Hello', {});
     const msgId = store.state.currentMessageId!;
-    store.handleOutboundMessage({ type: 'tool_call', id: msgId, tool_name: 'reify_get_parameters', tool_input: {} });
+    store.handleOutboundMessage({ type: 'tool_call', id: msgId, tool_use_id: 'tuid-1', tool_name: 'reify_get_parameters', tool_input: {} });
     // sessionStatus should now be 'tool-calling'
     render(() => <ChatPanel store={store} />);
     expect(screen.getByTestId('abort-button')).toBeTruthy();
