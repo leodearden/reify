@@ -749,12 +749,17 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let source = "auto";
-            // Exercise all four AutoTypeParam codes — each must emit one debug event.
+            // Exercise all five AutoTypeParam codes — each must emit one debug event.
+            // The fifth code (`AutoTypeParamDepthBoundExceeded`, task 2659) routes
+            // through the same `reify_lsp::auto_type_param` debug target as the
+            // original four so LSP consumers see a uniform debug stream for every
+            // auto-type-param diagnostic surface.
             for code in [
                 DiagnosticCode::AutoTypeParamPoolOverflow,
                 DiagnosticCode::AutoTypeParamNoCandidate,
                 DiagnosticCode::AutoTypeParamAmbiguous,
                 DiagnosticCode::AutoTypeParamNonUnique,
+                DiagnosticCode::AutoTypeParamDepthBoundExceeded,
             ] {
                 let diag = Diagnostic::error("auto-type-param error")
                     .with_code(code)
@@ -765,8 +770,8 @@ mod tests {
 
             assert_eq!(
                 debug_count.load(Ordering::Acquire),
-                4,
-                "expected exactly 4 debug events — one per AutoTypeParam variant — before \
+                5,
+                "expected exactly 5 debug events — one per AutoTypeParam variant — before \
                  processing the Shadowing diagnostic; a missing emission here cannot be \
                  masked by a spurious Shadowing event later"
             );
@@ -779,9 +784,9 @@ mod tests {
 
             assert_eq!(
                 debug_count.load(Ordering::Acquire),
-                4,
+                5,
                 "Shadowing diagnostic must not emit on reify_lsp::auto_type_param; \
-                 counter must remain 4 after the non-AutoTypeParam code is processed"
+                 counter must remain 5 after the non-AutoTypeParam code is processed"
             );
         });
     }
