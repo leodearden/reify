@@ -502,6 +502,12 @@ impl OcctKernel {
     ///
     /// Returns `Err(QueryError::InvalidHandle(handle))` if the handle is unknown.
     /// Returns `Err(QueryError::QueryFailed(...))` if the OCCT call fails.
+    ///
+    /// The return type is `[f64; 3]` rather than the FFI-internal `Point3`
+    /// struct: `Point3` is a cxx-bridge type unavailable in stub builds
+    /// (`!has_occt`), so the public API uses a plain array for both paths.
+    /// Future point-returning `OcctKernel` methods should follow the same
+    /// convention.
     pub fn closest_point_on_shape(
         &self,
         handle: GeometryHandleId,
