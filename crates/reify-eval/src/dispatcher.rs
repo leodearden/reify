@@ -279,6 +279,15 @@ pub fn long_chain_threshold_from_env_value(value: Option<&str>) -> Duration {
 /// because all three functions resolve stage count from `plan.conversions.len()`;
 /// keeping them together minimises grep-and-edit cost for future refactors.
 ///
+/// # Why not `per_stage_tolerance(tol, plan.conversions.len().max(1))`?
+///
+/// For an empty chain, `len().max(1)` would pass `n_stages = 1`, yielding
+/// `tol × 0.8` — the safety factor fires even though there is no conversion
+/// error to budget.  The correct contract for a zero-conversion plan is strict
+/// pass-through: the demanded repr is already present, so no chain budget is
+/// allocated at all.  This wrapper captures that semantic distinction so
+/// callers do not have to replicate the `is_empty()` guard themselves.
+///
 /// # Truth table
 ///
 /// | `plan.conversions.len()` | result                                        |
@@ -286,7 +295,18 @@ pub fn long_chain_threshold_from_env_value(value: Option<&str>) -> Duration {
 /// | 0 (empty chain)          | `requested_tol` (pass-through, no factor)     |
 /// | 1                        | `requested_tol × 0.8` (via delegation)        |
 /// | N ≥ 2                    | `requested_tol^(1/N) × 0.8` (via delegation) |
+///
+/// # Panics (debug builds only)
+///
+/// In debug builds, panics if `requested_tol` is not finite or is negative,
+/// keeping the precondition uniform across both the empty-chain and non-empty
+/// branches (the non-empty branch delegates to `per_stage_tolerance`, which
+/// carries the same assertion).
 pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> f64 {
+    debug_assert!(
+        requested_tol.is_finite() && requested_tol >= 0.0,
+        "dispatcher: requested_tol must be finite and non-negative, got {requested_tol}"
+    );
     if plan.conversions.is_empty() {
         // No kernel boundary crossed: demanded repr was already in `available`.
         // Pass through unchanged — the 0.8 SAFETY_FACTOR only applies when
