@@ -13,6 +13,15 @@
 //! When the follow-up task lands, the factory can switch to the real impl
 //! behind `cfg(has_manifold)` without changing the registration shape.
 
+use reify_types::{
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
+    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+};
+
+const STUB_MSG: &str = "Manifold mesh booleans not yet implemented; \
+    reify-kernel-manifold is a registration-only scaffold for v0.2 task 2643. \
+    Real Manifold C++ FFI is a follow-up.";
+
 /// Stub Manifold kernel — all operations return descriptive errors.
 ///
 /// The `_private: ()` field prevents external construction without [`Self::new`],
@@ -35,5 +44,82 @@ impl ManifoldKernel {
 impl Default for ManifoldKernel {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl GeometryKernel for ManifoldKernel {
+    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(STUB_MSG.into()))
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Err(QueryError::QueryFailed(STUB_MSG.into()))
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        Err(ExportError::FormatError(STUB_MSG.into()))
+    }
+
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        Err(TessError::TessellationFailed(STUB_MSG.into()))
+    }
+    // extract_edges, extract_faces, execute_with_history, query_many all use
+    // the trait defaults — they error in the standard "not supported" fashion.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::{ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery};
+
+    /// Structural pin: `Box<dyn GeometryKernel>` from `ManifoldKernel` must
+    /// compile. This fails at compile time if `ManifoldKernel` lacks the
+    /// `Send + Sync` supertraits required by the `GeometryKernel` trait object.
+    #[test]
+    fn manifold_kernel_implements_geometry_kernel_trait() {
+        let _boxed: Box<dyn GeometryKernel> = Box::new(ManifoldKernel::new());
+    }
+
+    /// `execute` must return `Err(GeometryError::OperationFailed(msg))` where
+    /// `msg` contains "Manifold" — confirming the stub error message names the
+    /// kernel. A future regression that swallows the kernel name (e.g. by
+    /// returning a generic error) would fail this assertion.
+    #[test]
+    fn manifold_kernel_returns_descriptive_error_for_mesh_boolean() {
+        let mut kernel = ManifoldKernel::new();
+        let result = kernel.execute(&GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("Manifold"),
+                    "error message must mention 'Manifold', got: {msg:?}",
+                );
+            }
+            other => panic!("expected Err(GeometryError::OperationFailed(_)), got {other:?}"),
+        }
+    }
+
+    /// `query`, `export`, and `tessellate` must all return `Err(...)` for any
+    /// input, locking the all-error stub contract.
+    #[test]
+    fn manifold_kernel_query_export_tessellate_all_error() {
+        let mut kernel = ManifoldKernel::new();
+
+        let query_result = kernel.query(&GeometryQuery::Volume(GeometryHandleId(1)));
+        assert!(query_result.is_err(), "query must return Err(...)");
+
+        let export_result = kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut vec![]);
+        assert!(export_result.is_err(), "export must return Err(...)");
+
+        let tess_result = kernel.tessellate(GeometryHandleId(1), 0.1);
+        assert!(tess_result.is_err(), "tessellate must return Err(...)");
     }
 }

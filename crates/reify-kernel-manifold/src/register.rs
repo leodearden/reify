@@ -46,7 +46,33 @@
 //! pattern. Only the kernel name string, supports table contents, and the
 //! dropped `cfg` gate differ.
 
-use reify_types::{CapabilityDescriptor, Operation, ReprKind};
+use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
+
+/// Factory invoked by the engine once at startup, returning the stub
+/// [`ManifoldKernel`](crate::kernel::ManifoldKernel).
+///
+/// Real Manifold C++ FFI is deferred to a follow-up task; this stub factory
+/// ensures the `inventory::submit!` below compiles and the registration
+/// materialises in `reify_eval::kernel_registry::registry()`. When the
+/// follow-up task adds real FFI, this function can switch behind
+/// `cfg(has_manifold)` without changing the registration shape.
+fn manifold_factory() -> Box<dyn GeometryKernel> {
+    Box::new(crate::kernel::ManifoldKernel::new())
+}
+
+// Unconditional submit — no `cfg(has_manifold)` gate (see design decisions in
+// the module doc). Manifold has only a stub in this v0.2 task, so a
+// `cfg(has_manifold)` gate would never fire and the registration would be dead
+// code. Submitting unconditionally keeps the cross-crate integration test
+// (step-7) clean and lets the dispatcher exercise lex-min tie-break logic with
+// a real two-kernel registry.
+inventory::submit! {
+    KernelRegistration {
+        name: MANIFOLD_KERNEL_NAME,
+        descriptor: manifold_capability_descriptor,
+        factory: manifold_factory,
+    }
+}
 
 /// Stable identifier for the Manifold kernel in the v0.2 multi-kernel registry.
 ///
