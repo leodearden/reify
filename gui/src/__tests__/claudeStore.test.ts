@@ -75,6 +75,7 @@ describe('claudeStore', () => {
       handleOutboundMessage({
         type: 'tool_call',
         id: msgId,
+        tool_use_id: 'tuid-1',
         tool_name: 'reify_get_parameters',
         tool_input: { entity: 'box1' },
       } as OutboundMessage);
