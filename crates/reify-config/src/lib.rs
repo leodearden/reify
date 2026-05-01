@@ -297,9 +297,11 @@ struct ManifestRaw {
 ///
 /// `max_depth` defaults to [`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`] so a
 /// declared-but-empty `[auto_type_params]` table still produces the
-/// PRD-decided default. `deny_unknown_fields` lands in step-8 to mirror the
-/// strict-schema convention on `[kernels.<id>]`.
+/// PRD-decided default. `deny_unknown_fields` mirrors the strict-schema
+/// convention on `[kernels.<id>]`: typos like `min_depth` surface as
+/// `ManifestError::Parse(_)` rather than silently parsing to the default.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AutoTypeParamsRaw {
     #[serde(default = "default_max_depth_value")]
     max_depth: usize,
