@@ -2314,10 +2314,27 @@ fn arm_member_type(
                 })
         }
         reify_syntax::MemberDecl::Let(l) => {
+            // The let was registered in the pre-pass; resolve its type from scope.
+            // Defensive parallel with the Param arm above: the per-arm loop at
+            // entity.rs:2125-2133 currently `continue`s past non-Sub arms before
+            // calling this helper, and the pre-pass at entity.rs:528-549 already
+            // rejects non-Sub arm members with a separate diagnostic — so this
+            // branch is unreachable from user source today. The diagnostic exists
+            // so that future work which lifts the Sub-only restriction does not
+            // regress to silently producing Type::Real.
             scope
                 .resolve(&l.name)
                 .map(|(_, ty)| ty.clone())
-                .unwrap_or(Type::Real)
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "could not resolve type for match-arm let '{}'",
+                            l.name
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "unresolved let")),
+                    );
+                    Type::Real
+                })
         }
         _ => {
             // suggestion 7: emit a diagnostic for any unhandled MemberDecl variant
