@@ -698,3 +698,77 @@ fn unrelated_unresolved_no_info_emitted() {
         info_diags
     );
 }
+
+// ─── task 2782: span-level dedup for parametric-prelude Info diagnostic ────────
+
+/// A user module that declares `let x : Vec<Real> = none` (a
+/// `fixup_option_none_for_let`-triggering form) against a parametric prelude
+/// `pub type Vec<T>` must receive exactly one `Severity::Info` diagnostic on the
+/// `Vec<Real>` annotation span.
+///
+/// This complements `parametric_form_use_emits_info_diagnostic` (which exercises
+/// the `param p : Vec<Float>` path with a single binding-site resolution).  The
+/// `let ... = none` form routes through `fixup_option_none_for_let`
+/// (entity.rs:2715), an additional resolution path that the existing test
+/// cannot cover.  The "exactly one Info" assertion guards against any future
+/// double-resolve regression — e.g. if a binding-site pre-pass for lets is
+/// added to mirror the existing param pre-pass at entity.rs:574, span-level
+/// dedup in `TypeAliasRegistry::should_emit_skipped_parametric_prelude_info`
+/// (task 2782) keeps the user-visible diagnostic count at one per use site.
+///
+/// Note: unlike the `param p : Vec<Float>` path, the `let ... = none` form does
+/// NOT produce an Error-level diagnostic — `none` is valid as an untyped sentinel
+/// and the annotation is advisory in this context.  Only the Info hint fires.
+///
+/// **Forward-looking guard**: currently only one resolution path runs for this form
+/// (via `fixup_option_none_for_let`; `compile_expr` intercepts `none` before
+/// consulting the annotation, and the entity-let pre-pass registers a placeholder
+/// `Type::Real` without resolving), so the `info_diags.len() == 1` assertion holds
+/// whether or not span-level dedup is active.  The dedup mechanism itself is
+/// exercised by the unit test
+/// `should_emit_skipped_parametric_prelude_info_dedups_per_span` in
+/// `type_resolution.rs`.  This integration test anchors the "exactly one Info per
+/// use site" contract so that any future binding-site pre-pass for lets (mirroring
+/// the existing param pre-pass at entity.rs:574) is caught immediately as a
+/// regression rather than silently producing duplicate diagnostics.
+#[test]
+fn parametric_prelude_let_none_emits_single_info_diagnostic() {
+    let vec_alias = make_parametric_pub_alias("Vec", "T");
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("param_let_info_prelude"))
+        .type_alias(vec_alias)
+        .build();
+
+    // `let x : Vec<Real> = none` — `none` produces OptionNone(Option<Real>) at
+    // compile_expr time; fixup_option_none_for_let then resolves the annotation
+    // `Vec<Real>` against the alias registry, hitting the
+    // skipped-parametric-prelude Info-emit branch in resolve_type_expr_with_aliases.
+    let source = "structure def S { let x : Vec<Real> = none }";
+    let parsed = reify_syntax::parse(source, ModulePath::single("param_let_info_user"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = compile_with_prelude(&parsed, &[prelude_m]);
+
+    // Headline assertion: exactly ONE Info diagnostic on this single use site.
+    // (The `let ... = none` form does not produce an Error, unlike the param path.)
+    let info_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info)
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected exactly 1 Info diagnostic for `let x : Vec<Real> = none`; got: {:?}",
+        info_diags
+    );
+    assert!(
+        info_diags[0].message.contains("Vec"),
+        "Info diagnostic must mention 'Vec'; got: {}",
+        info_diags[0].message
+    );
+    assert!(
+        info_diags[0].message.contains("parametric"),
+        "Info diagnostic must mention 'parametric'; got: {}",
+        info_diags[0].message
+    );
+}
