@@ -632,3 +632,109 @@ fn dfs_phase_a_overflow_on_first_param_halts_before_recursion() {
         "DFS overflow diagnostic must be an error"
     );
 }
+
+// ─── step-27: DFS Phase A empty pool on first param halts before recursion ──
+
+/// When the first param's bounds match zero in-scope structures, Phase A
+/// returns `CandidateEnumeration::Empty` for that param, and the DFS
+/// orchestrator emits a `NoCandidate` error and halts before enumerating
+/// the second param or starting the recursion.
+///
+/// Mirrors v0.1 BFS's `no_candidate_on_first_param_halts_and_does_not_enumerate_second_param`
+/// to pin Phase-A empty-pool halt parity through DFS.
+///
+/// Pins:
+/// - `per_param == [("T", NoCandidate)]` — length 1
+/// - `substitution.is_empty()` — no successful substitutions
+/// - exactly one `AutoTypeParamNoCandidate` diagnostic with the
+///   zero-rejections message form (`"...no feasible candidates for bound 'Seal'"`
+///   — no `"rejected by constraint"` suffix)
+/// - no second diagnostic (second param `U` was not enumerated)
+#[test]
+fn dfs_phase_a_empty_pool_on_first_param_halts_before_recursion() {
+    // Source with `trait Seal` (no structures implementing it) and a
+    // structure implementing `Cooled` for the second param. The first
+    // param's empty pool must short-circuit the orchestrator.
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()], // zero structures implement Seal
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()], // one structure; should NOT be enumerated
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![("T".to_string(), SelectionResult::NoCandidate)],
+            substitution: vec![],
+        },
+        "DFS no-candidate on first param must halt with per_param=[(T, NoCandidate)], substitution=[]"
+    );
+
+    // Exactly one diagnostic: NoCandidate for T (not a second for U).
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS exactly one no-candidate diagnostic expected (second param not enumerated), got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "DFS diagnostic must be AutoTypeParamNoCandidate, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "DFS no-candidate diagnostic must be an error"
+    );
+    // Zero-rejections message form: bound is mentioned but no "rejected by
+    // constraint" suffix (Phase A's empty-pool form, not Phase C's
+    // all-rejected-by-feasibility form).
+    assert!(
+        diagnostics[0].message.contains("'Seal'"),
+        "DFS no-candidate diagnostic must mention the bound 'Seal'; got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        !diagnostics[0].message.contains("rejected by constraint"),
+        "DFS no-candidate (zero-rejections form) must NOT mention 'rejected by constraint'; got: {:?}",
+        diagnostics[0].message
+    );
+}
