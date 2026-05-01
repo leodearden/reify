@@ -2901,3 +2901,53 @@ pub(crate) fn expand_constraint_inst(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arm_member_type_let_emits_diagnostic_when_unresolved() {
+        // Construct an empty scope — name "x" will not resolve.
+        let scope = CompilationScope::new("TestEntity");
+
+        // Hand-construct a Let member with name "x".
+        let span = SourceSpan::new(0, 0);
+        let member = reify_syntax::MemberDecl::Let(reify_syntax::LetDecl {
+            name: "x".to_string(),
+            doc: None,
+            is_pub: false,
+            type_expr: None,
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::Ident("dummy".to_string()),
+                span,
+            },
+            where_clause: None,
+            annotations: vec![],
+            span,
+            content_hash: reify_types::ContentHash(0),
+        });
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let ty = arm_member_type(&member, &scope, &mut diagnostics, span);
+
+        // Fallback type is retained.
+        assert_eq!(ty, Type::Real);
+
+        // A diagnostic must be emitted.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic, got: {:?}",
+            diagnostics
+        );
+
+        // The message must contain the expected substring and the name.
+        let msg = &diagnostics[0].message;
+        assert!(
+            msg.contains("could not resolve type for match-arm let"),
+            "unexpected message: {msg}"
+        );
+        assert!(msg.contains("'x'"), "message should mention 'x': {msg}");
+    }
+}
