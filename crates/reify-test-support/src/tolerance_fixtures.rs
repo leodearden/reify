@@ -492,6 +492,13 @@ mod tests {
         assert_eq!(sub.structure_name, "Head");
         assert!(sub.args.is_empty(), "args must be empty");
         assert!(!sub.is_collection, "is_collection must be false");
+        // The thickness param must survive sub-component appends — pin here so a
+        // future builder reorder that drops the param can't slip past unit tests.
+        assert_eq!(template.value_cells.len(), 1, "thickness param survives sub append");
+        assert_eq!(
+            template.value_cells[0].id,
+            ValueCellId::new("MyDesign", "thickness"),
+        );
 
         // (c) two subs — order preserved
         let template = my_design_template_with_subs(&[("head", "Head"), ("tail", "Head")]);
