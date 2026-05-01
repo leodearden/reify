@@ -300,3 +300,78 @@ fn bare_sub_inside_specialization_scope_emits_forbidden_decl_diagnostic() {
         "primary label span must equal the inner SubDecl's span"
     );
 }
+
+/// Combination test: all three forbidden kinds in a single specialization scope
+/// must each emit an independent diagnostic, in source order (param → port → sub).
+///
+/// Shape: `structure S { sub scope : Foo { param x; port p : SomePort; sub child : Foo } }`
+#[test]
+fn all_three_forbidden_kinds_in_same_specialization_scope_each_emit_diagnostic() {
+    let p_span = param_span();
+    let po_span = port_span();
+    let s_span = sub_span();
+    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+        "scope",
+        zero_span(),
+        vec![
+            make_param("x", p_span),
+            make_port("p", po_span),
+            make_sub_bare("child", s_span),
+        ],
+    )]);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let diags = forbidden_diagnostics(&compiled.diagnostics);
+
+    assert_eq!(
+        diags.len(),
+        3,
+        "expected exactly three SpecializationForbiddenDecl diagnostics (param + port + sub), got: {:#?}",
+        diags
+    );
+
+    // First diagnostic: param x
+    let d0 = diags[0];
+    assert_eq!(d0.severity, Severity::Error);
+    assert!(
+        d0.message.contains("'param'"),
+        "first diagnostic must be for 'param', got: {:?}",
+        d0.message
+    );
+    assert!(
+        d0.message.contains("'x'"),
+        "first diagnostic must name 'x', got: {:?}",
+        d0.message
+    );
+    assert_eq!(d0.labels[0].span, p_span, "first span must equal param span");
+
+    // Second diagnostic: port p
+    let d1 = diags[1];
+    assert_eq!(d1.severity, Severity::Error);
+    assert!(
+        d1.message.contains("'port'"),
+        "second diagnostic must be for 'port', got: {:?}",
+        d1.message
+    );
+    assert!(
+        d1.message.contains("'p'"),
+        "second diagnostic must name 'p', got: {:?}",
+        d1.message
+    );
+    assert_eq!(d1.labels[0].span, po_span, "second span must equal port span");
+
+    // Third diagnostic: sub child
+    let d2 = diags[2];
+    assert_eq!(d2.severity, Severity::Error);
+    assert!(
+        d2.message.contains("'sub'"),
+        "third diagnostic must be for 'sub', got: {:?}",
+        d2.message
+    );
+    assert!(
+        d2.message.contains("'child'"),
+        "third diagnostic must name 'child', got: {:?}",
+        d2.message
+    );
+    assert_eq!(d2.labels[0].span, s_span, "third span must equal sub span");
+}
