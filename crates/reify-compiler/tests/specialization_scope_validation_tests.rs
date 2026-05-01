@@ -402,3 +402,72 @@ fn permitted_only_specialization_scope_body_emits_no_forbidden_decl_diagnostic()
         diags
     );
 }
+
+/// Nested specialization scope: an inner `sub` with its own body inside an outer
+/// specialization scope must produce TWO diagnostics:
+///   1. One for the inner Sub itself (forbidden bare-sub in outer scope).
+///   2. One for the leaf Param inside the inner Sub's body (forbidden in inner scope).
+///
+/// Order is outer-first per `walk_members_depth`'s parent-before-children traversal.
+/// Locks in the "applies anywhere a specialization scope appears" PRD clause.
+///
+/// Shape: `structure S { sub outer : Foo { sub inner : Foo { param x } } }`
+#[test]
+fn forbidden_decl_in_nested_specialization_scope_body_emits_two_diagnostics() {
+    let inner_sub_span = sub_span();
+    let leaf_param_span = param_span();
+    let inner_sub = make_sub_with_body("inner", inner_sub_span, vec![make_param("x", leaf_param_span)]);
+    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+        "outer",
+        zero_span(),
+        vec![inner_sub],
+    )]);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let diags = forbidden_diagnostics(&compiled.diagnostics);
+
+    assert_eq!(
+        diags.len(),
+        2,
+        "expected two SpecializationForbiddenDecl diagnostics (inner sub + leaf param), got: {:#?}",
+        diags
+    );
+
+    // First diagnostic: the inner Sub itself (forbidden in outer scope).
+    let d0 = diags[0];
+    assert_eq!(d0.severity, Severity::Error);
+    assert!(
+        d0.message.contains("'sub'"),
+        "first diagnostic must be for 'sub', got: {:?}",
+        d0.message
+    );
+    assert!(
+        d0.message.contains("'inner'"),
+        "first diagnostic must name 'inner', got: {:?}",
+        d0.message
+    );
+    assert_eq!(
+        d0.labels[0].span,
+        inner_sub_span,
+        "first diagnostic span must equal inner SubDecl's span"
+    );
+
+    // Second diagnostic: the leaf Param inside the inner Sub's body.
+    let d1 = diags[1];
+    assert_eq!(d1.severity, Severity::Error);
+    assert!(
+        d1.message.contains("'param'"),
+        "second diagnostic must be for 'param', got: {:?}",
+        d1.message
+    );
+    assert!(
+        d1.message.contains("'x'"),
+        "second diagnostic must name 'x', got: {:?}",
+        d1.message
+    );
+    assert_eq!(
+        d1.labels[0].span,
+        leaf_param_span,
+        "second diagnostic span must equal leaf ParamDecl's span"
+    );
+}
