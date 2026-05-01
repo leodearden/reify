@@ -60,6 +60,7 @@ pub fn revolve_synthesis_post_sort_for_test(input: &[u32]) -> RevolveSynthesisPo
 }
 mod floor_constants;
 pub use floor_constants::RUST_GUARD_MARKER;
+pub mod register;
 #[cfg(has_occt)]
 mod handle;
 #[cfg(has_occt)]
