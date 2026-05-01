@@ -137,11 +137,17 @@ impl Manifest {
         }
         // Lift the optional `[auto_type_params]` section into the public
         // `AutoTypeParamsConfig` shape. Absent section ⇒ `Default::default()`
-        // so callers always get a fully-populated config.
+        // so callers always get a fully-populated config. `max_depth = 0` is
+        // rejected here (every search must visit at least one parameter).
         let auto_type_params = match raw.auto_type_params {
-            Some(raw_atp) => AutoTypeParamsConfig {
-                max_depth: raw_atp.max_depth,
-            },
+            Some(raw_atp) => {
+                if raw_atp.max_depth == 0 {
+                    return Err(ManifestError::InvalidMaxDepth(raw_atp.max_depth));
+                }
+                AutoTypeParamsConfig {
+                    max_depth: raw_atp.max_depth,
+                }
+            }
             None => AutoTypeParamsConfig::default(),
         };
         Ok(Manifest {
@@ -221,6 +227,11 @@ pub enum ManifestError {
     /// permission denied). The wrapped `io::Error` is exposed via
     /// [`std::error::Error::source`] so callers can introspect it.
     Io(std::io::Error),
+    /// `[auto_type_params].max_depth` was non-positive (i.e. `0`). Every
+    /// search must visit at least one parameter, so `0` is meaningless and
+    /// is rejected at parse time. The wrapped `usize` is the offending
+    /// value, surfaced verbatim in the rendered message.
+    InvalidMaxDepth(usize),
 }
 
 impl fmt::Display for ManifestError {
@@ -245,6 +256,9 @@ impl fmt::Display for ManifestError {
             }
             ManifestError::Io(err) => {
                 write!(f, "failed to read reify.toml: {}", err)
+            }
+            ManifestError::InvalidMaxDepth(n) => {
+                write!(f, "auto_type_params.max_depth must be > 0; got {}", n)
             }
         }
     }
