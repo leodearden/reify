@@ -5,7 +5,9 @@
 //! Every stub kernel adapter (`FidgetKernel`, `ManifoldKernel`, …) must satisfy
 //! an identical contract: the kernel is `Send + Sync`, implements
 //! `GeometryKernel` as a trait object, and every method returns a descriptive
-//! `Err(...)` variant whose message contains a kernel-identifying substring.
+//! `Err(...)` variant whose message contains both a kernel-identifying substring
+//! **and** the phrase `"not yet implemented"` — the shared prose marker for all
+//! registration-only scaffold stubs.
 //!
 //! The [`assert_stub_kernel_errors!`] macro encapsulates that contract as three
 //! independent `#[test]` functions so each concern is reported separately by the
@@ -58,8 +60,8 @@
 /// | Name | What it verifies |
 /// |------|-----------------|
 /// | `stub_kernel_implements_geometry_kernel_trait` | `Send + Sync` pin + `Box<dyn GeometryKernel>` upcast |
-/// | `stub_kernel_execute_returns_descriptive_error` | `execute` returns `Err(GeometryError::OperationFailed(msg))` with `msg.contains($substr)` for Union/Difference/Intersection |
-/// | `stub_kernel_query_export_tessellate_all_error` | `query`/`export`/`tessellate` return matching error variants with `msg.contains($substr)` |
+/// | `stub_kernel_execute_returns_descriptive_error` | `execute` returns `Err(GeometryError::OperationFailed(msg))` with `msg.contains($substr)` **and** `msg.contains("not yet implemented")` for Union/Difference/Intersection |
+/// | `stub_kernel_query_export_tessellate_all_error` | `query`/`export`/`tessellate` return matching error variants with `msg.contains($substr)` and `msg.contains("not yet implemented")` |
 ///
 /// # Example
 ///
@@ -87,8 +89,9 @@ macro_rules! assert_stub_kernel_errors {
             fn assert_send_sync<T: ::core::marker::Send + ::core::marker::Sync>(_: &T) {}
             let kernel = ($factory)();
             assert_send_sync(&kernel);
+            // Move `kernel` into the Box rather than constructing a second instance.
             let _boxed: ::std::boxed::Box<dyn ::reify_types::GeometryKernel> =
-                ::std::boxed::Box::new(($factory)());
+                ::std::boxed::Box::new(kernel);
         }
 
         /// `execute` returns `Err(GeometryError::OperationFailed(msg))` for
@@ -122,6 +125,12 @@ macro_rules! assert_stub_kernel_errors {
                             op,
                             msg,
                         );
+                        assert!(
+                            msg.contains("not yet implemented"),
+                            "execute error message must contain 'not yet implemented' for op {:?}, got: {:?}",
+                            op,
+                            msg,
+                        );
                     }
                     other => panic!(
                         "expected Err(GeometryError::OperationFailed(_)) for op {:?}, got {:?}",
@@ -148,6 +157,11 @@ macro_rules! assert_stub_kernel_errors {
                         $substr,
                         msg,
                     );
+                    assert!(
+                        msg.contains("not yet implemented"),
+                        "query error message must contain 'not yet implemented', got: {:?}",
+                        msg,
+                    );
                 }
                 other => panic!(
                     "expected Err(QueryError::QueryFailed(_)) from query, got {:?}",
@@ -168,6 +182,11 @@ macro_rules! assert_stub_kernel_errors {
                         $substr,
                         msg,
                     );
+                    assert!(
+                        msg.contains("not yet implemented"),
+                        "export error message must contain 'not yet implemented', got: {:?}",
+                        msg,
+                    );
                 }
                 other => panic!(
                     "expected Err(ExportError::FormatError(_)) from export, got {:?}",
@@ -185,6 +204,11 @@ macro_rules! assert_stub_kernel_errors {
                         msg.contains($substr),
                         "tessellate error message must contain {:?}, got: {:?}",
                         $substr,
+                        msg,
+                    );
+                    assert!(
+                        msg.contains("not yet implemented"),
+                        "tessellate error message must contain 'not yet implemented', got: {:?}",
                         msg,
                     );
                 }
