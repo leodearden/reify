@@ -244,6 +244,20 @@ impl Engine {
     /// None)`. The existing build-path error surface ("no geometry kernel
     /// registered") fires cleanly without a non-functional stub kernel.
     ///
+    /// # Manifold stub feature gate
+    ///
+    /// `reify-kernel-manifold`'s `inventory::submit!` is gated on
+    /// `#[cfg(any(test, feature = "stub_register"))]`.  In production builds
+    /// without that feature the Manifold stub contributes **no entry** to
+    /// `kernel_registry::registry()`, so the lex-min tie-break in
+    /// [`crate::kernel_registry::pick_lexmin_kernel`] is a no-op for that
+    /// kernel.  This prevents `"manifold" < "occt"` from silently routing
+    /// geometry ops through an unimplemented stub when no operator has
+    /// explicitly requested the Manifold kernel.  Integration test binaries
+    /// activate the feature via a self-dev-dep in
+    /// `crates/reify-kernel-manifold/Cargo.toml` — see the
+    /// `stub_register` feature comment there for the full rationale.
+    ///
     /// # Why additive (not a replacement)
     ///
     /// `Engine::new` and `Engine::with_prelude` remain unchanged: ~70
