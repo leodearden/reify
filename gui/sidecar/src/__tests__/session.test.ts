@@ -14,13 +14,13 @@ import { main } from '../index.js';
 
 /**
  * Extract the constructed prompt from the most recent spawn() call.
- * Finds the argument after '--' in the spawn args, which is the prompt text
- * passed to the Claude CLI.
+ * Reads the first JSON line written to the spawned process's stdin PassThrough,
+ * parses it as a stream-json user message, and returns the text content.
  */
-function getBuiltPrompt(callIndex = 0): string {
-  const callArgs = vi.mocked(spawn).mock.calls[callIndex]?.[1] as string[];
-  const dashIdx = callArgs.indexOf('--');
-  return callArgs[dashIdx + 1];
+async function getBuiltPrompt(callIndex = 0): Promise<string> {
+  const mockProc = vi.mocked(spawn).mock.results[callIndex]?.value as any;
+  const parsed = await drainStdinFirstLine(mockProc);
+  return (parsed as any).message.content[0].text as string;
 }
 
 /**
@@ -333,7 +333,7 @@ describe('SidecarSession', () => {
         context: { current_file: 'src/main.ri' },
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).toContain('Explain this');
       expect(prompt).toContain('Current file: src/main.ri');
@@ -348,7 +348,7 @@ describe('SidecarSession', () => {
         context: { attached_contexts: ['file: lib.ri\nfn add(a, b) = a + b', 'file: util.ri\nfn clamp(v) = max(0, v)'] },
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).toContain('Help me');
       expect(prompt).toContain('[Context]');
@@ -369,7 +369,7 @@ describe('SidecarSession', () => {
         },
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).toContain('Full context');
       expect(prompt).toContain('[Context]');
@@ -399,7 +399,7 @@ describe('SidecarSession', () => {
         context: {},
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).not.toContain('[Context]');
       expect(prompt).toBe('Some text');
@@ -413,7 +413,7 @@ describe('SidecarSession', () => {
         context: { current_file: '' },
       });
 
-      const prompt = getBuiltPrompt();
+      const prompt = await getBuiltPrompt();
 
       expect(prompt).not.toContain('[Context]');
       expect(prompt).not.toContain('Current file:');

@@ -125,6 +125,7 @@ export class SidecarSession {
       '--print',
       '--output-format', 'stream-json',
       '--include-partial-messages',
+      '--input-format', 'stream-json',
       '--model', this.config.model,
       '--system-prompt', this.config.systemPrompt,
     ];
@@ -133,13 +134,20 @@ export class SidecarSession {
       args.push('--resume', this.sessionId);
     }
 
-    args.push('--', prompt);
-
     const proc = spawn('claude', args, {
       cwd: this.config.workingDirectory,
       signal: this.abortController?.signal,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Write the initial user prompt as a stream-json message line.
+    // Keep stdin open (do NOT call end()) so tool_result blocks can follow.
+    proc.stdin?.write(
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: prompt }] },
+      }) + '\n'
+    );
 
     // Start timeout timer
     const timeoutMs = this.config.timeoutMs ?? 300_000;
