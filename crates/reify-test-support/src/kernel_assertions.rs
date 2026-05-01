@@ -228,7 +228,7 @@ mod tests {
         GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
     };
 
-    const STUB_MSG: &str = "TestStub kernel not yet implemented — fixture only";
+    const STUB_MSG: &str = "TestStub kernel not available — fixture only";
 
     /// Minimal all-error stub kernel for testing [`crate::assert_stub_kernel_errors!`].
     ///
