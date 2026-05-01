@@ -528,6 +528,30 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_AUTO_TYPE_PARAM_NON_UNIQUE`
     /// (see `docs/prds/auto-type-param-resolution.md` §"Phase C").
     AutoTypeParamNonUnique,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs::resolve_auto_type_params_with_backtracking`.
+    ///
+    /// Canonical message form:
+    /// `"auto type-parameter search exceeded depth bound: <N> auto-type-params declared, max_depth = <M>; falling back to per-parameter BFS (v0.1 algorithm)"`
+    /// where `<N>` is `params.len()` and `<M>` is the configured `max_depth`.
+    ///
+    /// Emitted as `Severity::Warning` when the v0.2 DFS-over-cross-product
+    /// algorithm receives more `auto:` type-parameters than the configured
+    /// depth bound (`params.len() > max_depth`). The DFS falls back to the
+    /// v0.1 per-parameter BFS (`resolve_auto_type_params`) immediately after
+    /// emission, so the user always has a working compile — the warning is
+    /// for auditability that the cross-product search did not run.
+    ///
+    /// Severity is `Warning` (not `Error`) because the fallback is
+    /// functionally correct (BFS is sound, just less complete than DFS over
+    /// the cross-product). The default `max_depth` is `6` per
+    /// [`reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`]; a single label is
+    /// attached at the first param's `auto:` use-site span.
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `W_AUTO_TYPE_PARAM_DEPTH_BOUND_EXCEEDED` (see
+    /// `docs/prds/v0_2/auto-resolution-backtracking.md` §"Resolved design
+    /// decisions").
+    AutoTypeParamDepthBoundExceeded,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:
