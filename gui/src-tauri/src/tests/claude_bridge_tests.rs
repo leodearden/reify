@@ -554,6 +554,8 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
         written
     );
     assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
+    assert_eq!(json_val["tool_use_id"], "tu-diag",
+        "tool_use_id must be echoed from the tool_call outbound");
 
     drop(stdout_writer);
 }
@@ -624,6 +626,8 @@ async fn from_parts_with_mcp_threads_selection_into_tool_result() {
         written
     );
     assert_eq!(json_val["tool_name"], "reify_get_selection");
+    assert_eq!(json_val["tool_use_id"], "tu-sel",
+        "tool_use_id must be echoed from the tool_call outbound");
 
     let selection_result = &json_val["result"];
     assert_eq!(
@@ -1592,6 +1596,24 @@ fn format_inbound_send_message_with_context_includes_context() {
     assert!(line.ends_with('\n'));
     let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     assert_eq!(json_val["context"]["selected_entity"], "box1");
+}
+
+#[test]
+fn format_inbound_tool_result_includes_tool_use_id() {
+    let msg = InboundMessage::ToolResult {
+        id: "msg-tr1".to_string(),
+        tool_name: "reify_get_diagnostics".to_string(),
+        result: serde_json::json!([]),
+        tool_use_id: "tu-echo-1".to_string(),
+    };
+    let line = format_inbound(&msg);
+    assert!(line.ends_with('\n'), "Should end with newline");
+    let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "tool_result");
+    assert_eq!(json_val["id"], "msg-tr1");
+    assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
+    assert_eq!(json_val["tool_use_id"], "tu-echo-1",
+        "tool_use_id must be echoed so the sidecar can use id-based correlation");
 }
 
 // --- shutdown_sidecar edge-case tests (task-353/step-1) ---
