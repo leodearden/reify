@@ -3789,4 +3789,58 @@ mod tests {
         // PartialEq derive: descriptors compare by structural equality.
         assert_eq!(cloned, d, "PartialEq derive must hold for cloned descriptor");
     }
+
+    /// Minimal `GeometryKernel` impl that uses every default trait method.
+    /// Used by `geometry_kernel_default_attribute_hook_returns_none` to pin the
+    /// PRD line 70 contract that "Fidget/OpenVDB don't implement
+    /// `KernelAttributeHook` — selectors fall through to computed selectors"
+    /// is structurally enforced by the trait DEFAULT, not by per-kernel code.
+    ///
+    /// We define this locally rather than depending on
+    /// `reify_test_support::FailingMockGeometryKernel` because `reify-types`
+    /// has no `dev-dependency` on `reify-test-support` (and adding one would
+    /// invert the layering — `reify-test-support` depends on `reify-types`).
+    struct DefaultsOnlyKernel;
+
+    impl GeometryKernel for DefaultsOnlyKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed("not used by this test".into()))
+        }
+        fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed("not used by this test".into()))
+        }
+        fn export(
+            &self,
+            _h: GeometryHandleId,
+            _f: ExportFormat,
+            _w: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            Err(ExportError::FormatError("not used by this test".into()))
+        }
+        fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed("not used by this test".into()))
+        }
+    }
+
+    /// PRD docs/prds/v0_2/persistent-naming-v2.md line 70 says "Fidget/OpenVDB
+    /// don't implement the trait — selectors over SDF or voxel reps fall
+    /// through to computed selectors." This contract is structurally enforced
+    /// by the trait DEFAULT for `attribute_hook()` returning `None`: any kernel
+    /// that does NOT explicitly override the accessor inherits the `None`
+    /// fall-through. This test pins the default behaviour against
+    /// `DefaultsOnlyKernel` (a kernel that overrides nothing), so a future
+    /// regression that flips the default to `Some(...)` would force the
+    /// non-overriding kernels (Fidget, OpenVDB, mocks, stubs) to claim a hook
+    /// they don't implement — and this test fails immediately.
+    #[test]
+    fn geometry_kernel_default_attribute_hook_returns_none() {
+        let kernel = DefaultsOnlyKernel;
+        let kernel_ref: &dyn GeometryKernel = &kernel;
+        assert!(
+            kernel_ref.attribute_hook().is_none(),
+            "GeometryKernel::attribute_hook() default must return None — \
+             enforces PRD line 70 'Fidget/OpenVDB selectors fall through to computed selectors' \
+             without per-kernel opt-out code",
+        );
+    }
 }
