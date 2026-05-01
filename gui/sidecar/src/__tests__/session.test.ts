@@ -24,6 +24,31 @@ function getBuiltPrompt(callIndex = 0): string {
 }
 
 /**
+ * Drain the first JSON line written to a spawned process's stdin PassThrough.
+ * Returns the parsed object.
+ */
+function drainStdinFirstLine(mockProc: any): Promise<unknown> {
+  const stdin = mockProc?.stdin as PassThrough;
+  if (!stdin) throw new Error('No stdin on mock process');
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    const onData = (chunk: Buffer | string) => {
+      buf += chunk.toString();
+      const nlIdx = buf.indexOf('\n');
+      if (nlIdx !== -1) {
+        stdin.removeListener('data', onData);
+        try {
+          resolve(JSON.parse(buf.slice(0, nlIdx)));
+        } catch (e) {
+          reject(e);
+        }
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
+/**
  * Create a mock child process that emits streaming JSON events on stdout,
  * then closes with the given exit code.
  */
@@ -392,6 +417,47 @@ describe('SidecarSession', () => {
 
       expect(prompt).not.toContain('[Context]');
       expect(prompt).not.toContain('Current file:');
+    });
+  });
+
+  it('invokeSdk uses --input-format stream-json and writes prompt to stdin', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } },
+      { type: 'result', session_id: 'sess-sj' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-x',
+      text: 'Hello',
+    });
+
+    // Drain stdin BEFORE awaiting the message (so we capture before proc closes)
+    const mockProc = vi.mocked(spawn).mock.results[0]?.value as any;
+    const stdinMsg = drainStdinFirstLine(mockProc);
+
+    await msgPromise;
+
+    // (a) spawn args include --input-format stream-json
+    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
+    const inputFormatIdx = callArgs.indexOf('--input-format');
+    expect(inputFormatIdx).toBeGreaterThanOrEqual(0);
+    expect(callArgs[inputFormatIdx + 1]).toBe('stream-json');
+
+    // (b) spawn args do NOT contain prompt text as argv tail
+    expect(callArgs[callArgs.length - 1]).not.toBe('Hello');
+
+    // (c) stdin received the prompt as a stream-json user message
+    const parsed = await stdinMsg;
+    expect(parsed).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Hello' }],
+      },
     });
   });
 
