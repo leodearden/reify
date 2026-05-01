@@ -694,10 +694,22 @@ pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_types::EnumDef]) 
 /// 2. Dimensional binary op (`*`, `/`) → recursively resolve operands to
 ///    DimensionVectors, combine with mul/div, return `Type::Scalar { dimension }`
 /// 3. Unknown → returns None
+///
+/// `caller_is_parametric` controls whether inner-arg errors from
+/// `resolve_parameterized_builtin_type` are propagated into `diagnostics`
+/// when resolution fails:
+/// - `false` (non-parametric alias, e.g. `type Bad = Scalar<NotADim>`):
+///   diagnostics are propagated — there is no later instantiation step that
+///   will re-emit them, so they must surface now.
+/// - `true` (parametric alias, e.g. `type Bad<Q> = Scalar<Q>`): diagnostics
+///   are discarded — the alias body will be fully resolved at instantiation
+///   time via `resolve_type_alias_expr_with_subst`, which emits inner-arg
+///   diagnostics on the substituted body.  See task #2766.
 pub(crate) fn resolve_type_alias_expr(
     type_expr: &reify_syntax::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
+    caller_is_parametric: bool,
 ) -> Option<Type> {
     match &type_expr.kind {
         reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
@@ -724,11 +736,17 @@ pub(crate) fn resolve_type_alias_expr(
             // type args may contain unresolved type params for ANY parameterized
             // builtin — e.g. `List<T>`, `Scalar<Q>`, `Vector3<Q>`, `Point3<Q>`
             // all appear here when their alias body contains a free type param.
-            // If the resolution succeeds we promote the diagnostics; if it fails
-            // we discard them silently — the alias will be fully resolved at
-            // instantiation time via resolve_type_alias_expr_with_subst.  This
-            // discard behaviour is intentional for all builtins handled by
-            // resolve_parameterized_builtin_type, not just the Vector3/Point3 arms.
+            // If the resolution succeeds we always promote the diagnostics.
+            // If it fails, the discard decision depends on caller_is_parametric:
+            // - Parametric alias (free type params in body): discard tmp_diags —
+            //   the alias is fully resolved at instantiation time via
+            //   resolve_type_alias_expr_with_subst, which re-emits inner-arg
+            //   diagnostics on the substituted body.
+            // - Non-parametric alias (no free type params): propagate tmp_diags —
+            //   there is no later instantiation step; errors must surface now.
+            //   (Task #2766 — previously all failures were silently discarded,
+            //   causing e.g. `type Bad = Scalar<NotADim>` to resolve silently to
+            //   Type::length() via the resolve_type_name("Scalar") default.)
             if !type_args.is_empty() {
                 let mut tmp_diags = Vec::new();
                 if let Some(ty) = resolve_parameterized_builtin_type(
@@ -742,7 +760,11 @@ pub(crate) fn resolve_type_alias_expr(
                     diagnostics.extend(tmp_diags);
                     return Some(ty);
                 }
-                // tmp_diags discarded — resolution deferred to instantiation time
+                if !caller_is_parametric {
+                    diagnostics.extend(tmp_diags);
+                }
+                // else: discarded — parametric alias bodies re-resolve at
+                // instantiation time via resolve_type_alias_expr_with_subst.
             }
             // Check for user-defined parameterized alias instantiation.
             // Use temporary diagnostics: during DFS pre-pass, type args may
@@ -1585,8 +1607,15 @@ pub(crate) fn resolve_alias_dfs(
         }
     }
 
-    // Now resolve this alias (dependencies should be in the registry)
-    let resolved = resolve_type_alias_expr(&decl.type_expr, alias_registry, diagnostics);
+    // Now resolve this alias (dependencies should be in the registry).
+    // Pass caller_is_parametric so the parameterized-builtin discard fires only
+    // for parametric aliases (those with free type params in the body).
+    let resolved = resolve_type_alias_expr(
+        &decl.type_expr,
+        alias_registry,
+        diagnostics,
+        !decl.type_params.is_empty(),
+    );
     let type_params = convert_type_params(&decl.type_params);
     let entry = TypeAliasEntry {
         name: name.to_string(),
