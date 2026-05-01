@@ -128,4 +128,187 @@ mod tests {
              extracted as Some(si_value) for the matching input_template_name"
         );
     }
+
+    /// Silent-skip audit: every malformed entry below must be silently
+    /// rejected so the one valid entry survives. Mirrors
+    /// `extract_output_tolerance_bound_skips_non_finite_non_length_and_unrelated_entity`
+    /// in `tolerance_combine.rs`. Pins each gate independently so a future
+    /// refactor that drops a gate fails this test on the specific case it
+    /// regressed.
+    #[test]
+    fn extract_input_tolerance_promise_silent_skip_audit() {
+        // Local helper: insert a Scalar value under a given (entity, member).
+        // Free function (not a closure) so the caller can re-borrow `values`
+        // immutably between successive insertions and observations.
+        fn insert_scalar(
+            values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+            entity: &str,
+            member: &str,
+            si_value: f64,
+            dim: DimensionVector,
+        ) {
+            values.insert(
+                ValueCellId::new(entity, member),
+                (
+                    Value::Scalar {
+                        si_value,
+                        dimension: dim,
+                    },
+                    DeterminacyState::Determined,
+                ),
+            );
+        }
+
+        let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+
+        // (g) Entry under different entity (`OtherInput`, "tolerance") with a
+        // tighter valid value — must be silently skipped by Gate 1 (cell
+        // lookup keyed by entity name). Inserted FIRST so that if the
+        // lookup ever broadened to scan-all, this tighter value would
+        // incorrectly win and the assertion would fail.
+        insert_scalar(
+            &mut values,
+            "OtherInput",
+            "tolerance",
+            1e-9,
+            DimensionVector::LENGTH,
+        );
+
+        // (h) Entry under same entity but different member
+        // (`STEPInput`, "source") with a String value — must be silently
+        // skipped by Gate 1 (member name mismatch). Use a String value so
+        // the test would also catch a future bug where the extractor
+        // accidentally accepted non-Scalar values at a different member.
+        values.insert(
+            ValueCellId::new("STEPInput", "source"),
+            (
+                Value::String("file.step".to_string()),
+                DeterminacyState::Determined,
+            ),
+        );
+
+        // The cases (a)..(f) below each individually exercise Gate 4a /
+        // 4b / 3 / 2 in sequence under the same key (`STEPInput`, "tolerance");
+        // since PersistentMap.insert overrides on a duplicate key, we
+        // observe one at a time by clearing the assertion after each.
+
+        // Sub-block (a) NaN.
+        insert_scalar(
+            &mut values,
+            "STEPInput",
+            "tolerance",
+            f64::NAN,
+            DimensionVector::LENGTH,
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(a) NaN tolerance literal must be silently skipped by is_finite()"
+        );
+
+        // Sub-block (b) +Inf.
+        insert_scalar(
+            &mut values,
+            "STEPInput",
+            "tolerance",
+            f64::INFINITY,
+            DimensionVector::LENGTH,
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(b) +Inf tolerance literal must be silently skipped by is_finite()"
+        );
+
+        // Sub-block (c) -Inf.
+        insert_scalar(
+            &mut values,
+            "STEPInput",
+            "tolerance",
+            f64::NEG_INFINITY,
+            DimensionVector::LENGTH,
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(c) -Inf tolerance literal must be silently skipped by is_finite()"
+        );
+
+        // Sub-block (d) negative finite.
+        insert_scalar(
+            &mut values,
+            "STEPInput",
+            "tolerance",
+            -1e-3,
+            DimensionVector::LENGTH,
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(d) negative finite tolerance literal must be silently skipped by >= 0.0"
+        );
+
+        // Sub-block (e) wrong dimension (DIMENSIONLESS).
+        insert_scalar(
+            &mut values,
+            "STEPInput",
+            "tolerance",
+            1.0,
+            DimensionVector::DIMENSIONLESS,
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(e) DIMENSIONLESS Scalar literal must be silently skipped by LENGTH gate"
+        );
+
+        // Sub-block (f) Bool variant directly under the canonical key.
+        values.insert(
+            ValueCellId::new("STEPInput", "tolerance"),
+            (Value::Bool(true), DeterminacyState::Determined),
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            None,
+            "(f) non-Scalar (Bool) Value must be silently skipped by Value::Scalar gate"
+        );
+
+        // Finally, install the one valid entry — must survive every gate.
+        insert_scalar(
+            &mut values,
+            "STEPInput",
+            "tolerance",
+            50e-6,
+            DimensionVector::LENGTH,
+        );
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            Some(50e-6),
+            "valid (LENGTH, finite, non-negative) entry under (STEPInput, \
+             \"tolerance\") must survive every gate; the unrelated (g) and \
+             (h) entries (OtherInput.tolerance and STEPInput.source) must be \
+             ignored"
+        );
+
+        // Cross-check: (g)'s tighter value under OtherInput must extract too
+        // when queried by its own template name — proves Gate 1's entity
+        // discrimination is bidirectional (not just "STEPInput-only").
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "OtherInput"),
+            Some(1e-9),
+            "Gate 1's entity discrimination must be bidirectional — querying \
+             by OtherInput's name must return its valid value, not be \
+             accidentally tied to STEPInput's"
+        );
+
+        // Cross-check: a query for an entity that has no tolerance cell
+        // must return None (covers Gate 1's None branch when no entry
+        // exists at all).
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "NonExistentInput"),
+            None,
+            "Gate 1 must return None when no (entity, \"tolerance\") cell exists"
+        );
+    }
 }
