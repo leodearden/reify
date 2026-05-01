@@ -164,6 +164,7 @@ describe('SidecarSession', () => {
     expect(toolCalls[0]).toEqual({
       type: 'tool_call',
       id: 'msg-tc',
+      tool_use_id: 'tu-1',
       tool_name: 'reify_get_source',
       tool_input: { file: 'main.ri' },
     });

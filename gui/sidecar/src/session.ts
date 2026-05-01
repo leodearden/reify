@@ -74,7 +74,7 @@ export class SidecarSession {
         this.handleClearSession();
         break;
       case 'tool_result':
-        this.handleToolResult(msg.tool_name, msg.result, msg.id);
+        this.handleToolResult(msg.tool_name, msg.result, msg.id, msg.tool_use_id);
         break;
     }
   }
@@ -234,13 +234,20 @@ export class SidecarSession {
                 }
               } else if (block.type === 'tool_use' && block.id && !this.toolNameById.has(block.id)) {
                 this.toolNameById.set(block.id, block.name);
-                // Push to FIFO queue so tool_result inbound can pop the matching id
+                // Maintain a FIFO queue of tool_use_ids per tool_name as a fallback
+                // correlation mechanism for hosts that do not echo back tool_use_id.
+                // CONTRACT: the fallback assumes the host returns tool_results in the
+                // same order Claude CLI emitted tool_uses for the same tool_name;
+                // out-of-order same-name results will be mis-correlated. Hosts should
+                // echo tool_use_id (included in the tool_call outbound below) in their
+                // InboundToolResult to enable correct id-based correlation instead.
                 const queue = this.pendingToolUseIds.get(block.name) ?? [];
                 queue.push(block.id);
                 this.pendingToolUseIds.set(block.name, queue);
                 this.onOutput({
                   type: 'tool_call',
                   id,
+                  tool_use_id: block.id,
                   tool_name: block.name,
                   tool_input: block.input ?? {},
                 });
@@ -294,7 +301,7 @@ export class SidecarSession {
    * Correlates tool_name → tool_use_id using the FIFO pendingToolUseIds queue.
    * Emits an error outbound if no matching tool_use_id is found.
    */
-  private handleToolResult(toolName: string, result: unknown, id: string): void {
+  private handleToolResult(toolName: string, result: unknown, id: string, inboundToolUseId?: string): void {
     // Validate currentStdin BEFORE consuming the FIFO queue. If we shifted first and
     // then found currentStdin is null, we'd silently drain the queue and corrupt
     // subsequent matching results.
@@ -307,8 +314,19 @@ export class SidecarSession {
       });
       return;
     }
-    const queue = this.pendingToolUseIds.get(toolName);
-    const toolUseId = queue?.shift();
+
+    let toolUseId: string | undefined;
+    if (inboundToolUseId !== undefined) {
+      // Preferred path: host echoed back the tool_use_id from the tool_call outbound.
+      // Direct id-based lookup — no FIFO consumed, correct for out-of-order results.
+      toolUseId = inboundToolUseId;
+    } else {
+      // Fallback path: FIFO queue by tool_name.
+      // See the in-order-only CONTRACT documented in invokeSdk's tool_use handler.
+      const queue = this.pendingToolUseIds.get(toolName);
+      toolUseId = queue?.shift();
+    }
+
     if (toolUseId === undefined) {
       // Distinct message: a process is running but this tool_name has no queued id.
       this.onOutput({
