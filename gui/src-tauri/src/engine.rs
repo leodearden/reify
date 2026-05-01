@@ -92,13 +92,13 @@ pub(crate) fn module_key(name: &str) -> String {
 }
 
 impl EngineSession {
-    /// Create a new EngineSession with the given constraint checker and optional geometry kernel.
-    pub fn new(
-        checker: Box<dyn ConstraintChecker>,
-        kernel: Option<Box<dyn GeometryKernel>>,
-    ) -> Self {
+    /// Shared field-initializer from a pre-constructed `Engine`.
+    ///
+    /// Both `new` and `with_registered_kernel` delegate here so the field list
+    /// stays in one place and the two constructors cannot drift.
+    fn from_engine(engine: Engine) -> Self {
         Self {
-            engine: Engine::new(checker, kernel),
+            engine,
             compiled: None,
             source_map: HashMap::new(),
             file_path: None,
@@ -109,6 +109,33 @@ impl EngineSession {
             line_offsets_cache: None,
             consumed_idents_cache: None,
         }
+    }
+
+    /// Create a new EngineSession with the given constraint checker and optional geometry kernel.
+    pub fn new(
+        checker: Box<dyn ConstraintChecker>,
+        kernel: Option<Box<dyn GeometryKernel>>,
+    ) -> Self {
+        Self::from_engine(Engine::new(checker, kernel))
+    }
+
+    /// Create a new EngineSession using the inventory-based kernel registry.
+    ///
+    /// This is the production-binary boot path. Reads the static
+    /// linker-collected set of [`reify_types::KernelRegistration`] records once
+    /// at construction, picks the lexicographically smallest entry, and
+    /// instantiates the geometry kernel via its registered factory — mirroring
+    /// [`Engine::with_registered_kernel`]'s contract exactly.
+    ///
+    /// When no kernel adapter has submitted a registration (stub-mode build,
+    /// `cfg(has_occt)` off), the underlying engine receives `None` as the
+    /// geometry kernel, matching `Engine::new(checker, None)` semantics.
+    ///
+    /// Unit tests that require a mock or failing kernel should continue to
+    /// use `EngineSession::new(checker, Some(Box::new(MockGeometryKernel::new())))` —
+    /// the kernel-injection seam is preserved for that use-case.
+    pub fn with_registered_kernel(checker: Box<dyn ConstraintChecker>) -> Self {
+        Self::from_engine(Engine::with_registered_kernel(checker))
     }
 
     /// Load source code, parse, compile, evaluate, and return full GUI state.
