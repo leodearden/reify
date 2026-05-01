@@ -2298,30 +2298,16 @@ fn arm_member_type(
     match member {
         reify_syntax::MemberDecl::Sub(s) => Type::StructureRef(s.structure_name.clone()),
         reify_syntax::MemberDecl::Param(p) => {
-            // Param is registered in pass 1; resolve its type from scope.
-            // The per-arm loop in `compile_match_arm_decl_group` `continue`s past non-Sub
-            // arms before calling this helper, and the pre-pass arm-member rejection in
-            // `compile_entity` (the non-Sub branch under MatchDecl) emits a separate
-            // diagnostic — so this branch is unreachable from user source today.
-            // ICE path: resolution failure means the pass-1 registration invariant was
-            // violated, which is a compiler bug.
-            //
-            // `UnresolvedKind::Name` (not `GuardedMember`) is used here because this
-            // resolves a declared member name from the pass-1 scope — the same semantic
-            // as entity.rs:793 and entity.rs:1181. `GuardedMember` at guards.rs:360
-            // covers a different context: looking up a binding inside a guard expression.
+            // Pre-pass registers this name; resolution failure here is a pass-1 invariant
+            // violation. See `emit_ice_unresolved` for the full rationale.
             scope
                 .resolve(&p.name)
                 .map(|(_, ty)| ty.clone())
                 .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &p.name, span, diagnostics))
         }
         reify_syntax::MemberDecl::Let(l) => {
-            // Let is registered in pass 1; resolve its type from scope.
-            // Defensive parallel with the Param arm above: this branch is also unreachable
-            // from user source today (same per-arm loop `continue` and pre-pass rejection).
-            // The ICE exists so that future work lifting the Sub-only restriction does not
-            // regress to silently producing Type::Real.
-            // `UnresolvedKind::Name` rationale: same as the Param arm above.
+            // Same pass-1 registration invariant as the Param arm above; the ICE guards
+            // against a future refactor regressing to silent Type::Real. See `emit_ice_unresolved`.
             scope
                 .resolve(&l.name)
                 .map(|(_, ty)| ty.clone())
