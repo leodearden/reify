@@ -225,8 +225,9 @@ mod tests {
 
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
-        LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch,
+        LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
     };
+    use std::time::Duration;
 
     /// Pins the three module-level long-chain constants by literal value:
     /// the PRD-default threshold (500 ms wall, per
@@ -239,6 +240,61 @@ mod tests {
         assert_eq!(LONG_CHAIN_DEFAULT_THRESHOLD_MS, 500);
         assert_eq!(LONG_CHAIN_THRESHOLD_ENV_VAR, "REIFY_LONG_CHAIN_THRESHOLD_MS");
         assert_eq!(LONG_CHAIN_MIN_STAGES, 2);
+    }
+
+    /// Negative-path coverage for [`is_long_chain_realization`]: each branch
+    /// where one or both gates fail must return `false`. Pins the
+    /// strict-`>` boundary semantics on BOTH gates independently — a future
+    /// `>=` flip on either gate would silently invert PRD-prose intent
+    /// ("longer than 2 stages" / "exceeds 500 ms").
+    #[test]
+    fn is_long_chain_realization_returns_false_when_chain_short() {
+        let threshold = Duration::from_millis(500);
+
+        // (a) Zero conversions + huge elapsed → chain not long ⇒ false.
+        let plan_zero = DispatchPlan {
+            kernel: "occt".to_string(),
+            conversions: vec![],
+        };
+        assert!(
+            !is_long_chain_realization(&plan_zero, Duration::from_secs(60), threshold),
+            "0 conversion stages must NOT trip the long-chain warning even with huge elapsed",
+        );
+
+        // (b) Exactly 2 conversions + huge elapsed → boundary on the
+        //     stage-count gate (strict `>` LONG_CHAIN_MIN_STAGES) ⇒ false.
+        let plan_two = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![
+                ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("manifold".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+            ],
+        };
+        assert!(
+            !is_long_chain_realization(&plan_two, Duration::from_secs(60), threshold),
+            "exactly 2 conversion stages must NOT warn (strict > on LONG_CHAIN_MIN_STAGES)",
+        );
+
+        // (c) 3+ conversions + zero elapsed → elapsed gate fails ⇒ false.
+        let plan_three = DispatchPlan {
+            kernel: "kernel_d".to_string(),
+            conversions: vec![
+                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+            ],
+        };
+        assert!(
+            !is_long_chain_realization(&plan_three, Duration::ZERO, threshold),
+            "elapsed = 0 must NOT warn even with 3 stages — both gates must hold",
+        );
+
+        // (d) 3 conversions + elapsed exactly == threshold → strict-`>`
+        //     boundary on the elapsed gate ⇒ false.
+        assert!(
+            !is_long_chain_realization(&plan_three, threshold, threshold),
+            "elapsed exactly equal to threshold must NOT warn (strict > on threshold)",
+        );
     }
 
     /// Trivial happy path: one kernel that supports the demanded op directly on
