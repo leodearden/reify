@@ -854,3 +854,104 @@ structure def S7 : T7 { param x : Real = 7.0 }
         extra.message
     );
 }
+
+// ─── step-31: DFS at max_depth runs DFS (no fallback diagnostic) ───────────
+
+/// Six `AutoTypeParam`s — boundary case `params.len() == max_depth`. Each
+/// has a single feasible candidate. Calling DFS with `max_depth = 6` must
+/// run DFS proper (NOT the BFS fallback) — `params.len() > max_depth` is
+/// strict-greater, so `6 > 6` is false.
+///
+/// Pins the off-by-one boundary: `>` triggers fallback, `==` does not.
+/// This test is the lower-bound mirror of step-29's upper-bound test.
+///
+/// Pins:
+/// - `outcome.per_param.len() == 6` and every entry is `Selected`
+/// - `outcome.substitution.len() == 6` in declared order
+/// - zero `AutoTypeParamDepthBoundExceeded` diagnostics in the diagnostics
+///   vector (the depth-bound branch must NOT fire when n == max_depth)
+#[test]
+fn dfs_at_max_depth_runs_dfs_no_fallback_diagnostic() {
+    // Six distinct traits, each with a single implementing structure.
+    let source = r#"
+trait T1 {}
+trait T2 {}
+trait T3 {}
+trait T4 {}
+trait T5 {}
+trait T6 {}
+
+structure def S1 : T1 { param x : Real = 1.0 }
+structure def S2 : T2 { param x : Real = 2.0 }
+structure def S3 : T3 { param x : Real = 3.0 }
+structure def S4 : T4 { param x : Real = 4.0 }
+structure def S5 : T5 { param x : Real = 5.0 }
+structure def S6 : T6 { param x : Real = 6.0 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params: Vec<AutoTypeParam> = (1..=6)
+        .map(|i| AutoTypeParam {
+            name: format!("P{}", i),
+            bounds: vec![format!("T{}", i)],
+            free: false,
+            use_site_span: SourceSpan::new(10 * i, 10 * i + 5),
+        })
+        .collect();
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // Six Selected entries in declared order: P1 ↦ S1, …, P6 ↦ S6.
+    assert_eq!(
+        outcome.per_param.len(),
+        6,
+        "DFS at max_depth boundary must produce 6 per_param entries (no fallback truncation), got: {:?}",
+        outcome.per_param
+    );
+    for (i, (name, sel)) in outcome.per_param.iter().enumerate() {
+        let expected_param = format!("P{}", i + 1);
+        let expected_struct = format!("S{}", i + 1);
+        assert_eq!(name, &expected_param, "per_param[{}].0 must be {expected_param}", i);
+        assert_eq!(
+            sel,
+            &SelectionResult::Selected(expected_struct.clone()),
+            "per_param[{}].1 must be Selected({expected_struct})",
+            i
+        );
+    }
+    assert_eq!(
+        outcome.substitution.len(),
+        6,
+        "DFS at max_depth boundary must produce 6 substitution entries, got: {:?}",
+        outcome.substitution
+    );
+
+    // Critical assertion: NO `AutoTypeParamDepthBoundExceeded` diagnostic.
+    // The depth-bound branch uses strict `>`, so `6 > 6` is false — the
+    // search runs DFS proper, not the BFS fallback.
+    let depth_bound_diagnostics: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded))
+        .collect();
+    assert!(
+        depth_bound_diagnostics.is_empty(),
+        "DFS at max_depth boundary (n == max_depth) must NOT emit AutoTypeParamDepthBoundExceeded \
+         (strict `>`: only n > max_depth triggers fallback), got: {:?}",
+        depth_bound_diagnostics
+    );
+}
