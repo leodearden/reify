@@ -548,6 +548,62 @@ mod tests {
         );
     }
 
+    /// Characterization test — PASSES against current code; purpose is to LOCK
+    /// the asymmetric vacuous-satisfaction case against silent option-(a)
+    /// refactors. This pins option-(b) of task 2793: `promise == 0.0` is kept
+    /// as a valid promise (not rejected by the extractor gate), and the
+    /// strict-`<` rule in [`is_promise_insufficient`] therefore classifies every
+    /// non-negative demand as sufficient when the promise is zero.
+    ///
+    /// **Coverage gap filled:** the existing
+    /// `is_promise_insufficient_returns_true_iff_demanded_strictly_less_than_promise`
+    /// test pins the `(0.0, 0.0) -> false` symmetric edge, but does NOT cover
+    /// the asymmetric `(positive_d, 0.0) -> false` vacuous-satisfaction case
+    /// that is the core footgun documented by this task.
+    ///
+    /// **Design rationale:** see the `# Zero-promise interpretation` subsection
+    /// in [`extract_input_tolerance_promise`]'s docstring. When `promise == 0.0`
+    /// the strict-`<` rule evaluates `demanded < 0.0`, which is false for every
+    /// `demanded >= 0.0`. A zero promise is therefore the loosest satisfiable
+    /// claim under this comparator — it vacuously satisfies every non-negative
+    /// demand — which is why `param tolerance : Length = 0m` silently disables
+    /// the `ImportedTolerancePromiseInsufficient` warning.
+    ///
+    /// If a future option-(a) refactor changes the extractor gate to `> 0.0`
+    /// (rejecting `0.0`), this test will still compile and pass because
+    /// `is_promise_insufficient` itself is unchanged — but `step-1`'s
+    /// `extract_input_tolerance_promise_accepts_zero_promise` will fail,
+    /// flagging the semantic change explicitly.
+    #[test]
+    fn is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand() {
+        // (a) demand == 0.0: symmetric edge, already pinned by the truth-table
+        //     test above — repeated here for self-contained completeness with a
+        //     comment marking it as the symmetric case.
+        assert!(
+            !is_promise_insufficient(0.0, 0.0),
+            "(a) symmetric edge: demand 0.0 == promise 0.0 — sufficient under strict `<`"
+        );
+
+        // (b) demand == 1e-12 (sub-femtometre): positive demand, vacuously
+        //     satisfied because 1e-12 < 0.0 is false.
+        assert!(
+            !is_promise_insufficient(1e-12, 0.0),
+            "(b) demand 1e-12 (sub-femtometre) vs promise 0.0 — vacuously satisfied"
+        );
+
+        // (c) demand == 1e-6 (1µm): typical CAD tolerance, vacuously satisfied.
+        assert!(
+            !is_promise_insufficient(1e-6, 0.0),
+            "(c) demand 1µm vs promise 0.0 — vacuously satisfied"
+        );
+
+        // (d) demand == 1.0 (1 metre): coarse demand, vacuously satisfied.
+        assert!(
+            !is_promise_insufficient(1.0, 0.0),
+            "(d) demand 1.0m vs promise 0.0 — vacuously satisfied"
+        );
+    }
+
     // Debug-build NaN/±Inf/negative panic tests. Mirror the
     // `combine_panics_in_debug_on_*` precedent in
     // `tolerance_combine.rs:466-505`. Canonical panic message format
