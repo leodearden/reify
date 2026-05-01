@@ -2185,9 +2185,9 @@ describe('echoed tool_use_id validation', () => {
   it('stale tool_use_id re-dispatch emits structured error and does not forward a second stdin line', async () => {
     // This test covers the "toolNameById drain" property through observable behavior:
     // once a tool_result has been successfully forwarded for a given tool_use_id, the id is
-    // deleted from toolNameById (session.ts:388). Re-dispatching a tool_result with the same
-    // id must hit the unknown-id guard (session.ts:335) and emit a structured error — not
-    // forward a second stdin line.
+    // deleted from toolNameById (the toolNameById.delete after the FIFO splice/shift).
+    // Re-dispatching a tool_result with the same id must hit the unknown-id guard in
+    // handleToolResult and emit a structured error — not forward a second stdin line.
     const { mockProc, stdout, stdinLines, msgPromise, toolCallWait } = setupValidationTest();
 
     // (1) Wait for tool_call outbound — tool_use is now registered in toolNameById
