@@ -1054,6 +1054,7 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       unexpectedErrorWait.then(() => 'error' as const),
     ]);
     expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
+    unexpectedErrorWait.cancel(); // release session.onOutput immediately; don't wait for the 5s default timeout
 
     // Assert the tool_result was forwarded with the correct tool_use_id
     expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_pending');
@@ -1128,6 +1129,7 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       unexpectedErrorWait.then(() => 'error' as const),
     ]);
     expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
+    unexpectedErrorWait.cancel(); // release session.onOutput immediately; don't wait for the 5s default timeout
 
     // Assert the tool_result was forwarded with the correct tool_use_id
     expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_th_pending');
