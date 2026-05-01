@@ -429,6 +429,49 @@ mod tests {
         );
     }
 
+    /// Characterization test — PASSES against current code; purpose is to LOCK
+    /// the lower-boundary-acceptance contract so a future option-(a) refactor
+    /// (tightening the gate from `>= 0.0` to `> 0.0`) requires a deliberate
+    /// test edit and conscious review rather than slipping in silently.
+    ///
+    /// `si_value == 0.0` is accepted by Gate 4's `is_finite() && si_value >= 0.0`
+    /// check — zero is the lower boundary of that gate, not a rejected value.
+    /// This mirrors the precedent set by
+    /// `crate::tolerance_scope::tests::extract_tolerance_bindings_accepts_zero_tolerance_literal`,
+    /// which explicitly pins `0.0` as a valid tolerance literal ("exact
+    /// representation") under the identical gate in the sibling extractor.
+    /// `crate::tolerance_combine::extract_output_tolerance_bound` applies the
+    /// same `is_finite() && >= 0.0` gate for the same reason. All three
+    /// extractors were built in lockstep and must remain symmetric.
+    ///
+    /// See the `# Zero-promise interpretation` subsection in
+    /// [`extract_input_tolerance_promise`]'s docstring for the semantic reading
+    /// (a zero promise claims "imported geometry has zero deviation from the
+    /// ideal") and for the placeholder-default footgun this enables when
+    /// authors write `param tolerance : Length = 0m`.
+    #[test]
+    fn extract_input_tolerance_promise_accepts_zero_promise() {
+        let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::default();
+        values.insert(
+            ValueCellId::new("STEPInput", "tolerance"),
+            (
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                DeterminacyState::Determined,
+            ),
+        );
+
+        assert_eq!(
+            extract_input_tolerance_promise(&values, "STEPInput"),
+            Some(0.0),
+            "si_value == 0.0 is the lower boundary of Gate 4's `is_finite() && >= 0.0` \
+             check and must be returned as Some(0.0), not silently skipped"
+        );
+    }
+
     /// Pinned by the strict-`<` design decision (see plan.json
     /// design_decisions): "A demand exactly equal to the promise IS
     /// satisfiable: the promise is an upper bound on the as-imported
