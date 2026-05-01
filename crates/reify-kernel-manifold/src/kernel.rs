@@ -144,6 +144,39 @@ mod tests {
         }
     }
 
+    /// STUB_MSG must point to the stable doc path, not a bare task ID.
+    ///
+    /// Asserts via the public `execute` trait surface (matching the existing
+    /// test style) that the error message:
+    ///   1. contains `"docs/prds/v0_2/multi-kernel.md"` (stable pointer), and
+    ///   2. does NOT contain `"task 2643"` (volatile tracker reference).
+    ///
+    /// A single `Union` op is sufficient because STUB_MSG is shared across all
+    /// variants — see design decision in plan.json.
+    #[test]
+    fn manifold_stub_msg_points_to_stable_doc_not_bare_task_id() {
+        let mut kernel = ManifoldKernel::new();
+        let op = GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        };
+        match kernel.execute(&op) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("docs/prds/v0_2/multi-kernel.md"),
+                    "error message must contain stable doc path 'docs/prds/v0_2/multi-kernel.md', got: {msg:?}",
+                );
+                assert!(
+                    !msg.contains("task 2643"),
+                    "error message must NOT contain bare task ID 'task 2643', got: {msg:?}",
+                );
+            }
+            other => panic!(
+                "expected Err(GeometryError::OperationFailed(_)), got {other:?}"
+            ),
+        }
+    }
+
     /// `query`, `export`, and `tessellate` must all return descriptive errors
     /// whose message contains "Manifold" (matching the loop in
     /// `manifold_kernel_returns_descriptive_error_for_mesh_boolean`), locking
