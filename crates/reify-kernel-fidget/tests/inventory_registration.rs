@@ -20,10 +20,13 @@ use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind}
 /// Positive pins: `(BooleanUnion/Difference/Intersection, Sdf)` — the
 /// complete set of SDF-native Booleans Fidget can execute.
 ///
-/// Negative pins: `(BooleanUnion, BRep)` and `(BooleanUnion, Mesh)` must both
-/// return `false`. This enforces the Fidget/OCCT/Manifold roles split: Fidget
-/// is the SDF specialist, B-rep Booleans belong to OCCT, Mesh Booleans belong
-/// to Manifold. A future regression adding B-rep or Mesh claims to Fidget's
+/// Negative pins: every combination of `{BooleanUnion, BooleanDifference,
+/// BooleanIntersection} × {BRep, Mesh}` must return `false`. Mirroring the
+/// positive-pin enumeration prevents a regression that selectively adds B-rep
+/// or Mesh support to Difference or Intersection (without Union) from slipping
+/// through. This enforces the Fidget/OCCT/Manifold roles split: Fidget is the
+/// SDF specialist, B-rep Booleans belong to OCCT, Mesh Booleans belong to
+/// Manifold. A future regression adding B-rep or Mesh claims to Fidget's
 /// descriptor would be caught at test time, preventing the dispatcher from
 /// routing those Booleans into a stub that cannot perform them.
 #[test]
@@ -44,17 +47,15 @@ fn fidget_capability_descriptor_lists_sdf_booleans() {
         "Fidget must declare (BooleanIntersection, Sdf)",
     );
 
-    // Negative pin — Fidget does NOT handle B-rep Booleans.
-    assert!(
-        !descriptor.supports(Operation::BooleanUnion, ReprKind::BRep),
-        "Fidget must NOT declare (BooleanUnion, BRep) — B-rep Booleans are OCCT's domain",
-    );
+    // Negative pins — Fidget does NOT handle B-rep Booleans (OCCT's domain).
+    assert!(!descriptor.supports(Operation::BooleanUnion,        ReprKind::BRep), "Fidget must NOT declare (BooleanUnion, BRep) — B-rep Booleans are OCCT's domain");
+    assert!(!descriptor.supports(Operation::BooleanDifference,   ReprKind::BRep), "Fidget must NOT declare (BooleanDifference, BRep) — B-rep Booleans are OCCT's domain");
+    assert!(!descriptor.supports(Operation::BooleanIntersection, ReprKind::BRep), "Fidget must NOT declare (BooleanIntersection, BRep) — B-rep Booleans are OCCT's domain");
 
-    // Negative pin — Fidget does NOT handle Mesh Booleans.
-    assert!(
-        !descriptor.supports(Operation::BooleanUnion, ReprKind::Mesh),
-        "Fidget must NOT declare (BooleanUnion, Mesh) — Mesh Booleans are Manifold's domain",
-    );
+    // Negative pins — Fidget does NOT handle Mesh Booleans (Manifold's domain).
+    assert!(!descriptor.supports(Operation::BooleanUnion,        ReprKind::Mesh), "Fidget must NOT declare (BooleanUnion, Mesh) — Mesh Booleans are Manifold's domain");
+    assert!(!descriptor.supports(Operation::BooleanDifference,   ReprKind::Mesh), "Fidget must NOT declare (BooleanDifference, Mesh) — Mesh Booleans are Manifold's domain");
+    assert!(!descriptor.supports(Operation::BooleanIntersection, ReprKind::Mesh), "Fidget must NOT declare (BooleanIntersection, Mesh) — Mesh Booleans are Manifold's domain");
 }
 
 /// Fidget submits exactly one `KernelRegistration` named `"fidget"` into
