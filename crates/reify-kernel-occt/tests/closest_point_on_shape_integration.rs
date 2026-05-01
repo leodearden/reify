@@ -169,20 +169,22 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
         .expect("extract_faces should succeed for a valid box");
     assert!(!faces.is_empty(), "box should have at least one face");
 
-    match kernel.closest_point_on_shape(faces[0], 0.0, 0.0, 0.0) {
-        Ok([x, y, z]) => {
-            let dist = (x * x + y * y + z * z).sqrt();
-            assert!(
-                (dist - 5.0).abs() < 1e-6,
-                "each face plane of a centred 10×10×10 box is at distance 5 from the origin \
-                 and the perpendicular foot lies within the face bounds, so the closest point \
-                 on any face from the origin is at distance 5.0; got ({x}, {y}, {z}), dist={dist}"
-            );
+    for &fid in &faces {
+        match kernel.closest_point_on_shape(fid, 0.0, 0.0, 0.0) {
+            Ok([x, y, z]) => {
+                let dist = (x * x + y * y + z * z).sqrt();
+                assert!(
+                    (dist - 5.0).abs() < 1e-6,
+                    "each face plane of a centred 10×10×10 box is at distance 5 from the origin \
+                     and the perpendicular foot lies within the face bounds, so the closest point \
+                     on any face from the origin is at distance 5.0; got ({x}, {y}, {z}), dist={dist}"
+                );
+            }
+            Err(e) => panic!(
+                "closest_point_on_shape on a Face sub-shape should satisfy the \
+                 'any TopoDS_Shape' contract, got Err({e:?})"
+            ),
         }
-        Err(e) => panic!(
-            "closest_point_on_shape on a Face sub-shape should satisfy the \
-             'any TopoDS_Shape' contract, got Err({e:?})"
-        ),
     }
 }
 
@@ -194,8 +196,8 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
 ///
 /// When the query vertex is inside the solid, `BRepExtrema_DistShapeShape`
 /// returns the nearest point on the **surface** of the solid — not the query
-/// point itself. For (1.0, 0.0, 0.0), the unique nearest face centre is the
-/// +X face at (5.0, 0.0, 0.0), distance 4.0. Regression sentinel — pin the
+/// point itself. For (1.0, 0.0, 0.0), the unique nearest point is the
+/// perpendicular foot on the +X face at (5.0, 0.0, 0.0), distance 4.0. Regression sentinel — pin the
 /// exact returned coordinates within 1e-6 so a future OCCT/cxx upgrade that
 /// changes this behaviour is caught.
 ///
