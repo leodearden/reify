@@ -2,9 +2,9 @@
 //!
 //! Extracted from `fillet_with_history_integration.rs` and
 //! `chamfer_with_history_integration.rs` to eliminate byte-for-byte duplication
-//! of the edge-buffer assertion blocks (h)–(l). Future history-record additions
-//! (e.g. result_subshape_index sentinels, silent_drop_count cross-checks) require
-//! only a single edit here rather than dual edits with drift risk.
+//! of the edge-buffer assertion blocks (g)–(l). Future history-record additions
+//! (e.g. result_subshape_index sentinels) require only a single edit here rather
+//! than dual edits with drift risk.
 
 #![cfg(has_occt)]
 
@@ -14,8 +14,11 @@ use reify_types::GeometryHandleId;
 /// Assert well-formedness of all edge-related history buffers produced by a
 /// local-feature operation (fillet or chamfer) on a 10 mm box.
 ///
-/// Covers assertion blocks (h)–(l) from the integration-test spec:
+/// Covers assertion blocks (g)–(l) from the integration-test spec:
 ///
+/// - **(g)** `silent_drop_count == 0`: every Modified/Generated child must be
+///   resolvable in the result map. Mirrors the same invariant in
+///   `boolean_op_history_integration.rs`.
 /// - **(h)** Extracts `result_edge_count` via `kernel.extract_edges(result_id)`.
 /// - **(i)** `edge_modified` per-record well-formedness: `parent_index == 0`,
 ///   `parent_subshape_index < 12` (box edges), `result_subshape_index < result_edge_count`.
@@ -40,6 +43,17 @@ pub fn assert_local_feature_history_well_formed(
     history: &LocalFeatureOpHistoryRecords,
     op_name: &str,
 ) {
+    // (g) silent_drop_count must be zero for a well-formed clean local-feature op:
+    //     every Modified/Generated child must be resolvable in the result map.
+    //     Mirrors the same invariant in boolean_op_history_integration.rs.
+    assert_eq!(
+        history.silent_drop_count,
+        0,
+        "{op_name} should not silently drop any history record on a clean 10mm-box op; \
+         got {} drops",
+        history.silent_drop_count
+    );
+
     // (h) Derive result_edge_count for index-bounds checks.
     let result_edges = kernel
         .extract_edges(result_id)
