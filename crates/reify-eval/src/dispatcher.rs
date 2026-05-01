@@ -181,7 +181,23 @@ mod tests {
 
     use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
-    use super::{DispatchPlan, dispatch};
+    use super::{
+        DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
+        LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch,
+    };
+
+    /// Pins the three module-level long-chain constants by literal value:
+    /// the PRD-default threshold (500 ms wall, per
+    /// `docs/prds/v0_2/per-purpose-tolerance.md` §"Long-chain diagnostic
+    /// gating"), the min-stages cutoff (`>` 2 ⇒ ≥3), and the env-var name
+    /// `REIFY_LONG_CHAIN_THRESHOLD_MS`. A typo or rename loudly fails this
+    /// test — mirrors `warm_pool::budget_env_var_name` (warm_pool.rs:830).
+    #[test]
+    fn long_chain_constants_are_pinned() {
+        assert_eq!(LONG_CHAIN_DEFAULT_THRESHOLD_MS, 500);
+        assert_eq!(LONG_CHAIN_THRESHOLD_ENV_VAR, "REIFY_LONG_CHAIN_THRESHOLD_MS");
+        assert_eq!(LONG_CHAIN_MIN_STAGES, 2);
+    }
 
     /// Trivial happy path: one kernel that supports the demanded op directly on
     /// a repr already in `available`. Plan must be `(kernel, no conversions)`.
