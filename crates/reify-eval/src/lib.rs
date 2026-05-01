@@ -47,6 +47,7 @@ pub use dispatcher::{
     DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
     LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization, long_chain_diagnostic,
     long_chain_threshold_from_env, long_chain_threshold_from_env_value,
+    per_stage_tolerance_for_plan,
 };
 pub use kernel_registry::{collect_registry, pick_lexmin_kernel, registry};
 pub use primitive_attribute_seed::seed_primitive_attributes;
