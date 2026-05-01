@@ -5,8 +5,6 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_eval::TestStatus;
 
 mod mcp_context;
-use reify_geometry::DispatchPlanner;
-use reify_kernel_occt::OcctKernelHandle;
 use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
 
 fn main() -> ExitCode {
@@ -222,10 +220,13 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
-    let mut planner = DispatchPlanner::new();
-    planner.register_kernel(Box::new(OcctKernelHandle::spawn()));
-
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    // Explicit reference to reify_kernel_occt: ensures the crate's object files
+    // are included in the link so its `cfg(has_occt)`-gated `inventory::submit!`
+    // fires and registers the OCCT kernel with the global registry.  Without this
+    // reference the linker may dead-strip the crate entirely (no other symbol in
+    // cmd_build now references it after the DispatchPlanner migration).
+    let _kernel_available = reify_kernel_occt::OCCT_AVAILABLE;
+    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
     let result = engine.build(&compiled, format);
 
     let outcome = report_eval_output(
