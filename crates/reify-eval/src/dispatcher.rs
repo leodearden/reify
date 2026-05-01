@@ -558,6 +558,38 @@ mod tests {
         }
     }
 
+    /// Pins the repr-name component of "names the chain": the message must
+    /// include the from/to ReprKind variants for each conversion stage.
+    /// Prevents a future refactor that drops the `from:?→to:?` portion (e.g.
+    /// emitting kernel names alone) from silently regressing the
+    /// user-visible budget-pressure signal.
+    #[test]
+    fn long_chain_diagnostic_message_includes_repr_transitions() {
+        let plan = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![
+                ("kappa".to_string(), ReprKind::BRep, ReprKind::Sdf),
+                ("lambda".to_string(), ReprKind::Sdf, ReprKind::Mesh),
+                ("mu".to_string(), ReprKind::Mesh, ReprKind::Voxel),
+            ],
+        };
+        let threshold = Duration::from_millis(500);
+        let elapsed = Duration::from_millis(750);
+
+        let diag = long_chain_diagnostic(&plan, elapsed, threshold)
+            .expect("3 stages + elapsed > threshold must emit a diagnostic");
+
+        for repr in ["BRep", "Sdf", "Mesh", "Voxel"] {
+            assert!(
+                diag.message.contains(repr),
+                "diagnostic message must surface ReprKind variant {:?} so users \
+                 can see the conversion-budget shape (got: {:?})",
+                repr,
+                diag.message,
+            );
+        }
+    }
+
     /// Trivial happy path: one kernel that supports the demanded op directly on
     /// a repr already in `available`. Plan must be `(kernel, no conversions)`.
     /// This locks the zero-conversion code path before BFS expansion is added.
