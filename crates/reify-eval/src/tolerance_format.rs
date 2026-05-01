@@ -93,4 +93,41 @@ mod tests {
         // precision spec is applied and the output matches f64 Display.
         assert_eq!(format_tolerance(1.5), "1.5m");
     }
+
+    // Debug-build NaN/+Inf/negative panic tests. Mirror the
+    // `is_promise_insufficient_panics_in_debug_on_*` precedent in
+    // `tolerance_promise.rs:487-540`. The `expected` string is the static
+    // prefix of the canonical message — substring matching avoids depending
+    // on the dynamic interpolated `si_metres` value.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "format_tolerance invariant violated")]
+    fn format_tolerance_panics_in_debug_on_negative() {
+        format_tolerance(-1e-5);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "format_tolerance invariant violated")]
+    fn format_tolerance_panics_in_debug_on_nan() {
+        format_tolerance(f64::NAN);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "format_tolerance invariant violated")]
+    fn format_tolerance_panics_in_debug_on_positive_infinity() {
+        format_tolerance(f64::INFINITY);
+    }
+
+    // Release-mode regression guard: pins that the fallback for non-finite /
+    // negative inputs is space-separated (`"-0.00001 m"`, not `"-0.00001m"`).
+    // This test is excluded from default `cargo test` (debug mode) but runs
+    // under `cargo test --release`, exercising the production code path.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn format_tolerance_negative_release_fallback_is_space_separated() {
+        assert_eq!(format_tolerance(-1e-5), "-0.00001 m");
+    }
 }
