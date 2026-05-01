@@ -287,7 +287,14 @@ pub fn long_chain_threshold_from_env_value(value: Option<&str>) -> Duration {
 /// | 1                        | `requested_tol × 0.8` (via delegation)        |
 /// | N ≥ 2                    | `requested_tol^(1/N) × 0.8` (via delegation) |
 pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> f64 {
-    requested_tol
+    if plan.conversions.is_empty() {
+        // No kernel boundary crossed: demanded repr was already in `available`.
+        // Pass through unchanged — the 0.8 SAFETY_FACTOR only applies when
+        // stages exist to accumulate conversion error.
+        requested_tol
+    } else {
+        per_stage_tolerance(requested_tol, plan.conversions.len())
+    }
 }
 
 /// Ordered sequence of conversion stages: each entry is
