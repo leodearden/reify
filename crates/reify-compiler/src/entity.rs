@@ -2915,9 +2915,13 @@ mod tests {
     use super::*;
 
     /// Table-driven coverage: both Param and Let route through `emit_ice_unresolved`
-    /// when the declared name is absent from scope.  We assert only that exactly one
-    /// diagnostic is pushed and `Type::Real` is returned — the message wording and
-    /// ICE label format are already pinned by the tests in `ice.rs`.
+    /// when the declared name is absent from scope.  We assert that:
+    /// 1. `Type::Real` is returned (the ICE fallback value).
+    /// 2. Exactly one diagnostic is pushed.
+    /// 3. The diagnostic message contains `"internal compiler error"` — proving the
+    ///    ICE pathway was taken, not the wildcard fallback ("unsupported member kind
+    ///    in match arm").  The exact ICE wording and label format are already pinned
+    ///    by the tests in `ice.rs`.
     #[test]
     fn arm_member_type_emits_ice_when_unresolved() {
         let span = SourceSpan::new(0, 0);
@@ -2966,6 +2970,10 @@ mod tests {
                 diagnostics.len(),
                 1,
                 "[{label}] expected exactly one diagnostic, got: {diagnostics:?}",
+            );
+            assert!(
+                diagnostics[0].message.contains("internal compiler error"),
+                "[{label}] expected ICE diagnostic, got: {:?}", diagnostics[0].message,
             );
         }
     }
