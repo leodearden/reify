@@ -433,6 +433,7 @@ mod tests {
         long_chain_diagnostic, long_chain_threshold_from_env_value,
         per_stage_tolerance_for_plan,
     };
+    use crate::tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance};
     use std::time::Duration;
 
     /// Pins the three module-level long-chain constants by literal value:
@@ -1209,6 +1210,55 @@ mod tests {
             per_stage_tolerance_for_plan(&plan, 1.0),
             1.0,
             "empty chain pass-through must be independent of requested_tol magnitude (1.0)",
+        );
+    }
+
+    /// Multi-stage chains must delegate to `per_stage_tolerance` verbatim —
+    /// i.e. `per_stage_tolerance_for_plan(&plan, req)` ==
+    /// `per_stage_tolerance(req, plan.conversions.len())`.
+    ///
+    /// Two chain shapes are checked to catch off-by-one bugs in the n_stages
+    /// resolution (e.g. `len() + 1` vs `len()`, or a hard-coded `n_stages = 1`):
+    ///   - 2-conversion chain → N=2, expected = req^(1/2) × 0.8
+    ///   - 3-conversion chain → N=3, expected = req^(1/3) × 0.8
+    ///
+    /// The expected RHS is computed by calling `per_stage_tolerance` directly
+    /// so the assertion catches any wiring divergence without embedding magic
+    /// numbers or duplicating the geometric-split formula here.
+    ///
+    /// This test fails before step-4: the skeleton returns `requested_tol`,
+    /// which equals `per_stage_tolerance(req, 1)` only for N=1 (which isn't
+    /// tested here).
+    #[test]
+    fn per_stage_tolerance_for_plan_multi_stage_chain_uses_geometric_split() {
+        // 2-conversion chain: BRep → Sdf → Mesh (N = 2).
+        let plan_two = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![
+                ("alpha".to_string(), ReprKind::BRep, ReprKind::Sdf),
+                ("beta".to_string(), ReprKind::Sdf, ReprKind::Mesh),
+            ],
+        };
+        let req = 1e-3_f64;
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan_two, req),
+            per_stage_tolerance(req, plan_two.conversions.len()),
+            "2-conversion chain must delegate to per_stage_tolerance(req, 2) verbatim",
+        );
+
+        // 3-conversion chain: BRep → Mesh → Sdf → Voxel (N = 3).
+        let plan_three = DispatchPlan {
+            kernel: "fidget".to_string(),
+            conversions: vec![
+                ("alpha".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("beta".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                ("gamma".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+            ],
+        };
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan_three, req),
+            per_stage_tolerance(req, plan_three.conversions.len()),
+            "3-conversion chain must delegate to per_stage_tolerance(req, 3) verbatim",
         );
     }
 }
