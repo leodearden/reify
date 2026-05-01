@@ -171,11 +171,24 @@ pub fn long_chain_diagnostic(
     if !is_long_chain_realization(plan, elapsed, threshold) {
         return None;
     }
+    // Render each conversion stage as "{kernel}: {from:?}→{to:?}" — Debug
+    // formatting on ReprKind / Operation already prints human-readable
+    // variant names (BRep / Mesh / Sdf / Voxel). PRD: "names the chain so
+    // users can see budget pressure" — each kernel + repr transition tells
+    // the user exactly where the conversion budget is going.
+    let stages_rendered = plan
+        .conversions
+        .iter()
+        .map(|(kernel, from, to)| format!("{kernel}: {from:?}→{to:?}"))
+        .collect::<Vec<_>>()
+        .join(" → ");
     let message = format!(
-        "long-chain realization: {} stages, elapsed {}ms exceeds {}ms threshold",
+        "long-chain realization ({} stages, elapsed {}ms > {}ms): {} → {}",
         plan.conversions.len(),
         elapsed.as_millis(),
         threshold.as_millis(),
+        stages_rendered,
+        plan.kernel,
     );
     Some(Diagnostic::warning(message).with_code(DiagnosticCode::LongChainRealization))
 }
