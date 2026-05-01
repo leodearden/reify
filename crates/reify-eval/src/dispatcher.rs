@@ -44,6 +44,48 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
+/// PRD-default wall-time threshold for the long-chain realization warning,
+/// in milliseconds.
+///
+/// Per `docs/prds/v0_2/multi-kernel.md` §"Resolved design decisions" →
+/// "Long-chain diagnostic" and `docs/prds/v0_2/per-purpose-tolerance.md`
+/// §"Resolved design decisions" → "Long-chain diagnostic gating": the
+/// dispatcher emits a warning when the realization wall time **exceeds 500
+/// ms** (configurable). Strict-`>` semantics — exactly 500 ms does NOT warn,
+/// matching the strict-`<` decision in
+/// [`crate::tolerance_promise::is_promise_insufficient`] (task 2651) and
+/// the broader "tighter satisfies looser" partial-order vocabulary across
+/// the tolerance subsystem.
+///
+/// Override at runtime via [`LONG_CHAIN_THRESHOLD_ENV_VAR`].
+pub const LONG_CHAIN_DEFAULT_THRESHOLD_MS: u64 = 500;
+
+/// Environment variable that overrides the long-chain wall-time threshold.
+///
+/// Accepted values:
+/// - Absent / unset → uses [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`].
+/// - A decimal integer string → interpreted as milliseconds.
+/// - Any other value → a `tracing::warn!` is emitted and
+///   [`LONG_CHAIN_DEFAULT_THRESHOLD_MS`] is used.
+///
+/// Mirrors [`crate::warm_pool::BUDGET_ENV_VAR`]'s constant-named-value
+/// pattern: pinning the env-var name at compile time lets tests catch a
+/// typo or rename before the runtime silently ignores the user's override.
+pub const LONG_CHAIN_THRESHOLD_ENV_VAR: &str = "REIFY_LONG_CHAIN_THRESHOLD_MS";
+
+/// PRD-default minimum-conversion-stages cutoff for the long-chain realization
+/// warning. The predicate uses STRICT `>` against this value, so the cutoff
+/// of `2` means "≥3 conversion stages required to warn".
+///
+/// Per `docs/prds/v0_2/multi-kernel.md` §"Resolved design decisions" →
+/// "Long-chain diagnostic": "longer than 2 stages" reads as strict in plain
+/// English. Boundary cases (exactly 2 stages) do NOT warn — short-chain
+/// pain is self-evident; nagging is poor ergonomics. Exposing the cutoff as
+/// a const lets a future PRD revision tighten to `> 1` or relax to `> 3`
+/// with a single-line change while the predicate semantics remain pinned by
+/// existing tests.
+pub const LONG_CHAIN_MIN_STAGES: usize = 2;
+
 /// Ordered sequence of conversion stages: each entry is
 /// `(kernel_name, from_repr, to_repr)`. Factored as a type alias to keep the
 /// internal BFS frontier type below clippy's `type_complexity` threshold and
