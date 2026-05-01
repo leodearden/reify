@@ -38,6 +38,165 @@
 ///    `export`, and `tessellate` return their respective error variants with
 ///    messages containing `$substr`.
 
+/// Assert the all-error stub-kernel contract for a [`::reify_types::GeometryKernel`]
+/// implementation by generating three independent `#[test]` functions.
+///
+/// # Signature
+///
+/// ```ignore
+/// assert_stub_kernel_errors!($factory:expr, $substr:literal);
+/// ```
+///
+/// - `$factory` — a callable expression (function path or closure) that returns a
+///   fresh kernel instance each time it is invoked, e.g. `FidgetKernel::new` or
+///   `|| FidgetKernel::new()`.
+/// - `$substr` — a string literal that must appear in every error message returned
+///   by the kernel, e.g. `"Fidget"` or `"Manifold"`.
+///
+/// # Generated test functions
+///
+/// | Name | What it verifies |
+/// |------|-----------------|
+/// | `stub_kernel_implements_geometry_kernel_trait` | `Send + Sync` pin + `Box<dyn GeometryKernel>` upcast |
+/// | `stub_kernel_execute_returns_descriptive_error` | `execute` returns `Err(GeometryError::OperationFailed(msg))` with `msg.contains($substr)` for Union/Difference/Intersection |
+/// | `stub_kernel_query_export_tessellate_all_error` | `query`/`export`/`tessellate` return matching error variants with `msg.contains($substr)` |
+///
+/// # Example
+///
+/// ```ignore
+/// #[cfg(test)]
+/// mod tests {
+///     use super::*;
+///     reify_test_support::assert_stub_kernel_errors!(FidgetKernel::new, "Fidget");
+/// }
+/// ```
+///
+/// The three generated functions live in the enclosing `mod tests` scope alongside
+/// any kernel-specific tests you add. Their fixed names (`stub_kernel_*`) don't
+/// collide with kernel-specific names (`fidget_kernel_*`, `manifold_kernel_*`).
+#[macro_export]
+macro_rules! assert_stub_kernel_errors {
+    ($factory:expr, $substr:literal $(,)?) => {
+        /// Compile-time `Send + Sync` pin and `Box<dyn GeometryKernel>` upcast.
+        ///
+        /// The inner `assert_send_sync` function takes `_: &T` so type inference
+        /// eliminates the need for turbofish at the call site. The `Box<dyn …>`
+        /// upcast fails to compile if the kernel is missing `Send` or `Sync`.
+        #[test]
+        fn stub_kernel_implements_geometry_kernel_trait() {
+            fn assert_send_sync<T: ::core::marker::Send + ::core::marker::Sync>(_: &T) {}
+            let kernel = ($factory)();
+            assert_send_sync(&kernel);
+            let _boxed: ::std::boxed::Box<dyn ::reify_types::GeometryKernel> =
+                ::std::boxed::Box::new(($factory)());
+        }
+
+        /// `execute` returns `Err(GeometryError::OperationFailed(msg))` for
+        /// Union, Difference, and Intersection, and `msg` contains `$substr`.
+        #[test]
+        fn stub_kernel_execute_returns_descriptive_error() {
+            let mut kernel = ($factory)();
+            let ops = [
+                ::reify_types::GeometryOp::Union {
+                    left: ::reify_types::GeometryHandleId(1),
+                    right: ::reify_types::GeometryHandleId(2),
+                },
+                ::reify_types::GeometryOp::Difference {
+                    left: ::reify_types::GeometryHandleId(1),
+                    right: ::reify_types::GeometryHandleId(2),
+                },
+                ::reify_types::GeometryOp::Intersection {
+                    left: ::reify_types::GeometryHandleId(1),
+                    right: ::reify_types::GeometryHandleId(2),
+                },
+            ];
+            for op in &ops {
+                let result =
+                    ::reify_types::GeometryKernel::execute(&mut kernel, op);
+                match result {
+                    Err(::reify_types::GeometryError::OperationFailed(msg)) => {
+                        assert!(
+                            msg.contains($substr),
+                            "execute error message must contain {:?} for op {:?}, got: {:?}",
+                            $substr,
+                            op,
+                            msg,
+                        );
+                    }
+                    other => panic!(
+                        "expected Err(GeometryError::OperationFailed(_)) for op {:?}, got {:?}",
+                        op, other
+                    ),
+                }
+            }
+        }
+
+        /// `query`, `export`, and `tessellate` all return their respective error
+        /// variants and the message contains `$substr`.
+        #[test]
+        fn stub_kernel_query_export_tessellate_all_error() {
+            let kernel = ($factory)();
+
+            match ::reify_types::GeometryKernel::query(
+                &kernel,
+                &::reify_types::GeometryQuery::Volume(::reify_types::GeometryHandleId(1)),
+            ) {
+                Err(::reify_types::QueryError::QueryFailed(msg)) => {
+                    assert!(
+                        msg.contains($substr),
+                        "query error message must contain {:?}, got: {:?}",
+                        $substr,
+                        msg,
+                    );
+                }
+                other => panic!(
+                    "expected Err(QueryError::QueryFailed(_)) from query, got {:?}",
+                    other
+                ),
+            }
+
+            match ::reify_types::GeometryKernel::export(
+                &kernel,
+                ::reify_types::GeometryHandleId(1),
+                ::reify_types::ExportFormat::Step,
+                &mut ::std::vec::Vec::<u8>::new(),
+            ) {
+                Err(::reify_types::ExportError::FormatError(msg)) => {
+                    assert!(
+                        msg.contains($substr),
+                        "export error message must contain {:?}, got: {:?}",
+                        $substr,
+                        msg,
+                    );
+                }
+                other => panic!(
+                    "expected Err(ExportError::FormatError(_)) from export, got {:?}",
+                    other
+                ),
+            }
+
+            match ::reify_types::GeometryKernel::tessellate(
+                &kernel,
+                ::reify_types::GeometryHandleId(1),
+                0.1,
+            ) {
+                Err(::reify_types::TessError::TessellationFailed(msg)) => {
+                    assert!(
+                        msg.contains($substr),
+                        "tessellate error message must contain {:?}, got: {:?}",
+                        $substr,
+                        msg,
+                    );
+                }
+                other => panic!(
+                    "expected Err(TessError::TessellationFailed(_)) from tessellate, got {:?}",
+                    other
+                ),
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use reify_types::{
@@ -88,6 +247,5 @@ mod tests {
     }
 
     // Invoke the macro to generate three #[test] fns against the fixture stub.
-    // This line will fail to compile until step-2 implements the macro.
     crate::assert_stub_kernel_errors!(TestStubKernel::new, "TestStub");
 }
