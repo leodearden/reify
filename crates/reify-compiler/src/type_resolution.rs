@@ -760,9 +760,24 @@ pub(crate) fn resolve_type_alias_expr(
                     diagnostics.extend(tmp_diags);
                     return Some(ty);
                 }
-                // see AliasInnerDiagPolicy: propagate iff Propagate
-                if inner_diag_policy == AliasInnerDiagPolicy::Propagate {
+                // see AliasInnerDiagPolicy: propagate iff Propagate.
+                //
+                // When tmp_diags is non-empty, the parametric resolver matched a builtin
+                // (e.g. Scalar) but failed to resolve its inner args; surface the errors
+                // and return None so the alias entry stays unresolved.  Falling through
+                // to the simple-name lookup at the bottom of this match arm would
+                // silently bind to the builtin's `resolve_type_name` default (Scalar →
+                // Type::length()) and produce a wrong-type cascade at use sites —
+                // see task #2841.  When tmp_diags is empty, the name did NOT match any
+                // builtin parametric (the `_ => None` arm of
+                // resolve_parameterized_builtin_type); fall through to the user-defined
+                // parametric alias check below, which is required for non-parametric
+                // aliases whose body references a user parametric alias such as
+                // `type StringList = Container<String>` (regression-pinned by
+                // `alias_body_references_user_parameterized_alias`).
+                if inner_diag_policy == AliasInnerDiagPolicy::Propagate && !tmp_diags.is_empty() {
                     diagnostics.extend(tmp_diags);
+                    return None;
                 }
             }
             // Check for user-defined parameterized alias instantiation.
