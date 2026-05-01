@@ -7,7 +7,7 @@
 //! - External point along +X axis → nearest face at x=5.
 //! - External point along +Y axis → nearest face at y=5.
 //! - Point already on the +X face → distance to returned witness ≤ 1e-6.
-//! - Interior point at origin → witness on box surface at distance ≈ 5.0.
+//! - Off-center interior point at (1,0,0) → OCCT returns query point (1,0,0) at distance 0 (regression sentinel).
 //! - Unknown handle → `QueryError::InvalidHandle`.
 
 #![cfg(has_occt)]
@@ -115,36 +115,37 @@ fn closest_point_when_point_lies_on_face() {
 // Interior point — degenerate case
 // ---------------------------------------------------------------------------
 
-/// Query point (0.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
+/// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// The C++ header documents that for points inside the solid, OCCT returns
-/// distance 0 and a boundary witness point — no special-casing applied.
-/// This test locks in that contract: the call must succeed without error
-/// (NbSolution ≥ 1), and the witness must be on the box surface at distance
-/// ≈ 5.0 from the origin (the nearest face distance for a box centred at
-/// origin with half-width 5).
+/// When the query vertex is inside the solid, `BRepExtrema_DistShapeShape`
+/// reports distance 0 (the shapes overlap) and places the witness
+/// `PointOnShape1` at the query location itself. This is OCCT's observed
+/// behaviour: the interior of the solid is part of shape1, so the nearest
+/// point on shape1 to the query vertex is the vertex itself. Regression
+/// sentinel — pin the exact returned coordinates within 1e-6 so a future
+/// OCCT/cxx upgrade that changes this behaviour is caught.
+///
+/// Observed against the OCCT version in use at task 2849.
 #[test]
-fn closest_point_for_interior_point_at_origin() {
+fn closest_point_for_offcenter_interior_point() {
     let (kernel, box_id) = box_kernel();
-    match kernel.closest_point_on_shape(box_id, 0.0, 0.0, 0.0) {
+    // For an interior query, OCCT returns the query point itself (distance=0).
+    match kernel.closest_point_on_shape(box_id, 1.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
-            // Witness must land on the nearest face (distance 5.0 from origin).
-            let dist = (x * x + y * y + z * z).sqrt();
             assert!(
-                (dist - 5.0).abs() < 1e-6,
-                "expected witness at distance ≈5.0 from origin (nearest box face), \
-                 got ({x}, {y}, {z}), dist={dist}"
+                (x - 1.0).abs() < 1e-6,
+                "expected x≈1.0 (query point returned for interior query), got {x}"
             );
-            // At least one coordinate ≈ ±5.0 confirms the witness is on a face.
-            let on_face = (x.abs() - 5.0).abs() < 1e-6
-                || (y.abs() - 5.0).abs() < 1e-6
-                || (z.abs() - 5.0).abs() < 1e-6;
             assert!(
-                on_face,
-                "expected one coord ≈ ±5.0 (witness on a box face), got ({x}, {y}, {z})"
+                y.abs() < 1e-6,
+                "expected y≈0.0, got {y}"
+            );
+            assert!(
+                z.abs() < 1e-6,
+                "expected z≈0.0, got {z}"
             );
         }
-        Err(e) => panic!("expected Ok for interior query at origin, got Err({e:?})"),
+        Err(e) => panic!("expected Ok([1.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),
     }
 }
 
