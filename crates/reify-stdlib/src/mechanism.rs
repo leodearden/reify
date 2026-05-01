@@ -450,7 +450,11 @@ fn append_body(
         // fixtures) that omit the field. `make_empty_mechanism` always
         // emits `loop_closures`, so no Mechanism Map produced by the
         // v0.2 builder reaches this branch.
-        _ => Vec::new(),
+        None => Vec::new(),
+        // A present-but-wrong-typed value indicates a corrupt mechanism —
+        // reject with Undef, matching the sibling-field guards at lines
+        // 435-446 (bodies, joint_parents, next_id).
+        Some(_) => return Value::Undef,
     };
 
     // Duplicate-solid detection: scan `bodies` for any existing record
