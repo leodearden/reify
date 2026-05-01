@@ -19,8 +19,8 @@ use reify_types::{
 };
 
 const STUB_MSG: &str = "Fidget SDF kernel not yet implemented; \
-    reify-kernel-fidget is a registration-only scaffold for v0.2 task 2644. \
-    Real Fidget Rust JIT FFI is a follow-up.";
+    reify-kernel-fidget is a registration-only scaffold for the v0.2 multi-kernel system \
+    (see docs/prds/v0_2/multi-kernel.md). Real Fidget Rust JIT FFI is a follow-up.";
 
 /// Stub Fidget kernel — all operations return descriptive errors.
 ///

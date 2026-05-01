@@ -19,8 +19,8 @@ use reify_types::{
 };
 
 const STUB_MSG: &str = "Manifold mesh booleans not yet implemented; \
-    reify-kernel-manifold is a registration-only scaffold for v0.2 task 2643. \
-    Real Manifold C++ FFI is a follow-up.";
+    reify-kernel-manifold is a registration-only scaffold for the v0.2 multi-kernel system \
+    (see docs/prds/v0_2/multi-kernel.md). Real Manifold C++ FFI is a follow-up.";
 
 /// Stub Manifold kernel — all operations return descriptive errors.
 ///
