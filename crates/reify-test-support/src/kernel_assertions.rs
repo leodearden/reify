@@ -1,42 +1,42 @@
-/// Shared test assertions for all-error stub `GeometryKernel` implementations.
-///
-/// # Purpose
-///
-/// Every stub kernel adapter (`FidgetKernel`, `ManifoldKernel`, …) must satisfy
-/// an identical contract: the kernel is `Send + Sync`, implements
-/// `GeometryKernel` as a trait object, and every method returns a descriptive
-/// `Err(...)` variant whose message contains a kernel-identifying substring.
-///
-/// The [`assert_stub_kernel_errors!`] macro encapsulates that contract as three
-/// independent `#[test]` functions so each concern is reported separately by the
-/// test runner.
-///
-/// # Usage
-///
-/// ```ignore
-/// // Inside a #[cfg(test)] mod tests block:
-/// reify_test_support::assert_stub_kernel_errors!(FidgetKernel::new, "Fidget");
-/// reify_test_support::assert_stub_kernel_errors!(ManifoldKernel::new, "Manifold");
-/// ```
-///
-/// `$factory` must be an expression that produces a value implementing
-/// [`::reify_types::GeometryKernel`] when called as `$factory()`.
-/// `$substr` is a string literal; the generated tests assert that every error
-/// message returned by the kernel contains this substring.
-///
-/// # Generated tests
-///
-/// Invoking the macro expands to three `#[test]` functions:
-///
-/// 1. `stub_kernel_implements_geometry_kernel_trait` — compile-time `Send + Sync`
-///    pin via a local `fn assert_send_sync<T: Send + Sync>(_: &T) {}` call, plus
-///    a `Box<dyn GeometryKernel>` upcast.
-/// 2. `stub_kernel_execute_returns_descriptive_error` — iterates over
-///    `Union/Difference/Intersection` ops and asserts each returns
-///    `Err(GeometryError::OperationFailed(msg))` with `msg.contains($substr)`.
-/// 3. `stub_kernel_query_export_tessellate_all_error` — asserts that `query`,
-///    `export`, and `tessellate` return their respective error variants with
-///    messages containing `$substr`.
+//! Shared test assertions for all-error stub `GeometryKernel` implementations.
+//!
+//! # Purpose
+//!
+//! Every stub kernel adapter (`FidgetKernel`, `ManifoldKernel`, …) must satisfy
+//! an identical contract: the kernel is `Send + Sync`, implements
+//! `GeometryKernel` as a trait object, and every method returns a descriptive
+//! `Err(...)` variant whose message contains a kernel-identifying substring.
+//!
+//! The [`assert_stub_kernel_errors!`] macro encapsulates that contract as three
+//! independent `#[test]` functions so each concern is reported separately by the
+//! test runner.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! // Inside a #[cfg(test)] mod tests block:
+//! reify_test_support::assert_stub_kernel_errors!(FidgetKernel::new, "Fidget");
+//! reify_test_support::assert_stub_kernel_errors!(ManifoldKernel::new, "Manifold");
+//! ```
+//!
+//! `$factory` must be an expression that produces a value implementing
+//! [`::reify_types::GeometryKernel`] when called as `$factory()`.
+//! `$substr` is a string literal; the generated tests assert that every error
+//! message returned by the kernel contains this substring.
+//!
+//! # Generated tests
+//!
+//! Invoking the macro expands to three `#[test]` functions:
+//!
+//! 1. `stub_kernel_implements_geometry_kernel_trait` — compile-time `Send + Sync`
+//!    pin via a local `fn assert_send_sync<T: Send + Sync>(_: &T) {}` call, plus
+//!    a `Box<dyn GeometryKernel>` upcast.
+//! 2. `stub_kernel_execute_returns_descriptive_error` — iterates over
+//!    `Union/Difference/Intersection` ops and asserts each returns
+//!    `Err(GeometryError::OperationFailed(msg))` with `msg.contains($substr)`.
+//! 3. `stub_kernel_query_export_tessellate_all_error` — asserts that `query`,
+//!    `export`, and `tessellate` return their respective error variants with
+//!    messages containing `$substr`.
 
 /// Assert the all-error stub-kernel contract for a [`::reify_types::GeometryKernel`]
 /// implementation by generating three independent `#[test]` functions.
