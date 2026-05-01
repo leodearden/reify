@@ -916,7 +916,10 @@ pub(crate) fn resolve_type_expr_with_aliases(
     // If the name is a parametric prelude alias that was skipped at seed time,
     // emit a Severity::Info hint so the user sees the cross-module propagation
     // limitation alongside the "unresolved type" Error that the caller will emit.
-    if alias_registry.is_skipped_parametric_prelude(name) {
+    // `should_emit_skipped_parametric_prelude_info` records the span on first
+    // emit and returns false for any subsequent call on the same span, providing
+    // span-level dedup across multiple call sites of resolve_type_expr_with_aliases.
+    if alias_registry.should_emit_skipped_parametric_prelude_info(name, type_expr.span) {
         diagnostics.push(
             Diagnostic::info(format!(
                 "type '{}' is a parametric prelude alias whose cross-module propagation \
