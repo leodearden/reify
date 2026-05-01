@@ -1532,23 +1532,16 @@ mod tests {
         let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
         let solid = Value::String("solid".to_string());
 
-        // Hand-construct a Mechanism Map with canonical shape but wrong-typed
-        // loop_closures field.
-        let mut map = BTreeMap::new();
-        map.insert(
-            Value::String("kind".to_string()),
-            Value::String("mechanism".to_string()),
-        );
-        map.insert(
-            Value::String("bodies".to_string()),
-            Value::List(vec![]),
-        );
-        map.insert(
-            Value::String("joint_parents".to_string()),
-            Value::Map(BTreeMap::new()),
-        );
-        map.insert(Value::String("next_id".to_string()), Value::Int(0));
-        // Wrong type: Int instead of List.
+        // Build the base mechanism via the public builder so the fixture
+        // automatically tracks any future additions to the canonical Mechanism
+        // Map shape; override only the one field under test.
+        let m0 = eval_builtin("mechanism", &[]);
+        let mut map = match m0 {
+            Value::Map(m) => m,
+            _ => panic!("mechanism() must return a Value::Map"),
+        };
+        // Wrong type: Int instead of List.  A present-but-wrong-typed
+        // loop_closures field simulates a corrupt Mechanism Map.
         map.insert(
             Value::String("loop_closures".to_string()),
             Value::Int(0),
