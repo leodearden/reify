@@ -153,36 +153,63 @@ fn build_registry() -> BTreeMap<String, &'static KernelRegistration> {
     map
 }
 
-// ── Synthetic test kernel ─────────────────────────────────────────────────
+// ── Synthetic test kernels ────────────────────────────────────────────────
 //
-// Submitted under `#[cfg(test)]` so it appears in this crate's `cargo test
-// --lib` build, where the smoke test below asserts non-empty content. Without
-// this synthetic the smoke test would pass by construction (`first.len() ==
-// second.len() == 0` for any iteration impl that returns nothing), so a
-// regression that strips the inventory walk from `build_registry` would slip
-// through unit tests entirely. The cross-crate end-to-end pin in
-// `crates/reify-eval/tests/kernel_registry_inventory.rs` covers the populated
-// case but is itself stub-mode-skipped, which is why the unit-level synthetic
-// is needed in addition.
+// All synthetic registrations below are `#[cfg(test)]`-only. They appear in
+// `cargo test --lib` builds for this crate but are invisible to integration
+// test binaries (which compile the lib without `cfg(test)`).
 //
-// The factory body is `unreachable!()`: any code path that picks the synthetic
-// as a real kernel (e.g. `Engine::with_registered_kernel` invoked from a unit
-// test) would surface a panic with a clear message. No unit test in
-// `reify-eval` currently constructs an `Engine` via that constructor — the
-// integration test that does so lives outside `src/` and therefore links the
-// lib without `cfg(test)`, leaving the synthetic invisible there.
+// Three synthetics are registered:
+//
+//   __a_kernel  — lex-min in the test build; descriptor: PrimitiveBox/BRep
+//   __b_kernel  — second; descriptor: PrimitiveCylinder/BRep
+//   __test_synthetic_kernel — third; descriptor: PrimitiveBox/BRep
+//
+// ASCII sort order: '_' = 0x5F, 'a' = 0x61, 'b' = 0x62, 't' = 0x74.
+// Therefore: __a_kernel < __b_kernel < __test_synthetic_kernel.
+//
+// This means the lex-min test (`pick_lexmin_kernel_returns_lex_smaller_of_known_pair`)
+// can assert pick_lexmin_kernel() == __a_kernel non-tautologically, and the
+// smoke test (`collect_registry_returns_typed_btreemap_smoke`) still finds
+// __test_synthetic_kernel by its stable NAME constant.
+//
+// All factories are `unreachable!()`: any code path that instantiates a
+// synthetic as a real kernel (e.g. Engine::with_registered_kernel from a unit
+// test) surfaces a clear panic. No unit test in reify-eval invokes that
+// constructor — the integration test that does lives outside `src/` and links
+// the lib without cfg(test), so synthetics are invisible there.
 #[cfg(test)]
 mod test_synthetic_kernel {
     use super::*;
     use reify_types::{GeometryKernel, Operation, ReprKind};
 
-    /// Stable name for the cfg(test)-only synthetic kernel. The double-
-    /// underscore prefix sorts before any plausible real adapter name in the
-    /// `cargo test --lib` build for `reify-eval` — but the synthetic is
-    /// invisible to integration test binaries (which compile the lib without
-    /// `cfg(test)`) so the lex-min picked by
-    /// [`Engine::with_registered_kernel`](crate::Engine::with_registered_kernel)
-    /// in real builds is unaffected.
+    // ── __a_kernel ─────────────────────────────────────────────────────────
+    // Lex-smallest synthetic in the test build. Used by the lex-min contract
+    // test to assert pick_lexmin_kernel() returns the smaller of a known pair.
+    const A_NAME: &str = "__a_kernel";
+
+    fn descriptor_a() -> CapabilityDescriptor {
+        CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        }
+    }
+
+    // ── __b_kernel ─────────────────────────────────────────────────────────
+    // Second-smallest synthetic. Present so the lex-min test can confirm
+    // pick_lexmin_kernel() chose __a_kernel over __b_kernel (not just "first
+    // synthetic seen" from an unordered walk).
+    const B_NAME: &str = "__b_kernel";
+
+    fn descriptor_b() -> CapabilityDescriptor {
+        CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveCylinder, ReprKind::BRep)],
+        }
+    }
+
+    // ── __test_synthetic_kernel ────────────────────────────────────────────
+    // Original synthetic, kept so the smoke test's contains_key(NAME) assertion
+    // is unaffected. Descriptor intentionally distinct from __a_kernel to
+    // guard against accidental descriptor-identity bugs.
     const SYNTHETIC_KERNEL_NAME: &str = "__test_synthetic_kernel";
 
     fn synthetic_descriptor() -> CapabilityDescriptor {
@@ -191,24 +218,55 @@ mod test_synthetic_kernel {
         }
     }
 
-    fn synthetic_factory() -> Box<dyn GeometryKernel> {
+    // ── Shared factory ─────────────────────────────────────────────────────
+    // All three synthetics share one unreachable!() factory: the bodies are
+    // identical (panics with a clear message), so a single DRY function
+    // serves all three registrations.
+    fn unreachable_factory() -> Box<dyn GeometryKernel> {
         unreachable!(
-            "synthetic test kernel factory must never be invoked: it exists only to \
-             give `kernel_registry::tests::collect_registry_returns_typed_btreemap_smoke` \
-             non-empty content to assert against. Reaching this branch means a unit \
-             test (cargo test --lib for reify-eval) misused `Engine::with_registered_kernel` \
-             — the lex-smallest synthetic was instantiated as if it were a real kernel."
+            "synthetic test kernel factory must never be invoked: these registrations \
+             exist only to give unit tests non-empty and structurally-varied registry \
+             content. Reaching this branch means a unit test (cargo test --lib for \
+             reify-eval) misused Engine::with_registered_kernel — a synthetic was \
+             instantiated as if it were a real kernel."
         );
+    }
+
+    inventory::submit! {
+        KernelRegistration {
+            name: A_NAME,
+            descriptor: descriptor_a,
+            factory: unreachable_factory,
+        }
+    }
+
+    inventory::submit! {
+        KernelRegistration {
+            name: B_NAME,
+            descriptor: descriptor_b,
+            factory: unreachable_factory,
+        }
     }
 
     inventory::submit! {
         KernelRegistration {
             name: SYNTHETIC_KERNEL_NAME,
             descriptor: synthetic_descriptor,
-            factory: synthetic_factory,
+            factory: unreachable_factory,
         }
     }
 
+    /// Stable name for the lex-min synthetic (`__a_kernel`). Referenced by
+    /// `pick_lexmin_kernel_returns_lex_smaller_of_known_pair` to pin the
+    /// contract without hard-coded string literals in the test body.
+    pub(super) const NAME_A: &str = A_NAME;
+
+    /// Stable name for the second synthetic (`__b_kernel`). Referenced
+    /// alongside `NAME_A` so the contract test can assert both are present.
+    pub(super) const NAME_B: &str = B_NAME;
+
+    /// Stable name for the original smoke-test synthetic (`__test_synthetic_kernel`).
+    /// Referenced by `collect_registry_returns_typed_btreemap_smoke`.
     pub(super) const NAME: &str = SYNTHETIC_KERNEL_NAME;
 }
 
@@ -280,27 +338,31 @@ mod tests {
         // (1) Both named synthetics must be visible — proves the inventory walk
         //     captured all submissions rather than stopping at the first.
         assert!(
-            registry().contains_key("__a_kernel"),
-            "registry must contain synthetic kernel \"__a_kernel\" — \
-             step-2 adds test_synthetic_kernel::NAME_A registration",
+            registry().contains_key(test_synthetic_kernel::NAME_A),
+            "registry must contain synthetic kernel {:?} — \
+             see test_synthetic_kernel::NAME_A",
+            test_synthetic_kernel::NAME_A,
         );
         assert!(
-            registry().contains_key("__b_kernel"),
-            "registry must contain synthetic kernel \"__b_kernel\" — \
-             step-2 adds test_synthetic_kernel::NAME_B registration",
+            registry().contains_key(test_synthetic_kernel::NAME_B),
+            "registry must contain synthetic kernel {:?} — \
+             see test_synthetic_kernel::NAME_B",
+            test_synthetic_kernel::NAME_B,
         );
 
         // (2) pick_lexmin_kernel must return the lex-smaller of the two
-        //     synthetics. "__a_kernel" < "__b_kernel" in ASCII order,
-        //     so __a_kernel must win.
+        //     synthetics. NAME_A = "__a_kernel" < NAME_B = "__b_kernel" in
+        //     ASCII order, so __a_kernel must win.
         let lexmin = pick_lexmin_kernel().expect(
             "registry must contain at least the cfg(test) synthetic kernels — \
              see test_synthetic_kernel module",
         );
         assert_eq!(
-            lexmin.name, "__a_kernel",
+            lexmin.name,
+            test_synthetic_kernel::NAME_A,
             "pick_lexmin_kernel must return the lex-smallest registered name \
-             (\"__a_kernel\"), but got {:?}",
+             ({:?}), but got {:?}",
+            test_synthetic_kernel::NAME_A,
             lexmin.name,
         );
     }
