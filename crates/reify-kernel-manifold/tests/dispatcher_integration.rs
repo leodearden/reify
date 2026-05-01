@@ -27,10 +27,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use reify_eval::{
-    dispatcher::{self, DispatchPlan},
-    kernel_registry,
-};
+use reify_eval::{dispatcher, kernel_registry};
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"manifold"`
@@ -44,6 +41,19 @@ use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 /// Manifold's declared input repr for `BooleanUnion`.
 #[test]
 fn manifold_dispatches_for_mesh_boolean_when_only_kernel() {
+    // Linker anchor: an explicit function-pointer reference to a symbol in
+    // `register.rs` forces the linker to include that translation unit from
+    // the `reify-kernel-manifold` rlib.  Without this, the linker dead-strips
+    // the entire manifold rlib — nothing else in this binary references it —
+    // so the `inventory::submit!` `__CTOR` `.init_array` entry never fires
+    // and `kernel_registry::registry()` returns an empty map.
+    //
+    // Compare: `crates/reify-eval/tests/kernel_registry_inventory.rs` uses
+    // `reify_kernel_occt::OCCT_AVAILABLE` as the equivalent anchor for the
+    // OCCT registration.  This is the same pattern, applied to manifold.
+    let _anchor: fn() -> reify_types::CapabilityDescriptor =
+        reify_kernel_manifold::register::manifold_capability_descriptor;
+
     let reg = kernel_registry::registry();
 
     // 1. Registry contains "manifold" — proves the inventory submit fired.

@@ -111,7 +111,7 @@ mod tests {
     /// input, locking the all-error stub contract.
     #[test]
     fn manifold_kernel_query_export_tessellate_all_error() {
-        let mut kernel = ManifoldKernel::new();
+        let kernel = ManifoldKernel::new();
 
         let query_result = kernel.query(&GeometryQuery::Volume(GeometryHandleId(1)));
         assert!(query_result.is_err(), "query must return Err(...)");
