@@ -158,17 +158,25 @@ export class SidecarSession {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    // Attach a no-op 'error' listener so an unhandled stream error cannot crash the sidecar
-    // process. Error reporting now flows through per-write callbacks (see writes below) which
-    // capture the correct id for each write rather than the outer send_message id.
+    // Attach an 'error' listener so an unhandled stream error cannot crash the sidecar process.
+    // Error reporting for *correlated* writes flows through per-write callbacks (see writes below),
+    // which capture the correct id for each write rather than the outer send_message id.
     //
-    // Intentional: orphan stream errors (fired to the 'error' listener without a pending write
-    // callback) are dropped rather than emitted with a potentially-wrong id. This is acceptable
-    // because the close path — observable via proc.on('close') and the exitCode check below —
-    // provides the authoritative signal that the CLI exited unexpectedly. A host relying solely
-    // on the 'error' event for EPIPE detection should check the 'done'/'error' outbound from
-    // handleSendMessage instead.
-    proc.stdin?.on('error', () => {});
+    // Orphan stream errors (fired to the 'error' listener without a pending write callback, e.g.
+    // when the underlying fd is closed externally) are now surfaced as a console.warn diagnostic
+    // so they are diagnosable in production rather than dropped silently. The close path —
+    // observable via proc.on('close') and the exitCode check below — remains the authoritative
+    // failure signal. A host relying on EPIPE detection should check the 'done'/'error' outbound
+    // from handleSendMessage instead.
+    let warnedOrphanStdinError = false;
+    proc.stdin?.on('error', (err: Error) => {
+      // One-shot guard (mirrors warnedMissingMessageId below) prevents log spam if the
+      // kernel/Node fires repeated errors on the same stream after an external fd close.
+      if (!warnedOrphanStdinError) {
+        warnedOrphanStdinError = true;
+        console.warn(`[sidecar] stdin error (orphan, no pending write): ${err.message}`);
+      }
+    });
 
     // Write the initial user prompt as a stream-json message line.
     // Stdin is kept open until a 'result' event arrives so tool_result blocks can follow.

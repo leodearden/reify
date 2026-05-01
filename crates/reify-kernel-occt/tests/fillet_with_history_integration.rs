@@ -12,6 +12,8 @@
 
 #![cfg(has_occt)]
 
+mod common;
+
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{GeometryOp, GeometryQuery, Value};
 
@@ -43,7 +45,21 @@ fn ten_mm_box_op() -> GeometryOp {
 /// - asserts `face_modified.parent_subshape_index < 6` (box has 6 faces);
 /// - asserts `face_generated.parent_subshape_index < 12` (fillet lateral faces
 ///   are generated FROM edges; box has 12 edges);
-/// - asserts every `result_subshape_index` is in-range for the result shape.
+/// - asserts every `result_subshape_index` is in-range for the result shape;
+/// - asserts `edge_modified` per-record well-formedness (parent_index == 0,
+///   parent_subshape_index < 12, result_subshape_index < result_edge_count);
+///   no non-empty assertion (OCCT may route via Generated/Deleted);
+/// - asserts `edge_generated` per-record bounds: parent_index == 0,
+///   parent_subshape_index < 8 (box VERTICES — generated FROM vertices, not edges),
+///   result_subshape_index < result_edge_count;
+/// - asserts `face_deleted.is_empty()` (fillet does not consume any parent face);
+/// - asserts `!edge_deleted.is_empty()` (BRepFilletAPI_MakeFillet marks all parent
+///   edges as IsDeleted; a regression that zeros this buffer is caught) and
+///   per-record bounds: parent_index == 0, parent_subshape_index < 12.
+///
+/// Assertion blocks (h)–(l) are delegated to
+/// `common::assert_local_feature_history_well_formed` to eliminate duplication
+/// with the chamfer mirror test.
 ///
 /// Compilation/linkage of this test pins step-2: it will fail to build
 /// until the FFI primitive + Rust handle method ship.
@@ -155,4 +171,15 @@ fn fillet_with_history_reports_face_records() {
             result_face_count
         );
     }
+
+    // (h)-(l) Edge-buffer well-formedness: delegated to the shared helper to
+    // eliminate duplication with the chamfer mirror test. Asserts edge_modified
+    // bounds, edge_generated bounds (keyed by VERTEX map), face_deleted empty,
+    // and edge_deleted non-empty + bounds.
+    common::assert_local_feature_history_well_formed(
+        &kernel,
+        result_id,
+        &history,
+        "fillet",
+    );
 }

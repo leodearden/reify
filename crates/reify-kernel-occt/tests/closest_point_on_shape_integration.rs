@@ -7,7 +7,10 @@
 //! - External point along +X axis → nearest face at x=5.
 //! - External point along +Y axis → nearest face at y=5.
 //! - Point already on the +X face → distance to returned witness ≤ 1e-6.
-//! - Interior point at origin → witness on box surface at distance ≈ 5.0.
+//! - Off-center interior point at (1,0,0) → OCCT returns nearest face point (5,0,0) at distance 4.0 (regression sentinel).
+//! - Oblique external (10,10,10) → corner witness (5,5,5) at distance 5√3.
+//! - Non-solid Face sub-shape input → "any TopoDS_Shape" contract holds (Ok with witness on face, distance ≈ 5.0).
+//! - NaN query coords → `Err(QueryError::QueryFailed(_))` (regression sentinel, OCCT rejects NaN vertex).
 //! - Unknown handle → `QueryError::InvalidHandle`.
 
 #![cfg(has_occt)]
@@ -89,6 +92,39 @@ fn closest_point_for_external_point_on_y_axis() {
     }
 }
 
+/// Query point (10.0, 10.0, 10.0) lies along the body-diagonal of the +X+Y+Z
+/// octant outside the centred 10×10×10 box. The unique closest point on the
+/// box is the corner vertex (5.0, 5.0, 5.0) at distance 5·√3 ≈ 8.6602540378
+/// — a corner-witness branch of `BRepExtrema_DistShapeShape` that the
+/// axis-aligned external-point tests do not cover.
+#[test]
+fn closest_point_for_oblique_external_point_resolves_to_corner_witness() {
+    let (kernel, box_id) = box_kernel();
+    match kernel.closest_point_on_shape(box_id, 10.0, 10.0, 10.0) {
+        Ok([x, y, z]) => {
+            assert!(
+                (x - 5.0).abs() < 1e-6,
+                "expected x≈5.0 (corner witness), got {x}"
+            );
+            assert!(
+                (y - 5.0).abs() < 1e-6,
+                "expected y≈5.0 (corner witness), got {y}"
+            );
+            assert!(
+                (z - 5.0).abs() < 1e-6,
+                "expected z≈5.0 (corner witness), got {z}"
+            );
+            let d = ((x - 10.0).powi(2) + (y - 10.0).powi(2) + (z - 10.0).powi(2)).sqrt();
+            assert!(
+                (d - (75.0_f64).sqrt()).abs() < 1e-6,
+                "expected distance 5√3≈{}, got {d}",
+                (75.0_f64).sqrt()
+            );
+        }
+        Err(e) => panic!("expected Ok([5.0, 5.0, 5.0]), got Err({e:?})"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Happy path — point already on the surface
 // ---------------------------------------------------------------------------
@@ -112,34 +148,118 @@ fn closest_point_when_point_lies_on_face() {
 }
 
 // ---------------------------------------------------------------------------
+// Non-solid TopoDS_Shape input
+// ---------------------------------------------------------------------------
+
+/// The C++ wrapper accepts "any TopoDS_Shape" per its docstring — not just
+/// Solid boxes. This test verifies that a `TopoDS_Face` sub-shape extracted
+/// from the box returns a valid witness, exercising the non-solid path.
+///
+/// Query (0.0, 0.0, 0.0) is chosen because each face plane of a centred
+/// 10×10×10 box is at distance 5 from the origin, and the perpendicular foot
+/// of the origin onto each face plane lies within the face's [-5,5]² bounds —
+/// so the closest point on any face from the origin is at distance 5.0,
+/// independent of which face `MapShapes` returns as `faces[0]`. This keeps
+/// the test deterministic without face-identification logic.
+#[test]
+fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
+    let (mut kernel, box_id) = box_kernel(); // mut required for extract_faces
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces should succeed for a valid box");
+    assert!(!faces.is_empty(), "box should have at least one face");
+
+    for &fid in &faces {
+        match kernel.closest_point_on_shape(fid, 0.0, 0.0, 0.0) {
+            Ok([x, y, z]) => {
+                let dist = (x * x + y * y + z * z).sqrt();
+                assert!(
+                    (dist - 5.0).abs() < 1e-6,
+                    "each face plane of a centred 10×10×10 box is at distance 5 from the origin \
+                     and the perpendicular foot lies within the face bounds, so the closest point \
+                     on any face from the origin is at distance 5.0; got ({x}, {y}, {z}), dist={dist}"
+                );
+            }
+            Err(e) => panic!(
+                "closest_point_on_shape on a Face sub-shape should satisfy the \
+                 'any TopoDS_Shape' contract, got Err({e:?})"
+            ),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Interior point — degenerate case
 // ---------------------------------------------------------------------------
 
-/// Query point (0.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
+/// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// Raw `BRepExtrema_DistShapeShape` against the solid reports distance 0 for
-/// interior points and returns the query point itself via `PointOnShape1`.
-/// The C++ wrapper detects this (dist < 1e-10) and re-runs the extrema against
-/// the outer shell so the returned witness lies on the boundary.
+/// `BRepExtrema_DistShapeShape` reports distance 0 and the query point
+/// itself when the point is inside a solid.  The C++ wrapper detects this
+/// (dist < 1e-10) and re-runs extrema against the outer shell, returning a
+/// proper boundary witness instead.  For (1.0, 0.0, 0.0), the unique nearest
+/// boundary point is the perpendicular foot on the +X face at (5.0, 0.0, 0.0),
+/// distance 4.0.  Regression sentinel — pin the exact returned coordinates
+/// within 1e-6 so a future OCCT/cxx upgrade that changes this behaviour is
+/// caught.
 ///
-/// This test locks in that observed contract: the call must succeed and the
-/// returned witness must lie on the box surface (distance ≈ 5.0 from the
-/// origin, since each face is 5 units away).
+/// Observed against the OCCT version in use at task 2849.
 #[test]
-fn closest_point_for_interior_point_at_origin() {
+fn closest_point_for_offcenter_interior_point() {
     let (kernel, box_id) = box_kernel();
-    match kernel.closest_point_on_shape(box_id, 0.0, 0.0, 0.0) {
+    // For an interior query, the C++ wrapper's shell-search detour returns the
+    // nearest surface point (5.0, 0.0, 0.0) instead of the query vertex itself.
+    match kernel.closest_point_on_shape(box_id, 1.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
-            // The wrapper projects onto the outer shell, so the witness is on
-            // the box surface at distance ≈ 5.0 from the origin.
-            let dist = (x * x + y * y + z * z).sqrt();
             assert!(
-                (dist - 5.0).abs() < 1e-6,
-                "expected interior query to return a surface witness (dist≈5), \
-                 got ({x}, {y}, {z}), dist={dist}"
+                (x - 5.0).abs() < 1e-6,
+                "expected x≈5.0 (nearest face surface for interior query at (1,0,0)), got {x}"
+            );
+            assert!(
+                y.abs() < 1e-6,
+                "expected y≈0.0, got {y}"
+            );
+            assert!(
+                z.abs() < 1e-6,
+                "expected z≈0.0, got {z}"
             );
         }
-        Err(e) => panic!("expected Ok for interior query at origin, got Err({e:?})"),
+        Err(e) => panic!("expected Ok([5.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Degenerate inputs — regression sentinels
+// ---------------------------------------------------------------------------
+
+/// Regression sentinel for `BRepBuilderAPI_MakeVertex(gp_Pnt(NAN, 0, 0))`
+/// behaviour. See `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:2626-2643`.
+///
+/// OCCT does not validate vertex constructor inputs: a NaN coordinate may
+/// succeed at vertex construction but produce `BRepExtrema_DistShapeShape`
+/// failure (`IsDone() == false` or `NbSolution() < 1`), yielding
+/// `Err(QueryError::QueryFailed(_))` in the Rust wrapper.  The exact observed
+/// outcome is pinned below so a future OCCT/cxx upgrade that flips this
+/// behaviour is caught.
+///
+/// Observed against the OCCT version in use at task 2849.
+#[test]
+fn closest_point_for_nan_query_coords_locks_current_behavior() {
+    let (kernel, box_id) = box_kernel();
+    // Behaviour observed against OCCT at task 2849; flip this assertion when
+    // the upgrade ticket lands.
+    let result = kernel.closest_point_on_shape(box_id, f64::NAN, 0.0, 0.0);
+    match result {
+        Err(QueryError::QueryFailed(_)) => {
+            // Expected: OCCT rejects the NaN vertex — lock in this branch.
+        }
+        Ok([x, y, z]) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for NaN query coords, \
+             got Ok([{x}, {y}, {z}]) — if OCCT changed behaviour, pin the Ok branch instead"
+        ),
+        Err(e) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for NaN query coords, got Err({e:?})"
+        ),
     }
 }
 
