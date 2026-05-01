@@ -456,6 +456,7 @@ mod tests {
     /// silently call `emit_kernel_selection` with an empty registry and have
     /// the helper quietly emit a spurious DEBUG event. This test confirms the
     /// panic fires when `total == 0` (in debug builds, i.e. `cargo test`).
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "emit_kernel_selection requires total >= 1")]
     fn emit_kernel_selection_panics_when_total_is_zero() {
