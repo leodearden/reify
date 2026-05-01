@@ -2352,3 +2352,71 @@ describe('waitForOutput / waitForOutputs deadline', () => {
     expect(session.onOutput).toBe(originalOnOutput);
   });
 });
+
+describe('waitForOutput cancel hook', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('cancel() before match restores session.onOutput immediately and keeps the promise pending', async () => {
+    const originalOnOutput = session.onOutput;
+
+    // Cast to the intended cancellable type — will be a runtime TypeError until step-2 implements it
+    const cancellable = waitForOutput(
+      session,
+      (m) => m.type === 'text_delta',
+    ) as Promise<OutboundMessage> & { cancel: () => void };
+
+    // session.onOutput should be swapped to the wrapped handler
+    expect(session.onOutput).not.toBe(originalOnOutput);
+
+    // Cancel BEFORE emitting any matching output
+    cancellable.cancel(); // TypeError: cancellable.cancel is not a function (until step-2)
+
+    // (b) session.onOutput should be restored immediately after cancel
+    expect(session.onOutput).toBe(originalOnOutput);
+
+    // (a) Emit a matching message — lands in outputs via restored handler; wait stays pending
+    session.onOutput({ type: 'text_delta', content: 'not-captured' } as any);
+    expect(outputs).toHaveLength(1);
+
+    // (c) Cancelled promise stays pending — a short race should time out, not resolve
+    const raceResult = await Promise.race([
+      cancellable.then(() => 'resolved' as const),
+      new Promise<'timeout'>((res) => setTimeout(() => res('timeout'), 50)),
+    ]);
+    expect(raceResult).toBe('timeout');
+  });
+
+  it('cancel() after match is a no-op (idempotent — does not throw, does not re-restore)', async () => {
+    const originalOnOutput = session.onOutput;
+
+    const cancellable = waitForOutput(
+      session,
+      (m) => m.type === 'text_delta',
+      { timeoutMs: 2000 },
+    ) as Promise<OutboundMessage> & { cancel: () => void };
+
+    // Emit a matching message so the wait settles via match
+    session.onOutput({ type: 'text_delta', content: 'match' } as any);
+    const result = await cancellable;
+    expect(result.type).toBe('text_delta');
+
+    // session.onOutput should already be restored
+    expect(session.onOutput).toBe(originalOnOutput);
+
+    // cancel() after resolution must not throw and must leave session.onOutput as-is
+    expect(() => cancellable.cancel()).not.toThrow();
+    expect(session.onOutput).toBe(originalOnOutput);
+  });
+});
