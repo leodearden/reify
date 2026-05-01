@@ -205,7 +205,8 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         DiagnosticCode::AutoTypeParamPoolOverflow
         | DiagnosticCode::AutoTypeParamNoCandidate
         | DiagnosticCode::AutoTypeParamAmbiguous
-        | DiagnosticCode::AutoTypeParamNonUnique,
+        | DiagnosticCode::AutoTypeParamNonUnique
+        | DiagnosticCode::AutoTypeParamDepthBoundExceeded,
     ) = diag.code
     {
         tracing::debug!(
