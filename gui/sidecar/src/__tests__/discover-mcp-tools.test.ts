@@ -41,6 +41,11 @@ describe('discoverRegisteredTools', () => {
   });
 
   it('discovers a tool whose name has uppercase characters', () => {
+    // The TS discovery layer intentionally tolerates any casing via [A-Za-z0-9_]+.
+    // The Rust convention (snake_case) is enforced by the Rust layer; keeping the
+    // TS layer casing-agnostic means the test stays valid if a mixed-case name is
+    // ever introduced or if the convention is relaxed.  See design decision in plan.json
+    // ("tolerates any casing") and the REGISTER_LITERAL_RE comment in discover-mcp-tools.ts.
     const dir = makeTempDir();
     writeFileSync(
       join(dir, 'navigation.rs'),
