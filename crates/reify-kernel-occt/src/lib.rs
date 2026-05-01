@@ -3326,6 +3326,162 @@ mod tests {
         }
     }
 
+    // --- fillet_with_history / chamfer_with_history direct-caller validation ---
+    // (v0.2 persistent-naming-v2, task 2655, step-3/step-7)
+    //
+    // These tests pin the DEFENSE-IN-DEPTH validation on the inherent
+    // `OcctKernel::fillet_with_history` / `chamfer_with_history` methods so
+    // that callers bypassing `GeometryOp::Fillet/Chamfer` get the same
+    // descriptive errors. The error message must mention the parameter name
+    // ("radius" / "distance") AND the op name ("fillet" / "chamfer") so call
+    // sites can identify which parameter caused the failure.
+
+    fn make_10mm_box_for_local_feature_test(kernel: &mut OcctKernel) -> GeometryHandle {
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0e-3),
+                height: Value::Real(10.0e-3),
+                depth: Value::Real(10.0e-3),
+            })
+            .expect("10mm box should build")
+    }
+
+    #[test]
+    fn fillet_with_history_zero_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+        let result = kernel.fillet_with_history(box_h.id, 0.0);
+        match &result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("fillet") && msg.contains("radius"),
+                    "error message should mention 'fillet' and 'radius', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-radius fillet_with_history"),
+        }
+    }
+
+    #[test]
+    fn fillet_with_history_negative_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+        let result = kernel.fillet_with_history(box_h.id, -1.0e-3);
+        match &result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("fillet") && msg.contains("radius"),
+                    "error message should mention 'fillet' and 'radius', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-radius fillet_with_history"),
+        }
+    }
+
+    #[test]
+    fn fillet_with_history_nan_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+        let result = kernel.fillet_with_history(box_h.id, f64::NAN);
+        match &result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("fillet") && msg.contains("radius"),
+                    "error message should mention 'fillet' and 'radius', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-radius fillet_with_history"),
+        }
+    }
+
+    #[test]
+    fn fillet_with_history_infinity_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+        let result = kernel.fillet_with_history(box_h.id, f64::INFINITY);
+        match &result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("fillet") && msg.contains("radius"),
+                    "error message should mention 'fillet' and 'radius', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-radius fillet_with_history"),
+        }
+    }
+
+    #[test]
+    fn chamfer_with_history_zero_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+        let result = kernel.chamfer_with_history(box_h.id, 0.0);
+        match &result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("chamfer") && msg.contains("distance"),
+                    "error message should mention 'chamfer' and 'distance', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-distance chamfer_with_history"),
+        }
+    }
+
+    #[test]
+    fn chamfer_with_history_negative_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+        let result = kernel.chamfer_with_history(box_h.id, -1.0e-3);
+        match &result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("chamfer") && msg.contains("distance"),
+                    "error message should mention 'chamfer' and 'distance', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-distance chamfer_with_history"),
+        }
+    }
+
+    #[test]
+    fn chamfer_with_history_nan_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+        let result = kernel.chamfer_with_history(box_h.id, f64::NAN);
+        match &result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("chamfer") && msg.contains("distance"),
+                    "error message should mention 'chamfer' and 'distance', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-distance chamfer_with_history"),
+        }
+    }
+
+    #[test]
+    fn chamfer_with_history_infinity_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+        let result = kernel.chamfer_with_history(box_h.id, f64::INFINITY);
+        match &result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("chamfer") && msg.contains("distance"),
+                    "error message should mention 'chamfer' and 'distance', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-distance chamfer_with_history"),
+        }
+    }
+
     // --- Rotate NaN/infinity/zero-axis rejection tests (step-3) ---
 
     #[test]
