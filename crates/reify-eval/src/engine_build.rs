@@ -250,6 +250,42 @@ fn populate_loft_op(
 }
 
 impl Engine {
+    /// Look up the imported-geometry tolerance promise carried by the
+    /// `param tolerance : Length = X` declaration on an `Input` occurrence
+    /// template (e.g. `STEPInput` / `STLInput`).
+    ///
+    /// Returns `Some(si_value)` (in metres) when the post-`eval()`
+    /// `Snapshot.values` map contains a well-formed entry at
+    /// `ValueCellId(input_template_name, "tolerance")`, otherwise `None`
+    /// (silent-skip on every malformed shape — see
+    /// [`crate::tolerance_promise::extract_input_tolerance_promise`]'s
+    /// six-gate audit).
+    ///
+    /// Pre-`eval()` (no `eval_state`) returns `None` directly. After
+    /// `eval()`, this is a thin delegator to
+    /// [`crate::tolerance_promise::extract_input_tolerance_promise`] over
+    /// the snapshot's value-cell map.
+    ///
+    /// # Sibling queries
+    ///
+    /// - [`Engine::demanded_tolerance_for_output`] (engine_purposes.rs) —
+    ///   the demand-side query, returning the tightest tolerance demanded
+    ///   by output occurrences and active purposes.
+    /// - [`Engine::check_imported_tolerance_promise`] — combines the two
+    ///   sides and emits a `Severity::Warning` diagnostic when a demand is
+    ///   strictly tighter than this promise.
+    ///
+    /// Per PRD `docs/prds/v0_2/per-purpose-tolerance.md` ("Resolved design
+    /// decisions" → "Imported geometry promise"), arch §10.4 / §14.5,
+    /// task 2651.
+    pub fn imported_tolerance_promise(&self, input_template_name: &str) -> Option<f64> {
+        let state = self.eval_state.as_ref()?;
+        crate::tolerance_promise::extract_input_tolerance_promise(
+            &state.snapshot.values,
+            input_template_name,
+        )
+    }
+
     /// Build geometry from the current snapshot values, without re-calling eval().
     ///
     /// Returns `None` if no snapshot exists. Otherwise: checks constraints from
