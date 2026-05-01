@@ -2233,3 +2233,32 @@ describe('FIFO consumption on echoed-id path', () => {
     await msgPromise;
   });
 });
+
+describe('waitForOutput / waitForOutputs deadline', () => {
+  let session: SidecarSession;
+
+  beforeEach(() => {
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+    });
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('waitForOutput rejects with named timeout error when predicate never matches; restores session.onOutput', async () => {
+    const originalOnOutput = session.onOutput;
+    await expect(
+      waitForOutput(session, () => false, { timeoutMs: 50 })
+    ).rejects.toThrow(/waitForOutput timed out waiting for predicate/);
+    expect(session.onOutput).toBe(originalOnOutput);
+  });
+
+  it('waitForOutputs rejects with named timeout error when predicate never matches; restores session.onOutput', async () => {
+    const originalOnOutput = session.onOutput;
+    await expect(
+      waitForOutputs(session, () => false, 1, { timeoutMs: 50 })
+    ).rejects.toThrow(/waitForOutputs timed out waiting for predicate/);
+    expect(session.onOutput).toBe(originalOnOutput);
+  });
+});
