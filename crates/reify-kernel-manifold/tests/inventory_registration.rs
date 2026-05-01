@@ -12,6 +12,7 @@
 //!
 //! `crates/reify-kernel-occt/tests/inventory_registration.rs:1-152`.
 
+use reify_kernel_manifold::register::MANIFOLD_KERNEL_NAME;
 use reify_types::{KernelRegistration, Operation, ReprKind};
 
 /// Manifold's capability descriptor must enumerate exactly the three
@@ -70,13 +71,13 @@ fn manifold_capability_descriptor_lists_mesh_booleans() {
 fn manifold_kernel_registration_appears_in_inventory_iter() {
     let manifold_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
         .into_iter()
-        .filter(|reg| reg.name == "manifold")
+        .filter(|reg| reg.name == MANIFOLD_KERNEL_NAME)
         .collect();
 
     assert_eq!(
         manifold_entries.len(),
         1,
-        "expected exactly one inventory::submit! for kernel name \"manifold\", found {}",
+        "expected exactly one inventory::submit! for kernel name {MANIFOLD_KERNEL_NAME:?}, found {}",
         manifold_entries.len(),
     );
 
