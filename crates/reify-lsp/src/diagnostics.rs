@@ -1922,6 +1922,68 @@ structure S {
         );
     }
 
+    /// LSP regression lock (task 2371, step-3): a `port` declaration directly
+    /// inside a specialization-scope body surfaces as exactly one LSP ERROR
+    /// diagnostic with code `"SpecializationForbiddenDecl"`, source `"reify"`,
+    /// a non-zero range (the port's span), and a message containing both
+    /// `'port'` and the port name `'p'`.
+    #[test]
+    fn lsp_compute_diagnostics_surfaces_specialization_forbidden_decl_for_port() {
+        use fixtures::*;
+        use lsp_types::NumberOrString;
+
+        let body = vec![make_port("p", port_span())];
+        let parsed =
+            parsed_module_with_structure_members(vec![make_sub_with_body("scope", dummy_span(), body)]);
+
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let source = source_stub();
+        let uri = test_uri();
+
+        let lsp_diags: Vec<lsp_types::Diagnostic> = compiled
+            .diagnostics
+            .iter()
+            .map(|diag| convert::convert_diagnostic(diag, &source, &uri))
+            .collect();
+
+        let forbidden: Vec<_> = lsp_diags
+            .iter()
+            .filter(|d| {
+                d.code == Some(NumberOrString::String("SpecializationForbiddenDecl".to_string()))
+            })
+            .collect();
+
+        assert_eq!(
+            forbidden.len(),
+            1,
+            "expected exactly 1 SpecializationForbiddenDecl diagnostic for port, got {}: {:#?}",
+            forbidden.len(),
+            lsp_diags
+        );
+
+        let diag = forbidden[0];
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diag.source.as_deref(), Some("reify"));
+        assert_ne!(
+            diag.range.start,
+            diag.range.end,
+            "range must be non-zero (port_span should be carried through), \
+             got start={:?} end={:?}",
+            diag.range.start,
+            diag.range.end
+        );
+        assert!(
+            diag.message.contains("'port'"),
+            "message must contain \"'port'\", got: {:?}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("'p'"),
+            "message must contain \"'p'\", got: {:?}",
+            diag.message
+        );
+    }
+
     /// (d) **Separation regression** — constraint-violation source must NOT produce
     /// any `computation-failed` diagnostics; the existing `constraint <id> violated`
     /// diagnostics must still appear.
