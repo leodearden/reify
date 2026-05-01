@@ -375,3 +375,30 @@ fn all_three_forbidden_kinds_in_same_specialization_scope_each_emit_diagnostic()
     );
     assert_eq!(d2.labels[0].span, s_span, "third span must equal sub span");
 }
+
+/// PRD acceptance criterion 4 (negative test): a specialization-scope body
+/// containing only permitted member kinds (`let`, `constraint`) must produce
+/// zero `SpecializationForbiddenDecl` diagnostics.
+///
+/// Pins the converse contract: `Let` and `Constraint` (and any future-permitted
+/// variant) must not be misclassified as forbidden.
+///
+/// Shape: `structure S { sub scope : Foo { let v = true; constraint <expr> } }`
+#[test]
+fn permitted_only_specialization_scope_body_emits_no_forbidden_decl_diagnostic() {
+    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
+        "scope",
+        zero_span(),
+        vec![make_let("v"), make_constraint()],
+    )]);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let diags = forbidden_diagnostics(&compiled.diagnostics);
+
+    assert!(
+        diags.is_empty(),
+        "let and constraint inside a specialization scope must not produce \
+         SpecializationForbiddenDecl diagnostics, got: {:#?}",
+        diags
+    );
+}
