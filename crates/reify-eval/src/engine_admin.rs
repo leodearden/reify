@@ -8,7 +8,7 @@ use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, FeatureTagTable,
-    GeometryKernel, KernelRegistration, OptimizedImpl, TopologyAttributeTable,
+    GeometryKernel, OptimizedImpl, TopologyAttributeTable,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -217,7 +217,7 @@ impl Engine {
     /// (v0.2 entry point per `docs/prds/v0_2/multi-kernel.md` "Resolved
     /// design decisions").
     ///
-    /// Reads the static linker-collected set of [`KernelRegistration`] records
+    /// Reads the static linker-collected set of [`reify_types::KernelRegistration`] records
     /// once at startup, picks the lexicographically smallest entry by `name`
     /// (matching the dispatcher's tie-break contract and the `collect_registry`
     /// BTreeMap key ordering), invokes its `factory` to instantiate a
