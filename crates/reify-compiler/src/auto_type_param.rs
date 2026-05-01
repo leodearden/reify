@@ -852,11 +852,9 @@ pub fn resolve_auto_type_params(
             CandidateEnumeration::Overflow(overflow_vec) => {
                 // Phase A already pushed the overflow diagnostic.
                 // Model overflow as Ambiguous (same "≥2 candidates, can't
-                // pick one without user input" shape) and halt.
-                // See function doc-comment for the mapping rationale.
-                let result = SelectionResult::Ambiguous(overflow_vec);
-                per_param.push((param.name.clone(), result));
-                break;
+                // pick one without user input" shape); the outer match below
+                // handles the push-and-break for all failure modes uniformly.
+                SelectionResult::Ambiguous(overflow_vec)
             }
             CandidateEnumeration::Found(candidates) => {
                 // Phase B: feasibility filter.
@@ -896,8 +894,10 @@ pub fn resolve_auto_type_params(
                 per_param.push((param.name.clone(), selection));
             }
             SelectionResult::NoCandidate | SelectionResult::Ambiguous(_) => {
-                // Phase C (or Phase A for Overflow) already pushed the
-                // appropriate diagnostic. Record the failure in per_param and
+                // All three failure modes (Overflow → Ambiguous, Phase A
+                // empty-pool → NoCandidate, Phase C all-rejected → NoCandidate)
+                // converge here. The appropriate diagnostic was already pushed
+                // by the emitting site. Record the failure in per_param and
                 // halt — no later param is enumerated, feasibility-checked, or
                 // selected (halt-on-first-failure, v0.1 rule). The failure
                 // entry is intentionally NOT pushed into substitution (see
