@@ -170,17 +170,19 @@ fn outbound_thinking_delta_deserializes() {
 
 #[test]
 fn outbound_tool_call_deserializes() {
-    let json_str = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_shape","tool_input":{"name":"cube1"}}"#;
+    let json_str = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_shape","tool_input":{"name":"cube1"},"tool_use_id":"tu-9"}"#;
     let msg: OutboundMessage = serde_json::from_str(json_str).unwrap();
     match msg {
         OutboundMessage::ToolCall {
             id,
             tool_name,
             tool_input,
+            tool_use_id,
         } => {
             assert_eq!(id, "msg-1");
             assert_eq!(tool_name, "reify_get_shape");
             assert_eq!(tool_input["name"], "cube1");
+            assert_eq!(tool_use_id, "tu-9");
         }
         _ => panic!("Expected ToolCall"),
     }
@@ -313,17 +315,19 @@ fn parse_outbound_thinking_delta() {
 
 #[test]
 fn parse_outbound_tool_call() {
-    let line = r#"{"type":"tool_call","id":"msg-3","tool_name":"reify_get","tool_input":{"x":1}}"#;
+    let line = r#"{"type":"tool_call","id":"msg-3","tool_name":"reify_get","tool_input":{"x":1},"tool_use_id":"tu-9"}"#;
     let msg = parse_outbound(line).unwrap();
     match msg {
         OutboundMessage::ToolCall {
             id,
             tool_name,
             tool_input,
+            tool_use_id,
         } => {
             assert_eq!(id, "msg-3");
             assert_eq!(tool_name, "reify_get");
             assert_eq!(tool_input["x"], 1);
+            assert_eq!(tool_use_id, "tu-9");
         }
         _ => panic!("Expected ToolCall"),
     }
@@ -1199,12 +1203,14 @@ fn outbound_to_event_tool_call() {
         id: "msg-3".to_string(),
         tool_name: "reify_list".to_string(),
         tool_input: json!({"filter": "all"}),
+        tool_use_id: "tu-payload".to_string(),
     };
     let (name, payload) = outbound_to_event(&msg);
     assert_eq!(name, "claude-tool-call");
     assert_eq!(payload["id"], "msg-3");
     assert_eq!(payload["tool_name"], "reify_list");
     assert_eq!(payload["tool_input"]["filter"], "all");
+    assert_eq!(payload["tool_use_id"], "tu-payload");
 }
 
 #[test]
