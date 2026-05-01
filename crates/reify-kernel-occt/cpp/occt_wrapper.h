@@ -745,9 +745,9 @@ double min_clearance(const OcctShape& a, const OcctShape& b);
 /// query vertex — uninteresting). This ordering mirrors `query_distance` and
 /// `min_clearance` for call-site consistency.
 ///
-/// When the query point lies on or inside the solid, OCCT reports distance 0
-/// and `PointOnShape1(1)` echoes back the query-vertex position — it does NOT
-/// project to the nearest surface/face. No special-casing is applied.
+/// When the query point lies on or inside the shape, OCCT projects to the
+/// nearest surface point and returns it as the witness.  No special-casing is
+/// applied — the returned point is whatever OCCT's solver picks.
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
 
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);

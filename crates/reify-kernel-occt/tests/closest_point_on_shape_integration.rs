@@ -117,24 +117,30 @@ fn closest_point_when_point_lies_on_face() {
 
 /// Query point (0.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// `BRepExtrema_DistShapeShape` treats a query vertex that is fully contained
-/// inside a solid as having distance 0.  It does NOT project to the nearest
-/// face; `PointOnShape1(1)` simply echoes back the query-vertex position.
-/// This test locks in that contract: the call must succeed without error
-/// (NbSolution ≥ 1), and the returned witness must be within 1e-6 of the
-/// query point itself (i.e. dist ≈ 0.0).
+/// `BRepExtrema_DistShapeShape` projects the query vertex to the nearest face
+/// of the solid even when the point is interior.  For this box (half-width 5
+/// in every axis) the nearest face is at distance 5.0, so the returned witness
+/// must be on the box surface with exactly one coordinate ≈ ±5.0 and distance
+/// ≈ 5.0 from the origin.  The call must succeed without error (NbSolution ≥ 1).
 #[test]
 fn closest_point_for_interior_point_at_origin() {
     let (kernel, box_id) = box_kernel();
     match kernel.closest_point_on_shape(box_id, 0.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
-            // For an interior query OCCT reports distance 0 and echoes the
-            // query point back as the witness — not the nearest surface point.
+            // Witness must land on the nearest face (distance 5.0 from origin).
             let dist = (x * x + y * y + z * z).sqrt();
             assert!(
-                dist < 1e-6,
-                "expected witness ≈ query point (0,0,0) for interior query, \
+                (dist - 5.0).abs() < 1e-6,
+                "expected witness at distance ≈5.0 from origin (nearest box face), \
                  got ({x}, {y}, {z}), dist={dist}"
+            );
+            // At least one coordinate ≈ ±5.0 confirms the witness is on a face.
+            let on_face = (x.abs() - 5.0).abs() < 1e-6
+                || (y.abs() - 5.0).abs() < 1e-6
+                || (z.abs() - 5.0).abs() < 1e-6;
+            assert!(
+                on_face,
+                "expected one coord ≈ ±5.0 (witness on a box face), got ({x}, {y}, {z})"
             );
         }
         Err(e) => panic!("expected Ok for interior query at origin, got Err({e:?})"),
