@@ -2297,29 +2297,22 @@ fn arm_member_type(
 ) -> Type {
     match member {
         reify_syntax::MemberDecl::Sub(s) => Type::StructureRef(s.structure_name.clone()),
-        reify_syntax::MemberDecl::Param(p) => {
-            // The param was registered in the pre-pass; resolve its type from scope.
-            // The per-arm loop at entity.rs:2125-2133 currently `continue`s past
-            // non-Sub arms before calling this helper — this branch is unreachable
-            // from user source today. ICE path: resolution failure means the pass-1
-            // registration invariant was violated, which is a compiler bug.
+        reify_syntax::MemberDecl::Param(_) | reify_syntax::MemberDecl::Let(_) => {
+            // Both Param and Let are registered in the pre-pass; resolve the type from scope.
+            // The per-arm loop at entity.rs:2125-2133 currently `continue`s past non-Sub arms
+            // before calling this helper, and the pre-pass at entity.rs:528-549 rejects non-Sub
+            // arm members with a separate diagnostic — so both branches are unreachable from user
+            // source today. ICE path: resolution failure means the pass-1 registration invariant
+            // was violated, which is a compiler bug.
+            let name = match member {
+                reify_syntax::MemberDecl::Param(p) => p.name.as_str(),
+                reify_syntax::MemberDecl::Let(l) => l.name.as_str(),
+                _ => unreachable!(),
+            };
             scope
-                .resolve(&p.name)
+                .resolve(name)
                 .map(|(_, ty)| ty.clone())
-                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &p.name, span, diagnostics))
-        }
-        reify_syntax::MemberDecl::Let(l) => {
-            // The let was registered in the pre-pass; resolve its type from scope.
-            // Defensive parallel with the Param arm above: the per-arm loop at
-            // entity.rs:2125-2133 currently `continue`s past non-Sub arms before
-            // calling this helper, and the pre-pass at entity.rs:528-549 already
-            // rejects non-Sub arm members with a separate diagnostic — so this
-            // branch is unreachable from user source today. ICE path: resolution
-            // failure means the pass-1 registration invariant was violated.
-            scope
-                .resolve(&l.name)
-                .map(|(_, ty)| ty.clone())
-                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &l.name, span, diagnostics))
+                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, name, span, diagnostics))
         }
         _ => {
             // suggestion 7: emit a diagnostic for any unhandled MemberDecl variant
@@ -2948,9 +2941,13 @@ mod tests {
         assert_eq!(diagnostics[0].severity, Severity::Error);
         assert_eq!(diagnostics[0].labels.len(), 1);
 
-        // The message must identify the offending name.
+        // The message must identify the offending name and confirm it is an ICE.
         let msg = &diagnostics[0].message;
         assert!(msg.contains("'x'"), "message should mention 'x': {msg}");
+        assert!(
+            msg.contains("internal compiler error"),
+            "expected ICE message but got: {msg}"
+        );
     }
 
     #[test]
@@ -2988,8 +2985,12 @@ mod tests {
         assert_eq!(diagnostics[0].severity, Severity::Error);
         assert_eq!(diagnostics[0].labels.len(), 1);
 
-        // The message must identify the offending name.
+        // The message must identify the offending name and confirm it is an ICE.
         let msg = &diagnostics[0].message;
         assert!(msg.contains("'y'"), "message should mention 'y': {msg}");
+        assert!(
+            msg.contains("internal compiler error"),
+            "expected ICE message but got: {msg}"
+        );
     }
 }
