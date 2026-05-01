@@ -112,6 +112,19 @@ impl OcctKernel {
     ) -> Result<f64, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
+
+    /// Stub closest-point probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::closest_point_on_shape` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn closest_point_on_shape(
+        &self,
+        _handle: GeometryHandleId,
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
 }
 
 impl Default for OcctKernel {

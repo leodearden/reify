@@ -736,6 +736,20 @@ double query_distance(const OcctShape& shape1, const OcctShape& shape2);
 /// per-pair witness points) from the generic query_distance callers.
 double min_clearance(const OcctShape& a, const OcctShape& b);
 
+/// Return the closest point on `shape` to the query point (px, py, pz).
+///
+/// Algorithm: build a TopoDS_Vertex from the query point via
+/// `BRepBuilderAPI_MakeVertex(gp_Pnt(px, py, pz))`, then run
+/// `BRepExtrema_DistShapeShape(shape, vertex)`. The witness on `shape` is
+/// `dist.PointOnShape1(1)` (operand 1 is the input shape; operand 2 is the
+/// query vertex — uninteresting). This ordering mirrors `query_distance` and
+/// `min_clearance` for call-site consistency.
+///
+/// When the query point lies on or inside the shape, OCCT returns distance 0
+/// and a boundary witness point. No special-casing is applied — the returned
+/// point is whatever OCCT's solver picks for the degenerate case.
+Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
 /// Compute the full 3×3 inertia tensor about the shape's centroid,

@@ -488,6 +488,35 @@ impl OcctKernel {
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
+    /// Return the closest point on the shape identified by `handle` to the
+    /// query point `(px, py, pz)`.
+    ///
+    /// Algorithm: `BRepExtrema_DistShapeShape(shape, vertex)` where `vertex` is
+    /// a `TopoDS_Vertex` built from the query point via
+    /// `BRepBuilderAPI_MakeVertex`. The witness on the input shape is read from
+    /// `dist.PointOnShape1(1)`.
+    ///
+    /// No special handling is applied for points inside the solid — the witness
+    /// point is whatever OCCT's solver returns (typically a point on the nearest
+    /// boundary face; distance is 0 for interior or on-surface points).
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(handle))` if the handle is unknown.
+    /// Returns `Err(QueryError::QueryFailed(...))` if the OCCT call fails.
+    pub fn closest_point_on_shape(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let p = ffi::ffi::closest_point_on_shape(s, px, py, pz)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok([p.x, p.y, p.z])
+    }
+
     /// Fuse `left` and `right` via `BRepAlgoAPI_Fuse` and return the
     /// fused-result handle alongside the per-parent face/edge history
     /// records (Modified / Generated / Deleted).
