@@ -62,6 +62,7 @@ pub fn propagate_via_kernel_attribute_hook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_test_support::{CountingSubscriberBuilder, FailingMockGeometryKernel};
     use reify_types::{
         ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryQuery,
         KernelAttributeHook, Mesh, TessError, Value,
@@ -169,6 +170,84 @@ mod tests {
             kernel.hook.calls.load(Ordering::Relaxed),
             1,
             "dispatcher must invoke hook.propagate_attributes exactly once",
+        );
+    }
+
+    /// PRD line 70 contract: kernels without a `KernelAttributeHook` (Fidget's
+    /// SDF reps, OpenVDB's voxel reps, mocks/stubs that inherit the trait
+    /// default) must cause the engine-side dispatcher to return
+    /// `Ok(KernelAttributeOutcome::FellThrough)` *without* mutating the
+    /// attribute table — and to emit exactly one `DEBUG`-level diagnostic
+    /// (not WARN — the no-hook case is informational, not anomalous) at the
+    /// `reify_eval::kernel_attribute_hook` target so an `RUST_LOG=debug`
+    /// operator can see when selectors will fall through to computed selectors.
+    ///
+    /// `FailingMockGeometryKernel` does not override
+    /// `GeometryKernel::attribute_hook`, so it inherits the `None` default
+    /// established in step 2. A regression that drops the default to a
+    /// `Some(...)` placeholder, accidentally upgrades the diagnostic to WARN,
+    /// or writes to `table` on the no-hook branch is caught here.
+    #[test]
+    fn propagate_via_kernel_attribute_hook_returns_fell_through_with_debug_diagnostic_when_kernel_has_no_hook(
+    ) {
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::DEBUG)
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_eval::kernel_attribute_hook")
+            .build();
+        let debug_count = counters[&tracing::Level::DEBUG].clone();
+        let warn_count = counters[&tracing::Level::WARN].clone();
+
+        let kernel = FailingMockGeometryKernel;
+        let mut table = TopologyAttributeTable::default();
+        let op = GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        };
+        let parents = [GeometryHandleId(1), GeometryHandleId(2)];
+        let result = GeometryHandleId(3);
+        let feature_id = FeatureId::new("test#realization[0]");
+
+        let outcome = tracing::subscriber::with_default(subscriber, || {
+            propagate_via_kernel_attribute_hook(
+                &kernel,
+                &mut table,
+                &op,
+                &parents,
+                result,
+                &feature_id,
+            )
+        });
+
+        match outcome {
+            Ok(KernelAttributeOutcome::FellThrough) => {}
+            other => panic!(
+                "dispatcher must return Ok(FellThrough) when kernel.attribute_hook() \
+                 inherits the None default; got {other:?}"
+            ),
+        }
+
+        assert!(
+            table.is_empty(),
+            "no-hook branch must not mutate the attribute table — it is the \
+             dispatcher's responsibility to leave attribute propagation to the \
+             computed-selector fallback in this case",
+        );
+
+        assert_eq!(
+            debug_count.load(Ordering::Acquire),
+            1,
+            "no-hook branch must emit exactly one DEBUG event at \
+             reify_eval::kernel_attribute_hook so RUST_LOG=debug operators \
+             see when selectors will fall through to computed selectors",
+        );
+        assert_eq!(
+            warn_count.load(Ordering::Acquire),
+            0,
+            "no-hook branch is informational, not anomalous — the diagnostic \
+             must be DEBUG-level, never WARN; this guards against a regression \
+             that conflates the FellThrough case with the Discarded case (which \
+             does emit WARN, but only from the kernel's own hook impl)",
         );
     }
 }
