@@ -215,6 +215,26 @@ pub struct CompiledModule {
     /// the verbatim intent. Only malformed shapes (zero args, key=value-first,
     /// non-Ident bare values) leave the field as None.
     pub kernel_pragma: Option<String>,
+    /// Resolved `auto:` type-parameter substitutions accumulated across the
+    /// compile pipeline, in `(param_name, concrete_template_name)` form
+    /// (e.g. `("T", "ORingSeal")`).
+    ///
+    /// Populated from `MultiParamResolutionOutcome.substitution`
+    /// (`crates/reify-compiler/src/auto_type_param.rs`) when a producer task
+    /// adds source-level `auto:` parsing and invokes `resolve_auto_type_params`
+    /// during compilation. Today the field stays at the default empty Vec
+    /// because `tree-sitter-reify/grammar.js` `type_arg_list` does not yet
+    /// accept `auto: TraitName` syntax — the wiring is in place so the
+    /// future producer task only needs to fill this field.
+    ///
+    /// Consumed by `Snapshot::from_compiled_module` which copies this Vec
+    /// verbatim into `EvaluationGraph.auto_type_substitution`; the eval-side
+    /// field then participates in `topology_fingerprint`'s 7th bucket
+    /// (`crates/reify-eval/src/graph.rs`, task 2388 / PRD task 5 criterion 7).
+    ///
+    /// Shape match: identical `Vec<(String, String)>` shape on both sides
+    /// — no adapter needed.
+    pub auto_type_substitution: Vec<(String, String)>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }

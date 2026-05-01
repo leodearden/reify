@@ -39,10 +39,19 @@ impl Snapshot {
     /// Create an initial snapshot from a compiled module.
     ///
     /// Builds the evaluation graph from the module's templates,
-    /// initializes all values to (Undef, Undetermined), and sets
-    /// provenance to Initial with version/snapshot IDs starting at 0.
+    /// wires `module.auto_type_substitution` into `graph.auto_type_substitution`
+    /// BEFORE computing `topology_fingerprint` so the 7th bucket reflects the
+    /// substitution (PRD task 5 criterion 7, tasks 2388/2778). Initializes all
+    /// values to (Undef, Undetermined), and sets provenance to Initial with
+    /// version/snapshot IDs starting at 0.
     pub fn from_compiled_module(module: &CompiledModule) -> Self {
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let mut graph = EvaluationGraph::from_templates(&module.templates);
+        // Wire MultiParamResolutionOutcome.substitution from CompiledModule
+        // into the graph BEFORE computing topology_fingerprint, so the 7th
+        // bucket reflects the substitution (PRD task 5 criterion 7,
+        // tasks 2388/2778). Vec<(String, String)> shape matches verbatim,
+        // no adapter needed.
+        graph.auto_type_substitution = module.auto_type_substitution.clone();
         let topology_fingerprint = graph.topology_fingerprint();
 
         // Initialize all value cells: Auto cells get (Undef, Auto),
