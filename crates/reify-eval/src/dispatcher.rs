@@ -672,6 +672,24 @@ mod tests {
         );
     }
 
+    /// Pins the configurability knob: a project setting
+    /// `REIFY_LONG_CHAIN_THRESHOLD_MS=1000` (modeled by `Some("1000")` at
+    /// the seam) actually changes the threshold to 1000ms — the env var is
+    /// not silently ignored. Independent from the unset-default test
+    /// (`long_chain_threshold_from_env_returns_default_when_unset`) so a
+    /// regression that always returned the default would fail this test
+    /// specifically while passing the unset-default test.
+    #[test]
+    fn long_chain_threshold_from_env_uses_env_value_when_valid() {
+        let resolved = long_chain_threshold_from_env_value(Some("1000"));
+        assert_eq!(
+            resolved,
+            Duration::from_millis(1000),
+            "env var '1000' must resolve to Duration::from_millis(1000), got {:?}",
+            resolved,
+        );
+    }
+
     /// Trivial happy path: one kernel that supports the demanded op directly on
     /// a repr already in `available`. Plan must be `(kernel, no conversions)`.
     /// This locks the zero-conversion code path before BFS expansion is added.
