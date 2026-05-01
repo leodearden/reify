@@ -177,4 +177,10 @@ mod tests {
             ),
         }
     }
+
+    // Macro-generated parallel coverage: exercises the same all-error stub
+    // contract via the shared helper, producing three `stub_kernel_*` tests
+    // alongside the existing `manifold_kernel_*` tests. The existing tests are
+    // removed in step-6 once equivalence is confirmed.
+    reify_test_support::assert_stub_kernel_errors!(ManifoldKernel::new, "Manifold");
 }
