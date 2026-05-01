@@ -101,20 +101,23 @@ pub fn step_input_template(promise_tol_si: f64) -> TopologyTemplate {
         .build()
 }
 
-/// Build a purpose whose sole constraint is
-/// `RepresentationWithin(subject, purpose_tol m)`.
+/// Core builder for a manufacturing-shaped [`CompiledPurpose`]. Callers
+/// supply the inner StructureRef name used for `subject_arg`'s `result_type`;
+/// the purpose name, `"subject"` param entity-kind (`"Structure"`), and
+/// `RepresentationWithin` structure are fixed.
 ///
-/// The `subject_arg`'s `result_type` uses the param's declared
-/// structure-ref name (`"Structure"`) so the fixture stays robust if a
-/// future hardening of `tolerance_scope`'s recognition gates asserts
-/// inner-name match against the declared param type. Both current callers
-/// (`tolerance_combine`, `tolerance_import_promise`) pass `"Structure"`.
-/// `tolerance_scope.rs` uses different inner names ("Bracket"/"Head")
-/// deliberately and does not share this fixture.
-pub fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> CompiledPurpose {
+/// Use this variant when the inner StructureRef name matters — e.g.
+/// `tolerance_scope` tests pass `"Bracket"` or `"Head"` to match the
+/// entity kind of the design component being constrained. Mirrors the
+/// `step_output_template_with_body` / `step_output_template` precedent.
+pub fn manufacturing_purpose_with_inner_name(
+    purpose_name: &str,
+    inner_kind: &str,
+    purpose_tol: f64,
+) -> CompiledPurpose {
     let subject_arg = CompiledExpr::value_ref(
         ValueCellId::new("subject", "self"),
-        Type::StructureRef("Structure".to_string()),
+        Type::StructureRef(inner_kind.to_string()),
     );
     let tol_arg = CompiledExpr::literal(
         Value::Scalar {
@@ -134,6 +137,20 @@ pub fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> CompiledPu
         .param("subject", "Structure")
         .constraint("subject", 0, None, rep_within)
         .build()
+}
+
+/// Build a purpose whose sole constraint is
+/// `RepresentationWithin(subject, purpose_tol m)`.
+///
+/// The `subject_arg`'s `result_type` uses the param's declared
+/// structure-ref name (`"Structure"`) so the fixture stays robust if a
+/// future hardening of `tolerance_scope`'s recognition gates asserts
+/// inner-name match against the declared param type. Both current callers
+/// (`tolerance_combine`, `tolerance_import_promise`) pass `"Structure"`.
+/// `tolerance_scope.rs` uses different inner names (`"Bracket"`/`"Head"`)
+/// via [`manufacturing_purpose_with_inner_name`].
+pub fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> CompiledPurpose {
+    manufacturing_purpose_with_inner_name(purpose_name, "Structure", purpose_tol)
 }
 
 /// Build a minimal `MyDesign` template with one `thickness : Real` param
