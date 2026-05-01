@@ -158,8 +158,15 @@ export class SidecarSession {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
+    // Attach an error listener so a broken stdin pipe (EPIPE) is handled gracefully
+    // rather than crashing the sidecar process. This is realistic now that stdin stays
+    // open across multiple writes (initial prompt + each tool_result block).
+    proc.stdin?.on('error', (err: Error) => {
+      this.onOutput({ type: 'error', id, message: `stdin write error: ${err.message}` });
+    });
+
     // Write the initial user prompt as a stream-json message line.
-    // Keep stdin open (do NOT call end()) so tool_result blocks can follow.
+    // Stdin is kept open until a 'result' event arrives so tool_result blocks can follow.
     proc.stdin?.write(
       JSON.stringify({
         type: 'user',
@@ -248,6 +255,10 @@ export class SidecarSession {
             }
           } else if (event.type === 'result' && event.session_id) {
             this.sessionId = event.session_id;
+            // Close stdin now that the invocation is complete. No further tool_results
+            // are expected after a 'result' event; keeping stdin open would prevent
+            // claude CLI from exiting deterministically.
+            proc.stdin?.end();
           }
         } catch {
           // Skip unparseable lines
@@ -307,15 +318,23 @@ export class SidecarSession {
       });
       return;
     }
-    this.currentStdin.write(
-      JSON.stringify({
-        type: 'user',
-        message: {
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: toolUseId, content: result }],
-        },
-      }) + '\n'
-    );
+    try {
+      this.currentStdin.write(
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: toolUseId, content: result }],
+          },
+        }) + '\n'
+      );
+    } catch (err: unknown) {
+      this.onOutput({
+        type: 'error',
+        id,
+        message: `stdin write error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
 
   /**
