@@ -114,6 +114,53 @@ pub fn extract_input_tolerance_promise(
     Some(si_value)
 }
 
+/// Test whether an imported-geometry tolerance promise is insufficient to
+/// satisfy a downstream demand.
+///
+/// Returns `true` iff `demanded < promise` (strict). The strict comparison
+/// — not `<=` — is the canonical design decision: a demand exactly equal to
+/// the promise IS satisfiable. The promise is an upper bound on the
+/// as-imported representation error, and a demand at the same level can be
+/// satisfied by the as-imported realization. Mirrors the partial-order
+/// "tighter satisfies looser" rule established by `tolerance_bucket`'s
+/// `cached_tol <= requested_tol` lookup — contrapositive `cached_tol >
+/// requested_tol` (cached strictly looser) cannot satisfy. Same logic here:
+/// `promise > demand` (i.e. `demand < promise`) is insufficient; equal is
+/// not insufficient.
+///
+/// # Truth table
+///
+/// | `demanded` | `promise` | result | reason                                |
+/// |------------|-----------|--------|---------------------------------------|
+/// | `1µm`      | `50µm`    | `true` | demand strictly tighter — insufficient |
+/// | `50µm`     | `1µm`     | `false`| demand looser — promise covers it      |
+/// | `1µm`      | `1µm`     | `false`| equal — strict `<`, not `<=`           |
+/// | `0.0`      | `1µm`     | `true` | zero is the tightest possible demand   |
+///
+/// # Panics
+///
+/// In debug builds: panics if either argument is NaN, ±Inf, or negative.
+/// The canonical message format `"TolerancePromise: tolerance must be finite
+/// and non-negative, got {tol}"` matches
+/// [`crate::tolerance_combine::combine_demanded_tolerance`]'s debug-assert
+/// so authoring errors surface with one voice across the four `tolerance_*`
+/// modules. Upstream extractors
+/// ([`extract_input_tolerance_promise`] and
+/// [`crate::tolerance_combine::extract_output_tolerance_bound`]) silently
+/// skip these malformed shapes so the comparator's invariant holds at every
+/// call site in practice.
+pub fn is_promise_insufficient(demanded: f64, promise: f64) -> bool {
+    debug_assert!(
+        demanded.is_finite() && demanded >= 0.0,
+        "TolerancePromise: tolerance must be finite and non-negative, got {demanded}"
+    );
+    debug_assert!(
+        promise.is_finite() && promise >= 0.0,
+        "TolerancePromise: tolerance must be finite and non-negative, got {promise}"
+    );
+    demanded < promise
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
