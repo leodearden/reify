@@ -497,8 +497,13 @@ impl OcctKernel {
     /// `dist.PointOnShape1(1)`.
     ///
     /// No special handling is applied for points inside the solid — the witness
-    /// point is whatever OCCT's solver returns (typically a point on the nearest
-    /// boundary face; distance is 0 for interior or on-surface points).
+    /// point is whatever OCCT's solver returns. In practice
+    /// `BRepExtrema_DistShapeShape` returns distance 0 for points on the surface
+    /// or strictly inside the solid; for interior points the witness coincides
+    /// with the query point itself (the solver does not search for a boundary
+    /// witness once the minimum is already zero). Callers needing a boundary
+    /// witness for interior queries must combine this with
+    /// `BRepClass3d_SolidClassifier` and a surface-only extrema themselves.
     ///
     /// Returns `Err(QueryError::InvalidHandle(handle))` if the handle is unknown.
     /// Returns `Err(QueryError::QueryFailed(...))` if the OCCT call fails.
