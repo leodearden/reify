@@ -711,10 +711,13 @@ pub enum DiagnosticCode {
     /// see exactly where the conversion budget is going (PRD: "names the
     /// chain so users can see budget pressure"). Strict-`>` gating mirrors
     /// the canonical decision in
-    /// [`reify_eval::is_promise_insufficient`](../../reify_eval/fn.is_promise_insufficient.html)
+    /// `reify_eval::tolerance_promise::is_promise_insufficient`
     /// (task 2651): boundary cases (exactly 2 stages, exactly 500 ms) do
     /// NOT warn — consistent with the "tighter satisfies looser" partial-order
-    /// vocabulary throughout the tolerance subsystem.
+    /// vocabulary throughout the tolerance subsystem. The link is rendered
+    /// as plain code-formatted prose (not an intra-doc link) because
+    /// `reify-types` is a *dependency* of `reify-eval`, not vice-versa, so
+    /// rustdoc cannot resolve a real link in this direction.
     ///
     /// The PRD-prose mnemonic for this code is `W_LONG_CHAIN_REALIZATION`
     /// (severity convention: `W_*` → Warning, `E_*` → Error). Mirrors the
