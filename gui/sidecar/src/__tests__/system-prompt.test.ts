@@ -68,4 +68,10 @@ describe('SYSTEM_PROMPT MCP tool registry alignment', () => {
       `SYSTEM_PROMPT advertises tools not in the MCP registry: ${missing.join(', ')}. Registered tools: ${[...registeredTools].sort().join(', ')}`,
     ).toEqual([]);
   });
+
+  it('discovers at least 16 registered tools (matches EXPECTED_TOOLS floor in crates/reify-mcp/tests/tools_tests.rs)', () => {
+    // Floor pinned to the canonical EXPECTED_TOOLS count (16) in crates/reify-mcp/tests/tools_tests.rs.
+    // Fails loudly if discovery starts under-counting (e.g. TOOLS_DIR drifted, regex broken).
+    expect(registeredTools.size).toBeGreaterThanOrEqual(16);
+  });
 });
