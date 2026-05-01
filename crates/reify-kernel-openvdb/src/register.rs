@@ -49,7 +49,7 @@
 //! pattern. Only the kernel name string, supports table contents (Voxel vs
 //! Sdf), the stub error string, and the doc comments' references differ.
 
-use reify_types::{CapabilityDescriptor, Operation, ReprKind};
+use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// Stable identifier for the OpenVDB kernel in the v0.2 multi-kernel registry.
 ///
@@ -92,3 +92,38 @@ pub fn openvdb_capability_descriptor() -> CapabilityDescriptor {
     CapabilityDescriptor { supports }
 }
 
+/// Factory invoked by the engine once at startup, returning the stub
+/// [`OpenVdbKernel`](crate::kernel::OpenVdbKernel).
+///
+/// Real OpenVDB FFI is deferred to a follow-up task; this stub factory
+/// ensures the `inventory::submit!` below compiles and the registration
+/// materialises in `reify_eval::kernel_registry::registry()`. When the
+/// follow-up task adds real FFI, this function can switch behind
+/// `cfg(has_openvdb)` without changing the registration shape.
+fn openvdb_factory() -> Box<dyn GeometryKernel> {
+    Box::new(crate::kernel::OpenVdbKernel::new())
+}
+
+// Unconditional submit — no `cfg(has_openvdb)` gate (see design decisions in
+// the module doc). OpenVDB has only a stub in this v0.2 task, so a
+// `cfg(has_openvdb)` gate would never fire and the registration would be dead
+// code. Submitting unconditionally keeps the cross-crate integration test
+// (step-7) clean and gives the dispatcher BFS a fourth real registered kernel
+// to exercise on the Voxel repr family.
+//
+// TODO(has_openvdb): When real OpenVDB FFI lands (follow-up task), flip this
+// submit to `#[cfg(any(has_openvdb, test))]` so the stub registers only when
+// OpenVDB is actually available or within this crate's own tests. Without that
+// gate, any binary that adds `reify-kernel-openvdb` as a non-dev dep will
+// unconditionally register the stub kernel — which will, lex-min-wise, win
+// over fidget/manifold/occt for any future `(op, Voxel)` claim added during
+// implementation drift. The cross-crate isolation in the test layout (openvdb
+// dev-deps on reify-eval, not the reverse) blocks that today, but the gate is
+// the structural enforcement that must land alongside the real FFI.
+inventory::submit! {
+    KernelRegistration {
+        name: OPENVDB_KERNEL_NAME,
+        descriptor: openvdb_capability_descriptor,
+        factory: openvdb_factory,
+    }
+}
