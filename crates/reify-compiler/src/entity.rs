@@ -653,12 +653,9 @@ pub(crate) fn compile_entity(
                     // can typecheck from outside without re-resolving
                     // compiled_templates.
                     if !child_tmpl.match_arm_groups.is_empty() {
-                        let mut clusters: Vec<(
-                            GuardedDeclGroup,
-                            Vec<(String, BTreeMap<String, Type>)>,
-                        )> = Vec::new();
+                        let mut clusters: Vec<SubClusterEntry> = Vec::new();
                         for group in &child_tmpl.match_arm_groups {
-                            let mut per_arm: Vec<(String, BTreeMap<String, Type>)> =
+                            let mut per_arm: Vec<ArmMemberMap> =
                                 Vec::with_capacity(group.arms.len());
                             for arm in &group.arms {
                                 if let Type::StructureRef(arm_struct) = &arm.arm_type {

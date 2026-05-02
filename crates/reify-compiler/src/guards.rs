@@ -665,6 +665,12 @@ pub(crate) fn compile_per_decl_constraint_guard(
 /// In v0.1, surface syntax does not produce a `current_guard` matching an
 /// arm's cell, so callers in `expr.rs` always pass `None`. The helper is
 /// exercised by direct unit tests pinning the contract for future tasks.
+//
+// `dead_code` is allowed here because v0.1's `expr.rs` MemberAccess hookup
+// (task 2373 step-8) always returns the full union — narrowing under arm
+// guards is a contract pinned by the inline unit tests below for future
+// tasks (e.g., when surface syntax for narrowing-on-decl is introduced).
+#[allow(dead_code)]
 pub(crate) fn narrow_arms_under_guard<'a>(
     arms: &'a [GuardedDeclArm],
     current_guard: Option<&ValueCellId>,
