@@ -2833,4 +2833,16 @@ mod invariant_tests {
         }
         super::assert_value_cell_types_representable(&graph);
     }
+
+    /// Task 2373: `Type::Union` is a compile-time-only union over
+    /// guarded-decl-group arm types — no Value counterpart exists, so cells
+    /// must hold a single concrete arm type post-narrowing. The
+    /// `is_representable_cell_type` predicate must reject it alongside
+    /// `TypeParam` and `Geometry`.
+    #[test]
+    fn is_representable_cell_type_rejects_union() {
+        assert!(!super::is_representable_cell_type(&Type::Union(vec![
+            Type::StructureRef("X".to_string())
+        ])));
+    }
 }
