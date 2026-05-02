@@ -257,6 +257,34 @@ pub(crate) fn substitute_expr(
 /// Guarded groups follow the same two-pass + incremental-classification pattern
 /// via `register_guarded_names` and `compile_guarded_members` (guards.rs).
 ///
+/// Emit the outside-match-collision diagnostic and record the cluster name in
+/// `collisions`.
+///
+/// Shared by the forward-direction check (MatchArmDeclGroup pre-pass arm) and the
+/// three reverse-direction checks (Param/Let/Sub pre-pass arms) to keep the message
+/// wording and two-label structure identical across all call sites.
+fn emit_outside_match_collision(
+    diagnostics: &mut Vec<Diagnostic>,
+    name: &str,
+    cluster_span: SourceSpan,
+    outside_span: SourceSpan,
+    collisions: &mut HashSet<String>,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "match-arm cluster '{}' collides with a declaration of the same name \
+             outside the match block",
+            name
+        ))
+        .with_label(DiagnosticLabel::new(cluster_span, "cluster declared here"))
+        .with_label(DiagnosticLabel::new(
+            outside_span,
+            "originally declared outside the match",
+        )),
+    );
+    collisions.insert(name.to_string());
+}
+
 /// # Shadowing
 ///
 /// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
@@ -368,6 +396,20 @@ pub(crate) fn compile_entity(
     // "unknown member" diagnostics on qualified access to the first cluster's sub.
     // (task 2613)
     let mut seen_match_arm_cluster_names: HashSet<String> = HashSet::new();
+    // Logical name → span for each match-arm cluster accepted in the pre-pass.
+    // Populated in the MatchArmDeclGroup arm so the reverse-direction check
+    // (Sub/Param/Let AFTER the match) can emit a two-label collision diagnostic.
+    // (task 2375)
+    let mut match_arm_cluster_logical_names: HashMap<String, SourceSpan> = HashMap::new();
+    // Cluster logical names that collide with an outside-of-match declaration.
+    // Populated in both directions (forward + reverse). Plumbed into
+    // compile_match_arm_decl_group (pass 2) to suppress cluster registration
+    // when the collision was already diagnosed in the pre-pass. (task 2375, step-10)
+    let mut clusters_with_outside_collision: HashSet<String> = HashSet::new();
+    // Span recorded for every regular Sub/Param/Let at pre-pass time, keyed by
+    // decl name. Used to supply the second DiagnosticLabel when a collision is
+    // detected in either direction (task 2375).
+    let mut outside_decl_spans: HashMap<String, SourceSpan> = HashMap::new();
     for member in structure.members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
@@ -434,6 +476,21 @@ pub(crate) fn compile_entity(
                     known_geometry_lets.insert(param.name.as_str());
                 }
                 scope.register(&param.name, ty);
+                outside_decl_spans.insert(param.name.clone(), param.span);
+                // Reverse-direction collision (task 2375): if this Param's name
+                // was already registered as a match-arm cluster, emit the collision
+                // diagnostic. The cluster is suppressed; the Param is kept.
+                if let Some(&cluster_span) =
+                    match_arm_cluster_logical_names.get(&param.name)
+                {
+                    emit_outside_match_collision(
+                        diagnostics,
+                        &param.name,
+                        cluster_span,
+                        param.span,
+                        &mut clusters_with_outside_collision,
+                    );
+                }
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // For lets, we need to infer the type from the expression.
@@ -448,6 +505,21 @@ pub(crate) fn compile_entity(
                     // be determined when we compile the expression. For now, use Real.
                     // We'll update this after the expression is compiled.
                     scope.register(&let_decl.name, Type::Real);
+                }
+                outside_decl_spans.insert(let_decl.name.clone(), let_decl.span);
+                // Reverse-direction collision (task 2375): if this Let's name
+                // was already registered as a match-arm cluster, emit the collision
+                // diagnostic. The cluster is suppressed; the Let is kept.
+                if let Some(&cluster_span) =
+                    match_arm_cluster_logical_names.get(&let_decl.name)
+                {
+                    emit_outside_match_collision(
+                        diagnostics,
+                        &let_decl.name,
+                        cluster_span,
+                        let_decl.span,
+                        &mut clusters_with_outside_collision,
+                    );
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
@@ -482,22 +554,48 @@ pub(crate) fn compile_entity(
                 // Sub-component type entries (used for `self.sub.member` qualified
                 // access) are registered per-arm. Clusters with duplicate logical
                 // names are skipped wholesale — the duplicate-cluster diagnostic is
-                // emitted by compile_match_arm_decl_group (entity.rs:2038) in
-                // pass 2; skipping the pre-pass prevents scope.sub_component_types,
+                // emitted by compile_match_arm_decl_group in pass 2; skipping the
+                // pre-pass prevents scope.sub_component_types,
                 // scope.sub_structure_traits, and scope.sub_member_types from being
                 // overwritten by the rejected cluster's child-template members.
                 // "First cluster wins" in the pre-pass is symmetric with "first
                 // cluster wins" in pass 2. (task 2613)
-                if let Some(first_arm) = m.arms.first()
-                    && let Some(name) = arm_member_name(&first_arm.member)
-                    && !seen_match_arm_cluster_names.insert(name.to_string())
-                {
-                    // Duplicate cluster name — skip pre-pass registration.
-                    // Pass 2 will emit the diagnostic.
-                    continue;
+
+                // Compute logical name once; shared by duplicate-check and
+                // collision-check below. When None (unsupported arm kind), both
+                // checks are bypassed — pass 2 diagnoses unsupported member kinds.
+                let maybe_logical_name =
+                    m.arms.first().and_then(|a| arm_member_name(&a.member));
+
+                if let Some(logical_name) = maybe_logical_name {
+                    // Duplicate cluster — skip pre-pass; pass 2 emits the diagnostic.
+                    // Precedence: duplicate-check fires before collision-check when
+                    // both apply — the first cluster with this name is canonical.
+                    if !seen_match_arm_cluster_names.insert(logical_name.to_string()) {
+                        continue;
+                    }
+
+                    // Forward-direction outside-match collision detection (task 2375).
+                    // If the cluster's logical name is already registered as a regular
+                    // Sub/Param/Let (recorded in outside_decl_spans), emit a collision
+                    // diagnostic and skip this cluster's pre-pass registration entirely.
+                    // The outside decl wins; the cluster is suppressed.
+                    if let Some(&outside_span) = outside_decl_spans.get(logical_name) {
+                        emit_outside_match_collision(
+                            diagnostics,
+                            logical_name,
+                            m.span,
+                            outside_span,
+                            &mut clusters_with_outside_collision,
+                        );
+                        continue;
+                    }
+
+                    // No collision — record this cluster for reverse-direction checks
+                    // (Sub/Param/Let declared AFTER this match block in source order).
+                    match_arm_cluster_logical_names.insert(logical_name.to_string(), m.span);
                 }
-                // No arm_member_name (e.g. unsupported arm kind): do not insert
-                // into seen_match_arm_cluster_names; let pass 2 emit its diagnostic.
+
                 for arm in &m.arms {
                     match &*arm.member {
                         reify_syntax::MemberDecl::Sub(sub) => {
@@ -700,6 +798,21 @@ pub(crate) fn compile_entity(
                 }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
+                }
+                outside_decl_spans.insert(sub.name.clone(), sub.span);
+                // Reverse-direction collision (task 2375): if this Sub's name
+                // was already registered as a match-arm cluster, emit the collision
+                // diagnostic. The cluster is suppressed; the Sub is kept.
+                if let Some(&cluster_span) =
+                    match_arm_cluster_logical_names.get(&sub.name)
+                {
+                    emit_outside_match_collision(
+                        diagnostics,
+                        &sub.name,
+                        cluster_span,
+                        sub.span,
+                        &mut clusters_with_outside_collision,
+                    );
                 }
             }
             reify_syntax::MemberDecl::MetaBlock(meta) => {
@@ -1468,9 +1581,9 @@ pub(crate) fn compile_entity(
             }
             reify_syntax::MemberDecl::MatchArmDeclGroup(m) => {
                 // Compile each arm's guard and register a GuardedDeclGroup cluster
-                // in the scope (task 2372, spec §6.4).  The cluster lives in
-                // `scope.match_arm_groups` (separate from `names`) so future
-                // duplicate-name tightening (task 2375) cannot misfire here.
+                // in the scope (task 2372, spec §6.4).  Clusters that collided with
+                // an outside-of-match declaration are suppressed via
+                // clusters_with_outside_collision (task 2375).
                 compile_match_arm_decl_group(
                     entity_name,
                     m,
@@ -1484,6 +1597,7 @@ pub(crate) fn compile_entity(
                     &mut sub_components,
                     pending_bound_checks,
                     &type_param_names,
+                    &clusters_with_outside_collision,
                 );
             }
         }
@@ -2008,7 +2122,9 @@ pub(crate) fn compile_entity(
 ///
 /// After all arms are processed, builds a `GuardedDeclGroup { name, arms }` and
 /// calls `scope.register_match_arm_group`.  Cluster names **never** route through
-/// `scope.register()`, so task 2375's duplicate-name tightening cannot misfire.
+/// `scope.register()`, so same-name diagnostics from outside-match collisions
+/// (emitted at pre-pass time) cannot misfire here — the cluster is suppressed via
+/// `clusters_with_outside_collision` before any scope mutation.
 #[allow(clippy::too_many_arguments)]
 fn compile_match_arm_decl_group(
     entity_name: &str,
@@ -2023,6 +2139,7 @@ fn compile_match_arm_decl_group(
     sub_components: &mut Vec<SubComponentDecl>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     type_param_names: &HashSet<String>,
+    clusters_with_outside_collision: &HashSet<String>,
 ) {
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
@@ -2097,6 +2214,14 @@ fn compile_match_arm_decl_group(
             return;
         }
     };
+
+    // Outside-match collision short-circuit (task 2375, step-10): if the pre-pass
+    // already detected and diagnosed a collision between this cluster's logical name
+    // and an outside-of-match Sub/Param/Let, suppress the cluster here — no need to
+    // re-emit the diagnostic, and no partial cluster should be formed.
+    if clusters_with_outside_collision.contains(&logical_name) {
+        return;
+    }
 
     // suggestion 4: validate that all subsequent arms share the same logical name
     for arm in &m.arms[1..] {
@@ -2177,6 +2302,36 @@ fn compile_match_arm_decl_group(
                     );
                 }
             }
+        }
+
+        // Exhaustiveness gate (task 2375): every variant of the discriminant enum
+        // must be covered by at least one arm. Compute the covered set by
+        // flattening ALL arms' patterns (so `Hex | Button => ...` contributes
+        // both "Hex" and "Button"). No wildcard support needed here — decl-level
+        // match arms only emit enum-ident patterns (unlike expr-level matches).
+        let covered: std::collections::HashSet<&str> = m
+            .arms
+            .iter()
+            .flat_map(|arm| arm.patterns.iter().map(|p| p.as_str()))
+            .collect();
+        let missing: Vec<&str> = variants
+            .iter()
+            .filter(|v| !covered.contains(v.as_str()))
+            .map(|v| v.as_str())
+            .collect();
+        if !missing.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "non-exhaustive match on '{}': missing variant(s) {}",
+                    enum_type_name,
+                    missing.iter().map(|v| format!("'{v}'")).collect::<Vec<_>>().join(", ")
+                ))
+                .with_label(DiagnosticLabel::new(m.span, "missing variants")),
+            );
+            // Early-return: do NOT push sub_components/guarded_groups and do NOT
+            // register the cluster. A partial cluster without all arms would have
+            // subs registered without cluster-aware union typing — a footgun.
+            return;
         }
     }
 

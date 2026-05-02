@@ -678,14 +678,13 @@ pub struct GuardedDeclArm {
 ///
 /// See PRD `docs/prds/match-block-decls.md` task 1 and spec §6.4.
 /// Stored in `CompilationScope::match_arm_groups` — separate from the regular
-/// `names` map so that future duplicate-name diagnostics (task 2375) cannot
-/// misfire on cluster members.
+/// `names` map so that outside-match collision diagnostics (task 2375) cannot
+/// misfire on cluster members; collisions are detected at pre-pass time and
+/// suppress the cluster before it reaches this map.
 ///
-/// **Exhaustiveness:** is *not* enforced here — a non-exhaustive `match`
-/// compiles silently with the omitted variants having no arm guard. Spec §6.4
-/// requires exhaustiveness; that check is scheduled for a follow-up task once
-/// union typing (task 2373) lands and provides the type-level union to
-/// compare patterns against.
+/// **Exhaustiveness:** enforced by `compile_match_arm_decl_group` (entity.rs,
+/// task 2375). A non-exhaustive `match` block emits a diagnostic and does NOT
+/// produce a `GuardedDeclGroup` — no partial cluster is ever registered.
 #[derive(Debug, Clone)]
 pub struct GuardedDeclGroup {
     /// The shared logical name of all arms (e.g. `"head"`).
