@@ -658,6 +658,11 @@ impl EvaluationGraph {
                 },
                 "auto_type_substitution: param names must be unique; duplicates are a producer bug"
             );
+            // Sort input pairs by `param_name`, not by `.0` of the resulting
+            // pair hashes (which is the convention used by sibling buckets).
+            // Under the param-name-uniqueness invariant debug_assert!ed above,
+            // both orderings are equivalent; the input-pair sort is preserved
+            // as-is to avoid re-shuffling the bit-stable bucket output.
             let mut sorted = self.auto_type_substitution.clone();
             sorted.sort_by(|a, b| a.0.cmp(&b.0));
             let pair_hashes: Vec<ContentHash> = sorted
