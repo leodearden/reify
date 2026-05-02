@@ -54,4 +54,11 @@ mod tests {
             Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
         );
     }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "child cell not yet evaluated")]
+    fn collect_member_list_panics_in_debug_when_child_missing() {
+        collect_member_list(&ValueMap::default(), "Parent", "bolts", "grade", 2);
+    }
 }
