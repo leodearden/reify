@@ -32,6 +32,8 @@ pub mod journal;
 pub mod primitive_attribute_seed;
 pub mod realization_cache;
 pub mod snapshot;
+pub mod source_location;
+pub use source_location::resolve_entity_source_location;
 pub mod test_runner;
 pub mod tolerance_bucket;
 pub mod tolerance_budget;
