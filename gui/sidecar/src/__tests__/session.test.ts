@@ -2196,6 +2196,58 @@ describe('stdin orphan-error diagnostic', () => {
     mockProc.emit('close', 0);
     await msgPromise;
   });
+
+  it('orphan stdin error one-shot guard fires console.warn exactly once across multiple emits', async () => {
+    const { mockProc, stdout } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_orphan', name: 'reify_x', input: {} },
+    ]);
+
+    // Suppress and capture console.warn calls
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Set up wait for tool_call BEFORE dispatch so we don't miss it
+    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+
+    // Start send_message (don't await — hangs waiting for stdout to close)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'send-orphan-oneshot',
+      text: 'Hi',
+    });
+
+    // Await tool_call — proves the prompt has been written to stdin and the 'error' listener is attached
+    await toolCallWait;
+
+    // First orphan EPIPE — should trigger a console.warn
+    mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 1'));
+    await new Promise(setImmediate);
+
+    // Second orphan EPIPE with a distinct message — one-shot guard must suppress this
+    mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 2 distinct'));
+    await new Promise(setImmediate);
+
+    // Filter to only guard fires (uniquely identified by the '[sidecar] stdin error' prefix)
+    const stdinErrorWarns = warnSpy.mock.calls.filter((args) =>
+      args.join(' ').includes('[sidecar] stdin error')
+    );
+
+    // One-shot guard: exactly one warn fired despite two error emits
+    expect(stdinErrorWarns).toHaveLength(1);
+
+    // The surviving warn references the FIRST error message
+    expect(stdinErrorWarns[0].join(' ')).toContain('synthetic orphan EPIPE 1');
+
+    // The surviving warn does NOT reference the suppressed second error
+    expect(stdinErrorWarns[0].join(' ')).not.toContain('synthetic orphan EPIPE 2');
+
+    // Cleanup
+    warnSpy.mockRestore();
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-orphan-oneshot' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
 });
 
 describe('echoed tool_use_id validation', () => {
