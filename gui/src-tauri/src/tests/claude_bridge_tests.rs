@@ -1403,6 +1403,34 @@ fn outbound_to_event_error() {
 }
 
 #[test]
+fn outbound_to_event_notice() {
+    let msg = OutboundMessage::Notice {
+        id: "msg-6".to_string(),
+        code: "degraded_turn_boundary".to_string(),
+        message: "assistant event missing message.id; turn-boundary detection disabled".to_string(),
+    };
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-notice");
+    assert_eq!(payload["id"], "msg-6");
+    assert_eq!(payload["code"], "degraded_turn_boundary");
+    assert_eq!(payload["message"], "assistant event missing message.id; turn-boundary detection disabled");
+}
+
+#[test]
+fn parse_outbound_notice() {
+    let line = r#"{"type":"notice","id":"msg-n1","code":"degraded_turn_boundary","message":"assistant event missing message.id"}"#;
+    let msg = parse_outbound(line).unwrap();
+    assert_eq!(
+        msg,
+        OutboundMessage::Notice {
+            id: "msg-n1".to_string(),
+            code: "degraded_turn_boundary".to_string(),
+            message: "assistant event missing message.id".to_string(),
+        }
+    );
+}
+
+#[test]
 fn outbound_to_event_ready() {
     let msg = OutboundMessage::Ready;
     let (name, payload) = outbound_to_event(&msg);

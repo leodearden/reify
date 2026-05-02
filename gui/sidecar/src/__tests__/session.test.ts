@@ -991,12 +991,13 @@ describe('SidecarSession multi-turn streaming', () => {
     // proving lastTextLen was NOT zeroed between the two partial events.
     expect(deltaContents).not.toContain('Hello world');
 
-    // (d) Error event emitted to host via onOutput — one-shot, first no-id event triggers it.
-    // Acceptance criterion #3: existing test must assert the new error-event surface.
-    const errorEvents = outputs.filter((o) => o.type === 'error');
-    expect(errorEvents).toHaveLength(1);
-    expect((errorEvents[0] as any).message).toContain('[degraded-turn-boundary]');
-    expect((errorEvents[0] as any).id).toBe('msg-no-id');
+    // (d) Notice event emitted to host via onOutput — one-shot, first no-id event triggers it.
+    // Acceptance criterion #3: existing test must assert the new notice-event surface.
+    const noticeEvents = outputs.filter((o) => o.type === 'notice');
+    expect(noticeEvents).toHaveLength(1);
+    expect((noticeEvents[0] as any).code).toBe('degraded_turn_boundary');
+    expect((noticeEvents[0] as any).message).toContain('message.id');
+    expect((noticeEvents[0] as any).id).toBe('msg-no-id');
 
     consoleSpy.mockRestore();
   });
@@ -1021,28 +1022,25 @@ describe('SidecarSession multi-turn streaming', () => {
 
     consoleSpy.mockRestore();
 
-    // Exactly one error emission across three no-id events (one-shot guard fires only once)
-    const errorEvents = outputs.filter((o) => o.type === 'error');
-    expect(errorEvents).toHaveLength(1);
+    // Exactly one notice emission across three no-id events (one-shot guard fires only once)
+    const noticeEvents = outputs.filter((o) => o.type === 'notice');
+    expect(noticeEvents).toHaveLength(1);
 
-    // Error correlates to the in-flight send_message id
-    expect((errorEvents[0] as any).id).toBe('msg-oneshot');
+    // Notice correlates to the in-flight send_message id
+    expect((noticeEvents[0] as any).id).toBe('msg-oneshot');
 
-    // Contains structured discriminator and references message.id in the message text
-    expect((errorEvents[0] as any).message).toContain('[degraded-turn-boundary]');
-    expect((errorEvents[0] as any).message).toContain('message.id');
+    // Structured discriminator via code field; message references message.id for human readability
+    expect((noticeEvents[0] as any).code).toBe('degraded_turn_boundary');
+    expect((noticeEvents[0] as any).message).toContain('message.id');
 
-    // Sanity: text deltas still emit — error event must NOT short-circuit normal streaming
+    // Sanity: text deltas still emit — notice event must NOT short-circuit normal streaming
     expect(outputs.some((o) => o.type === 'text_delta')).toBe(true);
 
-    // NOTE (follow-up): This test verifies sidecar-side semantics only. The host's
-    // claudeStore handler currently treats 'error' events as terminal (cancels the turn,
-    // marks the assistant message complete+errored, sets sessionStatus='idle'). That means
-    // the text_deltas that arrive after the error event land on an already-completed
-    // message. Verifying that post-error deltas are correctly reflected in host state —
-    // or asserting the turn-abort contract explicitly — requires an integration-level
-    // test spanning claudeStore. That is outside the scope of sidecar unit tests and
-    // should be tracked as a follow-up task.
+    // NOTE: Host-side non-terminal contract is verified by the claudeIntegration test
+    // 'claude-notice event preserves in-flight turn (non-terminal)' in
+    // gui/src/__tests__/claudeIntegration.test.ts. The 'notice' variant is handled by a
+    // dedicated non-terminal case in claudeStore.ts — no cancelAndFlush, no sessionStatus
+    // change, no in-flight assistant message mutation.
   });
 });
 

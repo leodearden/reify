@@ -288,10 +288,11 @@ describe('subscribeToClaudeEvents', () => {
     'claude-tool-result',
     'claude-done',
     'claude-error',
+    'claude-notice',
     'claude-ready',
   ];
 
-  it('calls listen() for all 7 claude event types', async () => {
+  it('calls listen() for all 8 claude event types', async () => {
     const unlisten = vi.fn();
     mockListen.mockResolvedValue(unlisten);
 
@@ -302,7 +303,7 @@ describe('subscribeToClaudeEvents', () => {
     for (const name of ALL_EVENT_NAMES) {
       expect(listenedEvents).toContain(name);
     }
-    expect(mockListen).toHaveBeenCalledTimes(7);
+    expect(mockListen).toHaveBeenCalledTimes(8);
   });
 
   it('returns a combined unlisten that calls all individual unlisteners', async () => {
@@ -385,6 +386,21 @@ describe('subscribeToClaudeEvents', () => {
       type: 'error',
       id: 'msg-4',
       message: 'rate limit exceeded',
+    });
+  });
+
+  it('maps claude-notice event to OutboundMessage { type: "notice" }', async () => {
+    const { setup } = captureListener('claude-notice');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({ payload: { id: 'msg-x', code: 'degraded_turn_boundary', message: 'detail...' } });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'notice',
+      id: 'msg-x',
+      code: 'degraded_turn_boundary',
+      message: 'detail...',
     });
   });
 
@@ -545,6 +561,7 @@ describe('subscribeToClaudeEvents', () => {
     { eventName: 'claude-thinking-delta', expectedType: 'thinking_delta', payload: { id: 'x', content: 'think', type: 'WRONG' } },
     { eventName: 'claude-text-delta', expectedType: 'text_delta', payload: { id: 'x', content: 'hi', type: 'WRONG' } },
     { eventName: 'claude-error', expectedType: 'error', payload: { id: 'x', message: 'oops', type: 'WRONG' } },
+    { eventName: 'claude-notice', expectedType: 'notice', payload: { id: 'x', code: 'degraded_turn_boundary', message: 'detail', type: 'WRONG' } },
   ])('payload type field does not override mapped event type for $eventName', async ({ eventName, expectedType, payload }) => {
     const { setup } = captureListener(eventName);
     const handler = vi.fn();
@@ -588,20 +605,20 @@ describe('subscribeToClaudeEvents', () => {
       expect(mockListen).toHaveBeenCalledTimes(1);
     });
 
-    it('cleans up all 6 prior listeners when the last (7th) listen() fails', async () => {
-      const unlisteners = Array.from({ length: 6 }, () => vi.fn());
+    it('cleans up all 7 prior listeners when the last (8th) listen() fails', async () => {
+      const unlisteners = Array.from({ length: 7 }, () => vi.fn());
       let callIdx = 0;
       mockListen.mockImplementation(async () => {
-        if (callIdx < 6) {
+        if (callIdx < 7) {
           return unlisteners[callIdx++];
         }
-        throw new Error('listen failed on call 7');
+        throw new Error('listen failed on call 8');
       });
 
       const handler = vi.fn();
-      await expect(subscribeToClaudeEvents(handler)).rejects.toThrow('listen failed on call 7');
+      await expect(subscribeToClaudeEvents(handler)).rejects.toThrow('listen failed on call 8');
 
-      // All 6 previously-resolved unlisteners must be called
+      // All 7 previously-resolved unlisteners must be called
       for (const unsub of unlisteners) {
         expect(unsub).toHaveBeenCalledTimes(1);
       }
@@ -626,6 +643,7 @@ describe('subscribeToClaudeEvents', () => {
       'claude-tool-result',
       'claude-done',
       'claude-error',
+      'claude-notice',
     ] as const;
 
     const INVALID_PAYLOADS = [

@@ -345,4 +345,58 @@ describe('claude bridge integration', () => {
     const systemMsg = store.state.messages.find((m) => m.role === 'system');
     expect(systemMsg).toBeTruthy();
   });
+
+  it('claude-notice event preserves in-flight turn (non-terminal)', async () => {
+    const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(async (eventName, handler) => {
+      capturedHandlers[eventName as string] = handler as (event: { payload: unknown }) => void;
+      return vi.fn();
+    });
+
+    const store = createClaudeStore({
+      onSend: () => {},
+      onAbort: () => {},
+    });
+
+    await subscribeToClaudeEvents(store.handleOutboundMessage);
+
+    store.sendMessage('hello', {});
+    const msgId = store.state.currentMessageId!;
+
+    // Receive a partial text_delta first
+    capturedHandlers['claude-text-delta']({ payload: { id: msgId, content: 'partial ' } });
+    flushRaf();
+
+    // Receive the notice — must NOT terminate the turn or mutate state
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    capturedHandlers['claude-notice']({
+      payload: { id: msgId, code: 'degraded_turn_boundary', message: 'detail...' },
+    });
+    consoleSpy.mockRestore();
+
+    // Subsequent deltas continue to land on the SAME in-flight assistant message
+    capturedHandlers['claude-text-delta']({ payload: { id: msgId, content: 'more text' } });
+    flushRaf();
+
+    const inFlight = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    expect(inFlight!.responseText).toBe('partial more text'); // deltas accumulated past the notice
+    expect(inFlight!.complete).toBe(false); // not terminated
+    expect(inFlight!.error).toBeUndefined(); // not errored
+    expect(store.state.sessionStatus).not.toBe('idle'); // session still active
+    // No system message added — host's notice handler does NOT addSystemMessage
+    const systemMsgs = store.state.messages.filter((m) => m.role === 'system');
+    expect(systemMsgs).toHaveLength(0);
+
+    // Then claude-done finishes the turn cleanly
+    capturedHandlers['claude-done']({ payload: { id: msgId } });
+    flushRaf();
+    expect(store.state.sessionStatus).toBe('idle');
+    const final = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    expect(final!.complete).toBe(true);
+    expect(final!.error).toBeUndefined(); // turn completed cleanly, not via error path
+  });
 });
