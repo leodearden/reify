@@ -648,6 +648,55 @@ pub(crate) fn compile_per_decl_constraint_guard(
     });
 }
 
+/// Structurally narrow a `GuardedDeclGroup`'s arms based on the active guard
+/// at a reference site (task 2373).
+///
+/// Returns the subset of `arms` whose `guard_value_cell` is reachable from
+/// `current_guard` via the `parent_chain` (mirroring the `is_ancestor_guard`
+/// walk in entity.rs:1731-1739). When `current_guard` is `None`, all arms
+/// are returned (no narrowing — the full union).
+///
+/// If `current_guard` is `Some` but no arm is reachable, falls back to the
+/// full arm set conservatively (no implication established → conservative
+/// full union). This mirrors the v0.1 narrowing-is-structural decision: the
+/// only existing implication mechanism is the parent-chain walk; we never
+/// over-narrow.
+///
+/// In v0.1, surface syntax does not produce a `current_guard` matching an
+/// arm's cell, so callers in `expr.rs` always pass `None`. The helper is
+/// exercised by direct unit tests pinning the contract for future tasks.
+pub(crate) fn narrow_arms_under_guard<'a>(
+    arms: &'a [GuardedDeclArm],
+    current_guard: Option<&ValueCellId>,
+    parent_chain: &HashMap<ValueCellId, Option<ValueCellId>>,
+) -> Vec<&'a GuardedDeclArm> {
+    let Some(current) = current_guard else {
+        return arms.iter().collect();
+    };
+    // Walk parent chain from current upward, collecting any arm whose cell
+    // appears (including current itself).
+    let mut active = Vec::new();
+    for arm in arms {
+        if &arm.guard_value_cell == current {
+            active.push(arm);
+            continue;
+        }
+        let mut cursor = parent_chain.get(current).and_then(|p| p.as_ref());
+        while let Some(ancestor) = cursor {
+            if ancestor == &arm.guard_value_cell {
+                active.push(arm);
+                break;
+            }
+            cursor = parent_chain.get(ancestor).and_then(|p| p.as_ref());
+        }
+    }
+    if active.is_empty() {
+        // No implication established — return the full arm set conservatively.
+        return arms.iter().collect();
+    }
+    active
+}
+
 #[cfg(test)]
 mod narrow_arms_under_guard_tests {
     use super::*;
