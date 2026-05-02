@@ -474,3 +474,87 @@ fn self_dot_cluster_dot_arm_specific_field_emits_diagnostic_listing_missing_arms
         errors
     );
 }
+
+/// Step-17: external `<sub>.<cluster>.<field>` access typechecks against
+/// the common-field type when present in every arm of the sub's cluster.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure def HexHead    { param across_flats : Real }
+/// structure def SocketHead { param across_flats : Real }
+/// structure def Bolt {
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+/// }
+/// structure def Driver {
+///     sub bolt : Bolt
+///     let across = bolt.head.across_flats
+/// }
+/// ```
+/// Asserts (a) no Error diagnostics, (b) `across.cell_type == Type::Real`.
+/// Pins PRD acceptance criterion 3 (external cluster access typechecks).
+#[test]
+fn external_sub_dot_cluster_dot_common_field_typechecks() {
+    let bolt_match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = structure_with_members(
+        "Bolt",
+        vec![param_member("head_type", "HeadType"), bolt_match_group],
+    );
+
+    // Driver { sub bolt : Bolt; let across = bolt.head.across_flats }
+    let across = let_member(
+        "across",
+        member_access(
+            member_access(make_ident_expr("bolt"), "head"),
+            "across_flats",
+        ),
+    );
+    let driver = structure_with_members("Driver", vec![sub_member("bolt", "Bolt"), across]);
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_external_cluster_common_field"),
+        declarations: vec![
+            head_type_enum(),
+            structure_with_members("HexHead", vec![param_member("across_flats", "Real")]),
+            structure_with_members("SocketHead", vec![param_member("across_flats", "Real")]),
+            bolt,
+            driver,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:#?}",
+        errors
+    );
+
+    let across_type = find_cell_type(&compiled, "Driver", "across")
+        .expect("expected `across` value cell on Driver template");
+
+    assert_eq!(
+        across_type,
+        Type::Real,
+        "expected across.cell_type == Real (common field across all arms of Bolt's cluster), \
+         got {}",
+        across_type
+    );
+}
