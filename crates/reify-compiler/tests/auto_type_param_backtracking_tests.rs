@@ -590,6 +590,17 @@ structure def WaterCooled : Cooled {
         "Human-readable message must still carry composite witness 'T=ORingSeal,U=WaterCooled', got: {:?}",
         diagnostics[0].message,
     );
+    // Negative pin: `max_feasible_to_collect = 2` strict-mode early-stop means the
+    // DFS halts after collecting (ORingSeal, AirCooled) and (ORingSeal, WaterCooled) —
+    // the RubberSeal-led feasibles are never reached. If this assertion fires, it means
+    // a 3rd feasible was collected (cap raised or DFS order changed), which would
+    // silently weaken the strict-mode contract this test is supposed to enforce.
+    assert!(
+        !diagnostics[0].message.contains("T=RubberSeal"),
+        "Strict-mode early-stop (max_feasible_to_collect=2) must prevent RubberSeal witnesses \
+         from appearing in the message; got: {:?}",
+        diagnostics[0].message,
+    );
 }
 
 // ─── step-25: DFS Phase A overflow on first param halts before recursion ───

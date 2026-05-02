@@ -849,6 +849,27 @@ pub struct Diagnostic {
     /// the LSP `data` JSON `{"candidates": [...]}` — a quick-fix provider
     /// that splits entries on the FQN convention will silently mis-parse
     /// joined labels. See task 2860 for the contract origin.
+    ///
+    /// # Single-param vs. multi-param interpretation
+    ///
+    /// The *shape* of this list differs by emission context:
+    ///
+    /// - **Single-param "pick one" sites** (e.g. `AutoTypeParamPoolOverflow`,
+    ///   `AutoTypeParamNoCandidate`) pack multiple alternative FQNs — a
+    ///   consumer should offer each as an independent substitution choice.
+    /// - **Multi-param "coherent assignment" sites** (e.g.
+    ///   `AutoTypeParamAmbiguous` when ≥2 cross-product assignments exist)
+    ///   pack the FQNs of a *single coherent assignment* — one FQN per
+    ///   declared parameter in declared order. The entries must be applied
+    ///   *together*, not as independent alternatives.
+    ///
+    /// Consumers that need to distinguish these two shapes must inspect the
+    /// [`Diagnostic::code`] field (e.g. `AutoTypeParamAmbiguous` signals the
+    /// multi-param case). Treating a multi-param "all-of-these-together" list
+    /// as a "pick one" list will produce incoherent quick-fixes. Task 2663
+    /// (search-failure diagnostic format) is the designated home for any
+    /// future structured multi-param field if a richer representation is
+    /// needed.
     pub candidates: Vec<String>,
 }
 
