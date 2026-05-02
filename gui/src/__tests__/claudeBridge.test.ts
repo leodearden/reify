@@ -887,6 +887,7 @@ import type {
   ToolResult,
   Done,
   ErrorMessage,
+  InboundToolResult,
 } from '../../sidecar/src/types';
 
 type Equals<A, B> =
@@ -925,6 +926,7 @@ type _AssertMapReturnType = AssertTrue<Equals<ReturnType<typeof mapContextToWire
 type _AssertTextDeltaPayload = AssertTrue<Equals<Omit<TextDelta, 'type'>, { id: string; content: string }>>;
 type _AssertThinkingDeltaPayload = AssertTrue<Equals<Omit<ThinkingDelta, 'type'>, { id: string; content: string }>>;
 type _AssertToolCallPayload = AssertTrue<Equals<Omit<ToolCall, 'type'>, { id: string; tool_use_id: string; tool_name: string; tool_input: Record<string, unknown> }>>;
+type _AssertInboundToolResultPayload = AssertTrue<Equals<Omit<InboundToolResult, 'type'>, { id: string; tool_use_id: string; tool_name: string; result: unknown }>>;
 type _AssertToolResultPayload = AssertTrue<Equals<Omit<ToolResult, 'type'>, { id: string; tool_name: string; result: unknown }>>;
 type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>;
 type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;
