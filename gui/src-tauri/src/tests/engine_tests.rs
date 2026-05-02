@@ -1221,6 +1221,44 @@ fn get_source_location_end_to_end() {
     assert!(loc.end_line >= loc.line, "end_line should be >= line");
 }
 
+/// Regression test (step-3 TDD red): `get_source_location` must accept a plain
+/// template name (e.g., "Bracket" without a ".member" suffix) and return the
+/// first value cell's span — identical to calling with "Bracket.width".
+///
+/// Currently FAILS because the old implementation calls `parse_cell_id(entity_path)`
+/// which requires the "Entity.member" format; "Bracket" returns `Err`, so the method
+/// returns `None`.  Fixed in step-4 by delegating to the shared helper.
+#[test]
+fn get_source_location_accepts_template_name_returns_first_cell_span() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    // Template name (no .member) must resolve to the first value cell (width).
+    let loc_name = session
+        .get_source_location("Bracket")
+        .expect("get_source_location('Bracket') must return Some — template-name accepted");
+
+    let loc_width = session
+        .get_source_location("Bracket.width")
+        .expect("get_source_location('Bracket.width') must return Some");
+
+    assert_eq!(
+        loc_name.file_path, "bracket.ri",
+        "file_path must be 'bracket.ri'"
+    );
+    assert!(loc_name.line >= 1, "line must be >= 1, got {}", loc_name.line);
+    assert_eq!(
+        (loc_name.line, loc_name.column, loc_name.end_line, loc_name.end_column),
+        (loc_width.line, loc_width.column, loc_width.end_line, loc_width.end_column),
+        "template-name resolution must proxy to the first value cell (width)"
+    );
+}
+
 #[test]
 fn get_source_location_returns_source_location_info() {
     let checker = SimpleConstraintChecker;
