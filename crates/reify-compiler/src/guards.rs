@@ -647,3 +647,54 @@ pub(crate) fn compile_per_decl_constraint_guard(
         parent_guard: None,
     });
 }
+
+#[cfg(test)]
+mod narrow_arms_under_guard_tests {
+    use super::*;
+    use reify_types::Value;
+
+    fn make_arm(guard_member: &str, arm_struct: &str) -> GuardedDeclArm {
+        GuardedDeclArm {
+            guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            guard_value_cell: ValueCellId::new("Bolt", guard_member),
+            arm_type: Type::StructureRef(arm_struct.to_string()),
+        }
+    }
+
+    /// Step-15 case 1: `current_guard == arm[0].guard_value_cell` → `[arm[0]]`.
+    #[test]
+    fn narrow_arms_collapses_to_arm_when_guard_matches_arm_cell() {
+        let arms = vec![make_arm("__guard_0", "HexHead"), make_arm("__guard_1", "SocketHead")];
+        let parent_chain: HashMap<ValueCellId, Option<ValueCellId>> = HashMap::new();
+        let current = arms[0].guard_value_cell.clone();
+        let result = narrow_arms_under_guard(&arms, Some(&current), &parent_chain);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].guard_value_cell, arms[0].guard_value_cell);
+    }
+
+    /// Step-15 case 2: `current_guard == None` → all arms.
+    #[test]
+    fn narrow_arms_returns_all_when_no_guard() {
+        let arms = vec![make_arm("__guard_0", "HexHead"), make_arm("__guard_1", "SocketHead")];
+        let parent_chain: HashMap<ValueCellId, Option<ValueCellId>> = HashMap::new();
+        let result = narrow_arms_under_guard(&arms, None, &parent_chain);
+        assert_eq!(result.len(), 2);
+    }
+
+    /// Step-15 case 3: non-matching guard whose parent chain reaches
+    /// `arm[1].guard_value_cell` → `[arm[1]]`.
+    #[test]
+    fn narrow_arms_walks_parent_chain_to_match_arm() {
+        let arms = vec![make_arm("__guard_0", "HexHead"), make_arm("__guard_1", "SocketHead")];
+        let nested = ValueCellId::new("Bolt", "__guard_2");
+        // nested's parent is arm[1].guard_value_cell (which is itself a "top-level" guard for the
+        // parent_chain — its own entry is None).
+        let mut parent_chain: HashMap<ValueCellId, Option<ValueCellId>> = HashMap::new();
+        parent_chain.insert(nested.clone(), Some(arms[1].guard_value_cell.clone()));
+        parent_chain.insert(arms[1].guard_value_cell.clone(), None);
+        parent_chain.insert(arms[0].guard_value_cell.clone(), None);
+        let result = narrow_arms_under_guard(&arms, Some(&nested), &parent_chain);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].guard_value_cell, arms[1].guard_value_cell);
+    }
+}
