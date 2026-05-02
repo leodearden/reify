@@ -691,3 +691,76 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
     // code field passthrough: hardcoded None in the mapping closure (see doc comment)
     assert!(first.code.is_none(), "expected code to be None");
 }
+
+/// Cross-transport parity test (step-7): the MCP-dispatch surface for
+/// `reify_get_source_location` must accept both a plain template name
+/// ("Bracket") and a full cell ID ("Bracket.width"), returning identical
+/// `(line, column, end_line, end_column)` tuples for both inputs.
+///
+/// This mirrors the CLI-side test `mcp_server_get_source_location_accepts_template_name_and_cell_id`
+/// (step-5) and proves that both transports use the same unified semantics.
+///
+/// The test passes after step-4 (GUI engine refactor) because
+/// `EngineSession::get_source_location("Bracket")` now returns `Some` — before
+/// step-4 it returned `None` and the trait impl mapped that to a ToolError,
+/// which `mcp_tool_call_impl` converts to a JSON error object, causing the
+/// assertion to fail.
+#[test]
+fn get_source_location_through_mcp_dispatch_accepts_template_name_and_cell_id() {
+    let ctx = make_tauri_context();
+
+    // (1) plain template name
+    let loc_name = mcp_tool_call_impl(
+        "reify_get_source_location",
+        serde_json::json!({"entity_path": "Bracket"}),
+        &ctx,
+    )
+    .expect("mcp_tool_call_impl('reify_get_source_location', {entity_path:'Bracket'}) must succeed");
+
+    // (2) full cell ID
+    let loc_width = mcp_tool_call_impl(
+        "reify_get_source_location",
+        serde_json::json!({"entity_path": "Bracket.width"}),
+        &ctx,
+    )
+    .expect(
+        "mcp_tool_call_impl('reify_get_source_location', {entity_path:'Bracket.width'}) must succeed",
+    );
+
+    // Both must resolve to a real location.
+    for (loc, label) in [(&loc_name, "Bracket"), (&loc_width, "Bracket.width")] {
+        assert_eq!(
+            loc["file_path"].as_str().unwrap_or(""),
+            "bracket.ri",
+            "{label}: file_path must be 'bracket.ri', got: {:?}",
+            loc["file_path"]
+        );
+        let line = loc["line"].as_u64().unwrap_or(0);
+        assert!(line >= 1, "{label}: line must be >= 1, got {line}");
+        let column = loc["column"].as_u64().unwrap_or(0);
+        assert!(column >= 1, "{label}: column must be >= 1, got {column}");
+        let end_line = loc["end_line"].as_u64().unwrap_or(0);
+        assert!(
+            end_line >= line,
+            "{label}: end_line ({end_line}) must be >= line ({line})"
+        );
+    }
+
+    // Template-name proxy must return the same span as the first value cell (width).
+    assert_eq!(
+        (
+            loc_name["line"].as_u64(),
+            loc_name["column"].as_u64(),
+            loc_name["end_line"].as_u64(),
+            loc_name["end_column"].as_u64(),
+        ),
+        (
+            loc_width["line"].as_u64(),
+            loc_width["column"].as_u64(),
+            loc_width["end_line"].as_u64(),
+            loc_width["end_column"].as_u64(),
+        ),
+        "template-name 'Bracket' must proxy to the first value cell (width) \
+         — spans must be identical.\nBracket={loc_name:?}\nBracket.width={loc_width:?}"
+    );
+}
