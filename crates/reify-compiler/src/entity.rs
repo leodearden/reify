@@ -2178,6 +2178,36 @@ fn compile_match_arm_decl_group(
                 }
             }
         }
+
+        // Exhaustiveness gate (task 2375): every variant of the discriminant enum
+        // must be covered by at least one arm. Compute the covered set by
+        // flattening ALL arms' patterns (so `Hex | Button => ...` contributes
+        // both "Hex" and "Button"). No wildcard support needed here — decl-level
+        // match arms only emit enum-ident patterns (unlike expr-level matches).
+        let covered: std::collections::HashSet<&str> = m
+            .arms
+            .iter()
+            .flat_map(|arm| arm.patterns.iter().map(|p| p.as_str()))
+            .collect();
+        let missing: Vec<&str> = variants
+            .iter()
+            .filter(|v| !covered.contains(v.as_str()))
+            .map(|v| v.as_str())
+            .collect();
+        if !missing.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "non-exhaustive match on '{}': missing variant(s) {}",
+                    enum_type_name,
+                    missing.join(", ")
+                ))
+                .with_label(DiagnosticLabel::new(m.span, "missing variants")),
+            );
+            // Early-return: do NOT push sub_components/guarded_groups and do NOT
+            // register the cluster. A partial cluster without all arms would have
+            // subs registered without cluster-aware union typing — a footgun.
+            return;
+        }
     }
 
     let mut group_arms: Vec<GuardedDeclArm> = Vec::with_capacity(m.arms.len());
