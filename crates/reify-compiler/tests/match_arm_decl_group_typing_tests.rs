@@ -398,3 +398,79 @@ fn self_dot_cluster_dot_common_field_resolves_to_arm_field_type() {
         probe_type
     );
 }
+
+/// Step-13: arm-specific fields produce a precise diagnostic naming the
+/// missing arm types.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure def HexHead    { param head_thickness : Real }
+/// structure def SocketHead {}                              // no head_thickness
+/// structure def Bolt {
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+///     let probe = self.head.head_thickness
+/// }
+/// ```
+/// Asserts exactly ONE error diagnostic mentions both `'head_thickness'`
+/// and `SocketHead` (the arm whose type lacks the field). Pins PRD
+/// acceptance criterion 2.
+#[test]
+fn self_dot_cluster_dot_arm_specific_field_emits_diagnostic_listing_missing_arms() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    // self.head.head_thickness — field present in HexHead, missing in SocketHead.
+    let probe = let_member(
+        "probe",
+        member_access(
+            member_access(make_ident_expr("self"), "head"),
+            "head_thickness",
+        ),
+    );
+
+    let bolt = structure_with_members(
+        "Bolt",
+        vec![param_member("head_type", "HeadType"), match_group, probe],
+    );
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_cluster_arm_specific_field"),
+        declarations: vec![
+            head_type_enum(),
+            structure_with_members("HexHead", vec![param_member("head_thickness", "Real")]),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors = error_diagnostics(&compiled);
+    let matching: Vec<&&reify_types::Diagnostic> = errors
+        .iter()
+        .filter(|d| d.message.contains("'head_thickness'") && d.message.contains("SocketHead"))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one error diagnostic mentioning both 'head_thickness' \
+         and 'SocketHead', got {} (all errors: {:#?})",
+        matching.len(),
+        errors
+    );
+}
