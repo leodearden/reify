@@ -7,6 +7,19 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// Iterates `idx in 0..n`, looks up `<parent>.<sub>[idx].<member>` in `values`,
 /// and collects the results into a `Value::List`.
 ///
+/// # Eval-order invariant
+///
+/// All child cells `<parent>.<sub>[0..(n-1)].<member>` **must** already be
+/// present in `values` before this helper is called. In debug/test builds a
+/// `debug_assert!` fires immediately if any child cell is absent, naming the
+/// missing cell and the violated invariant. In release builds the fallback
+/// `Value::Undef` is returned for absent cells — this preserves the historical
+/// behaviour of the three inline closures this helper replaces; the
+/// `debug_assert!` masks the regression in dev/test builds.
+///
+/// This mirrors the sibling pattern at
+/// `engine_edit.rs:223-233` (`reapply_guard_deactivations_post_wave2`).
+///
 /// # Parameters
 /// - `values`: the current live `ValueMap`
 /// - `parent`: entity name that owns the collection sub (e.g. `"Widget"`)
@@ -17,7 +30,8 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// # Returns
 /// `Value::List` whose `idx`-th element is the value of
 /// `<parent>.<sub>[idx].<member>` from `values`, or `Value::Undef` if the cell
-/// is absent.
+/// is absent (release-mode preserved historical behaviour, masked by the
+/// `debug_assert!` in dev/test builds).
 pub(crate) fn collect_member_list(
     values: &ValueMap,
     parent: &str,
@@ -28,6 +42,11 @@ pub(crate) fn collect_member_list(
     let items: Vec<Value> = (0..n)
         .map(|idx| {
             let scoped_id = ValueCellId::new(format!("{}.{}[{}]", parent, sub, idx), member);
+            debug_assert!(
+                values.contains(&scoped_id),
+                "child cell not yet evaluated: {} (collect_member_list eval-order invariant violated)",
+                scoped_id
+            );
             values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
         })
         .collect();
