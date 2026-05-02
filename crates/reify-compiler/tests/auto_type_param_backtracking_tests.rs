@@ -1834,3 +1834,146 @@ structure def RubberSeal : Seal {
         diagnostics
     );
 }
+
+// ─── Regression: per-leaf "exactly one check() call" — DFS multi-param path ──
+
+/// Pins the invariant that `dfs_leaf_feasible` invokes `constraint_checker.check()`
+/// exactly **once** per leaf when the orchestrator routes through the true
+/// multi-param DFS branch (`params.len() >= 2`).
+///
+/// **Coverage gap closed by this test:** the step-3 test
+/// (`dfs_leaf_invokes_constraint_checker_exactly_once_per_leaf_with_multi_constraint_template`)
+/// uses `params.len() == 1`, which triggers the early-return at
+/// `resolve_auto_type_params_with_backtracking::{single-param branch}` and
+/// routes through `filter_feasible_candidates` — so `dfs_search`,
+/// `dfs_leaf_feasible`, and `check_constraints_violated` are **never** called
+/// by that test. This test uses `params.len() == 2` to exercise the actual
+/// DFS path.
+///
+/// Setup:
+/// - Four structures: `ORingSeal : Seal`, `RubberSeal : Seal`,
+///   `AirCooled : Cooled`, `WaterCooled : Cooled`.
+/// - Two `AutoTypeParam`s: `T : Seal` (free=true) and `U : Cooled` (free=true).
+///   With two params the orchestrator enters `dfs_search` → `dfs_leaf_feasible`
+///   → `check_constraints_violated` for all 4 cross-product leaves.
+/// - Parameterized template carries **two** top-level constraints (indices 0
+///   and 1) — the multi-constraint shape is the regression target.
+/// - `MockConstraintChecker::with_call_queue(vec![Violated, Violated, Violated, Satisfied])`
+///   — exactly 4 queue items for 4 expected leaves.
+///
+/// Expected DFS visit order (T outer × U inner, lex within each level):
+/// 1. `(T=ORingSeal, U=AirCooled)` → queue pop #1 ⇒ `Violated` broadcast
+///    to both constraints → infeasible → backtrack at U-level.
+/// 2. `(T=ORingSeal, U=WaterCooled)` → queue pop #2 ⇒ `Violated` broadcast
+///    → infeasible → backtrack at T-level.
+/// 3. `(T=RubberSeal, U=AirCooled)` → queue pop #3 ⇒ `Violated` broadcast
+///    → infeasible → backtrack at U-level.
+/// 4. `(T=RubberSeal, U=WaterCooled)` → queue pop #4 ⇒ `Satisfied` broadcast
+///    → feasible → record, free-mode early-terminate.
+///
+/// **Why this catches the regression:** if `dfs_leaf_feasible` were changed
+/// to call `check()` once per constraint (instead of once per leaf), then
+/// with 2 constraints × 4 leaves = 8 calls the queue (length 4) would drain
+/// after 2 leaves, and the remaining calls would fall back to default
+/// `Satisfied`. Leaf 3 `(RubberSeal, AirCooled)` would then appear feasible,
+/// changing the lex-first selection from `(RubberSeal, WaterCooled)` to
+/// `(RubberSeal, AirCooled)` — an observable assertion failure.
+#[test]
+fn dfs_leaf_invokes_constraint_checker_exactly_once_per_leaf_with_multi_constraint_template_two_params(
+) {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Two top-level constraints — the multi-constraint shape is the regression
+    // target. The mock ignores expression content; literals are only needed so
+    // the builder has a value to store.
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr.clone())
+        .constraint("Coupling", 1, None, expr)
+        .build();
+
+    // Exactly 4 queue items for 4 cross-product leaves. One check() call per
+    // leaf broadcasts the queued verdict to ALL constraints in that call — so
+    // the queue drains at rate 1 per leaf regardless of constraint count.
+    let checker = MockConstraintChecker::new().with_call_queue(vec![
+        Satisfaction::Violated,
+        Satisfaction::Violated,
+        Satisfaction::Violated,
+        Satisfaction::Satisfied,
+    ]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    // Two params → orchestrator routes through the multi-param DFS branch,
+    // exercising dfs_leaf_feasible and check_constraints_violated for real.
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("RubberSeal".to_string())),
+                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+            ],
+            substitution: vec![
+                ("T".to_string(), "RubberSeal".to_string()),
+                ("U".to_string(), "WaterCooled".to_string()),
+            ],
+        },
+        "With multi-constraint template and queue [Violated×3, Satisfied], DFS must \
+         visit all 4 cross-product leaves in lex order, backtrack from (ORingSeal,*) \
+         and (RubberSeal,AirCooled), and select (RubberSeal, WaterCooled) as the only \
+         feasible leaf"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "Multi-constraint two-param backtracking happy path must emit zero diagnostics, got: {:?}",
+        diagnostics
+    );
+}
