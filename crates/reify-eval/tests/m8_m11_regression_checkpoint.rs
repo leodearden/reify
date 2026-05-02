@@ -404,6 +404,8 @@ fn assert_all_type_variants_listed(t: &reify_types::Type) {
         Type::Matrix { .. } => true,
         // Type-inference poison sentinel (task-448)
         Type::Error => true,
+        // Compile-time-only union over guarded-decl-group arm types (task 2373)
+        Type::Union(_) => true,
     };
 }
 
