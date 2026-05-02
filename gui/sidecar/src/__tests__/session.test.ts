@@ -1034,6 +1034,15 @@ describe('SidecarSession multi-turn streaming', () => {
 
     // Sanity: text deltas still emit — error event must NOT short-circuit normal streaming
     expect(outputs.some((o) => o.type === 'text_delta')).toBe(true);
+
+    // NOTE (follow-up): This test verifies sidecar-side semantics only. The host's
+    // claudeStore handler currently treats 'error' events as terminal (cancels the turn,
+    // marks the assistant message complete+errored, sets sessionStatus='idle'). That means
+    // the text_deltas that arrive after the error event land on an already-completed
+    // message. Verifying that post-error deltas are correctly reflected in host state —
+    // or asserting the turn-abort contract explicitly — requires an integration-level
+    // test spanning claudeStore. That is outside the scope of sidecar unit tests and
+    // should be tracked as a follow-up task.
   });
 });
 
