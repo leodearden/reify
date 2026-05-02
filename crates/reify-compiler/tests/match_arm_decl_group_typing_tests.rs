@@ -558,3 +558,67 @@ fn external_sub_dot_cluster_dot_common_field_typechecks() {
         across_type
     );
 }
+
+/// Step-19: external `<sub>.<cluster>.<inner>` referencing an arm-specific
+/// field emits exactly one error diagnostic naming the missing arm.
+///
+/// Constructs Driver { sub bolt : Bolt; let probe = bolt.head.head_thickness }
+/// where HexHead has `head_thickness : Real` and SocketHead does not.
+/// Pins PRD acceptance criterion 2 from outside the cluster.
+#[test]
+fn external_sub_dot_cluster_dot_arm_specific_field_emits_diagnostic() {
+    let bolt_match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = structure_with_members(
+        "Bolt",
+        vec![param_member("head_type", "HeadType"), bolt_match_group],
+    );
+
+    // Driver { sub bolt : Bolt; let probe = bolt.head.head_thickness }
+    let probe = let_member(
+        "probe",
+        member_access(
+            member_access(make_ident_expr("bolt"), "head"),
+            "head_thickness",
+        ),
+    );
+    let driver = structure_with_members("Driver", vec![sub_member("bolt", "Bolt"), probe]);
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_external_arm_specific_field"),
+        declarations: vec![
+            head_type_enum(),
+            structure_with_members("HexHead", vec![param_member("head_thickness", "Real")]),
+            empty_structure("SocketHead"),
+            bolt,
+            driver,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors = error_diagnostics(&compiled);
+    let matching: Vec<&&reify_types::Diagnostic> = errors
+        .iter()
+        .filter(|d| d.message.contains("'head_thickness'") && d.message.contains("SocketHead"))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one error diagnostic mentioning both 'head_thickness' \
+         and 'SocketHead', got {} (all errors: {:#?})",
+        matching.len(),
+        errors
+    );
+}
