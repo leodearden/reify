@@ -41,6 +41,7 @@ use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
+use crate::engine_helpers::collect_member_list;
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup, build_meta_map,
@@ -1598,20 +1599,17 @@ impl Engine {
 
                 // Update per-member synthetic lists: __list_{name}__{member}
                 for (member, _, _, _) in &col_sub.child_value_cells {
-                    let member_items: Vec<Value> = (0..new_count)
-                        .map(|idx| {
-                            let scoped_id = ValueCellId::new(
-                                format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, idx),
-                                member,
-                            );
-                            values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
-                        })
-                        .collect();
+                    let member_list_val = collect_member_list(
+                        &values,
+                        &col_sub.parent_entity,
+                        &col_sub.sub_name,
+                        member,
+                        new_count,
+                    );
                     let member_list_id = ValueCellId::new(
                         &col_sub.parent_entity,
                         format!("__list_{}__{}", col_sub.sub_name, member),
                     );
-                    let member_list_val = Value::List(member_items);
                     values.insert(member_list_id.clone(), member_list_val.clone());
                     new_snapshot.values.insert(
                         member_list_id,
@@ -3028,20 +3026,17 @@ impl Engine {
 
                 // Update per-member synthetic lists: __list_{name}__{member}
                 for (member, _, _, _) in &col_sub.child_value_cells {
-                    let member_items: Vec<Value> = (0..new_count)
-                        .map(|idx| {
-                            let scoped_id = ValueCellId::new(
-                                format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, idx),
-                                member,
-                            );
-                            values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
-                        })
-                        .collect();
+                    let member_list_val = collect_member_list(
+                        &values,
+                        &col_sub.parent_entity,
+                        &col_sub.sub_name,
+                        member,
+                        new_count,
+                    );
                     let member_list_id = ValueCellId::new(
                         &col_sub.parent_entity,
                         format!("__list_{}__{}", col_sub.sub_name, member),
                     );
-                    let member_list_val = Value::List(member_items);
                     values.insert(member_list_id.clone(), member_list_val.clone());
                     new_snapshot.values.insert(
                         member_list_id,

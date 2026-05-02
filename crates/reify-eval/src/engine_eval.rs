@@ -21,6 +21,7 @@ use crate::dirty::topological_sort;
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
+use crate::engine_helpers::collect_member_list;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup, build_meta_map,
@@ -1618,20 +1619,17 @@ impl Engine {
 
                         // Create per-member synthetic lists: __list_{name}__{member} for each value cell
                         for child_cell in &child_template.value_cells {
-                            let member_items: Vec<Value> = (0..n)
-                                .map(|idx| {
-                                    let scoped_id = ValueCellId::new(
-                                        format!("{}.{}[{}]", template.name, sub.name, idx),
-                                        &child_cell.id.member,
-                                    );
-                                    values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
-                                })
-                                .collect();
+                            let member_list_val = collect_member_list(
+                                &values,
+                                &template.name,
+                                &sub.name,
+                                &child_cell.id.member,
+                                n,
+                            );
                             let member_list_id = ValueCellId::new(
                                 &template.name,
                                 format!("__list_{}__{}", sub.name, child_cell.id.member),
                             );
-                            let member_list_val = Value::List(member_items);
                             values.insert(member_list_id.clone(), member_list_val.clone());
                             snapshot.values.insert(
                                 member_list_id,
