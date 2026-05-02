@@ -5,7 +5,7 @@
 //! line 70 requires for "first concrete impl of `KernelAttributeHook`":
 //! `ManifoldKernel::new()` → `&dyn GeometryKernel::attribute_hook()` → `Some` →
 //! `KernelAttributeHook::propagate_attributes(...)` → `Ok(Discarded)` with
-//! exactly one WARN-level diagnostic at the `reify_kernel_manifold` target and
+//! exactly one WARN-level diagnostic at the `reify_kernel_manifold::kernel` target and
 //! no writes to `TopologyAttributeTable`.
 //!
 //! # Why this lives in `crates/reify-kernel-manifold/tests/` (not in `kernel.rs`)
@@ -40,7 +40,7 @@ use reify_types::{
 /// `KernelAttributeHook` through the `&dyn GeometryKernel::attribute_hook()`
 /// accessor and the resulting hook's `propagate_attributes(...)` returns
 /// `Ok(KernelAttributeOutcome::Discarded)`, leaves `TopologyAttributeTable`
-/// empty, and emits exactly one WARN-level event at the `reify_kernel_manifold`
+/// empty, and emits exactly one WARN-level event at the `reify_kernel_manifold::kernel`
 /// target.
 ///
 /// This is the cross-crate plumbing pin: future Manifold FFI work that breaks
@@ -68,7 +68,11 @@ fn manifold_kernel_attribute_hook_round_trip_via_geometry_kernel_trait_object() 
 
     let (subscriber, counters) = CountingSubscriberBuilder::new()
         .count_level(tracing::Level::WARN)
-        .target_prefix("reify_kernel_manifold")
+        // Qualified prefix intentionally pins the `crate::module` tracing target
+        // (mirrors `target: "reify_kernel_manifold::kernel"` in the impl).
+        // If the `KernelAttributeHook` impl moves to a different submodule, update
+        // both the `target:` literal in `kernel.rs` and this prefix.
+        .target_prefix("reify_kernel_manifold::kernel")
         .build();
     let warn_count = counters[&tracing::Level::WARN].clone();
 
@@ -95,14 +99,14 @@ fn manifold_kernel_attribute_hook_round_trip_via_geometry_kernel_trait_object() 
          trait-object path — attributes were lost, not propagated",
     );
 
-    // (c) Exactly one WARN event at the reify_kernel_manifold target on the
-    // trait-object path — catches a BogusHook that returns Ok(Discarded) but
-    // omits the operator-visibility diagnostic.
+    // (c) Exactly one WARN event at the reify_kernel_manifold::kernel target on
+    // the trait-object path — catches a BogusHook that returns Ok(Discarded)
+    // but omits the operator-visibility diagnostic.
     assert_eq!(
         warn_count.load(Ordering::Acquire),
         1,
         "ManifoldKernel's hook must emit exactly one WARN event at \
-         reify_kernel_manifold target on the trait-object path — operator \
+         reify_kernel_manifold::kernel target on the trait-object path — operator \
          visibility for the intentional attribute-loss diagnostic per PRD \
          docs/prds/v0_2/persistent-naming-v2.md line 70",
     );

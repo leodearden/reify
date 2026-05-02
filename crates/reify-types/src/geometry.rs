@@ -956,7 +956,7 @@ pub enum KernelAttributeOutcome {
 /// # Sibling helper
 ///
 /// `reify-eval`'s
-/// [`propagate_attributes_via_brepalgoapi_history`](https://docs.rs/reify-eval)
+/// `reify_eval::propagate_attributes_via_brepalgoapi_history`
 /// covers the BRep-side `BRepAlgoAPI_*` Modified/Generated/Deleted
 /// propagation. The `KernelAttributeHook` trait is the analogue for non-BRep
 /// kernels: the function signatures are deliberately analogous so that
