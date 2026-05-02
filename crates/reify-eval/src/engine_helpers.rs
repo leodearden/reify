@@ -17,8 +17,8 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// behaviour of the three inline closures this helper replaces; the
 /// `debug_assert!` masks the regression in dev/test builds.
 ///
-/// This mirrors the sibling pattern at
-/// `engine_edit.rs:223-233` (`reapply_guard_deactivations_post_wave2`).
+/// This mirrors the sibling pattern in `reapply_guard_deactivations_post_wave2`
+/// (see `engine_edit.rs`).
 ///
 /// # Parameters
 /// - `values`: the current live `ValueMap`
@@ -39,6 +39,7 @@ pub(crate) fn collect_member_list(
     member: &str,
     n: i64,
 ) -> Value {
+    debug_assert!(n >= 0, "collect_member_list: negative count n={n} for {parent}.{sub}");
     let items: Vec<Value> = (0..n)
         .map(|idx| {
             let scoped_id = ValueCellId::new(format!("{}.{}[{}]", parent, sub, idx), member);
@@ -72,6 +73,14 @@ mod tests {
             result,
             Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
         );
+    }
+
+    #[test]
+    fn collect_member_list_returns_empty_for_zero_n() {
+        // n=0 is a valid boundary: collection subs whose count resolves to 0
+        // must produce an empty list without touching `values` at all.
+        let result = collect_member_list(&ValueMap::default(), "Parent", "bolts", "grade", 0);
+        assert_eq!(result, Value::List(vec![]));
     }
 
     #[cfg(debug_assertions)]
