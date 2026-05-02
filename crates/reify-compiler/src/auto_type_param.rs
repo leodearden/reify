@@ -167,23 +167,80 @@ pub struct AutoTypeParam {
     pub use_site_span: SourceSpan,
 }
 
-/// Result of [`resolve_auto_type_params`].
+/// Result returned by both auto-type-param orchestrators:
+/// [`resolve_auto_type_params`] (v0.1 BFS, since task 2310) and
+/// [`resolve_auto_type_params_with_backtracking`] (v0.2 DFS, since task 2659).
 ///
-/// - `per_param` — one entry per *processed* param, in declared order. Each
-///   entry is `(param_name, SelectionResult)`. All params up to and including
-///   the first failure are recorded here; params *after* the first failure are
-///   NOT recorded (halt-on-first-failure rule).
-/// - `substitution` — only the *successfully resolved* params, in declared
-///   order. Each entry is `(param_name, template_name)`. A param appears here
-///   iff its `SelectionResult` was `Selected`.
+/// ## `per_param` shape — BFS orchestrator
+///
+/// One entry per *processed* param, in declared order. Each entry is
+/// `(param_name, SelectionResult)`. All params up to **and including** the
+/// first failure are recorded; params *after* the first failure are NOT
+/// recorded (halt-on-first-failure rule). On a full success, all N params
+/// are recorded. Length ranges from 1 (first-param failure) to N.
+///
+/// ## `per_param` shape — DFS orchestrator
+///
+/// The DFS orchestrator's Phase A enumeration loop is **hoisted** out of the
+/// recursion (all params are enumerated up front before any cross-product leaf
+/// is visited). This changes the shape in two ways relative to BFS:
+///
+/// - **Phase A halt arm (Empty or Overflow on any param)**: `per_param` has
+///   length **1**, containing only the failing param's entry
+///   — `(name, NoCandidate)` for Empty, `(name, Ambiguous(overflow_vec))` for
+///   Overflow. Prior params that passed Phase A are NOT included: Phase B/C
+///   selection has not yet occurred at the moment the loop short-circuits, so
+///   there are no `Selected` entries to accumulate.
+///
+/// - **Cross-product Ambiguous arm (≥2 feasible cross-product assignments
+///   under strict mode)**: `per_param` has length **1**, anchored on
+///   `params[0]`: `[(params[0].name, Ambiguous(witnesses))]`. The Ambiguous
+///   outcome is collective across the cross-product — it is not attributable
+///   to any single param's Phase B/C selection — so the anchor follows the
+///   same convention as the diagnostic label (anchored on `params[0]`'s
+///   `use_site_span`).
+///
+/// - **Cross-product Selected paths** (single feasible assignment, single-param
+///   case, or all-success): `per_param` has length N, with each entry
+///   `(p.name, Selected(template_name))` in declared order — matches BFS's
+///   success shape.
+///
+/// ## Depth-bound discontinuity
+///
+/// When `params.len() > max_depth`, `resolve_auto_type_params_with_backtracking`
+/// delegates to BFS and the result has the **BFS shape** described above. This
+/// means that for the same Phase A failure fixture, the `per_param` shape FLIPS
+/// at the boundary:
+///
+/// - `n = max_depth` (DFS path): `[(failing_param, NoCandidate)]` — length 1.
+/// - `n = max_depth + 1` (BFS-fallback path): `[(prior_param, Selected), (failing_param, NoCandidate)]` — length 2.
+///
+/// This discontinuity is intentional. It is pinned by the test
+/// `dfs_phase_a_failure_at_depth_bound_boundary_documents_per_param_shape_discontinuity`
+/// in `tests/auto_type_param_backtracking_tests.rs`; callers that destructure
+/// `per_param` and need to handle both paths should grep for that test name to
+/// find the canonical explanation.
+///
+/// ## `substitution`
+///
+/// Only the *successfully resolved* params, in declared order. Each entry is
+/// `(param_name, template_name)`. A param appears here iff its
+/// `SelectionResult` was `Selected`. On any failure path, only the params that
+/// had already been `Selected` before the halt are included.
+///
+/// ## Asymmetry
 ///
 /// The asymmetry between `per_param` and `substitution` is intentional and
-/// load-bearing: `per_param` carries every outcome (success and the first
-/// failure), while `substitution` carries only the successful substitutions.
-/// Tests assert both lengths to pin declared-order halt semantics.
+/// load-bearing: `per_param` carries every recorded outcome (including the
+/// first failure), while `substitution` carries only the successful
+/// substitutions. Tests assert both lengths to pin declared-order halt
+/// semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiParamResolutionOutcome {
-    /// Per-param outcomes in declared order, stopping at the first failure.
+    /// Per-param outcomes in declared order, stopping at (or at) the first
+    /// failure. The exact shape depends on which orchestrator produced this
+    /// value; see the struct-level doc-comment for the BFS shape, the DFS
+    /// Phase A halt shape, and the DFS cross-product Ambiguous shape.
     pub per_param: Vec<(String, SelectionResult)>,
     /// Successfully resolved substitutions `(param_name, template_name)`, in
     /// declared order.
@@ -971,6 +1028,13 @@ pub fn resolve_auto_type_params(
 /// was sourced, and this keeps the algorithm crate independent of
 /// `reify-config`. The eventual call-site reads
 /// `Manifest::auto_type_params().max_depth` and passes it in directly.
+///
+/// # `per_param` shape
+///
+/// The DFS-specific shapes (Phase A halt, cross-product Ambiguous) and the
+/// depth-bound discontinuity are documented on [`MultiParamResolutionOutcome`].
+/// Callers that destructure `per_param` should consult that doc-comment for
+/// the authoritative per-orchestrator contract.
 ///
 /// # Out of scope (sibling tasks layered on top of this foundation)
 ///
