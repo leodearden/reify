@@ -143,17 +143,20 @@ fn propagate_poison() -> CompiledExpr {
 ///
 /// # Empty `per_arm` invariant (review-cycle-1, blocking-fix; task 2373 step-22)
 ///
-/// Empty `per_arm` is a producer-side bug — the inner call site at the
-/// `self.<cluster>.<inner>` branch already guards with
-/// `Some(arms) if !arms.is_empty()` (expr.rs ~1029), but the external
-/// `<sub>.<cluster>.<inner>` call site at expr.rs ~1188 only checks that the
-/// cluster entry exists. Centralizing the empty-slice guard here means any
-/// future call site is safe by construction, and emits a uniform
-/// "match-arm cluster has no resolvable arm structures" diagnostic that
-/// mirrors the inner-call-site fallback shape. The inner-call-site
-/// `Some(arms) if !arms.is_empty()` guard remains in place as defense in
-/// depth: it carries a slightly different (cluster-aware) diagnostic and
-/// avoids this helper entirely for the inner case.
+/// Empty `per_arm` is a producer-side bug. This guard is the single source of
+/// truth for the empty-per_arm "match-arm cluster has no resolvable arm
+/// structures" diagnostic for **both** call sites:
+///
+/// * `self.<cluster>.<inner>` (inner call site, expr.rs ~1029) — task 2869
+///   removed the former `Some(arms) if !arms.is_empty()` precheck there and
+///   now passes `.map(Vec::as_slice).unwrap_or(&[])` directly, so `None` and
+///   `Some(empty)` both reach this guard.
+/// * `<sub>.<cluster>.<inner>` (external call site, expr.rs ~1188) — checked
+///   that the cluster entry exists before calling, but per_arm can still be
+///   empty if no arm structures resolved.
+///
+/// Centralizing here means any future call site is safe by construction and
+/// emits a uniform diagnostic without a separate precheck.
 fn resolve_cluster_inner_member(
     per_arm: &[(String, std::collections::BTreeMap<String, Type>)],
     inner: &str,
@@ -1058,44 +1061,25 @@ pub(crate) fn compile_expr_guarded(
                     && self_name == "self"
                     && scope.resolve_match_arm_group(group_name.as_str()).is_some()
                 {
-                    let per_arm = scope
+                    // Deduplicated call (task 2869): coerce Option<&Vec<ArmMemberMap>> to
+                    // &[ArmMemberMap] so the helper's existing empty-slice guard (task
+                    // 2373 step-22) fires for both the None and Some(empty) cases. The
+                    // helper is the single source of truth for the empty-per_arm
+                    // diagnostic at both inner and external call sites.
+                    let per_arm: &[ArmMemberMap] = scope
                         .match_arm_group_arm_member_types
-                        .get(group_name.as_str());
-                    match per_arm {
-                        Some(arms) if !arms.is_empty() => {
-                            return resolve_cluster_inner_member(
-                                arms,
-                                member,
-                                &scope.entity_name,
-                                group_name,
-                                None,
-                                expr.span,
-                                diagnostics,
-                            );
-                        }
-                        _ => {
-                            // Cluster registered but no per-arm structures resolved
-                            // (e.g., every arm references an unknown structure, or no
-                            // Sub arms in the cluster). Suggestion 6 from review:
-                            // emit an explicit cluster-aware diagnostic rather than
-                            // falling through to `sub_component_types[<cluster>]`,
-                            // which retains only the last-arm structure (last write
-                            // wins) and would silently resolve `<inner>` against that
-                            // single arm — masking the cluster context.
-                            return make_poison_literal(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "match-arm cluster '{}' has no resolvable arm structures; \
-                                     cannot resolve member '{}'",
-                                    group_name, member
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "cluster has no resolved arm structures",
-                                )),
-                            );
-                        }
-                    }
+                        .get(group_name.as_str())
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    return resolve_cluster_inner_member(
+                        per_arm,
+                        member,
+                        &scope.entity_name,
+                        group_name,
+                        None,
+                        expr.span,
+                        diagnostics,
+                    );
                 }
 
                 // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name }).
@@ -2648,6 +2632,113 @@ mod tests {
             diagnostics2[0].message.contains("sub 'bolt'"),
             "external-call-site diagnostic must include qualifier `sub 'bolt'`; got: {:?}",
             diagnostics2[0].message
+        );
+    }
+
+    /// `compile_expr_guarded` on `self.<cluster>.<inner>` must use the helper's
+    /// empty-per_arm diagnostic when the cluster is registered but
+    /// `match_arm_group_arm_member_types` has no entry for it (producer-side bug).
+    ///
+    /// This path is unreachable through the full compilation pipeline (entity.rs's
+    /// `if !group_arms.is_empty()` gate prevents `register_match_arm_group` from
+    /// being called when no arms compile), so the test hand-constructs a
+    /// `CompilationScope` to exercise the call-site branch directly.
+    ///
+    /// Paired coverage at both call-site and helper levels
+    /// (`resolve_cluster_inner_member_empty_per_arm_returns_poison_without_panic`)
+    /// prevents future drift from reintroducing the duplication removed in task 2869.
+    #[test]
+    fn compile_expr_inner_cluster_missing_per_arm_returns_helper_diagnostic() {
+        use reify_types::Value;
+
+        // Build the scope: entity "Bolt" with a registered "head" cluster but no
+        // per-arm type map — this is the bug-condition the test pins.
+        let mut scope = CompilationScope::new("Bolt");
+        scope.is_entity_scope = true;
+        let group = GuardedDeclGroup {
+            name: "head".to_string(),
+            arms: vec![GuardedDeclArm {
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: ValueCellId::new("Bolt", "__guard_0"),
+                arm_type: Type::StructureRef("HexHead".to_string()),
+            }],
+        };
+        scope.register_match_arm_group("head", group);
+        // Deliberately leave `match_arm_group_arm_member_types` empty for "head".
+
+        // Build AST: self.head.across_flats (two nested MemberAccess nodes).
+        let self_expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Ident("self".to_string()),
+            span: SourceSpan::prelude(),
+        };
+        let self_head = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::MemberAccess {
+                object: Box::new(self_expr),
+                member: "head".to_string(),
+            },
+            span: SourceSpan::prelude(),
+        };
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::MemberAccess {
+                object: Box::new(self_head),
+                member: "across_flats".to_string(),
+            },
+            span: SourceSpan::prelude(),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut lambda_counter = 0u32;
+        let result = compile_expr_guarded(
+            &expr,
+            &scope,
+            &[],
+            &[],
+            &mut diagnostics,
+            None,
+            &mut lambda_counter,
+        );
+
+        // (a) poison literal returned.
+        assert_eq!(
+            result.result_type,
+            Type::Error,
+            "missing per_arm at inner call site must return Type::Error; got: {:?}",
+            result.result_type
+        );
+        // (b) exactly one Severity::Error diagnostic.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "missing per_arm must produce exactly one diagnostic; got {}: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        // (c) message matches the helper's empty-per_arm shape.
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("match-arm cluster 'head' has no resolvable arm structures"),
+            "diagnostic must mention the cluster shape; got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("cannot resolve member 'across_flats'"),
+            "diagnostic must name the unresolvable member; got: {:?}",
+            diagnostics[0].message
+        );
+        // (d) label text mirrors the helper's empty-per_arm label.
+        let label_msgs: Vec<&str> = diagnostics[0]
+            .labels
+            .iter()
+            .map(|l| l.message.as_str())
+            .collect();
+        assert!(
+            label_msgs.contains(&"cluster has no resolved arm structures"),
+            "diagnostic must carry the cluster label; got labels: {:?}",
+            label_msgs
         );
     }
 }
