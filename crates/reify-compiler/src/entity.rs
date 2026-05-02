@@ -368,6 +368,20 @@ pub(crate) fn compile_entity(
     // "unknown member" diagnostics on qualified access to the first cluster's sub.
     // (task 2613)
     let mut seen_match_arm_cluster_names: HashSet<String> = HashSet::new();
+    // Logical name → span for each match-arm cluster accepted in the pre-pass.
+    // Populated in the MatchArmDeclGroup arm so the reverse-direction check
+    // (Sub/Param/Let AFTER the match) can emit a two-label collision diagnostic.
+    // (task 2375)
+    let mut match_arm_cluster_logical_names: HashMap<String, SourceSpan> = HashMap::new();
+    // Cluster logical names that collide with an outside-of-match declaration.
+    // Populated in both directions (forward + reverse). Plumbed into
+    // compile_match_arm_decl_group (pass 2) to suppress cluster registration
+    // when the collision was already diagnosed in the pre-pass. (task 2375, step-10)
+    let mut clusters_with_outside_collision: HashSet<String> = HashSet::new();
+    // Span recorded for every regular Sub/Param/Let at pre-pass time, keyed by
+    // decl name. Used to supply the second DiagnosticLabel when a collision is
+    // detected in either direction (task 2375).
+    let mut outside_decl_spans: HashMap<String, SourceSpan> = HashMap::new();
     for member in structure.members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
@@ -434,6 +448,7 @@ pub(crate) fn compile_entity(
                     known_geometry_lets.insert(param.name.as_str());
                 }
                 scope.register(&param.name, ty);
+                outside_decl_spans.insert(param.name.clone(), param.span);
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // For lets, we need to infer the type from the expression.
@@ -449,6 +464,7 @@ pub(crate) fn compile_entity(
                     // We'll update this after the expression is compiled.
                     scope.register(&let_decl.name, Type::Real);
                 }
+                outside_decl_spans.insert(let_decl.name.clone(), let_decl.span);
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
                 // `known_geometry_lets` is intentionally shared across both branches
@@ -498,6 +514,39 @@ pub(crate) fn compile_entity(
                 }
                 // No arm_member_name (e.g. unsupported arm kind): do not insert
                 // into seen_match_arm_cluster_names; let pass 2 emit its diagnostic.
+
+                // Forward-direction outside-match collision detection (task 2375).
+                // If the cluster's logical name is already registered as a regular
+                // Sub/Param/Let (recorded in outside_decl_spans), emit a collision
+                // diagnostic and skip this cluster's pre-pass registration entirely.
+                // The outside decl wins; the cluster is suppressed.
+                if let Some(first_arm) = m.arms.first()
+                    && let Some(logical_name) = arm_member_name(&first_arm.member)
+                {
+                    if let Some(&outside_span) = outside_decl_spans.get(logical_name) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "match-arm cluster '{}' collides with declaration of '{}' \
+                                 outside the match block",
+                                logical_name, logical_name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                m.span,
+                                "cluster declared here",
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                outside_span,
+                                "originally declared outside the match",
+                            )),
+                        );
+                        clusters_with_outside_collision.insert(logical_name.to_string());
+                        continue;
+                    }
+                    // No collision — record this cluster for reverse-direction checks
+                    // (Sub/Param/Let declared AFTER this match block in source order).
+                    match_arm_cluster_logical_names.insert(logical_name.to_string(), m.span);
+                }
+
                 for arm in &m.arms {
                     match &*arm.member {
                         reify_syntax::MemberDecl::Sub(sub) => {
@@ -701,6 +750,7 @@ pub(crate) fn compile_entity(
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
                 }
+                outside_decl_spans.insert(sub.name.clone(), sub.span);
             }
             reify_syntax::MemberDecl::MetaBlock(meta) => {
                 if let Some(first_span) = first_meta_span {
