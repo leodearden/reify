@@ -241,3 +241,80 @@ fn self_dot_match_cluster_resolves_to_union_of_arm_types() {
         probe_type
     );
 }
+
+/// Step-9: pipe arms produce one `GuardedDeclArm` (not one per pattern), so
+/// the union has 2 members for `Hex | Button => sub head : RecessedHead;
+/// Socket => sub head : SocketHead`. Pins PRD acceptance criterion 5: pipe
+/// patterns do NOT fan out at the type level.
+#[test]
+fn self_dot_match_cluster_pipe_arm_collapses_to_one_union_member() {
+    let pipe_arm = MatchArmDeclArmDecl {
+        patterns: vec!["Hex".to_string(), "Button".to_string()],
+        member: Box::new(sub_member("head", "RecessedHead")),
+        span: zero_span(),
+    };
+    let socket_arm = match_arm_decl("Socket", sub_member("head", "SocketHead"));
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![pipe_arm, socket_arm],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let probe = let_member("probe", member_access(make_ident_expr("self"), "head"));
+
+    let bolt = structure_with_members(
+        "Bolt",
+        vec![param_member("head_type", "HeadType"), match_group, probe],
+    );
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_pipe_arm_collapses"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec![
+                    "Hex".to_string(),
+                    "Socket".to_string(),
+                    "Button".to_string(),
+                ],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("RecessedHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:#?}",
+        errors
+    );
+
+    let probe_type = find_cell_type(&compiled, "Bolt", "probe")
+        .expect("expected `probe` value cell on Bolt template");
+
+    // Two arms in the cluster: the pipe arm produces one entry, not two.
+    let expected = Type::Union(vec![
+        Type::StructureRef("RecessedHead".to_string()),
+        Type::StructureRef("SocketHead".to_string()),
+    ]);
+    assert_eq!(
+        probe_type, expected,
+        "expected probe.cell_type == Union<RecessedHead | SocketHead> (pipe arm \
+         must NOT fan out at the type level), got {}",
+        probe_type
+    );
+}
