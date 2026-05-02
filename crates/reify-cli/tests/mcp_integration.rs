@@ -786,3 +786,114 @@ fn mcp_server_get_parameters_distinguishes_auto_free_kind() {
         offset_param["kind"]
     );
 }
+
+/// MCP-protocol-level regression guard for the unified get_source_location semantics.
+///
+/// Sends two tools/call requests through the full JSON-RPC pipeline:
+/// 1. `{"entity_path": "Bracket"}` — plain template name
+/// 2. `{"entity_path": "Bracket.width"}` — full cell ID
+///
+/// Both must return a non-error SourceLocationInfo JSON with:
+/// - `file_path` containing "bracket.ri"
+/// - `line >= 1`, `column >= 1`, `end_line >= line`, `end_column >= 1`
+///
+/// Additionally, the two responses must have identical `(line, column, end_line,
+/// end_column)` tuples — since "Bracket" proxies to the first value cell (width).
+///
+/// This test passes against pre-step-6 CLI code (the old CLI already accepted
+/// both forms) and serves as the regression guard ensuring step-6's refactor
+/// to the shared helper preserves identical behaviour.
+#[test]
+fn mcp_server_get_source_location_accepts_template_name_and_cell_id() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        // (1) plain template name
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_source_location",
+                "arguments": {"entity_path": "Bracket"}
+            }
+        }),
+        // (2) full cell ID
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_source_location",
+                "arguments": {"entity_path": "Bracket.width"}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(
+        responses.len() >= 3,
+        "expected at least 3 responses, got {}",
+        responses.len()
+    );
+
+    // Helper: parse the SourceLocationInfo from a tools/call response.
+    let parse_loc = |resp: &Value, label: &str| -> Value {
+        assert_eq!(
+            resp["result"]["isError"],
+            Value::Bool(false),
+            "{label}: expected isError=false, got {:?}",
+            resp
+        );
+        let content = resp["result"]["content"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: expected content array"));
+        let text = content[0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{label}: expected content[0].text string"));
+        serde_json::from_str(text)
+            .unwrap_or_else(|e| panic!("{label}: content[0].text is not valid JSON: {e}\nraw: {text}"))
+    };
+
+    let loc_name = parse_loc(&responses[1], "entity_path='Bracket'");
+    let loc_width = parse_loc(&responses[2], "entity_path='Bracket.width'");
+
+    // Both must resolve to a real location.
+    for (loc, label) in [(&loc_name, "Bracket"), (&loc_width, "Bracket.width")] {
+        let file_path = loc["file_path"].as_str().unwrap_or("");
+        assert!(
+            file_path.contains("bracket.ri"),
+            "{label}: file_path must contain 'bracket.ri', got: {file_path}"
+        );
+        let line = loc["line"].as_u64().unwrap_or(0);
+        assert!(line >= 1, "{label}: line must be >= 1, got {line}");
+        let column = loc["column"].as_u64().unwrap_or(0);
+        assert!(column >= 1, "{label}: column must be >= 1, got {column}");
+        let end_line = loc["end_line"].as_u64().unwrap_or(0);
+        assert!(
+            end_line >= line,
+            "{label}: end_line ({end_line}) must be >= line ({line})"
+        );
+        let end_column = loc["end_column"].as_u64().unwrap_or(0);
+        assert!(end_column >= 1, "{label}: end_column must be >= 1, got {end_column}");
+    }
+
+    // Template-name proxy must return identical span to the first cell (width).
+    assert_eq!(
+        (
+            loc_name["line"].as_u64(),
+            loc_name["column"].as_u64(),
+            loc_name["end_line"].as_u64(),
+            loc_name["end_column"].as_u64(),
+        ),
+        (
+            loc_width["line"].as_u64(),
+            loc_width["column"].as_u64(),
+            loc_width["end_line"].as_u64(),
+            loc_width["end_column"].as_u64(),
+        ),
+        "template-name 'Bracket' must proxy to the first value cell (width): \
+         spans must be identical.\nBracket={loc_name:?}\nBracket.width={loc_width:?}"
+    );
+}
