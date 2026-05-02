@@ -39,10 +39,36 @@ impl Snapshot {
     /// Create an initial snapshot from a compiled module.
     ///
     /// Builds the evaluation graph from the module's templates,
-    /// initializes all values to (Undef, Undetermined), and sets
-    /// provenance to Initial with version/snapshot IDs starting at 0.
+    /// wires `module.auto_type_substitution` into `graph.auto_type_substitution`
+    /// BEFORE computing `topology_fingerprint` so the 7th bucket reflects the
+    /// substitution (PRD task 5 criterion 7, tasks 2388/2778). Initializes all
+    /// values to (Undef, Undetermined), and sets provenance to Initial with
+    /// version/snapshot IDs starting at 0.
     pub fn from_compiled_module(module: &CompiledModule) -> Self {
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let mut graph = EvaluationGraph::from_templates(&module.templates);
+        // Wire MultiParamResolutionOutcome.substitution from CompiledModule
+        // into the graph BEFORE computing topology_fingerprint, so the 7th
+        // bucket reflects the substitution (PRD task 5 criterion 7,
+        // tasks 2388/2778). Vec<(String, String)> shape matches verbatim,
+        // no adapter needed.
+        //
+        // Invariant (producer guarantee): param names in auto_type_substitution
+        // must be unique. Duplicates would make topology_fingerprint sensitive
+        // to insertion order, defeating criterion 7. The same assert fires
+        // inside topology_fingerprint (graph.rs:647-654) but catching it here
+        // at the API boundary surfaces the bug closer to the producer.
+        debug_assert!(
+            {
+                let mut seen = std::collections::HashSet::new();
+                module
+                    .auto_type_substitution
+                    .iter()
+                    .all(|(p, _)| seen.insert(p.as_str()))
+            },
+            "CompiledModule.auto_type_substitution: param names must be unique; \
+             duplicates are a producer bug (see EvaluationGraph::topology_fingerprint)"
+        );
+        graph.auto_type_substitution = module.auto_type_substitution.clone();
         let topology_fingerprint = graph.topology_fingerprint();
 
         // Initialize all value cells: Auto cells get (Undef, Auto),

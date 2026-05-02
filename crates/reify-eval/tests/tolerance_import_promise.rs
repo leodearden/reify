@@ -100,6 +100,101 @@ fn engine_check_imported_tolerance_promise_emits_warning_when_demand_strictly_ti
     );
 }
 
+/// Integration pin for the zero-promise lint introduced by task 2833
+/// (option-(b continuation)): when the imported-geometry promise is exactly
+/// `0.0` AND the downstream demand is strictly positive, the engine must emit
+/// `DiagnosticCode::InputTolerancePromiseIsZero` (NOT
+/// `ImportedTolerancePromiseInsufficient` — the strict-`<` branch never fires
+/// when `promise == 0.0` because `demanded < 0.0` is false for all
+/// `demanded >= 0.0`).
+///
+/// Setup mirrors `engine_check_imported_tolerance_promise_emits_warning_when_demand_strictly_tighter_than_promise`
+/// with `step_input_template(0.0)` (zero-promise variant) instead of
+/// `step_input_template(50e-6)`. Demand path is identical:
+/// STEPOutput(1µm) + manufacturing(1µm) → `min(1µm, 1µm) = 1µm > 0.0`, so
+/// the zero-promise guard fires.
+#[test]
+fn engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_zero_and_demand_positive(
+) {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_zero_promise_lint".to_string(),
+    ]))
+    .template(step_input_template(0.0))
+    .template(step_output_template(1e-6))
+    .template(my_design_template())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let mut engine = make_engine();
+    engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let diag = engine
+        .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
+        .expect(
+            "with promise=0.0 and demand=1µm (positive), the check must \
+             return Some(diagnostic) — the zero-promise lint must fire"
+        );
+
+    assert_eq!(
+        diag.severity,
+        Severity::Warning,
+        "diagnostic severity must be Warning (PRD: warn, not error)"
+    );
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::InputTolerancePromiseIsZero),
+        "code must be InputTolerancePromiseIsZero, NOT \
+         ImportedTolerancePromiseInsufficient — proves the new branch \
+         fires before the strict-`<` branch (which cannot fire when \
+         promise==0.0 anyway)"
+    );
+    assert!(
+        diag.message.contains("STEPInput"),
+        "message must name the input template (got: {:?})",
+        diag.message
+    );
+}
+
+/// Degenerate guard: when both the imported-geometry promise AND the downstream
+/// demand are exactly `0.0`, neither the zero-promise lint
+/// ([`DiagnosticCode::InputTolerancePromiseIsZero`]) nor the insufficient-promise
+/// lint ([`DiagnosticCode::ImportedTolerancePromiseInsufficient`]) should fire.
+///
+/// The zero-promise lint is guarded by `demanded > 0.0` (strict, not `>= 0.0`) —
+/// when both are zero there is no real mismatch and the canonical
+/// `(0.0, 0.0) -> false` truth-table row in `is_promise_insufficient` rules this
+/// sufficient. Loosening the guard to `>= 0.0` would emit the lint in the
+/// degenerate (0, 0) case and contradict the locked truth-table row.
+///
+/// Task 2833 decision: the `demanded > 0.0` strict guard is intentional and must
+/// not be widened to `>= 0.0`.
+#[test]
+fn engine_check_imported_tolerance_promise_returns_none_when_promise_and_demand_both_zero() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_zero_promise_zero_demand".to_string(),
+    ]))
+    .template(step_input_template(0.0))
+    .template(step_output_template(0.0))
+    .template(my_design_template())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 0.0))
+    .build();
+
+    let mut engine = make_engine();
+    engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    assert!(
+        engine
+            .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
+            .is_none(),
+        "with promise=0.0 and demand=0.0 (both zero), neither lint must fire — \
+         the zero-promise lint guard is `demanded > 0.0` (strict), not `>= 0.0`, \
+         and `is_promise_insufficient(0.0, 0.0)` is false by the strict-`<` rule. \
+         Loosening the guard to `>= 0.0` would regress this assertion."
+    );
+}
+
 /// Pinned by the no-op rows of `check_imported_tolerance_promise`'s truth
 /// table. Mirrors the four-block precedent
 /// `engine_demanded_tolerance_for_output_handles_partial_inputs` in

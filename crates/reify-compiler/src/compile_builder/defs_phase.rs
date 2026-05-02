@@ -293,6 +293,7 @@ mod tests {
             declared_version: None,
             solver_pragma: None,
             kernel_pragma: None,
+            auto_type_substitution: Vec::new(),
             diagnostics: vec![],
             content_hash: ContentHash::of_str(""),
         }

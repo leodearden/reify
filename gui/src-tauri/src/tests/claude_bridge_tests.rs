@@ -334,6 +334,32 @@ fn parse_outbound_tool_call() {
 }
 
 #[test]
+fn parse_outbound_tool_call_without_tool_use_id_defaults_to_empty() {
+    // Stale-sidecar payload: ToolCall JSON missing tool_use_id.
+    // After #[serde(default)] is applied, this should parse Ok with tool_use_id == "".
+    let line = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get","tool_input":{"x":1}}"#;
+    let result = parse_outbound(line);
+    match result {
+        Ok(OutboundMessage::ToolCall {
+            id,
+            tool_name,
+            tool_input,
+            tool_use_id,
+        }) => {
+            assert_eq!(id, "msg-1");
+            assert_eq!(tool_name, "reify_get");
+            assert_eq!(tool_input["x"], 1);
+            assert_eq!(
+                tool_use_id, "",
+                "missing tool_use_id must default to empty string"
+            );
+        }
+        Ok(other) => panic!("Expected ToolCall, got {:?}", other),
+        Err(e) => panic!("Expected Ok(ToolCall with empty tool_use_id), got Err: {}", e),
+    }
+}
+
+#[test]
 fn parse_outbound_tool_result() {
     let line = r#"{"type":"tool_result","id":"msg-3","tool_name":"reify_get","result":"done"}"#;
     let msg = parse_outbound(line).unwrap();
@@ -1173,6 +1199,129 @@ async fn read_sidecar_output_skips_invalid_json_lines() {
     let msgs = received.lock().unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0], OutboundMessage::Ready);
+}
+
+// --- read_sidecar_output warn tests (task-2819) ---
+
+/// A stale sidecar that omits `tool_use_id` from a ToolCall event must still
+/// deliver the message to `on_message` (not silently drop it), AND must emit
+/// exactly one WARN so operators know to rebuild the sidecar.
+#[tokio::test(flavor = "current_thread")]
+async fn read_sidecar_output_warns_when_tool_call_missing_tool_use_id() {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::BufReader;
+
+    let (_guard, warn_counter) = reify_test_support::warn_counting_guard();
+
+    // Stale-sidecar payload: ToolCall without tool_use_id.
+    let data = b"{\"type\":\"tool_call\",\"id\":\"msg-1\",\"tool_name\":\"reify_get\",\"tool_input\":{}}\n";
+    let reader = BufReader::new(&data[..]);
+    let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
+    let received_clone = Arc::clone(&received);
+
+    read_sidecar_output(
+        reader,
+        move |msg| {
+            received_clone.lock().unwrap().push(msg);
+        },
+        || {},
+    )
+    .await;
+
+    // (a) Message was delivered (not silently dropped).
+    let msgs = received.lock().unwrap();
+    assert_eq!(msgs.len(), 1, "stale ToolCall must be delivered to on_message");
+    assert!(
+        matches!(
+            &msgs[0],
+            OutboundMessage::ToolCall { tool_use_id, .. } if tool_use_id.is_empty()
+        ),
+        "expected ToolCall with empty tool_use_id, got {:?}",
+        msgs[0]
+    );
+
+    // (b) Exactly one WARN must be emitted for the version-skew.
+    reify_test_support::assert_warn_count(
+        &warn_counter,
+        1,
+        "missing tool_use_id must emit exactly one WARN",
+    );
+}
+
+/// Parse failures (e.g. invalid JSON) must emit a WARN and NOT deliver a
+/// message to `on_message`.
+#[tokio::test(flavor = "current_thread")]
+async fn read_sidecar_output_warns_on_parse_failure() {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::BufReader;
+
+    let (_guard, warn_counter) = reify_test_support::warn_counting_guard();
+
+    // Structurally-invalid OutboundMessage (unknown discriminant) — distinct from
+    // `read_sidecar_output_skips_invalid_json_lines`, which feeds raw `not-json`.
+    // Both shapes route through the same `parse_outbound -> Err` branch, so the
+    // WARN behavior we assert below is the same; the goal here is to widen
+    // invalid-input coverage.
+    let data = b"{\"type\":\"unknown_kind\"}\n";
+    let reader = BufReader::new(&data[..]);
+    let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
+    let received_clone = Arc::clone(&received);
+
+    read_sidecar_output(
+        reader,
+        move |msg| {
+            received_clone.lock().unwrap().push(msg);
+        },
+        || {},
+    )
+    .await;
+
+    // (a) No message delivered (existing drop-on-parse-failure behavior preserved).
+    let msgs = received.lock().unwrap();
+    assert_eq!(
+        msgs.len(),
+        0,
+        "invalid JSON must not be delivered to on_message"
+    );
+
+    // (b) Exactly one WARN must be emitted so operators can diagnose the failure.
+    reify_test_support::assert_warn_count(
+        &warn_counter,
+        1,
+        "parse failure must emit exactly one WARN",
+    );
+}
+
+/// `warn_if_stale_tool_call` must emit exactly one WARN for a stale ToolCall
+/// (empty tool_use_id), and zero WARNs for a valid ToolCall or a non-ToolCall
+/// variant.  Three branches tested in a single subscriber session so the
+/// assert is on the cumulative count.
+#[test]
+fn warn_if_stale_tool_call_emits_one_warn_only_for_stale_tool_call() {
+    let (_guard, counter) = reify_test_support::warn_counting_guard();
+
+    // (i) Stale ToolCall — empty tool_use_id → must bump the counter by 1.
+    let stale = OutboundMessage::ToolCall {
+        id: "msg-1".to_string(),
+        tool_name: "reify_get".to_string(),
+        tool_input: json!({}),
+        tool_use_id: String::new(),
+    };
+    warn_if_stale_tool_call(&stale);
+
+    // (ii) Valid ToolCall — non-empty tool_use_id → counter unchanged.
+    let valid = OutboundMessage::ToolCall {
+        id: "msg-2".to_string(),
+        tool_name: "reify_get".to_string(),
+        tool_input: json!({}),
+        tool_use_id: "tu-1".to_string(),
+    };
+    warn_if_stale_tool_call(&valid);
+
+    // (iii) Non-ToolCall variant → counter unchanged.
+    warn_if_stale_tool_call(&OutboundMessage::Ready);
+
+    reify_test_support::assert_warn_count(&counter, 1, "only the stale ToolCall must warn");
 }
 
 // --- outbound_to_event tests (step-7) ---

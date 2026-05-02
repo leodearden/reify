@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import type { OutboundMessage } from '../types.js';
+import type { OutboundMessage, InboundMessage } from '../types.js';
 
 // Mock the claude CLI subprocess spawning
 vi.mock('node:child_process', () => ({
@@ -52,21 +52,56 @@ function drainStdinFirstLine(mockProc: any): Promise<unknown> {
  * Event-driven helper: resolves when the next outbound matching predicate is emitted.
  * Hooks session.onOutput, restores the original after match, and resolves with the matching message.
  * Set this up BEFORE the action that produces the event.
+ *
+ * Accepts an optional `options.timeoutMs` (default 5000ms). If the predicate is never
+ * satisfied within that window, rejects with a named error and restores session.onOutput
+ * so test isolation is preserved.
+ *
+ * The returned promise carries a `.cancel()` method that immediately restores
+ * `session.onOutput` without settling the promise. **After calling `.cancel()`, do not
+ * `await` the returned promise** — it will remain pending until the surrounding test
+ * timeout fires. Use `.cancel()` only when you have already obtained a result via
+ * `Promise.race` and want to release the output hook without waiting for the
+ * default timeout.
  */
 function waitForOutput(
   session: SidecarSession,
-  predicate: (m: OutboundMessage) => boolean
-): Promise<OutboundMessage> {
-  return new Promise((resolve) => {
-    const prev = session.onOutput;
+  predicate: (m: OutboundMessage) => boolean,
+  options: { timeoutMs?: number } = {}
+): Promise<OutboundMessage> & { cancel: () => void } {
+  const timeoutMs = options.timeoutMs ?? 5000;
+  const prev = session.onOutput;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout>;
+
+  const cancel = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    session.onOutput = prev;
+    // The promise is left pending (never resolved or rejected).
+  };
+
+  const promise = new Promise<OutboundMessage>((resolve, reject) => {
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      session.onOutput = prev;
+      reject(new Error('waitForOutput timed out waiting for predicate'));
+    }, timeoutMs);
     session.onOutput = (msg: OutboundMessage) => {
       prev(msg);
       if (predicate(msg)) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         session.onOutput = prev;
         resolve(msg);
       }
     };
   });
+
+  return Object.assign(promise, { cancel });
 }
 
 /**
@@ -74,20 +109,36 @@ function waitForOutput(
  * Hooks session.onOutput, restores the original after the nth match, and resolves with the
  * last matching message. Decouples match counting from the predicate so the predicate stays
  * side-effect-free.
+ *
+ * Accepts an optional `options.timeoutMs` (default 2000ms). If the nth match is never
+ * reached within that window, rejects with a named error and restores session.onOutput
+ * so test isolation is preserved.
  */
 function waitForOutputs(
   session: SidecarSession,
   predicate: (m: OutboundMessage) => boolean,
-  count: number
+  count: number,
+  options: { timeoutMs?: number } = {}
 ): Promise<OutboundMessage> {
-  return new Promise((resolve) => {
+  const timeoutMs = options.timeoutMs ?? 5000;
+  const prev = session.onOutput;
+  return new Promise((resolve, reject) => {
     let matched = 0;
-    const prev = session.onOutput;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      session.onOutput = prev;
+      reject(new Error('waitForOutputs timed out waiting for predicate'));
+    }, timeoutMs);
     session.onOutput = (msg: OutboundMessage) => {
       prev(msg);
       if (predicate(msg)) {
         matched++;
         if (matched >= count) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
           session.onOutput = prev;
           resolve(msg);
         }
@@ -592,6 +643,7 @@ describe('SidecarSession', () => {
     session.handleMessage({
       type: 'tool_result',
       id: 'msg-1',
+      tool_use_id: 'toolu_xyz',
       tool_name: 'reify_get_diagnostics',
       result: { diagnostics: [] },
     });
@@ -630,6 +682,7 @@ describe('SidecarSession', () => {
     await session.handleMessage({
       type: 'tool_result',
       id: 'msg-orphan',
+      tool_use_id: 'toolu_orphan',
       tool_name: 'reify_unknown',
       result: 'x',
     });
@@ -655,6 +708,7 @@ describe('SidecarSession', () => {
     await session.handleMessage({
       type: 'tool_result',
       id: 'msg-stale',
+      tool_use_id: 'toolu_carry',
       tool_name: 'reify_get_source',
       result: 'x',
     });
@@ -1010,6 +1064,7 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       unexpectedErrorWait.then(() => 'error' as const),
     ]);
     expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
+    unexpectedErrorWait.cancel(); // release session.onOutput immediately; don't wait for the 5s default timeout
 
     // Assert the tool_result was forwarded with the correct tool_use_id
     expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_pending');
@@ -1020,6 +1075,9 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     mockProc.exitCode = 0;
     mockProc.emit('close', 0);
     await msgPromise;
+    // Pin the contract over the full output stream: exactly one text_delta 'Hi' across the
+    // entire turn (guards against duplicate emissions if the streaming loop restarts).
+    expect(outputs.filter((m) => m.type === 'text_delta' && (m as any).content === 'Hi').length).toBe(1);
   });
 
   it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (thinking channel)', async () => {
@@ -1084,6 +1142,7 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       unexpectedErrorWait.then(() => 'error' as const),
     ]);
     expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
+    unexpectedErrorWait.cancel(); // release session.onOutput immediately; don't wait for the 5s default timeout
 
     // Assert the tool_result was forwarded with the correct tool_use_id
     expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_th_pending');
@@ -1094,6 +1153,9 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     mockProc.exitCode = 0;
     mockProc.emit('close', 0);
     await msgPromise;
+    // Pin the contract over the full output stream: exactly one thinking_delta 'Hm' across
+    // the entire turn (guards against duplicate emissions if the streaming loop restarts).
+    expect(outputs.filter((m) => m.type === 'thinking_delta' && (m as any).content === 'Hm').length).toBe(1);
   });
 });
 
@@ -1692,6 +1754,7 @@ describe('entrypoint wiring', () => {
     input.write(JSON.stringify({
       type: 'tool_result',
       id: 'e2e-tr-1',
+      tool_use_id: 'toolu_e2e',
       tool_name: 'reify_get_diagnostics',
       result: { diagnostics: [] },
     }) + '\n');
@@ -1854,6 +1917,7 @@ describe('close-on-result race', () => {
     session.handleMessage({
       type: 'tool_result',
       id: 'tool-race',
+      tool_use_id: 'toolu_race',
       tool_name: 'reify_get_diagnostics',
       result: { diagnostics: [] },
     });
@@ -1933,6 +1997,7 @@ describe('stdin write error correlation', () => {
     session.handleMessage({
       type: 'tool_result',
       id: 'tool-B',
+      tool_use_id: 'toolu_x',
       tool_name: 'reify_get_diagnostics',
       result: { diagnostics: [] },
     });
@@ -1948,6 +2013,64 @@ describe('stdin write error correlation', () => {
     expect((errorMsg as any).message).toMatch(/stdin write error|EPIPE/i);
 
     // Cleanup: close stdout so msgPromise can resolve
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+});
+
+describe('stdin orphan-error diagnostic', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('orphan stdin error emits a console.warn diagnostic', async () => {
+    const { mockProc, stdout } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_orphan', name: 'reify_x', input: {} },
+    ]);
+
+    // Suppress and capture console.warn calls
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Set up wait for tool_call BEFORE dispatch so we don't miss it
+    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+
+    // Start send_message (don't await — hangs waiting for stdout to close)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'send-orphan',
+      text: 'Hi',
+    });
+
+    // Await tool_call — proves the prompt has been written to stdin and the 'error' listener is attached
+    await toolCallWait;
+
+    // Synthesize an orphan EPIPE: emits to the 'error' listener but no per-write callback is in flight.
+    mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE'));
+
+    // Allow the current tick to flush any synchronous handler side-effects
+    await new Promise(setImmediate);
+
+    // Assert console.warn was called with the error message (prefix is cosmetic, not load-bearing)
+    expect(warnSpy).toHaveBeenCalled();
+    const allCallArgs = warnSpy.mock.calls.map((args) => args.join(' '));
+    const matchingCall = allCallArgs.find((s) => s.includes('synthetic orphan EPIPE'));
+    expect(matchingCall).toBeDefined();
+
+    // Cleanup
+    warnSpy.mockRestore();
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-orphan' }) + '\n');
     stdout.push(null);
     mockProc.exitCode = 0;
     mockProc.emit('close', 0);
@@ -2077,9 +2200,9 @@ describe('echoed tool_use_id validation', () => {
   it('stale tool_use_id re-dispatch emits structured error and does not forward a second stdin line', async () => {
     // This test covers the "toolNameById drain" property through observable behavior:
     // once a tool_result has been successfully forwarded for a given tool_use_id, the id is
-    // deleted from toolNameById (session.ts:388). Re-dispatching a tool_result with the same
-    // id must hit the unknown-id guard (session.ts:335) and emit a structured error — not
-    // forward a second stdin line.
+    // deleted from toolNameById (the toolNameById.delete after the FIFO splice/shift).
+    // Re-dispatching a tool_result with the same id must hit the unknown-id guard in
+    // handleToolResult and emit a structured error — not forward a second stdin line.
     const { mockProc, stdout, stdinLines, msgPromise, toolCallWait } = setupValidationTest();
 
     // (1) Wait for tool_call outbound — tool_use is now registered in toolNameById
@@ -2188,13 +2311,22 @@ describe('FIFO consumption on echoed-id path', () => {
     expect(line2.message.content[0].tool_use_id).toBe('toolu_1');
 
     // --- Step (b): Dispatch tool_result WITHOUT tool_use_id (fallback path) ---
-    session.handleMessage({
+    /**
+     * Test-local relaxed shape that lets THIS test deliberately bypass the
+     * wire-contract type to exercise the FIFO-by-tool_name fallback path
+     * inside `handleToolResult`. The public `InboundToolResult` requires
+     * `tool_use_id`; this is the one site where the runtime fallback (kept
+     * as defense-in-depth) is exercised, by-design.
+     */
+    type FifoFallbackToolResult = { type: 'tool_result'; id: string; tool_name: string; result: unknown };
+    const fallbackMsg: FifoFallbackToolResult = {
       type: 'tool_result',
       id: 'tr-2',
       tool_name: 'reify_x',
       result: 'result-2',
       // no tool_use_id — fallback to FIFO
-    });
+    };
+    session.handleMessage(fallbackMsg as unknown as InboundMessage);
 
     // Wait for the third stdin line
     await waitForStdinLines(mockProc.stdin, stdinLines, 3);
@@ -2231,5 +2363,94 @@ describe('FIFO consumption on echoed-id path', () => {
     mockProc.exitCode = 0;
     mockProc.emit('close', 0);
     await msgPromise;
+  });
+});
+
+describe('waitForOutput / waitForOutputs deadline', () => {
+  let session: SidecarSession;
+
+  beforeEach(() => {
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+    });
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('waitForOutput rejects with named timeout error when predicate never matches; restores session.onOutput', async () => {
+    const originalOnOutput = session.onOutput;
+    await expect(
+      waitForOutput(session, () => false, { timeoutMs: 50 })
+    ).rejects.toThrow(/waitForOutput timed out waiting for predicate/);
+    expect(session.onOutput).toBe(originalOnOutput);
+  });
+
+  it('waitForOutputs rejects with named timeout error when predicate never matches; restores session.onOutput', async () => {
+    const originalOnOutput = session.onOutput;
+    await expect(
+      waitForOutputs(session, () => false, 1, { timeoutMs: 50 })
+    ).rejects.toThrow(/waitForOutputs timed out waiting for predicate/);
+    expect(session.onOutput).toBe(originalOnOutput);
+  });
+});
+
+describe('waitForOutput cancel hook', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('cancel() before match restores session.onOutput immediately and keeps the promise pending', async () => {
+    const originalOnOutput = session.onOutput;
+
+    const cancellable = waitForOutput(session, (m) => m.type === 'text_delta');
+
+    // session.onOutput should be swapped to the wrapped handler
+    expect(session.onOutput).not.toBe(originalOnOutput);
+
+    // Cancel BEFORE emitting any matching output
+    cancellable.cancel();
+
+    // (b) session.onOutput should be restored immediately after cancel
+    expect(session.onOutput).toBe(originalOnOutput);
+
+    // (a) Emit a matching message — lands in outputs via restored handler; wait stays pending
+    session.onOutput({ type: 'text_delta', content: 'not-captured' } as any);
+    expect(outputs).toHaveLength(1);
+
+    // (c) Cancelled promise stays pending — a short race should time out, not resolve
+    const raceResult = await Promise.race([
+      cancellable.then(() => 'resolved' as const),
+      new Promise<'timeout'>((res) => setTimeout(() => res('timeout'), 50)),
+    ]);
+    expect(raceResult).toBe('timeout');
+  });
+
+  it('cancel() after match is a no-op (idempotent — does not throw, does not re-restore)', async () => {
+    const originalOnOutput = session.onOutput;
+
+    const cancellable = waitForOutput(session, (m) => m.type === 'text_delta', { timeoutMs: 2000 });
+
+    // Emit a matching message so the wait settles via match
+    session.onOutput({ type: 'text_delta', content: 'match' } as any);
+    const result = await cancellable;
+    expect(result.type).toBe('text_delta');
+
+    // session.onOutput should already be restored
+    expect(session.onOutput).toBe(originalOnOutput);
+
+    // cancel() after resolution must not throw and must leave session.onOutput as-is
+    expect(() => cancellable.cancel()).not.toThrow();
+    expect(session.onOutput).toBe(originalOnOutput);
   });
 });

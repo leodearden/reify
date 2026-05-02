@@ -1683,6 +1683,333 @@ structure S {
         );
     }
 
+    // ── specialization-scope LSP regression locks (task 2371) ──────────────
+    //
+    // AST-builder helpers for hand-constructed ParsedModules are collected in
+    // `mod fixtures` below.  The helpers mirror the fixtures in
+    // `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs::tests`
+    // (lines 178-305) — kept here as a private sub-module to avoid crossing
+    // crate boundaries.
+    //
+    // Each test builds a ParsedModule with a specialization scope
+    // (`MemberDecl::Sub { body: Some(_) }`), drives it through
+    // `reify_compiler::compile_with_stdlib`, converts every compiler diagnostic
+    // through `convert::convert_diagnostic` (mirroring the post-parse half of
+    // `compute_diagnostics`), then filters to
+    // `code == "SpecializationForbiddenDecl"` before asserting.
+
+    // TODO: The helpers below duplicate ~125 lines from
+    // `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs::tests`
+    // (lines 178-305).  Any change to `MemberDecl`/`SubDecl`/`ParamDecl` field
+    // shapes must be applied to BOTH copies.  When that next happens, converge
+    // them into a shared `reify-test-fixtures` dev-dep crate, or expose them
+    // from `reify-syntax` behind a `test-utils` feature flag.
+    mod fixtures {
+        use reify_syntax::{
+            ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl,
+            PortDecl, StructureDef, SubDecl,
+        };
+        use reify_types::{ContentHash, ModulePath, SourceSpan};
+
+        pub fn dummy_span() -> SourceSpan {
+            SourceSpan::new(10, 20)
+        }
+
+        pub fn param_span() -> SourceSpan {
+            SourceSpan::new(30, 50)
+        }
+
+        pub fn port_span() -> SourceSpan {
+            SourceSpan::new(60, 80)
+        }
+
+        pub fn sub_span() -> SourceSpan {
+            SourceSpan::new(90, 110)
+        }
+
+        pub fn dummy_hash() -> ContentHash {
+            ContentHash(0)
+        }
+
+        pub fn dummy_expr() -> Expr {
+            Expr {
+                kind: ExprKind::BoolLiteral(true),
+                span: dummy_span(),
+            }
+        }
+
+        pub fn make_param(name: &str, span: SourceSpan) -> MemberDecl {
+            MemberDecl::Param(ParamDecl {
+                name: name.to_string(),
+                doc: None,
+                type_expr: None,
+                default: None,
+                where_clause: None,
+                annotations: Vec::new(),
+                span,
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
+            MemberDecl::Port(PortDecl {
+                name: name.to_string(),
+                direction: None,
+                type_name: "SomePort".to_string(),
+                members: Vec::new(),
+                frame_expr: None,
+                span,
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
+            MemberDecl::Sub(SubDecl {
+                name: name.to_string(),
+                structure_name: "Foo".to_string(),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                is_collection: false,
+                where_clause: None,
+                body: None,
+                span,
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_sub_with_body(
+            name: &str,
+            span: SourceSpan,
+            body: Vec<MemberDecl>,
+        ) -> MemberDecl {
+            MemberDecl::Sub(SubDecl {
+                name: name.to_string(),
+                structure_name: "Foo".to_string(),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                is_collection: false,
+                where_clause: None,
+                body: Some(body),
+                span,
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_let(name: &str) -> MemberDecl {
+            MemberDecl::Let(LetDecl {
+                name: name.to_string(),
+                doc: None,
+                is_pub: false,
+                type_expr: None,
+                value: dummy_expr(),
+                where_clause: None,
+                annotations: Vec::new(),
+                span: dummy_span(),
+                content_hash: dummy_hash(),
+            })
+        }
+
+        pub fn make_constraint() -> MemberDecl {
+            MemberDecl::Constraint(ConstraintDecl {
+                label: None,
+                expr: dummy_expr(),
+                where_clause: None,
+                span: dummy_span(),
+                content_hash: dummy_hash(),
+            })
+        }
+
+        /// Build a ParsedModule with a single Structure named "S" whose
+        /// top-level members are the supplied `members`.
+        pub fn parsed_module_with_structure_members(
+            members: Vec<MemberDecl>,
+        ) -> reify_syntax::ParsedModule {
+            reify_syntax::ParsedModule {
+                path: ModulePath::single("test"),
+                declarations: vec![Declaration::Structure(StructureDef {
+                    name: "S".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    type_params: Vec::new(),
+                    trait_bounds: Vec::new(),
+                    members,
+                    span: dummy_span(),
+                    content_hash: dummy_hash(),
+                    pragmas: Vec::new(),
+                    annotations: Vec::new(),
+                })],
+                errors: Vec::new(),
+                content_hash: dummy_hash(),
+                pragmas: Vec::new(),
+            }
+        }
+
+        /// A source stub long enough for all span offsets (up to sub_span end=110)
+        /// to produce non-zero LSP positions when passed to `convert_diagnostic`.
+        pub fn source_stub() -> String {
+            " ".repeat(120)
+        }
+    }
+
+    /// Drive the specialization-scope pipeline for `body` (the contents of a
+    /// `sub scope : Foo { body }` node inside structure S) and assert that the
+    /// resulting LSP diagnostics with code `"SpecializationForbiddenDecl"` match
+    /// `expected` exactly.
+    ///
+    /// For each `(kind, name)` pair the helper asserts the full canonical
+    /// compiler message:
+    /// `"'{kind}' declaration '{name}' is not permitted in a specialization scope (spec §8.7)"`
+    ///
+    /// Both sides are sorted before comparison so the check is
+    /// order-independent and robust against accidental false-positive matches
+    /// that `find()`-based substring lookups can silently pass.
+    ///
+    /// Additionally asserts for every forbidden diagnostic:
+    /// - severity `ERROR`, source `"reify"`
+    /// - non-zero range (the declaration's span was carried through the pipeline)
+    ///
+    /// When `expected` has more than one entry the helper additionally asserts
+    /// that all range-start positions are distinct (sibling violations must not
+    /// collapse into the same LSP location).
+    ///
+    /// Pass `expected = &[]` to assert that no such diagnostic is emitted.
+    fn assert_specialization_forbidden(
+        body: Vec<reify_syntax::MemberDecl>,
+        expected: &[(&str, &str)],
+    ) {
+        use fixtures::*;
+        use lsp_types::{DiagnosticSeverity, NumberOrString};
+
+        let parsed = parsed_module_with_structure_members(
+            vec![make_sub_with_body("scope", dummy_span(), body)],
+        );
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let source = source_stub();
+        let uri = test_uri();
+
+        let forbidden: Vec<lsp_types::Diagnostic> = compiled
+            .diagnostics
+            .iter()
+            .map(|d| convert::convert_diagnostic(d, &source, &uri))
+            .filter(|d| {
+                d.code
+                    == Some(NumberOrString::String(
+                        "SpecializationForbiddenDecl".to_string(),
+                    ))
+            })
+            .collect();
+
+        assert_eq!(
+            forbidden.len(),
+            expected.len(),
+            "expected {} SpecializationForbiddenDecl diagnostic(s), got {}: {:#?}",
+            expected.len(),
+            forbidden.len(),
+            forbidden
+        );
+
+        // Assert full canonical messages.  Sorting both sides makes the
+        // comparison order-independent and rules out silent false-positives
+        // from short-token substring matches (e.g. 'x' in an unrelated part
+        // of the message) or find()-based first-match aliasing.
+        let mut expected_msgs: Vec<String> = expected
+            .iter()
+            .map(|&(kind, name)| {
+                format!(
+                    "'{kind}' declaration '{name}' is not permitted \
+                     in a specialization scope (spec §8.7)"
+                )
+            })
+            .collect();
+        expected_msgs.sort();
+        let mut actual_msgs: Vec<String> =
+            forbidden.iter().map(|d| d.message.clone()).collect();
+        actual_msgs.sort();
+        assert_eq!(
+            actual_msgs,
+            expected_msgs,
+            "SpecializationForbiddenDecl messages do not match the canonical compiler format"
+        );
+
+        // Structural properties — asserted on every forbidden diagnostic.
+        for d in &forbidden {
+            assert_eq!(
+                d.severity,
+                Some(DiagnosticSeverity::ERROR),
+                "expected ERROR severity; diagnostic: {d:#?}"
+            );
+            assert_eq!(
+                d.source.as_deref(),
+                Some("reify"),
+                "expected source 'reify'; diagnostic: {d:#?}"
+            );
+            assert_ne!(
+                d.range.start,
+                d.range.end,
+                "range must be non-zero; got start={:?} end={:?}",
+                d.range.start,
+                d.range.end
+            );
+            assert!(
+                d.range.start.line > 0 || d.range.start.character > 0,
+                "range start must not be (0,0) — span was not carried through \
+                 convert_diagnostic; got ({}, {})",
+                d.range.start.line,
+                d.range.start.character
+            );
+        }
+
+        // Multiple violations must map to distinct LSP positions.
+        if expected.len() > 1 {
+            let starts: Vec<_> = forbidden
+                .iter()
+                .map(|d| (d.range.start.line, d.range.start.character))
+                .collect();
+            let unique_starts: std::collections::HashSet<_> = starts.iter().collect();
+            assert_eq!(
+                unique_starts.len(),
+                expected.len(),
+                "all violation spans must be distinguishable; got: {starts:?}"
+            );
+        }
+    }
+
+    /// LSP regression lock (task 2371, step-7): a specialization scope containing
+    /// only permitted declarations (`let` and `constraint`) must produce ZERO LSP
+    /// diagnostics with code `"SpecializationForbiddenDecl"`.
+    ///
+    /// Pins the converse contract at the LSP layer: permitted decls must never
+    /// surface this code, regardless of what unrelated diagnostics the compile
+    /// pipeline emits (those are ignored by the code filter).
+    #[test]
+    fn lsp_compute_diagnostics_emits_no_specialization_forbidden_decl_for_permitted_only_spec_scope(
+    ) {
+        use fixtures::*;
+        assert_specialization_forbidden(vec![make_let("m"), make_constraint()], &[]);
+    }
+
+    /// LSP regression lock (task 2371, step-9): a specialization scope with three
+    /// sibling forbidden declarations (param, port, bare sub) surfaces exactly THREE
+    /// distinct LSP ERROR diagnostics with code `"SpecializationForbiddenDecl"` —
+    /// one per violation — each with a distinguishable non-zero range.
+    ///
+    /// Mirrors the compiler-side test
+    /// `validate_module_emits_one_diagnostic_per_sibling_forbidden_decl_in_same_body`
+    /// and locks the per-violation 1-LSP-diagnostic contract end-to-end: the LSP
+    /// wire form must NOT collapse sibling violations.
+    #[test]
+    fn lsp_compute_diagnostics_surfaces_one_specialization_forbidden_decl_per_sibling_violation() {
+        use fixtures::*;
+        assert_specialization_forbidden(
+            vec![
+                make_param("x", param_span()),
+                make_port("p", port_span()),
+                make_sub_bare("child", sub_span()),
+            ],
+            &[("param", "x"), ("port", "p"), ("sub", "child")],
+        );
+    }
+
     /// (d) **Separation regression** — constraint-violation source must NOT produce
     /// any `computation-failed` diagnostics; the existing `constraint <id> violated`
     /// diagnostics must still appear.

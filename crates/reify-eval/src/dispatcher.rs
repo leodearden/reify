@@ -45,6 +45,8 @@ use std::time::Duration;
 
 use reify_types::{CapabilityDescriptor, Diagnostic, DiagnosticCode, Operation, ReprKind};
 
+use crate::tolerance_budget::per_stage_tolerance;
+
 /// PRD-default wall-time threshold for the long-chain realization warning,
 /// in milliseconds.
 ///
@@ -260,6 +262,61 @@ pub fn long_chain_threshold_from_env_value(value: Option<&str>) -> Duration {
     Duration::from_millis(parsed_ms)
 }
 
+/// Returns the per-stage tolerance budget for a conversion chain described by a
+/// [`DispatchPlan`].
+///
+/// This is the conversion-chain budget allocator: `n_stages` is resolved from
+/// `plan.conversions.len()`.  For chains with at least one conversion stage, the
+/// function delegates to [`crate::tolerance_budget::per_stage_tolerance`], which
+/// applies a geometric split with the 0.8 `SAFETY_FACTOR` (see
+/// `docs/prds/v0_2/per-purpose-tolerance.md` §"Conversion-budget allocation
+/// heuristic").  For an empty chain (demanded repr already in `available`, no
+/// kernel boundary crossed), the function returns `requested_tol` unchanged —
+/// applying the safety factor would gratuitously tighten the user's budget on a
+/// non-existent chain.
+///
+/// Co-located with [`is_long_chain_realization`] / [`long_chain_diagnostic`]
+/// because all three functions resolve stage count from `plan.conversions.len()`;
+/// keeping them together minimises grep-and-edit cost for future refactors.
+///
+/// # Why not `per_stage_tolerance(tol, plan.conversions.len().max(1))`?
+///
+/// For an empty chain, `len().max(1)` would pass `n_stages = 1`, yielding
+/// `tol × 0.8` — the safety factor fires even though there is no conversion
+/// error to budget.  The correct contract for a zero-conversion plan is strict
+/// pass-through: the demanded repr is already present, so no chain budget is
+/// allocated at all.  This wrapper captures that semantic distinction so
+/// callers do not have to replicate the `is_empty()` guard themselves.
+///
+/// # Truth table
+///
+/// | `plan.conversions.len()` | result                                        |
+/// |--------------------------|-----------------------------------------------|
+/// | 0 (empty chain)          | `requested_tol` (pass-through, no factor)     |
+/// | 1                        | `requested_tol × 0.8` (via delegation)        |
+/// | N ≥ 2                    | `requested_tol^(1/N) × 0.8` (via delegation) |
+///
+/// # Panics (debug builds only)
+///
+/// In debug builds, panics if `requested_tol` is not finite or is negative,
+/// keeping the precondition uniform across both the empty-chain and non-empty
+/// branches (the non-empty branch delegates to `per_stage_tolerance`, which
+/// carries the same assertion).
+pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> f64 {
+    debug_assert!(
+        requested_tol.is_finite() && requested_tol >= 0.0,
+        "dispatcher: requested_tol must be finite and non-negative, got {requested_tol}"
+    );
+    if plan.conversions.is_empty() {
+        // No kernel boundary crossed: demanded repr was already in `available`.
+        // Pass through unchanged — the 0.8 SAFETY_FACTOR only applies when
+        // stages exist to accumulate conversion error.
+        requested_tol
+    } else {
+        per_stage_tolerance(requested_tol, plan.conversions.len())
+    }
+}
+
 /// Ordered sequence of conversion stages: each entry is
 /// `(kernel_name, from_repr, to_repr)`. Factored as a type alias to keep the
 /// internal BFS frontier type below clippy's `type_complexity` threshold and
@@ -401,7 +458,9 @@ mod tests {
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
         LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
         long_chain_diagnostic, long_chain_threshold_from_env_value,
+        per_stage_tolerance_for_plan,
     };
+    use crate::tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance};
     use std::time::Duration;
 
     /// Pins the three module-level long-chain constants by literal value:
@@ -1136,6 +1195,123 @@ mod tests {
         assert!(
             plan_box.conversions.is_empty(),
             "PrimitiveBox→BRep requires zero conversions, got {plan_box:?}",
+        );
+    }
+
+    /// Empty conversion chain must return `requested_tol` unchanged (bit-exact
+    /// pass-through, no arithmetic applied).
+    ///
+    /// Pins the no-chain-no-allocation contract: when `plan.conversions` is
+    /// empty the demanded repr was already in `available` — no kernel boundary
+    /// is crossed, so the 0.8 `SAFETY_FACTOR` must NOT be applied.  Applying
+    /// it would silently strip 20 % of the user's budget on every direct-
+    /// dispatch path, which the PRD explicitly rules out ("When a request
+    /// crosses kernel boundaries … the orchestrator divides the bound across
+    /// stages" — no boundary ⇒ no division).
+    ///
+    /// Three distinct magnitudes (1e-3, 1e-6, 1.0) demonstrate the pass-
+    /// through is independent of the scale of `requested_tol`.
+    #[test]
+    fn per_stage_tolerance_for_plan_empty_chain_returns_requested_tol_unchanged() {
+        let plan = DispatchPlan {
+            kernel: "occt".to_string(),
+            conversions: vec![],
+        };
+
+        // Bit-exact pass-through: no arithmetic must touch the value.
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan, 1e-3),
+            1e-3,
+            "empty conversion chain must return requested_tol unchanged (bit-exact pass-through)",
+        );
+
+        // Independence of magnitude: pass-through holds for small tolerances.
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan, 1e-6),
+            1e-6,
+            "empty chain pass-through must be independent of requested_tol magnitude (1e-6)",
+        );
+
+        // Independence of magnitude: pass-through holds for unit tolerance.
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan, 1.0),
+            1.0,
+            "empty chain pass-through must be independent of requested_tol magnitude (1.0)",
+        );
+    }
+
+    /// Multi-stage chains must delegate to `per_stage_tolerance` verbatim —
+    /// i.e. `per_stage_tolerance_for_plan(&plan, req)` ==
+    /// `per_stage_tolerance(req, plan.conversions.len())`.
+    ///
+    /// Two chain shapes are checked to catch off-by-one bugs in the n_stages
+    /// resolution (e.g. `len() + 1` vs `len()`, or a hard-coded `n_stages = 1`):
+    ///   - 2-conversion chain → N=2, expected = req^(1/2) × 0.8
+    ///   - 3-conversion chain → N=3, expected = req^(1/3) × 0.8
+    ///
+    /// The expected RHS is computed by calling `per_stage_tolerance` directly
+    /// so the assertion catches any wiring divergence without embedding magic
+    /// numbers or duplicating the geometric-split formula here.
+    ///
+    /// This test fails before step-4: the skeleton returns `requested_tol`,
+    /// which equals `per_stage_tolerance(req, 1)` only for N=1 (which isn't
+    /// tested here).
+    #[test]
+    fn per_stage_tolerance_for_plan_multi_stage_chain_uses_geometric_split() {
+        // 2-conversion chain: BRep → Sdf → Mesh (N = 2).
+        let plan_two = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![
+                ("alpha".to_string(), ReprKind::BRep, ReprKind::Sdf),
+                ("beta".to_string(), ReprKind::Sdf, ReprKind::Mesh),
+            ],
+        };
+        let req = 1e-3_f64;
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan_two, req),
+            per_stage_tolerance(req, plan_two.conversions.len()),
+            "2-conversion chain must delegate to per_stage_tolerance(req, 2) verbatim",
+        );
+
+        // 3-conversion chain: BRep → Mesh → Sdf → Voxel (N = 3).
+        let plan_three = DispatchPlan {
+            kernel: "fidget".to_string(),
+            conversions: vec![
+                ("alpha".to_string(), ReprKind::BRep, ReprKind::Mesh),
+                ("beta".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                ("gamma".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+            ],
+        };
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan_three, req),
+            per_stage_tolerance(req, plan_three.conversions.len()),
+            "3-conversion chain must delegate to per_stage_tolerance(req, 3) verbatim",
+        );
+    }
+
+    /// A single-conversion chain (N=1) must return `requested_tol × SAFETY_FACTOR`
+    /// bit-exactly (the N=1 path in `per_stage_tolerance` short-circuits without
+    /// `powf`, so the result is a simple multiply — `assert_eq!` is valid here).
+    ///
+    /// This is a separate test from the multi-stage case because it pins a
+    /// specific regression: if the empty-vs-non-empty branch were accidentally
+    /// flipped to `if plan.conversions.len() <= 1` the single-conversion case
+    /// would fall into the pass-through branch and return `requested_tol` instead
+    /// of `requested_tol × 0.8`, which step-1 and step-3 alone would not catch.
+    #[test]
+    fn per_stage_tolerance_for_plan_single_conversion_applies_safety_factor() {
+        let plan = DispatchPlan {
+            kernel: "occt".to_string(),
+            conversions: vec![
+                ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            ],
+        };
+        let req = 1e-3_f64;
+        // N=1: no powf, so bit-exact multiply.
+        assert_eq!(
+            per_stage_tolerance_for_plan(&plan, req),
+            req * SAFETY_FACTOR,
+            "single-conversion chain must return requested_tol × SAFETY_FACTOR (N=1 short-circuit)",
         );
     }
 }

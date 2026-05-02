@@ -33,6 +33,9 @@ export function parseInboundMessage(line: string): InboundMessage {
     if (!('result' in parsed)) {
       throw new Error('tool_result requires a "result" field');
     }
+    if (typeof parsed.tool_use_id !== 'string' || !parsed.tool_use_id) {
+      throw new Error('tool_result requires a non-empty "tool_use_id" field');
+    }
   }
   return parsed as InboundMessage;
 }

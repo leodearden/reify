@@ -88,14 +88,21 @@ use reify_types::{
 /// tolerance binding) rather than writing `param tolerance : Length = 0m` as
 /// a placeholder default.
 ///
-/// **Open design question (task 2833):** whether to keep this behavior
-/// (option-(b): accept `0.0` and document), tighten the gate to `> 0.0`
-/// (option-(a): treat `0.0` as "no promise"), or emit a separate diagnostic
-/// code when a zero promise is present and a non-zero demand exists is tracked
-/// in task 2833. Two characterization tests — `extract_input_tolerance_promise_accepts_zero_promise`
-/// and `is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand` —
-/// lock the current behavior so any future option-(a) refactor requires a
-/// deliberate test edit rather than slipping in silently.
+/// **Resolution (task 2833):** option-(b continuation) selected. The gate stays
+/// at `is_finite() && >= 0.0` to preserve cross-extractor symmetry with
+/// `tolerance_scope::extract_tolerance_bindings` and
+/// `tolerance_combine::extract_output_tolerance_bound`. The footgun is surfaced
+/// at runtime via the new [`DiagnosticCode::InputTolerancePromiseIsZero`] lint
+/// emitted by [`crate::engine_tolerance::Engine::check_imported_tolerance_promise`]
+/// when `promise == 0.0 && demanded > 0.0` — see
+/// [`input_tolerance_promise_is_zero_diagnostic`] for the builder and
+/// `tests/tolerance_import_promise.rs::engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_zero_and_demand_positive`
+/// for the integration pin. The two characterization tests added by task 2793
+/// (`extract_input_tolerance_promise_accepts_zero_promise` and
+/// `is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand`)
+/// lock the lower-level extractor + comparator behavior unchanged — they remain
+/// green under this resolution because the gate and the strict-`<` rule are both
+/// preserved.
 pub fn extract_input_tolerance_promise(
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     input_template_name: &str,
@@ -190,6 +197,12 @@ pub fn extract_input_tolerance_promise(
 /// recommended opt-out (omit the `tolerance` parameter entirely rather than
 /// defaulting it to `0m`).
 ///
+/// Task 2833 surfaces this footgun at the engine query layer via
+/// [`DiagnosticCode::InputTolerancePromiseIsZero`] (emitted when
+/// `promise == 0.0 && demanded > 0.0`), so the comparator's vacuous-satisfaction
+/// behavior is preserved as a primitive while the engine catches the
+/// placeholder-default footgun at the user-facing query.
+///
 /// # Panics
 ///
 /// In debug builds: panics if either argument is NaN, ±Inf, or negative.
@@ -212,6 +225,54 @@ pub fn is_promise_insufficient(demanded: f64, promise: f64) -> bool {
         "TolerancePromise: tolerance must be finite and non-negative, got {promise}"
     );
     demanded < promise
+}
+
+/// Build the `Severity::Warning` diagnostic emitted when the imported-geometry
+/// tolerance promise on an `Input` occurrence template is exactly `0.0` AND
+/// the downstream demand is strictly positive (`demanded > 0.0`).
+///
+/// This surfaces the placeholder-default footgun where `param tolerance : Length = 0m`
+/// silently disables the [`DiagnosticCode::ImportedTolerancePromiseInsufficient`]
+/// warning: when `promise == 0.0`, the strict-`<` rule in
+/// [`is_promise_insufficient`] evaluates `demanded < 0.0`, which is false for
+/// every `demanded >= 0.0`, so the insufficient branch never fires.
+///
+/// # Resolution (task 2833)
+///
+/// Option-(b continuation) was selected: the extractor gate stays at
+/// `is_finite() && >= 0.0` to preserve cross-extractor symmetry, and the
+/// footgun is surfaced at runtime via this diagnostic emitted at the engine
+/// query layer. See [`DiagnosticCode::InputTolerancePromiseIsZero`] for the
+/// full design rationale.
+///
+/// # Canonical message form
+///
+/// `"imported geometry '<input_template>' carries a zero tolerance promise \
+/// (`tolerance = 0m`) but downstream demand is <demanded_str>; …"`.
+///
+/// The recommended opt-out is to **omit the `tolerance` parameter entirely**
+/// rather than writing `param tolerance : Length = 0m` as a placeholder default.
+///
+/// # Arguments
+///
+/// - `input_template_name` — the `Input` occurrence template name (e.g.
+///   `"STEPInput"`); appears verbatim in the message so authors can locate the
+///   import site.
+/// - `demanded` — the demanded tolerance in SI metres; rendered with µm/mm/m
+///   prefixes by magnitude via `tolerance_format::format_tolerance`.
+pub fn input_tolerance_promise_is_zero_diagnostic(
+    input_template_name: &str,
+    demanded: f64,
+) -> Diagnostic {
+    let demanded_str = crate::tolerance_format::format_tolerance(demanded);
+    let message = format!(
+        "imported geometry '{input_template_name}' carries a zero tolerance promise \
+         (`tolerance = 0m`) but downstream demand is {demanded_str}; the zero promise \
+         vacuously satisfies any non-negative demand, suppressing the \
+         ImportedTolerancePromiseInsufficient warning. Omit the `tolerance` parameter \
+         to opt out of making a promise."
+    );
+    Diagnostic::warning(message).with_code(DiagnosticCode::InputTolerancePromiseIsZero)
 }
 
 /// Build the `Severity::Warning` diagnostic emitted when a downstream
@@ -485,6 +546,14 @@ mod tests {
     /// (tightening the gate from `>= 0.0` to `> 0.0`) requires a deliberate
     /// test edit and conscious review rather than slipping in silently.
     ///
+    /// **Resolution-locked (task 2833):** task 2833 resolved as option-(b continuation)
+    /// — the gate stays at `is_finite() && >= 0.0`. This test remains green under
+    /// the resolution because the extractor gate is unchanged. The placeholder-default
+    /// footgun (`param tolerance : Length = 0m` suppressing the
+    /// `ImportedTolerancePromiseInsufficient` warning) is now surfaced at the engine
+    /// query layer via [`DiagnosticCode::InputTolerancePromiseIsZero`] rather than
+    /// by tightening this gate.
+    ///
     /// `si_value == 0.0` is accepted by Gate 4's `is_finite() && si_value >= 0.0`
     /// check — zero is the lower boundary of that gate, not a rejected value.
     /// This mirrors the precedent set by
@@ -579,6 +648,19 @@ mod tests {
     /// strict-`<` rule in [`is_promise_insufficient`] therefore classifies every
     /// non-negative demand as sufficient when the promise is zero.
     ///
+    /// **Resolution-locked (task 2833):** task 2833 resolved as option-(b continuation).
+    /// This test characterizes the LOWER-LEVEL comparator primitive and remains
+    /// green because `is_promise_insufficient`'s strict-`<` rule is unchanged.
+    /// The placeholder-default footgun (`param tolerance : Length = 0m` vacuously
+    /// satisfying any non-negative demand, thereby suppressing the
+    /// `ImportedTolerancePromiseInsufficient` warning) is now surfaced at the engine
+    /// query layer by [`DiagnosticCode::InputTolerancePromiseIsZero`] (emitted
+    /// when `promise == 0.0 && demanded > 0.0`). This test locks the baseline
+    /// that the engine's new lint operates on top of — a future option-(a)
+    /// refactor that tightens the extractor gate to `> 0.0` would require
+    /// changing `extract_input_tolerance_promise_accepts_zero_promise` first,
+    /// making the semantic change explicit.
+    ///
     /// **Coverage gap filled:** the existing
     /// `is_promise_insufficient_returns_true_iff_demanded_strictly_less_than_promise`
     /// test pins the `(0.0, 0.0) -> false` symmetric edge but does NOT cover
@@ -594,12 +676,6 @@ mod tests {
     /// claim under this comparator — it vacuously satisfies every non-negative
     /// demand — which is why `param tolerance : Length = 0m` silently disables
     /// the `ImportedTolerancePromiseInsufficient` warning.
-    ///
-    /// If a future option-(a) refactor changes the extractor gate to `> 0.0`
-    /// (rejecting `0.0`), this test will still compile and pass because
-    /// `is_promise_insufficient` itself is unchanged — but `step-1`'s
-    /// `extract_input_tolerance_promise_accepts_zero_promise` will fail,
-    /// flagging the semantic change explicitly.
     #[test]
     fn is_promise_insufficient_returns_false_when_promise_is_zero_for_any_non_negative_demand() {
         // (a) demand == 1e-12 (sub-femtometre): positive demand, vacuously
@@ -682,6 +758,58 @@ mod tests {
     #[should_panic(expected = "tolerance must be finite and non-negative")]
     fn is_promise_insufficient_panics_in_debug_on_negative_promise() {
         is_promise_insufficient(1e-6, -1.0e-3);
+    }
+
+    /// Verifies that `input_tolerance_promise_is_zero_diagnostic` builds a
+    /// `Severity::Warning` carrying `DiagnosticCode::InputTolerancePromiseIsZero`,
+    /// names the input template in the message, and renders `demanded` in
+    /// human-readable unit-prefixed form (via `tolerance_format::format_tolerance`).
+    ///
+    /// Combines the shape-check (severity + code + template name) and the
+    /// unit-rendering regression guard into a single test since the diagnostic
+    /// has only one side (no `promise` argument to render separately).
+    ///
+    /// The regression guard `!diag.message.contains("0.000001m")` locks out raw
+    /// SI-metre float interpolation — same convention as
+    /// `imported_tolerance_promise_diagnostic_renders_human_readable_units`
+    /// (task 2790).
+    #[test]
+    fn input_tolerance_promise_is_zero_diagnostic_builds_warning_with_code_template_name_and_human_readable_demanded(
+    ) {
+        use reify_types::{DiagnosticCode, Severity};
+
+        let diag = input_tolerance_promise_is_zero_diagnostic("STEPInput", 1e-6);
+
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning (PRD: warn, not error — \
+             runtime proceeds with as-imported realization)"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::InputTolerancePromiseIsZero),
+            "diagnostic code must be InputTolerancePromiseIsZero (not \
+             ImportedTolerancePromiseInsufficient) — proves the new variant fires"
+        );
+        assert!(
+            diag.message.contains("STEPInput"),
+            "message must name the input template so authors can locate the \
+             import site (got: {:?})",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("1µm"),
+            "demanded 1e-6 must render as '1µm' via format_tolerance \
+             (got: {:?})",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("0.000001m"),
+            "regression guard: raw SI-metre form '0.000001m' must not appear \
+             in the message (got: {:?})",
+            diag.message
+        );
     }
 
     /// Pinned by the diagnostic-emission contract: when a downstream demand

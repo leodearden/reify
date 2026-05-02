@@ -14,13 +14,28 @@
 //! - `Scalar<Q>` — HAS a `resolve_type_name` default (`Type::length()`); the
 //!   discard bug caused the alias to silently resolve to `Length` with zero
 //!   diagnostics.  This test drives the narrowing fix in task #2766.
-//! - `Vector3<Q>` — no `resolve_type_name` default; error surfaces via
-//!   use-site `unresolved type: Bad`.
+//! - `Vector3<Q>` — like Scalar, routes through
+//!   `resolve_type_alias_expr_to_dimension`; the alias-DFS `Propagate` path
+//!   emits `"cannot resolve '...' to a dimension type in alias expression"`,
+//!   which the test pins via the `"dimension type in alias expression"` fragment
+//!   — unique to that helper's error path.
 
 mod common;
 
 use common::compile_with_stdlib_helper;
 use reify_types::Severity;
+
+/// Shared source for the two Scalar-with-use-site regression tests below.
+///
+/// Both `non_parametric_alias_scalar_unknown_dimension_produces_error` (task
+/// #2766, pinning the inner-arg "NotADim" diagnostic) and
+/// `non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic`
+/// (task #2841, pinning the downstream "unresolved type: Bad" diagnostic)
+/// compile the same source but assert different message fragments.  Factoring
+/// into a const eliminates the duplication and makes a future rename of the
+/// alias or the structure visible in exactly one place.
+const SCALAR_BAD_WITH_USE_SITE: &str =
+    "type Bad = Scalar<NotADim>\nstructure def Use { param v : Bad }";
 
 /// Compile `source` and assert that at least one Error-severity diagnostic is
 /// emitted.  Panics with the full diagnostic list on failure so the test output
@@ -103,26 +118,88 @@ fn non_parametric_alias_list_unknown_inner_produces_error() {
 /// that might be introduced later in the pipeline.
 #[test]
 fn non_parametric_alias_scalar_unknown_dimension_produces_error() {
-    assert_error_containing(
-        "type Bad = Scalar<NotADim>\nstructure def Use { param v : Bad }",
-        "NotADim",
-    );
+    assert_error_containing(SCALAR_BAD_WITH_USE_SITE, "NotADim");
 }
 
 /// A non-parametric alias `type Bad = Vector3<NotADim>` paired with a use-site
 /// `structure def Use { param v : Bad }` must produce at least one
-/// Error-severity diagnostic.
+/// Error-severity diagnostic whose message contains the fixed phrase
+/// `"dimension type in alias expression"`.
 ///
-/// `Vector3` has no `resolve_type_name` default, so when `NotADim` cannot be
-/// resolved to a dimension type, `resolve_parameterized_builtin_type` returns
-/// `None`, the alias records `resolved_type: None`, and the use-site emits
-/// `unresolved type: Bad`.
+/// `Vector3` routes through `resolve_type_alias_expr_to_dimension`, the same
+/// dimension-resolver helper used by Scalar.  When `NotADim` cannot be resolved
+/// to a known dimension, the helper emits `"cannot resolve 'NotADim' to a
+/// dimension type in alias expression"`.  Because the alias has zero type
+/// parameters, `seed_alias_entry` selects `AliasInnerDiagPolicy::Propagate`,
+/// which extends `diagnostics` with the inner-arg error.
 ///
-/// Like the List test, this naturally passes before the fix; included to
-/// complete the three-builtin contract surface.
+/// The `"dimension type in alias expression"` fragment uniquely identifies the
+/// dimension-resolver helper's error path — the use-site fallback
+/// `"unresolved type: Bad"` does not contain this phrase, and no other code
+/// path currently emits it.  The assertion therefore fails if `Propagate`
+/// regresses or the dimension-resolver is bypassed, without being confused by
+/// any future diagnostic that merely mentions the identifier `NotADim`.
+/// This complements the Scalar test by exercising the second
+/// `resolve_parameterized_builtin_type` branch (the dimension-resolver branch).
 #[test]
 fn non_parametric_alias_vector3_unknown_dimension_produces_error() {
-    assert_produces_error(
+    assert_error_containing(
         "type Bad = Vector3<NotADim>\nstructure def Use { param v : Bad }",
+        "dimension type in alias expression",
     );
+}
+
+/// After the alias-DFS pre-pass, the `CompiledTypeAlias` registry entry for
+/// `type Bad = Scalar<NotADim>` must have `resolved_type == None`.
+///
+/// This pins acceptance criterion #1 from task #2841.  `Scalar` has a
+/// `resolve_type_name` default (`Type::Scalar { dimension: LENGTH }`).  Before
+/// the fix, the `AliasInnerDiagPolicy::Propagate` branch in
+/// `resolve_type_alias_expr` propagated `tmp_diags` but then fell through to
+/// the simple-name lookup at the bottom of the match arm, which resolved
+/// `"Scalar"` (no type args) to `Type::length()` and stored that as the alias
+/// entry's `resolved_type`.  Downstream consumers (e.g. `entity.rs` param-type
+/// resolution) then saw a wrong-but-typed alias entry and proceeded without the
+/// expected `"unresolved type: Bad"` diagnostic — producing a wrong-type
+/// cascade.
+///
+/// After the fix (`return None;` gated on `!tmp_diags.is_empty()` inside the
+/// Propagate branch), the alias entry is left with `resolved_type: None`, which
+/// is what this test asserts.
+///
+/// Pre-fix expectation: this assertion FAILS because `resolved_type` is
+/// `Some(Scalar { dimension: LENGTH })` (i.e. `Some(Type::length())`).
+#[test]
+fn non_parametric_alias_scalar_unknown_dimension_leaves_alias_unresolved() {
+    let module = compile_with_stdlib_helper("type Bad = Scalar<NotADim>");
+    let bad = module
+        .type_aliases
+        .iter()
+        .find(|a| a.name == "Bad")
+        .expect("alias 'Bad' not found in module.type_aliases");
+    assert!(
+        bad.resolved_type.is_none(),
+        "expected None, got {:?}",
+        bad.resolved_type
+    );
+}
+
+/// A use-site `param v : Bad` where `type Bad = Scalar<NotADim>` must produce
+/// an Error-severity diagnostic containing `"unresolved type: Bad"`.
+///
+/// This pins acceptance criterion #2 from task #2841.  After the fix, the
+/// alias entry for `Bad` has `resolved_type: None`.  When `entity.rs` resolves
+/// the param type at line 374-415, it finds no resolved type for `Bad` and
+/// emits `"unresolved type: Bad"` (entity.rs:~409).  Before the fix the alias
+/// entry held `Some(Type::length())`, so `entity.rs` silently typed `v` as
+/// `Length` with no error — a wrong-type cascade.
+///
+/// This test is causally downstream of
+/// `non_parametric_alias_scalar_unknown_dimension_leaves_alias_unresolved` (the
+/// alias must be `None` before the use-site diagnostic can fire), but is kept
+/// as a separate `#[test]` so a future regression is attributable to either
+/// registry state or the use-site diagnostic path independently.
+#[test]
+fn non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic() {
+    assert_error_containing(SCALAR_BAD_WITH_USE_SITE, "unresolved type: Bad");
 }

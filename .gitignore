@@ -13,6 +13,7 @@ node_modules/
 # blobs, not directories — the trailing-slash rule above does not match symlinks. This
 # explicit entry prevents a worktree-local gui/node_modules symlink from being re-added.
 gui/node_modules
+gui/sidecar/node_modules
 /package.json
 /package-lock.json
 gui/package-lock.json

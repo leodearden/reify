@@ -2298,30 +2298,24 @@ fn arm_member_type(
     match member {
         reify_syntax::MemberDecl::Sub(s) => Type::StructureRef(s.structure_name.clone()),
         reify_syntax::MemberDecl::Param(p) => {
-            // The param was registered in the pre-pass; resolve its type from scope.
+            // Pre-pass registers this name; resolution failure here is a pass-1 invariant
+            // violation. See `emit_ice_unresolved` for the full rationale.
             scope
                 .resolve(&p.name)
                 .map(|(_, ty)| ty.clone())
-                .unwrap_or_else(|| {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "could not resolve type for match-arm param '{}'",
-                            p.name
-                        ))
-                        .with_label(DiagnosticLabel::new(span, "unresolved param")),
-                    );
-                    Type::Real
-                })
+                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &p.name, span, diagnostics))
         }
         reify_syntax::MemberDecl::Let(l) => {
+            // Same pass-1 registration invariant as the Param arm above; the ICE guards
+            // against a future refactor regressing to silent Type::Real. See `emit_ice_unresolved`.
             scope
                 .resolve(&l.name)
                 .map(|(_, ty)| ty.clone())
-                .unwrap_or(Type::Real)
+                .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::Name, &l.name, span, diagnostics))
         }
         _ => {
-            // suggestion 7: emit a diagnostic for any unhandled MemberDecl variant
-            // so the caller gets explicit feedback rather than a silently-wrong Type::Real.
+            // Unhandled MemberDecl variant: emit a diagnostic so the caller gets explicit
+            // feedback rather than a silently-wrong Type::Real.
             diagnostics.push(
                 Diagnostic::error("unsupported member kind in match arm")
                     .with_label(DiagnosticLabel::new(
@@ -2898,6 +2892,82 @@ pub(crate) fn expand_constraint_inst(
             );
         } else {
             constraints.push(cc);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Table-driven coverage: both Param and Let route through `emit_ice_unresolved`
+    /// when the declared name is absent from scope.  We assert that:
+    /// 1. `Type::Real` is returned (the ICE fallback value).
+    /// 2. Exactly one diagnostic is pushed.
+    /// 3. The diagnostic message contains `"internal compiler error"` — proving the
+    ///    ICE pathway was taken, not the wildcard fallback ("unsupported member kind
+    ///    in match arm").
+    /// 4. The diagnostic message also contains `"unresolved name"` — pinning
+    ///    `UnresolvedKind::Name` as the exact pathway (not `GuardedMember`).  The
+    ///    exact ICE wording and label format are already pinned by the tests in
+    ///    `ice.rs`.
+    #[test]
+    fn arm_member_type_emits_ice_when_unresolved() {
+        let span = SourceSpan::new(0, 0);
+
+        let cases: &[(&str, reify_syntax::MemberDecl)] = &[
+            (
+                "Param",
+                reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                    name: "x".to_string(),
+                    doc: None,
+                    type_expr: None,
+                    default: None,
+                    where_clause: None,
+                    annotations: vec![],
+                    span,
+                    content_hash: reify_types::ContentHash(0),
+                }),
+            ),
+            (
+                "Let",
+                reify_syntax::MemberDecl::Let(reify_syntax::LetDecl {
+                    name: "x".to_string(),
+                    doc: None,
+                    is_pub: false,
+                    type_expr: None,
+                    value: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::Ident("dummy".to_string()),
+                        span,
+                    },
+                    where_clause: None,
+                    annotations: vec![],
+                    span,
+                    content_hash: reify_types::ContentHash(0),
+                }),
+            ),
+        ];
+
+        for (label, member) in cases {
+            // Empty scope — name "x" will not resolve.
+            let scope = CompilationScope::new("TestEntity");
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let ty = arm_member_type(member, &scope, &mut diagnostics, span);
+
+            assert_eq!(ty, Type::Real, "[{label}] fallback type should be Type::Real");
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "[{label}] expected exactly one diagnostic, got: {diagnostics:?}",
+            );
+            assert!(
+                diagnostics[0].message.contains("internal compiler error"),
+                "[{label}] expected ICE diagnostic, got: {:?}", diagnostics[0].message,
+            );
+            assert!(
+                diagnostics[0].message.contains("unresolved name"),
+                "[{label}] expected UnresolvedKind::Name ICE, got: {:?}", diagnostics[0].message,
+            );
         }
     }
 }

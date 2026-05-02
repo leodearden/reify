@@ -215,6 +215,20 @@ pub struct CompiledModule {
     /// the verbatim intent. Only malformed shapes (zero args, key=value-first,
     /// non-Ident bare values) leave the field as None.
     pub kernel_pragma: Option<String>,
+    /// Resolved `auto:` type-parameter substitutions for this module, in
+    /// `(param_name, concrete_template_name)` form (e.g. `("T", "ORingSeal")`).
+    ///
+    /// **Invariant:** param names must be unique across the Vec — duplicates
+    /// make `topology_fingerprint` order-sensitive, which is a producer bug.
+    ///
+    /// **Producer:** `MultiParamResolutionOutcome.substitution` from
+    /// `auto_type_param::resolve_auto_type_params` (see `auto_type_param.rs`).
+    /// Until the parser accepts `auto: TraitName` syntax, this Vec stays empty.
+    ///
+    /// **Consumer:** `Snapshot::from_compiled_module` copies this Vec verbatim
+    /// into `EvaluationGraph::auto_type_substitution`, which mixes it into
+    /// `topology_fingerprint`'s 7th bucket (see `graph.rs`).
+    pub auto_type_substitution: Vec<(String, String)>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }

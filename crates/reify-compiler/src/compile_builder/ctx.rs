@@ -167,6 +167,9 @@ impl CompilationCtx {
             solver_pragma: None,
             // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
             kernel_pragma: None,
+            // Populated by a future producer task that adds `auto:` parser
+            // support; empty Vec until then (see CompiledModule.auto_type_substitution).
+            auto_type_substitution: Vec::new(),
             diagnostics: self.diagnostics,
             content_hash,
         }
