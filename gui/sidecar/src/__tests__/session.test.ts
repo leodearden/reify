@@ -1048,6 +1048,66 @@ describe('SidecarSession multi-turn streaming', () => {
     // dedicated non-terminal case in claudeStore.ts — no cancelAndFlush, no sessionStatus
     // change, no in-flight assistant message mutation.
   });
+
+  it('mixed id-presence within a single invocation: warning fires exactly once, no-id event does not reset, msg_t2 reset emits full delta', async () => {
+    // Verify mixed id-presence semantics across a 3-event sequence:
+    //   event 1: id='msg_t1'  → id-change reset, currentAssistantMessageId='msg_t1', delta='Hello'
+    //   event 2: no id        → one-shot warning fires (console.error + notice), NO reset,
+    //                           lastTextLen stays at 5, delta=' world' (continuation)
+    //   event 3: id='msg_t2'  → id-change reset (msg_t2 != msg_t1), delta='Goodbye' (full)
+    //
+    // Key invariants:
+    //  - console.error fires exactly once (one-shot across the whole invocation)
+    //  - no-id event does NOT reset lastTextLen (delta is ' world', not 'Hello world')
+    //  - id-change reset on msg_t2 produces the full 'Goodbye' from offset 0
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // event 1: id-bearing, triggers turn-1 reset; text 'Hello' (len=5)
+      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'text', text: 'Hello' }] } },
+      // event 2: no message.id, triggers one-shot warning; text 'Hello world' (len=11, delta=' world')
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } },
+      // event 3: new id 'msg_t2', triggers id-change reset; text 'Goodbye' (delta='Goodbye' from offset 0)
+      { type: 'assistant', message: { id: 'msg_t2', content: [{ type: 'text', text: 'Goodbye' }] } },
+      { type: 'result', session_id: 'sess-mixed-id' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-mixed', text: 'Mixed id test' });
+
+    // 1. console.error fires exactly once across the entire invocation (one-shot guard spans
+    //    both the no-id event and the subsequent id-bearing event without re-triggering).
+    expect(consoleSpy).toHaveBeenCalledTimes(1);
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('missing message.id'));
+
+    // 2. Exactly one notice event, correlating to the in-flight send_message id.
+    const noticeEvents = outputs.filter((o) => o.type === 'notice');
+    expect(noticeEvents).toHaveLength(1);
+    expect((noticeEvents[0] as any).code).toBe('degraded_turn_boundary');
+    expect((noticeEvents[0] as any).message).toContain('message.id');
+    expect((noticeEvents[0] as any).id).toBe('msg-mixed');
+
+    // 3. Text delta assertions — verify all three externally observable deltas.
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    const deltaContents = textDeltas.map((o) => (o as any).content);
+
+    // event 1 (msg_t1): id-change reset → lastTextLen=0 → full 'Hello' emits as delta
+    expect(deltaContents).toContain('Hello');
+
+    // event 2 (no id): no reset → lastTextLen stays at 5 → only ' world' slice emits
+    expect(deltaContents).toContain(' world');
+
+    // Absence check: 'Hello world' as a single delta would indicate a spurious reset on the
+    // no-id event (i.e. lastTextLen wrongly zeroed), producing a full-string delta from offset 0.
+    expect(deltaContents).not.toContain('Hello world');
+
+    // event 3 (msg_t2): id-change reset (msg_t2 !== msg_t1) → lastTextLen=0 → 'Goodbye' from offset 0
+    expect(deltaContents).toContain('Goodbye');
+
+    consoleSpy.mockRestore();
+  });
 });
 
 describe('SidecarSession reset-boundary tool correlation preservation', () => {
