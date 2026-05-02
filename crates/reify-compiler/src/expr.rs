@@ -850,6 +850,28 @@ pub(crate) fn compile_expr_guarded(
                 if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind
                     && obj_name == "self"
                 {
+                    // self.<match-arm cluster> — task 2373.
+                    //
+                    // When `member` is the logical name of a `match`-block decl
+                    // cluster (PRD `match-block-decls.md` §6.4), the static type
+                    // is `Type::Union(arm_types)`. The synthetic ValueRef stamp
+                    // `__match_arm_group_<member>` is a compile-time sentinel —
+                    // no real cell is allocated; `Type::Union` is rejected by
+                    // `is_representable_cell_type` so any downstream eval-time
+                    // demand on this cell is a clear bug, not a silent miss.
+                    //
+                    // Narrowing under arm guards is handled in step-15/16 via
+                    // `narrow_arms_under_guard`; for now we always return the
+                    // full union (correct when `current_guard == None`, which is
+                    // the common case for v0.1 surface syntax).
+                    if let Some(group) = scope.resolve_match_arm_group(member.as_str()) {
+                        let arm_types: Vec<Type> =
+                            group.arms.iter().map(|a| a.arm_type.clone()).collect();
+                        let synthetic_entity = scope.entity_name.clone();
+                        let synthetic_member = format!("__match_arm_group_{}", member);
+                        let group_id = ValueCellId::new(&synthetic_entity, &synthetic_member);
+                        return CompiledExpr::value_ref(group_id, Type::Union(arm_types));
+                    }
                     // self.sub — for single-instance subs, return a StructureRef so outer
                     // chaining works. Collection subs are excluded here and handled below
                     // via resolve_collection_sub_to_list (self.bolts ≡ bare bolts).
