@@ -1257,9 +1257,12 @@ async fn read_sidecar_output_warns_on_parse_failure() {
 
     let (_guard, warn_counter) = reify_test_support::warn_counting_guard();
 
-    // Same invalid-JSON input as read_sidecar_output_skips_invalid_json_lines
-    // (for consistency in the invalid-input space).
-    let data = b"not-json\n";
+    // Structurally-invalid OutboundMessage (unknown discriminant) — distinct from
+    // `read_sidecar_output_skips_invalid_json_lines`, which feeds raw `not-json`.
+    // Both shapes route through the same `parse_outbound -> Err` branch, so the
+    // WARN behavior we assert below is the same; the goal here is to widen
+    // invalid-input coverage.
+    let data = b"{\"type\":\"unknown_kind\"}\n";
     let reader = BufReader::new(&data[..]);
     let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
     let received_clone = Arc::clone(&received);
@@ -1287,6 +1290,38 @@ async fn read_sidecar_output_warns_on_parse_failure() {
         1,
         "parse failure must emit exactly one WARN",
     );
+}
+
+/// `warn_if_stale_tool_call` must emit exactly one WARN for a stale ToolCall
+/// (empty tool_use_id), and zero WARNs for a valid ToolCall or a non-ToolCall
+/// variant.  Three branches tested in a single subscriber session so the
+/// assert is on the cumulative count.
+#[test]
+fn warn_if_stale_tool_call_emits_one_warn_only_for_stale_tool_call() {
+    let (_guard, counter) = reify_test_support::warn_counting_guard();
+
+    // (i) Stale ToolCall — empty tool_use_id → must bump the counter by 1.
+    let stale = OutboundMessage::ToolCall {
+        id: "msg-1".to_string(),
+        tool_name: "reify_get".to_string(),
+        tool_input: json!({}),
+        tool_use_id: String::new(),
+    };
+    warn_if_stale_tool_call(&stale);
+
+    // (ii) Valid ToolCall — non-empty tool_use_id → counter unchanged.
+    let valid = OutboundMessage::ToolCall {
+        id: "msg-2".to_string(),
+        tool_name: "reify_get".to_string(),
+        tool_input: json!({}),
+        tool_use_id: "tu-1".to_string(),
+    };
+    warn_if_stale_tool_call(&valid);
+
+    // (iii) Non-ToolCall variant → counter unchanged.
+    warn_if_stale_tool_call(&OutboundMessage::Ready);
+
+    reify_test_support::assert_warn_count(&counter, 1, "only the stale ToolCall must warn");
 }
 
 // --- outbound_to_event tests (step-7) ---
