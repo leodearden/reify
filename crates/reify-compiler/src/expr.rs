@@ -2650,4 +2650,111 @@ mod tests {
             diagnostics2[0].message
         );
     }
+
+    /// `compile_expr_guarded` on `self.<cluster>.<inner>` must use the helper's
+    /// empty-per_arm diagnostic when the cluster is registered but
+    /// `match_arm_group_arm_member_types` has no entry for it (producer-side bug).
+    ///
+    /// This path is unreachable through the full compilation pipeline (entity.rs's
+    /// `if !group_arms.is_empty()` gate prevents `register_match_arm_group` from
+    /// being called when no arms compile), so the test hand-constructs a
+    /// `CompilationScope` to exercise the call-site branch directly.
+    ///
+    /// Paired coverage at both call-site and helper levels
+    /// (`resolve_cluster_inner_member_empty_per_arm_returns_poison_without_panic`)
+    /// prevents future drift from reintroducing the duplication removed in task 2869.
+    #[test]
+    fn compile_expr_inner_cluster_missing_per_arm_returns_helper_diagnostic() {
+        use reify_types::Value;
+
+        // Build the scope: entity "Bolt" with a registered "head" cluster but no
+        // per-arm type map — this is the bug-condition the test pins.
+        let mut scope = CompilationScope::new("Bolt");
+        scope.is_entity_scope = true;
+        let group = GuardedDeclGroup {
+            name: "head".to_string(),
+            arms: vec![GuardedDeclArm {
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: ValueCellId::new("Bolt", "__guard_0"),
+                arm_type: Type::StructureRef("HexHead".to_string()),
+            }],
+        };
+        scope.register_match_arm_group("head", group);
+        // Deliberately leave `match_arm_group_arm_member_types` empty for "head".
+
+        // Build AST: self.head.across_flats (two nested MemberAccess nodes).
+        let self_expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Ident("self".to_string()),
+            span: SourceSpan::prelude(),
+        };
+        let self_head = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::MemberAccess {
+                object: Box::new(self_expr),
+                member: "head".to_string(),
+            },
+            span: SourceSpan::prelude(),
+        };
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::MemberAccess {
+                object: Box::new(self_head),
+                member: "across_flats".to_string(),
+            },
+            span: SourceSpan::prelude(),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut lambda_counter = 0u32;
+        let result = compile_expr_guarded(
+            &expr,
+            &scope,
+            &[],
+            &[],
+            &mut diagnostics,
+            None,
+            &mut lambda_counter,
+        );
+
+        // (a) poison literal returned.
+        assert_eq!(
+            result.result_type,
+            Type::Error,
+            "missing per_arm at inner call site must return Type::Error; got: {:?}",
+            result.result_type
+        );
+        // (b) exactly one Severity::Error diagnostic.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "missing per_arm must produce exactly one diagnostic; got {}: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        // (c) message matches the helper's empty-per_arm shape.
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("match-arm cluster 'head' has no resolvable arm structures"),
+            "diagnostic must mention the cluster shape; got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("cannot resolve member 'across_flats'"),
+            "diagnostic must name the unresolvable member; got: {:?}",
+            diagnostics[0].message
+        );
+        // (d) label text mirrors the helper's empty-per_arm label.
+        let label_msgs: Vec<&str> = diagnostics[0]
+            .labels
+            .iter()
+            .map(|l| l.message.as_str())
+            .collect();
+        assert!(
+            label_msgs.contains(&"cluster has no resolved arm structures"),
+            "diagnostic must carry the cluster label; got labels: {:?}",
+            label_msgs
+        );
+    }
 }
