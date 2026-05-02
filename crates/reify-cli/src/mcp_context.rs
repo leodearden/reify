@@ -350,48 +350,10 @@ impl ReifyToolContext for CliToolContext {
             .get(&file_path)
             .map(|f| f.content.as_str())
             .unwrap_or("");
-
-        // Search templates for matching entity
-        for template in &compiled.templates {
-            if template.name == entity_path {
-                // Return the span of the first value cell as a proxy for the entity
-                if let Some(cell) = template.value_cells.first() {
-                    let (line, column) =
-                        reify_types::byte_offset_to_line_col(source, cell.span.start as usize);
-                    let (end_line, end_column) =
-                        reify_types::byte_offset_to_line_col(source, cell.span.end as usize);
-                    return Ok(SourceLocationInfo {
-                        file_path,
-                        line: line as u32,
-                        column: column as u32,
-                        end_line: end_line as u32,
-                        end_column: end_column as u32,
-                    });
-                }
-            }
-
-            // Also check for entity.member pattern
-            for cell in &template.value_cells {
-                let cell_id_str = format!("{}", cell.id);
-                if cell_id_str == entity_path || cell.id.member == entity_path {
-                    let (line, column) =
-                        reify_types::byte_offset_to_line_col(source, cell.span.start as usize);
-                    let (end_line, end_column) =
-                        reify_types::byte_offset_to_line_col(source, cell.span.end as usize);
-                    return Ok(SourceLocationInfo {
-                        file_path,
-                        line: line as u32,
-                        column: column as u32,
-                        end_line: end_line as u32,
-                        end_column: end_column as u32,
-                    });
-                }
-            }
-        }
-
-        Err(ToolError::EngineError(format!(
-            "entity not found: {entity_path}"
-        )))
+        reify_eval::resolve_entity_source_location(compiled, source, &file_path, entity_path)
+            .ok_or_else(|| {
+                ToolError::EngineError(format!("entity not found: {entity_path}"))
+            })
     }
 
     fn update_source(&self, file_path: &str, content: &str) -> Result<UpdateResult, ToolError> {
