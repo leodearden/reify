@@ -583,6 +583,10 @@ pub fn filter_feasible_candidates(
     // candidates in Phase B.  When the deferred type-substitution pass lands
     // (substituting Type::TypeParam(T) → Type::StructureRef(candidate)), this
     // will need to move back inside the loop with per-candidate ValueMap setup.
+    //
+    // NOTE: an identical build (with identical TODO) also lives in
+    // `resolve_auto_type_params_with_backtracking` for the DFS hot path.
+    // Both copies must be migrated together when the substitution pass lands.
     let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
         parameterized_template
             .constraints
@@ -1131,6 +1135,36 @@ pub fn resolve_auto_type_params_with_backtracking(
         );
     }
 
+    // Build the parameterized template's constraint list ONCE here so the
+    // DFS leaf-feasibility predicate (`check_constraints_violated`, called
+    // at every cross-product leaf via `dfs_leaf_feasible`) borrows a single
+    // owned `Vec` rather than rebuilding it on every leaf. With max_depth=6
+    // and ~10 candidates per param the worst case is 10^6 leaves; the
+    // per-leaf rebuild was a measurable hot-path allocation pin.
+    //
+    // NOTE: an identical build (with identical TODO) also lives in
+    // `filter_feasible_candidates` for the Phase B / single-param path.
+    // Both copies must be migrated together when the substitution pass lands.
+    //
+    // TODO(post-substitution-mechanics): once the deferred type-substitution
+    // pass lands (substituting `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
+    // — see the `TODO(post-substitution-mechanics)` block at the BFS-fallback
+    // branch above and the matching note in `filter_feasible_candidates`),
+    // per-candidate `ValueMap`s will differ across leaves and this hoist
+    // becomes unsound — `constraints_template` will need to move back inside
+    // the leaf with per-candidate value setup. Revert this hoist when that
+    // task lands.
+    let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+        parameterized_template
+            .constraints
+            .iter()
+            .map(|c| (c.id.clone(), &c.expr))
+            .collect();
+    // The empty ValueMap used by every DFS leaf: built once here alongside
+    // `constraints_template` so `dfs_leaf_feasible` doesn't construct a new
+    // (zero-heap-allocation but non-trivial stack init) empty map per call.
+    let leaf_values = reify_types::ValueMap::new();
+
     // Phase A enumeration runs ONCE per param up front (before recursion),
     // producing a `Vec<Vec<String>>` of per-param candidate vectors. This
     // hoists Phase A out of the DFS body — Phase A depends only on the
@@ -1267,7 +1301,8 @@ pub fn resolve_auto_type_params_with_backtracking(
         &per_param_candidates,
         &mut current,
         &mut feasible_assignments,
-        parameterized_template,
+        &constraints_template,
+        &leaf_values,
         constraint_checker,
         functions,
         max_feasible_to_collect,
@@ -1390,58 +1425,75 @@ pub fn resolve_auto_type_params_with_backtracking(
 
 // ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
 
-/// Separator used inside the synthetic leaf-label placeholder produced by
-/// [`dfs_leaf_feasible`] when joining the per-param candidate names.
+/// Returns `true` iff any constraint in `constraints_template` is `Satisfied::Violated`
+/// according to `checker`.
 ///
-/// Label-only role: the joined string is passed to
-/// [`filter_feasible_candidates`] as a single-element `candidates` slice
-/// solely so exactly one `constraint_checker.check()` call fires per leaf
-/// (one queue pop drives one leaf verdict). With the deferred type-
-/// substitution mechanics (see the Phase B scope cut documented on
-/// [`resolve_auto_type_params_with_backtracking`]), `filter_feasible_candidates`
-/// does NOT consult the candidate name string in the verdict path —
-/// `constraint_checker.check()` receives an empty `ValueMap` and the
-/// per-template constraint list, neither of which depends on the synthetic
-/// label. The label is therefore a stable identifier (not a semantic FQN)
-/// and would only become load-bearing if a future task surfaces it in
-/// downstream diagnostic structure.
+/// # Semantics
 ///
-/// Revisit when the deferred substitution mechanics land: at that point the
-/// placeholder must be replaced with a real candidate-FQN-driven
-/// substitution-aware feasibility check (one per leaf), not a synthetic
-/// label.
-const DFS_LEAF_LABEL_SEPARATOR: &str = ",";
+/// - Returns `true` iff at least one [`reify_types::ConstraintResult`] has
+///   `satisfaction == `[`reify_types::Satisfaction::Violated`]`.
+///   Feasibility is the **negation** of this predicate.
+/// - [`reify_types::Satisfaction::Indeterminate`] does **NOT** cause a `true` return.
+///   Architecture §2.5 monotonic-feasible rule: undef does not falsify — only
+///   `Violated` makes a leaf infeasible.
+/// - The borrowed-slice signature lets callers (especially the DFS hot path)
+///   reuse a single owned `Vec` built ONCE by the orchestrator across many
+///   leaf calls, without rebuilding it per leaf.
+///
+/// # Residual per-call allocation
+///
+/// `ConstraintInput::constraints` is owned (`Vec<(ConstraintNodeId, &CompiledExpr)>`),
+/// so this function still clones `constraints_template` via `.to_vec()` on every
+/// call — copying a heap `String` per `ConstraintNodeId`. The orchestrator-level
+/// hoist eliminates the per-leaf *rebuild* (the `iter().map().collect()` traversal
+/// of `parameterized_template.constraints`), but not the per-leaf *clone* of the
+/// already-built slice.
+///
+/// TODO(constraint-input-borrow): change `ConstraintInput::constraints` from
+/// `Vec<(ConstraintNodeId, &CompiledExpr)>` to `&[(ConstraintNodeId, &CompiledExpr)]`
+/// (or `Cow`) so this helper can pass the borrowed slice through without cloning.
+/// That change is in `reify_types::ConstraintInput` (outside this crate's scope).
+fn check_constraints_violated(
+    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
+    checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+    values: &reify_types::ValueMap,
+) -> bool {
+    use reify_types::ConstraintInput;
+    let input = ConstraintInput {
+        constraints: constraints_template.to_vec(),
+        values,
+        functions,
+        determinacy: None,
+    };
+    let results = checker.check(&input);
+    results
+        .iter()
+        .any(|r| r.satisfaction == reify_types::Satisfaction::Violated)
+}
 
 /// True iff the current cross-product leaf assignment is feasible.
 ///
-/// Synthesizes a single-element placeholder vec for `filter_feasible_candidates`
-/// so exactly one `constraint_checker.check()` call fires per leaf. The
-/// placeholder string is `current.join(DFS_LEAF_LABEL_SEPARATOR)` — a
-/// label-only synthetic identifier; see [`DFS_LEAF_LABEL_SEPARATOR`] for the
-/// label-vs-FQN role and the contract under deferred substitution mechanics.
+/// A thin wrapper around [`check_constraints_violated`] — returns the
+/// negation of that predicate: `true` iff no constraint in
+/// `constraints_template` is `Satisfaction::Violated`.
 ///
-/// The "single check per leaf" shape is what makes the
-/// [`reify_test_support::MockConstraintChecker::with_call_queue`] FIFO model
-/// useful for backtracking tests: one queue pop drives one leaf verdict.
+/// The "single check per leaf" shape is preserved: `check_constraints_violated`
+/// calls `constraint_checker.check()` exactly once per leaf, which is what
+/// makes the [`reify_test_support::MockConstraintChecker::with_call_queue`]
+/// FIFO model useful for backtracking tests: one queue pop drives one leaf
+/// verdict.
 ///
-/// Inherits Phase B's monotonic-feasible rule (architecture §2.5):
-/// `Indeterminate` counts as feasible — only `Satisfaction::Violated` on the
-/// single-candidate input maps to [`FeasibilityResult::Empty`].
+/// Inherits the monotonic-feasible rule (architecture §2.5):
+/// `Indeterminate` counts as feasible — only `Satisfaction::Violated`
+/// makes a leaf infeasible.
 fn dfs_leaf_feasible(
-    current: &[String],
-    parameterized_template: &TopologyTemplate,
+    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
+    values: &reify_types::ValueMap,
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
 ) -> bool {
-    let leaf_label = current.join(DFS_LEAF_LABEL_SEPARATOR);
-    let placeholder = vec![leaf_label];
-    let feasibility = filter_feasible_candidates(
-        &placeholder,
-        parameterized_template,
-        constraint_checker,
-        functions,
-    );
-    matches!(feasibility, FeasibilityResult::Feasible { .. })
+    !check_constraints_violated(constraints_template, constraint_checker, functions, values)
 }
 
 /// Recursive DFS over the cross-product of per-param Phase A candidate vectors.
@@ -1464,7 +1516,7 @@ fn dfs_leaf_feasible(
 //
 // `#[allow(clippy::too_many_arguments)]`: this recursive helper threads
 // recursion state (`level`, `current`, `feasible_assignments`) alongside
-// shared search context (`per_param_candidates`, `parameterized_template`,
+// shared search context (`per_param_candidates`, `constraints_template`,
 // `constraint_checker`, `functions`, `max_feasible_to_collect`). Wrapping the
 // shared context in a struct would force every recursive call site to deref
 // through the wrapper for what is effectively a flat parameter pack; the
@@ -1476,7 +1528,8 @@ fn dfs_search(
     per_param_candidates: &[Vec<String>],
     current: &mut Vec<String>,
     feasible_assignments: &mut Vec<Vec<String>>,
-    parameterized_template: &TopologyTemplate,
+    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
+    leaf_values: &reify_types::ValueMap,
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
     max_feasible_to_collect: usize,
@@ -1484,16 +1537,16 @@ fn dfs_search(
     if level == per_param_candidates.len() {
         // Leaf branch: this cross-product assignment is feasible iff
         // `dfs_leaf_feasible` returns `true`. The leaf-feasibility predicate
-        // reuses Phase B's `Satisfaction::Violated` discriminator (see
-        // `filter_feasible_candidates`): a leaf is infeasible iff its
-        // single-call constraint check produces a Violated result, and
-        // feasible otherwise. This inherits architecture §2.5's
-        // monotonic-feasible rule — `Indeterminate` counts as feasible
-        // (only `Violated` falsifies). Backtracking is therefore driven by
-        // the same three-arm satisfaction enum that v0.1 BFS uses; the only
-        // change at v0.2 is that infeasibility unwinds to the next sibling
-        // at the deepest open level rather than halting the orchestrator.
-        if dfs_leaf_feasible(current, parameterized_template, constraint_checker, functions) {
+        // uses `check_constraints_violated`'s `Satisfaction::Violated`
+        // discriminator: a leaf is infeasible iff its single-call constraint
+        // check produces a Violated result, and feasible otherwise. This
+        // inherits architecture §2.5's monotonic-feasible rule —
+        // `Indeterminate` counts as feasible (only `Violated` falsifies).
+        // Backtracking is therefore driven by the same three-arm satisfaction
+        // enum that v0.1 BFS uses; the only change at v0.2 is that
+        // infeasibility unwinds to the next sibling at the deepest open level
+        // rather than halting the orchestrator.
+        if dfs_leaf_feasible(constraints_template, leaf_values, constraint_checker, functions) {
             feasible_assignments.push(current.clone());
             // Early-terminate once the requested feasible count is reached:
             // free-mode (max=1) stops at the first feasible; strict-mode
@@ -1509,7 +1562,8 @@ fn dfs_search(
             per_param_candidates,
             current,
             feasible_assignments,
-            parameterized_template,
+            constraints_template,
+            leaf_values,
             constraint_checker,
             functions,
             max_feasible_to_collect,
@@ -1520,4 +1574,110 @@ fn dfs_search(
         }
     }
     false
+}
+
+// ─── Unit tests for private helpers ──────────────────────────────────────────
+
+#[cfg(test)]
+mod helper_tests {
+    use super::check_constraints_violated;
+    use reify_test_support::MockConstraintChecker;
+    use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
+
+    fn literal_expr() -> reify_types::CompiledExpr {
+        reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool)
+    }
+
+    /// Empty `constraints_template` slice → vacuously no violations → `false`.
+    #[test]
+    fn check_constraints_violated_returns_false_for_empty_constraints() {
+        let checker = MockConstraintChecker::new();
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&[], &checker, functions, &values);
+        assert!(
+            !result,
+            "empty constraints slice must return false (vacuously no violations)"
+        );
+    }
+
+    /// Single constraint, checker returns `Satisfied` → `false`.
+    #[test]
+    fn check_constraints_violated_returns_false_when_all_satisfied() {
+        let expr = literal_expr();
+        let id = ConstraintNodeId::new("C0", 0);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(id.clone(), &expr)];
+        let checker = MockConstraintChecker::new(); // default: Satisfied
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        assert!(
+            !result,
+            "all-Satisfied constraints must return false (no violations)"
+        );
+    }
+
+    /// Single constraint, checker returns `Indeterminate` → `false`
+    /// (architecture §2.5: Indeterminate counts as feasible, does not falsify).
+    #[test]
+    fn check_constraints_violated_returns_false_when_all_indeterminate_per_arch_2_5() {
+        let expr = literal_expr();
+        let id = ConstraintNodeId::new("C0", 0);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(id.clone(), &expr)];
+        let checker = MockConstraintChecker::new().with_default(Satisfaction::Indeterminate);
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        assert!(
+            !result,
+            "Indeterminate constraints must return false (undef does not falsify, arch §2.5)"
+        );
+    }
+
+    /// Two constraints, checker returns `Violated` for all → `true`.
+    #[test]
+    fn check_constraints_violated_returns_true_when_any_violated() {
+        let expr = literal_expr();
+        let id0 = ConstraintNodeId::new("C0", 0);
+        let id1 = ConstraintNodeId::new("C1", 1);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(id0.clone(), &expr), (id1.clone(), &expr)];
+        let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        assert!(
+            result,
+            "all-Violated constraints must return true (any one Violated falsifies)"
+        );
+    }
+
+    /// Two constraints with distinct ids "C0" and "C1"; C0 → Satisfied, C1 → Violated → `true`
+    /// (any one Violated falsifies).
+    #[test]
+    fn check_constraints_violated_returns_true_for_mixed_satisfied_and_violated() {
+        let expr = literal_expr();
+        let id0 = ConstraintNodeId::new("C0", 0);
+        let id1 = ConstraintNodeId::new("C1", 1);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(id0.clone(), &expr), (id1.clone(), &expr)];
+        // C0 → Satisfied (default), C1 → Violated
+        let checker = MockConstraintChecker::new()
+            .with_default(Satisfaction::Satisfied)
+            .with_result(id1.clone(), Satisfaction::Violated);
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        assert!(
+            result,
+            "mixed Satisfied+Violated must return true (any one Violated falsifies)"
+        );
+    }
 }
