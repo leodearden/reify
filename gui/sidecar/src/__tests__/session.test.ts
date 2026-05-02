@@ -955,6 +955,9 @@ describe('SidecarSession multi-turn streaming', () => {
   });
 
   it('handles assistant event without message.id gracefully — no crash, deltas emit correctly', async () => {
+    // Suppress console.error noise from the no-id warning branch
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
     // Verify the fallback branch (event.message.id absent):
     // (a) No exception thrown — session completes normally.
     // (b) Deltas emit correctly for monotonically growing text within a single turn.
@@ -987,6 +990,50 @@ describe('SidecarSession multi-turn streaming', () => {
     // (c) No spurious reset: the full 'Hello world' must NOT appear as a single delta,
     // proving lastTextLen was NOT zeroed between the two partial events.
     expect(deltaContents).not.toContain('Hello world');
+
+    // (d) Error event emitted to host via onOutput — one-shot, first no-id event triggers it.
+    // Acceptance criterion #3: existing test must assert the new error-event surface.
+    const errorEvents = outputs.filter((o) => o.type === 'error');
+    expect(errorEvents).toHaveLength(1);
+    expect((errorEvents[0] as any).message).toContain('[degraded-turn-boundary]');
+    expect((errorEvents[0] as any).id).toBe('msg-no-id');
+
+    consoleSpy.mockRestore();
+  });
+
+  it('emits onOutput error event exactly once when assistant events lack message.id (one-shot semantics)', async () => {
+    // Verify one-shot guard: across multiple no-id events in a single invokeSdk call,
+    // exactly one error event is emitted (the guard must not fire on subsequent no-id events).
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // Three assistant events, all lacking message.id — exercises the one-shot guard
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'a' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'ab' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'abc' }] } },
+      { type: 'result', session_id: 'sess-no-id-oneshot' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-oneshot', text: 'Test' });
+
+    consoleSpy.mockRestore();
+
+    // Exactly one error emission across three no-id events (one-shot guard fires only once)
+    const errorEvents = outputs.filter((o) => o.type === 'error');
+    expect(errorEvents).toHaveLength(1);
+
+    // Error correlates to the in-flight send_message id
+    expect((errorEvents[0] as any).id).toBe('msg-oneshot');
+
+    // Contains structured discriminator and references message.id in the message text
+    expect((errorEvents[0] as any).message).toContain('[degraded-turn-boundary]');
+    expect((errorEvents[0] as any).message).toContain('message.id');
+
+    // Sanity: text deltas still emit — error event must NOT short-circuit normal streaming
+    expect(outputs.some((o) => o.type === 'text_delta')).toBe(true);
   });
 });
 
