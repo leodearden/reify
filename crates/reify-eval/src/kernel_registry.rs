@@ -498,6 +498,39 @@ mod tests {
         emit_kernel_selection("nothing", 0);
     }
 
+    /// The helper `debug_assert_unique_op_repr_pairs` must panic in debug
+    /// builds when two kernels claim the same `(Operation, ReprKind)` pair.
+    ///
+    /// Constructs a synthetic `BTreeMap<String, CapabilityDescriptor>` with
+    /// two entries — `"kernel_a"` and `"kernel_b"` — both claiming
+    /// `(BooleanUnion, BRep)` in their `supports` tables, then calls the
+    /// helper directly. This bypasses the global `inventory` registry (no
+    /// `OnceLock` mutation, no test pollution) following the same testability
+    /// rationale as the existing `emit_kernel_selection` extraction.
+    ///
+    /// The `#[cfg(debug_assertions)]` guard is required because `debug_assert!`
+    /// compiles to a no-op in release builds — `#[should_panic]` would falsely
+    /// pass if the test ran in a build where the assertion is elided.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "duplicate kernel claim for")]
+    fn debug_assert_unique_op_repr_pairs_panics_on_duplicate_pair() {
+        let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        registered.insert(
+            "kernel_a".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+            },
+        );
+        registered.insert(
+            "kernel_b".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+            },
+        );
+        debug_assert_unique_op_repr_pairs(&registered);
+    }
+
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
     /// *smaller* kernel when multiple registrations are present.
     ///
