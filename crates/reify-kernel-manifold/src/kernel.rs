@@ -219,6 +219,10 @@ mod tests {
 
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(tracing::Level::WARN)
+            // Qualified prefix intentionally pins the `crate::module` tracing target
+            // (mirrors `target: "reify_kernel_manifold::kernel"` in the impl above).
+            // If the `KernelAttributeHook` impl moves to a different submodule, update
+            // both the `target:` literal in `propagate_attributes` and this prefix.
             .target_prefix("reify_kernel_manifold::kernel")
             .build();
         let warn_count = counters[&tracing::Level::WARN].clone();
