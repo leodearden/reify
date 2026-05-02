@@ -318,3 +318,83 @@ fn self_dot_match_cluster_pipe_arm_collapses_to_one_union_member() {
         probe_type
     );
 }
+
+/// Step-11: nested `self.<cluster>.<member>` resolves to the common-field
+/// type when the inner member is present in every arm with the same type.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure def HexHead    { param across_flats : Real }
+/// structure def SocketHead { param across_flats : Real }
+/// structure def Bolt {
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+///     let probe = self.head.across_flats
+/// }
+/// ```
+/// Asserts `probe.cell_type == Type::Real` (the common field's type, not Union).
+/// Pins PRD acceptance criterion 1 (common fields type-check via the cluster).
+#[test]
+fn self_dot_cluster_dot_common_field_resolves_to_arm_field_type() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    // self.head.across_flats — nested MemberAccess.
+    let probe = let_member(
+        "probe",
+        member_access(
+            member_access(make_ident_expr("self"), "head"),
+            "across_flats",
+        ),
+    );
+
+    let bolt = structure_with_members(
+        "Bolt",
+        vec![param_member("head_type", "HeadType"), match_group, probe],
+    );
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_cluster_common_field"),
+        declarations: vec![
+            head_type_enum(),
+            structure_with_members("HexHead", vec![param_member("across_flats", "Real")]),
+            structure_with_members("SocketHead", vec![param_member("across_flats", "Real")]),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) No Error diagnostics.
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:#?}",
+        errors
+    );
+
+    // (b) `probe` cell has the common field type — Real, not Union.
+    let probe_type = find_cell_type(&compiled, "Bolt", "probe")
+        .expect("expected `probe` value cell on Bolt template");
+
+    assert_eq!(
+        probe_type,
+        Type::Real,
+        "expected probe.cell_type == Real (common field across all arms), got {}",
+        probe_type
+    );
+}
