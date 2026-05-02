@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import type { OutboundMessage } from '../types.js';
+import type { OutboundMessage, InboundMessage } from '../types.js';
 
 // Mock the claude CLI subprocess spawning
 vi.mock('node:child_process', () => ({
@@ -643,6 +643,7 @@ describe('SidecarSession', () => {
     session.handleMessage({
       type: 'tool_result',
       id: 'msg-1',
+      tool_use_id: 'toolu_xyz',
       tool_name: 'reify_get_diagnostics',
       result: { diagnostics: [] },
     });
@@ -681,6 +682,7 @@ describe('SidecarSession', () => {
     await session.handleMessage({
       type: 'tool_result',
       id: 'msg-orphan',
+      tool_use_id: 'toolu_orphan',
       tool_name: 'reify_unknown',
       result: 'x',
     });
@@ -706,6 +708,7 @@ describe('SidecarSession', () => {
     await session.handleMessage({
       type: 'tool_result',
       id: 'msg-stale',
+      tool_use_id: 'toolu_carry',
       tool_name: 'reify_get_source',
       result: 'x',
     });
@@ -1914,6 +1917,7 @@ describe('close-on-result race', () => {
     session.handleMessage({
       type: 'tool_result',
       id: 'tool-race',
+      tool_use_id: 'toolu_race',
       tool_name: 'reify_get_diagnostics',
       result: { diagnostics: [] },
     });
@@ -1993,6 +1997,7 @@ describe('stdin write error correlation', () => {
     session.handleMessage({
       type: 'tool_result',
       id: 'tool-B',
+      tool_use_id: 'toolu_x',
       tool_name: 'reify_get_diagnostics',
       result: { diagnostics: [] },
     });
@@ -2306,13 +2311,22 @@ describe('FIFO consumption on echoed-id path', () => {
     expect(line2.message.content[0].tool_use_id).toBe('toolu_1');
 
     // --- Step (b): Dispatch tool_result WITHOUT tool_use_id (fallback path) ---
-    session.handleMessage({
+    /**
+     * Test-local relaxed shape that lets THIS test deliberately bypass the
+     * wire-contract type to exercise the FIFO-by-tool_name fallback path
+     * inside `handleToolResult`. The public `InboundToolResult` requires
+     * `tool_use_id`; this is the one site where the runtime fallback (kept
+     * as defense-in-depth) is exercised, by-design.
+     */
+    type FifoFallbackToolResult = { type: 'tool_result'; id: string; tool_name: string; result: unknown };
+    const fallbackMsg: FifoFallbackToolResult = {
       type: 'tool_result',
       id: 'tr-2',
       tool_name: 'reify_x',
       result: 'result-2',
       // no tool_use_id — fallback to FIFO
-    });
+    };
+    session.handleMessage(fallbackMsg as unknown as InboundMessage);
 
     // Wait for the third stdin line
     await waitForStdinLines(mockProc.stdin, stdinLines, 3);
