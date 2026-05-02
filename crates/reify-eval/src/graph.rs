@@ -143,8 +143,10 @@ pub struct EvaluationGraph {
     /// of Vec insertion order (revert-stable: same candidate re-selected after
     /// a parameter edit + revert → same fingerprint → cache reuse).
     ///
-    /// **Empty-Vec:** the default empty Vec contributes `ContentHash(0)` (the
-    /// neutral element of `combine_all`) — no special-case branch needed.
+    /// **Empty-Vec:** the default empty Vec contributes `ContentHash(0)`; this
+    /// is deterministic but is NOT a no-op against the outer `combine_all` —
+    /// adding this bucket shifts pre-existing fingerprints, which is acceptable
+    /// since `topology_fingerprint` is an in-memory cache key only.
     ///
     /// **Invariant:** param names must be unique; duplicates are a producer bug.
     pub auto_type_substitution: Vec<(String, String)>,
@@ -639,9 +641,12 @@ impl EvaluationGraph {
         // step-3 contract: identical input Vecs (in identical order) produce
         // identical bucket hashes — enforced by ContentHash determinism.
         //
-        // step-7 back-compat contract: an empty Vec contributes
-        // ContentHash(0) to the bucket via combine_all([])'s neutral-element
-        // semantics — no special-case branch is needed.
+        // step-7 back-compat contract: an empty Vec contributes ContentHash(0)
+        // deterministically via combine_all([]). This is NOT a no-op against
+        // the outer combine_all — combine(x, ContentHash(0)) rehashes a 32-byte
+        // concat (hash.rs:32-37), so adding this bucket shifts pre-existing
+        // fingerprints. That shift is acceptable: topology_fingerprint is an
+        // in-memory cache key only, not a persisted identifier.
         let auto_type_sub_hash = {
             // Invariant: param names must be unique (producer guarantee).
             debug_assert!(
