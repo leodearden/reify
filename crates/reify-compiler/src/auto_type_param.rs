@@ -583,6 +583,10 @@ pub fn filter_feasible_candidates(
     // candidates in Phase B.  When the deferred type-substitution pass lands
     // (substituting Type::TypeParam(T) → Type::StructureRef(candidate)), this
     // will need to move back inside the loop with per-candidate ValueMap setup.
+    //
+    // NOTE: an identical build (with identical TODO) also lives in
+    // `resolve_auto_type_params_with_backtracking` for the DFS hot path.
+    // Both copies must be migrated together when the substitution pass lands.
     let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
         parameterized_template
             .constraints
@@ -1138,6 +1142,10 @@ pub fn resolve_auto_type_params_with_backtracking(
     // and ~10 candidates per param the worst case is 10^6 leaves; the
     // per-leaf rebuild was a measurable hot-path allocation pin.
     //
+    // NOTE: an identical build (with identical TODO) also lives in
+    // `filter_feasible_candidates` for the Phase B / single-param path.
+    // Both copies must be migrated together when the substitution pass lands.
+    //
     // TODO(post-substitution-mechanics): once the deferred type-substitution
     // pass lands (substituting `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
     // — see the `TODO(post-substitution-mechanics)` block at the BFS-fallback
@@ -1152,6 +1160,10 @@ pub fn resolve_auto_type_params_with_backtracking(
             .iter()
             .map(|c| (c.id.clone(), &c.expr))
             .collect();
+    // The empty ValueMap used by every DFS leaf: built once here alongside
+    // `constraints_template` so `dfs_leaf_feasible` doesn't construct a new
+    // (zero-heap-allocation but non-trivial stack init) empty map per call.
+    let leaf_values = reify_types::ValueMap::new();
 
     // Phase A enumeration runs ONCE per param up front (before recursion),
     // producing a `Vec<Vec<String>>` of per-param candidate vectors. This
@@ -1290,6 +1302,7 @@ pub fn resolve_auto_type_params_with_backtracking(
         &mut current,
         &mut feasible_assignments,
         &constraints_template,
+        &leaf_values,
         constraint_checker,
         functions,
         max_feasible_to_collect,
@@ -1426,6 +1439,20 @@ pub fn resolve_auto_type_params_with_backtracking(
 /// - The borrowed-slice signature lets callers (especially the DFS hot path)
 ///   reuse a single owned `Vec` built ONCE by the orchestrator across many
 ///   leaf calls, without rebuilding it per leaf.
+///
+/// # Residual per-call allocation
+///
+/// `ConstraintInput::constraints` is owned (`Vec<(ConstraintNodeId, &CompiledExpr)>`),
+/// so this function still clones `constraints_template` via `.to_vec()` on every
+/// call — copying a heap `String` per `ConstraintNodeId`. The orchestrator-level
+/// hoist eliminates the per-leaf *rebuild* (the `iter().map().collect()` traversal
+/// of `parameterized_template.constraints`), but not the per-leaf *clone* of the
+/// already-built slice.
+///
+/// TODO(constraint-input-borrow): change `ConstraintInput::constraints` from
+/// `Vec<(ConstraintNodeId, &CompiledExpr)>` to `&[(ConstraintNodeId, &CompiledExpr)]`
+/// (or `Cow`) so this helper can pass the borrowed slice through without cloning.
+/// That change is in `reify_types::ConstraintInput` (outside this crate's scope).
 fn check_constraints_violated(
     constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
     checker: &dyn ConstraintChecker,
@@ -1462,11 +1489,11 @@ fn check_constraints_violated(
 /// makes a leaf infeasible.
 fn dfs_leaf_feasible(
     constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
+    values: &reify_types::ValueMap,
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
 ) -> bool {
-    let empty_values = reify_types::ValueMap::new();
-    !check_constraints_violated(constraints_template, constraint_checker, functions, &empty_values)
+    !check_constraints_violated(constraints_template, constraint_checker, functions, values)
 }
 
 /// Recursive DFS over the cross-product of per-param Phase A candidate vectors.
@@ -1502,6 +1529,7 @@ fn dfs_search(
     current: &mut Vec<String>,
     feasible_assignments: &mut Vec<Vec<String>>,
     constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
+    leaf_values: &reify_types::ValueMap,
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
     max_feasible_to_collect: usize,
@@ -1518,7 +1546,7 @@ fn dfs_search(
         // enum that v0.1 BFS uses; the only change at v0.2 is that
         // infeasibility unwinds to the next sibling at the deepest open level
         // rather than halting the orchestrator.
-        if dfs_leaf_feasible(constraints_template, constraint_checker, functions) {
+        if dfs_leaf_feasible(constraints_template, leaf_values, constraint_checker, functions) {
             feasible_assignments.push(current.clone());
             // Early-terminate once the requested feasible count is reached:
             // free-mode (max=1) stops at the first feasible; strict-mode
@@ -1535,6 +1563,7 @@ fn dfs_search(
             current,
             feasible_assignments,
             constraints_template,
+            leaf_values,
             constraint_checker,
             functions,
             max_feasible_to_collect,
