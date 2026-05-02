@@ -143,17 +143,20 @@ fn propagate_poison() -> CompiledExpr {
 ///
 /// # Empty `per_arm` invariant (review-cycle-1, blocking-fix; task 2373 step-22)
 ///
-/// Empty `per_arm` is a producer-side bug — the inner call site at the
-/// `self.<cluster>.<inner>` branch already guards with
-/// `Some(arms) if !arms.is_empty()` (expr.rs ~1029), but the external
-/// `<sub>.<cluster>.<inner>` call site at expr.rs ~1188 only checks that the
-/// cluster entry exists. Centralizing the empty-slice guard here means any
-/// future call site is safe by construction, and emits a uniform
-/// "match-arm cluster has no resolvable arm structures" diagnostic that
-/// mirrors the inner-call-site fallback shape. The inner-call-site
-/// `Some(arms) if !arms.is_empty()` guard remains in place as defense in
-/// depth: it carries a slightly different (cluster-aware) diagnostic and
-/// avoids this helper entirely for the inner case.
+/// Empty `per_arm` is a producer-side bug. This guard is the single source of
+/// truth for the empty-per_arm "match-arm cluster has no resolvable arm
+/// structures" diagnostic for **both** call sites:
+///
+/// * `self.<cluster>.<inner>` (inner call site, expr.rs ~1029) — task 2869
+///   removed the former `Some(arms) if !arms.is_empty()` precheck there and
+///   now passes `.map(Vec::as_slice).unwrap_or(&[])` directly, so `None` and
+///   `Some(empty)` both reach this guard.
+/// * `<sub>.<cluster>.<inner>` (external call site, expr.rs ~1188) — checked
+///   that the cluster entry exists before calling, but per_arm can still be
+///   empty if no arm structures resolved.
+///
+/// Centralizing here means any future call site is safe by construction and
+/// emits a uniform diagnostic without a separate precheck.
 fn resolve_cluster_inner_member(
     per_arm: &[(String, std::collections::BTreeMap<String, Type>)],
     inner: &str,
@@ -1058,44 +1061,25 @@ pub(crate) fn compile_expr_guarded(
                     && self_name == "self"
                     && scope.resolve_match_arm_group(group_name.as_str()).is_some()
                 {
-                    let per_arm = scope
+                    // Deduplicated call (task 2869): coerce Option<&Vec<ArmMemberMap>> to
+                    // &[ArmMemberMap] so the helper's existing empty-slice guard (task
+                    // 2373 step-22) fires for both the None and Some(empty) cases. The
+                    // helper is the single source of truth for the empty-per_arm
+                    // diagnostic at both inner and external call sites.
+                    let per_arm: &[ArmMemberMap] = scope
                         .match_arm_group_arm_member_types
-                        .get(group_name.as_str());
-                    match per_arm {
-                        Some(arms) if !arms.is_empty() => {
-                            return resolve_cluster_inner_member(
-                                arms,
-                                member,
-                                &scope.entity_name,
-                                group_name,
-                                None,
-                                expr.span,
-                                diagnostics,
-                            );
-                        }
-                        _ => {
-                            // Cluster registered but no per-arm structures resolved
-                            // (e.g., every arm references an unknown structure, or no
-                            // Sub arms in the cluster). Suggestion 6 from review:
-                            // emit an explicit cluster-aware diagnostic rather than
-                            // falling through to `sub_component_types[<cluster>]`,
-                            // which retains only the last-arm structure (last write
-                            // wins) and would silently resolve `<inner>` against that
-                            // single arm — masking the cluster context.
-                            return make_poison_literal(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "match-arm cluster '{}' has no resolvable arm structures; \
-                                     cannot resolve member '{}'",
-                                    group_name, member
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "cluster has no resolved arm structures",
-                                )),
-                            );
-                        }
-                    }
+                        .get(group_name.as_str())
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    return resolve_cluster_inner_member(
+                        per_arm,
+                        member,
+                        &scope.entity_name,
+                        group_name,
+                        None,
+                        expr.span,
+                        diagnostics,
+                    );
                 }
 
                 // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name }).
