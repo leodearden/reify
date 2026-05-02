@@ -2,9 +2,12 @@
 //!
 //! Extracted from `fillet_with_history_integration.rs` and
 //! `chamfer_with_history_integration.rs` to eliminate byte-for-byte duplication
-//! of the edge-buffer assertion blocks (g)–(l). Future history-record additions
+//! of the edge-buffer assertion blocks (h)–(l). Future history-record additions
 //! (e.g. result_subshape_index sentinels) require only a single edit here rather
 //! than dual edits with drift risk.
+//!
+//! Block (g) mirrors the silent_drop_count invariant from
+//! `boolean_op_history_integration.rs` (parity, not extraction).
 
 #![cfg(has_occt)]
 
