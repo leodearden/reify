@@ -1390,6 +1390,39 @@ pub fn resolve_auto_type_params_with_backtracking(
 
 // ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
 
+/// Returns `true` iff any constraint in `constraints_template` is `Satisfied::Violated`
+/// according to `checker`.
+///
+/// # Semantics
+///
+/// - Returns `true` iff at least one [`reify_types::ConstraintResult`] has
+///   `satisfaction == `[`reify_types::Satisfaction::Violated`]`.
+///   Feasibility is the **negation** of this predicate.
+/// - [`reify_types::Satisfaction::Indeterminate`] does **NOT** cause a `true` return.
+///   Architecture §2.5 monotonic-feasible rule: undef does not falsify — only
+///   `Violated` makes a leaf infeasible.
+/// - The borrowed-slice signature lets callers (especially the DFS hot path)
+///   reuse a single owned `Vec` built ONCE by the orchestrator across many
+///   leaf calls, without rebuilding it per leaf.
+fn check_constraints_violated(
+    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
+    checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+    values: &reify_types::ValueMap,
+) -> bool {
+    use reify_types::ConstraintInput;
+    let input = ConstraintInput {
+        constraints: constraints_template.to_vec(),
+        values,
+        functions,
+        determinacy: None,
+    };
+    let results = checker.check(&input);
+    results
+        .iter()
+        .any(|r| r.satisfaction == reify_types::Satisfaction::Violated)
+}
+
 /// Separator used inside the synthetic leaf-label placeholder produced by
 /// [`dfs_leaf_feasible`] when joining the per-param candidate names.
 ///
