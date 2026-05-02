@@ -74,6 +74,26 @@ pub mod ffi {
         duplicate_count: u32,
     }
 
+    /// Curvature properties at a parametric point on a face surface.
+    ///
+    /// Returned by `curvature_at`. All direction vectors are unit tangent
+    /// vectors lying in the tangent plane of the surface at `(u, v)`.
+    struct CurvatureProps {
+        /// Gaussian curvature K = κ₁·κ₂. Invariant under normal reversal.
+        gaussian: f64,
+        /// Mean curvature H = (κ₁ + κ₂) / 2. Sign follows outward normal
+        /// convention (negated for TopAbs_REVERSED faces).
+        mean: f64,
+        /// Minimum principal curvature κ_min ≤ κ_max.
+        kappa_min: f64,
+        /// Maximum principal curvature κ_max ≥ κ_min.
+        kappa_max: f64,
+        /// Principal direction for κ_min (unit tangent vector).
+        dir_min: Point3,
+        /// Principal direction for κ_max (unit tangent vector).
+        dir_max: Point3,
+    }
+
     unsafe extern "C++" {
         include!("occt_wrapper.h");
 
@@ -584,6 +604,27 @@ pub mod ffi {
         /// Throws (surfaces as `Err`) if either shape is not a face, has no
         /// underlying surface, or yields a degenerate normal.
         fn surface_angle(face_a: &OcctShape, face_b: &OcctShape) -> Result<f64>;
+
+        /// Unit outward normal at the parametric point `(u, v)` on `face`.
+        ///
+        /// The shape must be a `TopoDS_Face`. Algorithm: `BRepAdaptor_Surface::D1`
+        /// → `Du × Dv` → magnitude check → `TopAbs_REVERSED` orientation flip →
+        /// normalize. Returns the normalized outward unit vector.
+        ///
+        /// Throws (surfaces as `Err`) if the shape is not a face, has no underlying
+        /// surface, or yields a degenerate (zero-magnitude) cross product at `(u, v)`.
+        fn surface_normal_at(face: &OcctShape, u: f64, v: f64) -> Result<Point3>;
+
+        /// Gaussian, mean, and principal curvatures at the parametric point
+        /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
+        ///
+        /// Uses `GeomLProp_SLProps(surf, u, v, degree=2, resolution=1e-9)`.
+        /// Sign convention for H and κ follows the outward normal (negated for
+        /// `TopAbs_REVERSED` faces); Gaussian K is invariant.
+        ///
+        /// Throws (surfaces as `Err`) if the shape is not a face, has no
+        /// underlying surface, or curvature is undefined at `(u, v)`.
+        fn curvature_at(face: &OcctShape, u: f64, v: f64) -> Result<CurvatureProps>;
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
         /// Surface-properties centroid for a 2D sub-shape (TopoDS_Face).
         /// Used by the `Centroid` query path when the stored repr is

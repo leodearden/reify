@@ -112,6 +112,9 @@
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 
+// OCCT local surface properties (curvature via GeomLProp_SLProps)
+#include <GeomLProp_SLProps.hxx>
+
 // OCCT BRep serialization
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
@@ -2605,6 +2608,92 @@ double surface_angle(const OcctShape& face_a, const OcctShape& face_b) {
         gp_Vec nb = face_outward_unit_normal(fb, "surface_angle: face_b");
         double dot = std::clamp(na.Dot(nb), -1.0, 1.0);
         return std::acos(dot);
+    });
+}
+
+Point3 surface_normal_at(const OcctShape& shape, double u, double v) {
+    return wrap_occt_call("surface_normal_at", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error(
+                "surface_normal_at: shape is not a face"
+            );
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("surface_normal_at: face is null");
+        }
+        Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+        if (surf.IsNull()) {
+            throw std::runtime_error(
+                "surface_normal_at: face has no underlying surface"
+            );
+        }
+        BRepAdaptor_Surface adaptor(face);
+        gp_Pnt p;
+        gp_Vec du, dv;
+        adaptor.D1(u, v, p, du, dv);
+        gp_Vec n = du.Crossed(dv);
+        double mag = n.Magnitude();
+        if (mag < CPP_DIR_MAG_MIN) {
+            throw std::runtime_error(
+                "surface_normal_at: degenerate surface (zero normal)"
+            );
+        }
+        if (face.Orientation() == TopAbs_REVERSED) {
+            n.Reverse();
+        }
+        return Point3{ n.X() / mag, n.Y() / mag, n.Z() / mag };
+    });
+}
+
+CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
+    return wrap_occt_call("curvature_at", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error("curvature_at: shape is not a face");
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("curvature_at: face is null");
+        }
+        Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+        if (surf.IsNull()) {
+            throw std::runtime_error(
+                "curvature_at: face has no underlying surface"
+            );
+        }
+
+        GeomLProp_SLProps props(surf, u, v, /*degree=*/2, /*resolution=*/1e-9);
+        if (!props.IsCurvatureDefined()) {
+            throw std::runtime_error(
+                "curvature_at: curvature undefined at (u, v)"
+            );
+        }
+
+        double K = props.GaussianCurvature();
+        double H = props.MeanCurvature();
+        double k_max_raw = props.MaxCurvature();
+        double k_min_raw = props.MinCurvature();
+        gp_Dir d_max, d_min;
+        props.CurvatureDirections(d_max, d_min);
+
+        // When the face orientation is REVERSED our outward normal is flipped,
+        // so mean curvature H and both principal curvatures change sign.
+        // Gaussian curvature K = κ₁·κ₂ is invariant (both flip → product is
+        // unchanged).  Principal directions live in the tangent plane and are
+        // independent of the normal choice, so they are NOT flipped.
+        if (face.Orientation() == TopAbs_REVERSED) {
+            H = -H;
+            k_max_raw = -k_max_raw;
+            k_min_raw = -k_min_raw;
+        }
+
+        // Re-sort kappa_min ≤ kappa_max after the potential sign flip.
+        double kappa_min = std::min(k_min_raw, k_max_raw);
+        double kappa_max = std::max(k_min_raw, k_max_raw);
+
+        Point3 dmin{ d_min.X(), d_min.Y(), d_min.Z() };
+        Point3 dmax{ d_max.X(), d_max.Y(), d_max.Z() };
+        return CurvatureProps{ K, H, kappa_min, kappa_max, dmin, dmax };
     });
 }
 

@@ -80,7 +80,7 @@ const _: () = assert!(RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ
 #[cfg(not(has_occt))]
 mod stubs;
 #[cfg(not(has_occt))]
-pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
+pub use stubs::{Curvature, OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 
 #[cfg(has_occt)]
 use std::collections::HashMap;
@@ -275,6 +275,32 @@ fn decode_deleted_records(flat: Vec<u32>) -> Vec<DeletedRecord> {
             parent_subshape_index: c[1],
         })
         .collect()
+}
+
+/// Curvature properties at a parametric point on a face surface.
+///
+/// Returned by [`OcctKernel::curvature_at`]. All direction vectors are
+/// unit-length tangent vectors lying in the tangent plane at `(u, v)`.
+///
+/// Defined under `#[cfg(has_occt)]` and re-exported from the crate root.
+/// An identical struct is defined in `stubs.rs` under `#[cfg(not(has_occt))]`
+/// so that call sites compile under both build modes without `#[cfg]` noise.
+#[cfg(has_occt)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Curvature {
+    /// Gaussian curvature K = κ₁·κ₂. Invariant under normal-direction reversal.
+    pub gaussian: f64,
+    /// Mean curvature H = (κ₁ + κ₂) / 2. Sign follows the outward normal
+    /// convention (negated for `TopAbs_REVERSED` faces).
+    pub mean: f64,
+    /// Minimum principal curvature κ_min ≤ κ_max.
+    pub kappa_min: f64,
+    /// Maximum principal curvature κ_max ≥ κ_min.
+    pub kappa_max: f64,
+    /// Principal direction corresponding to κ_min (unit tangent vector).
+    pub dir_min: [f64; 3],
+    /// Principal direction corresponding to κ_max (unit tangent vector).
+    pub dir_max: [f64; 3],
 }
 
 #[cfg(has_occt)]
@@ -567,6 +593,73 @@ impl OcctKernel {
             .map_err(|_| QueryError::InvalidHandle(face_b))?;
         ffi::ffi::surface_angle(s1, s2)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
+    /// Unit outward normal at the parametric point `(u, v)` on `face`.
+    ///
+    /// Algorithm: `BRepAdaptor_Surface::D1(u, v)` → `Du × Dv` → magnitude
+    /// check → `TopAbs_REVERSED` orientation flip → normalize.
+    ///
+    /// The return type is `[f64; 3]` rather than the FFI-internal `Point3`
+    /// struct: `Point3` is a cxx-bridge type unavailable in stub builds
+    /// (`!has_occt`), so the public API uses a plain array for both paths
+    /// (same convention as `closest_point_on_shape`).
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, yields a degenerate normal, or any OCCT call fails.
+    pub fn surface_normal_at(
+        &self,
+        handle: GeometryHandleId,
+        u: f64,
+        v: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let p = ffi::ffi::surface_normal_at(s, u, v)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok([p.x, p.y, p.z])
+    }
+
+    /// Gaussian, mean, and principal curvatures at the parametric point
+    /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
+    ///
+    /// Uses `GeomLProp_SLProps`. Sign convention for `mean` and the principal
+    /// curvatures follows the outward normal (negated for `TopAbs_REVERSED`
+    /// faces); Gaussian curvature `K = κ₁·κ₂` is invariant.
+    ///
+    /// The return type is `Curvature` — a plain Rust struct with `f64` and
+    /// `[f64; 3]` fields defined in both `has_occt` and `!has_occt` builds so
+    /// callers compile under either mode.
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, curvature is undefined at `(u, v)`, or any OCCT
+    ///   call fails.
+    pub fn curvature_at(
+        &self,
+        handle: GeometryHandleId,
+        u: f64,
+        v: f64,
+    ) -> Result<Curvature, QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let c = ffi::ffi::curvature_at(s, u, v)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok(Curvature {
+            gaussian: c.gaussian,
+            mean: c.mean,
+            kappa_min: c.kappa_min,
+            kappa_max: c.kappa_max,
+            dir_min: [c.dir_min.x, c.dir_min.y, c.dir_min.z],
+            dir_max: [c.dir_max.x, c.dir_max.y, c.dir_max.z],
+        })
     }
 
     /// Fuse `left` and `right` via `BRepAlgoAPI_Fuse` and return the

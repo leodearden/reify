@@ -274,10 +274,15 @@ fn surface_normal_at_matches_query_face_normal_at_centroid() {
 /// `curvature_at` on a sphere of radius 5 returns the analytic constant
 /// curvature values (umbilical surface).
 ///
-/// Sphere r = 5 analytic values:
-///   K = 1/r² = 0.04,  H = 1/r = 0.2,  κ_min = κ_max = 1/r = 0.2.
+/// OCCT sign convention: mean curvature H and principal curvatures κᵢ are
+/// negative for convex surfaces when the outward (surface) normal points away
+/// from the centre of curvature. For a sphere of radius r with outward normal:
+///   K = 1/r² = 0.04   (Gaussian, always positive for a sphere),
+///   H = -1/r = -0.2   (negative: centre of curvature is inward),
+///   κ_min = κ_max = -1/r = -0.2  (umbilical: all principal curvatures equal).
+///
 /// Principal directions are unit tangent vectors at the surface (tangent-plane
-/// property verified by near-zero dot product with the surface normal).
+/// property verified by near-zero dot product with the face outward normal).
 #[test]
 fn curvature_at_on_sphere_face_yields_constant_k_and_h() {
     use reify_kernel_occt::Curvature;
@@ -294,29 +299,33 @@ fn curvature_at_on_sphere_face_yields_constant_k_and_h() {
         .expect("curvature_at should succeed for sphere face");
 
     let tol = 1e-9;
+    // Gaussian K = 1/r² — invariant, always positive.
     assert!(
         (c.gaussian - 0.04).abs() < tol,
         "sphere Gaussian curvature: expected 0.04, got {}",
         c.gaussian
     );
+    // Mean H = -1/r (negative: convex sphere, outward normal, OCCT sign convention).
     assert!(
-        (c.mean - 0.2).abs() < tol,
-        "sphere mean curvature: expected 0.2, got {}",
+        (c.mean + 0.2).abs() < tol,
+        "sphere mean curvature: expected -0.2, got {}",
         c.mean
     );
+    // κ_min = κ_max = -1/r (umbilical, both equal).
     assert!(
-        (c.kappa_min - 0.2).abs() < tol,
-        "sphere κ_min: expected 0.2, got {}",
+        (c.kappa_min + 0.2).abs() < tol,
+        "sphere κ_min: expected -0.2, got {}",
         c.kappa_min
     );
     assert!(
-        (c.kappa_max - 0.2).abs() < tol,
-        "sphere κ_max: expected 0.2, got {}",
+        (c.kappa_max + 0.2).abs() < tol,
+        "sphere κ_max: expected -0.2, got {}",
         c.kappa_max
     );
 
     // Principal directions must lie in the tangent plane: near-zero dot with
-    // the surface normal at (π, 0).
+    // the face outward normal at (π, 0). On a sphere umbilical point, OCCT
+    // picks an arbitrary orthonormal pair in the tangent plane.
     let n = kernel
         .surface_normal_at(face, PI, 0.0)
         .expect("surface_normal_at should succeed");
@@ -336,8 +345,17 @@ fn curvature_at_on_sphere_face_yields_constant_k_and_h() {
 // curvature_at — edge cases
 // ---------------------------------------------------------------------------
 
-/// `curvature_at` on the curved side face of a cylinder is developable:
-///   K ≈ 0,  H = 1/(2r),  κ_min ≈ 0,  κ_max = 1/r.
+/// `curvature_at` on the curved side face of a cylinder is developable.
+///
+/// OCCT sign convention (negative for convex surfaces with outward normal):
+///   K = 0     (developable: one zero principal curvature),
+///   H = -1/(2r) = -0.1,
+///   κ_min = -1/r = -0.2  (circumferential direction, most curved),
+///   κ_max = 0            (axial direction, no curvature along Z).
+///
+/// Note: κ_min corresponds to the circumferential direction because
+/// `GeomLProp_SLProps::MinCurvature` returns the smallest (most negative)
+/// signed value. The re-sort in `curvature_at` preserves this ordering.
 #[test]
 fn curvature_at_on_cylinder_side_face_yields_developable_curvature() {
     let (mut kernel, cyl_id) = cylinder_kernel(5.0, 10.0);
@@ -364,39 +382,39 @@ fn curvature_at_on_cylinder_side_face_yields_developable_curvature() {
         "cylinder side Gaussian: expected 0, got {}",
         c.gaussian
     );
-    // H = 1/(2r) = 0.1.
+    // H = -1/(2r) = -0.1 (negative: convex cylinder, OCCT sign convention).
     assert!(
-        (c.mean - 0.1).abs() < tol,
-        "cylinder side mean: expected 0.1, got {}",
+        (c.mean + 0.1).abs() < tol,
+        "cylinder side mean: expected -0.1, got {}",
         c.mean
     );
-    // κ_min = 0 (axial direction).
+    // κ_min = -1/r = -0.2 (circumferential direction — most curved, most negative).
     assert!(
-        c.kappa_min.abs() < tol,
-        "cylinder side κ_min: expected 0, got {}",
+        (c.kappa_min + 0.2).abs() < tol,
+        "cylinder side κ_min: expected -0.2, got {}",
         c.kappa_min
     );
-    // κ_max = 1/r = 0.2 (circumferential direction).
+    // κ_max = 0 (axial direction — no curvature along Z).
     assert!(
-        (c.kappa_max - 0.2).abs() < tol,
-        "cylinder side κ_max: expected 0.2, got {}",
+        c.kappa_max.abs() < tol,
+        "cylinder side κ_max: expected 0, got {}",
         c.kappa_max
     );
 
-    // dir_min ≈ ±Z (axial): |dir_min[2]| ≈ 1.
-    // Accept both +Z and −Z since OCCT's convention may vary.
-    let axial_dot = c.dir_min[2].abs();
+    // dir_min corresponds to κ_min = -0.2 (circumferential direction ⊥ Z).
+    // dir_max corresponds to κ_max = 0 (axial direction ≈ ±Z).
+    // Accept both +Z and −Z for dir_max since OCCT's sign convention may vary.
     assert!(
-        (axial_dot - 1.0).abs() < 1e-9,
-        "cylinder dir_min should be ≈ ±Z, got {:?}",
+        c.dir_min[2].abs() < 1e-9,
+        "cylinder dir_min (circumferential) should be ⊥ Z, got {:?}",
         c.dir_min
     );
 
-    // dir_max ⊥ Z: |dir_max[2]| ≈ 0.
+    let axial_dot = c.dir_max[2].abs();
     assert!(
-        c.dir_max[2].abs() < 1e-9,
-        "cylinder dir_max should be ⊥ Z, dir_max[2] = {}",
-        c.dir_max[2]
+        (axial_dot - 1.0).abs() < 1e-9,
+        "cylinder dir_max (axial) should be ≈ ±Z, got {:?}",
+        c.dir_max
     );
 }
 

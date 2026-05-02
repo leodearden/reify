@@ -852,6 +852,40 @@ Point3 query_face_normal(const OcctShape& shape);
 /// Returns radians in `[0, π]`.
 double surface_angle(const OcctShape& face_a, const OcctShape& face_b);
 
+/// Unit outward normal at the parametric point `(u, v)` on `face`.
+///
+/// The shape MUST be a `TopoDS_Face`. Algorithm:
+///   (a) `BRepAdaptor_Surface::D1(u, v, p, du, dv)` — first derivatives,
+///   (b) cross product `n = Du × Dv`,
+///   (c) reject if `|n| < CPP_DIR_MAG_MIN` (degenerate point),
+///   (d) flip if `face.Orientation() == TopAbs_REVERSED`,
+///   (e) normalize.
+///
+/// Throws `std::runtime_error` if the shape is not a face, has no underlying
+/// surface, or yields a degenerate (zero-magnitude) normal at `(u, v)`.
+Point3 surface_normal_at(const OcctShape& face, double u, double v);
+
+/// Curvature properties at the parametric point `(u, v)` on a face surface.
+/// Defined by the cxx bridge (ffi.rs); forward-declared here for use in the
+/// `curvature_at` function signature.
+struct CurvatureProps;
+
+/// Gaussian, mean, and principal curvatures at the parametric point `(u, v)`
+/// on `face`, plus the principal curvature direction tangent vectors.
+///
+/// The shape MUST be a `TopoDS_Face`. Algorithm:
+///   (a) `GeomLProp_SLProps(surf, u, v, degree=2, resolution=1e-9)`,
+///   (b) reject if `IsCurvatureDefined()` is false,
+///   (c) extract K, H, κ_max, κ_min and direction vectors d_max, d_min,
+///   (d) for `TopAbs_REVERSED` faces: negate H, κ_max, κ_min (K invariant;
+///       directions unchanged — they are tangent-plane vectors, independent
+///       of the normal orientation choice).
+///   (e) re-sort so that `kappa_min ≤ kappa_max` after any sign flip.
+///
+/// Throws `std::runtime_error` if the shape is not a face, has no underlying
+/// surface, or curvature is undefined at `(u, v)` (e.g. at a singular point).
+CurvatureProps curvature_at(const OcctShape& face, double u, double v);
+
 // --- Conformance queries ---
 
 /// Check whether `shape` is watertight (closed, no free edges).

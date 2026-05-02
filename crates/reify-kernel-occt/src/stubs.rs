@@ -139,6 +139,51 @@ impl OcctKernel {
     ) -> Result<f64, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
+
+    /// Stub surface-normal-at probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::surface_normal_at` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn surface_normal_at(
+        &self,
+        _handle: GeometryHandleId,
+        _u: f64,
+        _v: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub curvature-at probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::curvature_at` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn curvature_at(
+        &self,
+        _handle: GeometryHandleId,
+        _u: f64,
+        _v: f64,
+    ) -> Result<Curvature, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+}
+
+/// Curvature properties at a parametric point on a face.
+///
+/// Defined in `stubs.rs` (under `#[cfg(not(has_occt))]`) to mirror the
+/// `Curvature` struct in `lib.rs` (under `#[cfg(has_occt)]`), so that call
+/// sites compile under both build modes without `#[cfg]` noise.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Curvature {
+    /// Gaussian curvature K = κ₁·κ₂.
+    pub gaussian: f64,
+    /// Mean curvature H = (κ₁ + κ₂) / 2.
+    pub mean: f64,
+    /// Minimum principal curvature κ_min ≤ κ_max.
+    pub kappa_min: f64,
+    /// Maximum principal curvature κ_max ≥ κ_min.
+    pub kappa_max: f64,
+    /// Principal direction corresponding to κ_min (unit tangent vector).
+    pub dir_min: [f64; 3],
+    /// Principal direction corresponding to κ_max (unit tangent vector).
+    pub dir_max: [f64; 3],
 }
 
 impl Default for OcctKernel {
@@ -544,6 +589,22 @@ mod tests {
         let handle = OcctKernelHandle::spawn();
         let result = handle.chamfer_with_history(GeometryHandleId(1), 1.0e-3);
         let err = result.expect_err("stub chamfer_with_history should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_surface_normal_at_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.surface_normal_at(GeometryHandleId(1), 0.0, 0.0);
+        let err = result.expect_err("stub surface_normal_at should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_curvature_at_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.curvature_at(GeometryHandleId(1), 0.0, 0.0);
+        let err = result.expect_err("stub curvature_at should error");
         assert_stub_message(&format!("{err:?}"));
     }
 }
