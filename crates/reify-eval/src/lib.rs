@@ -16,6 +16,7 @@ mod engine_build;
 mod engine_constraints;
 mod engine_edit;
 mod engine_eval;
+mod engine_helpers;
 pub mod freshness_walk;
 pub mod gating;
 pub mod kernel_registry;
