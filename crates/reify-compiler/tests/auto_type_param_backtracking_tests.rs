@@ -412,15 +412,15 @@ structure def WaterCooled : Cooled {
 /// (no automatic disambiguation), so Phase C surfaces the witnesses for
 /// the diagnostic and halts substitution.
 ///
-/// Asserts the loose-witness contract (witnesses.len() ≥ 2, no exact
-/// witness format) so this test stays decoupled from the witness-string
-/// formatting decision pinned in step-24. Richer per-witness format with
-/// the smallest-infeasibility witness is task 2663's scope.
+/// Asserts exactly 2 witnesses (strict-mode cap, max_feasible_to_collect=2),
+/// no exact witness format, so this test stays decoupled from the
+/// witness-string formatting decision pinned in step-24. Richer per-witness
+/// format with the smallest-infeasibility witness is task 2663's scope.
 ///
 /// Pins:
 /// - `per_param.len() == 1` (single Ambiguous entry on the FIRST param's name)
 /// - `per_param[0].0 == "T"` (Ambiguous attaches to params[0].name)
-/// - `per_param[0].1` matches `SelectionResult::Ambiguous(_)` with ≥2 witnesses
+/// - `per_param[0].1` matches `SelectionResult::Ambiguous(_)` with exactly 2 witnesses (strict-mode cap)
 /// - `substitution.is_empty()` (no successful substitutions on Ambiguous)
 /// - exactly one `AutoTypeParamAmbiguous` diagnostic
 #[test]
@@ -497,9 +497,10 @@ structure def WaterCooled : Cooled {
     );
     match &outcome.per_param[0].1 {
         SelectionResult::Ambiguous(witnesses) => {
-            assert!(
-                witnesses.len() >= 2,
-                "DFS strict-mode Ambiguous must carry ≥2 witnesses (lex-first two cross-product summaries), got: {:?}",
+            assert_eq!(
+                witnesses.len(),
+                2,
+                "DFS strict-mode Ambiguous must carry exactly 2 witnesses (strict-mode early-stop cap, max_feasible_to_collect=2), got: {:?}",
                 witnesses,
             );
         }
