@@ -1751,6 +1751,7 @@ describe('entrypoint wiring', () => {
     input.write(JSON.stringify({
       type: 'tool_result',
       id: 'e2e-tr-1',
+      tool_use_id: 'toolu_e2e',
       tool_name: 'reify_get_diagnostics',
       result: { diagnostics: [] },
     }) + '\n');

@@ -79,6 +79,7 @@ describe('parseInboundMessage', () => {
     const line = JSON.stringify({
       type: 'tool_result',
       id: 'msg-1',
+      tool_use_id: 'toolu_x',
       tool_name: 'reify_get_diagnostics',
       result: { ok: true },
     });
@@ -86,6 +87,7 @@ describe('parseInboundMessage', () => {
     expect(msg).toEqual({
       type: 'tool_result',
       id: 'msg-1',
+      tool_use_id: 'toolu_x',
       tool_name: 'reify_get_diagnostics',
       result: { ok: true },
     });
