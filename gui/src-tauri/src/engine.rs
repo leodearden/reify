@@ -365,34 +365,22 @@ impl EngineSession {
         Some((k.as_str(), v.as_str()))
     }
 
-    /// Look up source location for an entity path (e.g., "Bracket.width").
+    /// Look up source location for either a template name (e.g., `"Bracket"`) or a
+    /// cell ID (e.g., `"Bracket.width"`).
+    ///
+    /// - **Template name** (no `.`) → returns the first value cell's span as a proxy.
+    /// - **Cell ID** (`Entity.member`) → returns that cell's span.
+    ///
+    /// Returns `None` when the entity or member is not found, the compiled module is
+    /// not loaded, or when the invariant is broken (e.g., via `break_source_map_for_test`).
     pub fn get_source_location(&self, entity_path: &str) -> Option<SourceLocationInfo> {
         let compiled = self.compiled.as_ref()?;
-        let cell_id = parse_cell_id(entity_path).ok()?;
-
-        // Find the span for this cell
-        let span = compiled.templates.iter().find_map(|t| {
-            t.value_cells
-                .iter()
-                .find(|vc| vc.id == cell_id)
-                .map(|vc| vc.span)
-        })?;
-
         // Delegate source key resolution to resolve_source — returns None when
         // no module is loaded or when the invariant is broken (e.g., via
-        // break_source_map_for_test), eliminating duplicated fallible lookup.
+        // break_source_map_for_test), preserving the graceful-degradation contract
+        // exercised by get_source_location_returns_none_when_module_name_broken.
         let (file, source) = self.resolve_source()?;
-
-        let (line, col) = reify_types::byte_offset_to_line_col(source, span.start as usize);
-        let (end_line, end_col) = reify_types::byte_offset_to_line_col(source, span.end as usize);
-
-        Some(SourceLocationInfo {
-            file_path: file.to_owned(),
-            line: line as u32,
-            column: col as u32,
-            end_line: end_line as u32,
-            end_column: end_col as u32,
-        })
+        reify_eval::resolve_entity_source_location(compiled, source, file, entity_path)
     }
 
     /// Return diagnostics (warnings, info) from the most recently compiled module.
