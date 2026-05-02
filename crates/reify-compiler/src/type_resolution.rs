@@ -811,7 +811,25 @@ pub(crate) fn resolve_type_alias_expr(
                 ) {
                     return Some(ty);
                 }
-                // Silently return None — deferred to instantiation time
+                // see AliasInnerDiagPolicy: propagate iff Propagate.
+                //
+                // When tmp_diags is non-empty, resolve_parameterized_alias matched the
+                // user-defined alias but failed to resolve an inner type arg (e.g.
+                // `type Bad = Wrapper<NotAType>` emits "unresolved type argument
+                // 'NotAType' for alias 'Wrapper'").  Under Propagate (non-parametric
+                // callers), surface the errors and return None so the alias entry stays
+                // unresolved — falling through to the simple-name lookup below would
+                // silently bind to any `resolve_type_name` default and produce a
+                // wrong-type cascade at use sites (see task #2843).
+                // Under Defer (parametric callers), inner-arg diagnostics about
+                // unresolved type params (e.g. `T`) are expected and must be discarded;
+                // substitution at use-site instantiation via resolve_type_alias_expr_with_subst
+                // will resolve them correctly.
+                if inner_diag_policy == AliasInnerDiagPolicy::Propagate && !tmp_diags.is_empty() {
+                    diagnostics.extend(tmp_diags);
+                    return None;
+                }
+                // Defer: silently return None — deferred to instantiation time
             }
             // Simple name: check builtins, then alias registry
             let empty = HashSet::new();
