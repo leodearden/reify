@@ -525,14 +525,19 @@ impl OcctKernel {
         Ok([p.x, p.y, p.z])
     }
 
-    /// Dihedral angle (in radians) between the two faces identified by
-    /// `face_a` and `face_b`.
+    /// Angle between the outward normals of the two faces (in radians),
+    /// sampled at each face's surface centroid.
     ///
     /// Algorithm: `acos(clamp(n_a · n_b, -1, 1))` where each `n` is the
     /// face's unit outward normal sampled at its centroid via
     /// `BRepAdaptor_Surface::D1`. Honours `TopAbs_REVERSED` orientation
     /// (same semantics as `query_face_normal`). The dot clamp guards against
     /// FP rounding outside `acos`'s domain for parallel/antiparallel inputs.
+    ///
+    /// Note: this is the angle between outward normals, not a classical
+    /// dihedral angle (which requires a shared edge). For adjacent convex
+    /// faces this equals the exterior angle; for disjoint faces the value
+    /// is still geometrically meaningful.
     ///
     /// Both handles must name `BRepKind::Face` shapes — the `TopAbs_FACE`
     /// check is performed on the C++ side so errors flow through

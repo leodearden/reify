@@ -1,5 +1,5 @@
-//! Integration tests for `OcctKernel::surface_angle` — returns the dihedral
-//! angle (in radians) between two `TopoDS_Face` shapes via face-normal dot.
+//! Integration tests for `OcctKernel::surface_angle` — returns the angle
+//! (in radians) between two `TopoDS_Face` outward normals via face-normal dot.
 //!
 //! Fixture: a 10×10×10 box centered at the origin (x∈[-5,5], y∈[-5,5], z∈[-5,5]),
 //! with 6 faces extracted via `extract_faces`.
@@ -266,5 +266,114 @@ fn non_face_shape_for_face_b_returns_query_failed() {
             "expected Err(QueryFailed(\"...not a face...\")) when passing a solid handle for face_b, \
              got {other:?}"
         ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Coverage — curved face (cylinder)
+// ---------------------------------------------------------------------------
+
+/// `surface_angle` returns a finite value in `[0, π]` for every face pair of a
+/// cylinder, including the curved side face.
+///
+/// A cylinder has 3 faces: bottom cap, top cap, and the curved lateral surface.
+/// This test exercises the centroid-sampling path on the curved face and
+/// confirms no errors are raised. It additionally verifies that the two end
+/// caps (flat, with normals ≈ ±Z) yield angle ≈ π, and that calling the
+/// function with the same curved-face handle twice yields angle ≈ 0.
+///
+/// Curved-face caveat: the area centroid of the cylindrical side surface lies
+/// on the cylinder axis (not on the surface itself). `ShapeAnalysis_Surface
+/// ::ValueOfUV` projects it to the nearest surface point, producing a radially
+/// outward normal at that point. The exact azimuth is implementation-defined,
+/// but the normal is always perpendicular to the Z axis, so:
+///   `surface_angle(side, cap) ≈ π/2` regardless of which azimuth is chosen.
+#[test]
+fn cylinder_curved_face_returns_finite_angle() {
+    let mut kernel = OcctKernel::new();
+    let cyl_id = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(5.0),
+            height: Value::Real(10.0),
+        })
+        .expect("cylinder creation should succeed")
+        .id;
+
+    let faces = kernel
+        .extract_faces(cyl_id)
+        .expect("extract_faces should succeed for cylinder");
+    assert_eq!(faces.len(), 3, "expected 3 faces for a cylinder (bottom, top, side)");
+
+    // Every pair must return Ok with a finite angle in [0, π].
+    for i in 0..faces.len() {
+        for j in 0..faces.len() {
+            let angle = kernel
+                .surface_angle(faces[i], faces[j])
+                .unwrap_or_else(|e| {
+                    panic!("surface_angle(face[{i}], face[{j}]) failed: {e:?}")
+                });
+            assert!(
+                angle.is_finite() && angle >= 0.0 && angle <= PI + 1e-9,
+                "surface_angle(face[{i}], face[{j}]) = {angle:.10}, \
+                 expected finite value in [0, π]"
+            );
+            // Same-face degenerate case: angle must be ≈ 0.
+            if i == j {
+                assert!(
+                    angle.abs() < 1e-9,
+                    "surface_angle(face[{i}], face[{i}]) = {angle:.10}, expected ≈ 0"
+                );
+            }
+        }
+    }
+
+    // FaceNormal returns Value::String (JSON), e.g. `{"x":0.0,"y":0.0,"z":1.0}`.
+    // Parse the z component to identify the two flat caps (|n_z| ≈ 1).
+    let parse_nz = |face_id| -> f64 {
+        match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
+            Ok(Value::String(s)) => {
+                // Extract the z value from the JSON string.
+                // Format is always `{"x":<f>,"y":<f>,"z":<f>}`.
+                s.split("\"z\":")
+                    .nth(1)
+                    .and_then(|tail| tail.trim_end_matches('}').parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            }
+            other => panic!("FaceNormal returned unexpected value: {other:?}"),
+        }
+    };
+
+    let cap_indices: Vec<usize> = (0..3)
+        .filter(|&i| parse_nz(faces[i]).abs() > 0.99)
+        .collect();
+    assert_eq!(
+        cap_indices.len(),
+        2,
+        "expected exactly 2 flat cap faces with |n_z| ≈ 1, found {cap_indices:?}"
+    );
+
+    // The two caps have anti-parallel normals (+Z and −Z): angle ≈ π.
+    let (ca, cb) = (cap_indices[0], cap_indices[1]);
+    let cap_angle = kernel
+        .surface_angle(faces[ca], faces[cb])
+        .expect("surface_angle(cap, cap) should succeed");
+    assert!(
+        (cap_angle - PI).abs() < 1e-9,
+        "cylinder caps: expected angle ≈ π ≈ {PI:.10}, got {cap_angle:.10}"
+    );
+
+    // The side face is the one that is not a cap.
+    let side_idx = (0..3).find(|i| !cap_indices.contains(i)).unwrap();
+    // Side vs each cap: the lateral normal is radially outward (⊥ Z), so
+    // angle with either cap normal (which is ±Z) ≈ π/2.
+    for &cap_idx in &cap_indices {
+        let angle = kernel
+            .surface_angle(faces[side_idx], faces[cap_idx])
+            .expect("surface_angle(side, cap) should succeed");
+        assert!(
+            (angle - PI / 2.0).abs() < 1e-6,
+            "cylinder side vs cap[{cap_idx}]: expected ≈ π/2 ≈ {:.10}, got {angle:.10}",
+            PI / 2.0
+        );
     }
 }

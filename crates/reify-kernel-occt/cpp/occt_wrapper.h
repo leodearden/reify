@@ -827,7 +827,8 @@ Point3 query_edge_tangent(const OcctShape& shape);
 /// or yields a degenerate (zero-magnitude) normal.
 Point3 query_face_normal(const OcctShape& shape);
 
-/// Dihedral angle (in radians) between `face_a` and `face_b`.
+/// Angle between the outward normals of `face_a` and `face_b` (in radians),
+/// sampled at each face's surface centroid.
 ///
 /// Both inputs MUST be `TopoDS_Face` shapes; a `std::runtime_error` is thrown
 /// via `wrap_occt_call` if either is not a face, has no underlying surface, or
@@ -836,6 +837,12 @@ Point3 query_face_normal(const OcctShape& shape);
 /// Algorithm: `acos(clamp(n_a · n_b, -1, 1))` where each `n` is the face's
 /// unit outward normal sampled at its centroid. Honours `TopAbs_REVERSED`
 /// orientation (same semantics as `query_face_normal`).
+///
+/// Note: this is the angle between outward normals, not a classical dihedral
+/// angle (which is defined only for faces sharing an edge and measures the
+/// interior half-plane angle). For adjacent convex faces this equals the
+/// exterior angle; for disjoint or non-adjacent faces the value is still
+/// well-defined but has no standard geometric name.
 ///
 /// Returns radians in `[0, π]`.
 double surface_angle(const OcctShape& face_a, const OcctShape& face_b);
