@@ -943,45 +943,47 @@ pub fn resolve_auto_type_params(
 
 // ─── v0.2 — Backtracking: DFS over cross-product with depth bound ─────────
 //
-// Driving PRD: docs/prds/v0_2/auto-resolution-backtracking.md.
-//
-// `resolve_auto_type_params_with_backtracking` extends v0.1's per-param BFS
-// (`resolve_auto_type_params` above) into a depth-first search over the
-// cross-product of `auto:` candidate sets. At each leaf assignment of the
-// cross-product, `filter_feasible_candidates` is re-invoked (full re-check
-// per the PRD design decision "implement v0.2 search with full re-check at
-// each binding") to determine feasibility; an infeasible leaf triggers
-// backtracking to the next sibling at the deepest open level.
-//
-// Above the depth bound `params.len() > max_depth`, the function emits
-// `AutoTypeParamDepthBoundExceeded` (Severity::Warning) and delegates back
-// to `resolve_auto_type_params` (BFS). The fallback is functionally correct
-// (BFS is sound, just less complete than DFS over cross-product) so the
-// user has a working compile — the warning is for auditability.
-//
-// # Out of scope (sibling tasks layered on top of this foundation)
-//
-// - Backjumping via the "rejected because" channel — task 2660.
-// - `auto(free)` report-all cross-product enumeration with the
-//   `AutoTypeParamNonUnique` warning — task 2661.
-// - Cross-product hard cap of 100k assignments — task 2662.
-// - Rich diagnostic format with smallest infeasibility witness — task 2663.
-// - Comprehensive v0.1 BFS-failure scenario coverage — task 2664.
-// - Type-substitution mechanics
-//   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
-//   deferred per the PRD's "Constraint-feasibility incremental binding
-//   deferred" decision.
+// Canonical algorithm description, design decisions, and the out-of-scope
+// task list live on `resolve_auto_type_params_with_backtracking`'s rustdoc
+// below. The module-level rustdoc (top of file, "Phase E (v0.2) —
+// Backtracking" section) carries a one-line pointer to that function.
 
 /// DFS over the cross-product of `auto:` candidate sets with a depth bound.
 ///
-/// See the section header comment above for context, design decisions, and
-/// out-of-scope deferrals to sibling tasks.
+/// Driving PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`.
+///
+/// Extends v0.1's per-param BFS (`resolve_auto_type_params` above) into a
+/// depth-first search over the cross-product of `auto:` candidate sets. At
+/// each leaf assignment of the cross-product, `filter_feasible_candidates`
+/// is re-invoked (full re-check per the PRD design decision "implement v0.2
+/// search with full re-check at each binding") to determine feasibility; an
+/// infeasible leaf triggers backtracking to the next sibling at the deepest
+/// open level.
+///
+/// Above the depth bound `params.len() > max_depth`, the function emits
+/// `AutoTypeParamDepthBoundExceeded` (Severity::Warning) and delegates back
+/// to `resolve_auto_type_params` (BFS). The fallback is functionally correct
+/// (BFS is sound, just less complete than DFS over cross-product) so the
+/// user has a working compile — the warning is for auditability.
 ///
 /// `max_depth` is taken as a scalar (not a `&AutoTypeParamsConfig`) per the
 /// design decision: algorithm correctness does not depend on where the value
 /// was sourced, and this keeps the algorithm crate independent of
 /// `reify-config`. The eventual call-site reads
 /// `Manifest::auto_type_params().max_depth` and passes it in directly.
+///
+/// # Out of scope (sibling tasks layered on top of this foundation)
+///
+/// - Backjumping via the "rejected because" channel — task 2660.
+/// - `auto(free)` report-all cross-product enumeration with the
+///   `AutoTypeParamNonUnique` warning — task 2661.
+/// - Cross-product hard cap of 100k assignments — task 2662.
+/// - Rich diagnostic format with smallest infeasibility witness — task 2663.
+/// - Comprehensive v0.1 BFS-failure scenario coverage — task 2664.
+/// - Type-substitution mechanics
+///   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
+///   deferred per the PRD's "Constraint-feasibility incremental binding
+///   deferred" decision.
 //
 // `#[allow(clippy::too_many_arguments)]`: this signature mirrors v0.1's
 // `resolve_auto_type_params` (already at clippy's 7-arg ceiling) plus the
@@ -1006,7 +1008,6 @@ pub fn resolve_auto_type_params_with_backtracking(
     // greater than `max_depth` (which `reify-config` already rejects when
     // `max_depth == 0`), so the depth-bound branch does not fire here.
     if params.is_empty() {
-        let _ = max_depth;
         return MultiParamResolutionOutcome {
             per_param: vec![],
             substitution: vec![],
@@ -1021,6 +1022,22 @@ pub fn resolve_auto_type_params_with_backtracking(
     // Canonical message form pinned in step-10's diagnostic-code doc-comment:
     // see `DiagnosticCode::AutoTypeParamDepthBoundExceeded` in
     // `crates/reify-types/src/diagnostics.rs`.
+    //
+    // TODO(post-substitution-mechanics): the BFS fallback's soundness
+    // currently relies on the deferred type-substitution scope cut (see the
+    // PRD's "Constraint-feasibility incremental binding deferred" decision):
+    // because Phase B's verdict does not depend on the candidate binding
+    // today, BFS picking a per-param-feasible combination is equivalent to
+    // DFS finding any cross-product feasible. Once the deferred
+    // `Type::TypeParam(T) → Type::StructureRef(candidate)` substitution
+    // mechanics land, BFS may pick a per-param-feasible combination that is
+    // INFEASIBLE at the cross-product, silently producing a wrong
+    // substitution while the warning suggests merely "fell back to BFS". At
+    // that point this branch should be revisited — either by escalating the
+    // diagnostic from Warning to Error, or by replacing the BFS fallback
+    // with a hard error. Tracked alongside the substitution-mechanics task
+    // (separately deferred per the PRD; not one of the listed siblings
+    // 2660/2661/2662/2663/2664).
 
     // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
     if params.len() > max_depth {
@@ -1297,14 +1314,35 @@ pub fn resolve_auto_type_params_with_backtracking(
 
 // ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
 
+/// Separator used inside the synthetic leaf-label placeholder produced by
+/// [`dfs_leaf_feasible`] when joining the per-param candidate names.
+///
+/// Label-only role: the joined string is passed to
+/// [`filter_feasible_candidates`] as a single-element `candidates` slice
+/// solely so exactly one `constraint_checker.check()` call fires per leaf
+/// (one queue pop drives one leaf verdict). With the deferred type-
+/// substitution mechanics (see the Phase B scope cut documented on
+/// [`resolve_auto_type_params_with_backtracking`]), `filter_feasible_candidates`
+/// does NOT consult the candidate name string in the verdict path —
+/// `constraint_checker.check()` receives an empty `ValueMap` and the
+/// per-template constraint list, neither of which depends on the synthetic
+/// label. The label is therefore a stable identifier (not a semantic FQN)
+/// and would only become load-bearing if a future task surfaces it in
+/// downstream diagnostic structure.
+///
+/// Revisit when the deferred substitution mechanics land: at that point the
+/// placeholder must be replaced with a real candidate-FQN-driven
+/// substitution-aware feasibility check (one per leaf), not a synthetic
+/// label.
+const DFS_LEAF_LABEL_SEPARATOR: &str = ",";
+
 /// True iff the current cross-product leaf assignment is feasible.
 ///
 /// Synthesizes a single-element placeholder vec for `filter_feasible_candidates`
-/// so exactly one `constraint_checker.check()` call fires per leaf. With
-/// deferred substitution mechanics (see the Phase B scope cut), the
-/// candidate name does not affect the verdict — it serves only as a stable
-/// label if a future task (e.g. 2663's rich diagnostic format) lifts the
-/// leaf verdict into per-leaf diagnostic structure.
+/// so exactly one `constraint_checker.check()` call fires per leaf. The
+/// placeholder string is `current.join(DFS_LEAF_LABEL_SEPARATOR)` — a
+/// label-only synthetic identifier; see [`DFS_LEAF_LABEL_SEPARATOR`] for the
+/// label-vs-FQN role and the contract under deferred substitution mechanics.
 ///
 /// The "single check per leaf" shape is what makes the
 /// [`reify_test_support::MockConstraintChecker::with_call_queue`] FIFO model
@@ -1319,7 +1357,7 @@ fn dfs_leaf_feasible(
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
 ) -> bool {
-    let leaf_label = current.join(",");
+    let leaf_label = current.join(DFS_LEAF_LABEL_SEPARATOR);
     let placeholder = vec![leaf_label];
     let feasibility = filter_feasible_candidates(
         &placeholder,
