@@ -571,6 +571,15 @@ pub mod ffi {
         /// the face's centroid. Honours topological orientation: a REVERSED
         /// face yields the topologically-outward normal.
         fn query_face_normal(shape: &OcctShape) -> Result<Point3>;
+        /// Dihedral angle (radians) between two `TopoDS_Face` shapes.
+        ///
+        /// Algorithm: `acos(clamp(n_a · n_b, -1, 1))` where each `n` is the
+        /// face's unit outward normal at its centroid. Honours `TopAbs_REVERSED`
+        /// orientation. Returns radians in `[0, π]`.
+        ///
+        /// Throws (surfaces as `Err`) if either shape is not a face, has no
+        /// underlying surface, or yields a degenerate normal.
+        fn surface_angle(face_a: &OcctShape, face_b: &OcctShape) -> Result<f64>;
         fn query_centroid(shape: &OcctShape) -> Result<Point3>;
         /// Surface-properties centroid for a 2D sub-shape (TopoDS_Face).
         /// Used by the `Centroid` query path when the stored repr is

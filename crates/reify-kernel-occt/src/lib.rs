@@ -525,6 +525,46 @@ impl OcctKernel {
         Ok([p.x, p.y, p.z])
     }
 
+    /// Angle between the outward normals of the two faces (in radians),
+    /// sampled at each face's surface centroid.
+    ///
+    /// Algorithm: `acos(clamp(n_a · n_b, -1, 1))` where each `n` is the
+    /// face's unit outward normal sampled at its centroid via
+    /// `BRepAdaptor_Surface::D1`. Honours `TopAbs_REVERSED` orientation
+    /// (same semantics as `query_face_normal`). The dot clamp guards against
+    /// FP rounding outside `acos`'s domain for parallel/antiparallel inputs.
+    ///
+    /// Note: this is the angle between outward normals, not a classical
+    /// dihedral angle (which requires a shared edge). For adjacent convex
+    /// faces this equals the exterior angle; for disjoint faces the value
+    /// is still geometrically meaningful.
+    ///
+    /// Both handles must name `BRepKind::Face` shapes — the `TopAbs_FACE`
+    /// check is performed on the C++ side so errors flow through
+    /// `QueryFailed(e.to_string())` with a recognizable prefix.
+    ///
+    /// Returns radians in `[0, π]`.
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if either handle is unknown.
+    /// - `QueryError::QueryFailed` — if either shape is not a face, has no
+    ///   underlying surface, yields a degenerate normal, or any OCCT call fails.
+    pub fn surface_angle(
+        &self,
+        face_a: GeometryHandleId,
+        face_b: GeometryHandleId,
+    ) -> Result<f64, QueryError> {
+        let s1 = self
+            .get_shape(face_a)
+            .map_err(|_| QueryError::InvalidHandle(face_a))?;
+        let s2 = self
+            .get_shape(face_b)
+            .map_err(|_| QueryError::InvalidHandle(face_b))?;
+        ffi::ffi::surface_angle(s1, s2)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
     /// Fuse `left` and `right` via `BRepAlgoAPI_Fuse` and return the
     /// fused-result handle alongside the per-parent face/edge history
     /// records (Modified / Generated / Deleted).

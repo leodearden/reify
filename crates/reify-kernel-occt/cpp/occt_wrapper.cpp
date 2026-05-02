@@ -190,6 +190,69 @@ constexpr double CPP_ANGLE_ABS_MIN = 1e-30;
 /// The layered invariant RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ
 /// is enforced at compile time by `const _: () = assert!(...)` in lib.rs.
 
+namespace {
+
+/// Compute the unit outward normal of `face` at its surface centroid.
+///
+/// Steps:
+///   0. reject null face (IsNull guard)
+///   1. centroid via `BRepGProp::SurfaceProperties`
+///   2. project to (u,v) via `BRep_Tool::Surface` + `ShapeAnalysis_Surface::ValueOfUV`
+///   3. first derivatives via `BRepAdaptor_Surface::D1`
+///   4. cross product `Du × Dv`; reject if magnitude < `CPP_DIR_MAG_MIN`
+///   5. flip if `face.Orientation() == TopAbs_REVERSED`
+///   6. normalize
+///
+/// `who` is a caller-supplied prefix for error messages, e.g.
+/// `"surface_angle: face_a"`. Callers must pre-validate that `face` is a
+/// `TopoDS_FACE` before calling this helper (the `TopAbs_FACE` check must
+/// happen before `TopoDS::Face()` so errors mention the right operation).
+///
+/// Returns the normalized outward normal vector.
+static gp_Vec face_outward_unit_normal(const TopoDS_Face& face, const char* who) {
+    // 0. Null guard — TopoDS::Face() on a non-face shape won't necessarily
+    //    set IsNull(), but a genuinely null face should be caught early.
+    if (face.IsNull()) {
+        throw std::runtime_error(std::string(who) + ": face is null");
+    }
+
+    // 1. Compute the face centroid via SurfaceProperties + CentreOfMass.
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(face, props);
+    gp_Pnt centroid = props.CentreOfMass();
+
+    // 2. Project the 3D centroid back to (u, v) parametric coordinates.
+    Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+    if (surf.IsNull()) {
+        throw std::runtime_error(std::string(who) + ": face has no underlying surface");
+    }
+    ShapeAnalysis_Surface analyzer(surf);
+    gp_Pnt2d uv = analyzer.ValueOfUV(centroid, 1e-9);
+
+    // 3. First derivatives at (u, v) via BRepAdaptor_Surface.
+    BRepAdaptor_Surface adaptor(face);
+    gp_Pnt p;
+    gp_Vec du, dv;
+    adaptor.D1(uv.X(), uv.Y(), p, du, dv);
+
+    // 4. Cross product gives the surface normal (Du × Dv).
+    gp_Vec n = du.Crossed(dv);
+    double mag = n.Magnitude();
+    if (mag < CPP_DIR_MAG_MIN) {
+        throw std::runtime_error(std::string(who) + ": degenerate surface (zero normal)");
+    }
+
+    // 5. Account for face orientation: REVERSED flips the parametric cross-product.
+    if (face.Orientation() == TopAbs_REVERSED) {
+        n.Reverse();
+    }
+
+    // 6. Normalize.
+    return gp_Vec(n.X() / mag, n.Y() / mag, n.Z() / mag);
+}
+
+} // anonymous namespace (face_outward_unit_normal)
+
 // --- Primitive construction ---
 
 std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
@@ -2515,56 +2578,33 @@ Point3 query_edge_tangent(const OcctShape& shape) {
 
 Point3 query_face_normal(const OcctShape& shape) {
     return wrap_occt_call("query_face_normal", [&]() {
-        // 1. Coerce shape to TopoDS_Face. TopoDS::Face throws Standard_Failure
-        //    via the wrap_occt_call guard if the shape is not a face.
+        // Coerce shape to TopoDS_Face (TopAbs_FACE check first so the error
+        // message names this operation; then delegate to the shared helper).
         if (shape.shape.ShapeType() != TopAbs_FACE) {
             throw std::runtime_error(
                 "query_face_normal: shape is not a face"
             );
         }
         TopoDS_Face face = TopoDS::Face(shape.shape);
-        if (face.IsNull()) {
-            throw std::runtime_error("query_face_normal: face is null");
+        gp_Vec n = face_outward_unit_normal(face, "query_face_normal");
+        return Point3{ n.X(), n.Y(), n.Z() };
+    });
+}
+
+double surface_angle(const OcctShape& face_a, const OcctShape& face_b) {
+    return wrap_occt_call("surface_angle", [&]() {
+        if (face_a.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error("surface_angle: face_a is not a face");
         }
-
-        // 2. Compute the face centroid via SurfaceProperties + CentreOfMass.
-        GProp_GProps props;
-        BRepGProp::SurfaceProperties(face, props);
-        gp_Pnt centroid = props.CentreOfMass();
-
-        // 3. Project the 3D centroid back to (u, v) parametric coordinates.
-        Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
-        if (surf.IsNull()) {
-            throw std::runtime_error(
-                "query_face_normal: face has no underlying surface"
-            );
+        if (face_b.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error("surface_angle: face_b is not a face");
         }
-        ShapeAnalysis_Surface analyzer(surf);
-        gp_Pnt2d uv = analyzer.ValueOfUV(centroid, 1e-9);
-
-        // 4. First derivatives at (u, v) via BRepAdaptor_Surface.
-        BRepAdaptor_Surface adaptor(face);
-        gp_Pnt p;
-        gp_Vec du, dv;
-        adaptor.D1(uv.X(), uv.Y(), p, du, dv);
-
-        // 5. Cross product gives the surface normal (Du × Dv).
-        gp_Vec n = du.Crossed(dv);
-        double mag = n.Magnitude();
-        if (mag < CPP_DIR_MAG_MIN) {
-            throw std::runtime_error(
-                "query_face_normal: degenerate surface (zero normal)"
-            );
-        }
-
-        // 6. Account for face orientation: a REVERSED face flips the
-        //    parametric-derivative cross-product so the returned normal
-        //    points along the topological orientation of the face.
-        if (face.Orientation() == TopAbs_REVERSED) {
-            n.Reverse();
-        }
-
-        return Point3{ n.X() / mag, n.Y() / mag, n.Z() / mag };
+        TopoDS_Face fa = TopoDS::Face(face_a.shape);
+        TopoDS_Face fb = TopoDS::Face(face_b.shape);
+        gp_Vec na = face_outward_unit_normal(fa, "surface_angle: face_a");
+        gp_Vec nb = face_outward_unit_normal(fb, "surface_angle: face_b");
+        double dot = std::clamp(na.Dot(nb), -1.0, 1.0);
+        return std::acos(dot);
     });
 }
 
