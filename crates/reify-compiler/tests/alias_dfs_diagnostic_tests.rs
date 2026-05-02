@@ -203,3 +203,36 @@ fn non_parametric_alias_scalar_unknown_dimension_leaves_alias_unresolved() {
 fn non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic() {
     assert_error_containing(SCALAR_BAD_WITH_USE_SITE, "unresolved type: Bad");
 }
+
+/// A non-parametric alias `type Bad = Wrapper<NotAType>` (where
+/// `type Wrapper<T> = List<T>` is a user-defined parametric alias) paired with
+/// a use-site `structure def Use { param v : Bad }` must produce at least one
+/// Error-severity diagnostic that mentions `"NotAType"`.
+///
+/// This is the primary regression test for task #2843.
+///
+/// (a) This test pins the task #2843 fix.
+///
+/// (b) Before the fix, the user-alias-instantiation branch in
+///     `resolve_type_alias_expr` (type_resolution.rs:794-815) unconditionally
+///     discarded `tmp_diags` from `resolve_parameterized_alias` regardless of
+///     `inner_diag_policy`.  The diagnostic "unresolved type argument 'NotAType'
+///     for alias 'Wrapper'" written by `resolve_parameterized_alias` into
+///     `tmp_diags` was therefore silently dropped during alias-DFS resolution.
+///     No Error-severity diagnostic mentioning "NotAType" reached the output —
+///     the bug.
+///
+/// (c) The `structure def Use { param v : Bad }` use-site is included so the
+///     alias entry for `Bad` is materialised through the full pipeline, matching
+///     the convention of every Error-producing test in this file.
+///
+/// After the fix (policy-gated `diagnostics.extend(tmp_diags); return None;`
+/// inserted between the success path and the silent-discard comment), the
+/// inner-arg error surfaces during alias-DFS and the assertion passes.
+#[test]
+fn non_parametric_alias_user_parametric_unknown_inner_produces_error() {
+    assert_error_containing(
+        "type Wrapper<T> = List<T>\ntype Bad = Wrapper<NotAType>\nstructure def Use { param v : Bad }",
+        "NotAType",
+    );
+}
