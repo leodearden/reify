@@ -999,6 +999,12 @@ describe('SidecarSession multi-turn streaming', () => {
     expect((noticeEvents[0] as any).message).toContain('message.id');
     expect((noticeEvents[0] as any).id).toBe('msg-no-id');
 
+    // (e) console.error fires exactly once across two no-id events (one-shot guard),
+    // and the warning text references 'missing message.id' — the sole human-debugging
+    // signal that turn-boundary detection has degraded.
+    expect(consoleSpy).toHaveBeenCalledTimes(1);
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('missing message.id'));
+
     consoleSpy.mockRestore();
   });
 
