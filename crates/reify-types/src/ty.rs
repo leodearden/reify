@@ -1422,4 +1422,17 @@ mod tests {
         assert_eq!(map.get(&t_b), Some(&"material"));
         assert_eq!(map.get(&t_other), None);
     }
+
+    // ── Union tests (task-2373) ─────────────────────────────────────────────
+    // `Type::Union(Vec<Type>)` is a compile-time-only union over the arm-types
+    // of a `match`-block decl cluster. See PRD `match-block-decls.md` §6.4.
+
+    #[test]
+    fn type_union_display_pipe_separated() {
+        let union = Type::Union(vec![
+            Type::StructureRef("HexHead".into()),
+            Type::StructureRef("SocketHead".into()),
+        ]);
+        assert_eq!(format!("{}", union), "Union<HexHead | SocketHead>");
+    }
 }
