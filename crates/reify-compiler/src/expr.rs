@@ -2534,4 +2534,84 @@ mod tests {
     fn make_poison_type_panics_with_non_error_severity_diagnostic() {
         let _ = make_poison_type(&mut vec![], Diagnostic::info("wrong severity"));
     }
+
+    /// `resolve_cluster_inner_member` must NOT panic when called with an empty
+    /// `per_arm` slice (review-cycle-1 robustness fix; task 2373 step-21/22).
+    ///
+    /// Before the fix, the helper computed `missing` = empty (vacuously true on
+    /// empty input), entered the all-arms-have-the-field branch, then indexed
+    /// `lookups[0]` → index-out-of-bounds panic.
+    ///
+    /// Contract: an empty `per_arm` is treated as "cluster has no resolvable arm
+    /// structures" and emits the same diagnostic shape as the inner-call-site
+    /// fallback at expr.rs:1049-1059, then returns a poison literal so downstream
+    /// expressions don't cascade. Both `sub_qualifier = None` and
+    /// `sub_qualifier = Some(...)` paths are covered: the latter pins the
+    /// `"sub '<name>'"` qualifier substring expected by external-scope callers.
+    #[test]
+    fn resolve_cluster_inner_member_empty_per_arm_returns_poison_without_panic() {
+        // Case 1: sub_qualifier = None (inner self.<cluster>.<inner> call site).
+        let per_arm: Vec<(String, std::collections::BTreeMap<String, Type>)> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = resolve_cluster_inner_member(
+            &per_arm,
+            "anything",
+            "Bolt",
+            "head",
+            None,
+            SourceSpan::prelude(),
+            &mut diagnostics,
+        );
+        // (b) returned CompiledExpr.result_type == Type::Error.
+        assert_eq!(
+            result.result_type,
+            Type::Error,
+            "empty per_arm must return a poison literal (Type::Error), got: {:?}",
+            result.result_type
+        );
+        // (c) exactly one Severity::Error diagnostic mentioning the cluster shape.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "empty per_arm must push exactly one diagnostic, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert!(
+            diagnostics[0].message.contains("match-arm cluster"),
+            "diagnostic must mention 'match-arm cluster' for cluster shape; got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("head"),
+            "diagnostic must name the empty cluster ('head'); got: {:?}",
+            diagnostics[0].message
+        );
+
+        // Case 2: sub_qualifier = Some("bolt") (external <sub>.<cluster>.<inner>
+        // call site). Diagnostic must contain the qualifier fragment.
+        let mut diagnostics2: Vec<Diagnostic> = vec![];
+        let result2 = resolve_cluster_inner_member(
+            &per_arm,
+            "anything",
+            "Driver.bolt",
+            "head",
+            Some("bolt"),
+            SourceSpan::prelude(),
+            &mut diagnostics2,
+        );
+        assert_eq!(
+            result2.result_type,
+            Type::Error,
+            "empty per_arm with sub qualifier must also return Type::Error"
+        );
+        assert_eq!(diagnostics2.len(), 1);
+        assert_eq!(diagnostics2[0].severity, Severity::Error);
+        assert!(
+            diagnostics2[0].message.contains("sub 'bolt'"),
+            "external-call-site diagnostic must include qualifier `sub 'bolt'`; got: {:?}",
+            diagnostics2[0].message
+        );
+    }
 }
