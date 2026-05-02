@@ -25,12 +25,14 @@ export interface InboundToolResult {
   type: 'tool_result';
   id: string;
   /** The Claude CLI tool_use_id from the corresponding tool_call outbound message.
-   * The Rust host always echoes this field (InboundMessage::ToolResult.tool_use_id
-   * is required on the wire). When present the sidecar uses id-based correlation
-   * (preferred, correct for out-of-order results). When absent it falls back to
-   * FIFO-by-tool_name (kept optional here to allow sidecar tests that exercise
-   * the fallback path without an echoed id). */
-  tool_use_id?: string;
+   * Required by the wire contract — Rust `InboundMessage::ToolResult.tool_use_id`
+   * is `String` (mandatory). The sidecar uses id-based correlation via this echoed
+   * value (preferred, correct for out-of-order results). Hosts that pre-date the
+   * echoed-id contract (sending without this field) will be rejected at parse time;
+   * the sidecar still implements a FIFO-by-tool_name fallback at the private handler
+   * level as defense-in-depth, but it is no longer reachable from the public API
+   * surface. */
+  tool_use_id: string;
   tool_name: string;
   result: unknown;
 }

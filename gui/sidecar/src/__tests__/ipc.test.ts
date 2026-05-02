@@ -79,6 +79,7 @@ describe('parseInboundMessage', () => {
     const line = JSON.stringify({
       type: 'tool_result',
       id: 'msg-1',
+      tool_use_id: 'toolu_x',
       tool_name: 'reify_get_diagnostics',
       result: { ok: true },
     });
@@ -86,6 +87,7 @@ describe('parseInboundMessage', () => {
     expect(msg).toEqual({
       type: 'tool_result',
       id: 'msg-1',
+      tool_use_id: 'toolu_x',
       tool_name: 'reify_get_diagnostics',
       result: { ok: true },
     });
@@ -109,6 +111,28 @@ describe('parseInboundMessage', () => {
   it('throws on tool_result missing result field', () => {
     const line = JSON.stringify({ type: 'tool_result', id: 'msg-1', tool_name: 'reify_get_diagnostics' });
     expect(() => parseInboundMessage(line)).toThrow(/result/i);
+  });
+
+  it('throws on tool_result missing tool_use_id field', () => {
+    const line = JSON.stringify({
+      type: 'tool_result',
+      id: 'msg-1',
+      tool_name: 'reify_get_diagnostics',
+      result: { ok: true },
+      // tool_use_id intentionally omitted
+    });
+    expect(() => parseInboundMessage(line)).toThrow(/tool_use_id/i);
+  });
+
+  it('throws on tool_result with empty tool_use_id', () => {
+    const line = JSON.stringify({
+      type: 'tool_result',
+      id: 'msg-1',
+      tool_use_id: '',
+      tool_name: 'reify_get_diagnostics',
+      result: { ok: true },
+    });
+    expect(() => parseInboundMessage(line)).toThrow(/tool_use_id/i);
   });
 });
 
