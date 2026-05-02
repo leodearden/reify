@@ -1020,6 +1020,249 @@ structure def S6 : T6 { param x : Real = 6.0 }
     );
 }
 
+// ─── step-32: depth-bound boundary — per_param shape discontinuity ──────────
+
+/// Parity test for the `per_param` shape discontinuity at the DFS / BFS-fallback
+/// boundary.
+///
+/// # What this test pins
+///
+/// `MultiParamResolutionOutcome.per_param` has different shapes at the
+/// depth-bound boundary:
+///
+/// - **DFS path** (`n ≤ max_depth`): Phase A halt on a non-first param records
+///   only the failing param — `[(U, NoCandidate)]` (length 1).  This is the
+///   contract documented on `MultiParamResolutionOutcome.per_param` for the DFS
+///   Phase A halt arms (see its doc-comment for the authoritative statement).
+///
+/// - **BFS-fallback path** (`n > max_depth`): delegates to
+///   `resolve_auto_type_params` (v0.1), which uses halt-on-first-failure with
+///   accumulation — `[(T, Selected("ORingSeal")), (U, NoCandidate)]` (length 2).
+///   The failing-param entry is still the last entry, but prior successes are
+///   included.
+///
+/// At the boundary itself (`n = max_depth` vs `n = max_depth + 1`) the caller
+/// observes a SHAPE FLIP for the same Phase A failure mode.  This discontinuity
+/// is intentional; it is documented on `MultiParamResolutionOutcome.per_param`
+/// (task 2861 resolution: option (a) — doc-comment update, not algorithm change).
+///
+/// # Fixture
+///
+/// Same `[T:Seal→ORingSeal Found, U:Cooled→Empty]` pair used in
+/// `dfs_phase_a_empty_pool_on_second_param_halts_against_second_param` (DFS
+/// shape) and `mid_list_failure_records_success_then_failure_in_per_param_but_only_success_in_substitution`
+/// in `auto_type_param_multi_param_tests.rs` (BFS shape).  Only `max_depth`
+/// varies between the two runs (2 vs 1).
+///
+/// # Pins
+///
+/// - **DFS run** (`max_depth = 2`, params.len() == 2; strict `>` does NOT fire):
+///   `per_param.len() == 1`, entry is `("U", NoCandidate)`.
+///   Exactly one `AutoTypeParamNoCandidate` diagnostic, zero
+///   `AutoTypeParamDepthBoundExceeded` diagnostics.
+///
+/// - **BFS-fallback run** (`max_depth = 1`, 2 > 1 ⇒ fallback fires):
+///   `per_param.len() == 2`, entries are
+///   `[("T", Selected("ORingSeal")), ("U", NoCandidate)]`.
+///   `substitution == [("T", "ORingSeal")]`.
+///   Exactly one `AutoTypeParamDepthBoundExceeded` (Warning) and one
+///   `AutoTypeParamNoCandidate` diagnostic (2 total).
+///
+/// - **Shape divergence assertion**: the two `per_param.len()` values differ
+///   (1 vs 2) — this is the canonical proof that the discontinuity exists and
+///   is pinned, not accidentally unified by some future refactor.
+///
+/// - The failing-param entry `("U", NoCandidate)` is the last entry in BOTH
+///   outcomes — the only universally-stable feature across the boundary.
+#[test]
+fn dfs_phase_a_failure_at_depth_bound_boundary_documents_per_param_shape_discontinuity() {
+    // T's bound (Seal) has one matching structure ⇒ Phase A returns Found.
+    // U's bound (Cooled) has zero matching structures ⇒ Phase A returns Empty.
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+
+    // Distinct spans on T vs U — same as the sibling test.
+    let t_span = SourceSpan::new(10, 20);
+    let u_span = SourceSpan::new(30, 40);
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()], // one structure ⇒ Found
+            free: false,
+            use_site_span: t_span,
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()], // zero structures ⇒ Empty
+            free: false,
+            use_site_span: u_span,
+        },
+    ];
+
+    // ── DFS run: max_depth = 2, params.len() = 2 (strict `>` does NOT fire) ──
+    let mut dfs_diagnostics = Vec::new();
+    let dfs_outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        2, // 2 > 2 is false → DFS path
+        &mut dfs_diagnostics,
+    );
+
+    assert_eq!(
+        dfs_outcome.per_param,
+        vec![("U".to_string(), SelectionResult::NoCandidate)],
+        "DFS path (max_depth=2, n=2): per_param must be length-1 [(U, NoCandidate)]; \
+         the Phase A halt arm records only the failing param, not prior Phase A Found entries"
+    );
+    assert!(
+        dfs_outcome.substitution.is_empty(),
+        "DFS path: substitution must be empty on Phase A halt, got: {:?}",
+        dfs_outcome.substitution
+    );
+
+    let dfs_depth_bound_count = dfs_diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded))
+        .count();
+    assert_eq!(
+        dfs_depth_bound_count, 0,
+        "DFS path must emit zero AutoTypeParamDepthBoundExceeded diagnostics (no fallback); \
+         got: {:?}",
+        dfs_diagnostics
+    );
+
+    let dfs_no_candidate_count = dfs_diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate))
+        .count();
+    assert_eq!(
+        dfs_no_candidate_count, 1,
+        "DFS path must emit exactly one AutoTypeParamNoCandidate diagnostic; got: {:?}",
+        dfs_diagnostics
+    );
+
+    // ── BFS-fallback run: max_depth = 1, params.len() = 2 (2 > 1 ⇒ fallback) ──
+    let mut bfs_diagnostics = Vec::new();
+    let bfs_fallback_outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        1, // 2 > 1 is true → BFS-fallback path
+        &mut bfs_diagnostics,
+    );
+
+    assert_eq!(
+        bfs_fallback_outcome.per_param,
+        vec![
+            ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+            ("U".to_string(), SelectionResult::NoCandidate),
+        ],
+        "BFS-fallback path (max_depth=1, n=2): per_param must be length-2 \
+         [(T, Selected(\"ORingSeal\")), (U, NoCandidate)]; \
+         BFS halt-on-first-failure accumulates prior successes"
+    );
+    assert_eq!(
+        bfs_fallback_outcome.substitution,
+        vec![("T".to_string(), "ORingSeal".to_string())],
+        "BFS-fallback path: substitution must contain T's resolution, got: {:?}",
+        bfs_fallback_outcome.substitution
+    );
+
+    let bfs_depth_bound_count = bfs_diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded))
+        .count();
+    assert_eq!(
+        bfs_depth_bound_count, 1,
+        "BFS-fallback path must emit exactly one AutoTypeParamDepthBoundExceeded diagnostic; \
+         got: {:?}",
+        bfs_diagnostics
+    );
+    let depth_bound_diag = bfs_diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded))
+        .unwrap();
+    assert_eq!(
+        depth_bound_diag.severity,
+        Severity::Warning,
+        "AutoTypeParamDepthBoundExceeded must be Warning severity, got: {:?}",
+        depth_bound_diag.severity
+    );
+
+    let bfs_no_candidate_count = bfs_diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate))
+        .count();
+    assert_eq!(
+        bfs_no_candidate_count, 1,
+        "BFS-fallback path must emit exactly one AutoTypeParamNoCandidate diagnostic; \
+         got: {:?}",
+        bfs_diagnostics
+    );
+
+    // ── Canonical shape-discontinuity assertion ──────────────────────────────
+    // This is the central pin: the two per_param shapes ARE deliberately different.
+    // A future refactor that accidentally unifies them will break this assertion.
+    assert_ne!(
+        dfs_outcome.per_param.len(),
+        bfs_fallback_outcome.per_param.len(),
+        "INTENTIONAL DISCONTINUITY: DFS (max_depth=2) produces per_param.len()={} \
+         while BFS-fallback (max_depth=1) produces per_param.len()={} for the same fixture. \
+         This is the documented depth-bound shape discontinuity — do not \"fix\" by unifying \
+         the shapes without updating MultiParamResolutionOutcome.per_param's doc-comment \
+         and the task-2861 design decision.",
+        dfs_outcome.per_param.len(),
+        bfs_fallback_outcome.per_param.len()
+    );
+    assert_eq!(
+        dfs_outcome.per_param.len(), 1,
+        "DFS per_param length must be exactly 1 (the failing param only)"
+    );
+    assert_eq!(
+        bfs_fallback_outcome.per_param.len(), 2,
+        "BFS-fallback per_param length must be exactly 2 (prior success + failing param)"
+    );
+
+    // The failing-param entry is the last entry in BOTH outcomes —
+    // the only universally-stable feature across the boundary.
+    let dfs_last = dfs_outcome.per_param.last().unwrap();
+    let bfs_last = bfs_fallback_outcome.per_param.last().unwrap();
+    assert_eq!(
+        dfs_last,
+        &("U".to_string(), SelectionResult::NoCandidate),
+        "DFS: last per_param entry must be the failing param (U, NoCandidate)"
+    );
+    assert_eq!(
+        bfs_last,
+        &("U".to_string(), SelectionResult::NoCandidate),
+        "BFS-fallback: last per_param entry must be the failing param (U, NoCandidate)"
+    );
+    assert_eq!(
+        dfs_last, bfs_last,
+        "The failing-param entry must be identical in both DFS and BFS-fallback outcomes \
+         — it is the only universally-stable feature across the depth-bound boundary"
+    );
+}
+
 // ─── amend (post-verification): coverage gaps surfaced in code review ──────
 
 /// Multi-param scenario where Phase A succeeds for every param but every
