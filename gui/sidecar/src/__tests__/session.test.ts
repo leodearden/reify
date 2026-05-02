@@ -110,7 +110,7 @@ function waitForOutput(
  * last matching message. Decouples match counting from the predicate so the predicate stays
  * side-effect-free.
  *
- * Accepts an optional `options.timeoutMs` (default 2000ms). If the nth match is never
+ * Accepts an optional `options.timeoutMs` (default 5000ms). If the nth match is never
  * reached within that window, rejects with a named error and restores session.onOutput
  * so test isolation is preserved.
  */
