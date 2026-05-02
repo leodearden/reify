@@ -47,51 +47,28 @@ fn cylinder_kernel(radius: f64, height: f64) -> (OcctKernel, GeometryHandleId) {
     (kernel, handle.id)
 }
 
-/// Parse the z-component out of a `FaceNormal` JSON result:
-/// `{"x":<f>,"y":<f>,"z":<f>}`.
-///
-/// Panics with a clear message if the format changes, so a test won't
-/// silently degenerate to all-zero normals and become a tautology.
-fn parse_face_normal_z(kernel: &OcctKernel, face_id: GeometryHandleId) -> f64 {
+/// Parse all three components out of a `FaceNormal` JSON-encoded `Value::String`
+/// via `serde_json` — robust to key-ordering / whitespace / float-format
+/// changes. Today's format is `{"x":<f>,"y":<f>,"z":<f>}`.
+fn parse_face_normal(kernel: &OcctKernel, face_id: GeometryHandleId) -> [f64; 3] {
     match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
-        Ok(Value::String(s)) => s
-            .split("\"z\":")
-            .nth(1)
-            .and_then(|tail| tail.trim_end_matches('}').parse::<f64>().ok())
-            .expect("FaceNormal JSON 'z' component missing or unparseable"),
+        Ok(Value::String(s)) => {
+            let v: serde_json::Value = serde_json::from_str(&s)
+                .unwrap_or_else(|e| panic!("FaceNormal JSON parse failed: {e}; raw = {s:?}"));
+            let get = |k: &str| -> f64 {
+                v.get(k).and_then(|x| x.as_f64()).unwrap_or_else(|| {
+                    panic!("FaceNormal JSON missing or non-numeric '{k}': {s:?}")
+                })
+            };
+            [get("x"), get("y"), get("z")]
+        }
         other => panic!("FaceNormal returned unexpected value: {other:?}"),
     }
 }
 
-/// Parse all three components out of a `FaceNormal` JSON result.
-///
-/// Panics with a clear message if the format changes, so a test won't
-/// silently degenerate to all-zero normals and become a tautology.
-fn parse_face_normal(kernel: &OcctKernel, face_id: GeometryHandleId) -> [f64; 3] {
-    match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
-        Ok(Value::String(s)) => {
-            // Format: `{"x":<f>,"y":<f>,"z":<f>}`
-            let x = s
-                .split("\"x\":")
-                .nth(1)
-                .and_then(|t| t.split(',').next())
-                .and_then(|t| t.parse::<f64>().ok())
-                .expect("FaceNormal JSON 'x' component missing or unparseable");
-            let y = s
-                .split("\"y\":")
-                .nth(1)
-                .and_then(|t| t.split(',').next())
-                .and_then(|t| t.parse::<f64>().ok())
-                .expect("FaceNormal JSON 'y' component missing or unparseable");
-            let z = s
-                .split("\"z\":")
-                .nth(1)
-                .and_then(|t| t.trim_end_matches('}').parse::<f64>().ok())
-                .expect("FaceNormal JSON 'z' component missing or unparseable");
-            [x, y, z]
-        }
-        other => panic!("FaceNormal returned unexpected value: {other:?}"),
-    }
+/// Z-component of `FaceNormal`. Convenience for the cylinder cap/side filter.
+fn parse_face_normal_z(kernel: &OcctKernel, face_id: GeometryHandleId) -> f64 {
+    parse_face_normal(kernel, face_id)[2]
 }
 
 // ---------------------------------------------------------------------------
