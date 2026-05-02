@@ -129,6 +129,21 @@ pub enum Type {
     /// result type; consumer sites (binary operators, index access, member
     /// access, quantifiers, etc.) guard on `is_error()` and short-circuit.
     Error,
+    /// Compile-time-only union of mutually-exclusive arm types from a
+    /// `match`-block decl cluster (PRD `match-block-decls.md` §6.4).
+    ///
+    /// When `self.head` (or `bolt.head` from outside) refers to a
+    /// `GuardedDeclGroup` whose arms each declare a sub of a different
+    /// concrete structure (e.g. `Hex => sub head : HexHead;
+    /// Socket => sub head : SocketHead`), the static type at the reference
+    /// site is `Type::Union(vec![HexHead, SocketHead])`. Narrowing under a
+    /// matching arm-guard collapses the union to a single arm-type.
+    ///
+    /// Compile-time only: rejected by `is_representable_cell_type` in
+    /// `reify-eval` (engine_eval.rs). A `Value::Union` does not exist; at
+    /// runtime exactly one arm is active and its concrete `StructureRef`-
+    /// typed cell holds the value.
+    Union(Vec<Type>),
 }
 
 impl Type {
@@ -365,6 +380,14 @@ impl std::fmt::Display for Type {
             Type::BoundingBox => write!(f, "BoundingBox"),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
             Type::Error => write!(f, "<error>"),
+            Type::Union(arms) => write!(
+                f,
+                "Union<{}>",
+                arms.iter()
+                    .map(|a| format!("{}", a))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ),
         }
     }
 }
