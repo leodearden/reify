@@ -170,7 +170,7 @@ export class SidecarSession {
     // from handleSendMessage instead.
     let warnedOrphanStdinError = false;
     proc.stdin?.on('error', (err: Error) => {
-      // One-shot guard (mirrors warnedMissingMessageId below) prevents log spam if the
+      // One-shot guard (mirrors notifiedMissingMessageId below) prevents log spam if the
       // kernel/Node fires repeated errors on the same stream after an external fd close.
       if (!warnedOrphanStdinError) {
         warnedOrphanStdinError = true;
@@ -215,8 +215,8 @@ export class SidecarSession {
     let lastTextLen = 0;
     let lastThinkingLen = 0;
     let currentAssistantMessageId: string | null = null;
-    // One-shot guard: warn at most once per invocation if message.id is absent.
-    let warnedMissingMessageId = false;
+    // One-shot guard: notify (stderr + host via onOutput) at most once per invocation if message.id is absent.
+    let notifiedMissingMessageId = false;
 
     // Parse streaming JSON events from stdout
     try {
@@ -239,18 +239,16 @@ export class SidecarSession {
               lastTextLen = 0;
               lastThinkingLen = 0;
               currentAssistantMessageId = event.message.id;
-            } else if (typeof event.message.id !== 'string' && !warnedMissingMessageId) {
-              warnedMissingMessageId = true;
-              console.error(
-                '[sidecar] assistant event missing message.id — turn-boundary detection disabled for this invocation; ' +
-                'multi-turn delta offsets may be incorrect if accumulated text length is not reset between turns.',
-              );
+            } else if (typeof event.message.id !== 'string' && !notifiedMissingMessageId) {
+              notifiedMissingMessageId = true;
+              const DEGRADED_TURN_BOUNDARY_DETAIL =
+                'assistant event missing message.id — turn-boundary detection disabled for this invocation; ' +
+                'multi-turn delta offsets may be incorrect if accumulated text length is not reset between turns.';
+              console.error(`[sidecar] ${DEGRADED_TURN_BOUNDARY_DETAIL}`);
               this.onOutput({
                 type: 'error',
                 id,
-                message:
-                  '[degraded-turn-boundary] assistant event missing message.id — turn-boundary detection disabled for this invocation; ' +
-                  'multi-turn delta offsets may be incorrect if accumulated text length is not reset between turns.',
+                message: `[degraded-turn-boundary] ${DEGRADED_TURN_BOUNDARY_DETAIL}`,
               });
             }
             for (const block of event.message.content) {
