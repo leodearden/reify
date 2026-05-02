@@ -1581,3 +1581,174 @@ fn match_arm_decl_group_outside_sub_after_match_emits_collision_diagnostic() {
         compiled.diagnostics
     );
 }
+
+/// Task 2375 step-7(a): a Param `head` declared before the match block must
+/// trigger a collision diagnostic when the match block also declares `head`.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure Bolt {
+///     param head : Real               // outside Param — collides with cluster
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+/// }
+/// ```
+///
+/// RED before step-8 confirms it's already GREEN from step-4's `scope.names` check.
+#[test]
+fn match_arm_decl_group_outside_param_collision_emits_diagnostic() {
+    let outside_param = param_member("head", "Real");
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        // outside Param precedes the match block.
+        members: vec![outside_param, param_member("head_type", "HeadType"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_outside_param_collision"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
+        d.message.contains("match-arm cluster 'head'")
+            && d.message.contains("outside the match block")
+    });
+    assert!(
+        has_collision_diag,
+        "expected collision diagnostic for 'head' (outside Param before match), got: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// Task 2375 step-7(b): a Let `head` declared before the match block must
+/// trigger a collision diagnostic when the match block also declares `head`.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure Bolt {
+///     let head = 1.0                  // outside Let — collides with cluster
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+/// }
+/// ```
+///
+/// RED before step-8 confirms it's already GREEN from step-4's `scope.names` check.
+#[test]
+fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
+    let outside_let = MemberDecl::Let(LetDecl {
+        name: "head".to_string(),
+        doc: None,
+        is_pub: false,
+        type_expr: None,
+        value: Expr {
+            kind: ExprKind::NumberLiteral(1.0),
+            span: zero_span(),
+        },
+        where_clause: None,
+        annotations: vec![],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        // outside Let precedes the match block.
+        members: vec![outside_let, param_member("head_type", "HeadType"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_outside_let_collision"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
+        d.message.contains("match-arm cluster 'head'")
+            && d.message.contains("outside the match block")
+    });
+    assert!(
+        has_collision_diag,
+        "expected collision diagnostic for 'head' (outside Let before match), got: {:#?}",
+        compiled.diagnostics
+    );
+}
