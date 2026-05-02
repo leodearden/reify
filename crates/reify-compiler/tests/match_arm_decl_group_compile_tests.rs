@@ -1752,3 +1752,169 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
         compiled.diagnostics
     );
 }
+
+/// Task 2375 step-9: forward-direction collision must ALSO suppress cluster
+/// registration — match_arm_groups must be empty when a collision is detected.
+///
+/// Same scenario as step-3 (outside Sub BEFORE match), but now asserting BOTH:
+///   (a) collision diagnostic IS emitted, AND
+///   (b) bolt_template.match_arm_groups is EMPTY (cluster did NOT form).
+///
+/// RED before pass-2 short-circuit (step-10); GREEN after.
+#[test]
+fn match_arm_decl_group_outside_collision_suppresses_cluster_registration() {
+    let outside_sub = sub_member("head", "DefaultHead");
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        // outside Sub precedes the match block in source order (forward direction).
+        members: vec![param_member("head_type", "HeadType"), outside_sub, match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_forward_collision_suppresses_cluster"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("DefaultHead"),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Collision diagnostic must still be emitted.
+    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
+        d.message.contains("match-arm cluster 'head'")
+            && d.message.contains("outside the match block")
+    });
+    assert!(
+        has_collision_diag,
+        "expected collision diagnostic for 'head' (forward direction), got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) Cluster must NOT be registered — match_arm_groups must be empty.
+    let bolt_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("Bolt template should be compiled");
+
+    assert!(
+        bolt_template.match_arm_groups.is_empty(),
+        "expected no match_arm_groups entry when forward collision detected, got: {:#?}",
+        bolt_template.match_arm_groups
+    );
+}
+
+/// Task 2375 step-9: reverse-direction collision must ALSO suppress cluster
+/// registration — same as above but with outside Sub declared AFTER the match.
+///
+/// RED before pass-2 short-circuit (step-10); GREEN after.
+#[test]
+fn match_arm_decl_group_reverse_collision_suppresses_cluster_registration() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let outside_sub = sub_member("head", "DefaultHead");
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        // outside Sub follows the match block in source order (reverse direction).
+        members: vec![param_member("head_type", "HeadType"), match_group, outside_sub],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_reverse_collision_suppresses_cluster"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("DefaultHead"),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Collision diagnostic must still be emitted.
+    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
+        d.message.contains("match-arm cluster 'head'")
+            && d.message.contains("outside the match block")
+    });
+    assert!(
+        has_collision_diag,
+        "expected collision diagnostic for 'head' (reverse direction), got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) Cluster must NOT be registered — match_arm_groups must be empty.
+    let bolt_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("Bolt template should be compiled");
+
+    assert!(
+        bolt_template.match_arm_groups.is_empty(),
+        "expected no match_arm_groups entry when reverse collision detected, got: {:#?}",
+        bolt_template.match_arm_groups
+    );
+}
