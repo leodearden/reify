@@ -524,12 +524,17 @@ fn checkpoint_type_variant_coverage() {
             n: 3,
             quantity: Box::new(Type::Real),
         },
+        // Compile-time-only union over guarded-decl-group arm types (task 2373) (1)
+        Type::Union(vec![
+            Type::StructureRef("HexHead".to_string()),
+            Type::StructureRef("SocketHead".to_string()),
+        ]),
     ];
 
     assert_eq!(
         all_types.len(),
-        27,
-        "expected exactly 27 Type variants; update this test if the enum changes"
+        28,
+        "expected exactly 28 Type variants; update this test if the enum changes"
     );
 
     // Drive the exhaustiveness guard with each variant. Compile error here means
