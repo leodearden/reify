@@ -1521,3 +1521,109 @@ fn dfs_search(
     }
     false
 }
+
+// ─── Unit tests for private helpers ──────────────────────────────────────────
+
+#[cfg(test)]
+mod helper_tests {
+    use super::check_constraints_violated;
+    use reify_test_support::MockConstraintChecker;
+    use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
+
+    fn literal_expr() -> reify_types::CompiledExpr {
+        reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool)
+    }
+
+    /// Empty `constraints_template` slice → vacuously no violations → `false`.
+    #[test]
+    fn check_constraints_violated_returns_false_for_empty_constraints() {
+        let checker = MockConstraintChecker::new();
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&[], &checker, functions, &values);
+        assert!(
+            !result,
+            "empty constraints slice must return false (vacuously no violations)"
+        );
+    }
+
+    /// Single constraint, checker returns `Satisfied` → `false`.
+    #[test]
+    fn check_constraints_violated_returns_false_when_all_satisfied() {
+        let expr = literal_expr();
+        let id = ConstraintNodeId::new("C0", 0);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(id.clone(), &expr)];
+        let checker = MockConstraintChecker::new(); // default: Satisfied
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        assert!(
+            !result,
+            "all-Satisfied constraints must return false (no violations)"
+        );
+    }
+
+    /// Single constraint, checker returns `Indeterminate` → `false`
+    /// (architecture §2.5: Indeterminate counts as feasible, does not falsify).
+    #[test]
+    fn check_constraints_violated_returns_false_when_all_indeterminate_per_arch_2_5() {
+        let expr = literal_expr();
+        let id = ConstraintNodeId::new("C0", 0);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(id.clone(), &expr)];
+        let checker = MockConstraintChecker::new().with_default(Satisfaction::Indeterminate);
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        assert!(
+            !result,
+            "Indeterminate constraints must return false (undef does not falsify, arch §2.5)"
+        );
+    }
+
+    /// Two constraints, checker returns `Violated` for all → `true`.
+    #[test]
+    fn check_constraints_violated_returns_true_when_any_violated() {
+        let expr = literal_expr();
+        let id0 = ConstraintNodeId::new("C0", 0);
+        let id1 = ConstraintNodeId::new("C1", 1);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(id0.clone(), &expr), (id1.clone(), &expr)];
+        let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        assert!(
+            result,
+            "all-Violated constraints must return true (any one Violated falsifies)"
+        );
+    }
+
+    /// Two constraints with distinct ids "C0" and "C1"; C0 → Satisfied, C1 → Violated → `true`
+    /// (any one Violated falsifies).
+    #[test]
+    fn check_constraints_violated_returns_true_for_mixed_satisfied_and_violated() {
+        let expr = literal_expr();
+        let id0 = ConstraintNodeId::new("C0", 0);
+        let id1 = ConstraintNodeId::new("C1", 1);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(id0.clone(), &expr), (id1.clone(), &expr)];
+        // C0 → Satisfied (default), C1 → Violated
+        let checker = MockConstraintChecker::new()
+            .with_default(Satisfaction::Satisfied)
+            .with_result(id1.clone(), Satisfaction::Violated);
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        assert!(
+            result,
+            "mixed Satisfied+Violated must return true (any one Violated falsifies)"
+        );
+    }
+}
