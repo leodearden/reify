@@ -4,6 +4,9 @@ use reify_types::{Value, ValueCellId, ValueMap};
 
 /// Build a synthetic per-member list value for a collection sub.
 ///
+/// Iterates `idx in 0..n`, looks up `<parent>.<sub>[idx].<member>` in `values`,
+/// and collects the results into a `Value::List`.
+///
 /// # Parameters
 /// - `values`: the current live `ValueMap`
 /// - `parent`: entity name that owns the collection sub (e.g. `"Widget"`)
@@ -13,15 +16,22 @@ use reify_types::{Value, ValueCellId, ValueMap};
 ///
 /// # Returns
 /// `Value::List` whose `idx`-th element is the value of
-/// `<parent>.<sub>[idx].<member>` from `values`.
+/// `<parent>.<sub>[idx].<member>` from `values`, or `Value::Undef` if the cell
+/// is absent.
 pub(crate) fn collect_member_list(
-    _values: &ValueMap,
-    _parent: &str,
-    _sub: &str,
-    _member: &str,
-    _n: i64,
+    values: &ValueMap,
+    parent: &str,
+    sub: &str,
+    member: &str,
+    n: i64,
 ) -> Value {
-    unimplemented!()
+    let items: Vec<Value> = (0..n)
+        .map(|idx| {
+            let scoped_id = ValueCellId::new(format!("{}.{}[{}]", parent, sub, idx), member);
+            values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
+        })
+        .collect();
+    Value::List(items)
 }
 
 #[cfg(test)]
