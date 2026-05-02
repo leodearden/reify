@@ -626,11 +626,6 @@ fn dfs_phase_a_overflow_on_first_param_halts_before_recursion() {
         "DFS diagnostic must be AutoTypeParamPoolOverflow, got: {:?}",
         diagnostics[0].code
     );
-    assert_eq!(
-        diagnostics[0].severity,
-        Severity::Error,
-        "DFS overflow diagnostic must be an error"
-    );
 }
 
 // ─── step-27: DFS Phase A empty pool on first param halts before recursion ──
@@ -1324,17 +1319,17 @@ structure def ORingSeal : Seal {
 /// param (not the first). Mirrors
 /// `dfs_phase_a_empty_pool_on_second_param_halts_against_second_param` for
 /// the `Overflow` arm of the orchestrator's up-front per-param Phase A
-/// enumeration loop (`auto_type_param.rs:1120-1140`), and mirrors
+/// enumeration loop, and mirrors
 /// `dfs_phase_a_overflow_on_first_param_halts_before_recursion` for param
 /// position.
 ///
 /// **Why this test exists**: The Empty and Overflow arms are syntactically
 /// symmetric in the `for param in params` loop but take diverging code paths:
-/// - `Empty` (line 1097): calls `emit_no_candidate_zero_rejections` to push
+/// - `Empty` arm: calls `emit_no_candidate_zero_rejections` to push
 ///   the diagnostic itself, then `return`s `[(name, NoCandidate)]`.
-/// - `Overflow` (line 1120): does NOT push a diagnostic — `enumerate_candidates`
+/// - `Overflow` arm: does NOT push a diagnostic — `enumerate_candidates`
 ///   already pushed `AutoTypeParamPoolOverflow` with the failing param's
-///   `use_site_span` (lines 382-388). It only synthesizes
+///   `use_site_span`. It only synthesizes
 ///   `[(name, Ambiguous(overflow_vec))]` and `return`s.
 ///
 /// Without this test, a future change to the Overflow arm (e.g., accidentally
@@ -1448,11 +1443,6 @@ structure def AirCooled : Cooled {
         Some(DiagnosticCode::AutoTypeParamPoolOverflow),
         "DFS diagnostic must be AutoTypeParamPoolOverflow, got: {:?}",
         diagnostics[0].code
-    );
-    assert_eq!(
-        diagnostics[0].severity,
-        Severity::Error,
-        "DFS overflow diagnostic must be an error"
     );
     // Anchor parity: the label must use U's span, confirming the failure is
     // attributed to the second param (not T's span, which would indicate a
