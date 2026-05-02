@@ -68,7 +68,7 @@ fn manifold_kernel_attribute_hook_round_trip_via_geometry_kernel_trait_object() 
 
     let (subscriber, counters) = CountingSubscriberBuilder::new()
         .count_level(tracing::Level::WARN)
-        .target_prefix("reify_kernel_manifold")
+        .target_prefix("reify_kernel_manifold::kernel")
         .build();
     let warn_count = counters[&tracing::Level::WARN].clone();
 
