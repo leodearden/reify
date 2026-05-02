@@ -484,4 +484,12 @@ mod tests {
         let err = result.expect_err("stub closest_point_on_shape should error");
         assert_stub_message(&format!("{err:?}"));
     }
+
+    #[test]
+    fn stub_kernel_surface_angle_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.surface_angle(GeometryHandleId(1), GeometryHandleId(2));
+        let err = result.expect_err("stub surface_angle should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
 }
