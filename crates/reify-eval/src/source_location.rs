@@ -9,6 +9,11 @@
 //!
 //! Returns `None` for anything else (unknown name, bare member without entity
 //! prefix, empty string).
+//!
+//! **Behavior change vs. pre-refactor CLI:** the prior CLI implementation also
+//! matched bare member names (e.g., `"width"`) across all templates; this is
+//! intentionally dropped for parity with the GUI surface — callers must use
+//! the `Entity.member` form.
 
 use reify_compiler::CompiledModule;
 use reify_types::SourceLocationInfo;
@@ -18,7 +23,9 @@ use reify_types::SourceLocationInfo;
 /// Accepts two forms:
 /// - **Template name** (no `.`) — returns the first value cell's span as a
 ///   proxy for the entity location.
-/// - **`Entity.member`** (contains exactly one `.`) — returns that cell's span.
+/// - **`Entity.member`** (splits on the first `.`) — returns that cell's span.
+///   If the member part itself contains a `.` the input will not match any
+///   value cell (members never contain dots), so `None` is returned.
 ///
 /// Returns `None` when the entity or member is not found, or when the input
 /// does not match either accepted form (e.g., bare member name, empty string).
@@ -32,19 +39,19 @@ pub fn resolve_entity_source_location(
         return None;
     }
 
-    let span = if let Some(dot_pos) = entity_path.find('.') {
-        // "Entity.member" form
-        let entity = &entity_path[..dot_pos];
-        let member = &entity_path[dot_pos + 1..];
-        // Reject bare-member (empty entity part) and double-dot patterns
-        if entity.is_empty() || member.is_empty() {
+    let span = if let Some((entity, member)) = entity_path.split_once('.') {
+        // "Entity.member" form — split on first dot only.
+        // Reject malformed inputs: empty entity, empty member, or a member
+        // that itself contains a dot (no value cell has a dotted member name).
+        if entity.is_empty() || member.is_empty() || member.contains('.') {
             return None;
         }
         compiled
             .templates
             .iter()
+            .filter(|t| t.name == entity)
             .flat_map(|t| t.value_cells.iter())
-            .find(|vc| vc.id.entity == entity && vc.id.member == member)
+            .find(|vc| vc.id.member == member)
             .map(|vc| vc.span)?
     } else {
         // Plain template-name form — no dot, so reject names containing any
