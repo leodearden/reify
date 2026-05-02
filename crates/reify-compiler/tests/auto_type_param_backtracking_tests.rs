@@ -955,3 +955,367 @@ structure def S6 : T6 { param x : Real = 6.0 }
         depth_bound_diagnostics
     );
 }
+
+// ─── amend (post-verification): coverage gaps surfaced in code review ──────
+
+/// Multi-param scenario where Phase A succeeds for every param but every
+/// cross-product leaf is rejected by Phase B (`Satisfaction::Violated` on the
+/// per-leaf check). Exercises the `0 =>` arm of the cross-product result match
+/// in `resolve_auto_type_params_with_backtracking`: Phase A enumeration phase
+/// completes for both T and U, recursion enters and visits every leaf, and
+/// every leaf is infeasible — `feasible_assignments.len() == 0`. The
+/// orchestrator then emits a single `AutoTypeParamNoCandidate` (zero-rejections
+/// form) anchored on `params[0]` and produces
+/// `per_param == [(T, NoCandidate)]`, `substitution == []`.
+///
+/// Distinct from the Phase A empty-pool halt
+/// (`dfs_phase_a_empty_pool_on_first_param_halts_before_recursion`): there
+/// the up-front Phase A enumeration loop short-circuits BEFORE recursion;
+/// here recursion runs to completion and the `0 =>` arm fires AFTER the
+/// cross-product is exhausted with zero feasibles. The two arms produce the
+/// same outward `NoCandidate` shape but reach it through different paths,
+/// and the branch is small but distinct enough to drift independently.
+///
+/// Pins:
+/// - `per_param == [(T, NoCandidate)]` — single-entry, anchored on params[0]
+/// - `substitution.is_empty()`
+/// - exactly one `AutoTypeParamNoCandidate` diagnostic
+/// - the diagnostic uses the zero-rejections message form (no
+///   "rejected by constraint" suffix), confirming the `0 =>` arm reuses
+///   `emit_no_candidate_zero_rejections` rather than a Phase C all-rejected
+///   path
+#[test]
+fn dfs_multi_param_all_leaves_violated_emits_no_candidate_on_first_param() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Parameterized template carries one top-level constraint so the checker's
+    // Violated default produces non-empty `ConstraintResult`s in Phase B's
+    // leaf check; without a constraint, `filter_feasible_candidates` would
+    // never see a Violated and would trivially accept every leaf.
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    // Default Violated ⇒ every cross-product leaf is infeasible.
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![("T".to_string(), SelectionResult::NoCandidate)],
+            substitution: vec![],
+        },
+        "DFS with every cross-product leaf infeasible must emit NoCandidate against params[0] (cross-product `0 =>` arm)"
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS `0 =>` arm must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "DFS `0 =>` arm diagnostic must be AutoTypeParamNoCandidate, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "AutoTypeParamNoCandidate must be Error severity"
+    );
+    // Zero-rejections message form: bound mentioned, no "rejected by constraint"
+    // suffix (distinguishes the cross-product `0 =>` arm from a hypothetical
+    // Phase C all-rejected path that would carry per-candidate rejection
+    // detail). Pins reuse of `emit_no_candidate_zero_rejections`.
+    assert!(
+        diagnostics[0].message.contains("'Seal'"),
+        "DFS `0 =>` arm diagnostic must mention params[0]'s bound 'Seal'; got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        !diagnostics[0].message.contains("rejected by constraint"),
+        "DFS `0 =>` arm (zero-rejections form) must NOT mention 'rejected by constraint'; got: {:?}",
+        diagnostics[0].message
+    );
+}
+
+/// Multi-param strict-mode scenario where exactly one of the four cross-product
+/// leaves is feasible. Exercises the `1 =>` arm via the strict path: with
+/// `max_feasible_to_collect = 2` (strict mode), the search runs all four
+/// leaves to confirm only one feasible exists, then takes the `1 =>` arm to
+/// produce a `Selected` substitution.
+///
+/// Existing tests reach the `1 =>` arm only via free-mode early-termination
+/// on the first feasible (`max_feasible_to_collect = 1`). A regression that
+/// drops feasible assignments after the first in strict mode (e.g. a future
+/// change that early-terminates strict mode after leaf 1 even before
+/// confirming uniqueness) would not be caught by those tests.
+///
+/// Queue verdicts (in DFS visit order T outer, U inner):
+/// 1. (ORingSeal, AirCooled) → `Violated`  (infeasible — backtrack)
+/// 2. (ORingSeal, WaterCooled) → `Violated` (infeasible — backtrack)
+/// 3. (RubberSeal, AirCooled) → `Violated` (infeasible — backtrack)
+/// 4. (RubberSeal, WaterCooled) → `Satisfied` (feasible — recorded)
+///
+/// Strict mode requires confirming a SECOND feasible to declare Ambiguous;
+/// the search exhausts the cross-product after leaf 4 with `feasible_assignments
+/// .len() == 1`, so the `1 =>` arm fires and produces the `Selected` outcome
+/// for the lone feasible leaf.
+///
+/// Pins:
+/// - `per_param == [(T, Selected("RubberSeal")), (U, Selected("WaterCooled"))]`
+/// - `substitution == [(T, "RubberSeal"), (U, "WaterCooled")]`
+/// - zero diagnostics — the `1 =>` arm is a clean success; no Ambiguous /
+///   NoCandidate emission paths fire
+#[test]
+fn dfs_strict_mode_with_exactly_one_feasible_leaf_selects_it() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // One constraint on the parameterized template so the checker's queue
+    // verdict produces a non-empty `ConstraintResult` per leaf.
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    // Three leaves Violated (backtracked), one Satisfied (the lex-last leaf
+    // (RubberSeal, WaterCooled) — visited at index 3 in DFS order, T outer).
+    let checker = MockConstraintChecker::new().with_call_queue(vec![
+        Satisfaction::Violated,
+        Satisfaction::Violated,
+        Satisfaction::Violated,
+        Satisfaction::Satisfied,
+    ]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false, // strict ⇒ max_feasible_to_collect = 2
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("RubberSeal".to_string())),
+                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+            ],
+            substitution: vec![
+                ("T".to_string(), "RubberSeal".to_string()),
+                ("U".to_string(), "WaterCooled".to_string()),
+            ],
+        },
+        "DFS strict-mode with exactly one feasible leaf must Select that leaf via the `1 =>` arm"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "DFS strict-mode `1 =>` arm (clean unique success) must emit zero diagnostics, got: {:?}",
+        diagnostics
+    );
+}
+
+/// Phase A halt parity for failures discovered on the SECOND param (not the
+/// first). Mirrors `dfs_phase_a_empty_pool_on_first_param_halts_before_recursion`
+/// but with T succeeding enumeration (one matching structure) and U failing
+/// (zero matching structures). Pins that the up-front per-param Phase A loop
+/// terminates on the failure regardless of position, with the
+/// `AutoTypeParamNoCandidate` diagnostic anchored on U's span (not T's).
+///
+/// Without this test, a future change to enumeration ordering or to the
+/// halt arm could silently regress halt behavior for second-or-later
+/// failures while keeping the first-param tests green.
+///
+/// Pins:
+/// - DFS halts during the up-front Phase A enumeration loop (recursion never
+///   starts because U's `Empty` arm `return`s immediately).
+/// - `per_param == [(U, NoCandidate)]` — DFS records only the failing param
+///   (consistent with the up-front Phase A loop's halt arms, which return
+///   the single failing-param entry rather than accumulating prior Selected
+///   entries; selection has not happened yet at this stage of DFS).
+/// - `substitution.is_empty()`.
+/// - exactly one `AutoTypeParamNoCandidate` diagnostic.
+/// - the diagnostic's label anchors on U's `use_site_span` (not T's),
+///   confirming the failure is attributed to the second param.
+#[test]
+fn dfs_phase_a_empty_pool_on_second_param_halts_against_second_param() {
+    // T's bound (Seal) has one matching structure ⇒ Phase A returns Found.
+    // U's bound (Cooled) has zero matching structures ⇒ Phase A returns Empty.
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    // Distinct spans on T vs U so the diagnostic-label assertion can
+    // unambiguously confirm the failure is anchored on U.
+    let t_span = SourceSpan::new(10, 20);
+    let u_span = SourceSpan::new(30, 40);
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()], // one structure ⇒ Found
+            free: false,
+            use_site_span: t_span,
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()], // zero structures ⇒ Empty
+            free: false,
+            use_site_span: u_span,
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![("U".to_string(), SelectionResult::NoCandidate)],
+            substitution: vec![],
+        },
+        "DFS Phase A empty-pool on the second param must halt with per_param=[(U, NoCandidate)], substitution=[]"
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS Phase A second-param empty-pool halt must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "DFS Phase A second-param empty-pool diagnostic must be AutoTypeParamNoCandidate"
+    );
+    assert!(
+        diagnostics[0].message.contains("'Cooled'"),
+        "DFS second-param empty-pool diagnostic must mention U's bound 'Cooled' (not T's 'Seal'); got: {:?}",
+        diagnostics[0].message
+    );
+    // Anchor parity: the label must use U's span, confirming the failure is
+    // attributed to the second param.
+    assert_eq!(
+        diagnostics[0].labels.len(),
+        1,
+        "DFS Phase A second-param empty-pool diagnostic must carry exactly one label"
+    );
+    assert_eq!(
+        diagnostics[0].labels[0].span, u_span,
+        "DFS second-param empty-pool diagnostic label must anchor on U's span (not T's)"
+    );
+}
