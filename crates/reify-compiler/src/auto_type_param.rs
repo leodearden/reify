@@ -1292,6 +1292,18 @@ pub fn resolve_auto_type_params_with_backtracking(
             let message = format!(
                 "auto type-parameters have multiple feasible cross-product assignments: {witnesses_join}; consider an explicit substitution like '{lex_first_witness}' instead of 'auto:'",
             );
+            // FQN-only invariant: `Diagnostic.candidates` carries bare FQNs (see
+            // `crates/reify-types/src/diagnostics.rs::Diagnostic::candidates`).
+            // The lex-first feasible cross-product leaf (declared-order ×
+            // lex-within-param order; see `dfs_search` doc-comment) supplies the
+            // FQN list — the exact substitution suggestion the message body
+            // advertises. Composite witness summaries (`T=...,U=...`) remain in
+            // the human-readable `message` field only; routing them through
+            // `candidates` would violate the contract shared by every other
+            // auto-type-param emission site (Phase A overflow, Phase C
+            // strict-Ambiguous, Phase C all-rejected) and break LSP `convert.rs`
+            // consumers that flatten `data.candidates` as a bare-FQN list.
+            // (Task 2860.)
             diagnostics.push(
                 Diagnostic::error(message)
                     .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
@@ -1299,7 +1311,7 @@ pub fn resolve_auto_type_params_with_backtracking(
                         params[0].use_site_span,
                         label_message,
                     ))
-                    .with_candidates(witnesses.clone()),
+                    .with_candidates(feasible_assignments[0].clone()),
             );
             MultiParamResolutionOutcome {
                 per_param: vec![(

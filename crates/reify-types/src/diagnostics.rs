@@ -506,6 +506,19 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_AUTO_TYPE_PARAM_AMBIGUOUS`
     /// (see `docs/prds/auto-type-param-resolution.md` §"Phase C").
+    ///
+    /// **Multi-param cross-product Ambiguous (v0.2 backtracking).** When
+    /// `resolve_auto_type_params_with_backtracking` finds ≥2 feasible
+    /// cross-product assignments under strict mode, the structured
+    /// [`Diagnostic::candidates`] field carries the **lex-first feasible
+    /// cross-product leaf's FQN list** (in declared parameter order),
+    /// NOT the per-leaf composite witness summaries. Per-leaf witnesses
+    /// (e.g. `"T=ORingSeal,U=AirCooled"`) appear only in the
+    /// human-readable [`Diagnostic::message`] field. This preserves the
+    /// FQN-only invariant on `candidates` (see field doc-comment) so LSP
+    /// quick-fixes can offer the lex-first leaf as a coherent explicit
+    /// substitution. Task 2663 (search-failure diagnostic format)
+    /// inherits this contract.
     AutoTypeParamAmbiguous,
     /// Origin: `crates/reify-compiler/src/auto_type_param.rs`
     /// (Phase C selection logic — `select_candidate`).
@@ -822,6 +835,41 @@ pub struct Diagnostic {
     /// Producers attach via [`Diagnostic::with_candidates`]; consumers
     /// (LSP quick-fixes, IDE error UIs) may read this without parsing the
     /// human-readable message.
+    ///
+    /// # Invariant: bare FQN entries only
+    ///
+    /// Each entry is a single bare FQN (e.g. `"foo::ORingSeal"`), NEVER a
+    /// composite `name=value,name=value` tuple. Multi-valued or structured
+    /// witness summaries (e.g. cross-product witnesses) belong in the
+    /// human-readable [`Diagnostic::message`] field; producers that need
+    /// to surface a multi-dimensional witness must collapse to the
+    /// lex-first leaf's FQNs (or the flat FQN union) before calling
+    /// [`Diagnostic::with_candidates`]. Downstream consumers in
+    /// `crates/reify-lsp/src/convert.rs` flatten this list verbatim into
+    /// the LSP `data` JSON `{"candidates": [...]}` — a quick-fix provider
+    /// that splits entries on the FQN convention will silently mis-parse
+    /// joined labels. See task 2860 for the contract origin.
+    ///
+    /// # Single-param vs. multi-param interpretation
+    ///
+    /// The *shape* of this list differs by emission context:
+    ///
+    /// - **Single-param "pick one" sites** (e.g. `AutoTypeParamPoolOverflow`,
+    ///   `AutoTypeParamNoCandidate`) pack multiple alternative FQNs — a
+    ///   consumer should offer each as an independent substitution choice.
+    /// - **Multi-param "coherent assignment" sites** (e.g.
+    ///   `AutoTypeParamAmbiguous` when ≥2 cross-product assignments exist)
+    ///   pack the FQNs of a *single coherent assignment* — one FQN per
+    ///   declared parameter in declared order. The entries must be applied
+    ///   *together*, not as independent alternatives.
+    ///
+    /// Consumers that need to distinguish these two shapes must inspect the
+    /// [`Diagnostic::code`] field (e.g. `AutoTypeParamAmbiguous` signals the
+    /// multi-param case). Treating a multi-param "all-of-these-together" list
+    /// as a "pick one" list will produce incoherent quick-fixes. Task 2663
+    /// (search-failure diagnostic format) is the designated home for any
+    /// future structured multi-param field if a richer representation is
+    /// needed.
     pub candidates: Vec<String>,
 }
 
