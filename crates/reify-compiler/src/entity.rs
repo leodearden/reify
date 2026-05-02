@@ -449,6 +449,29 @@ pub(crate) fn compile_entity(
                 }
                 scope.register(&param.name, ty);
                 outside_decl_spans.insert(param.name.clone(), param.span);
+                // Reverse-direction collision (task 2375): if this Param's name
+                // was already registered as a match-arm cluster, emit the collision
+                // diagnostic. The cluster is suppressed; the Param is kept.
+                if let Some(&cluster_span) =
+                    match_arm_cluster_logical_names.get(&param.name)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm cluster '{}' collides with declaration of '{}' \
+                             outside the match block",
+                            param.name, param.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            cluster_span,
+                            "cluster declared here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            param.span,
+                            "originally declared outside the match",
+                        )),
+                    );
+                    clusters_with_outside_collision.insert(param.name.clone());
+                }
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // For lets, we need to infer the type from the expression.
@@ -465,6 +488,29 @@ pub(crate) fn compile_entity(
                     scope.register(&let_decl.name, Type::Real);
                 }
                 outside_decl_spans.insert(let_decl.name.clone(), let_decl.span);
+                // Reverse-direction collision (task 2375): if this Let's name
+                // was already registered as a match-arm cluster, emit the collision
+                // diagnostic. The cluster is suppressed; the Let is kept.
+                if let Some(&cluster_span) =
+                    match_arm_cluster_logical_names.get(&let_decl.name)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm cluster '{}' collides with declaration of '{}' \
+                             outside the match block",
+                            let_decl.name, let_decl.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            cluster_span,
+                            "cluster declared here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            let_decl.span,
+                            "originally declared outside the match",
+                        )),
+                    );
+                    clusters_with_outside_collision.insert(let_decl.name.clone());
+                }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
                 // `known_geometry_lets` is intentionally shared across both branches
@@ -751,6 +797,29 @@ pub(crate) fn compile_entity(
                     scope.collection_sub_names.insert(sub.name.clone());
                 }
                 outside_decl_spans.insert(sub.name.clone(), sub.span);
+                // Reverse-direction collision (task 2375): if this Sub's name
+                // was already registered as a match-arm cluster, emit the collision
+                // diagnostic. The cluster is suppressed; the Sub is kept.
+                if let Some(&cluster_span) =
+                    match_arm_cluster_logical_names.get(&sub.name)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm cluster '{}' collides with declaration of '{}' \
+                             outside the match block",
+                            sub.name, sub.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            cluster_span,
+                            "cluster declared here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            sub.span,
+                            "originally declared outside the match",
+                        )),
+                    );
+                    clusters_with_outside_collision.insert(sub.name.clone());
+                }
             }
             reify_syntax::MemberDecl::MetaBlock(meta) => {
                 if let Some(first_span) = first_meta_span {
