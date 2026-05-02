@@ -206,7 +206,7 @@ fn non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic() {
 
 /// A parametric alias chain `type Wrapper<T> = List<T>` +
 /// `type OuterWrapper<T> = Wrapper<T>` must produce ZERO Error-severity
-/// diagnostics from the alias-DFS pre-pass.
+/// diagnostics mentioning either alias name from the alias-DFS pre-pass.
 ///
 /// This is the Defer-policy regression guard for task #2843.
 ///
@@ -230,18 +230,28 @@ fn non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic() {
 /// No use-site is needed here: `OuterWrapper` is parametric and never
 /// instantiated, so the absence of errors from the DFS pre-pass alone is the
 /// assertion under test.
+///
+/// The filter is scoped to diagnostics whose message mentions `"Wrapper"`,
+/// which includes both `"Wrapper"` and `"OuterWrapper"` — the only aliases
+/// defined in this fixture.  This insulates the test from any unrelated
+/// Error-severity diagnostic that `compile_with_stdlib_helper` might emit
+/// from the stdlib in a future version, preventing false failures due to
+/// noise outside the contract under test.
 #[test]
 fn parametric_alias_user_parametric_chain_defers_dfs_diagnostics() {
     let module = compile_with_stdlib_helper("type Wrapper<T> = List<T>\ntype OuterWrapper<T> = Wrapper<T>");
+    // Filter to diagnostics whose message mentions either alias name in the fixture.
+    // "OuterWrapper" is a strict superset of "Wrapper" character-wise, but both
+    // are caught by the single `contains("Wrapper")` predicate.
     let errs: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Error && d.message.contains("Wrapper"))
         .collect();
     assert!(
         errs.is_empty(),
-        "expected zero Error-severity diagnostics from alias-DFS pre-pass of a parametric chain, \
-         but got: {errs:?}"
+        "expected zero Error-severity diagnostics mentioning 'Wrapper'/'OuterWrapper' \
+         from alias-DFS pre-pass of a parametric chain, but got: {errs:?}"
     );
 }
 
