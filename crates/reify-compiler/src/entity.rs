@@ -522,7 +522,17 @@ pub(crate) fn compile_entity(
                                     .collect();
                                 scope
                                     .sub_member_types
-                                    .insert(sub.name.clone(), member_types);
+                                    .insert(sub.name.clone(), member_types.clone());
+                                // Per-arm member-type tracking (task 2373): unlike
+                                // sub_member_types (last-write-wins on the merged sub.name
+                                // key), this map preserves each arm's structure name and
+                                // member set in arm-order so that nested `self.<group>.<m>`
+                                // can detect per-arm differences (e.g. arm-specific fields).
+                                scope
+                                    .match_arm_group_arm_member_types
+                                    .entry(sub.name.clone())
+                                    .or_default()
+                                    .push((sub.structure_name.clone(), member_types));
                             }
                         }
                         other => {

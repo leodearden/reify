@@ -909,6 +909,60 @@ pub(crate) fn compile_expr_guarded(
                     }
                 }
 
+                // Pattern: self.<cluster>.<inner> — task 2373 step-12.
+                //
+                // Cluster-aware nested MemberAccess: when `<cluster>` is a registered
+                // match-arm decl group, we walk each arm's child template members and
+                // either return the common-field type (when every arm exposes <inner>
+                // with the same type) or fall through. This branch must precede the
+                // generic `self.<sub>.<member>` branch below because the pre-pass
+                // also registers each arm's sub.name in `sub_component_types` (last
+                // arm wins) — without an early intercept the merged-map path would
+                // mask per-arm differences. Step-14 extends this branch with
+                // diagnostics for arms missing the field.
+                if let reify_syntax::ExprKind::MemberAccess {
+                    object: inner_obj,
+                    member: group_name,
+                } = &object.kind
+                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+                    && self_name == "self"
+                    && scope.resolve_match_arm_group(group_name.as_str()).is_some()
+                {
+                    let per_arm = scope
+                        .match_arm_group_arm_member_types
+                        .get(group_name.as_str());
+                    if let Some(arms) = per_arm {
+                        // Collect per-arm Option<Type>: Some(T) if the arm's child
+                        // template has `member` with type T, None if missing.
+                        let lookups: Vec<(String, Option<Type>)> = arms
+                            .iter()
+                            .map(|(sname, mts)| (sname.clone(), mts.get(member).cloned()))
+                            .collect();
+                        let all_present =
+                            lookups.iter().all(|(_, t)| t.is_some());
+                        if all_present {
+                            // Check if all arm types agree.
+                            let first_type = lookups[0].1.clone().unwrap();
+                            let all_equal =
+                                lookups.iter().all(|(_, t)| t.as_ref() == Some(&first_type));
+                            if all_equal {
+                                let synthetic_entity = scope.entity_name.clone();
+                                let synthetic_member = format!(
+                                    "__match_arm_group_{}__{}",
+                                    group_name, member
+                                );
+                                let id = ValueCellId::new(&synthetic_entity, &synthetic_member);
+                                return CompiledExpr::value_ref(id, first_type);
+                            }
+                            // Divergent types across arms — step-14 extends with diagnostic.
+                        }
+                        // Step-14 will handle missing-arm and divergent-type diagnostics here.
+                    }
+                    // Fall through to existing self.sub.member path if cluster handling
+                    // doesn't resolve (e.g., empty per-arm map). Step-14 will replace
+                    // this fall-through with a precise diagnostic.
+                }
+
                 // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name }).
                 // Single match; branches internally on whether sub_name is a collection sub.
                 // Invariant: collection_sub_names ⊆ sub_component_types.keys(), so the outer

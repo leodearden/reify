@@ -58,6 +58,22 @@ pub(crate) struct CompilationScope<'u> {
     /// `meta_entries` hashing (entity.rs ~line 1656) which sorts keys for the
     /// same reason.
     pub(crate) match_arm_groups: BTreeMap<String, GuardedDeclGroup>,
+    /// Per-arm member-type maps for match-arm clusters (task 2373).
+    ///
+    /// Keyed by group logical name; the inner Vec is in arm-order (matches
+    /// `match_arm_groups[name].arms`). Each entry is `(structure_name,
+    /// member_types)` where `member_types[m] = T` for the arm's child
+    /// template.
+    ///
+    /// Used by `expr.rs` to type-check nested `self.<cluster>.<inner>`
+    /// access on a per-arm basis: the merged `sub_member_types[group]` map
+    /// only retains the last arm's members (last write wins), so per-arm
+    /// differentiation requires this parallel map.
+    ///
+    /// Populated in the entity.rs MatchArmDeclGroup pre-pass alongside
+    /// `sub_member_types`.
+    pub(crate) match_arm_group_arm_member_types:
+        HashMap<String, Vec<(String, BTreeMap<String, Type>)>>,
 }
 
 impl<'u> CompilationScope<'u> {
@@ -78,6 +94,7 @@ impl<'u> CompilationScope<'u> {
             sub_member_types: HashMap::new(),
             has_geometry: false,
             match_arm_groups: BTreeMap::new(),
+            match_arm_group_arm_member_types: HashMap::new(),
         }
     }
 
