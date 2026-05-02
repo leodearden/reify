@@ -658,11 +658,15 @@ impl EvaluationGraph {
                 },
                 "auto_type_substitution: param names must be unique; duplicates are a producer bug"
             );
+            // In release builds the assert is elided; duplicate param names
+            // produce a deterministic-but-undefined fingerprint (sorted pairs
+            // hashed as-is) — callers must not rely on any particular result.
             // Sort input pairs by `param_name`, not by `.0` of the resulting
             // pair hashes (which is the convention used by sibling buckets).
             // Under the param-name-uniqueness invariant debug_assert!ed above,
-            // both orderings are equivalent; the input-pair sort is preserved
-            // as-is to avoid re-shuffling the bit-stable bucket output.
+            // both orderings satisfy the determinism contract (logical map
+            // equality → bucket equality); the input-pair sort is preserved
+            // as-is to avoid re-shuffling the existing bit-stable bucket output.
             let mut sorted = self.auto_type_substitution.clone();
             sorted.sort_by(|a, b| a.0.cmp(&b.0));
             let pair_hashes: Vec<ContentHash> = sorted
