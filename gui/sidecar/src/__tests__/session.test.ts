@@ -2140,6 +2140,44 @@ describe('stdin write error correlation', () => {
   });
 });
 
+/**
+ * Shared setup for orphan-stdin-error tests. Creates a mock proc with one tool_use,
+ * installs a console.warn spy, dispatches handleMessage, and awaits the tool_call
+ * output to confirm the stdin 'error' listener is attached before returning.
+ *
+ * Returns { mockProc, stdout, msgPromise, warnSpy, finish } where finish() restores
+ * the spy, closes the mock process, and resolves the pending handleMessage.
+ */
+async function setupOrphanStdinErrorScenario(session: SidecarSession) {
+  const { mockProc, stdout } = makeMockProc([
+    { type: 'tool_use', id: 'toolu_orphan', name: 'reify_x', input: {} },
+  ]);
+
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+
+  const msgPromise = session.handleMessage({
+    type: 'send_message',
+    id: 'send-orphan',
+    text: 'Hi',
+  });
+
+  // Await tool_call — proves the prompt has been written to stdin and the 'error' listener is attached
+  await toolCallWait;
+
+  const finish = async () => {
+    warnSpy.mockRestore();
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-orphan' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  };
+
+  return { mockProc, stdout, msgPromise, warnSpy, finish };
+}
+
 describe('stdin orphan-error diagnostic', () => {
   let session: SidecarSession;
   let outputs: OutboundMessage[];
@@ -2156,25 +2194,7 @@ describe('stdin orphan-error diagnostic', () => {
   });
 
   it('orphan stdin error emits a console.warn diagnostic', async () => {
-    const { mockProc, stdout } = makeMockProc([
-      { type: 'tool_use', id: 'toolu_orphan', name: 'reify_x', input: {} },
-    ]);
-
-    // Suppress and capture console.warn calls
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    // Set up wait for tool_call BEFORE dispatch so we don't miss it
-    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
-
-    // Start send_message (don't await — hangs waiting for stdout to close)
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'send-orphan',
-      text: 'Hi',
-    });
-
-    // Await tool_call — proves the prompt has been written to stdin and the 'error' listener is attached
-    await toolCallWait;
+    const { mockProc, warnSpy, finish } = await setupOrphanStdinErrorScenario(session);
 
     // Synthesize an orphan EPIPE: emits to the 'error' listener but no per-write callback is in flight.
     mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE'));
@@ -2188,35 +2208,11 @@ describe('stdin orphan-error diagnostic', () => {
     const matchingCall = allCallArgs.find((s) => s.includes('synthetic orphan EPIPE'));
     expect(matchingCall).toBeDefined();
 
-    // Cleanup
-    warnSpy.mockRestore();
-    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-orphan' }) + '\n');
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
+    await finish();
   });
 
   it('orphan stdin error one-shot guard fires console.warn exactly once across multiple emits', async () => {
-    const { mockProc, stdout } = makeMockProc([
-      { type: 'tool_use', id: 'toolu_orphan', name: 'reify_x', input: {} },
-    ]);
-
-    // Suppress and capture console.warn calls
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    // Set up wait for tool_call BEFORE dispatch so we don't miss it
-    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
-
-    // Start send_message (don't await — hangs waiting for stdout to close)
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'send-orphan-oneshot',
-      text: 'Hi',
-    });
-
-    // Await tool_call — proves the prompt has been written to stdin and the 'error' listener is attached
-    await toolCallWait;
+    const { mockProc, warnSpy, finish } = await setupOrphanStdinErrorScenario(session);
 
     // First orphan EPIPE — should trigger a console.warn
     mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 1'));
@@ -2226,9 +2222,9 @@ describe('stdin orphan-error diagnostic', () => {
     mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 2 distinct'));
     await new Promise(setImmediate);
 
-    // Filter to only guard fires (uniquely identified by the '[sidecar] stdin error' prefix)
+    // Filter to guard fires (identified by the synthetic error message they carry; robust to prefix changes)
     const stdinErrorWarns = warnSpy.mock.calls.filter((args) =>
-      args.join(' ').includes('[sidecar] stdin error')
+      args.join(' ').includes('synthetic orphan EPIPE')
     );
 
     // One-shot guard: exactly one warn fired despite two error emits
@@ -2240,13 +2236,7 @@ describe('stdin orphan-error diagnostic', () => {
     // The surviving warn does NOT reference the suppressed second error
     expect(stdinErrorWarns[0].join(' ')).not.toContain('synthetic orphan EPIPE 2');
 
-    // Cleanup
-    warnSpy.mockRestore();
-    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-orphan-oneshot' }) + '\n');
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
+    await finish();
   });
 });
 
