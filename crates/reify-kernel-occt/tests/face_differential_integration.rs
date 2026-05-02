@@ -49,18 +49,24 @@ fn cylinder_kernel(radius: f64, height: f64) -> (OcctKernel, GeometryHandleId) {
 
 /// Parse the z-component out of a `FaceNormal` JSON result:
 /// `{"x":<f>,"y":<f>,"z":<f>}`.
+///
+/// Panics with a clear message if the format changes, so a test won't
+/// silently degenerate to all-zero normals and become a tautology.
 fn parse_face_normal_z(kernel: &OcctKernel, face_id: GeometryHandleId) -> f64 {
     match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
         Ok(Value::String(s)) => s
             .split("\"z\":")
             .nth(1)
             .and_then(|tail| tail.trim_end_matches('}').parse::<f64>().ok())
-            .unwrap_or(0.0),
+            .expect("FaceNormal JSON 'z' component missing or unparseable"),
         other => panic!("FaceNormal returned unexpected value: {other:?}"),
     }
 }
 
 /// Parse all three components out of a `FaceNormal` JSON result.
+///
+/// Panics with a clear message if the format changes, so a test won't
+/// silently degenerate to all-zero normals and become a tautology.
 fn parse_face_normal(kernel: &OcctKernel, face_id: GeometryHandleId) -> [f64; 3] {
     match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
         Ok(Value::String(s)) => {
@@ -70,18 +76,18 @@ fn parse_face_normal(kernel: &OcctKernel, face_id: GeometryHandleId) -> [f64; 3]
                 .nth(1)
                 .and_then(|t| t.split(',').next())
                 .and_then(|t| t.parse::<f64>().ok())
-                .unwrap_or(0.0);
+                .expect("FaceNormal JSON 'x' component missing or unparseable");
             let y = s
                 .split("\"y\":")
                 .nth(1)
                 .and_then(|t| t.split(',').next())
                 .and_then(|t| t.parse::<f64>().ok())
-                .unwrap_or(0.0);
+                .expect("FaceNormal JSON 'y' component missing or unparseable");
             let z = s
                 .split("\"z\":")
                 .nth(1)
                 .and_then(|t| t.trim_end_matches('}').parse::<f64>().ok())
-                .unwrap_or(0.0);
+                .expect("FaceNormal JSON 'z' component missing or unparseable");
             [x, y, z]
         }
         other => panic!("FaceNormal returned unexpected value: {other:?}"),
@@ -328,6 +334,32 @@ fn curvature_at_on_sphere_face_yields_constant_k_and_h() {
         dot_max.abs() < 1e-9,
         "dir_max should be in the tangent plane: dot(dir_max, n) = {dot_max}"
     );
+
+    // Principal directions must be unit length (per the Curvature doc contract).
+    let dir_min_mag_sq = c.dir_min[0] * c.dir_min[0]
+        + c.dir_min[1] * c.dir_min[1]
+        + c.dir_min[2] * c.dir_min[2];
+    let dir_max_mag_sq = c.dir_max[0] * c.dir_max[0]
+        + c.dir_max[1] * c.dir_max[1]
+        + c.dir_max[2] * c.dir_max[2];
+    assert!(
+        (dir_min_mag_sq - 1.0).abs() < 1e-9,
+        "sphere dir_min should be unit length: |dir_min|² = {dir_min_mag_sq}"
+    );
+    assert!(
+        (dir_max_mag_sq - 1.0).abs() < 1e-9,
+        "sphere dir_max should be unit length: |dir_max|² = {dir_max_mag_sq}"
+    );
+
+    // Principal directions must be mutually orthogonal (OCCT picks an
+    // orthonormal pair at umbilical points; both lie in the tangent plane).
+    let dot_dirs = c.dir_min[0] * c.dir_max[0]
+        + c.dir_min[1] * c.dir_max[1]
+        + c.dir_min[2] * c.dir_max[2];
+    assert!(
+        dot_dirs.abs() < 1e-9,
+        "sphere dir_min and dir_max should be mutually orthogonal: dot = {dot_dirs}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +436,31 @@ fn curvature_at_on_cylinder_side_face_yields_developable_curvature() {
         (axial_dot - 1.0).abs() < 1e-9,
         "cylinder dir_max (axial) should be ≈ ±Z, got {:?}",
         c.dir_max
+    );
+
+    // Both principal directions must be unit length (per the Curvature doc contract).
+    let dir_min_mag_sq = c.dir_min[0] * c.dir_min[0]
+        + c.dir_min[1] * c.dir_min[1]
+        + c.dir_min[2] * c.dir_min[2];
+    let dir_max_mag_sq = c.dir_max[0] * c.dir_max[0]
+        + c.dir_max[1] * c.dir_max[1]
+        + c.dir_max[2] * c.dir_max[2];
+    assert!(
+        (dir_min_mag_sq - 1.0).abs() < 1e-9,
+        "cylinder dir_min should be unit length: |dir_min|² = {dir_min_mag_sq}"
+    );
+    assert!(
+        (dir_max_mag_sq - 1.0).abs() < 1e-9,
+        "cylinder dir_max should be unit length: |dir_max|² = {dir_max_mag_sq}"
+    );
+
+    // Mutually orthogonal.
+    let dot_dirs = c.dir_min[0] * c.dir_max[0]
+        + c.dir_min[1] * c.dir_max[1]
+        + c.dir_min[2] * c.dir_max[2];
+    assert!(
+        dot_dirs.abs() < 1e-9,
+        "cylinder dir_min and dir_max should be mutually orthogonal: dot = {dot_dirs}"
     );
 }
 

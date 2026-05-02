@@ -2662,6 +2662,15 @@ CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
             );
         }
 
+        // NOTE: curvature properties are evaluated on the raw Geom_Surface
+        // obtained from BRep_Tool::Surface, while surface_normal_at uses
+        // BRepAdaptor_Surface::D1.  For faces with a non-identity BRep_TFace
+        // location (e.g. transformed or composed surfaces), these two
+        // abstractions can evaluate on slightly different geometric entities,
+        // so numerical agreement between the two APIs is not guaranteed on
+        // such faces.  For standard primitives (sphere, cylinder, plane)
+        // produced by BRepPrimAPI, the location is identity and both
+        // approaches agree numerically.
         GeomLProp_SLProps props(surf, u, v, /*degree=*/2, /*resolution=*/1e-9);
         if (!props.IsCurvatureDefined()) {
             throw std::runtime_error(

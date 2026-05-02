@@ -5,7 +5,7 @@
 //! downstream crates to compile and fail gracefully at runtime.
 
 use crate::{
-    BooleanOpHistoryRecords, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
+    BooleanOpHistoryRecords, Curvature, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
     SweepOpHistoryRecords,
 };
 use reify_types::{
@@ -163,27 +163,6 @@ impl OcctKernel {
     ) -> Result<Curvature, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
-}
-
-/// Curvature properties at a parametric point on a face.
-///
-/// Defined in `stubs.rs` (under `#[cfg(not(has_occt))]`) to mirror the
-/// `Curvature` struct in `lib.rs` (under `#[cfg(has_occt)]`), so that call
-/// sites compile under both build modes without `#[cfg]` noise.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Curvature {
-    /// Gaussian curvature K = κ₁·κ₂.
-    pub gaussian: f64,
-    /// Mean curvature H = (κ₁ + κ₂) / 2.
-    pub mean: f64,
-    /// Minimum principal curvature κ_min ≤ κ_max.
-    pub kappa_min: f64,
-    /// Maximum principal curvature κ_max ≥ κ_min.
-    pub kappa_max: f64,
-    /// Principal direction corresponding to κ_min (unit tangent vector).
-    pub dir_min: [f64; 3],
-    /// Principal direction corresponding to κ_max (unit tangent vector).
-    pub dir_max: [f64; 3],
 }
 
 impl Default for OcctKernel {

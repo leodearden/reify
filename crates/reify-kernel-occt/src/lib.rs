@@ -61,6 +61,10 @@ pub fn revolve_synthesis_post_sort_for_test(input: &[u32]) -> RevolveSynthesisPo
 mod floor_constants;
 pub use floor_constants::RUST_GUARD_MARKER;
 pub mod register;
+// `types` is always compiled so `Curvature` exists in both `has_occt` and
+// `!has_occt` builds without a `#[cfg]`-gated duplicate definition.
+mod types;
+pub use types::Curvature;
 #[cfg(has_occt)]
 mod handle;
 #[cfg(has_occt)]
@@ -80,7 +84,7 @@ const _: () = assert!(RUST_LINE_WIRE_MIN_LENGTH_SQ < CPP_LINE_WIRE_MIN_LENGTH_SQ
 #[cfg(not(has_occt))]
 mod stubs;
 #[cfg(not(has_occt))]
-pub use stubs::{Curvature, OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
+pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 
 #[cfg(has_occt)]
 use std::collections::HashMap;
@@ -275,32 +279,6 @@ fn decode_deleted_records(flat: Vec<u32>) -> Vec<DeletedRecord> {
             parent_subshape_index: c[1],
         })
         .collect()
-}
-
-/// Curvature properties at a parametric point on a face surface.
-///
-/// Returned by [`OcctKernel::curvature_at`]. All direction vectors are
-/// unit-length tangent vectors lying in the tangent plane at `(u, v)`.
-///
-/// Defined under `#[cfg(has_occt)]` and re-exported from the crate root.
-/// An identical struct is defined in `stubs.rs` under `#[cfg(not(has_occt))]`
-/// so that call sites compile under both build modes without `#[cfg]` noise.
-#[cfg(has_occt)]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Curvature {
-    /// Gaussian curvature K = κ₁·κ₂. Invariant under normal-direction reversal.
-    pub gaussian: f64,
-    /// Mean curvature H = (κ₁ + κ₂) / 2. Sign follows the outward normal
-    /// convention (negated for `TopAbs_REVERSED` faces).
-    pub mean: f64,
-    /// Minimum principal curvature κ_min ≤ κ_max.
-    pub kappa_min: f64,
-    /// Maximum principal curvature κ_max ≥ κ_min.
-    pub kappa_max: f64,
-    /// Principal direction corresponding to κ_min (unit tangent vector).
-    pub dir_min: [f64; 3],
-    /// Principal direction corresponding to κ_max (unit tangent vector).
-    pub dir_max: [f64; 3],
 }
 
 #[cfg(has_occt)]
