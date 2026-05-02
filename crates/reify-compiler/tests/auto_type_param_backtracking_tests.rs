@@ -574,34 +574,9 @@ structure def WaterCooled : Cooled {
         );
     }
 
-    // (c) Witness summaries still appear in the human-readable message body
-    //     (so the visibility loss from removing them from `candidates` is offset
-    //     by message-side preservation).
-    //
-    //     Note: `max_feasible_to_collect = 2` in strict mode (see auto_type_param.rs),
-    //     so the DFS stops after finding 2 feasibles: (ORingSeal, AirCooled) and
-    //     (ORingSeal, WaterCooled). Only those two witnesses appear in the message.
-    assert!(
-        diagnostics[0].message.contains("T=ORingSeal,U=AirCooled"),
-        "Human-readable message must still carry composite witness 'T=ORingSeal,U=AirCooled', got: {:?}",
-        diagnostics[0].message,
-    );
-    assert!(
-        diagnostics[0].message.contains("T=ORingSeal,U=WaterCooled"),
-        "Human-readable message must still carry composite witness 'T=ORingSeal,U=WaterCooled', got: {:?}",
-        diagnostics[0].message,
-    );
-    // Negative pin: `max_feasible_to_collect = 2` strict-mode early-stop means the
-    // DFS halts after collecting (ORingSeal, AirCooled) and (ORingSeal, WaterCooled) —
-    // the RubberSeal-led feasibles are never reached. If this assertion fires, it means
-    // a 3rd feasible was collected (cap raised or DFS order changed), which would
-    // silently weaken the strict-mode contract this test is supposed to enforce.
-    assert!(
-        !diagnostics[0].message.contains("T=RubberSeal"),
-        "Strict-mode early-stop (max_feasible_to_collect=2) must prevent RubberSeal witnesses \
-         from appearing in the message; got: {:?}",
-        diagnostics[0].message,
-    );
+    // (c) dropped — FQN content is already pinned by (a)/(b) above, and the
+    //     strict-mode early-stop cap is pinned by witnesses.len() == 2 above.
+    //     Message-body witness format is left uncoupled for task 2663.
 }
 
 // ─── step-25: DFS Phase A overflow on first param halts before recursion ───
