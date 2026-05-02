@@ -2906,8 +2906,11 @@ mod tests {
     /// 2. Exactly one diagnostic is pushed.
     /// 3. The diagnostic message contains `"internal compiler error"` — proving the
     ///    ICE pathway was taken, not the wildcard fallback ("unsupported member kind
-    ///    in match arm").  The exact ICE wording and label format are already pinned
-    ///    by the tests in `ice.rs`.
+    ///    in match arm").
+    /// 4. The diagnostic message also contains `"unresolved name"` — pinning
+    ///    `UnresolvedKind::Name` as the exact pathway (not `GuardedMember`).  The
+    ///    exact ICE wording and label format are already pinned by the tests in
+    ///    `ice.rs`.
     #[test]
     fn arm_member_type_emits_ice_when_unresolved() {
         let span = SourceSpan::new(0, 0);
@@ -2960,6 +2963,10 @@ mod tests {
             assert!(
                 diagnostics[0].message.contains("internal compiler error"),
                 "[{label}] expected ICE diagnostic, got: {:?}", diagnostics[0].message,
+            );
+            assert!(
+                diagnostics[0].message.contains("unresolved name"),
+                "[{label}] expected UnresolvedKind::Name ICE, got: {:?}", diagnostics[0].message,
             );
         }
     }
