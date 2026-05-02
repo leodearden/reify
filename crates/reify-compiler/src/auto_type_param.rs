@@ -237,7 +237,7 @@ pub struct AutoTypeParam {
 /// semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiParamResolutionOutcome {
-    /// Per-param outcomes in declared order, stopping at (or at) the first
+    /// Per-param outcomes in declared order, stopping at or before the first
     /// failure. The exact shape depends on which orchestrator produced this
     /// value; see the struct-level doc-comment for the BFS shape, the DFS
     /// Phase A halt shape, and the DFS cross-product Ambiguous shape.

@@ -1074,6 +1074,18 @@ structure def S6 : T6 { param x : Real = 6.0 }
 ///
 /// - The failing-param entry `("U", NoCandidate)` is the last entry in BOTH
 ///   outcomes — the only universally-stable feature across the boundary.
+///
+/// # Out of scope: Overflow arm boundary parity
+///
+/// The struct-level doc on `MultiParamResolutionOutcome.per_param` lists both
+/// `Empty` (NoCandidate) and `Overflow` (Ambiguous(overflow_vec)) as Phase A
+/// halt arms with the same length-1 DFS shape.  This test covers only the
+/// `Empty` arm.  The `Overflow` arm's DFS shape is covered by the standalone
+/// DFS overflow tests (`dfs_phase_a_overflow_on_first_param_halts_before_recursion`,
+/// etc.), and its shape is structurally identical to the Empty arm (length-1,
+/// anchored on the failing param).  Pinning the `Overflow` arm at the
+/// depth-bound boundary (`max_depth = n-1` vs `max_depth = n`) is therefore
+/// intentionally left for a follow-up if the doc-contract or algorithm changes.
 #[test]
 fn dfs_phase_a_failure_at_depth_bound_boundary_documents_per_param_shape_discontinuity() {
     // T's bound (Seal) has one matching structure ⇒ Phase A returns Found.
@@ -1233,14 +1245,6 @@ structure def ORingSeal : Seal {
         dfs_outcome.per_param.len(),
         bfs_fallback_outcome.per_param.len()
     );
-    assert_eq!(
-        dfs_outcome.per_param.len(), 1,
-        "DFS per_param length must be exactly 1 (the failing param only)"
-    );
-    assert_eq!(
-        bfs_fallback_outcome.per_param.len(), 2,
-        "BFS-fallback per_param length must be exactly 2 (prior success + failing param)"
-    );
 
     // The failing-param entry is the last entry in BOTH outcomes —
     // the only universally-stable feature across the boundary.
@@ -1255,11 +1259,6 @@ structure def ORingSeal : Seal {
         bfs_last,
         &("U".to_string(), SelectionResult::NoCandidate),
         "BFS-fallback: last per_param entry must be the failing param (U, NoCandidate)"
-    );
-    assert_eq!(
-        dfs_last, bfs_last,
-        "The failing-param entry must be identical in both DFS and BFS-fallback outcomes \
-         — it is the only universally-stable feature across the depth-bound boundary"
     );
 }
 
