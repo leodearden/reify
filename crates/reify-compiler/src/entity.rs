@@ -1587,9 +1587,9 @@ pub(crate) fn compile_entity(
             }
             reify_syntax::MemberDecl::MatchArmDeclGroup(m) => {
                 // Compile each arm's guard and register a GuardedDeclGroup cluster
-                // in the scope (task 2372, spec §6.4).  The cluster lives in
-                // `scope.match_arm_groups` (separate from `names`) so future
-                // duplicate-name tightening (task 2375) cannot misfire here.
+                // in the scope (task 2372, spec §6.4).  Clusters that collided with
+                // an outside-of-match declaration are suppressed via
+                // clusters_with_outside_collision (task 2375).
                 compile_match_arm_decl_group(
                     entity_name,
                     m,
@@ -1603,6 +1603,7 @@ pub(crate) fn compile_entity(
                     &mut sub_components,
                     pending_bound_checks,
                     &type_param_names,
+                    &clusters_with_outside_collision,
                 );
             }
         }
@@ -2127,7 +2128,9 @@ pub(crate) fn compile_entity(
 ///
 /// After all arms are processed, builds a `GuardedDeclGroup { name, arms }` and
 /// calls `scope.register_match_arm_group`.  Cluster names **never** route through
-/// `scope.register()`, so task 2375's duplicate-name tightening cannot misfire.
+/// `scope.register()`, so same-name diagnostics from outside-match collisions
+/// (emitted at pre-pass time) cannot misfire here — the cluster is suppressed via
+/// `clusters_with_outside_collision` before any scope mutation.
 #[allow(clippy::too_many_arguments)]
 fn compile_match_arm_decl_group(
     entity_name: &str,
@@ -2142,6 +2145,7 @@ fn compile_match_arm_decl_group(
     sub_components: &mut Vec<SubComponentDecl>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     type_param_names: &HashSet<String>,
+    clusters_with_outside_collision: &HashSet<String>,
 ) {
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
@@ -2216,6 +2220,14 @@ fn compile_match_arm_decl_group(
             return;
         }
     };
+
+    // Outside-match collision short-circuit (task 2375, step-10): if the pre-pass
+    // already detected and diagnosed a collision between this cluster's logical name
+    // and an outside-of-match Sub/Param/Let, suppress the cluster here — no need to
+    // re-emit the diagnostic, and no partial cluster should be formed.
+    if clusters_with_outside_collision.contains(&logical_name) {
+        return;
+    }
 
     // suggestion 4: validate that all subsequent arms share the same logical name
     for arm in &m.arms[1..] {
