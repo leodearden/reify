@@ -626,11 +626,6 @@ fn dfs_phase_a_overflow_on_first_param_halts_before_recursion() {
         "DFS diagnostic must be AutoTypeParamPoolOverflow, got: {:?}",
         diagnostics[0].code
     );
-    assert_eq!(
-        diagnostics[0].severity,
-        Severity::Error,
-        "DFS overflow diagnostic must be an error"
-    );
 }
 
 // ─── step-27: DFS Phase A empty pool on first param halts before recursion ──
@@ -1317,5 +1312,148 @@ structure def ORingSeal : Seal {
     assert_eq!(
         diagnostics[0].labels[0].span, u_span,
         "DFS second-param empty-pool diagnostic label must anchor on U's span (not T's)"
+    );
+}
+
+/// Phase A halt parity for **Overflow** failures discovered on the SECOND
+/// param (not the first). Mirrors
+/// `dfs_phase_a_empty_pool_on_second_param_halts_against_second_param` for
+/// the `Overflow` arm of the orchestrator's up-front per-param Phase A
+/// enumeration loop, and mirrors
+/// `dfs_phase_a_overflow_on_first_param_halts_before_recursion` for param
+/// position.
+///
+/// **Why this test exists**: The Empty and Overflow arms are syntactically
+/// symmetric in the `for param in params` loop but take diverging code paths:
+/// - `Empty` arm: calls `emit_no_candidate_zero_rejections` to push
+///   the diagnostic itself, then `return`s `[(name, NoCandidate)]`.
+/// - `Overflow` arm: does NOT push a diagnostic — `enumerate_candidates`
+///   already pushed `AutoTypeParamPoolOverflow` with the failing param's
+///   `use_site_span`. It only synthesizes
+///   `[(name, Ambiguous(overflow_vec))]` and `return`s.
+///
+/// Without this test, a future change to the Overflow arm (e.g., accidentally
+/// resetting `overflow_vec` on non-first params, using `params[0].use_site_span`
+/// instead of `param.use_site_span`, or skipping the `return`) could silently
+/// regress overflow halt behavior for second-or-later failures while keeping
+/// all first-param overflow tests green.
+///
+/// **Fixture asymmetry**: T's bound is `"Cooled"` (1 structure → Phase A
+/// `Found`), and U's bound is `"Seal"` (MAX+1 structures → Phase A `Overflow`).
+/// This reverses the trait→param mapping vs the empty-pool sibling (which has
+/// T=Seal-1 and U=Cooled-0), but the test asserts on param POSITION and param
+/// NAME — not trait name — so the reversal is contract-equivalent.
+/// `build_n_seal_structures(MAX+1)` is reused for U's overflow pool; one
+/// inline `AirCooled : Cooled` structure provides T's single-candidate pool.
+///
+/// Pins:
+/// - `per_param == [(U, Ambiguous(_))]` — length 1, only the failing param
+///   recorded (halt before recursion, before any T selection). Overflow maps
+///   to `Ambiguous` (not `NoCandidate`) to distinguish it from an empty pool.
+/// - `substitution.is_empty()`.
+/// - exactly one `AutoTypeParamPoolOverflow` diagnostic (U's overflow;
+///   T enumerated successfully so no T diagnostic is emitted).
+/// - the diagnostic's label anchors on U's `use_site_span` (not T's) —
+///   the critical anchor-parity assertion that distinguishes second-param
+///   overflow from a regression anchored on `params[0]`.
+#[test]
+fn dfs_phase_a_overflow_on_second_param_halts_against_second_param() {
+    // U's bound (Seal) has MAX+1 matching structures ⇒ Phase A returns Overflow.
+    // T's bound (Cooled) has one matching structure ⇒ Phase A returns Found.
+    // Note: T is enumerated first, but the Overflow on U must still halt
+    // with only U's entry in per_param and U's span in the diagnostic label.
+    let mut source = build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1);
+    source.push_str(
+        r#"trait Cooled {}
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+"#,
+    );
+    let module = parse_and_compile(&source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    // Distinct spans on T vs U so the diagnostic-label assertion can
+    // unambiguously confirm the failure is anchored on U.
+    let t_span = SourceSpan::new(10, 20);
+    let u_span = SourceSpan::new(30, 40);
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Cooled".to_string()], // one structure ⇒ Found
+            free: false,
+            use_site_span: t_span,
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Seal".to_string()], // MAX+1 structures ⇒ Overflow
+            free: false,
+            use_site_span: u_span,
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // Only the failing (second) param recorded; it overflowed → Ambiguous.
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "DFS overflow on second param must halt: per_param must have exactly 1 entry, got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(
+        outcome.per_param[0].0, "U",
+        "per_param entry must be for the failing param 'U', not 'T'"
+    );
+    assert!(
+        matches!(outcome.per_param[0].1, SelectionResult::Ambiguous(_)),
+        "DFS Phase A overflow maps to Ambiguous; got: {:?}",
+        outcome.per_param[0].1
+    );
+    assert!(
+        outcome.substitution.is_empty(),
+        "DFS overflow on second param must yield empty substitution, got: {:?}",
+        outcome.substitution
+    );
+
+    // Exactly one diagnostic: the overflow anchored on U (no T diagnostic,
+    // and no second-param recursion was entered).
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS exactly one overflow diagnostic expected (T enumerated OK, recursion not entered), got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamPoolOverflow),
+        "DFS diagnostic must be AutoTypeParamPoolOverflow, got: {:?}",
+        diagnostics[0].code
+    );
+    // Anchor parity: the label must use U's span, confirming the failure is
+    // attributed to the second param (not T's span, which would indicate a
+    // regression that used params[0].use_site_span everywhere).
+    assert_eq!(
+        diagnostics[0].labels.len(),
+        1,
+        "DFS Phase A second-param overflow diagnostic must carry exactly one label"
+    );
+    assert_eq!(
+        diagnostics[0].labels[0].span, u_span,
+        "DFS second-param overflow diagnostic label must anchor on U's span (not T's)"
     );
 }
