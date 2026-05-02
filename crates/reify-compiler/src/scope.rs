@@ -59,8 +59,10 @@ pub(crate) struct CompilationScope<'u> {
     pub(crate) has_geometry: bool,
     /// Match-arm clusters keyed by their shared logical name (task 2372).
     ///
-    /// Deliberately separate from `names` so that duplicate-name diagnostics
-    /// (task 2375) cannot misfire on cluster members registered here.
+    /// Deliberately separate from `names` so that outside-match collision
+    /// diagnostics (task 2375) cannot misfire on cluster members registered
+    /// here — collisions are detected at pre-pass time and suppress the cluster
+    /// before it ever reaches this map.
     /// Populated by `register_match_arm_group`; queried by `resolve_match_arm_group`.
     ///
     /// `BTreeMap` (not `HashMap`) so that iteration over the collected
@@ -193,8 +195,9 @@ impl<'u> CompilationScope<'u> {
     /// Register a match-arm `GuardedDeclGroup` under its logical name.
     ///
     /// Stored in `match_arm_groups` — deliberately separate from `names` so that
-    /// future duplicate-name diagnostics (task 2375) cannot misfire on cluster
-    /// members.
+    /// outside-match collision diagnostics (task 2375) cannot misfire on cluster
+    /// members; the cluster-isolation invariant prevents collisions with
+    /// outside-of-match decls from surfacing as cluster-internal duplicates.
     ///
     /// Callers must never register the same `name` twice. In practice,
     /// `compile_match_arm_decl_group` (entity.rs) emits a

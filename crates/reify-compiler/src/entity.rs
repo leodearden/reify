@@ -544,8 +544,8 @@ pub(crate) fn compile_entity(
                 // Sub-component type entries (used for `self.sub.member` qualified
                 // access) are registered per-arm. Clusters with duplicate logical
                 // names are skipped wholesale — the duplicate-cluster diagnostic is
-                // emitted by compile_match_arm_decl_group (entity.rs:2038) in
-                // pass 2; skipping the pre-pass prevents scope.sub_component_types,
+                // emitted by compile_match_arm_decl_group in pass 2; skipping the
+                // pre-pass prevents scope.sub_component_types,
                 // scope.sub_structure_traits, and scope.sub_member_types from being
                 // overwritten by the rejected cluster's child-template members.
                 // "First cluster wins" in the pre-pass is symmetric with "first
