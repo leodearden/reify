@@ -140,6 +140,20 @@ fn propagate_poison() -> CompiledExpr {
 ///
 /// Returns a poison literal (`Type::Error`) on missing-arm or divergent-type
 /// diagnostics so downstream expressions don't cascade.
+///
+/// # Empty `per_arm` invariant (review-cycle-1, blocking-fix; task 2373 step-22)
+///
+/// Empty `per_arm` is a producer-side bug — the inner call site at the
+/// `self.<cluster>.<inner>` branch already guards with
+/// `Some(arms) if !arms.is_empty()` (expr.rs ~1029), but the external
+/// `<sub>.<cluster>.<inner>` call site at expr.rs ~1188 only checks that the
+/// cluster entry exists. Centralizing the empty-slice guard here means any
+/// future call site is safe by construction, and emits a uniform
+/// "match-arm cluster has no resolvable arm structures" diagnostic that
+/// mirrors the inner-call-site fallback shape. The inner-call-site
+/// `Some(arms) if !arms.is_empty()` guard remains in place as defense in
+/// depth: it carries a slightly different (cluster-aware) diagnostic and
+/// avoids this helper entirely for the inner case.
 fn resolve_cluster_inner_member(
     per_arm: &[(String, std::collections::BTreeMap<String, Type>)],
     inner: &str,
@@ -149,6 +163,28 @@ fn resolve_cluster_inner_member(
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledExpr {
+    // Empty per_arm guard (task 2373 step-22): without this, the
+    // `missing.is_empty()` branch below would index `lookups[0]` and panic
+    // with index-out-of-bounds. Emit a uniform cluster-shape diagnostic and
+    // return a poison literal so downstream expressions don't cascade.
+    if per_arm.is_empty() {
+        let qualifier_pre = match sub_qualifier {
+            Some(s) => format!(" of sub '{}'", s),
+            None => String::new(),
+        };
+        return make_poison_literal(
+            diagnostics,
+            Diagnostic::error(format!(
+                "match-arm cluster '{}'{} has no resolvable arm structures; \
+                 cannot resolve member '{}'",
+                group_name, qualifier_pre, inner
+            ))
+            .with_label(DiagnosticLabel::new(
+                span,
+                "cluster has no resolved arm structures",
+            )),
+        );
+    }
     let lookups: Vec<(String, Option<Type>)> = per_arm
         .iter()
         .map(|(sname, mts)| (sname.clone(), mts.get(inner).cloned()))
