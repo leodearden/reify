@@ -647,6 +647,43 @@ pub(crate) fn compile_entity(
                     scope
                         .sub_member_types
                         .insert(sub.name.clone(), member_types);
+                    // External-scope match-arm cluster pre-pass (task 2373):
+                    // copy each cluster from the child template along with
+                    // per-arm member maps so that `<sub>.<cluster>.<inner>`
+                    // can typecheck from outside without re-resolving
+                    // compiled_templates.
+                    if !child_tmpl.match_arm_groups.is_empty() {
+                        let mut clusters: Vec<(
+                            GuardedDeclGroup,
+                            Vec<(String, BTreeMap<String, Type>)>,
+                        )> = Vec::new();
+                        for group in &child_tmpl.match_arm_groups {
+                            let mut per_arm: Vec<(String, BTreeMap<String, Type>)> =
+                                Vec::with_capacity(group.arms.len());
+                            for arm in &group.arms {
+                                if let Type::StructureRef(arm_struct) = &arm.arm_type {
+                                    let arm_members: BTreeMap<String, Type> =
+                                        find_template(compiled_templates, arm_struct)
+                                            .map(|t| {
+                                                t.value_cells
+                                                    .iter()
+                                                    .map(|vc| {
+                                                        (vc.id.member.clone(), vc.cell_type.clone())
+                                                    })
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default();
+                                    per_arm.push((arm_struct.clone(), arm_members));
+                                } else {
+                                    // Non-StructureRef arm types are not produced in v0.1;
+                                    // fall back to an empty entry preserving arm-index alignment.
+                                    per_arm.push((String::new(), BTreeMap::new()));
+                                }
+                            }
+                            clusters.push((group.clone(), per_arm));
+                        }
+                        scope.sub_match_arm_groups.insert(sub.name.clone(), clusters);
+                    }
                 }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());

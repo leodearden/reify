@@ -1105,6 +1105,76 @@ pub(crate) fn compile_expr_guarded(
                     let scoped_id = ValueCellId::new(&scoped_entity, member);
                     return CompiledExpr::value_ref(scoped_id, member_type);
                 }
+
+                // Pattern: <sub>.<cluster>.<inner> — task 2373 step-18.
+                //
+                // External-scope cluster access: when `<sub>` is a sub of the
+                // current entity AND `<cluster>` is a match-arm cluster on the
+                // sub's child structure, look up `<inner>` in each arm's child
+                // template per the per-arm member maps populated in the entity.rs
+                // Sub pre-pass. Step-20 extends this branch with missing-arm
+                // diagnostics.
+                if let reify_syntax::ExprKind::MemberAccess {
+                    object: inner_obj,
+                    member: group_name,
+                } = &object.kind
+                    && let reify_syntax::ExprKind::Ident(sub_name) = &inner_obj.kind
+                    && let Some(clusters) = scope.sub_match_arm_groups.get(sub_name.as_str())
+                    && let Some((_group, per_arm)) =
+                        clusters.iter().find(|(g, _)| &g.name == group_name)
+                {
+                    let lookups: Vec<(String, Option<Type>)> = per_arm
+                        .iter()
+                        .map(|(sname, mts)| (sname.clone(), mts.get(member).cloned()))
+                        .collect();
+                    let missing: Vec<&str> = lookups
+                        .iter()
+                        .filter_map(|(s, t)| if t.is_none() { Some(s.as_str()) } else { None })
+                        .collect();
+                    if missing.is_empty() {
+                        let first_type = lookups[0].1.clone().unwrap();
+                        let all_equal =
+                            lookups.iter().all(|(_, t)| t.as_ref() == Some(&first_type));
+                        if all_equal {
+                            // Synthetic stamp scoped under the sub's child entity name.
+                            let scoped_entity =
+                                format!("{}.{}", scope.entity_name, sub_name);
+                            let synthetic_member = format!(
+                                "__match_arm_group_{}__{}",
+                                group_name, member
+                            );
+                            let id = ValueCellId::new(&scoped_entity, &synthetic_member);
+                            return CompiledExpr::value_ref(id, first_type);
+                        }
+                        // Divergent types — step-20 will add a precise diagnostic.
+                        let divergent: Vec<String> = lookups
+                            .iter()
+                            .map(|(s, t)| {
+                                format!(
+                                    "{}: {}",
+                                    s,
+                                    t.as_ref().map(|x| x.to_string()).unwrap_or_default()
+                                )
+                            })
+                            .collect();
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "field '{}' has divergent types across match-arm types of sub '{}': {}",
+                                member,
+                                sub_name,
+                                divergent.join(", ")
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "divergent field types across cluster arms",
+                            )),
+                        );
+                    }
+                    // Step-20 will replace this with a precise missing-arm diagnostic
+                    // qualified by the sub name. For step-18 (step-17 passing), fall
+                    // through to the generic unknown-member path below.
+                }
             }
 
             // Check if this is a port member access (port_name.member_name)

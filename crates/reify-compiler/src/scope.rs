@@ -74,6 +74,23 @@ pub(crate) struct CompilationScope<'u> {
     /// `sub_member_types`.
     pub(crate) match_arm_group_arm_member_types:
         HashMap<String, Vec<(String, BTreeMap<String, Type>)>>,
+    /// External-scope match-arm clusters declared on each sub's child
+    /// structure (task 2373).
+    ///
+    /// Keyed by sub name (e.g. `bolt`); the value is a list of
+    /// `(GuardedDeclGroup, per_arm_member_maps)` for each cluster on that
+    /// sub's child template. The per-arm member maps are
+    /// `(structure_name, member_types)` in arm-order, mirroring
+    /// `match_arm_group_arm_member_types`.
+    ///
+    /// Used by `expr.rs` to type-check `<sub>.<cluster>` (synthetic Union)
+    /// and `<sub>.<cluster>.<inner>` (common-field lookup, missing-arm
+    /// diagnostics) from outside the sub's structure. Populated in the
+    /// entity.rs Sub pre-pass.
+    pub(crate) sub_match_arm_groups: HashMap<
+        String,
+        Vec<(GuardedDeclGroup, Vec<(String, BTreeMap<String, Type>)>)>,
+    >,
 }
 
 impl<'u> CompilationScope<'u> {
@@ -95,6 +112,7 @@ impl<'u> CompilationScope<'u> {
             has_geometry: false,
             match_arm_groups: BTreeMap::new(),
             match_arm_group_arm_member_types: HashMap::new(),
+            sub_match_arm_groups: HashMap::new(),
         }
     }
 
