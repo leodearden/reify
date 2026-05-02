@@ -891,6 +891,121 @@ pub enum AttributeHistory {
     Loft(LoftOpHistoryRecords),
 }
 
+/// Outcome of a [`KernelAttributeHook::propagate_attributes`] call (or of the
+/// engine-side dispatcher [`propagate_via_kernel_attribute_hook`] in
+/// `reify-eval`).
+///
+/// Three variants capture the semantically-distinct results the v0.2
+/// persistent-naming-v2 PRD (docs/prds/v0_2/persistent-naming-v2.md line 70)
+/// requires:
+///
+/// - [`KernelAttributeOutcome::Propagated`] — the hook ran and copied the
+///   appropriate parent topology attributes onto the result handles. The
+///   result table now contains the propagated entries.
+/// - [`KernelAttributeOutcome::Discarded`] — the hook ran but **intentionally
+///   did not preserve attributes** (e.g. heavy remeshing within tolerance, or
+///   — in this v0.2 stub — deferred Manifold FFI). The hook itself emits the
+///   `tracing::warn!` diagnostic before returning this variant; consumers do
+///   NOT need to surface a duplicate diagnostic.
+/// - [`KernelAttributeOutcome::FellThrough`] — the kernel does not advertise
+///   a `KernelAttributeHook` at all (the trait default for
+///   [`GeometryKernel::attribute_hook`] returned `None`). This is reserved for
+///   the engine-side dispatcher; `KernelAttributeHook::propagate_attributes`
+///   itself never returns `FellThrough` (its caller knows the hook ran). The
+///   dispatcher emits a `tracing::debug!` diagnostic before returning this
+///   variant — the no-hook case is informational, not a warning.
+///
+/// Splitting `Discarded` from `FellThrough` lets the consumer distinguish
+/// "hook ran and gave up" from "no hook to run" without a separate accessor
+/// call on the kernel.
+///
+/// No `Other(_)` escape hatch — consumers must pattern-match exhaustively so
+/// future variants surface at compile time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelAttributeOutcome {
+    /// The hook copied parent topology attributes onto the result handles.
+    Propagated,
+    /// The hook ran but intentionally lost attributes (with diagnostic).
+    Discarded,
+    /// No hook to run — kernel does not advertise a `KernelAttributeHook`.
+    /// Returned only by the engine-side dispatcher, never by a hook impl.
+    FellThrough,
+}
+
+/// Best-effort propagation of `TopologyAttribute`s through a non-OCCT kernel's
+/// native operations.
+///
+/// Per `docs/prds/v0_2/persistent-naming-v2.md` line 70 ("Multi-kernel
+/// propagation via `KernelAttributeHook` trait"), this trait lets kernels
+/// whose native primitives expose a parent→child correspondence (e.g.
+/// Manifold's `MeshGL` merge vectors + per-triangle `faceID` / `originalID`)
+/// copy parent attributes onto result face handles after a Boolean op.
+///
+/// Kernels that have NO such correspondence (Fidget's SDF reps, OpenVDB's
+/// voxel reps) deliberately do **not** implement this trait; they inherit
+/// the [`GeometryKernel::attribute_hook`] default of `None`, and the
+/// engine-side dispatcher [`propagate_via_kernel_attribute_hook`] in
+/// `reify-eval` returns [`KernelAttributeOutcome::FellThrough`] for them so
+/// selectors over those reps fall through to computed selectors.
+///
+/// `Send + Sync` matches [`GeometryKernel`] — the hook is held behind a
+/// trait-object reference (`Option<&dyn KernelAttributeHook>`) returned by
+/// `attribute_hook()`, and the engine may invoke it from the dispatcher
+/// thread.
+///
+/// # Sibling helper
+///
+/// `reify-eval`'s
+/// [`propagate_attributes_via_brepalgoapi_history`](https://docs.rs/reify-eval)
+/// covers the BRep-side `BRepAlgoAPI_*` Modified/Generated/Deleted
+/// propagation. The `KernelAttributeHook` trait is the analogue for non-BRep
+/// kernels: the function signatures are deliberately analogous so that
+/// reading either implementation makes the other intuitable.
+pub trait KernelAttributeHook: Send + Sync {
+    /// Best-effort attribute propagation across a kernel-native operation.
+    ///
+    /// Inputs:
+    /// - `table` — the `TopologyAttributeTable` to update in place. Parent
+    ///   entries are read; new entries are written for each result handle that
+    ///   the kernel's native correspondence maps a parent attribute onto.
+    /// - `op` — the `GeometryOp` whose result is being attributed. Used by the
+    ///   hook to dispatch on the op kind (typically: Boolean Union/Difference/
+    ///   Intersection on a mesh-Boolean kernel).
+    /// - `parent_handles` — the parent solid handles passed to `op`, in the
+    ///   order the op consumed them. Lookups against `table` use these handles.
+    /// - `result_handle` — the kernel's freshly-allocated result handle. Hook
+    ///   impls record entries against this handle (or against sub-handles
+    ///   derived from it via the kernel's face/edge extraction; the trait does
+    ///   not prescribe the exact sub-handle vocabulary because non-BRep kernels
+    ///   may not use the same face/edge taxonomy as OCCT).
+    /// - `splitting_feature_id` — the FeatureId whose op is being propagated,
+    ///   for stamping into `ModEntry`s on splits (see `propagate_attributes_via_brepalgoapi_history` for the analogous use).
+    ///
+    /// Returns:
+    /// - `Ok(KernelAttributeOutcome::Propagated)` if the hook copied the
+    ///   parent attributes onto the result.
+    /// - `Ok(KernelAttributeOutcome::Discarded)` if the hook intentionally did
+    ///   not preserve attributes (heavy remeshing within tolerance, or — in
+    ///   the current v0.2 Manifold stub — deferred FFI). The hook itself MUST
+    ///   emit a `tracing::warn!` diagnostic before returning this variant.
+    /// - `Err(QueryError)` for runtime kernel failures distinct from the
+    ///   intentional Discarded path.
+    ///
+    /// Note: the hook impl never returns `KernelAttributeOutcome::FellThrough`
+    /// — that variant is reserved for the engine-side dispatcher when no hook
+    /// is advertised. Returning `FellThrough` from a hook impl would be a
+    /// contract violation (and is structurally discouraged: the kernel-side
+    /// caller already knows the hook ran).
+    fn propagate_attributes(
+        &self,
+        table: &mut TopologyAttributeTable,
+        op: &GeometryOp,
+        parent_handles: &[GeometryHandleId],
+        result_handle: GeometryHandleId,
+        splitting_feature_id: &FeatureId,
+    ) -> Result<KernelAttributeOutcome, QueryError>;
+}
+
 /// Trait for geometry kernels. Lives in reify-types for dependency inversion —
 /// implemented in reify-kernel-occt, consumed by reify-eval via reify-geometry.
 pub trait GeometryKernel: Send + Sync {
@@ -1007,6 +1122,33 @@ pub trait GeometryKernel: Send + Sync {
         Err(QueryError::QueryFailed(
             "topology extraction not supported by this kernel".into(),
         ))
+    }
+
+    /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
+    /// kernels with native parent→child correspondence (e.g. Manifold's
+    /// `MeshGL` merge vectors + per-triangle `faceID` / `originalID`).
+    ///
+    /// Returns `None` by default — kernels without a native attribute-tracking
+    /// channel (Fidget's SDF reps, OpenVDB's voxel reps, mocks, stubs) inherit
+    /// this default and selectors over their reps fall through to computed
+    /// selectors via [`KernelAttributeOutcome::FellThrough`] in the engine-side
+    /// dispatcher (`reify-eval::propagate_via_kernel_attribute_hook`).
+    ///
+    /// Per `docs/prds/v0_2/persistent-naming-v2.md` line 70, this default is
+    /// the **structural enforcement** of "Fidget/OpenVDB don't implement the
+    /// trait — selectors fall through to computed selectors": no per-kernel
+    /// opt-out code is needed in fidget/openvdb because the absence of an
+    /// override IS the fall-through contract.
+    ///
+    /// Manifold's adapter (`reify-kernel-manifold`) overrides this to return
+    /// `Some(self)`, providing the first concrete impl of
+    /// [`KernelAttributeHook`].
+    ///
+    /// This is intentionally additive (rather than required), following the
+    /// established pattern at [`GeometryKernel::execute_with_history`]
+    /// (default `AttributeHistory::None`).
+    fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
+        None
     }
 }
 
@@ -3788,5 +3930,59 @@ mod tests {
         assert_eq!(cloned.supports, d.supports, "clone must preserve supports table");
         // PartialEq derive: descriptors compare by structural equality.
         assert_eq!(cloned, d, "PartialEq derive must hold for cloned descriptor");
+    }
+
+    /// Minimal `GeometryKernel` impl that uses every default trait method.
+    /// Used by `geometry_kernel_default_attribute_hook_returns_none` to pin the
+    /// PRD line 70 contract that "Fidget/OpenVDB don't implement
+    /// `KernelAttributeHook` — selectors fall through to computed selectors"
+    /// is structurally enforced by the trait DEFAULT, not by per-kernel code.
+    ///
+    /// We define this locally rather than depending on
+    /// `reify_test_support::FailingMockGeometryKernel` because `reify-types`
+    /// has no `dev-dependency` on `reify-test-support` (and adding one would
+    /// invert the layering — `reify-test-support` depends on `reify-types`).
+    struct DefaultsOnlyKernel;
+
+    impl GeometryKernel for DefaultsOnlyKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed("not used by this test".into()))
+        }
+        fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed("not used by this test".into()))
+        }
+        fn export(
+            &self,
+            _h: GeometryHandleId,
+            _f: ExportFormat,
+            _w: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            Err(ExportError::FormatError("not used by this test".into()))
+        }
+        fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed("not used by this test".into()))
+        }
+    }
+
+    /// PRD docs/prds/v0_2/persistent-naming-v2.md line 70 says "Fidget/OpenVDB
+    /// don't implement the trait — selectors over SDF or voxel reps fall
+    /// through to computed selectors." This contract is structurally enforced
+    /// by the trait DEFAULT for `attribute_hook()` returning `None`: any kernel
+    /// that does NOT explicitly override the accessor inherits the `None`
+    /// fall-through. This test pins the default behaviour against
+    /// `DefaultsOnlyKernel` (a kernel that overrides nothing), so a future
+    /// regression that flips the default to `Some(...)` would force the
+    /// non-overriding kernels (Fidget, OpenVDB, mocks, stubs) to claim a hook
+    /// they don't implement — and this test fails immediately.
+    #[test]
+    fn geometry_kernel_default_attribute_hook_returns_none() {
+        let kernel = DefaultsOnlyKernel;
+        let kernel_ref: &dyn GeometryKernel = &kernel;
+        assert!(
+            kernel_ref.attribute_hook().is_none(),
+            "GeometryKernel::attribute_hook() default must return None — \
+             enforces PRD line 70 'Fidget/OpenVDB selectors fall through to computed selectors' \
+             without per-kernel opt-out code",
+        );
     }
 }

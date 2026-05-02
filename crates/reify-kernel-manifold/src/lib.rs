@@ -23,6 +23,25 @@
 //! — so that the downstream persistent-naming-v2 task 9 gate ("manifold
 //! adapter exists") is satisfied.
 //!
+//! # Persistent-naming-v2 task 9: `KernelAttributeHook`
+//!
+//! Per `docs/prds/v0_2/persistent-naming-v2.md` line 70, [`ManifoldKernel`]
+//! is the first concrete impl of [`reify_types::KernelAttributeHook`]:
+//!
+//! - [`reify_types::GeometryKernel::attribute_hook`] is overridden to return
+//!   `Some(self)`, opting Manifold into native attribute propagation through
+//!   the engine-side `reify_eval::propagate_via_kernel_attribute_hook`
+//!   dispatcher.
+//! - [`reify_types::KernelAttributeHook::propagate_attributes`] in this
+//!   v0.2 stub returns `Ok(KernelAttributeOutcome::Discarded)` and emits a
+//!   `tracing::warn!(target = "reify_kernel_manifold", reason =
+//!   "deferred_ffi", ...)` event regardless of inputs — real `MeshGL` /
+//!   `faceID` / `originalID` walking lands when the FFI does. The trait
+//!   surface is stable across that swap.
+//! - Fidget / OpenVDB structurally inherit the [`reify_types::GeometryKernel::attribute_hook`]
+//!   `None` default and therefore fall through to computed selectors per the
+//!   PRD contract — no per-kernel opt-out is required there.
+//!
 //! # Design templates
 //!
 //! `crates/reify-kernel-occt/src/register.rs` — OCCT's registration pattern.

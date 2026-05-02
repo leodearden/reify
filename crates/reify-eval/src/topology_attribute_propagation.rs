@@ -30,6 +30,15 @@
 //! transformation rules (e.g. "boolean cut's generated faces always
 //! carry Role::NewEdge") are deferred to tasks 5-8, which will add
 //! per-op variants of this helper.
+//!
+//! # See also
+//!
+//! [`crate::kernel_attribute_hook`] (file: `crates/reify-eval/src/kernel_attribute_hook.rs`)
+//! covers mesh-Boolean attribute propagation via the
+//! [`reify_types::KernelAttributeHook`] trait — PRD line 70's Manifold
+//! `MeshGL` / `originalID` / `faceID` pattern. This module is the BRep-side
+//! analogue: it covers `BRepAlgoAPI_*` Modified / Generated / Deleted
+//! propagation only.
 
 use std::collections::HashMap;
 

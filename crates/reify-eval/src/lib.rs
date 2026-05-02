@@ -19,6 +19,7 @@ mod engine_eval;
 mod engine_helpers;
 pub mod freshness_walk;
 pub mod gating;
+pub mod kernel_attribute_hook;
 pub mod kernel_registry;
 #[doc(hidden)]
 pub use engine_eval::ASSERT_MSG_PREFIX;
@@ -52,6 +53,7 @@ pub use dispatcher::{
     long_chain_threshold_from_env, long_chain_threshold_from_env_value,
     per_stage_tolerance_for_plan,
 };
+pub use kernel_attribute_hook::propagate_via_kernel_attribute_hook;
 pub use kernel_registry::{collect_registry, pick_lexmin_kernel, registry};
 pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use realization_cache::RealizationCache;
