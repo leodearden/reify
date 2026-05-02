@@ -34,7 +34,7 @@
 //!   dispatcher.
 //! - [`reify_types::KernelAttributeHook::propagate_attributes`] in this
 //!   v0.2 stub returns `Ok(KernelAttributeOutcome::Discarded)` and emits a
-//!   `tracing::warn!(target = "reify_kernel_manifold", reason =
+//!   `tracing::warn!(target = "reify_kernel_manifold::kernel", reason =
 //!   "deferred_ffi", ...)` event regardless of inputs — real `MeshGL` /
 //!   `faceID` / `originalID` walking lands when the FFI does. The trait
 //!   surface is stable across that swap.

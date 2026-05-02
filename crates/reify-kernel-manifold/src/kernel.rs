@@ -139,13 +139,14 @@ impl KernelAttributeHook for ManifoldKernel {
         // mandates that hook impls emit their own diagnostic before
         // returning, so consumers do not need to surface a duplicate.
         //
-        // `target: "reify_kernel_manifold"` matches the crate name so a
-        // `RUST_LOG=reify_kernel_manifold=warn` operator filter sees the
-        // event. `reason="deferred_ffi"` is the structured-fields key by
+        // `target: "reify_kernel_manifold::kernel"` matches the module path
+        // of this impl so a `RUST_LOG=reify_kernel_manifold::kernel=warn`
+        // (or the broader `reify_kernel_manifold=warn`) operator filter sees
+        // the event. `reason="deferred_ffi"` is the structured-fields key by
         // which a future `reason="heavy_remeshing"` (when real FFI lands)
         // can be distinguished.
         tracing::warn!(
-            target: "reify_kernel_manifold",
+            target: "reify_kernel_manifold::kernel",
             reason = "deferred_ffi",
             op = ?op,
             parents = parent_handles.len(),
@@ -193,7 +194,7 @@ mod tests {
     /// (a) `propagate_attributes` returns `Ok(KernelAttributeOutcome::Discarded)`
     ///     for the v0.2 stub regardless of inputs — the trait surface model.
     /// (b) `table` is left unchanged: the stub does not write spurious entries.
-    /// (c) Exactly one WARN-level event fires at the `reify_kernel_manifold`
+    /// (c) Exactly one WARN-level event fires at the `reify_kernel_manifold::kernel`
     ///     target, matching the `Discarded` contract that hook impls emit
     ///     their own diagnostic before returning.
     ///
@@ -244,12 +245,12 @@ mod tests {
              attributes were lost, not propagated",
         );
 
-        // (c) Exactly one WARN event at the reify_kernel_manifold target.
+        // (c) Exactly one WARN event at the reify_kernel_manifold::kernel target.
         assert_eq!(
             warn_count.load(Ordering::Acquire),
             1,
             "Manifold Discarded path must emit exactly one WARN event at \
-             reify_kernel_manifold target — operator visibility for the \
+             reify_kernel_manifold::kernel target — operator visibility for the \
              intentional attribute-loss diagnostic per PRD line 70",
         );
     }
