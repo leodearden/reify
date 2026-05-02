@@ -877,10 +877,13 @@ struct CurvatureProps;
 ///   (a) `GeomLProp_SLProps(surf, u, v, degree=2, resolution=1e-9)`,
 ///   (b) reject if `IsCurvatureDefined()` is false,
 ///   (c) extract K, H, κ_max, κ_min and direction vectors d_max, d_min,
-///   (d) for `TopAbs_REVERSED` faces: negate H, κ_max, κ_min (K invariant;
-///       directions unchanged — they are tangent-plane vectors, independent
-///       of the normal orientation choice).
-///   (e) re-sort so that `kappa_min ≤ kappa_max` after any sign flip.
+///   (d) for `TopAbs_REVERSED` faces: negate H, κ_max, κ_min (K invariant);
+///       then swap (κ_min, κ_max) and (d_min, d_max) together, since the
+///       sign flip reverses the ordering — what was the larger value paired
+///       with d_max is now the smaller (more negative) value, so it becomes
+///       the new κ_min/d_min and vice versa. The tangent-plane vectors
+///       themselves are unchanged; only their min/max *labels* swap so the
+///       (κ, direction) pairing remains correct under the new normal.
 ///
 /// Throws `std::runtime_error` if the shape is not a face, has no underlying
 /// surface, or curvature is undefined at `(u, v)` (e.g. at a singular point).

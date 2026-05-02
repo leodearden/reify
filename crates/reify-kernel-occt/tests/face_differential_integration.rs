@@ -451,6 +451,120 @@ fn curvature_at_on_cylinder_cap_face_yields_zero_curvature() {
     );
 }
 
+/// `curvature_at` on a `TopAbs_REVERSED` face whose principal curvatures
+/// differ in absolute value (non-developable case) keeps `(κ_min, dir_min)`
+/// and `(κ_max, dir_max)` correctly paired after the orientation-flip swap.
+///
+/// Regression for the bug where `REVERSED` faces had their principal-curvature
+/// values negated and re-sorted but the corresponding direction vectors were
+/// NOT swapped — so `dir_min` could end up paired with `κ_max` (and vice
+/// versa) whenever the sign flip reversed the value ordering.
+///
+/// Construction: a hollow cylinder = outer cylinder (R = 10) − inner cylinder
+/// (r = 5). The Boolean cut leaves the inner cylindrical face oriented
+/// `REVERSED` so its outward normal points toward the axis. That inner face
+/// has principal curvatures `+1/r` (circumferential, paired with a tangent
+/// vector ⊥ Z) and `0` (axial, paired with ±Z) — different absolute values,
+/// so the (κ, direction) pairing matters.
+///
+/// The earlier sphere/cylinder happy-path tests do not catch this because:
+///   - sphere is umbilical (`dir_min == dir_max` up to sign),
+///   - the regular cylinder side face is `FORWARD` (no flip taken).
+#[test]
+fn curvature_at_on_reversed_inner_cylinder_face_pairs_directions_with_min_max() {
+    use reify_kernel_occt::Curvature;
+    let mut kernel = OcctKernel::new();
+    let outer = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(10.0),
+            height: Value::Real(10.0),
+        })
+        .expect("outer cylinder creation should succeed");
+    let inner = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(5.0),
+            height: Value::Real(10.0),
+        })
+        .expect("inner cylinder creation should succeed");
+    let hollow = kernel
+        .execute(&GeometryOp::Difference {
+            left: outer.id,
+            right: inner.id,
+        })
+        .expect("hollow-cylinder difference should succeed");
+
+    let faces = kernel
+        .extract_faces(hollow.id)
+        .expect("extract_faces should succeed for hollow cylinder");
+
+    // Locate the inner cylindrical face: its `surface_normal_at` succeeds at
+    // (u = π/2, v = 5) AND the returned outward normal points inward
+    // (negative radial — i.e. n_y < 0 at this parametric point) AND it is
+    // perpendicular to Z (curved side, not a cap).
+    let inner_side = faces
+        .iter()
+        .copied()
+        .find(|&f| {
+            kernel.surface_normal_at(f, PI / 2.0, 5.0).map_or(false, |n| {
+                n[2].abs() < 0.5 && n[1] < -0.5
+            })
+        })
+        .expect(
+            "hollow cylinder should have an inner cylindrical face whose \
+             outward normal at (π/2, 5) points inward",
+        );
+
+    let c: Curvature = kernel
+        .curvature_at(inner_side, PI / 2.0, 5.0)
+        .expect("curvature_at should succeed for the inner cylindrical face");
+
+    let tol = 1e-9;
+
+    // Sanity: K = 0 (still developable), H = +1/(2r) = +0.1, κ_min = 0,
+    // κ_max = +1/r = +0.2 (positive sign because the post-orientation outward
+    // normal points toward the centre of curvature on this concave face).
+    assert!(
+        c.gaussian.abs() < tol,
+        "inner side Gaussian: expected 0, got {}",
+        c.gaussian
+    );
+    assert!(
+        (c.mean - 0.1).abs() < tol,
+        "inner side mean: expected +0.1, got {}",
+        c.mean
+    );
+    assert!(
+        c.kappa_min.abs() < tol,
+        "inner side κ_min: expected 0, got {}",
+        c.kappa_min
+    );
+    assert!(
+        (c.kappa_max - 0.2).abs() < tol,
+        "inner side κ_max: expected +0.2, got {}",
+        c.kappa_max
+    );
+
+    // CRITICAL — the (κ, direction) pairing under REVERSED:
+    //   κ_min = 0       must be paired with the axial direction (≈ ±Z),
+    //   κ_max = +0.2    must be paired with the circumferential direction (⊥ Z).
+    // If the directions were not swapped together with the curvature labels,
+    // these dot-product assertions would flip.
+    let dir_min_axial_dot = c.dir_min[2].abs();
+    assert!(
+        (dir_min_axial_dot - 1.0).abs() < 1e-9,
+        "inner side dir_min (paired with κ_min = 0) should be axial (≈ ±Z), \
+         got dir_min = {:?}, |dir_min · Z| = {dir_min_axial_dot}",
+        c.dir_min
+    );
+    assert!(
+        c.dir_max[2].abs() < 1e-9,
+        "inner side dir_max (paired with κ_max = +0.2) should be \
+         circumferential (⊥ Z), got dir_max = {:?}, dir_max[2] = {}",
+        c.dir_max,
+        c.dir_max[2]
+    );
+}
+
 /// Passing an unknown handle returns `QueryError::InvalidHandle`.
 #[test]
 fn curvature_at_unknown_handle_returns_invalid_handle() {

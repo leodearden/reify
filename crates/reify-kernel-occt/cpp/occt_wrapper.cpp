@@ -2679,17 +2679,24 @@ CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
         // When the face orientation is REVERSED our outward normal is flipped,
         // so mean curvature H and both principal curvatures change sign.
         // Gaussian curvature K = κ₁·κ₂ is invariant (both flip → product is
-        // unchanged).  Principal directions live in the tangent plane and are
-        // independent of the normal choice, so they are NOT flipped.
+        // unchanged).  The tangent-plane *vectors* themselves are
+        // direction-of-the-normal independent, but the *labels* "min" vs
+        // "max" follow the curvature ordering — so once both curvatures flip
+        // sign, what was previously paired with d_max (the larger value)
+        // becomes the smaller (more negative) value, i.e. the new kappa_min;
+        // we therefore swap both the curvature pair and the direction pair so
+        // that (kappa_min, d_min) and (kappa_max, d_max) remain correctly
+        // associated with the post-orientation normal.
         if (face.Orientation() == TopAbs_REVERSED) {
             H = -H;
             k_max_raw = -k_max_raw;
             k_min_raw = -k_min_raw;
+            std::swap(k_min_raw, k_max_raw);
+            std::swap(d_min, d_max);
         }
 
-        // Re-sort kappa_min ≤ kappa_max after the potential sign flip.
-        double kappa_min = std::min(k_min_raw, k_max_raw);
-        double kappa_max = std::max(k_min_raw, k_max_raw);
+        double kappa_min = k_min_raw;
+        double kappa_max = k_max_raw;
 
         Point3 dmin{ d_min.X(), d_min.Y(), d_min.Z() };
         Point3 dmax{ d_max.X(), d_max.Y(), d_max.Z() };
