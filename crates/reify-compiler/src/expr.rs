@@ -931,17 +931,21 @@ pub(crate) fn compile_expr_guarded(
                     let per_arm = scope
                         .match_arm_group_arm_member_types
                         .get(group_name.as_str());
-                    if let Some(arms) = per_arm {
+                    if let Some(arms) = per_arm
+                        && !arms.is_empty()
+                    {
                         // Collect per-arm Option<Type>: Some(T) if the arm's child
                         // template has `member` with type T, None if missing.
                         let lookups: Vec<(String, Option<Type>)> = arms
                             .iter()
                             .map(|(sname, mts)| (sname.clone(), mts.get(member).cloned()))
                             .collect();
-                        let all_present =
-                            lookups.iter().all(|(_, t)| t.is_some());
-                        if all_present {
-                            // Check if all arm types agree.
+                        let missing: Vec<&str> = lookups
+                            .iter()
+                            .filter_map(|(s, t)| if t.is_none() { Some(s.as_str()) } else { None })
+                            .collect();
+                        if missing.is_empty() {
+                            // All arms have the field; check that all types agree.
                             let first_type = lookups[0].1.clone().unwrap();
                             let all_equal =
                                 lookups.iter().all(|(_, t)| t.as_ref() == Some(&first_type));
@@ -954,13 +958,51 @@ pub(crate) fn compile_expr_guarded(
                                 let id = ValueCellId::new(&synthetic_entity, &synthetic_member);
                                 return CompiledExpr::value_ref(id, first_type);
                             }
-                            // Divergent types across arms — step-14 extends with diagnostic.
+                            // Divergent types across arms — emit precise diagnostic
+                            // listing each arm's structure → divergent type.
+                            // Step-14 (task 2373).
+                            let divergent: Vec<String> = lookups
+                                .iter()
+                                .map(|(s, t)| {
+                                    format!(
+                                        "{}: {}",
+                                        s,
+                                        t.as_ref().map(|x| x.to_string()).unwrap_or_default()
+                                    )
+                                })
+                                .collect();
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "field '{}' has divergent types across match-arm types: {}",
+                                    member,
+                                    divergent.join(", ")
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "divergent field types across cluster arms",
+                                )),
+                            );
                         }
-                        // Step-14 will handle missing-arm and divergent-type diagnostics here.
+                        // Some arms are missing the field — emit precise diagnostic
+                        // naming the offending arm types. Step-14 (task 2373).
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "field '{}' is not present in match-arm types: {}",
+                                member,
+                                missing.join(", ")
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "field missing from one or more cluster arms",
+                            )),
+                        );
                     }
-                    // Fall through to existing self.sub.member path if cluster handling
-                    // doesn't resolve (e.g., empty per-arm map). Step-14 will replace
-                    // this fall-through with a precise diagnostic.
+                    // Empty per-arm map (cluster registered but no arm subs resolved
+                    // — e.g., unknown structure name). Fall through to the existing
+                    // sub_member_types path which already emits a generic
+                    // "unknown member" diagnostic.
                 }
 
                 // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name }).
