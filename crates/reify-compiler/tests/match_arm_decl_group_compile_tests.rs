@@ -24,6 +24,10 @@ fn zero_span() -> SourceSpan {
     SourceSpan::new(0, 0)
 }
 
+fn span_at(start: u32, end: u32) -> SourceSpan {
+    SourceSpan::new(start, end)
+}
+
 fn make_ident_expr(name: &str) -> Expr {
     Expr {
         kind: ExprKind::Ident(name.to_string()),
@@ -55,6 +59,10 @@ fn param_member(name: &str, type_name: &str) -> MemberDecl {
 }
 
 fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
+    sub_member_with_span(name, structure_name, zero_span())
+}
+
+fn sub_member_with_span(name: &str, structure_name: &str, span: SourceSpan) -> MemberDecl {
     MemberDecl::Sub(SubDecl {
         name: name.to_string(),
         structure_name: structure_name.to_string(),
@@ -63,7 +71,20 @@ fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
         is_collection: false,
         where_clause: None,
         body: None,
-        span: zero_span(),
+        span,
+        content_hash: ContentHash(0),
+    })
+}
+
+fn param_member_with_span(name: &str, type_name: &str, span: SourceSpan) -> MemberDecl {
+    MemberDecl::Param(ParamDecl {
+        name: name.to_string(),
+        doc: None,
+        type_expr: Some(named_type_expr(type_name)),
+        default: None,
+        where_clause: None,
+        annotations: vec![],
+        span,
         content_hash: ContentHash(0),
     })
 }
@@ -1433,7 +1454,11 @@ fn duplicate_match_cluster_does_not_pollute_first_cluster_sub_member_types() {
 /// RED before the forward-collision detection (step-4); GREEN after.
 #[test]
 fn match_arm_decl_group_outside_sub_before_match_emits_collision_diagnostic() {
-    let outside_sub = sub_member("head", "DefaultHead");
+    // Distinct spans so the test can verify the two-label structure of the diagnostic.
+    let outside_span = span_at(1, 5);
+    let cluster_span = span_at(10, 20);
+
+    let outside_sub = sub_member_with_span("head", "DefaultHead", outside_span);
 
     let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
         discriminant: make_ident_expr("head_type"),
@@ -1441,7 +1466,7 @@ fn match_arm_decl_group_outside_sub_before_match_emits_collision_diagnostic() {
             match_arm_decl("Hex", sub_member("head", "HexHead")),
             match_arm_decl("Socket", sub_member("head", "SocketHead")),
         ],
-        span: zero_span(),
+        span: cluster_span,
         content_hash: ContentHash(0),
     });
 
@@ -1483,14 +1508,31 @@ fn match_arm_decl_group_outside_sub_before_match_emits_collision_diagnostic() {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
-        d.message.contains("match-arm cluster 'head'")
-            && d.message.contains("outside the match block")
-    });
-    assert!(
-        has_collision_diag,
-        "expected a collision diagnostic for 'head' (outside Sub before match), got: {:#?}",
-        compiled.diagnostics
+    let collision_diag = compiled
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a collision diagnostic for 'head' (outside Sub before match), got: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert_eq!(
+        collision_diag.labels.len(),
+        2,
+        "collision diagnostic must have exactly two labels"
+    );
+    assert_eq!(
+        collision_diag.labels[0].span, cluster_span,
+        "first label must point to the cluster declaration"
+    );
+    assert_eq!(
+        collision_diag.labels[1].span, outside_span,
+        "second label must point to the outside-of-match declaration"
     );
 }
 
@@ -1521,17 +1563,21 @@ fn match_arm_decl_group_outside_sub_before_match_emits_collision_diagnostic() {
 /// RED before the reverse-collision detection (step-6); GREEN after.
 #[test]
 fn match_arm_decl_group_outside_sub_after_match_emits_collision_diagnostic() {
+    // Distinct spans so the test can verify the two-label structure of the diagnostic.
+    let cluster_span = span_at(1, 10);
+    let outside_span = span_at(20, 30);
+
     let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
         discriminant: make_ident_expr("head_type"),
         arms: vec![
             match_arm_decl("Hex", sub_member("head", "HexHead")),
             match_arm_decl("Socket", sub_member("head", "SocketHead")),
         ],
-        span: zero_span(),
+        span: cluster_span,
         content_hash: ContentHash(0),
     });
 
-    let outside_sub = sub_member("head", "DefaultHead");
+    let outside_sub = sub_member_with_span("head", "DefaultHead", outside_span);
 
     let bolt = Declaration::Structure(StructureDef {
         name: "Bolt".to_string(),
@@ -1571,14 +1617,31 @@ fn match_arm_decl_group_outside_sub_after_match_emits_collision_diagnostic() {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
-        d.message.contains("match-arm cluster 'head'")
-            && d.message.contains("outside the match block")
-    });
-    assert!(
-        has_collision_diag,
-        "expected a collision diagnostic for 'head' (outside Sub after match), got: {:#?}",
-        compiled.diagnostics
+    let collision_diag = compiled
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a collision diagnostic for 'head' (outside Sub after match), got: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert_eq!(
+        collision_diag.labels.len(),
+        2,
+        "collision diagnostic must have exactly two labels"
+    );
+    assert_eq!(
+        collision_diag.labels[0].span, cluster_span,
+        "first label must point to the cluster declaration"
+    );
+    assert_eq!(
+        collision_diag.labels[1].span, outside_span,
+        "second label must point to the outside-of-match declaration"
     );
 }
 
@@ -1601,7 +1664,11 @@ fn match_arm_decl_group_outside_sub_after_match_emits_collision_diagnostic() {
 /// RED before step-8 confirms it's already GREEN from step-4's `scope.names` check.
 #[test]
 fn match_arm_decl_group_outside_param_collision_emits_diagnostic() {
-    let outside_param = param_member("head", "Real");
+    // Distinct spans so the test can verify the two-label structure of the diagnostic.
+    let outside_span = span_at(1, 5);
+    let cluster_span = span_at(10, 20);
+
+    let outside_param = param_member_with_span("head", "Real", outside_span);
 
     let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
         discriminant: make_ident_expr("head_type"),
@@ -1609,7 +1676,7 @@ fn match_arm_decl_group_outside_param_collision_emits_diagnostic() {
             match_arm_decl("Hex", sub_member("head", "HexHead")),
             match_arm_decl("Socket", sub_member("head", "SocketHead")),
         ],
-        span: zero_span(),
+        span: cluster_span,
         content_hash: ContentHash(0),
     });
 
@@ -1650,14 +1717,31 @@ fn match_arm_decl_group_outside_param_collision_emits_diagnostic() {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
-        d.message.contains("match-arm cluster 'head'")
-            && d.message.contains("outside the match block")
-    });
-    assert!(
-        has_collision_diag,
-        "expected collision diagnostic for 'head' (outside Param before match), got: {:#?}",
-        compiled.diagnostics
+    let collision_diag = compiled
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected collision diagnostic for 'head' (outside Param before match), got: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert_eq!(
+        collision_diag.labels.len(),
+        2,
+        "collision diagnostic must have exactly two labels"
+    );
+    assert_eq!(
+        collision_diag.labels[0].span, cluster_span,
+        "first label must point to the cluster declaration"
+    );
+    assert_eq!(
+        collision_diag.labels[1].span, outside_span,
+        "second label must point to the outside-of-match declaration"
     );
 }
 
@@ -1680,6 +1764,10 @@ fn match_arm_decl_group_outside_param_collision_emits_diagnostic() {
 /// RED before step-8 confirms it's already GREEN from step-4's `scope.names` check.
 #[test]
 fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
+    // Distinct spans so the test can verify the two-label structure of the diagnostic.
+    let outside_span = span_at(1, 5);
+    let cluster_span = span_at(10, 20);
+
     let outside_let = MemberDecl::Let(LetDecl {
         name: "head".to_string(),
         doc: None,
@@ -1691,7 +1779,7 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
         },
         where_clause: None,
         annotations: vec![],
-        span: zero_span(),
+        span: outside_span,
         content_hash: ContentHash(0),
     });
 
@@ -1701,7 +1789,7 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
             match_arm_decl("Hex", sub_member("head", "HexHead")),
             match_arm_decl("Socket", sub_member("head", "SocketHead")),
         ],
-        span: zero_span(),
+        span: cluster_span,
         content_hash: ContentHash(0),
     });
 
@@ -1742,14 +1830,31 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
-        d.message.contains("match-arm cluster 'head'")
-            && d.message.contains("outside the match block")
-    });
-    assert!(
-        has_collision_diag,
-        "expected collision diagnostic for 'head' (outside Let before match), got: {:#?}",
-        compiled.diagnostics
+    let collision_diag = compiled
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected collision diagnostic for 'head' (outside Let before match), got: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert_eq!(
+        collision_diag.labels.len(),
+        2,
+        "collision diagnostic must have exactly two labels"
+    );
+    assert_eq!(
+        collision_diag.labels[0].span, cluster_span,
+        "first label must point to the cluster declaration"
+    );
+    assert_eq!(
+        collision_diag.labels[1].span, outside_span,
+        "second label must point to the outside-of-match declaration"
     );
 }
 
@@ -1763,7 +1868,11 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
 /// RED before pass-2 short-circuit (step-10); GREEN after.
 #[test]
 fn match_arm_decl_group_outside_collision_suppresses_cluster_registration() {
-    let outside_sub = sub_member("head", "DefaultHead");
+    // Distinct spans so the test can verify the two-label structure of the diagnostic.
+    let outside_span = span_at(1, 5);
+    let cluster_span = span_at(10, 20);
+
+    let outside_sub = sub_member_with_span("head", "DefaultHead", outside_span);
 
     let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
         discriminant: make_ident_expr("head_type"),
@@ -1771,7 +1880,7 @@ fn match_arm_decl_group_outside_collision_suppresses_cluster_registration() {
             match_arm_decl("Hex", sub_member("head", "HexHead")),
             match_arm_decl("Socket", sub_member("head", "SocketHead")),
         ],
-        span: zero_span(),
+        span: cluster_span,
         content_hash: ContentHash(0),
     });
 
@@ -1813,15 +1922,32 @@ fn match_arm_decl_group_outside_collision_suppresses_cluster_registration() {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    // (a) Collision diagnostic must still be emitted.
-    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
-        d.message.contains("match-arm cluster 'head'")
-            && d.message.contains("outside the match block")
-    });
-    assert!(
-        has_collision_diag,
-        "expected collision diagnostic for 'head' (forward direction), got: {:#?}",
-        compiled.diagnostics
+    // (a) Collision diagnostic must be emitted with correct two-label structure.
+    let collision_diag = compiled
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected collision diagnostic for 'head' (forward direction), got: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert_eq!(
+        collision_diag.labels.len(),
+        2,
+        "collision diagnostic must have exactly two labels"
+    );
+    assert_eq!(
+        collision_diag.labels[0].span, cluster_span,
+        "first label must point to the cluster declaration"
+    );
+    assert_eq!(
+        collision_diag.labels[1].span, outside_span,
+        "second label must point to the outside-of-match declaration"
     );
 
     // (b) Cluster must NOT be registered — match_arm_groups must be empty.
@@ -1844,17 +1970,21 @@ fn match_arm_decl_group_outside_collision_suppresses_cluster_registration() {
 /// RED before pass-2 short-circuit (step-10); GREEN after.
 #[test]
 fn match_arm_decl_group_reverse_collision_suppresses_cluster_registration() {
+    // Distinct spans so the test can verify the two-label structure of the diagnostic.
+    let cluster_span = span_at(1, 10);
+    let outside_span = span_at(20, 30);
+
     let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
         discriminant: make_ident_expr("head_type"),
         arms: vec![
             match_arm_decl("Hex", sub_member("head", "HexHead")),
             match_arm_decl("Socket", sub_member("head", "SocketHead")),
         ],
-        span: zero_span(),
+        span: cluster_span,
         content_hash: ContentHash(0),
     });
 
-    let outside_sub = sub_member("head", "DefaultHead");
+    let outside_sub = sub_member_with_span("head", "DefaultHead", outside_span);
 
     let bolt = Declaration::Structure(StructureDef {
         name: "Bolt".to_string(),
@@ -1894,15 +2024,32 @@ fn match_arm_decl_group_reverse_collision_suppresses_cluster_registration() {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    // (a) Collision diagnostic must still be emitted.
-    let has_collision_diag = compiled.diagnostics.iter().any(|d| {
-        d.message.contains("match-arm cluster 'head'")
-            && d.message.contains("outside the match block")
-    });
-    assert!(
-        has_collision_diag,
-        "expected collision diagnostic for 'head' (reverse direction), got: {:#?}",
-        compiled.diagnostics
+    // (a) Collision diagnostic must be emitted with correct two-label structure.
+    let collision_diag = compiled
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected collision diagnostic for 'head' (reverse direction), got: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert_eq!(
+        collision_diag.labels.len(),
+        2,
+        "collision diagnostic must have exactly two labels"
+    );
+    assert_eq!(
+        collision_diag.labels[0].span, cluster_span,
+        "first label must point to the cluster declaration"
+    );
+    assert_eq!(
+        collision_diag.labels[1].span, outside_span,
+        "second label must point to the outside-of-match declaration"
     );
 
     // (b) Cluster must NOT be registered — match_arm_groups must be empty.
