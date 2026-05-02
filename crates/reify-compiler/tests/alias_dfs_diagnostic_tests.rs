@@ -204,6 +204,47 @@ fn non_parametric_alias_scalar_use_site_emits_unresolved_type_diagnostic() {
     assert_error_containing(SCALAR_BAD_WITH_USE_SITE, "unresolved type: Bad");
 }
 
+/// A parametric alias chain `type Wrapper<T> = List<T>` +
+/// `type OuterWrapper<T> = Wrapper<T>` must produce ZERO Error-severity
+/// diagnostics from the alias-DFS pre-pass.
+///
+/// This is the Defer-policy regression guard for task #2843.
+///
+/// (a) This pins acceptance criterion #2 of task #2843 — the Defer policy is
+///     honoured for parametric callers.
+///
+/// (b) During alias-DFS resolution of `OuterWrapper`, the inner type arg `T`
+///     cannot resolve because the user-alias branch passes `&empty` as
+///     `type_param_names` to `resolve_parameterized_alias`, which writes
+///     "unresolved type argument 'T' for alias 'Wrapper'" into `tmp_diags`.
+///
+/// (c) Under `AliasInnerDiagPolicy::Defer`, that diagnostic must be silently
+///     discarded and the alias entry left unresolved (`resolved_type: None`).
+///     Substitution at use-site instantiation will resolve `T` correctly via
+///     `resolve_type_alias_expr_with_subst`.
+///
+/// (d) This test WOULD FAIL if the implementation mistakenly extended
+///     `tmp_diags` into `diagnostics` unconditionally instead of gating on
+///     `inner_diag_policy == AliasInnerDiagPolicy::Propagate`.
+///
+/// No use-site is needed here: `OuterWrapper` is parametric and never
+/// instantiated, so the absence of errors from the DFS pre-pass alone is the
+/// assertion under test.
+#[test]
+fn parametric_alias_user_parametric_chain_defers_dfs_diagnostics() {
+    let module = compile_with_stdlib_helper("type Wrapper<T> = List<T>\ntype OuterWrapper<T> = Wrapper<T>");
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "expected zero Error-severity diagnostics from alias-DFS pre-pass of a parametric chain, \
+         but got: {errs:?}"
+    );
+}
+
 /// A non-parametric alias `type Bad = Wrapper<NotAType>` (where
 /// `type Wrapper<T> = List<T>` is a user-defined parametric alias) paired with
 /// a use-site `structure def Use { param v : Bad }` must produce at least one
