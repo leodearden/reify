@@ -245,6 +245,13 @@ export class SidecarSession {
                 '[sidecar] assistant event missing message.id — turn-boundary detection disabled for this invocation; ' +
                 'multi-turn delta offsets may be incorrect if accumulated text length is not reset between turns.',
               );
+              this.onOutput({
+                type: 'error',
+                id,
+                message:
+                  '[degraded-turn-boundary] assistant event missing message.id — turn-boundary detection disabled for this invocation; ' +
+                  'multi-turn delta offsets may be incorrect if accumulated text length is not reset between turns.',
+              });
             }
             for (const block of event.message.content) {
               if (block.type === 'text' && block.text) {

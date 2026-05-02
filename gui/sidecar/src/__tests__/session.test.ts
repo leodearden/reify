@@ -1452,7 +1452,7 @@ describe('SidecarSession timeout', () => {
     session.onOutput = (msg) => outputs.push(msg);
 
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Response' }] } },
+      { type: 'assistant', message: { id: 'msg_ok_1', content: [{ type: 'text', text: 'Response' }] } },
       { type: 'result', session_id: 'sess-ok' },
     ])) as any);
 
@@ -1738,7 +1738,7 @@ describe('entrypoint wiring', () => {
         // Emit a tool_use event and leave stdout open
         mockStdout.push(JSON.stringify({
           type: 'assistant',
-          message: { content: [
+          message: { id: 'msg_e2e_1', content: [
             { type: 'tool_use', id: 'toolu_e2e', name: 'reify_get_diagnostics', input: {} },
           ] },
         }) + '\n');
