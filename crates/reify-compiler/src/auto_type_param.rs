@@ -1131,6 +1131,28 @@ pub fn resolve_auto_type_params_with_backtracking(
         );
     }
 
+    // Build the parameterized template's constraint list ONCE here so the
+    // DFS leaf-feasibility predicate (`check_constraints_violated`, called
+    // at every cross-product leaf via `dfs_leaf_feasible`) borrows a single
+    // owned `Vec` rather than rebuilding it on every leaf. With max_depth=6
+    // and ~10 candidates per param the worst case is 10^6 leaves; the
+    // per-leaf rebuild was a measurable hot-path allocation pin.
+    //
+    // TODO(post-substitution-mechanics): once the deferred type-substitution
+    // pass lands (substituting `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
+    // — see the `TODO(post-substitution-mechanics)` block at the BFS-fallback
+    // branch above and the matching note in `filter_feasible_candidates`),
+    // per-candidate `ValueMap`s will differ across leaves and this hoist
+    // becomes unsound — `constraints_template` will need to move back inside
+    // the leaf with per-candidate value setup. Revert this hoist when that
+    // task lands.
+    let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+        parameterized_template
+            .constraints
+            .iter()
+            .map(|c| (c.id.clone(), &c.expr))
+            .collect();
+
     // Phase A enumeration runs ONCE per param up front (before recursion),
     // producing a `Vec<Vec<String>>` of per-param candidate vectors. This
     // hoists Phase A out of the DFS body — Phase A depends only on the
@@ -1267,7 +1289,7 @@ pub fn resolve_auto_type_params_with_backtracking(
         &per_param_candidates,
         &mut current,
         &mut feasible_assignments,
-        parameterized_template,
+        &constraints_template,
         constraint_checker,
         functions,
         max_feasible_to_collect,
@@ -1423,58 +1445,28 @@ fn check_constraints_violated(
         .any(|r| r.satisfaction == reify_types::Satisfaction::Violated)
 }
 
-/// Separator used inside the synthetic leaf-label placeholder produced by
-/// [`dfs_leaf_feasible`] when joining the per-param candidate names.
-///
-/// Label-only role: the joined string is passed to
-/// [`filter_feasible_candidates`] as a single-element `candidates` slice
-/// solely so exactly one `constraint_checker.check()` call fires per leaf
-/// (one queue pop drives one leaf verdict). With the deferred type-
-/// substitution mechanics (see the Phase B scope cut documented on
-/// [`resolve_auto_type_params_with_backtracking`]), `filter_feasible_candidates`
-/// does NOT consult the candidate name string in the verdict path —
-/// `constraint_checker.check()` receives an empty `ValueMap` and the
-/// per-template constraint list, neither of which depends on the synthetic
-/// label. The label is therefore a stable identifier (not a semantic FQN)
-/// and would only become load-bearing if a future task surfaces it in
-/// downstream diagnostic structure.
-///
-/// Revisit when the deferred substitution mechanics land: at that point the
-/// placeholder must be replaced with a real candidate-FQN-driven
-/// substitution-aware feasibility check (one per leaf), not a synthetic
-/// label.
-const DFS_LEAF_LABEL_SEPARATOR: &str = ",";
-
 /// True iff the current cross-product leaf assignment is feasible.
 ///
-/// Synthesizes a single-element placeholder vec for `filter_feasible_candidates`
-/// so exactly one `constraint_checker.check()` call fires per leaf. The
-/// placeholder string is `current.join(DFS_LEAF_LABEL_SEPARATOR)` — a
-/// label-only synthetic identifier; see [`DFS_LEAF_LABEL_SEPARATOR`] for the
-/// label-vs-FQN role and the contract under deferred substitution mechanics.
+/// A thin wrapper around [`check_constraints_violated`] — returns the
+/// negation of that predicate: `true` iff no constraint in
+/// `constraints_template` is `Satisfaction::Violated`.
 ///
-/// The "single check per leaf" shape is what makes the
-/// [`reify_test_support::MockConstraintChecker::with_call_queue`] FIFO model
-/// useful for backtracking tests: one queue pop drives one leaf verdict.
+/// The "single check per leaf" shape is preserved: `check_constraints_violated`
+/// calls `constraint_checker.check()` exactly once per leaf, which is what
+/// makes the [`reify_test_support::MockConstraintChecker::with_call_queue`]
+/// FIFO model useful for backtracking tests: one queue pop drives one leaf
+/// verdict.
 ///
-/// Inherits Phase B's monotonic-feasible rule (architecture §2.5):
-/// `Indeterminate` counts as feasible — only `Satisfaction::Violated` on the
-/// single-candidate input maps to [`FeasibilityResult::Empty`].
+/// Inherits the monotonic-feasible rule (architecture §2.5):
+/// `Indeterminate` counts as feasible — only `Satisfaction::Violated`
+/// makes a leaf infeasible.
 fn dfs_leaf_feasible(
-    current: &[String],
-    parameterized_template: &TopologyTemplate,
+    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
 ) -> bool {
-    let leaf_label = current.join(DFS_LEAF_LABEL_SEPARATOR);
-    let placeholder = vec![leaf_label];
-    let feasibility = filter_feasible_candidates(
-        &placeholder,
-        parameterized_template,
-        constraint_checker,
-        functions,
-    );
-    matches!(feasibility, FeasibilityResult::Feasible { .. })
+    let empty_values = reify_types::ValueMap::new();
+    !check_constraints_violated(constraints_template, constraint_checker, functions, &empty_values)
 }
 
 /// Recursive DFS over the cross-product of per-param Phase A candidate vectors.
@@ -1497,7 +1489,7 @@ fn dfs_leaf_feasible(
 //
 // `#[allow(clippy::too_many_arguments)]`: this recursive helper threads
 // recursion state (`level`, `current`, `feasible_assignments`) alongside
-// shared search context (`per_param_candidates`, `parameterized_template`,
+// shared search context (`per_param_candidates`, `constraints_template`,
 // `constraint_checker`, `functions`, `max_feasible_to_collect`). Wrapping the
 // shared context in a struct would force every recursive call site to deref
 // through the wrapper for what is effectively a flat parameter pack; the
@@ -1509,7 +1501,7 @@ fn dfs_search(
     per_param_candidates: &[Vec<String>],
     current: &mut Vec<String>,
     feasible_assignments: &mut Vec<Vec<String>>,
-    parameterized_template: &TopologyTemplate,
+    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
     max_feasible_to_collect: usize,
@@ -1517,16 +1509,16 @@ fn dfs_search(
     if level == per_param_candidates.len() {
         // Leaf branch: this cross-product assignment is feasible iff
         // `dfs_leaf_feasible` returns `true`. The leaf-feasibility predicate
-        // reuses Phase B's `Satisfaction::Violated` discriminator (see
-        // `filter_feasible_candidates`): a leaf is infeasible iff its
-        // single-call constraint check produces a Violated result, and
-        // feasible otherwise. This inherits architecture §2.5's
-        // monotonic-feasible rule — `Indeterminate` counts as feasible
-        // (only `Violated` falsifies). Backtracking is therefore driven by
-        // the same three-arm satisfaction enum that v0.1 BFS uses; the only
-        // change at v0.2 is that infeasibility unwinds to the next sibling
-        // at the deepest open level rather than halting the orchestrator.
-        if dfs_leaf_feasible(current, parameterized_template, constraint_checker, functions) {
+        // uses `check_constraints_violated`'s `Satisfaction::Violated`
+        // discriminator: a leaf is infeasible iff its single-call constraint
+        // check produces a Violated result, and feasible otherwise. This
+        // inherits architecture §2.5's monotonic-feasible rule —
+        // `Indeterminate` counts as feasible (only `Violated` falsifies).
+        // Backtracking is therefore driven by the same three-arm satisfaction
+        // enum that v0.1 BFS uses; the only change at v0.2 is that
+        // infeasibility unwinds to the next sibling at the deepest open level
+        // rather than halting the orchestrator.
+        if dfs_leaf_feasible(constraints_template, constraint_checker, functions) {
             feasible_assignments.push(current.clone());
             // Early-terminate once the requested feasible count is reached:
             // free-mode (max=1) stops at the first feasible; strict-mode
@@ -1542,7 +1534,7 @@ fn dfs_search(
             per_param_candidates,
             current,
             feasible_assignments,
-            parameterized_template,
+            constraints_template,
             constraint_checker,
             functions,
             max_feasible_to_collect,
