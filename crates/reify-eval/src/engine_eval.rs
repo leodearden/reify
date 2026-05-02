@@ -67,6 +67,9 @@ pub fn is_representable_cell_type(ty: &reify_types::Type) -> bool {
     match ty {
         // Unrepresentable: no corresponding `Value` variant.
         Type::TypeParam(_) | Type::Geometry => false,
+        // Compile-time-only union — value cells must hold a single concrete
+        // arm type post-narrowing (task 2373).
+        Type::Union(_) => false,
         // Representable: every other variant that has (or may have) a
         // corresponding `Value`. Listed explicitly so that adding a new
         // `Type` variant to `reify_types` requires a conscious decision here
@@ -2832,5 +2835,17 @@ mod invariant_tests {
             graph.value_cells.insert(id, node);
         }
         super::assert_value_cell_types_representable(&graph);
+    }
+
+    /// Task 2373: `Type::Union` is a compile-time-only union over
+    /// guarded-decl-group arm types — no Value counterpart exists, so cells
+    /// must hold a single concrete arm type post-narrowing. The
+    /// `is_representable_cell_type` predicate must reject it alongside
+    /// `TypeParam` and `Geometry`.
+    #[test]
+    fn is_representable_cell_type_rejects_union() {
+        assert!(!super::is_representable_cell_type(&Type::Union(vec![
+            Type::StructureRef("X".to_string())
+        ])));
     }
 }

@@ -121,6 +121,136 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// Resolve `<scope>.<cluster>.<inner>` against a per-arm member-type map for a
+/// match-arm decl group (task 2373).
+///
+/// Shared by the `self.<cluster>.<inner>` and `<sub>.<cluster>.<inner>`
+/// branches in the `MemberAccess` arm of `compile_expr_guarded`. The two
+/// call sites differ only in:
+///
+/// * `scoped_entity` — the entity stamp for the synthetic `ValueCellId`
+///   (`scope.entity_name` for the inner case, `<entity>.<sub>` for the
+///   external case),
+/// * `sub_qualifier` — diagnostic preamble fragment (`None` ⇒ "match-arm
+///   types"; `Some("bolt")` ⇒ "match-arm types of sub 'bolt'"),
+///
+/// while the per-arm lookup, missing-arm filter, divergent-types branch,
+/// and synthetic stamp construction are identical. Extracting them here
+/// avoids the ~70 lines of duplication called out in the post-impl review.
+///
+/// Returns a poison literal (`Type::Error`) on missing-arm or divergent-type
+/// diagnostics so downstream expressions don't cascade.
+///
+/// # Empty `per_arm` invariant (review-cycle-1, blocking-fix; task 2373 step-22)
+///
+/// Empty `per_arm` is a producer-side bug — the inner call site at the
+/// `self.<cluster>.<inner>` branch already guards with
+/// `Some(arms) if !arms.is_empty()` (expr.rs ~1029), but the external
+/// `<sub>.<cluster>.<inner>` call site at expr.rs ~1188 only checks that the
+/// cluster entry exists. Centralizing the empty-slice guard here means any
+/// future call site is safe by construction, and emits a uniform
+/// "match-arm cluster has no resolvable arm structures" diagnostic that
+/// mirrors the inner-call-site fallback shape. The inner-call-site
+/// `Some(arms) if !arms.is_empty()` guard remains in place as defense in
+/// depth: it carries a slightly different (cluster-aware) diagnostic and
+/// avoids this helper entirely for the inner case.
+fn resolve_cluster_inner_member(
+    per_arm: &[(String, std::collections::BTreeMap<String, Type>)],
+    inner: &str,
+    scoped_entity: &str,
+    group_name: &str,
+    sub_qualifier: Option<&str>,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    // Empty per_arm guard (task 2373 step-22): without this, the
+    // `missing.is_empty()` branch below would index `lookups[0]` and panic
+    // with index-out-of-bounds. Emit a uniform cluster-shape diagnostic and
+    // return a poison literal so downstream expressions don't cascade.
+    if per_arm.is_empty() {
+        let qualifier_pre = match sub_qualifier {
+            Some(s) => format!(" of sub '{}'", s),
+            None => String::new(),
+        };
+        return make_poison_literal(
+            diagnostics,
+            Diagnostic::error(format!(
+                "match-arm cluster '{}'{} has no resolvable arm structures; \
+                 cannot resolve member '{}'",
+                group_name, qualifier_pre, inner
+            ))
+            .with_label(DiagnosticLabel::new(
+                span,
+                "cluster has no resolved arm structures",
+            )),
+        );
+    }
+    let lookups: Vec<(String, Option<Type>)> = per_arm
+        .iter()
+        .map(|(sname, mts)| (sname.clone(), mts.get(inner).cloned()))
+        .collect();
+    let missing: Vec<&str> = lookups
+        .iter()
+        .filter_map(|(s, t)| if t.is_none() { Some(s.as_str()) } else { None })
+        .collect();
+
+    let qualifier: String = match sub_qualifier {
+        Some(s) => format!(" of sub '{}'", s),
+        None => String::new(),
+    };
+
+    if missing.is_empty() {
+        // All arms have the field; check that all types agree.
+        let first_type = lookups[0].1.clone().unwrap();
+        let all_equal = lookups.iter().all(|(_, t)| t.as_ref() == Some(&first_type));
+        if all_equal {
+            let synthetic_member = format!("__match_arm_group_{}__{}", group_name, inner);
+            let id = ValueCellId::new(scoped_entity, &synthetic_member);
+            return CompiledExpr::value_ref(id, first_type);
+        }
+        // Divergent types across arms — emit precise diagnostic listing each
+        // arm's structure → divergent type.
+        let divergent: Vec<String> = lookups
+            .iter()
+            .map(|(s, t)| {
+                format!(
+                    "{}: {}",
+                    s,
+                    t.as_ref().map(|x| x.to_string()).unwrap_or_default()
+                )
+            })
+            .collect();
+        return make_poison_literal(
+            diagnostics,
+            Diagnostic::error(format!(
+                "field '{}' has divergent types across match-arm types{}: {}",
+                inner,
+                qualifier,
+                divergent.join(", ")
+            ))
+            .with_label(DiagnosticLabel::new(
+                span,
+                "divergent field types across cluster arms",
+            )),
+        );
+    }
+    // Some arms are missing the field — emit precise diagnostic naming the
+    // offending arm types.
+    make_poison_literal(
+        diagnostics,
+        Diagnostic::error(format!(
+            "field '{}' is not present in match-arm types{}: {}",
+            inner,
+            qualifier,
+            missing.join(", ")
+        ))
+        .with_label(DiagnosticLabel::new(
+            span,
+            "field missing from one or more cluster arms",
+        )),
+    )
+}
+
 /// Aggregation operations available on collection subs.
 ///
 /// When accessed through `self.<sub>.<member>`, these emit a "drop self." recommendation
@@ -850,6 +980,28 @@ pub(crate) fn compile_expr_guarded(
                 if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind
                     && obj_name == "self"
                 {
+                    // self.<match-arm cluster> — task 2373.
+                    //
+                    // When `member` is the logical name of a `match`-block decl
+                    // cluster (PRD `match-block-decls.md` §6.4), the static type
+                    // is `Type::Union(arm_types)`. The synthetic ValueRef stamp
+                    // `__match_arm_group_<member>` is a compile-time sentinel —
+                    // no real cell is allocated; `Type::Union` is rejected by
+                    // `is_representable_cell_type` so any downstream eval-time
+                    // demand on this cell is a clear bug, not a silent miss.
+                    //
+                    // Narrowing under arm guards is handled in step-15/16 via
+                    // `narrow_arms_under_guard`; for now we always return the
+                    // full union (correct when `current_guard == None`, which is
+                    // the common case for v0.1 surface syntax).
+                    if let Some(group) = scope.resolve_match_arm_group(member.as_str()) {
+                        let arm_types: Vec<Type> =
+                            group.arms.iter().map(|a| a.arm_type.clone()).collect();
+                        let synthetic_entity = scope.entity_name.clone();
+                        let synthetic_member = format!("__match_arm_group_{}", member);
+                        let group_id = ValueCellId::new(&synthetic_entity, &synthetic_member);
+                        return CompiledExpr::value_ref(group_id, Type::Union(arm_types));
+                    }
                     // self.sub — for single-instance subs, return a StructureRef so outer
                     // chaining works. Collection subs are excluded here and handled below
                     // via resolve_collection_sub_to_list (self.bolts ≡ bare bolts).
@@ -882,6 +1034,65 @@ pub(crate) fn compile_expr_guarded(
                                 diagnostics,
                                 Diagnostic::error(format!("unknown member '{}' on self", member))
                                     .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                            );
+                        }
+                    }
+                }
+
+                // Pattern: self.<cluster>.<inner> — task 2373 step-12.
+                //
+                // Cluster-aware nested MemberAccess: when `<cluster>` is a registered
+                // match-arm decl group, we walk each arm's child template members and
+                // either return the common-field type (when every arm exposes <inner>
+                // with the same type) or fall through. This branch must precede the
+                // generic `self.<sub>.<member>` branch below because the pre-pass
+                // also registers each arm's sub.name in `sub_component_types` (last
+                // arm wins) — without an early intercept the merged-map path would
+                // mask per-arm differences. Step-14 extends this branch with
+                // diagnostics for arms missing the field.
+                if let reify_syntax::ExprKind::MemberAccess {
+                    object: inner_obj,
+                    member: group_name,
+                } = &object.kind
+                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+                    && self_name == "self"
+                    && scope.resolve_match_arm_group(group_name.as_str()).is_some()
+                {
+                    let per_arm = scope
+                        .match_arm_group_arm_member_types
+                        .get(group_name.as_str());
+                    match per_arm {
+                        Some(arms) if !arms.is_empty() => {
+                            return resolve_cluster_inner_member(
+                                arms,
+                                member,
+                                &scope.entity_name,
+                                group_name,
+                                None,
+                                expr.span,
+                                diagnostics,
+                            );
+                        }
+                        _ => {
+                            // Cluster registered but no per-arm structures resolved
+                            // (e.g., every arm references an unknown structure, or no
+                            // Sub arms in the cluster). Suggestion 6 from review:
+                            // emit an explicit cluster-aware diagnostic rather than
+                            // falling through to `sub_component_types[<cluster>]`,
+                            // which retains only the last-arm structure (last write
+                            // wins) and would silently resolve `<inner>` against that
+                            // single arm — masking the cluster context.
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "match-arm cluster '{}' has no resolvable arm structures; \
+                                     cannot resolve member '{}'",
+                                    group_name, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "cluster has no resolved arm structures",
+                                )),
                             );
                         }
                     }
@@ -986,6 +1197,44 @@ pub(crate) fn compile_expr_guarded(
                     let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
                     let scoped_id = ValueCellId::new(&scoped_entity, member);
                     return CompiledExpr::value_ref(scoped_id, member_type);
+                }
+
+                // Pattern: <sub>.<cluster>.<inner> — task 2373 step-18.
+                //
+                // External-scope cluster access: when `<sub>` is a sub of the
+                // current entity AND `<cluster>` is a match-arm cluster on the
+                // sub's child structure, look up `<inner>` in each arm's child
+                // template per the per-arm member maps populated in the entity.rs
+                // Sub pre-pass. Step-20 extends this branch with missing-arm
+                // diagnostics.
+                //
+                // Suggestion 5 from review: explicitly skip collection subs
+                // here. `bolts.head.X` on a `bolts: List<Bolt>` collection sub
+                // must be written as `bolts[i].head.X`; the indexed-access
+                // branch below handles the per-instance shape. Without this
+                // guard, the cluster-aware path would synthesize a non-list
+                // result type and bypass the collection semantics enforced
+                // for non-cluster `<sub>.<member>` access.
+                if let reify_syntax::ExprKind::MemberAccess {
+                    object: inner_obj,
+                    member: group_name,
+                } = &object.kind
+                    && let reify_syntax::ExprKind::Ident(sub_name) = &inner_obj.kind
+                    && !scope.collection_sub_names.contains(sub_name.as_str())
+                    && let Some(clusters) = scope.sub_match_arm_groups.get(sub_name.as_str())
+                    && let Some((_group, per_arm)) =
+                        clusters.iter().find(|(g, _)| &g.name == group_name)
+                {
+                    let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
+                    return resolve_cluster_inner_member(
+                        per_arm,
+                        member,
+                        &scoped_entity,
+                        group_name,
+                        Some(sub_name),
+                        expr.span,
+                        diagnostics,
+                    );
                 }
             }
 
@@ -2320,5 +2569,85 @@ mod tests {
     #[should_panic(expected = "severity")]
     fn make_poison_type_panics_with_non_error_severity_diagnostic() {
         let _ = make_poison_type(&mut vec![], Diagnostic::info("wrong severity"));
+    }
+
+    /// `resolve_cluster_inner_member` must NOT panic when called with an empty
+    /// `per_arm` slice (review-cycle-1 robustness fix; task 2373 step-21/22).
+    ///
+    /// Before the fix, the helper computed `missing` = empty (vacuously true on
+    /// empty input), entered the all-arms-have-the-field branch, then indexed
+    /// `lookups[0]` → index-out-of-bounds panic.
+    ///
+    /// Contract: an empty `per_arm` is treated as "cluster has no resolvable arm
+    /// structures" and emits the same diagnostic shape as the inner-call-site
+    /// fallback at expr.rs:1049-1059, then returns a poison literal so downstream
+    /// expressions don't cascade. Both `sub_qualifier = None` and
+    /// `sub_qualifier = Some(...)` paths are covered: the latter pins the
+    /// `"sub '<name>'"` qualifier substring expected by external-scope callers.
+    #[test]
+    fn resolve_cluster_inner_member_empty_per_arm_returns_poison_without_panic() {
+        // Case 1: sub_qualifier = None (inner self.<cluster>.<inner> call site).
+        let per_arm: Vec<(String, std::collections::BTreeMap<String, Type>)> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = resolve_cluster_inner_member(
+            &per_arm,
+            "anything",
+            "Bolt",
+            "head",
+            None,
+            SourceSpan::prelude(),
+            &mut diagnostics,
+        );
+        // (b) returned CompiledExpr.result_type == Type::Error.
+        assert_eq!(
+            result.result_type,
+            Type::Error,
+            "empty per_arm must return a poison literal (Type::Error), got: {:?}",
+            result.result_type
+        );
+        // (c) exactly one Severity::Error diagnostic mentioning the cluster shape.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "empty per_arm must push exactly one diagnostic, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert!(
+            diagnostics[0].message.contains("match-arm cluster"),
+            "diagnostic must mention 'match-arm cluster' for cluster shape; got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("head"),
+            "diagnostic must name the empty cluster ('head'); got: {:?}",
+            diagnostics[0].message
+        );
+
+        // Case 2: sub_qualifier = Some("bolt") (external <sub>.<cluster>.<inner>
+        // call site). Diagnostic must contain the qualifier fragment.
+        let mut diagnostics2: Vec<Diagnostic> = vec![];
+        let result2 = resolve_cluster_inner_member(
+            &per_arm,
+            "anything",
+            "Driver.bolt",
+            "head",
+            Some("bolt"),
+            SourceSpan::prelude(),
+            &mut diagnostics2,
+        );
+        assert_eq!(
+            result2.result_type,
+            Type::Error,
+            "empty per_arm with sub qualifier must also return Type::Error"
+        );
+        assert_eq!(diagnostics2.len(), 1);
+        assert_eq!(diagnostics2[0].severity, Severity::Error);
+        assert!(
+            diagnostics2[0].message.contains("sub 'bolt'"),
+            "external-call-site diagnostic must include qualifier `sub 'bolt'`; got: {:?}",
+            diagnostics2[0].message
+        );
     }
 }

@@ -504,7 +504,23 @@ pub(crate) fn compile_entity(
                             scope
                                 .sub_component_types
                                 .insert(sub.name.clone(), sub.structure_name.clone());
-                            if let Some(child_tmpl) =
+                            // Per-arm member-type tracking (task 2373): unlike
+                            // sub_member_types (last-write-wins on the merged sub.name
+                            // key), this map preserves each arm's structure name and
+                            // member set in arm-order so that nested `self.<group>.<m>`
+                            // can detect per-arm differences (e.g. arm-specific fields).
+                            //
+                            // Mirror the outer-scope `sub_match_arm_groups` pre-pass at
+                            // entity.rs:655-682: always push a per-arm entry (with an
+                            // empty BTreeMap when `find_template` fails) so the per-arm
+                            // Vec length always equals the cluster's arm count. Without
+                            // this, an unresolved arm structure would silently shrink
+                            // the per-arm Vec, and `self.<cluster>.<inner>` would then
+                            // iterate fewer arms than the cluster actually has —
+                            // potentially reporting a field as universally-present when
+                            // it is in fact arm-specific. (Amendment for review
+                            // suggestion 1.)
+                            let (member_types, has_template) = if let Some(child_tmpl) =
                                 find_template(compiled_templates, &sub.structure_name)
                             {
                                 scope.sub_structure_traits.insert(
@@ -515,15 +531,25 @@ pub(crate) fn compile_entity(
                                 // qualified access resolves correctly — mirrors the regular Sub
                                 // pre-pass at entity.rs:594-602.
                                 // (Suggestion 3 from review: match regular Sub pre-pass.)
-                                let member_types: BTreeMap<String, Type> = child_tmpl
+                                let mts: BTreeMap<String, Type> = child_tmpl
                                     .value_cells
                                     .iter()
                                     .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
                                     .collect();
+                                (mts, true)
+                            } else {
+                                (BTreeMap::new(), false)
+                            };
+                            if has_template {
                                 scope
                                     .sub_member_types
-                                    .insert(sub.name.clone(), member_types);
+                                    .insert(sub.name.clone(), member_types.clone());
                             }
+                            scope
+                                .match_arm_group_arm_member_types
+                                .entry(sub.name.clone())
+                                .or_default()
+                                .push((sub.structure_name.clone(), member_types));
                         }
                         other => {
                             // suggestion 6: only 'sub' arms are supported in task 2372.
@@ -637,6 +663,40 @@ pub(crate) fn compile_entity(
                     scope
                         .sub_member_types
                         .insert(sub.name.clone(), member_types);
+                    // External-scope match-arm cluster pre-pass (task 2373):
+                    // copy each cluster from the child template along with
+                    // per-arm member maps so that `<sub>.<cluster>.<inner>`
+                    // can typecheck from outside without re-resolving
+                    // compiled_templates.
+                    if !child_tmpl.match_arm_groups.is_empty() {
+                        let mut clusters: Vec<SubClusterEntry> = Vec::new();
+                        for group in &child_tmpl.match_arm_groups {
+                            let mut per_arm: Vec<ArmMemberMap> =
+                                Vec::with_capacity(group.arms.len());
+                            for arm in &group.arms {
+                                if let Type::StructureRef(arm_struct) = &arm.arm_type {
+                                    let arm_members: BTreeMap<String, Type> =
+                                        find_template(compiled_templates, arm_struct)
+                                            .map(|t| {
+                                                t.value_cells
+                                                    .iter()
+                                                    .map(|vc| {
+                                                        (vc.id.member.clone(), vc.cell_type.clone())
+                                                    })
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default();
+                                    per_arm.push((arm_struct.clone(), arm_members));
+                                } else {
+                                    // Non-StructureRef arm types are not produced in v0.1;
+                                    // fall back to an empty entry preserving arm-index alignment.
+                                    per_arm.push((String::new(), BTreeMap::new()));
+                                }
+                            }
+                            clusters.push((group.clone(), per_arm));
+                        }
+                        scope.sub_match_arm_groups.insert(sub.name.clone(), clusters);
+                    }
                 }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());

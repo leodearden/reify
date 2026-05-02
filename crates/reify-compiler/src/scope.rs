@@ -3,6 +3,18 @@ use std::collections::BTreeMap;
 
 // --- Compilation context ---
 
+/// Per-arm child-template member map for a match-arm cluster (task 2373).
+///
+/// `(structure_name, member_types)` where `member_types[m] = T` for that
+/// arm's child template. Tracked as a tuple so each entry preserves both
+/// the arm's structure name (for diagnostics) and its member typing.
+pub(crate) type ArmMemberMap = (String, BTreeMap<String, Type>);
+
+/// External-scope cluster entry (task 2373): the cluster definition plus
+/// its per-arm member maps in arm-order. Used to typecheck
+/// `<sub>.<cluster>.<inner>` access from outside a sub's structure.
+pub(crate) type SubClusterEntry = (GuardedDeclGroup, Vec<ArmMemberMap>);
+
 /// Name scope: maps identifier names to (ValueCellId, Type, Option<guard_cell_id>)
 /// within a structure. The guard cell ID tracks which guard (if any) protects this name.
 #[derive(Clone)]
@@ -58,6 +70,35 @@ pub(crate) struct CompilationScope<'u> {
     /// `meta_entries` hashing (entity.rs ~line 1656) which sorts keys for the
     /// same reason.
     pub(crate) match_arm_groups: BTreeMap<String, GuardedDeclGroup>,
+    /// Per-arm member-type maps for match-arm clusters (task 2373).
+    ///
+    /// Keyed by group logical name; the inner Vec is in arm-order (matches
+    /// `match_arm_groups[name].arms`). Each entry is `(structure_name,
+    /// member_types)` where `member_types[m] = T` for the arm's child
+    /// template.
+    ///
+    /// Used by `expr.rs` to type-check nested `self.<cluster>.<inner>`
+    /// access on a per-arm basis: the merged `sub_member_types[group]` map
+    /// only retains the last arm's members (last write wins), so per-arm
+    /// differentiation requires this parallel map.
+    ///
+    /// Populated in the entity.rs MatchArmDeclGroup pre-pass alongside
+    /// `sub_member_types`.
+    pub(crate) match_arm_group_arm_member_types: HashMap<String, Vec<ArmMemberMap>>,
+    /// External-scope match-arm clusters declared on each sub's child
+    /// structure (task 2373).
+    ///
+    /// Keyed by sub name (e.g. `bolt`); the value is a list of
+    /// `(GuardedDeclGroup, per_arm_member_maps)` for each cluster on that
+    /// sub's child template. The per-arm member maps are
+    /// `(structure_name, member_types)` in arm-order, mirroring
+    /// `match_arm_group_arm_member_types`.
+    ///
+    /// Used by `expr.rs` to type-check `<sub>.<cluster>` (synthetic Union)
+    /// and `<sub>.<cluster>.<inner>` (common-field lookup, missing-arm
+    /// diagnostics) from outside the sub's structure. Populated in the
+    /// entity.rs Sub pre-pass.
+    pub(crate) sub_match_arm_groups: HashMap<String, Vec<SubClusterEntry>>,
 }
 
 impl<'u> CompilationScope<'u> {
@@ -78,6 +119,8 @@ impl<'u> CompilationScope<'u> {
             sub_member_types: HashMap::new(),
             has_geometry: false,
             match_arm_groups: BTreeMap::new(),
+            match_arm_group_arm_member_types: HashMap::new(),
+            sub_match_arm_groups: HashMap::new(),
         }
     }
 

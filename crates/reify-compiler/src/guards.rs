@@ -647,3 +647,207 @@ pub(crate) fn compile_per_decl_constraint_guard(
         parent_guard: None,
     });
 }
+
+/// Structurally narrow a `GuardedDeclGroup`'s arms based on the active guard
+/// at a reference site (task 2373).
+///
+/// Returns the subset of `arms` whose `guard_value_cell` is reachable from
+/// `current_guard` via the `parent_chain` (mirroring the `is_ancestor_guard`
+/// walk in entity.rs:1731-1739). When `current_guard` is `None`, all arms
+/// are returned (no narrowing — the full union).
+///
+/// If `current_guard` is `Some` but no arm is reachable, falls back to the
+/// full arm set conservatively (no implication established → conservative
+/// full union). This mirrors the v0.1 narrowing-is-structural decision: the
+/// only existing implication mechanism is the parent-chain walk; we never
+/// over-narrow.
+///
+/// In v0.1, surface syntax does not produce a `current_guard` matching an
+/// arm's cell, so callers in `expr.rs` always pass `None`. The helper is
+/// exercised by direct unit tests pinning the contract for future tasks.
+//
+// `dead_code` is allowed here because v0.1's `expr.rs` MemberAccess hookup
+// (task 2373 step-8) always returns the full union — narrowing under arm
+// guards is a contract pinned by the inline unit tests below for future
+// tasks (e.g., when surface syntax for narrowing-on-decl is introduced).
+#[allow(dead_code)]
+pub(crate) fn narrow_arms_under_guard<'a>(
+    arms: &'a [GuardedDeclArm],
+    current_guard: Option<&ValueCellId>,
+    parent_chain: &HashMap<ValueCellId, Option<ValueCellId>>,
+) -> Vec<&'a GuardedDeclArm> {
+    let Some(current) = current_guard else {
+        return arms.iter().collect();
+    };
+    // Walk parent chain from current upward, collecting any arm whose cell
+    // appears (including current itself).
+    let mut active = Vec::new();
+    for arm in arms {
+        if &arm.guard_value_cell == current {
+            active.push(arm);
+            continue;
+        }
+        let mut cursor = parent_chain.get(current).and_then(|p| p.as_ref());
+        while let Some(ancestor) = cursor {
+            if ancestor == &arm.guard_value_cell {
+                active.push(arm);
+                break;
+            }
+            cursor = parent_chain.get(ancestor).and_then(|p| p.as_ref());
+        }
+    }
+    if active.is_empty() {
+        // No implication established — return the full arm set conservatively.
+        return arms.iter().collect();
+    }
+    active
+}
+
+#[cfg(test)]
+mod narrow_arms_under_guard_tests {
+    use super::*;
+    use reify_types::Value;
+
+    fn make_arm(guard_member: &str, arm_struct: &str) -> GuardedDeclArm {
+        GuardedDeclArm {
+            guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            guard_value_cell: ValueCellId::new("Bolt", guard_member),
+            arm_type: Type::StructureRef(arm_struct.to_string()),
+        }
+    }
+
+    /// Step-15 case 1: `current_guard == arm[0].guard_value_cell` → `[arm[0]]`.
+    #[test]
+    fn narrow_arms_collapses_to_arm_when_guard_matches_arm_cell() {
+        let arms = vec![make_arm("__guard_0", "HexHead"), make_arm("__guard_1", "SocketHead")];
+        let parent_chain: HashMap<ValueCellId, Option<ValueCellId>> = HashMap::new();
+        let current = arms[0].guard_value_cell.clone();
+        let result = narrow_arms_under_guard(&arms, Some(&current), &parent_chain);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].guard_value_cell, arms[0].guard_value_cell);
+    }
+
+    /// Step-15 case 2: `current_guard == None` → all arms.
+    #[test]
+    fn narrow_arms_returns_all_when_no_guard() {
+        let arms = vec![make_arm("__guard_0", "HexHead"), make_arm("__guard_1", "SocketHead")];
+        let parent_chain: HashMap<ValueCellId, Option<ValueCellId>> = HashMap::new();
+        let result = narrow_arms_under_guard(&arms, None, &parent_chain);
+        assert_eq!(result.len(), 2);
+    }
+
+    /// Step-15 case 3: non-matching guard whose parent chain reaches
+    /// `arm[1].guard_value_cell` → `[arm[1]]`.
+    #[test]
+    fn narrow_arms_walks_parent_chain_to_match_arm() {
+        let arms = vec![make_arm("__guard_0", "HexHead"), make_arm("__guard_1", "SocketHead")];
+        let nested = ValueCellId::new("Bolt", "__guard_2");
+        // nested's parent is arm[1].guard_value_cell (which is itself a "top-level" guard for the
+        // parent_chain — its own entry is None).
+        let mut parent_chain: HashMap<ValueCellId, Option<ValueCellId>> = HashMap::new();
+        parent_chain.insert(nested.clone(), Some(arms[1].guard_value_cell.clone()));
+        parent_chain.insert(arms[1].guard_value_cell.clone(), None);
+        parent_chain.insert(arms[0].guard_value_cell.clone(), None);
+        let result = narrow_arms_under_guard(&arms, Some(&nested), &parent_chain);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].guard_value_cell, arms[1].guard_value_cell);
+    }
+
+    /// Amendment for review suggestion 4: integration-style proof that the
+    /// `parent_chain` shape consumed by `narrow_arms_under_guard` matches
+    /// what `entity.rs` actually constructs at lines ~1757-1760
+    /// (`guard_parent_map: HashMap<ValueCellId, Option<ValueCellId>>` built
+    /// from `guarded_groups.iter().map(|g| (g.guard_value_cell.clone(),
+    /// g.parent_guard.clone())).collect()`).
+    ///
+    /// This builds a `Vec<CompiledGuardedGroup>` mirroring how
+    /// `compile_match_arm_decl_group` and `compile_block_guard` populate the
+    /// reference-safety sweep, then transforms it via the *same expression*
+    /// used in entity.rs to produce the parent_chain. Two `GuardedDeclArm`
+    /// entries are produced with cell IDs matching their group entries; one
+    /// outer (non-arm) guard is also added with the inner-arm's parent set
+    /// to the outer guard. We assert that narrowing under the outer guard
+    /// reaches both arms (because the outer guard's chain crosses neither
+    /// arm cell), and narrowing under one arm cell reaches just that arm.
+    #[test]
+    fn narrow_arms_under_real_entity_parent_chain_shape() {
+        use reify_types::CompiledExpr;
+
+        let outer_guard = ValueCellId::new("Bolt", "__guard_outer");
+        let arm0_guard = ValueCellId::new("Bolt", "__guard_0");
+        let arm1_guard = ValueCellId::new("Bolt", "__guard_1");
+
+        // Build CompiledGuardedGroup entries the same way
+        // compile_match_arm_decl_group / compile_block_guard do, then derive
+        // the parent_chain via the entity.rs:1757-1760 expression.
+        let groups: Vec<crate::types::CompiledGuardedGroup> = vec![
+            crate::types::CompiledGuardedGroup {
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: outer_guard.clone(),
+                members: vec![],
+                constraints: vec![],
+                else_members: vec![],
+                else_constraints: vec![],
+                parent_guard: None,
+            },
+            crate::types::CompiledGuardedGroup {
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: arm0_guard.clone(),
+                members: vec![],
+                constraints: vec![],
+                else_members: vec![],
+                else_constraints: vec![],
+                parent_guard: Some(outer_guard.clone()),
+            },
+            crate::types::CompiledGuardedGroup {
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: arm1_guard.clone(),
+                members: vec![],
+                constraints: vec![],
+                else_members: vec![],
+                else_constraints: vec![],
+                parent_guard: Some(outer_guard.clone()),
+            },
+        ];
+
+        // Mirror entity.rs:1757-1760 verbatim.
+        let parent_chain: HashMap<ValueCellId, Option<ValueCellId>> = groups
+            .iter()
+            .map(|g| (g.guard_value_cell.clone(), g.parent_guard.clone()))
+            .collect();
+
+        let arms = vec![
+            GuardedDeclArm {
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: arm0_guard.clone(),
+                arm_type: Type::StructureRef("HexHead".to_string()),
+            },
+            GuardedDeclArm {
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: arm1_guard.clone(),
+                arm_type: Type::StructureRef("SocketHead".to_string()),
+            },
+        ];
+
+        // Case A: current_guard == arm0_guard → narrows to arm[0] only.
+        let result = narrow_arms_under_guard(&arms, Some(&arm0_guard), &parent_chain);
+        assert_eq!(
+            result.len(),
+            1,
+            "narrowing under arm[0]'s own guard cell must collapse to that single arm"
+        );
+        assert_eq!(result[0].guard_value_cell, arm0_guard);
+
+        // Case B: current_guard == outer_guard → no implication established
+        // (outer is parent OF the arms, not reachable FROM the arms via the
+        // parent chain — the helper walks current→ancestors), so the helper
+        // returns the conservative full arm set.
+        let result = narrow_arms_under_guard(&arms, Some(&outer_guard), &parent_chain);
+        assert_eq!(
+            result.len(),
+            2,
+            "narrowing under an outer (parent-of-arms) guard must not establish \
+             implication and falls back to the full arm set"
+        );
+    }
+}
