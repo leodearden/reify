@@ -257,6 +257,34 @@ pub(crate) fn substitute_expr(
 /// Guarded groups follow the same two-pass + incremental-classification pattern
 /// via `register_guarded_names` and `compile_guarded_members` (guards.rs).
 ///
+/// Emit the outside-match-collision diagnostic and record the cluster name in
+/// `collisions`.
+///
+/// Shared by the forward-direction check (MatchArmDeclGroup pre-pass arm) and the
+/// three reverse-direction checks (Param/Let/Sub pre-pass arms) to keep the message
+/// wording and two-label structure identical across all call sites.
+fn emit_outside_match_collision(
+    diagnostics: &mut Vec<Diagnostic>,
+    name: &str,
+    cluster_span: SourceSpan,
+    outside_span: SourceSpan,
+    collisions: &mut HashSet<String>,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "match-arm cluster '{}' collides with a declaration of the same name \
+             outside the match block",
+            name
+        ))
+        .with_label(DiagnosticLabel::new(cluster_span, "cluster declared here"))
+        .with_label(DiagnosticLabel::new(
+            outside_span,
+            "originally declared outside the match",
+        )),
+    );
+    collisions.insert(name.to_string());
+}
+
 /// # Shadowing
 ///
 /// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
@@ -455,22 +483,13 @@ pub(crate) fn compile_entity(
                 if let Some(&cluster_span) =
                     match_arm_cluster_logical_names.get(&param.name)
                 {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "match-arm cluster '{}' collides with declaration of '{}' \
-                             outside the match block",
-                            param.name, param.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            cluster_span,
-                            "cluster declared here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            param.span,
-                            "originally declared outside the match",
-                        )),
+                    emit_outside_match_collision(
+                        diagnostics,
+                        &param.name,
+                        cluster_span,
+                        param.span,
+                        &mut clusters_with_outside_collision,
                     );
-                    clusters_with_outside_collision.insert(param.name.clone());
                 }
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
@@ -494,22 +513,13 @@ pub(crate) fn compile_entity(
                 if let Some(&cluster_span) =
                     match_arm_cluster_logical_names.get(&let_decl.name)
                 {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "match-arm cluster '{}' collides with declaration of '{}' \
-                             outside the match block",
-                            let_decl.name, let_decl.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            cluster_span,
-                            "cluster declared here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            let_decl.span,
-                            "originally declared outside the match",
-                        )),
+                    emit_outside_match_collision(
+                        diagnostics,
+                        &let_decl.name,
+                        cluster_span,
+                        let_decl.span,
+                        &mut clusters_with_outside_collision,
                     );
-                    clusters_with_outside_collision.insert(let_decl.name.clone());
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
@@ -550,44 +560,37 @@ pub(crate) fn compile_entity(
                 // overwritten by the rejected cluster's child-template members.
                 // "First cluster wins" in the pre-pass is symmetric with "first
                 // cluster wins" in pass 2. (task 2613)
-                if let Some(first_arm) = m.arms.first()
-                    && let Some(name) = arm_member_name(&first_arm.member)
-                    && !seen_match_arm_cluster_names.insert(name.to_string())
-                {
-                    // Duplicate cluster name — skip pre-pass registration.
-                    // Pass 2 will emit the diagnostic.
-                    continue;
-                }
-                // No arm_member_name (e.g. unsupported arm kind): do not insert
-                // into seen_match_arm_cluster_names; let pass 2 emit its diagnostic.
 
-                // Forward-direction outside-match collision detection (task 2375).
-                // If the cluster's logical name is already registered as a regular
-                // Sub/Param/Let (recorded in outside_decl_spans), emit a collision
-                // diagnostic and skip this cluster's pre-pass registration entirely.
-                // The outside decl wins; the cluster is suppressed.
-                if let Some(first_arm) = m.arms.first()
-                    && let Some(logical_name) = arm_member_name(&first_arm.member)
-                {
-                    if let Some(&outside_span) = outside_decl_spans.get(logical_name) {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "match-arm cluster '{}' collides with declaration of '{}' \
-                                 outside the match block",
-                                logical_name, logical_name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                m.span,
-                                "cluster declared here",
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                outside_span,
-                                "originally declared outside the match",
-                            )),
-                        );
-                        clusters_with_outside_collision.insert(logical_name.to_string());
+                // Compute logical name once; shared by duplicate-check and
+                // collision-check below. When None (unsupported arm kind), both
+                // checks are bypassed — pass 2 diagnoses unsupported member kinds.
+                let maybe_logical_name =
+                    m.arms.first().and_then(|a| arm_member_name(&a.member));
+
+                if let Some(logical_name) = maybe_logical_name {
+                    // Duplicate cluster — skip pre-pass; pass 2 emits the diagnostic.
+                    // Precedence: duplicate-check fires before collision-check when
+                    // both apply — the first cluster with this name is canonical.
+                    if !seen_match_arm_cluster_names.insert(logical_name.to_string()) {
                         continue;
                     }
+
+                    // Forward-direction outside-match collision detection (task 2375).
+                    // If the cluster's logical name is already registered as a regular
+                    // Sub/Param/Let (recorded in outside_decl_spans), emit a collision
+                    // diagnostic and skip this cluster's pre-pass registration entirely.
+                    // The outside decl wins; the cluster is suppressed.
+                    if let Some(&outside_span) = outside_decl_spans.get(logical_name) {
+                        emit_outside_match_collision(
+                            diagnostics,
+                            logical_name,
+                            m.span,
+                            outside_span,
+                            &mut clusters_with_outside_collision,
+                        );
+                        continue;
+                    }
+
                     // No collision — record this cluster for reverse-direction checks
                     // (Sub/Param/Let declared AFTER this match block in source order).
                     match_arm_cluster_logical_names.insert(logical_name.to_string(), m.span);
@@ -803,22 +806,13 @@ pub(crate) fn compile_entity(
                 if let Some(&cluster_span) =
                     match_arm_cluster_logical_names.get(&sub.name)
                 {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "match-arm cluster '{}' collides with declaration of '{}' \
-                             outside the match block",
-                            sub.name, sub.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            cluster_span,
-                            "cluster declared here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            sub.span,
-                            "originally declared outside the match",
-                        )),
+                    emit_outside_match_collision(
+                        diagnostics,
+                        &sub.name,
+                        cluster_span,
+                        sub.span,
+                        &mut clusters_with_outside_collision,
                     );
-                    clusters_with_outside_collision.insert(sub.name.clone());
                 }
             }
             reify_syntax::MemberDecl::MetaBlock(meta) => {
@@ -2330,7 +2324,7 @@ fn compile_match_arm_decl_group(
                 Diagnostic::error(format!(
                     "non-exhaustive match on '{}': missing variant(s) {}",
                     enum_type_name,
-                    missing.join(", ")
+                    missing.iter().map(|v| format!("'{v}'")).collect::<Vec<_>>().join(", ")
                 ))
                 .with_label(DiagnosticLabel::new(m.span, "missing variants")),
             );
