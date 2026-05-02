@@ -540,9 +540,11 @@ structure def WaterCooled : Cooled {
     // FQNs (declared order); per-leaf composite witnesses live in the
     // human-readable message body only.
     //
-    // The four DFS-visited feasibles (declared-order × lex-within-param order)
-    // are (ORingSeal, AirCooled), (ORingSeal, WaterCooled),
-    // (RubberSeal, AirCooled), (RubberSeal, WaterCooled), so
+    // In strict mode, `max_feasible_to_collect = 2`: the DFS visits feasibles
+    // in declared-order × lex-within-param order and stops after collecting 2.
+    // With Seal candidates {ORingSeal, RubberSeal} and Cooled candidates
+    // {AirCooled, WaterCooled} (both lex-sorted), the first two feasibles
+    // collected are (ORingSeal, AirCooled) and (ORingSeal, WaterCooled), so
     // `feasible_assignments[0]` is ["ORingSeal", "AirCooled"].
     //
     // (a) `candidates` carries exactly the lex-first leaf's FQN list.
@@ -574,14 +576,18 @@ structure def WaterCooled : Cooled {
     // (c) Witness summaries still appear in the human-readable message body
     //     (so the visibility loss from removing them from `candidates` is offset
     //     by message-side preservation).
+    //
+    //     Note: `max_feasible_to_collect = 2` in strict mode (see auto_type_param.rs),
+    //     so the DFS stops after finding 2 feasibles: (ORingSeal, AirCooled) and
+    //     (ORingSeal, WaterCooled). Only those two witnesses appear in the message.
     assert!(
         diagnostics[0].message.contains("T=ORingSeal,U=AirCooled"),
         "Human-readable message must still carry composite witness 'T=ORingSeal,U=AirCooled', got: {:?}",
         diagnostics[0].message,
     );
     assert!(
-        diagnostics[0].message.contains("T=RubberSeal,U=WaterCooled"),
-        "Human-readable message must still carry composite witness 'T=RubberSeal,U=WaterCooled', got: {:?}",
+        diagnostics[0].message.contains("T=ORingSeal,U=WaterCooled"),
+        "Human-readable message must still carry composite witness 'T=ORingSeal,U=WaterCooled', got: {:?}",
         diagnostics[0].message,
     );
 }
