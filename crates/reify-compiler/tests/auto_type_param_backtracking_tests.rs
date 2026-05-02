@@ -532,6 +532,58 @@ structure def WaterCooled : Cooled {
         Severity::Error,
         "AutoTypeParamAmbiguous diagnostic must be an Error severity"
     );
+
+    // ── Pins the FQN-only invariant on `Diagnostic.candidates` for the ──────
+    // multi-param ≥2-feasibles emission site (task 2860).
+    //
+    // The structured field carries the lex-first feasible cross-product leaf's
+    // FQNs (declared order); per-leaf composite witnesses live in the
+    // human-readable message body only.
+    //
+    // The four DFS-visited feasibles (declared-order × lex-within-param order)
+    // are (ORingSeal, AirCooled), (ORingSeal, WaterCooled),
+    // (RubberSeal, AirCooled), (RubberSeal, WaterCooled), so
+    // `feasible_assignments[0]` is ["ORingSeal", "AirCooled"].
+    //
+    // (a) `candidates` carries exactly the lex-first leaf's FQN list.
+    assert_eq!(
+        diagnostics[0].candidates,
+        vec!["ORingSeal".to_string(), "AirCooled".to_string()],
+        "Diagnostic.candidates must be the lex-first feasible cross-product leaf's FQN list \
+         (FQN-only invariant, task 2860); got: {:?}",
+        diagnostics[0].candidates,
+    );
+
+    // (b) No entry is a composite `name=value,name=value` tuple — the FQN-only
+    //     invariant shared with Phase A overflow, Phase C strict-Ambiguous, and
+    //     Phase C all-rejected emission sites (see `candidates` doc-comment in
+    //     `crates/reify-types/src/diagnostics.rs`).
+    for entry in &diagnostics[0].candidates {
+        assert!(
+            !entry.contains('='),
+            "Diagnostic.candidates entries must be bare FQNs (no '=' composite tuples), got: {:?}",
+            entry,
+        );
+        assert!(
+            !entry.contains(','),
+            "Diagnostic.candidates entries must be bare FQNs (no ',' composite tuples), got: {:?}",
+            entry,
+        );
+    }
+
+    // (c) Witness summaries still appear in the human-readable message body
+    //     (so the visibility loss from removing them from `candidates` is offset
+    //     by message-side preservation).
+    assert!(
+        diagnostics[0].message.contains("T=ORingSeal,U=AirCooled"),
+        "Human-readable message must still carry composite witness 'T=ORingSeal,U=AirCooled', got: {:?}",
+        diagnostics[0].message,
+    );
+    assert!(
+        diagnostics[0].message.contains("T=RubberSeal,U=WaterCooled"),
+        "Human-readable message must still carry composite witness 'T=RubberSeal,U=WaterCooled', got: {:?}",
+        diagnostics[0].message,
+    );
 }
 
 // ─── step-25: DFS Phase A overflow on first param halts before recursion ───
