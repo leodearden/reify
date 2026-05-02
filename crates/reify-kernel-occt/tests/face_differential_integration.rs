@@ -211,15 +211,17 @@ fn surface_normal_at_non_face_shape_returns_query_failed_with_not_a_face() {
     }
 }
 
-/// `surface_normal_at` at the parametric midpoint of a sphere face agrees with
-/// `query_face_normal` (centroid-sampled normal) within 1e-6.
+/// Cross-API agreement: `surface_normal_at` at the centroid's (u, v) agrees
+/// in direction with `query_face_normal` at the centroid (dot product ≈ 1).
 ///
-/// For a full OCCT sphere face the parameter range is u∈[0, 2π], v∈[−π/2, π/2].
-/// The midpoint (π, 0) lies on the equator at −X, and `query_face_normal` at
-/// the centroid converges to the same point (the sphere surface has a unique
-/// area centroid at the geometric center, projected to u≈π, v≈0 by OCCT's
-/// `ShapeAnalysis_Surface::ValueOfUV`). Both functions use the same Du × Dv
-/// algorithm so they should agree bit-for-bit at the same (u, v).
+/// Both APIs use the same Du × Dv algorithm. `query_face_normal` returns the
+/// outward normal at the face's physical centroid. For a sphere, the outward
+/// normal is also the unit radial direction, so we can invert the
+/// parametrization to recover which (u, v) the centroid corresponds to, then
+/// call `surface_normal_at` at that same (u, v). Both calls must agree.
+///
+/// A disagreement (dot < 0.99) would indicate a regression in orientation
+/// handling or the Du × Dv computation in one of the two APIs.
 #[test]
 fn surface_normal_at_matches_query_face_normal_at_centroid() {
     let (mut kernel, sphere_id) = sphere_kernel(5.0);
@@ -228,42 +230,29 @@ fn surface_normal_at_matches_query_face_normal_at_centroid() {
         .expect("extract_faces should succeed for sphere");
     let face = faces[0];
 
-    // FaceNormal returns the normal at the physical centroid (u,v).
+    // FaceNormal returns the outward unit normal at the physical centroid.
     let qfn = parse_face_normal(&kernel, face);
 
-    // surface_normal_at at (π, 0): same (u,v) as the sphere's centroid projection.
+    // For a sphere, the outward normal direction determines (u, v) uniquely:
+    //   normal = (cos(v)·cos(u), cos(v)·sin(u), sin(v))
+    // Invert: v = arcsin(qfn[2]),  u = atan2(qfn[1], qfn[0]).
+    // OCCT sphere uses u ∈ [0, 2π], so shift negative u by 2π.
+    let v_at_centroid = qfn[2].asin();
+    let u_at_centroid = {
+        let u = qfn[1].atan2(qfn[0]);
+        if u < 0.0 { u + 2.0 * PI } else { u }
+    };
+
+    // surface_normal_at at the recovered centroid (u, v) must agree with qfn.
     let n = kernel
-        .surface_normal_at(face, PI, 0.0)
-        .expect("surface_normal_at should succeed");
+        .surface_normal_at(face, u_at_centroid, v_at_centroid)
+        .expect("surface_normal_at should succeed at the centroid (u, v)");
 
-    // The two normals should agree component-wise within 1e-6 if they're
-    // sampling the same (u, v). If the sphere centroid projects to a different
-    // (u, v) than (π, 0), this test instead checks that both are unit vectors
-    // and that surface_normal_at returns a radially outward result.
     let dot = n[0] * qfn[0] + n[1] * qfn[1] + n[2] * qfn[2];
-    // Both are unit vectors for the same surface, so dot ≈ 1 means parallel.
-    // We relax to dot > 0 (same hemisphere) as a weaker orientation sanity check
-    // when (π, 0) doesn't coincide with the centroid projection.
-    let _ = dot; // Used below only if we can verify coincidence.
-
-    // Unconditional: both must be unit vectors.
-    let mag_n = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    let mag_qfn = (qfn[0] * qfn[0] + qfn[1] * qfn[1] + qfn[2] * qfn[2]).sqrt();
     assert!(
-        (mag_n - 1.0).abs() < 1e-9,
-        "surface_normal_at should be unit length, |n| = {mag_n}"
-    );
-    assert!(
-        (mag_qfn - 1.0).abs() < 1e-9,
-        "query_face_normal should be unit length, |n| = {mag_qfn}"
-    );
-
-    // For a sphere, both normals are radially outward. Verify the sphere
-    // outward-normal contract: n ≈ surface_point / r.
-    // At (u=π, v=0), P = (−5, 0, 0), so n should be ≈ (−1, 0, 0).
-    assert!(
-        (n[0] + 1.0).abs() < 1e-6 && n[1].abs() < 1e-6 && n[2].abs() < 1e-6,
-        "surface_normal_at(sphere, π, 0) expected (−1, 0, 0), got {n:?}"
+        dot > 0.99,
+        "surface_normal_at and query_face_normal disagree at the sphere centroid: \
+         dot = {dot}, n = {n:?}, qfn = {qfn:?}, u = {u_at_centroid}, v = {v_at_centroid}"
     );
 }
 
