@@ -127,11 +127,13 @@ fn propagate_poison() -> CompiledExpr {
 /// Shared by the `self.<cluster>.<inner>` and `<sub>.<cluster>.<inner>`
 /// branches in the `MemberAccess` arm of `compile_expr_guarded`. The two
 /// call sites differ only in:
-///   * `scoped_entity` — the entity stamp for the synthetic `ValueCellId`
-///     (`scope.entity_name` for the inner case, `<entity>.<sub>` for the
-///     external case),
-///   * `sub_qualifier` — diagnostic preamble fragment (`None` ⇒ "match-arm
-///     types"; `Some("bolt")` ⇒ "match-arm types of sub 'bolt'"),
+///
+/// * `scoped_entity` — the entity stamp for the synthetic `ValueCellId`
+///   (`scope.entity_name` for the inner case, `<entity>.<sub>` for the
+///   external case),
+/// * `sub_qualifier` — diagnostic preamble fragment (`None` ⇒ "match-arm
+///   types"; `Some("bolt")` ⇒ "match-arm types of sub 'bolt'"),
+///
 /// while the per-arm lookup, missing-arm filter, divergent-types branch,
 /// and synthetic stamp construction are identical. Extracting them here
 /// avoids the ~70 lines of duplication called out in the post-impl review.

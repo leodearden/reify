@@ -559,6 +559,87 @@ fn external_sub_dot_cluster_dot_common_field_typechecks() {
     );
 }
 
+/// Amendment for review suggestion 3: when two arms expose the same field
+/// name with different `Type`s, exactly one error diagnostic must mention
+/// "divergent" along with both arm structure names.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure def HexHead    { param across_flats : Real }
+/// structure def SocketHead { param across_flats : Length }
+/// structure def Bolt {
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+///     let probe = self.head.across_flats
+/// }
+/// ```
+/// Pins the divergent-types branch of `resolve_cluster_inner_member`,
+/// previously untested. `Real` (dimensionless) and `Length`
+/// (length-dimensioned `Scalar`) hit the `all_equal == false` path inside
+/// the helper.
+#[test]
+fn self_dot_cluster_dot_divergent_types_emits_diagnostic_listing_arms() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let probe = let_member(
+        "probe",
+        member_access(
+            member_access(make_ident_expr("self"), "head"),
+            "across_flats",
+        ),
+    );
+
+    let bolt = structure_with_members(
+        "Bolt",
+        vec![param_member("head_type", "HeadType"), match_group, probe],
+    );
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_cluster_divergent_types"),
+        declarations: vec![
+            head_type_enum(),
+            structure_with_members("HexHead", vec![param_member("across_flats", "Real")]),
+            structure_with_members("SocketHead", vec![param_member("across_flats", "Length")]),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors = error_diagnostics(&compiled);
+    let matching: Vec<&&reify_types::Diagnostic> = errors
+        .iter()
+        .filter(|d| {
+            d.message.contains("divergent")
+                && d.message.contains("HexHead")
+                && d.message.contains("SocketHead")
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one error diagnostic mentioning 'divergent', 'HexHead', \
+         and 'SocketHead', got {} (all errors: {:#?})",
+        matching.len(),
+        errors
+    );
+}
+
 /// Step-19: external `<sub>.<cluster>.<inner>` referencing an arm-specific
 /// field emits exactly one error diagnostic naming the missing arm.
 ///
