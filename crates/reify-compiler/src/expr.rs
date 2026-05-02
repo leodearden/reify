@@ -1171,9 +1171,20 @@ pub(crate) fn compile_expr_guarded(
                             )),
                         );
                     }
-                    // Step-20 will replace this with a precise missing-arm diagnostic
-                    // qualified by the sub name. For step-18 (step-17 passing), fall
-                    // through to the generic unknown-member path below.
+                    // Step-20: precise missing-arm diagnostic qualified by the sub name.
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "field '{}' is not present in match-arm types of sub '{}': {}",
+                            member,
+                            sub_name,
+                            missing.join(", ")
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "field missing from one or more cluster arms",
+                        )),
+                    );
                 }
             }
 
