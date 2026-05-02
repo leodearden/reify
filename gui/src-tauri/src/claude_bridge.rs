@@ -90,6 +90,11 @@ pub enum OutboundMessage {
         id: String,
         message: String,
     },
+    Notice {
+        id: String,
+        code: String,
+        message: String,
+    },
     Ready,
 }
 
@@ -855,6 +860,10 @@ pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
         OutboundMessage::ErrorMessage { id, message } => (
             "claude-error".to_string(),
             serde_json::json!({ "id": id, "message": message }),
+        ),
+        OutboundMessage::Notice { id, code, message } => (
+            "claude-notice".to_string(),
+            serde_json::json!({ "id": id, "code": code, "message": message }),
         ),
         OutboundMessage::Ready => ("claude-ready".to_string(), serde_json::json!({})),
     }

@@ -81,6 +81,15 @@ export interface ErrorMessage {
   message: string;
 }
 
+export interface NoticeMessage {
+  type: 'notice';
+  id: string;
+  /** Stable, structured discriminator for the notice. e.g. 'degraded_turn_boundary'.
+   * Hosts SHOULD route on `code` rather than substring-matching `message` prose. */
+  code: string;
+  message: string;
+}
+
 export interface Ready {
   type: 'ready';
 }
@@ -92,4 +101,5 @@ export type OutboundMessage =
   | ToolResult
   | Done
   | ErrorMessage
+  | NoticeMessage
   | Ready;

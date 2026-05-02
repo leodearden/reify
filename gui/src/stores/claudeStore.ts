@@ -209,6 +209,19 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
         break;
       }
 
+      case 'notice': {
+        // Non-terminal diagnostic from the sidecar. Logs to console.warn for operator
+        // visibility (dev-tools / production logs) but does NOT cancel/flush the
+        // pending RAF, does NOT mutate sessionStatus, does NOT touch the in-flight
+        // assistant message, and does NOT add a SystemMessage to the chat transcript.
+        // The pre-regression behavior was stderr-only invisibility on the sidecar
+        // side; this upgrades to host-operator visibility while preserving the
+        // graceful-degradation lifecycle for the in-flight turn.
+        // eslint-disable-next-line no-console
+        console.warn(`[claudeStore] sidecar notice: code=${msg.code} id=${msg.id} message=${msg.message}`);
+        break;
+      }
+
       case 'error': {
         cancelAndFlush();
         setState('sessionStatus', 'idle');

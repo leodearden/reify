@@ -31,6 +31,7 @@ import type {
   ToolResult,
   Done,
   ErrorMessage,
+  NoticeMessage,
 } from '../sidecar/src/types';
 
 // ── Commands (invoke wrappers) ──────────────────────────────────────
@@ -252,6 +253,7 @@ const KEYS_ID_TOOL_NAME: string[] = ['id', 'tool_name'];
 const KEYS_ID_TOOL_NAME_TOOL_USE_ID: string[] = ['id', 'tool_name', 'tool_use_id'];
 const KEYS_ID: string[] = ['id'];
 const KEYS_ID_MESSAGE: string[] = ['id', 'message'];
+const KEYS_ID_CODE_MESSAGE: string[] = ['id', 'code', 'message'];
 
 /**
  * Subscribe to all Claude sidecar events and map payloads to OutboundMessage.
@@ -298,6 +300,11 @@ export async function subscribeToClaudeEvents(
       const p = validatePayload('claude-error', event.payload, KEYS_ID_MESSAGE);
       if (!p) return;
       handler({ type: 'error', id: p.id as string, message: p.message as string });
+    }],
+    ['claude-notice', (event) => {
+      const p = validatePayload('claude-notice', event.payload, KEYS_ID_CODE_MESSAGE);
+      if (!p) return;
+      handler({ type: 'notice', id: p.id as string, code: p.code as string, message: p.message as string });
     }],
     ['claude-ready', () => handler({ type: 'ready' })],
   ];

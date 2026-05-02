@@ -246,9 +246,10 @@ export class SidecarSession {
                 'multi-turn delta offsets may be incorrect if accumulated text length is not reset between turns.';
               console.error(`[sidecar] ${DEGRADED_TURN_BOUNDARY_DETAIL}`);
               this.onOutput({
-                type: 'error',
+                type: 'notice',
                 id,
-                message: `[degraded-turn-boundary] ${DEGRADED_TURN_BOUNDARY_DETAIL}`,
+                code: 'degraded_turn_boundary',
+                message: DEGRADED_TURN_BOUNDARY_DETAIL,
               });
             }
             for (const block of event.message.content) {
