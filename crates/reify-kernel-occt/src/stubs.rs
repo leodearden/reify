@@ -503,4 +503,20 @@ mod tests {
         let err = result.expect_err("stub surface_angle should error");
         assert_stub_message(&format!("{err:?}"));
     }
+
+    #[test]
+    fn stub_handle_fillet_with_history_returns_error() {
+        let handle = OcctKernelHandle::spawn();
+        let result = handle.fillet_with_history(GeometryHandleId(1), 1.0e-3);
+        let err = result.expect_err("stub fillet_with_history should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_handle_chamfer_with_history_returns_error() {
+        let handle = OcctKernelHandle::spawn();
+        let result = handle.chamfer_with_history(GeometryHandleId(1), 1.0e-3);
+        let err = result.expect_err("stub chamfer_with_history should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
 }
