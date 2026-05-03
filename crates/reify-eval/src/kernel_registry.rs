@@ -144,7 +144,7 @@ pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
         .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
         .collect();
     if UNIQUENESS_CHECKED
-        .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
         warn_if_duplicate_op_repr_pairs(&result);
@@ -867,13 +867,11 @@ mod tests {
     /// most once across repeated calls, mirroring how `build_registry`'s
     /// duplicate-NAME walk is amortised by the surrounding `OnceLock`.
     ///
-    /// Pinned via the underlying `static UNIQUENESS_CHECKED: AtomicBool`:
-    /// (a) after at least one `collect_registry()` call the flag is set
-    ///     (`load(Acquire) == true`);
-    /// (b) a fresh `compare_exchange(false, true, …)` returns `Err` because
-    ///     the flag has already transitioned — proving subsequent
-    ///     `collect_registry()` calls cannot re-enter the gated helper
-    ///     invocation, regardless of test ordering or parallelism.
+    /// Pinned by asserting that `UNIQUENESS_CHECKED.load(Acquire) == true`
+    /// after at least one `collect_registry()` call: the flag transitions
+    /// `false → true` exactly once (the gate flips on first call) and never
+    /// reverts, so subsequent calls skip the O(kernels × supports) HashMap
+    /// walk regardless of test ordering or parallelism.
     ///
     /// Test pollution: this test sets the flag for the rest of the binary,
     /// but other tests are unaffected — `collect_registry()` continues to
@@ -892,15 +890,6 @@ mod tests {
             super::UNIQUENESS_CHECKED.load(Ordering::Acquire),
             "collect_registry() must set UNIQUENESS_CHECKED on its first invocation \
              so subsequent calls skip the O(kernels × supports) HashMap walk",
-        );
-
-        assert!(
-            super::UNIQUENESS_CHECKED
-                .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err(),
-            "Once-shot semantics: after collect_registry() consumes the gate, \
-             a fresh compare_exchange(false, true) must return Err — proving the \
-             helper invocation cannot re-fire on subsequent collect_registry() calls",
         );
     }
 }
