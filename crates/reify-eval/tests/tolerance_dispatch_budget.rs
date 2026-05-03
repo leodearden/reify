@@ -17,34 +17,29 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{
-    DispatchPlan, dispatch, per_stage_tolerance_for_plan,
-    tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance},
+    dispatch, per_stage_tolerance_for_plan,
+    tolerance_budget::per_stage_tolerance,
 };
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
 /// Integration smoke: confirms `per_stage_tolerance_for_plan` is re-exported
 /// through the crate root and wired correctly to `dispatch()` output.
 ///
-/// Three contracts locked here:
+/// Two contracts locked here:
 ///
 /// (a) `dispatch()` on a BRep→Sdf→Mesh→BooleanUnion registry produces a
 ///     `DispatchPlan` with 2 conversions — pinning that the plan shape fed to
 ///     `per_stage_tolerance_for_plan` matches what the live dispatcher returns.
+///     This is the only test site where a real `dispatch()` call (BFS search
+///     over a live capability registry) feeds its result to
+///     `per_stage_tolerance_for_plan`; in-crate unit tests construct
+///     `DispatchPlan` literals directly and do not exercise that wiring.
 ///
 /// (b) `per_stage_tolerance_for_plan(&plan, req)` equals
 ///     `per_stage_tolerance(req, 2)` — the integration-usage validation the
 ///     task description asks for ("validated by … integration usage").
-///
-/// (c) An empty-conversion `DispatchPlan` passes `requested_tol` through
-///     unchanged — the 0.8 `SAFETY_FACTOR` must NOT fire when there is no
-///     kernel boundary to cross.
 #[test]
 fn lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end() {
-    // Pin SAFETY_FACTOR through the public surface so a re-export regression
-    // drops compilation here (mirrors the long_chain_diagnostic.rs constant
-    // assertions, task 2646).
-    assert_eq!(SAFETY_FACTOR, 0.8);
-
     // ── (a) end-to-end dispatch produces a 2-conversion plan ─────────────────
 
     // Fixture mirrors dispatcher.rs:894–920 (`dispatch_two_stage_chain_is_shortest`):
@@ -95,23 +90,5 @@ fn lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end() {
         per_stage_tolerance(req, 2),
         "per_stage_tolerance_for_plan must equal per_stage_tolerance(req, n_stages=2) \
          for a 2-conversion plan",
-    );
-
-    // ── (c) empty-conversion plan: pass-through contract ─────────────────────
-
-    // An empty `conversions` vec means the demanded repr is already in
-    // `available` — no kernel boundary crossed, so the 0.8 SAFETY_FACTOR
-    // must NOT be applied. PRD scopes the heuristic to chain-crossing
-    // requests only.
-    let empty_plan = DispatchPlan {
-        kernel: "occt".to_string(),
-        conversions: vec![],
-    };
-    let pass_tol = 5e-6_f64;
-    assert_eq!(
-        per_stage_tolerance_for_plan(&empty_plan, pass_tol),
-        pass_tol,
-        "empty-conversion plan must pass through requested_tol unchanged \
-         (no conversion chain, no budget allocation)",
     );
 }
