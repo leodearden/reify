@@ -865,6 +865,26 @@ impl Engine {
                                 "topology-attribute attribute history population failed for {realization_id} op {op_idx}: {e}"
                             )));
                         }
+                        // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
+                        // propagation for non-BRep kernels.  Runs immediately after
+                        // `populate_attribute_history` (BRep-first ordering per design
+                        // decision: OCCT-native population writes first; the hook is the
+                        // non-BRep path that returns `FellThrough` for OCCT shapes — a
+                        // near-zero-cost no-op — and routes to `propagate_attributes` for
+                        // kernels that advertise a hook).  Skipped entirely when
+                        // `parent_handles_for_op` returns an empty slice (primitives,
+                        // curve constructors, Pipe) so vacuous hook calls are never made.
+                        let parent_handles = parent_handles_for_op(&geom_op);
+                        if !parent_handles.is_empty() {
+                            let _ = crate::kernel_attribute_hook::propagate_via_kernel_attribute_hook(
+                                &*kernel,
+                                topology_attribute_table,
+                                &geom_op,
+                                &parent_handles,
+                                handle.id,
+                                &feature_id,
+                            );
+                        }
                         step_handles.push(handle.id);
                     }
                     Err(e) => {
