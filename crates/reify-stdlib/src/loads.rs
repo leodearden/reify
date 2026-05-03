@@ -1010,6 +1010,39 @@ mod tests {
         );
     }
 
+    // ── gravity constructor: 1-arg Vector3<Acceleration> form ────────────────
+
+    #[test]
+    fn gravity_vector3_arg_round_trips_unchanged() {
+        use super::acceleration_dim;
+
+        // Moon gravity in +X direction (sideways) to distinguish from the -Z sign-flip path.
+        let moon_gravity = make_scalar_vec3([1.62, 0.0, 0.0], acceleration_dim());
+
+        let result = eval_builtin("gravity", &[moon_gravity.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("gravity".to_string())),
+            "kind should be 'gravity'"
+        );
+
+        let accel = map
+            .get(&Value::String("acceleration".to_string()))
+            .expect("acceleration field must exist");
+
+        // Vector3 arg round-trips unchanged (no sign flip, no Z-axis remap).
+        assert_eq!(
+            accel, &moon_gravity,
+            "acceleration should round-trip the input Vector3 unchanged"
+        );
+    }
+
     // ── gravity constructor: 1-arg Scalar<Acceleration> form ─────────────────
 
     #[test]
