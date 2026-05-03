@@ -210,4 +210,35 @@ mod tests {
             loc
         );
     }
+
+    // (h) Empty entity (".width") — leading-dot input must return None.
+    //     Pins the `entity.is_empty()` branch of the guard at line 46.
+    #[test]
+    fn empty_entity_with_member_returns_none() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", ".width");
+        assert!(loc.is_none(), "expected None for '.width' (empty entity), got {:?}", loc);
+    }
+
+    // (i) Empty member ("Bracket.") — trailing-dot input must return None.
+    //     Pins the `member.is_empty()` branch of the guard at line 46.
+    #[test]
+    fn entity_with_empty_member_returns_none() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.");
+        assert!(loc.is_none(), "expected None for 'Bracket.' (empty member), got {:?}", loc);
+    }
+
+    // (j) Dotted member ("Bracket.foo.bar") — member containing a further '.'
+    //     must return None. Pins the `member.contains('.')` branch of the guard
+    //     at line 46 and the documented dotted-member rejection path.
+    #[test]
+    fn dotted_member_returns_none() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.foo.bar");
+        assert!(loc.is_none(), "expected None for 'Bracket.foo.bar' (dotted member), got {:?}", loc);
+    }
 }
