@@ -224,6 +224,70 @@ fn max_sampled_field_with_pressure_codomain_returns_dimensioned_scalar() {
     );
 }
 
+// ── Step 7: argmax over a 1-D Length-domain Sampled field ───────────────────
+
+/// `argmax(field)` over a Sampled 1-D Length-domain Real-codomain field
+/// returns the coord at the index of the data buffer's maximum, wrapped
+/// per the field's `domain_type` (here `Type::Scalar { LENGTH }`).
+#[test]
+fn argmax_sampled_field_1d_length_domain_returns_coord_at_max_index() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    // axis = [0,1,2,3,4]; data = [1,5,3,4,2] -> max at index 1 -> coord 1.0m
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(field) over 1-D LENGTH domain should return the coord of the data max"
+    );
+}
+
+/// `argmax(field)` over a Sampled 1-D Real-domain field returns the
+/// coord as `Value::Real` (no dimension to preserve).
+#[test]
+fn argmax_sampled_field_1d_real_domain_returns_real_coord() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+
+    let expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Real(1.0),
+        "argmax(field) over 1-D Real domain should return Value::Real(coord)"
+    );
+}
+
 /// `min(field)` over a Sampled 1-D Pressure-codomain field returns the
 /// minimum value as `Value::Scalar { si_value: <min>, dimension: PRESSURE }`.
 #[test]
