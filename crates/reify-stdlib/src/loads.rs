@@ -787,4 +787,48 @@ mod tests {
             "3 args → Undef"
         );
     }
+
+    // ── body_force constructor: happy path ───────────────────────────────────
+
+    #[test]
+    fn body_force_returns_map_with_correct_fields() {
+        use super::{force_density_dim};
+
+        let body = body_selector_stub();
+        // Weight-density of steel ≈ 7850 kg/m³ × 9.81 m/s² ≈ 77 kN/m³.
+        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], force_density_dim());
+
+        let result = eval_builtin("body_force", &[body.clone(), fd.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("body_force".to_string())),
+            "kind should be 'body_force'"
+        );
+        assert_eq!(
+            map.get(&Value::String("body".to_string())),
+            Some(&body),
+            "body should round-trip"
+        );
+        assert_eq!(
+            map.get(&Value::String("force_density".to_string())),
+            Some(&fd),
+            "force_density should round-trip"
+        );
+    }
+
+    #[test]
+    fn force_density_dim_equals_force_div_volume() {
+        use super::force_density_dim;
+        assert_eq!(
+            force_density_dim(),
+            DimensionVector::FORCE.div(&DimensionVector::VOLUME),
+            "force_density_dim() should equal FORCE / VOLUME"
+        );
+    }
 }
