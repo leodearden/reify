@@ -568,10 +568,27 @@ pub(crate) fn compile_entity(
                     m.arms.first().and_then(|a| arm_member_name(&a.member));
 
                 if let Some(logical_name) = maybe_logical_name {
-                    // Duplicate cluster — skip pre-pass; pass 2 emits the diagnostic.
+                    // Duplicate cluster — skip pre-pass; pass 2 normally emits the
+                    // diagnostic via scope.match_arm_groups.contains_key(...).
                     // Precedence: duplicate-check fires before collision-check when
                     // both apply — the first cluster with this name is canonical.
+                    //
+                    // Exception: if the *first* cluster with this name was suppressed
+                    // by an outside-match collision (clusters_with_outside_collision),
+                    // scope.match_arm_groups will never have the entry, so pass 2
+                    // won't be able to detect the duplicate. Emit the duplicate-cluster
+                    // diagnostic here in the pre-pass instead. (task 2376, step-2)
                     if !seen_match_arm_cluster_names.insert(logical_name.to_string()) {
+                        if clusters_with_outside_collision.contains(logical_name) {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate match-arm cluster name '{}' — two match blocks \
+                                     declare the same logical name in this structure",
+                                    logical_name
+                                ))
+                                .with_label(DiagnosticLabel::new(m.span, "duplicate cluster")),
+                            );
+                        }
                         continue;
                     }
 
