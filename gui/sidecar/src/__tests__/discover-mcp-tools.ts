@@ -34,6 +34,20 @@
  * option: strip line and block comments before applying the regexes (e.g.
  * `src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')`).
  *
+ * Per-file constraint — gating is per-file. The `REGISTER_IDENT_RE` pre-pass
+ * only looks at `registry.register(IDENT, ...)` calls within the same `.rs`
+ * file as the matching `CONST_DECL_RE`. A const declared in `mod.rs`/`consts.rs`
+ * and registered via `registry.register(consts::NAME, ...)` from a sibling
+ * `*.rs` file is silently dropped. The current Rust source tree does not split
+ * const declarations across files, so this is a theoretical limitation today,
+ * but the floor assertion (`>= 16`) would not catch a single missing tool.
+ * Contract for future contributors: keep the const declaration and its
+ * `registry.register(NAME, ...)` call in the same `.rs` file. See the
+ * `silently_drops_a_const_split_across_files` test in
+ * `discover-mcp-tools.test.ts` for the regression pin. Future-hardening
+ * option: do a project-wide `REGISTER_IDENT_RE` pre-pass first, then filter
+ * `CONST_DECL_RE` matches against the global set.
+ *
  * Uppercase tool names are intentionally supported by `[A-Za-z0-9_]+` in both
  * patterns (the casing policy is enforced by the Rust layer; the TS discovery
  * layer stays casing-agnostic so it stays valid if the policy is ever relaxed).
