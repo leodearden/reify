@@ -1256,16 +1256,13 @@ mod tests {
     ///    if `per_stage_tolerance_for_plan` stopped delegating and hard-coded a
     ///    wrong exponent.
     ///
-    /// 2. **Hand-computed numeric pin** (`assert!` with `abs() < 1e-12`): catches
-    ///    a shared formula bug where BOTH `per_stage_tolerance` and
-    ///    `per_stage_tolerance_for_plan` are broken identically (e.g. both drop
-    ///    `SAFETY_FACTOR`), which would leave the delegation `assert_eq!` green
-    ///    while the actual output is wrong. The epsilon `1e-12` matches the
-    ///    convention in `tolerance_budget::tests::geometric_split_multi_stages`.
-    ///
-    /// This test fails before step-4: the skeleton returns `requested_tol`,
-    /// which equals `per_stage_tolerance(req, 1)` only for N=1 (which isn't
-    /// tested here).
+    /// 2. **Hand-computed numeric pin** (`assert_eq!` against the literal
+    ///    `req^(1/N) × 0.8` expression): secondary defence-in-depth against
+    ///    a shared formula regression. Note that
+    ///    `tolerance_budget::tests::geometric_split_multi_stages` already pins
+    ///    the same formula for the underlying `per_stage_tolerance` function, so
+    ///    these pins do not claim unique coverage — they simply make the expected
+    ///    output of this test self-evident without tracing into a helper.
     #[test]
     fn per_stage_tolerance_for_plan_multi_stage_chain_uses_geometric_split() {
         // 2-conversion chain: BRep → Sdf → Mesh (N = 2).
@@ -1282,14 +1279,14 @@ mod tests {
             per_stage_tolerance(req, plan_two.conversions.len()),
             "2-conversion chain must delegate to per_stage_tolerance(req, 2) verbatim",
         );
-        // Hand-computed numeric pin: catches a regression where per_stage_tolerance
-        // and per_stage_tolerance_for_plan break identically (e.g. both drop
-        // SAFETY_FACTOR), which the delegation-equality assertion above would miss.
+        // Hand-computed numeric pin: secondary confirmation the formula is
+        // req^(1/N) * 0.8. Both sides execute identical IEEE-754 operations on
+        // the same inputs so the result is bit-identical — assert_eq! is valid.
         let expected_two = 0.001_f64.powf(0.5) * 0.8;
-        assert!(
-            (per_stage_tolerance_for_plan(&plan_two, req) - expected_two).abs() < 1e-12,
-            "2-conversion chain must equal req^(1/2) * 0.8 = {expected_two}, got {}",
+        assert_eq!(
             per_stage_tolerance_for_plan(&plan_two, req),
+            expected_two,
+            "2-conversion chain must equal req^(1/2) * 0.8",
         );
 
         // 3-conversion chain: BRep → Mesh → Sdf → Voxel (N = 3).
@@ -1307,10 +1304,10 @@ mod tests {
             "3-conversion chain must delegate to per_stage_tolerance(req, 3) verbatim",
         );
         let expected_three = 0.001_f64.powf(1.0 / 3.0) * 0.8;
-        assert!(
-            (per_stage_tolerance_for_plan(&plan_three, req) - expected_three).abs() < 1e-12,
-            "3-conversion chain must equal req^(1/3) * 0.8 = {expected_three}, got {}",
+        assert_eq!(
             per_stage_tolerance_for_plan(&plan_three, req),
+            expected_three,
+            "3-conversion chain must equal req^(1/3) * 0.8",
         );
     }
 

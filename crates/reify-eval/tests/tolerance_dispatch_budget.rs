@@ -18,14 +18,14 @@ use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{
     dispatch, per_stage_tolerance_for_plan,
-    tolerance_budget::per_stage_tolerance,
+    tolerance_budget::{per_stage_tolerance, SAFETY_FACTOR},
 };
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
 /// Integration smoke: confirms `per_stage_tolerance_for_plan` is re-exported
 /// through the crate root and wired correctly to `dispatch()` output.
 ///
-/// Two contracts locked here:
+/// Three contracts locked here:
 ///
 /// (a) `dispatch()` on a BRep→Sdf→Mesh→BooleanUnion registry produces a
 ///     `DispatchPlan` with 2 conversions — pinning that the plan shape fed to
@@ -38,8 +38,16 @@ use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 /// (b) `per_stage_tolerance_for_plan(&plan, req)` equals
 ///     `per_stage_tolerance(req, 2)` — the integration-usage validation the
 ///     task description asks for ("validated by … integration usage").
+///
+/// (c) `SAFETY_FACTOR` is reachable via the public crate surface (compile-only
+///     check; the value is pinned by `tolerance_budget::tests::*`).
 #[test]
 fn lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end() {
+    // Compile-check: confirms SAFETY_FACTOR is reachable via the public crate
+    // surface. The value is pinned by `tolerance_budget::tests::*`; this just
+    // locks the re-export path so a missing `pub use` drops compilation here.
+    let _ = SAFETY_FACTOR;
+
     // ── (a) end-to-end dispatch produces a 2-conversion plan ─────────────────
 
     // Fixture mirrors dispatcher.rs:894–920 (`dispatch_two_stage_chain_is_shortest`):
