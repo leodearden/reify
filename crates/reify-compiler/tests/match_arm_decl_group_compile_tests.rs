@@ -2221,3 +2221,125 @@ fn match_arm_decl_group_duplicate_and_outside_collision_emit_in_order() {
         duplicate_pos
     );
 }
+
+/// Task 2376 step-3: an outside Sub declared BEFORE the match AND another outside
+/// Sub declared AFTER the match, both named `head`, must trigger exactly ONE
+/// collision diagnostic — forward + reverse do not double-fire.
+///
+/// The forward collision (cluster vs. the before-Sub) marks the cluster in
+/// `clusters_with_outside_collision` and skips populating
+/// `match_arm_cluster_logical_names`.  The after-Sub's reverse check finds no
+/// entry in `match_arm_cluster_logical_names` and therefore emits nothing.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure DefaultHeadBefore {}
+/// structure HexHead {}
+/// structure SocketHead {}
+/// structure DefaultHeadAfter {}
+/// structure Bolt {
+///     param head_type : HeadType
+///     sub head : DefaultHeadBefore        // before the match (span 1..5)
+///     match head_type {                   // cluster (span 10..20)
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+///     sub head : DefaultHeadAfter         // after the match (span 30..35)
+/// }
+/// ```
+///
+/// Expected: exactly one collision diagnostic; its second label points at the
+/// before-Sub (forward direction, span 1..5).
+#[test]
+fn match_arm_decl_group_outside_sub_before_and_after_match_emits_single_collision() {
+    let before_span = span_at(1, 5);
+    let cluster_span = span_at(10, 20);
+    let after_span = span_at(30, 35);
+
+    let outside_sub_before = sub_member_with_span("head", "DefaultHeadBefore", before_span);
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: cluster_span,
+        content_hash: ContentHash(0),
+    });
+
+    let outside_sub_after = sub_member_with_span("head", "DefaultHeadAfter", after_span);
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            outside_sub_before,
+            match_group,
+            outside_sub_after,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_before_and_after_sub_single_collision"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("DefaultHeadBefore"),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            empty_structure("DefaultHeadAfter"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Exactly one collision diagnostic (forward + reverse must not double-fire).
+    let collision_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .collect();
+    assert_eq!(
+        collision_diags.len(),
+        1,
+        "expected exactly one collision diagnostic (no double-fire), got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // The single diagnostic is the forward-direction one: labels[1] points at the
+    // before-Sub (span 1..5), not the after-Sub (span 30..35).
+    let diag = &collision_diags[0];
+    assert_eq!(diag.labels.len(), 2, "collision diagnostic must have exactly two labels");
+    assert_eq!(
+        diag.labels[0].span, cluster_span,
+        "first label must point to the cluster"
+    );
+    assert_eq!(
+        diag.labels[1].span, before_span,
+        "second label must point to the before-Sub (forward collision direction)"
+    );
+}
