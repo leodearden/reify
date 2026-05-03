@@ -2343,3 +2343,109 @@ fn match_arm_decl_group_outside_sub_before_and_after_match_emits_single_collisio
         "second label must point to the before-Sub (forward collision direction)"
     );
 }
+
+/// Task 2376 step-5: when the outside Sub has a *different* name (`foot`) from
+/// the match cluster (`head`), no collision diagnostic must be emitted, and the
+/// cluster registers successfully in `match_arm_groups`.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure DefaultFoot {}
+/// structure HexHead {}
+/// structure SocketHead {}
+/// structure Bolt {
+///     param head_type : HeadType
+///     sub foot : DefaultFoot      // different name — must NOT collide with `head`
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+/// }
+/// ```
+///
+/// Expected: zero collision diagnostics; `bolt_template.match_arm_groups` contains
+/// the `head` cluster.
+#[test]
+fn match_arm_decl_group_outside_sub_with_different_name_emits_no_collision() {
+    let outside_sub = sub_member("foot", "DefaultFoot");
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            outside_sub,
+            match_group,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_different_name_no_collision"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("DefaultFoot"),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No collision diagnostic — different names cannot collide.
+    let collision_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("match-arm cluster")
+                && d.message.contains("outside the match block")
+        })
+        .collect();
+    assert!(
+        collision_diags.is_empty(),
+        "expected no collision diagnostic when outside Sub 'foot' and cluster 'head' differ, \
+         got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // Positive: the `head` cluster must be registered successfully.
+    let bolt_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("Bolt template should be compiled");
+    assert!(
+        bolt_template.match_arm_groups.iter().any(|g| g.name == "head"),
+        "expected 'head' cluster in match_arm_groups (no collision suppression), got: {:#?}",
+        bolt_template.match_arm_groups
+    );
+}
