@@ -26,7 +26,8 @@ use reify_types::{GeometryError, GeometryHandleId};
 ///   `parent_subshape_index` values in `face_generated` must equal 12, one per
 ///   parent edge of the 10mm cube. Uses `HashSet` deduplication so the check is
 ///   independent of OCCT's per-edge face count (esc-2655-26 suggestion #1 /
-///   task 2821 amendment).
+///   task 2821 amendment). Each record additionally has `parent_index == 0` and
+///   `parent_subshape_index < 12` (mirrors blocks (i)/(j)/(l)).
 /// - **(h)** Extracts `result_edge_count` via `kernel.extract_edges(result_id)`.
 /// - **(i)** `edge_modified` per-record well-formedness: `parent_index == 0`,
 ///   `parent_subshape_index < 12` (box edges), `result_subshape_index < result_edge_count`.
@@ -85,6 +86,18 @@ pub fn assert_local_feature_history_well_formed(
         generated_edge_parents.len(),
         history.face_generated.len()
     );
+    for r in &history.face_generated {
+        assert_eq!(
+            r.parent_index, 0,
+            "{op_name} face_generated records always have parent_index=0, got {}",
+            r.parent_index
+        );
+        assert!(
+            r.parent_subshape_index < 12,
+            "{op_name} face_generated parent_subshape_index {} out of range for a 12-edge box",
+            r.parent_subshape_index
+        );
+    }
 
     // (h) Derive result_edge_count for index-bounds checks.
     let result_edges = kernel
