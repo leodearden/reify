@@ -646,4 +646,36 @@ mod tests {
             "4 args → Undef"
         );
     }
+
+    // ── traction_load constructor: happy path ────────────────────────────────
+
+    #[test]
+    fn traction_load_returns_map_with_correct_fields() {
+        let face = face_selector_stub();
+        // Shear traction with normal+tangential components (Pa).
+        let traction = make_scalar_vec3([2e6, 0.0, -1e6], DimensionVector::PRESSURE);
+
+        let result = eval_builtin("traction_load", &[face.clone(), traction.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("traction_load".to_string())),
+            "kind should be 'traction_load'"
+        );
+        assert_eq!(
+            map.get(&Value::String("face".to_string())),
+            Some(&face),
+            "face should round-trip"
+        );
+        assert_eq!(
+            map.get(&Value::String("traction".to_string())),
+            Some(&traction),
+            "traction should round-trip"
+        );
+    }
 }
