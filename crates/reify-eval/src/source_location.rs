@@ -246,4 +246,23 @@ mod tests {
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.foo.bar");
         assert!(loc.is_none(), "expected None for 'Bracket.foo.bar' (dotted member), got {:?}", loc);
     }
+
+    // (k) Multiple consecutive dots ("Bracket..width") — pins the API contract:
+    //     malformed inputs return None.  Splitting on the first '.' yields
+    //     entity="Bracket", member=".width"; member.contains('.') is true so
+    //     the guard at line 46 rejects the input.  This case is an independent
+    //     regression vector from (j): a future refactor that special-cases
+    //     multi-dot inputs might catch "foo.bar.baz" but miss the "Bracket..width"
+    //     consecutive-dot shape, so it deserves its own pin.
+    #[test]
+    fn consecutive_dots_returns_none() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket..width");
+        assert!(
+            loc.is_none(),
+            "expected None for 'Bracket..width' (consecutive dots), got {:?}",
+            loc
+        );
+    }
 }
