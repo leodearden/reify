@@ -344,13 +344,16 @@ impl ReifyToolContext for CliToolContext {
             .compiled
             .as_ref()
             .ok_or_else(|| ToolError::EngineError("no compiled module".to_string()))?;
-        let file_path = state.active_file.clone().unwrap_or_default();
+        let file_path = state
+            .active_file
+            .as_ref()
+            .ok_or_else(|| ToolError::EngineError("no active file".to_string()))?;
         let source = state
             .files
-            .get(&file_path)
+            .get(file_path)
             .map(|f| f.content.as_str())
             .unwrap_or("");
-        reify_eval::resolve_entity_source_location(compiled, source, &file_path, entity_path)
+        reify_eval::resolve_entity_source_location(compiled, source, file_path, entity_path)
             .ok_or_else(|| {
                 ToolError::EngineError(format!("entity not found: {entity_path}"))
             })
