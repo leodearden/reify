@@ -1293,16 +1293,20 @@ pub fn resolve_auto_type_params_with_backtracking(
     // U inner, …).
     //
     // Strict-vs-free dispatch (step-24 / task 2661): if any param is strict
-    // (`free=false`), the search must continue past the first feasible leaf
-    // so the orchestrator can detect ≥2 feasibles ⇒ Ambiguous. We only need
-    // to find TWO feasibles to know "≥2"; further leaves cannot change the
-    // Ambiguous outcome. Free-mode (`every param free=true`) collects ALL
-    // feasible leaves (usize::MAX early-stop) so the exact count is known
-    // for elision reporting and the lex-first pick is `feasible_assignments[0]`
-    // (DFS visits in declared-order × lex-within-param order by construction).
-    // Task 2662 layers a 100k hard cap on top; pre-2662, free-mode worst case
-    // mirrors strict-mode (both visit the full cross-product when few/many
-    // feasibles exist).
+    // (`free=false`), the search stops as soon as 2 feasibles are collected
+    // (early-exit; max_feasible_to_collect=2). Free-mode (`every param free=true`)
+    // collects ALL feasible leaves (max_feasible_to_collect=usize::MAX) so the
+    // exact count is known for elision reporting and the lex-first pick is
+    // `feasible_assignments[0]` (DFS visits in declared-order × lex-within-param
+    // order by construction).
+    //
+    // Cost note: free-mode visits the full cross-product in the worst case (K^N
+    // leaves). Strict-mode is cheaper in the common case because it terminates
+    // as soon as 2 feasibles are found; only in the all-infeasible worst case
+    // does strict-mode also visit O(K^N) leaves.
+    // TODO(task-2662): task 2662 layers a 100k hard cap on free-mode; until
+    // that lands, free-mode is unbounded and callers with large candidate sets
+    // may observe high latency.
     let any_strict = params.iter().any(|p| !p.free);
     let max_feasible_to_collect: usize = if any_strict { 2 } else { usize::MAX };
 
@@ -1340,8 +1344,8 @@ pub fn resolve_auto_type_params_with_backtracking(
         1 => {
             // Exactly one feasible cross-product assignment. Two paths reach
             // here:
-            // - free-mode: `max_feasible_to_collect = 1` stopped the search
-            //   at the first feasible leaf, lex-first by construction.
+            // - free-mode: DFS visited all leaves but found exactly one
+            //   feasible, lex-first by construction.
             // - strict-mode: the search exhausted with a single feasible
             //   leaf — uniquely determined, no Ambiguous needed.
             // Both paths produce a full per_param/substitution Vec mapping
@@ -1387,17 +1391,7 @@ pub fn resolve_auto_type_params_with_backtracking(
                 // Compact per-leaf witness summaries: "T=ORingSeal,U=AirCooled".
                 // Richer formatting (with trait bounds, smallest witness, etc.)
                 // is deferred to task 2663.
-                let witnesses: Vec<String> = feasible_assignments
-                    .iter()
-                    .map(|leaf| {
-                        params
-                            .iter()
-                            .zip(leaf.iter())
-                            .map(|(p, c)| format!("{}={}", p.name, c))
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    })
-                    .collect();
+                let witnesses = render_witnesses(params, &feasible_assignments);
                 // Diagnostic: emit one AutoTypeParamAmbiguous (Error). The label
                 // anchors on params[0].use_site_span — same convention as v0.1
                 // BFS strict-Ambiguous on the first-failing param. Mirrors the
@@ -1457,17 +1451,8 @@ pub fn resolve_auto_type_params_with_backtracking(
                 // Build composite witness strings for the displayed portion only.
                 // Format: "T=ORingSeal,U=AirCooled" — mirrors strict-Ambiguous.
                 // Richer formatting is task 2663's scope.
-                let displayed_witnesses: Vec<String> = feasible_assignments[..display_count]
-                    .iter()
-                    .map(|leaf| {
-                        params
-                            .iter()
-                            .zip(leaf.iter())
-                            .map(|(p, c)| format!("{}={}", p.name, c))
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    })
-                    .collect();
+                let displayed_witnesses =
+                    render_witnesses(params, &feasible_assignments[..display_count]);
 
                 let (_joined_bounds, label_message) =
                     render_auto_type_param_label(&params[0].bounds);
@@ -1513,6 +1498,29 @@ pub fn resolve_auto_type_params_with_backtracking(
             }
         }
     }
+}
+
+// ─── DFS rendering helpers (v0.2) ────────────────────────────────────────
+
+/// Render composite witness strings for a slice of cross-product leaf assignments.
+///
+/// Each leaf is rendered as `"T=ORingSeal,U=AirCooled"` — param names zipped with
+/// their selected candidate names and joined by `=`, then comma-joined across params.
+///
+/// Used by both the strict-Ambiguous and all-free NonUnique emission sites so both
+/// share a single edit point for task 2663's richer-format work.
+fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<String> {
+    leaves
+        .iter()
+        .map(|leaf| {
+            params
+                .iter()
+                .zip(leaf.iter())
+                .map(|(p, c)| format!("{}={}", p.name, c))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect()
 }
 
 // ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
