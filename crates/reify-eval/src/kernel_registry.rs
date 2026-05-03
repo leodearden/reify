@@ -45,12 +45,25 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Memoized BTreeMap of every static-collected [`KernelRegistration`], keyed
 /// by `name`. Allocated once on first call and never rebuilt.
 static REGISTRY: OnceLock<BTreeMap<String, &'static KernelRegistration>> = OnceLock::new();
+
+/// Once-shot gate around `collect_registry()`'s call to
+/// [`warn_if_duplicate_op_repr_pairs`]. Mirrors how the surrounding
+/// `REGISTRY: OnceLock` amortises [`build_registry`]'s duplicate-NAME
+/// walk: the (Operation, ReprKind) uniqueness verdict is stable across
+/// calls because descriptor function pointers are fixed at link time, so
+/// running the O(kernels × supports) HashMap walk on every
+/// `collect_registry()` invocation would burn CPU for no diagnostic
+/// benefit. Consumed via `compare_exchange(false, true)` so the gate
+/// flips exactly once per process; subsequent calls observe `Err` and
+/// short-circuit.
+static UNIQUENESS_CHECKED: AtomicBool = AtomicBool::new(false);
 
 /// Borrowed accessor over the memoized registry of [`KernelRegistration`]
 /// records.
@@ -122,7 +135,12 @@ pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
         .iter()
         .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
         .collect();
-    warn_if_duplicate_op_repr_pairs(&result);
+    if UNIQUENESS_CHECKED
+        .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
+        .is_ok()
+    {
+        warn_if_duplicate_op_repr_pairs(&result);
+    }
     result
 }
 
