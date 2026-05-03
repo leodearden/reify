@@ -890,3 +890,102 @@ fn all_reductions_sampled_empty_data_returns_undef() {
         );
     }
 }
+
+// ── Step 19: argcount-gating regression pins ───────────────────────────────
+
+/// Regression pin: `max(field, scalar)` (2 args, first is Field) must NOT
+/// be intercepted by our 1-arg-Field gate. The dispatch falls through to
+/// `eval_builtin`'s binary `max(a, b)` (`reify-stdlib::numeric.rs:63`),
+/// which expects scalar `as_f64()` operands — `Value::Field` has no
+/// `as_f64()` mapping, so the binary form returns `Value::Undef`.
+///
+/// This pins the gating contract: the 1-arg-Field arm in `lib.rs` is the
+/// ONLY path that reduces a field. A 2-arg call with a Field first arg
+/// falls through to the binary numeric form and produces `Undef`.
+#[test]
+fn argcount_gating_max_field_then_extra_arg_returns_undef() {
+    let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let expr = make_function_call(
+        "max",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "max(field, scalar) (2 args) should fall through to binary numeric.rs::max and return Undef (Field has no as_f64)"
+    );
+}
+
+/// Same regression pin for `min`.
+#[test]
+fn argcount_gating_min_field_then_extra_arg_returns_undef() {
+    let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let expr = make_function_call(
+        "min",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "min(field, scalar) (2 args) should fall through to binary numeric.rs::min and return Undef (Field has no as_f64)"
+    );
+}
+
+/// Same regression pin for `argmax` (no binary form — falls through to
+/// `eval_builtin` which has no binding for `argmax`, → `Undef`).
+#[test]
+fn argcount_gating_argmax_field_then_extra_arg_returns_undef() {
+    let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let expr = make_function_call(
+        "argmax",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "argmax(field, scalar) (2 args) should fall through to eval_builtin and return Undef (no binding)"
+    );
+}
+
+/// Same regression pin for `argmin`.
+#[test]
+fn argcount_gating_argmin_field_then_extra_arg_returns_undef() {
+    let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let expr = make_function_call(
+        "argmin",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "argmin(field, scalar) (2 args) should fall through to eval_builtin and return Undef (no binding)"
+    );
+}
