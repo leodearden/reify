@@ -1978,7 +1978,7 @@ fn dfs_search(
 
 #[cfg(test)]
 mod helper_tests {
-    use super::check_constraints_violated;
+    use super::check_constraints_leaf;
     use reify_test_support::MockConstraintChecker;
     use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
 
@@ -1986,21 +1986,21 @@ mod helper_tests {
         reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool)
     }
 
-    /// Empty `constraints_template` slice → vacuously no violations → `false`.
+    /// Empty `constraints_template` slice → vacuously no violations → `feasible == true`.
     #[test]
     fn check_constraints_violated_returns_false_for_empty_constraints() {
         let checker = MockConstraintChecker::new();
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&[], &checker, functions, &values);
+        let result = check_constraints_leaf(&[], &checker, functions, &values);
         assert!(
-            !result,
-            "empty constraints slice must return false (vacuously no violations)"
+            result.feasible,
+            "empty constraints slice must be feasible (vacuously no violations)"
         );
     }
 
-    /// Single constraint, checker returns `Satisfied` → `false`.
+    /// Single constraint, checker returns `Satisfied` → `feasible == true`.
     #[test]
     fn check_constraints_violated_returns_false_when_all_satisfied() {
         let expr = literal_expr();
@@ -2011,14 +2011,14 @@ mod helper_tests {
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
-            !result,
-            "all-Satisfied constraints must return false (no violations)"
+            result.feasible,
+            "all-Satisfied constraints must be feasible (no violations)"
         );
     }
 
-    /// Single constraint, checker returns `Indeterminate` → `false`
+    /// Single constraint, checker returns `Indeterminate` → `feasible == true`
     /// (architecture §2.5: Indeterminate counts as feasible, does not falsify).
     #[test]
     fn check_constraints_violated_returns_false_when_all_indeterminate_per_arch_2_5() {
@@ -2030,14 +2030,14 @@ mod helper_tests {
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
-            !result,
-            "Indeterminate constraints must return false (undef does not falsify, arch §2.5)"
+            result.feasible,
+            "Indeterminate constraints must be feasible (undef does not falsify, arch §2.5)"
         );
     }
 
-    /// Two constraints, checker returns `Violated` for all → `true`.
+    /// Two constraints, checker returns `Violated` for all → `feasible == false`.
     #[test]
     fn check_constraints_violated_returns_true_when_any_violated() {
         let expr = literal_expr();
@@ -2049,15 +2049,15 @@ mod helper_tests {
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
-            result,
-            "all-Violated constraints must return true (any one Violated falsifies)"
+            !result.feasible,
+            "all-Violated constraints must not be feasible (any one Violated falsifies)"
         );
     }
 
-    /// Two constraints with distinct ids "C0" and "C1"; C0 → Satisfied, C1 → Violated → `true`
-    /// (any one Violated falsifies).
+    /// Two constraints with distinct ids "C0" and "C1"; C0 → Satisfied, C1 → Violated →
+    /// `feasible == false` (any one Violated falsifies).
     #[test]
     fn check_constraints_violated_returns_true_for_mixed_satisfied_and_violated() {
         let expr = literal_expr();
@@ -2072,10 +2072,10 @@ mod helper_tests {
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
-            result,
-            "mixed Satisfied+Violated must return true (any one Violated falsifies)"
+            !result.feasible,
+            "mixed Satisfied+Violated must not be feasible (any one Violated falsifies)"
         );
     }
 }
