@@ -582,7 +582,7 @@ mod tests {
         emit_kernel_selection("nothing", 0);
     }
 
-    /// The helper `debug_assert_unique_op_repr_pairs` must panic in debug
+    /// The helper `warn_if_duplicate_op_repr_pairs` must panic in debug
     /// builds when two kernels claim the same `(Operation, ReprKind)` pair.
     ///
     /// Constructs a synthetic `BTreeMap<String, CapabilityDescriptor>` with
@@ -598,7 +598,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "duplicate kernel claim for")]
-    fn debug_assert_unique_op_repr_pairs_panics_on_duplicate_pair() {
+    fn warn_if_duplicate_op_repr_pairs_panics_on_duplicate_pair() {
         let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
         registered.insert(
             "kernel_a".to_string(),
@@ -612,10 +612,10 @@ mod tests {
                 supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
             },
         );
-        debug_assert_unique_op_repr_pairs(&registered);
+        warn_if_duplicate_op_repr_pairs(&registered);
     }
 
-    /// Contract pin: `debug_assert_unique_op_repr_pairs` must emit exactly one
+    /// Contract pin: `warn_if_duplicate_op_repr_pairs` must emit exactly one
     /// `WARN`-level event when a duplicate `(Operation, ReprKind)` pair is
     /// detected, regardless of whether debug assertions are enabled.
     ///
@@ -629,7 +629,7 @@ mod tests {
     /// call in `std::panic::catch_unwind` so the panic does not propagate to
     /// the test runner before we can read `warn_count`.
     #[test]
-    fn debug_assert_unique_op_repr_pairs_always_emits_warn_on_duplicate() {
+    fn warn_if_duplicate_op_repr_pairs_always_emits_warn_on_duplicate() {
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -658,27 +658,27 @@ mod tests {
         // we assert on it.
         tracing::subscriber::with_default(subscriber, || {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                debug_assert_unique_op_repr_pairs(&registered);
+                warn_if_duplicate_op_repr_pairs(&registered);
             }));
         });
 
         assert_eq!(
             warn_count.load(Ordering::Acquire),
             1,
-            "debug_assert_unique_op_repr_pairs must emit exactly one WARN event \
+            "warn_if_duplicate_op_repr_pairs must emit exactly one WARN event \
              at reify_eval::kernel_registry when a duplicate (op, repr) pair is \
              detected — operator visibility contract: warn! fires in all builds, \
              not just debug",
         );
     }
 
-    /// Contract pin: `debug_assert_unique_op_repr_pairs` must emit exactly one
+    /// Contract pin: `warn_if_duplicate_op_repr_pairs` must emit exactly one
     /// `WARN`-level event via the **intra-kernel** branch when a single
     /// kernel's `supports` Vec contains the same `(Operation, ReprKind)` pair
     /// more than once.
     ///
     /// This mirrors
-    /// `debug_assert_unique_op_repr_pairs_always_emits_warn_on_duplicate`
+    /// `warn_if_duplicate_op_repr_pairs_always_emits_warn_on_duplicate`
     /// (the inter-kernel warn test) which covers the inter-kernel branch.  A
     /// separate test is needed here because an arm-swap regression that drops
     /// only the intra-kernel `tracing::warn!` would still pass the inter-kernel
@@ -716,7 +716,7 @@ mod tests {
     /// `CountingSubscriberBuilder` in `reify-test-support` to capture recorded
     /// fields — a larger change intentionally deferred.
     #[test]
-    fn debug_assert_unique_op_repr_pairs_always_emits_warn_on_intra_kernel_duplicate() {
+    fn warn_if_duplicate_op_repr_pairs_always_emits_warn_on_intra_kernel_duplicate() {
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -742,14 +742,14 @@ mod tests {
         // we assert on it.
         tracing::subscriber::with_default(subscriber, || {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                debug_assert_unique_op_repr_pairs(&registered);
+                warn_if_duplicate_op_repr_pairs(&registered);
             }));
         });
 
         assert_eq!(
             warn_count.load(Ordering::Acquire),
             1,
-            "debug_assert_unique_op_repr_pairs must emit exactly one WARN event \
+            "warn_if_duplicate_op_repr_pairs must emit exactly one WARN event \
              at reify_eval::kernel_registry when a single kernel's supports Vec \
              lists the same (op, repr) pair twice — intra-kernel operator \
              visibility contract: warn! fires in all builds, not just debug",
