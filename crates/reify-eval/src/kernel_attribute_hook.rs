@@ -15,7 +15,7 @@
 //! [`propagate_via_kernel_attribute_hook`] is wired into
 //! `Engine::execute_realization_ops` in `crates/reify-eval/src/engine_build.rs`
 //! (task 2875). The dispatcher is invoked once per parent-having op — i.e.
-//! once per op for which [`crate::parent_handles_for_op`] returns a
+//! once per op for which `parent_handles_for_op` (in `engine_build.rs`) returns a
 //! non-empty slice — immediately after the existing
 //! `populate_attribute_history` call (BRep-first ordering: OCCT-native
 //! attribute population runs first; the hook is the non-BRep fallback path
@@ -75,7 +75,7 @@ use reify_types::{
 ///
 /// **Call site:** wired into `Engine::execute_realization_ops` in
 /// `crates/reify-eval/src/engine_build.rs` by task 2875. Invoked once per
-/// parent-having op (per [`crate::parent_handles_for_op`]) immediately after
+/// parent-having op (per `parent_handles_for_op` in `engine_build.rs`) immediately after
 /// `populate_attribute_history`. See the module-level docstring for the full
 /// three-layer test contract and the BRep-first ordering rationale.
 pub fn propagate_via_kernel_attribute_hook(

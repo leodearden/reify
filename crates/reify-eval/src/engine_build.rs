@@ -298,6 +298,8 @@ fn parent_handles_for_op(op: &GeometryOp) -> Vec<GeometryHandleId> {
         | GeometryOp::Mirror { target, .. }
         | GeometryOp::LinearPattern2D { target, .. }
         | GeometryOp::ArbitraryPattern { target, .. }
+        // Draft's `plane` is a reference geometry / constraint, not a parent
+        // whose sub-shapes propagate — analogous to SweepGuided's guide.
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
         | GeometryOp::Shell { target, .. } => vec![*target],
