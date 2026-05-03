@@ -121,9 +121,9 @@
 //!
 //! Driving PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`. The section
 //! header comment immediately above the function delineates the algorithm's
-//! scope and deferrals to sibling tasks 2660 (backjumping), 2661 (free
-//! enumeration), 2662 (100k cap), 2663 (rich diagnostic format), and 2664
-//! (BFS-failure test suite).
+//! scope and deferrals to sibling tasks 2660 (backjumping), 2662 (100k cap),
+//! 2663 (rich diagnostic format), and 2664 (BFS-failure test suite). Task 2661
+//! (`auto(free)` cross-product NonUnique enumeration) now lands in this module.
 //!
 //! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
@@ -204,6 +204,16 @@ pub struct AutoTypeParam {
 ///   case, or all-success): `per_param` has length N, with each entry
 ///   `(p.name, Selected(template_name))` in declared order — matches BFS's
 ///   success shape.
+///
+/// - **Cross-product all-free NonUnique arm (≥2 feasible cross-product
+///   assignments when every param has `free=true`)**: `per_param` has length
+///   N — the same success shape as the single-feasible (`1 =>`) arm — with
+///   each entry `(p.name, Selected(lex_first_candidate))`. The lex-first
+///   feasible leaf (`feasible_assignments[0]`, DFS visit order) is selected.
+///   One `AutoTypeParamNonUnique` (Warning) diagnostic is attached alongside
+///   the success outcome. Contrast with the strict-mode Ambiguous arm (length
+///   1, `SelectionResult::Ambiguous`) which fires when any param has
+///   `free=false`. (Task 2661.)
 ///
 /// ## Depth-bound discontinuity
 ///
@@ -1043,8 +1053,6 @@ pub fn resolve_auto_type_params(
 /// # Out of scope (sibling tasks layered on top of this foundation)
 ///
 /// - Backjumping via the "rejected because" channel — task 2660.
-/// - `auto(free)` report-all cross-product enumeration with the
-///   `AutoTypeParamNonUnique` warning — task 2661.
 /// - Cross-product hard cap of 100k assignments — task 2662.
 /// - Rich diagnostic format with smallest infeasibility witness — task 2663.
 /// - Comprehensive v0.1 BFS-failure scenario coverage — task 2664.
@@ -1284,15 +1292,23 @@ pub fn resolve_auto_type_params_with_backtracking(
     // leaves in declared-order × lexicographic-within-param order (T outer,
     // U inner, …).
     //
-    // Strict-vs-free dispatch (step-24): if any param is strict
-    // (`free=false`), the search must continue past the first feasible leaf
-    // so the orchestrator can detect ≥2 feasibles ⇒ Ambiguous. We only need
-    // to find TWO feasibles to know "≥2"; further leaves cannot change the
-    // Ambiguous outcome. Free-mode (`every param free=true`) stops at the
-    // FIRST feasible leaf and selects it lex-first — the v0.2 free-mode
-    // contract; richer report-all enumeration is task 2661's scope.
+    // Strict-vs-free dispatch (step-24 / task 2661): if any param is strict
+    // (`free=false`), the search stops as soon as 2 feasibles are collected
+    // (early-exit; max_feasible_to_collect=2). Free-mode (`every param free=true`)
+    // collects ALL feasible leaves (max_feasible_to_collect=usize::MAX) so the
+    // exact count is known for elision reporting and the lex-first pick is
+    // `feasible_assignments[0]` (DFS visits in declared-order × lex-within-param
+    // order by construction).
+    //
+    // Cost note: free-mode visits the full cross-product in the worst case (K^N
+    // leaves). Strict-mode is cheaper in the common case because it terminates
+    // as soon as 2 feasibles are found; only in the all-infeasible worst case
+    // does strict-mode also visit O(K^N) leaves.
+    // TODO(task-2662): task 2662 layers a 100k hard cap on free-mode; until
+    // that lands, free-mode is unbounded and callers with large candidate sets
+    // may observe high latency.
     let any_strict = params.iter().any(|p| !p.free);
-    let max_feasible_to_collect: usize = if any_strict { 2 } else { 1 };
+    let max_feasible_to_collect: usize = if any_strict { 2 } else { usize::MAX };
 
     let mut current: Vec<String> = Vec::with_capacity(params.len());
     let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
@@ -1328,8 +1344,8 @@ pub fn resolve_auto_type_params_with_backtracking(
         1 => {
             // Exactly one feasible cross-product assignment. Two paths reach
             // here:
-            // - free-mode: `max_feasible_to_collect = 1` stopped the search
-            //   at the first feasible leaf, lex-first by construction.
+            // - free-mode: DFS visited all leaves but found exactly one
+            //   feasible, lex-first by construction.
             // - strict-mode: the search exhausted with a single feasible
             //   leaf — uniquely determined, no Ambiguous needed.
             // Both paths produce a full per_param/substitution Vec mapping
@@ -1354,73 +1370,157 @@ pub fn resolve_auto_type_params_with_backtracking(
             }
         }
         _ => {
-            // ≥2 feasible cross-product assignments. Only reachable in strict
-            // mode by construction: free-mode requested
-            // `max_feasible_to_collect = 1`, so the DFS would have early-
-            // terminated at the first feasible leaf and produced exactly one
-            // entry above. (Free-mode "≥2 feasibles ⇒ NonUnique warning +
-            // lex-first" is task 2661's scope, not 2659.)
-            debug_assert!(
-                any_strict,
-                "≥2 feasibles must only arise in strict mode (free-mode \
-                 max_feasible_to_collect=1 stops earlier)"
-            );
-            // Compact per-leaf witness summaries: "T=ORingSeal,U=AirCooled".
-            // Richer formatting (with trait bounds, smallest witness, etc.)
-            // is deferred to task 2663.
-            let witnesses: Vec<String> = feasible_assignments
-                .iter()
-                .map(|leaf| {
-                    params
-                        .iter()
-                        .zip(leaf.iter())
-                        .map(|(p, c)| format!("{}={}", p.name, c))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                })
-                .collect();
-            // Diagnostic: emit one AutoTypeParamAmbiguous (Error). The label
-            // anchors on params[0].use_site_span — same convention as v0.1
-            // BFS strict-Ambiguous on the first-failing param. Mirrors the
-            // canonical "consider an explicit substitution like '<lex_first>'
-            // instead of 'auto:'" suffix from v0.1's per-param Ambiguous.
-            let (_joined_bounds, label_message) =
-                render_auto_type_param_label(&params[0].bounds);
-            let witnesses_join = witnesses.join("; ");
-            let lex_first_witness = witnesses[0].clone();
-            let message = format!(
-                "auto type-parameters have multiple feasible cross-product assignments: {witnesses_join}; consider an explicit substitution like '{lex_first_witness}' instead of 'auto:'",
-            );
-            // FQN-only invariant: `Diagnostic.candidates` carries bare FQNs (see
-            // `crates/reify-types/src/diagnostics.rs::Diagnostic::candidates`).
-            // The lex-first feasible cross-product leaf (declared-order ×
-            // lex-within-param order; see `dfs_search` doc-comment) supplies the
-            // FQN list — the exact substitution suggestion the message body
-            // advertises. Composite witness summaries (`T=...,U=...`) remain in
-            // the human-readable `message` field only; routing them through
-            // `candidates` would violate the contract shared by every other
-            // auto-type-param emission site (Phase A overflow, Phase C
-            // strict-Ambiguous, Phase C all-rejected) and break LSP `convert.rs`
-            // consumers that flatten `data.candidates` as a bare-FQN list.
-            // (Task 2860.)
-            diagnostics.push(
-                Diagnostic::error(message)
-                    .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
-                    .with_label(DiagnosticLabel::new(
-                        params[0].use_site_span,
-                        label_message,
-                    ))
-                    .with_candidates(feasible_assignments[0].clone()),
-            );
-            MultiParamResolutionOutcome {
-                per_param: vec![(
-                    params[0].name.clone(),
-                    SelectionResult::Ambiguous(witnesses),
-                )],
-                substitution: vec![],
+            // ≥2 feasible cross-product assignments. Dispatch on `any_strict`:
+            // - strict mode (any param free=false): Ambiguous Error (unchanged
+            //   from task 2659 — the user requested unique resolution on at
+            //   least one slot, so a non-unique cross-product cannot be
+            //   auto-resolved).
+            // - all-free mode (every param free=true): NonUnique Warning +
+            //   lex-first success shape (task 2661). The runtime picks
+            //   `feasible_assignments[0]` — the lexicographically-first
+            //   feasible leaf by DFS visit order (declared-order ×
+            //   lex-within-param) — and emits a Warning for auditability.
+            if any_strict {
+                // Strict-mode Ambiguous path (task 2659, step-24). max_feasible_to_collect=2
+                // guarantees exactly 2 entries are present in the strict arm.
+                debug_assert!(
+                    feasible_assignments.len() >= 2,
+                    "strict-mode ≥2 arm: must have collected at least 2 feasibles; \
+                     the sibling NonUnique branch (not any_strict) handles the all-free case"
+                );
+                // Compact per-leaf witness summaries: "T=ORingSeal,U=AirCooled".
+                // Richer formatting (with trait bounds, smallest witness, etc.)
+                // is deferred to task 2663.
+                let witnesses = render_witnesses(params, &feasible_assignments);
+                // Diagnostic: emit one AutoTypeParamAmbiguous (Error). The label
+                // anchors on params[0].use_site_span — same convention as v0.1
+                // BFS strict-Ambiguous on the first-failing param. Mirrors the
+                // canonical "consider an explicit substitution like '<lex_first>'
+                // instead of 'auto:'" suffix from v0.1's per-param Ambiguous.
+                let (_joined_bounds, label_message) =
+                    render_auto_type_param_label(&params[0].bounds);
+                let witnesses_join = witnesses.join("; ");
+                let lex_first_witness = witnesses[0].clone();
+                let message = format!(
+                    "auto type-parameters have multiple feasible cross-product assignments: {witnesses_join}; consider an explicit substitution like '{lex_first_witness}' instead of 'auto:'",
+                );
+                // FQN-only invariant: `Diagnostic.candidates` carries bare FQNs (see
+                // `crates/reify-types/src/diagnostics.rs::Diagnostic::candidates`).
+                // The lex-first feasible cross-product leaf (declared-order ×
+                // lex-within-param order; see `dfs_search` doc-comment) supplies the
+                // FQN list — the exact substitution suggestion the message body
+                // advertises. Composite witness summaries (`T=...,U=...`) remain in
+                // the human-readable `message` field only; routing them through
+                // `candidates` would violate the contract shared by every other
+                // auto-type-param emission site (Phase A overflow, Phase C
+                // strict-Ambiguous, Phase C all-rejected) and break LSP `convert.rs`
+                // consumers that flatten `data.candidates` as a bare-FQN list.
+                // (Task 2860.)
+                diagnostics.push(
+                    Diagnostic::error(message)
+                        .with_code(DiagnosticCode::AutoTypeParamAmbiguous)
+                        .with_label(DiagnosticLabel::new(
+                            params[0].use_site_span,
+                            label_message,
+                        ))
+                        .with_candidates(feasible_assignments[0].clone()),
+                );
+                MultiParamResolutionOutcome {
+                    per_param: vec![(
+                        params[0].name.clone(),
+                        SelectionResult::Ambiguous(witnesses),
+                    )],
+                    substitution: vec![],
+                }
+            } else {
+                // All-free NonUnique path (task 2661). Every param has free=true,
+                // so we collected ALL feasible leaves (max_feasible_to_collect=usize::MAX).
+                // Emit AutoTypeParamNonUnique (Warning) and return the lex-first
+                // feasible as a full length-N success shape — mirroring the `1 =>`
+                // arm (single-feasible success) but with an attached Warning.
+                //
+                // Display cap (task 2661 step-5): at most DISPLAY_CAP witness strings
+                // are rendered; if more feasibles exist, append "(N more elided)".
+                // DISPLAY_CAP is local to this branch to minimise blast radius —
+                // it only governs the v0.2 all-free NonUnique message rendering.
+                const DISPLAY_CAP: usize = 16;
+                let total = feasible_assignments.len();
+                let display_count = total.min(DISPLAY_CAP);
+                let elided = total.saturating_sub(DISPLAY_CAP);
+
+                // Build composite witness strings for the displayed portion only.
+                // Format: "T=ORingSeal,U=AirCooled" — mirrors strict-Ambiguous.
+                // Richer formatting is task 2663's scope.
+                let displayed_witnesses =
+                    render_witnesses(params, &feasible_assignments[..display_count]);
+
+                let (_joined_bounds, label_message) =
+                    render_auto_type_param_label(&params[0].bounds);
+                let witnesses_join = displayed_witnesses.join("; ");
+                let lex_first_witness = displayed_witnesses[0].clone();
+                let message = if elided > 0 {
+                    format!(
+                        "auto(free) type-parameters have multiple feasible cross-product assignments: {witnesses_join}; ({elided} more elided); selected lexicographically-first '{lex_first_witness}'",
+                    )
+                } else {
+                    format!(
+                        "auto(free) type-parameters have multiple feasible cross-product assignments: {witnesses_join}; selected lexicographically-first '{lex_first_witness}'",
+                    )
+                };
+                // FQN-only invariant (task 2860): candidates carries the lex-first
+                // feasible leaf's bare FQN list — parallel to strict-Ambiguous above.
+                diagnostics.push(
+                    Diagnostic::warning(message)
+                        .with_code(DiagnosticCode::AutoTypeParamNonUnique)
+                        .with_label(DiagnosticLabel::new(
+                            params[0].use_site_span,
+                            label_message,
+                        ))
+                        .with_candidates(feasible_assignments[0].clone()),
+                );
+                // Success shape (mirrors `1 =>` arm): full length-N per_param and
+                // substitution, each param mapped to its lex-first candidate.
+                let first_feasible = &feasible_assignments[0];
+                let per_param: Vec<(String, SelectionResult)> = params
+                    .iter()
+                    .zip(first_feasible.iter())
+                    .map(|(p, name)| (p.name.clone(), SelectionResult::Selected(name.clone())))
+                    .collect();
+                let substitution: Vec<(String, String)> = params
+                    .iter()
+                    .zip(first_feasible.iter())
+                    .map(|(p, name)| (p.name.clone(), name.clone()))
+                    .collect();
+                MultiParamResolutionOutcome {
+                    per_param,
+                    substitution,
+                }
             }
         }
     }
+}
+
+// ─── DFS rendering helpers (v0.2) ────────────────────────────────────────
+
+/// Render composite witness strings for a slice of cross-product leaf assignments.
+///
+/// Each leaf is rendered as `"T=ORingSeal,U=AirCooled"` — param names zipped with
+/// their selected candidate names and joined by `=`, then comma-joined across params.
+///
+/// Used by both the strict-Ambiguous and all-free NonUnique emission sites so both
+/// share a single edit point for task 2663's richer-format work.
+fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<String> {
+    leaves
+        .iter()
+        .map(|leaf| {
+            params
+                .iter()
+                .zip(leaf.iter())
+                .map(|(p, c)| format!("{}={}", p.name, c))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect()
 }
 
 // ─── DFS recursion helpers (v0.2) ────────────────────────────────────────

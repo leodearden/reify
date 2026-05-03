@@ -22,8 +22,6 @@
 //! # Out of scope (sibling tasks)
 //!
 //! - Backjumping via "rejected because" channel (task 2660).
-//! - `auto(free)` report-all cross-product enumeration with the
-//!   `AutoTypeParamNonUnique` warning (task 2661).
 //! - Cross-product hard cap at 100k assignments (task 2662).
 //! - Rich diagnostic format with smallest infeasibility witness (task 2663).
 //! - Comprehensive v0.1 BFS-failure scenario coverage (task 2664).
@@ -31,6 +29,13 @@
 //!   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
 //!   deferred per the PRD's "Constraint-feasibility incremental binding
 //!   deferred" decision.
+//!
+//! The `auto(free)` cross-product NonUnique Warning enumeration (originally
+//! listed here as "task 2661's scope") now lands in this file — see
+//! `dfs_free_mode_two_feasible_cross_products_emits_non_unique_warning_and_picks_lex_first`,
+//! `dfs_free_mode_more_than_sixteen_feasibles_emits_non_unique_with_elision_count`,
+//! `dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker`,
+//! and `dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique`.
 
 use std::collections::HashMap;
 
@@ -205,8 +210,8 @@ structure def ORingSeal : Seal {
 /// lexicographic order (T outer, U inner) and stop at the first feasible
 /// leaf. Expected outcome: `substitution == [(T, ORingSeal), (U, AirCooled)]`,
 /// `per_param == [(T, Selected(ORingSeal)), (U, Selected(AirCooled))]`,
-/// zero diagnostics (free-mode `NonUnique` warnings are task 2661's scope —
-/// see file-level out-of-scope note).
+/// one `AutoTypeParamNonUnique` Warning diagnostic (task 2661, now landed —
+/// see `dfs_free_mode_two_feasible_cross_products_emits_non_unique_warning_and_picks_lex_first`).
 ///
 /// Strict-Ambiguous over multiple cross-product feasibles is the inverse
 /// of this test and is exercised by `dfs_strict_mode_with_two_feasible_cross_products_returns_ambiguous`
@@ -281,10 +286,26 @@ structure def WaterCooled : Cooled {
         },
         "DFS multi-param all-feasible (free=true on both) must pick the lex-first cross-product (T=ORingSeal, U=AirCooled)"
     );
-    assert!(
-        diagnostics.is_empty(),
-        "DFS multi-param all-feasible free-mode must emit zero diagnostics in 2659 (NonUnique warning is task 2661's scope), got: {:?}",
+    // Task 2661: all-free ≥2 feasibles now emit AutoTypeParamNonUnique (Warning).
+    // With no constraints, all 4 cross-product leaves are trivially feasible.
+    // The lex-first is still (ORingSeal, AirCooled) — per_param/substitution
+    // unchanged; only the diagnostic count changes from 0 to 1.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS multi-param all-feasible free-mode (4 feasibles) must emit 1 AutoTypeParamNonUnique \
+         diagnostic (task 2661); got: {:?}",
         diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "DFS multi-param all-feasible free-mode diagnostic must be AutoTypeParamNonUnique"
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity"
     );
 }
 
@@ -391,10 +412,27 @@ structure def WaterCooled : Cooled {
         },
         "DFS must backtrack from infeasible leaf (ORingSeal, AirCooled) and pick (ORingSeal, WaterCooled) as the next feasible leaf"
     );
-    assert!(
-        diagnostics.is_empty(),
-        "DFS backtracking happy path (free-mode) must emit zero diagnostics, got: {:?}",
+    // Task 2661: all-free mode now collects ALL feasibles (max_feasible_to_collect=usize::MAX).
+    // After the 2-item queue [Violated, Satisfied] is exhausted, leaves 3 and 4 use the
+    // default Satisfied → 3 feasibles total: (ORingSeal,WaterCooled), (RubberSeal,AirCooled),
+    // (RubberSeal,WaterCooled). Lex-first is still (ORingSeal, WaterCooled).
+    // The backtracking semantics are unchanged; only the diagnostic count changes.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS backtracking free-mode (≥2 feasibles) must emit 1 AutoTypeParamNonUnique \
+         diagnostic (task 2661); got: {:?}",
         diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "DFS backtracking free-mode diagnostic must be AutoTypeParamNonUnique"
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity"
     );
 }
 
@@ -1975,5 +2013,637 @@ structure def WaterCooled : Cooled {
         diagnostics.is_empty(),
         "Multi-constraint two-param backtracking happy path must emit zero diagnostics, got: {:?}",
         diagnostics
+    );
+}
+
+// ─── step-3 (task 2661): mixed strict+free ≥2 feasibles → Ambiguous, not NonUnique ──
+
+/// Regression test: when ANY param is strict (`free=false`), ≥2 cross-product
+/// feasibles must produce `AutoTypeParamAmbiguous` (Error), NOT
+/// `AutoTypeParamNonUnique` (Warning).
+///
+/// Fixture: 2 params `[T:Seal (free=false STRICT), U:Cooled (free=true)]` with
+/// 2 candidates each (4 cross-product leaves). Default `MockConstraintChecker`
+/// (every leaf trivially feasible, no constraint on template) → 4 feasibles
+/// found by the DFS (strict mode, `max_feasible_to_collect=2`; stops at 2).
+///
+/// Design decision: `any_strict = params.iter().any(|p| !p.free)`. If ANY param
+/// is strict, the cross-product must be uniquely determined for compilation to
+/// succeed; ambiguity is an error. The new all-free NonUnique path only fires
+/// when `!any_strict`.
+///
+/// Pins:
+/// (a) `diagnostics.len() == 1`, code `AutoTypeParamAmbiguous`, severity `Error`
+///     (NOT `AutoTypeParamNonUnique` Warning)
+/// (b) `outcome.per_param.len() == 1` — Ambiguous shape (length-1, anchored on T)
+/// (c) `outcome.per_param[0].1` is `SelectionResult::Ambiguous(_)` with 2 witnesses
+/// (d) `outcome.substitution.is_empty()`
+///
+/// This test should PASS immediately after step-2's impl (the dispatch is
+/// already in place); it exists as a contract pin so a future refactor cannot
+/// accidentally collapse the strict/free branches.
+#[test]
+fn dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // No constraints on the template → every leaf trivially feasible.
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Satisfied);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false, // ← STRICT: any_strict = true → Ambiguous path
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true, // free, but any_strict is already true because of T
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // (a) Exactly one Ambiguous Error — NOT a NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "mixed strict/free ≥2 feasibles must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamAmbiguous),
+        "mixed strict/free diagnostic must be AutoTypeParamAmbiguous (Error), \
+         NOT AutoTypeParamNonUnique (Warning); got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "AutoTypeParamAmbiguous must be Error severity (not Warning)"
+    );
+    // (b) Ambiguous shape: length-1 per_param anchored on T (params[0]).
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "mixed strict/free Ambiguous must produce length-1 per_param (not length-2 success shape); \
+         got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(
+        outcome.per_param[0].0, "T",
+        "Ambiguous per_param entry must be anchored on params[0].name ('T')"
+    );
+    // (c) SelectionResult::Ambiguous with 2 witnesses (strict-mode cap).
+    match &outcome.per_param[0].1 {
+        SelectionResult::Ambiguous(witnesses) => {
+            assert_eq!(
+                witnesses.len(),
+                2,
+                "strict-mode Ambiguous must carry exactly 2 witnesses \
+                 (max_feasible_to_collect=2 cap); got: {:?}",
+                witnesses
+            );
+        }
+        other => panic!(
+            "mixed strict/free ≥2 feasibles must produce SelectionResult::Ambiguous, got: {:?}",
+            other
+        ),
+    }
+    // (d) Empty substitution on Ambiguous.
+    assert!(
+        outcome.substitution.is_empty(),
+        "mixed strict/free Ambiguous must yield empty substitution; got: {:?}",
+        outcome.substitution
+    );
+}
+
+// ─── step-4 (task 2661): >16 feasibles → NonUnique with elision count ──────────
+
+/// Two `AutoTypeParam`s `[T:Seal (free), U:Cooled (free)]` with 5 candidates
+/// each (25 cross-product leaves). Default `MockConstraintChecker` (every leaf
+/// trivially feasible) → 25 feasibles.
+///
+/// With `DISPLAY_CAP = 16`, expected elision count = 25 - 16 = 9.
+///
+/// **Current behavior (step-2 impl, pre-step-5):** the NonUnique branch was
+/// added but includes ALL 25 witnesses without the elision logic.  This test
+/// FAILS because `message.contains("9 more elided")` is not satisfied.
+///
+/// Pins:
+/// (a) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity Warning
+/// (b) `message.contains("9 more elided")` — exact elision count substring
+/// (c) `message.contains("ORingSeal")` — lex-first T candidate present
+/// (d) `message.contains("AirCooled")` — lex-first U candidate present
+/// (e) `outcome.per_param.len() == 2`, each entry `Selected`
+/// (f) `outcome.per_param[0]` is `(T_name, Selected(lex-first-T))`
+/// (g) `outcome.substitution.len() == 2`
+#[test]
+fn dfs_free_mode_more_than_sixteen_feasibles_emits_non_unique_with_elision_count() {
+    // 5 Seal structures (alphabetical order matters for lex-first):
+    //   ORingSeal < RubberSeal < SilicaSeal < TeflonSeal < UretheSeal
+    // 5 Cooled structures:
+    //   AirCooled < ForcedConvection < LiquidCooled < NaturalConvection < WaterCooled
+    // → 5×5 = 25 cross-product leaves, all trivially feasible (default Satisfied).
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+structure def SilicaSeal : Seal {
+    param hardness : Real = 7.0
+}
+structure def TeflonSeal : Seal {
+    param friction : Real = 0.1
+}
+structure def UretheSeal : Seal {
+    param elasticity : Real = 3.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+structure def ForcedConvection : Cooled {
+    param fan_speed : Real = 3000.0
+}
+structure def LiquidCooled : Cooled {
+    param coolant_flow : Real = 8.0
+}
+structure def NaturalConvection : Cooled {
+    param fin_area : Real = 0.05
+}
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // No constraints → all 25 leaves trivially feasible.
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Satisfied);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // (a) Exactly one NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "25 feasibles must emit exactly one AutoTypeParamNonUnique diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity"
+    );
+    // (b) Exact elision count: 25 - 16 = 9.
+    assert!(
+        diagnostics[0].message.contains("9 more elided"),
+        "message must contain '9 more elided' (25 - DISPLAY_CAP(16) = 9); got: {:?}",
+        diagnostics[0].message
+    );
+    // (b2) Exactly DISPLAY_CAP=16 witnesses are rendered — not more, not fewer.
+    // Count `; T=` separators: witnesses are joined by `"; "` so inter-witness
+    // separators = (witness count - 1).  With 16 displayed witnesses the
+    // separator count is 15.  (The `selected lexicographically-first '...'`
+    // suffix also contains `T=` but is preceded by `; selected`, not `; T=`,
+    // so it is not counted here.)
+    {
+        let sep_count = diagnostics[0]
+            .message
+            .matches("; T=")
+            .count();
+        assert_eq!(
+            sep_count,
+            15,
+            "message must contain exactly 15 '; T=' separators (== DISPLAY_CAP-1 = 15 \
+             inter-witness separators for 16 displayed witnesses), \
+             got {} — a regression here means the display window was not applied; message: {:?}",
+            sep_count,
+            diagnostics[0].message
+        );
+    }
+    // (c) Lex-first T candidate appears in the message.
+    assert!(
+        diagnostics[0].message.contains("ORingSeal"),
+        "message must contain lex-first T candidate 'ORingSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+    // (d) Lex-first U candidate appears in the message.
+    assert!(
+        diagnostics[0].message.contains("AirCooled"),
+        "message must contain lex-first U candidate 'AirCooled'; got: {:?}",
+        diagnostics[0].message
+    );
+    // (e) Full success shape: 2 per_param entries.
+    assert_eq!(
+        outcome.per_param.len(),
+        2,
+        "25-feasible outcome must have per_param.len() == 2 (success shape); got: {:?}",
+        outcome.per_param
+    );
+    // (f) First param maps to lex-first T candidate.
+    assert_eq!(
+        outcome.per_param[0],
+        ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+        "per_param[0] must be (T, Selected(ORingSeal)) — lex-first T"
+    );
+    // (g) Full substitution Vec.
+    assert_eq!(
+        outcome.substitution.len(),
+        2,
+        "25-feasible outcome must have substitution.len() == 2; got: {:?}",
+        outcome.substitution
+    );
+    assert_eq!(
+        outcome.substitution[0],
+        ("T".to_string(), "ORingSeal".to_string()),
+        "substitution[0] must be (T, ORingSeal)"
+    );
+}
+
+// ─── step-6 (task 2661): exactly 16 feasibles → no elision marker ──────────────
+
+/// Two `AutoTypeParam`s `[T:Seal (free), U:Cooled (free)]` with 4 candidates
+/// each (16 cross-product leaves). Default `MockConstraintChecker` (all
+/// feasible) → exactly 16 feasibles.
+///
+/// With `DISPLAY_CAP = 16` and `total = 16`: `elided = 16.saturating_sub(16) = 0`
+/// → the elision marker must NOT appear in the message.
+///
+/// This is the off-by-one boundary test: `total > DISPLAY_CAP` (equivalently
+/// `elided > 0`) must use strict `>`, not `>=`, so that exactly 16 feasibles
+/// produces no elision.
+///
+/// Pins:
+/// (a) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity Warning
+/// (b) `!message.contains("elided")` — boundary must NOT produce the elision marker
+/// (c) `!message.contains("more elided")` — belt-and-suspenders
+/// (d) `message.contains("ORingSeal")` — lex-first T candidate present
+#[test]
+fn dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker() {
+    // 4 Seal structures (lex order: ORingSeal < RubberSeal < SilicaSeal < TeflonSeal)
+    // 4 Cooled structures (lex order: AirCooled < ForcedConvection < LiquidCooled < WaterCooled)
+    // → 4×4 = 16 cross-product leaves, all trivially feasible (default Satisfied).
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+structure def SilicaSeal : Seal {
+    param hardness : Real = 7.0
+}
+structure def TeflonSeal : Seal {
+    param friction : Real = 0.1
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+structure def ForcedConvection : Cooled {
+    param fan_speed : Real = 3000.0
+}
+structure def LiquidCooled : Cooled {
+    param coolant_flow : Real = 8.0
+}
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // No constraints → all 16 leaves trivially feasible.
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Satisfied);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // (a) Exactly one NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "16 feasibles must emit exactly one AutoTypeParamNonUnique diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity"
+    );
+    // (b) Boundary: exactly 16 feasibles (= DISPLAY_CAP) must NOT produce the elision marker.
+    assert!(
+        !diagnostics[0].message.contains("elided"),
+        "boundary case (16 = DISPLAY_CAP): message must NOT contain 'elided' \
+         (elision only fires when total > DISPLAY_CAP); got: {:?}",
+        diagnostics[0].message
+    );
+    // (c) Belt-and-suspenders: no "more elided" substring either.
+    assert!(
+        !diagnostics[0].message.contains("more elided"),
+        "boundary case (16 = DISPLAY_CAP): message must NOT contain 'more elided'; got: {:?}",
+        diagnostics[0].message
+    );
+    // (d) Lex-first T candidate present in message.
+    assert!(
+        diagnostics[0].message.contains("ORingSeal"),
+        "message must contain lex-first T candidate 'ORingSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+    // Success shape: 2 per_param entries, lex-first selected.
+    assert_eq!(outcome.per_param.len(), 2, "success shape must have 2 per_param entries");
+    assert_eq!(
+        outcome.per_param[0],
+        ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+        "per_param[0] must be (T, Selected(ORingSeal))"
+    );
+}
+
+// ─── step-1 (task 2661): free-mode ≥2 cross-product feasibles ─────────────────
+// → NonUnique Warning + lex-first success shape
+
+/// Two `AutoTypeParam`s `[T : Seal (free=true), U : Cooled (free=true)]` with
+/// 2 candidates each (4 cross-product leaves). A single constraint is added to
+/// the template so the `MockConstraintChecker`'s queue fires per-leaf.
+///
+/// Queue `[Satisfied, Violated, Satisfied, Violated]` drives:
+/// - Leaf 1 `(ORingSeal, AirCooled)`   → Satisfied → **feasible**
+/// - Leaf 2 `(ORingSeal, WaterCooled)` → Violated  → infeasible
+/// - Leaf 3 `(RubberSeal, AirCooled)`  → Satisfied → **feasible**
+/// - Leaf 4 `(RubberSeal, WaterCooled)`→ Violated  → infeasible
+///
+/// → exactly 2 cross-product feasibles; lex-first = `(ORingSeal, AirCooled)`.
+///
+/// Task 2661 behavior: free-mode collects ALL feasible leaves
+/// (`max_feasible_to_collect = usize::MAX`), emits one `AutoTypeParamNonUnique`
+/// Warning, and returns the lex-first feasible in a full success shape.
+///
+/// Pins:
+/// (a) `per_param == [(T, Selected("ORingSeal")), (U, Selected("AirCooled"))]`
+///     — full length-N success shape, lex-first selected.
+/// (b) `substitution == [(T, "ORingSeal"), (U, "AirCooled")]`
+/// (c) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity `Warning`
+/// (d) `diagnostics[0].candidates == ["ORingSeal", "AirCooled"]`
+///     — FQN-only invariant: bare FQNs of the lex-first leaf (task 2860)
+/// (e) message contains "ORingSeal", "RubberSeal", "AirCooled"
+///     (both feasible witnesses are rendered)
+#[test]
+fn dfs_free_mode_two_feasible_cross_products_emits_non_unique_warning_and_picks_lex_first() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // One constraint on the template so the per-call queue verdict fires at
+    // each leaf (with an empty constraints slice, `check()` would never be
+    // called and every leaf would be trivially feasible regardless of the queue).
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    // Queue [S, V, S, V]: leaves 1 and 3 feasible, leaves 2 and 4 infeasible.
+    // → 2 cross-product feasibles: (ORingSeal, AirCooled) and (RubberSeal, AirCooled).
+    // lex-first = (ORingSeal, AirCooled) (first discovered in DFS order).
+    let checker = MockConstraintChecker::new().with_call_queue(vec![
+        Satisfaction::Satisfied,
+        Satisfaction::Violated,
+        Satisfaction::Satisfied,
+        Satisfaction::Violated,
+    ]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // (a) Full N-length per_param — success shape, not length-1 Ambiguous shape.
+    assert_eq!(
+        outcome.per_param,
+        vec![
+            ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+            ("U".to_string(), SelectionResult::Selected("AirCooled".to_string())),
+        ],
+        "all-free ≥2 NonUnique path must produce length-2 per_param with Selected \
+         entries (success shape, not Ambiguous); got: {:?}",
+        outcome.per_param
+    );
+    // (b) Full substitution Vec in declared order.
+    assert_eq!(
+        outcome.substitution,
+        vec![
+            ("T".to_string(), "ORingSeal".to_string()),
+            ("U".to_string(), "AirCooled".to_string()),
+        ],
+        "all-free ≥2 NonUnique path must produce full substitution Vec; got: {:?}",
+        outcome.substitution
+    );
+    // (c) Exactly one NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "all-free ≥2 feasibles must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "all-free ≥2 diagnostic must be AutoTypeParamNonUnique, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity (not Error)"
+    );
+    // (d) FQN-only candidates invariant: lex-first leaf's bare FQN list.
+    assert_eq!(
+        diagnostics[0].candidates,
+        vec!["ORingSeal".to_string(), "AirCooled".to_string()],
+        "Diagnostic.candidates must be the lex-first leaf's bare FQN list \
+         (FQN-only invariant, task 2860); got: {:?}",
+        diagnostics[0].candidates
+    );
+    // Candidates must be bare FQNs — no '=' or ',' composite tuples.
+    for entry in &diagnostics[0].candidates {
+        assert!(
+            !entry.contains('='),
+            "Diagnostic.candidates entries must be bare FQNs (no '='); got: {:?}",
+            entry
+        );
+        assert!(
+            !entry.contains(','),
+            "Diagnostic.candidates entries must be bare FQNs (no ','); got: {:?}",
+            entry
+        );
+    }
+    // (e) Both feasible witnesses appear in the message body.
+    assert!(
+        diagnostics[0].message.contains("ORingSeal"),
+        "message must mention ORingSeal (from lex-first witness); got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("RubberSeal"),
+        "message must mention RubberSeal (from second feasible witness); got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("AirCooled"),
+        "message must mention AirCooled (appears in both feasible witnesses); got: {:?}",
+        diagnostics[0].message
     );
 }
