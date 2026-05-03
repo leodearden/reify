@@ -768,13 +768,30 @@ pub(crate) fn resolve_type_alias_expr(
                 // to the simple-name lookup at the bottom of this match arm would
                 // silently bind to the builtin's `resolve_type_name` default (Scalar →
                 // Type::length()) and produce a wrong-type cascade at use sites —
-                // see task #2841.  When tmp_diags is empty, the name did NOT match any
-                // builtin parametric (the `_ => None` arm of
-                // resolve_parameterized_builtin_type); fall through to the user-defined
-                // parametric alias check below, which is required for non-parametric
-                // aliases whose body references a user parametric alias such as
-                // `type StringList = Container<String>` (regression-pinned by
-                // `alias_body_references_user_parameterized_alias`).
+                // see task #2841.
+                //
+                // When tmp_diags is empty, EITHER no arm matched the name in
+                // resolve_parameterized_builtin_type (the `_ => None` arm) OR a matched
+                // arm delegated inner-arg resolution to a silent inner resolver
+                // (`resolve_type_expr_with_aliases` returns `None` without pushing a
+                // diagnostic for unknown simple names — see the silent-fallback behaviour
+                // around line ~980).  This fall-through is safe only because
+                // `resolve_type_name` (lines 497-609) has NO default for `List` / `Set` /
+                // `Map` / `Option` / `Tensor` / `Matrix` / `Vector3` / `Point3`: a
+                // silent-None from any of those arms results in no default binding, so
+                // falling through to the user-parametric check below is harmless.
+                // Adding a `resolve_type_name` default for any of those builtins would
+                // silently re-introduce a #2841-shaped wrong-type cascade when a
+                // non-parametric alias body references the builtin with an unresolvable
+                // inner arg.  `Scalar` is the one builtin parametric that *does* have a
+                // `resolve_type_name` default (`Type::length()`), and is safe only because
+                // its failure path always pushes a diagnostic via
+                // `resolve_type_alias_expr_to_dimension` — keeping tmp_diags non-empty
+                // whenever the Scalar arm matched and failed (see task #2843).
+                // Fall through to the user-defined parametric alias check below, which is
+                // required for non-parametric aliases whose body references a user
+                // parametric alias such as `type StringList = Container<String>`
+                // (regression-pinned by `alias_body_references_user_parameterized_alias`).
                 if inner_diag_policy == AliasInnerDiagPolicy::Propagate && !tmp_diags.is_empty() {
                     diagnostics.extend(tmp_diags);
                     return None;
