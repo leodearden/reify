@@ -128,8 +128,16 @@ pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
 /// Internally delegates to the memoized [`registry`] accessor so the
 /// inventory walk is never repeated; the per-call cost is one descriptor
 /// invocation per registered kernel plus the surrounding `BTreeMap`
-/// allocation. Per the PRD's "read once at engine startup" contract,
-/// callers SHOULD NOT call this on the hot dispatch path.
+/// allocation. The [`warn_if_duplicate_op_repr_pairs`] uniqueness check
+/// (an O(kernels × supports) `HashMap` walk) is gated behind
+/// `UNIQUENESS_CHECKED` so it runs at most once per process — mirroring
+/// how [`build_registry`]'s duplicate-NAME check is amortised behind the
+/// surrounding `REGISTRY: OnceLock`. The result itself is not memoized by
+/// design: callers receive a fresh, mutable `BTreeMap` each call. Per the
+/// PRD's "read once at engine startup" contract, callers SHOULD NOT call
+/// this on the hot dispatch path; the once-flag enforces that intent
+/// structurally for the diagnostic walk while leaving the result allocation
+/// per-call.
 pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
     let result: BTreeMap<String, CapabilityDescriptor> = registry()
         .iter()
