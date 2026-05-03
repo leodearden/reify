@@ -55,6 +55,29 @@ describe('discoverRegisteredTools', () => {
     expect(result.has('reify_GetSource')).toBe(true);
   });
 
+  it('ignores a const NAME with no matching registry.register(NAME, ...) call', () => {
+    // Regression test for CONST_DECL_RE gating: a stale or test-only const must
+    // NOT appear in the discovered set unless its NAME also appears as the first
+    // argument to a registry.register(NAME, ...) call in the same file.
+    // The real inline registration for a different tool must still be discovered.
+    const dir = makeTempDir();
+    writeFileSync(
+      join(dir, 'stale.rs'),
+      [
+        '// Stale const that is never wired into the registry:',
+        'const STALE: &str = "reify_stale";',
+        '',
+        'pub fn register(registry: &mut Registry) {',
+        '    registry.register("reify_real", handler);',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const result = discoverRegisteredTools(dir);
+    expect(result.has('reify_stale')).toBe(false);
+    expect(result.has('reify_real')).toBe(true);
+  });
+
   it('throws an Error containing the resolved path when given a non-existent directory', () => {
     const nonExistent = resolve(tmpdir(), 'reify-tools-does-not-exist-98765');
     expect(() => discoverRegisteredTools(nonExistent)).toThrowError(nonExistent);
