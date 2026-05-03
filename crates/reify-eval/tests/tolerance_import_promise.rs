@@ -195,6 +195,79 @@ fn engine_check_imported_tolerance_promise_returns_none_when_promise_and_demand_
     );
 }
 
+/// Fills the `(positive_promise, demand=0)` cell of
+/// `Engine::check_imported_tolerance_promise`'s dispatch matrix — the
+/// symmetric mirror of the `(zero_promise, positive_demand)` row pinned by
+/// `engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_zero_and_demand_positive`.
+///
+/// Confirms that the zero-promise check at `engine_tolerance.rs:81`
+/// (introduced by task 2833) does **NOT** intercept the `(positive, 0.0)`
+/// row: the guard `promise == 0.0 && demanded > 0.0` skips because
+/// `promise != 0.0`. The strict-`<` branch then fires because
+/// `is_promise_insufficient(0.0, 50e-6) == true` — zero is the tightest
+/// possible demand (canonical truth-table row `(demand=0.0, promise=1µm) →
+/// true`, case (d) of
+/// `is_promise_insufficient_returns_true_iff_demanded_strictly_less_than_promise`).
+///
+/// A regression that widened `&&` to `||` or swapped the operands in the
+/// zero-promise guard would silently steal this case from the strict-`<`
+/// branch, changing `code` from `ImportedTolerancePromiseInsufficient` to
+/// `InputTolerancePromiseIsZero` (or worse, returning `None`) and breaking
+/// the dispatch-matrix truth table without a compile error.
+///
+/// Setup mirrors
+/// `engine_check_imported_tolerance_promise_returns_none_when_promise_and_demand_both_zero`
+/// with `step_input_template(50e-6)` instead of `step_input_template(0.0)`:
+/// STEPOutput(0.0) + manufacturing(0.0) fold to `min(0.0, 0.0) = 0.0` via
+/// `combine_demanded_tolerance`, so demanded = 0.0.
+#[test]
+fn engine_check_imported_tolerance_promise_emits_insufficient_lint_when_promise_positive_and_demand_zero(
+) {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_positive_promise_zero_demand".to_string(),
+    ]))
+    .template(step_input_template(50e-6))
+    .template(step_output_template(0.0))
+    .template(my_design_template())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 0.0))
+    .build();
+
+    let mut engine = make_engine();
+    engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let diag = engine
+        .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
+        .expect(
+            "promise=50µm, demand=0 — strict-< branch must fire: \
+             is_promise_insufficient(0.0, 50e-6) == true, so Some(diagnostic) \
+             is required; None would mean the (positive_promise, demand=0) \
+             dispatch-matrix cell is broken",
+        );
+
+    assert_eq!(
+        diag.severity,
+        Severity::Warning,
+        "diagnostic severity must be Warning (PRD: warn, not error — \
+         runtime proceeds with as-imported realization)"
+    );
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::ImportedTolerancePromiseInsufficient),
+        "code must be ImportedTolerancePromiseInsufficient, NOT \
+         InputTolerancePromiseIsZero — proves the zero-promise branch \
+         (promise == 0.0 && demanded > 0.0) correctly skipped because \
+         promise=50µm != 0.0; a guard widened to `||` or with operands \
+         swapped would produce InputTolerancePromiseIsZero here"
+    );
+    assert!(
+        diag.message.contains("STEPInput"),
+        "message must name the input template for author-locatability \
+         (got: {:?})",
+        diag.message
+    );
+}
+
 /// Pinned by the no-op rows of `check_imported_tolerance_promise`'s truth
 /// table. Mirrors the four-block precedent
 /// `engine_demanded_tolerance_for_output_handles_partial_inputs` in
