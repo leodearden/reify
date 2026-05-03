@@ -65,6 +65,17 @@ pub(crate) fn compute_argmax(field_val: &Value) -> Value {
     compute_argextremum(field_val, false)
 }
 
+/// Compute `argmin(field)` — return the domain coord at which a
+/// `Sampled`-source field attains its minimum value, wrapped per the
+/// field's `domain_type`.
+///
+/// Tie-break: lowest linear index wins (mirrors `compute_argmax`).
+///
+/// Other source kinds return `Value::Undef` (deferred).
+pub(crate) fn compute_argmin(field_val: &Value) -> Value {
+    compute_argextremum(field_val, true)
+}
+
 /// Shared body for `compute_max` / `compute_min`. `find_min == true`
 /// selects the minimum, `false` selects the maximum.
 fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
