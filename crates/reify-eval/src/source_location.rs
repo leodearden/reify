@@ -108,6 +108,7 @@ mod tests {
         );
         assert!(loc.line >= 1, "line must be >= 1 (1-based)");
         assert!(loc.column >= 1, "column must be >= 1 (1-based)");
+        assert!(loc.end_column >= 1, "end_column must be >= 1 (1-based)");
         assert!(
             loc.end_line >= loc.line,
             "end_line ({}) must be >= line ({})",
