@@ -1864,18 +1864,22 @@ structure S {
     /// presence-only, eliminating the dual-edit ratchet that arises from
     /// re-asserting spec-section wording at multiple layers.
     ///
-    /// Both sides are sorted before pairing so the check is order-independent.
+    /// Pairing is by content: for each `(kind, name, expected_pos)` in
+    /// `expected` the helper finds the unique diagnostic in `forbidden` whose
+    /// message contains both `"'{kind}'"` and `"'{name}'"`.  If no diagnostic
+    /// or more than one diagnostic matches, the assertion fails immediately with
+    /// a clear message — making any compiler message-format reshuffle that
+    /// still embeds both tokens self-evident rather than hiding behind a
+    /// sort-key drift.
     ///
-    /// Additionally asserts for every forbidden diagnostic:
+    /// Additionally asserts for every matched diagnostic:
     /// - severity `ERROR`, source `"reify"`
     /// - `range.start` equals the expected `Position` for that violation
     ///   (explicit witness that the fixture span was carried through
-    ///   `convert_diagnostic` + `offset_to_position` correctly)
+    ///   `convert_diagnostic` + `offset_to_position` correctly; also
+    ///   guarantees distinctness of starts for sibling violations since the
+    ///   expected Positions are all distinct)
     /// - non-degenerate range: `range.start != range.end`
-    ///
-    /// When `expected` has more than one entry the helper additionally asserts
-    /// that all range-start positions are distinct (sibling violations must not
-    /// collapse into the same LSP location).
     ///
     /// Pass `expected = &[]` to assert that no such diagnostic is emitted.
     fn assert_specialization_forbidden(
@@ -1883,7 +1887,7 @@ structure S {
         expected: &[(&str, &str, lsp_types::Position)],
     ) {
         use fixtures::*;
-        use lsp_types::{DiagnosticSeverity, NumberOrString, Position};
+        use lsp_types::{DiagnosticSeverity, NumberOrString};
 
         let parsed = parsed_module_with_structure_members(
             vec![make_sub_with_body("scope", dummy_span(), body)],
@@ -1913,30 +1917,29 @@ structure S {
             forbidden
         );
 
-        // Sort expected by (kind, name) and forbidden by message so pairing is
-        // order-independent (emission order is the compiler's prerogative).
-        let mut expected_sorted: Vec<(&str, &str, Position)> = expected.to_vec();
-        expected_sorted.sort_by_key(|&(kind, name, _)| (kind, name));
-        let mut forbidden_sorted: Vec<&lsp_types::Diagnostic> = forbidden.iter().collect();
-        forbidden_sorted.sort_by(|a, b| a.message.cmp(&b.message));
+        // Pair by content: for each expected (kind, name, pos) find the unique
+        // diagnostic whose message contains both quoted tokens.  This is robust
+        // to any compiler message-format reshuffle that still embeds both tokens
+        // — a sort-key drift can never silently mispair violations.
+        for (kind, name, expected_pos) in expected {
+            let matches: Vec<&lsp_types::Diagnostic> = forbidden
+                .iter()
+                .filter(|d| {
+                    d.message.contains(&format!("'{kind}'"))
+                        && d.message.contains(&format!("'{name}'"))
+                })
+                .collect();
 
-        // Per-violation assertions: kind/name substring presence (mirrors
-        // compiler-side style in specialization_scope_check.rs:410-414,
-        // 540-548, 580-586, 619-628), structural properties, and exact
-        // range.start Position.
-        for ((kind, name, expected_pos), d) in
-            expected_sorted.iter().zip(forbidden_sorted.iter())
-        {
-            assert!(
-                d.message.contains(&format!("'{kind}'")),
-                "expected quoted kind '{kind}' in message; got: {:?}",
-                d.message
+            assert_eq!(
+                matches.len(),
+                1,
+                "expected exactly one SpecializationForbiddenDecl diagnostic \
+                 containing kind='{kind}' and name='{name}'; found {}: {matches:#?}",
+                matches.len()
             );
-            assert!(
-                d.message.contains(&format!("'{name}'")),
-                "expected quoted name '{name}' in message; got: {:?}",
-                d.message
-            );
+
+            let d = matches[0];
+
             assert_eq!(
                 d.severity,
                 Some(DiagnosticSeverity::ERROR),
@@ -1961,20 +1964,6 @@ structure S {
                 "range must be non-degenerate; got start={:?} end={:?}",
                 d.range.start,
                 d.range.end
-            );
-        }
-
-        // Multiple violations must map to distinct LSP positions.
-        if expected.len() > 1 {
-            let starts: Vec<_> = forbidden
-                .iter()
-                .map(|d| (d.range.start.line, d.range.start.character))
-                .collect();
-            let unique_starts: std::collections::HashSet<_> = starts.iter().collect();
-            assert_eq!(
-                unique_starts.len(),
-                expected.len(),
-                "all violation spans must be distinguishable; got: {starts:?}"
             );
         }
     }
