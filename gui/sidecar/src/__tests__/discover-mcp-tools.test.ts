@@ -30,6 +30,10 @@ describe('discoverRegisteredTools', () => {
     expect(result.has('reify_get_source')).toBe(true);
   });
 
+  // NOTE: the `registry.register(NAME, handler)` line in this fixture is now
+  // load-bearing: removing it would cause the gating logic (REGISTER_IDENT_RE
+  // pre-pass) to exclude "reify_qux".  See the "ignores a const NAME with no
+  // matching registry.register(NAME, ...) call" test below for the regression.
   it('discovers a tool whose registration uses const NAME indirection', () => {
     const dir = makeTempDir();
     writeFileSync(
