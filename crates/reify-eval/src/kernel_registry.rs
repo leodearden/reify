@@ -672,6 +672,90 @@ mod tests {
         );
     }
 
+    /// Contract pin: `debug_assert_unique_op_repr_pairs` must emit exactly one
+    /// `WARN`-level event via the **intra-kernel** branch when a single
+    /// kernel's `supports` Vec contains the same `(Operation, ReprKind)` pair
+    /// more than once.
+    ///
+    /// This mirrors
+    /// `debug_assert_unique_op_repr_pairs_always_emits_warn_on_duplicate`
+    /// (the inter-kernel warn test) which covers the inter-kernel branch.  A
+    /// separate test is needed here because an arm-swap regression that drops
+    /// only the intra-kernel `tracing::warn!` would still pass the inter-kernel
+    /// test (inter-kernel scenario unchanged).  Pinning the warn count for the
+    /// intra-kernel fixture independently ensures the `warn!` call is present
+    /// in both branches.
+    ///
+    /// The `tracing::warn!` call is straight-line code that precedes the
+    /// `debug_assert!`, so it always fires — even in release builds where the
+    /// panic is compiled out.  In debug builds the helper panics after emitting
+    /// WARN; we wrap the call in `std::panic::catch_unwind` inside the
+    /// subscriber scope so `warn_count` is incremented before we assert on it.
+    ///
+    /// ## Coverage note
+    ///
+    /// `CountingSubscriberBuilder` counts events by level and target; it does
+    /// not capture event fields.  Both the intra-kernel and inter-kernel arms
+    /// emit at the same level (`WARN`) and target (`reify_eval::kernel_registry`),
+    /// so this count-only assertion cannot distinguish *which* arm emitted the
+    /// event.  An arm-swap regression would still pass this test.
+    ///
+    /// That gap is acceptable here because:
+    /// * There is no in-tree behavioral oracle for branch routing within the
+    ///   intra-kernel arm.  If a future regression makes branch routing
+    ///   observable, the right fix is to extend `CountingSubscriberBuilder` in
+    ///   `reify-test-support` to capture event fields and assert on the field
+    ///   set (`kernel` only vs `prev_kernel`/`new_kernel`) — not to extract the
+    ///   panic-message substring into a shared `const`.
+    /// * This test pins the orthogonal *operator-visibility* contract — that
+    ///   `warn!` fires in **all** builds, including release where `debug_assert!`
+    ///   is compiled out.  That contract holds regardless of arm identity.
+    ///
+    /// Field-level verification (asserting presence of `kernel` field rather
+    /// than `prev_kernel`/`new_kernel`) would require extending
+    /// `CountingSubscriberBuilder` in `reify-test-support` to capture recorded
+    /// fields — a larger change intentionally deferred.
+    #[test]
+    fn debug_assert_unique_op_repr_pairs_always_emits_warn_on_intra_kernel_duplicate() {
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_eval::kernel_registry")
+            .build();
+        let warn_count = counters[&tracing::Level::WARN].clone();
+
+        let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        registered.insert(
+            "kernel_a".to_string(),
+            CapabilityDescriptor {
+                supports: vec![
+                    (Operation::BooleanUnion, ReprKind::BRep),
+                    (Operation::BooleanUnion, ReprKind::BRep),
+                ],
+            },
+        );
+
+        // In debug builds the helper panics after emitting WARN.  Catch the
+        // panic inside the subscriber scope so warn_count is incremented before
+        // we assert on it.
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                debug_assert_unique_op_repr_pairs(&registered);
+            }));
+        });
+
+        assert_eq!(
+            warn_count.load(Ordering::Acquire),
+            1,
+            "debug_assert_unique_op_repr_pairs must emit exactly one WARN event \
+             at reify_eval::kernel_registry when a single kernel's supports Vec \
+             lists the same (op, repr) pair twice — intra-kernel operator \
+             visibility contract: warn! fires in all builds, not just debug",
+        );
+    }
+
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
     /// *smaller* kernel when multiple registrations are present.
     ///
