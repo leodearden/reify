@@ -2200,6 +2200,12 @@ fn match_arm_decl_group_duplicate_and_outside_collision_emit_in_order() {
     );
 
     // (c) Collision appears before duplicate in the diagnostics vec.
+    // This asserts insertion order, which IS the contract today: the
+    // forward-collision check fires in the pre-pass when the cluster is
+    // first encountered; the duplicate-cluster check fires later when the
+    // second cluster is processed. Both follow source order. If a future
+    // change introduces a diagnostics sort pass, update this assertion to
+    // compare diagnostic spans instead of vec indices.
     let collision_pos = compiled
         .diagnostics
         .iter()
