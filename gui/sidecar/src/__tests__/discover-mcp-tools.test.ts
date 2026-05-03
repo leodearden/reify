@@ -82,6 +82,42 @@ describe('discoverRegisteredTools', () => {
     expect(result.has('reify_real')).toBe(true);
   });
 
+  // Characterization test — pins current behavior of the comment false-positive gap.
+  //
+  // `REGISTER_IDENT_RE` runs against the raw `.rs` file source, including comment lines.
+  // A commented-out `// registry.register(NAME, ...)` line still matches the regex and
+  // populates `registeredIdents`, which re-admits the stale const that the gating is
+  // supposed to exclude.
+  //
+  // This test deliberately asserts the CURRENT (limited) behavior:
+  //   result.has('reify_stale_commented') === true
+  // If a future task implements comment stripping before applying the regexes
+  // (e.g. `src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')`),
+  // that task MUST invert this expectation to `false` to reflect the fixed behavior.
+  it('admits_a_stale_const_when_register_call_is_commented_out', () => {
+    const dir = makeTempDir();
+    writeFileSync(
+      join(dir, 'commented.rs'),
+      [
+        '// Stale const that is wired only via a commented-out register call:',
+        'const STALE: &str = "reify_stale_commented";',
+        '',
+        'pub fn register(registry: &mut Registry) {',
+        '    // registry.register(STALE, handler);   <-- commented out!',
+        '    registry.register("reify_real_in_same_file", handler);',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const result = discoverRegisteredTools(dir);
+    // The commented-out `// registry.register(STALE, ...)` currently satisfies the
+    // REGISTER_IDENT_RE pre-pass (raw-source scan), so STALE enters registeredIdents
+    // and the stale const value is admitted — this is the known false-positive.
+    expect(result.has('reify_stale_commented')).toBe(true);
+    // The real inline literal registration in the same file is unaffected.
+    expect(result.has('reify_real_in_same_file')).toBe(true);
+  });
+
   it('throws an Error containing the resolved path when given a non-existent directory', () => {
     const nonExistent = resolve(tmpdir(), 'reify-tools-does-not-exist-98765');
     expect(() => discoverRegisteredTools(nonExistent)).toThrowError(nonExistent);
