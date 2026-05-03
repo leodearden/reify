@@ -655,6 +655,22 @@ impl OcctKernel {
         ) -> Result<cxx::UniquePtr<ffi::ffi::LocalFeatureOpHistory>, E>,
         E: std::fmt::Display,
     {
+        // DEFENSE-IN-DEPTH (task 2821 / esc-2655-26 #4): `BRepFilletAPI_MakeFillet`
+        // and `BRepFilletAPI_MakeChamfer` iterate parent edges of a Solid; only a
+        // Solid input has a well-defined edge map AND produces a Solid result that
+        // matches the hardcoded `store_with_repr(..., BRepKind::Solid)` below.
+        // Passing a Face / Edge / Wire / Shell / Compound would either crash inside
+        // OCCT or silently produce a misclassified result.  Guard up-front so both
+        // `fillet_with_history` and `chamfer_with_history` receive the check for free.
+        match self.repr_of(shape_id) {
+            Some(BRepKind::Solid) => {}
+            Some(other) => {
+                return Err(GeometryError::OperationFailed(format!(
+                    "local-feature operation requires a BRepKind::Solid input shape, got {other:?}"
+                )))
+            }
+            None => return Err(GeometryError::InvalidReference(shape_id)),
+        }
         let (result_shape, records) = {
             let shape = self.get_shape(shape_id)?;
             let mut history = build(shape)
