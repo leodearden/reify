@@ -2770,3 +2770,168 @@ fn build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam
         map
     );
 }
+
+// ─── step-5 (task 2660): DFS backjumps to lex-first-param blame ──────────────
+
+/// When the first leaf's constraint violation blames only `T` (the lex-first /
+/// outermost param, index 0), the DFS must backjump directly to the T-level and
+/// skip the entire remaining `(ORingSeal, *, *)` sub-tree.
+///
+/// # Setup
+///
+/// - 3 free params: `[T:Seal, U:Cooled, W:Hot]`, two candidates each.
+///   Cross-product: 8 leaves, DFS order T outer × U mid × W inner.
+/// - Template: one cell `field_t : TypeParam("T")`, one constraint
+///   `ValueRef(field_t, TypeParam("T"))` → blame = {T(0)}.
+/// - Mock: `with_call_queue(vec![Violated])`, default `Satisfied`.
+///   → leaf 1 check Violated; all subsequent checks Satisfied.
+///
+/// # Expected visit sequence WITH backjumping
+///
+/// 1. `(ORingSeal, AirCooled, Hot1)` → Violated → blame={0} (T) → BackjumpTo(0)
+///    - W-loop (level=2): j=0 < K=2 → propagate
+///    - U-loop (level=1): j=0 < K=1 → propagate
+///    - T-loop (level=0): j=0 == K=0 → pop ORingSeal, try RubberSeal
+/// 2. `(RubberSeal, AirCooled, Hot1)` → Satisfied → record
+/// 3. `(RubberSeal, AirCooled, Hot2)` → Satisfied → record
+/// 4. `(RubberSeal, WaterCooled, Hot1)` → Satisfied → record
+/// 5. `(RubberSeal, WaterCooled, Hot2)` → Satisfied → record
+///
+/// 4 feasibles; lex-first = `(RubberSeal, AirCooled, Hot1)`.
+///
+/// # Distinguishes backjump-on from backjump-off
+///
+/// WITHOUT backjumping, the search also visits `(ORingSeal, AirCooled, Hot2)`,
+/// `(ORingSeal, WaterCooled, Hot1)`, `(ORingSeal, WaterCooled, Hot2)` — all
+/// Satisfied — giving 7 feasibles with lex-first `(ORingSeal, AirCooled, Hot2)`.
+/// The substitution result diverges visibly:
+/// - WITH backjump:    `T=RubberSeal, U=AirCooled, W=Hot1`
+/// - WITHOUT backjump: `T=ORingSeal,  U=AirCooled, W=Hot2`
+///
+/// The diagnostic message also differs: with backjumping, ORingSeal is never
+/// recorded as feasible and must NOT appear in the NonUnique witness list.
+#[test]
+fn dfs_backjumps_to_blamed_param_when_leaf_violation_blames_only_lex_first_param() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+trait Hot {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+
+structure def Hot1 : Hot {
+    param temp : Real = 100.0
+}
+
+structure def Hot2 : Hot {
+    param temp : Real = 200.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template: one cell `field_t : TypeParam("T")`, one constraint that
+    // ValueRefs field_t. Blame = {T(0)} — only T is referenced.
+    let field_t = ValueCellId::new("Coupling", "field_t");
+    let constraint_expr =
+        CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .constraint("Coupling", 0, None, constraint_expr)
+        .build();
+
+    // Queue: [Violated]; default: Satisfied.
+    // → leaf 1 check = Violated; all subsequent checks = Satisfied.
+    let checker = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "W".to_string(),
+            bounds: vec!["Hot".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // WITH backjumping: lex-first feasible is (RubberSeal, AirCooled, Hot1)
+    // because the entire (ORingSeal, *, *) sub-tree is skipped after the
+    // first leaf's Violated verdict blames only T(0).
+    assert_eq!(
+        outcome.substitution,
+        vec![
+            ("T".to_string(), "RubberSeal".to_string()),
+            ("U".to_string(), "AirCooled".to_string()),
+            ("W".to_string(), "Hot1".to_string()),
+        ],
+        "WITH backjumping: lex-first must be (RubberSeal, AirCooled, Hot1) \
+         (ORingSeal sub-tree entirely skipped); got: {:?}",
+        outcome.substitution
+    );
+
+    // WITH backjumping: only 4 feasible witnesses (all under RubberSeal).
+    // ORingSeal must NOT appear in the NonUnique diagnostic message.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "4 feasibles must emit exactly one NonUnique diagnostic; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert!(
+        !diagnostics[0].message.contains("ORingSeal"),
+        "WITH backjumping: ORingSeal sub-tree is never visited as feasible; \
+         message must NOT mention 'ORingSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("RubberSeal"),
+        "WITH backjumping: all 4 feasibles are under RubberSeal; \
+         message must contain 'RubberSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+}
