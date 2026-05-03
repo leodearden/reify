@@ -29,6 +29,10 @@ pub(crate) const EARTH_GRAVITY: f64 = 9.80665;
 /// Analogous to `joints::JOINT_KINDS`.  Consumed by `is_load_value` and
 /// guarded by the `load_kinds_all_dispatched_by_eval_loads` partition test to
 /// prevent silent drift between this list and `eval_loads`'s dispatch arms.
+///
+/// Not yet referenced by any external caller — the FEA solver (PRD task 16)
+/// will wire this up when it lands.
+#[allow(dead_code)]
 pub(crate) const LOAD_KINDS: &[&str] = &[
     "point_load",
     "pressure_load",
@@ -40,13 +44,15 @@ pub(crate) const LOAD_KINDS: &[&str] = &[
 /// Returns `true` if `v` is a load `Value::Map` produced by this module —
 /// i.e., a Map with a `kind` field whose value is one of `LOAD_KINDS`.
 ///
-/// Analogous to `joints::is_joint_value`.
+/// Analogous to `joints::is_joint_value`.  Used by the FEA solver (PRD
+/// task 16) once it lands; not yet called from any external module.
+#[allow(dead_code)]
 pub(crate) fn is_load_value(v: &Value) -> bool {
     match v {
         Value::Map(m) => m
             .get(&Value::String("kind".to_string()))
             .and_then(|k| if let Value::String(s) = k { Some(s.as_str()) } else { None })
-            .map_or(false, |s| LOAD_KINDS.contains(&s)),
+            .is_some_and(|s| LOAD_KINDS.contains(&s)),
         _ => false,
     }
 }
