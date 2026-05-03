@@ -24,8 +24,8 @@ use std::sync::atomic::AtomicBool;
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, InterpolationKind,
-    ResolvedFunction, SampledField, SampledGridKind, Type, Value, ValueMap,
+    CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
+    InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Type, Value, ValueMap,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -186,5 +186,73 @@ fn min_two_arg_scalar_form_unchanged() {
         result,
         Value::Real(3.0),
         "binary min(3.0, 5.0) should still resolve via numeric.rs to 3.0"
+    );
+}
+
+// ── Step 5: max / min over a dimensioned (PRESSURE) codomain ────────────────
+
+/// `max(field)` over a Sampled 1-D Pressure-codomain field returns the
+/// maximum value as `Value::Scalar { si_value: <max>, dimension: PRESSURE }`.
+#[test]
+fn max_sampled_field_with_pressure_codomain_returns_dimensioned_scalar() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let sf = make_sampled_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![100e6, 250e6, 175e6],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, pressure.clone());
+
+    let expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        pressure.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Scalar {
+            si_value: 250e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max of pressure-codomain field should preserve PRESSURE dimension"
+    );
+}
+
+/// `min(field)` over a Sampled 1-D Pressure-codomain field returns the
+/// minimum value as `Value::Scalar { si_value: <min>, dimension: PRESSURE }`.
+#[test]
+fn min_sampled_field_with_pressure_codomain_returns_dimensioned_scalar() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let sf = make_sampled_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![100e6, 250e6, 175e6],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, pressure.clone());
+
+    let expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(field, field_type)],
+        pressure.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Scalar {
+            si_value: 100e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "min of pressure-codomain field should preserve PRESSURE dimension"
     );
 }
