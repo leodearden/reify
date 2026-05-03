@@ -800,12 +800,11 @@ pub(crate) fn resolve_type_alias_expr(
                 // resolve_parameterized_builtin_type (the `_ => None` arm) OR a matched
                 // arm delegated inner-arg resolution to a silent inner resolver
                 // (`resolve_type_expr_with_aliases` returns `None` without pushing a
-                // diagnostic for unknown simple names — see the silent-fallback behaviour
-                // around line ~980).  This fall-through is safe only because
-                // `resolve_type_name` (lines 497-609) has NO default for `List` / `Set` /
-                // `Map` / `Option` / `Tensor` / `Matrix` / `Vector3` / `Point3`: a
-                // silent-None from any of those arms results in no default binding, so
-                // falling through to the user-parametric check below is harmless.
+                // diagnostic for unknown simple names — see its silent-fallback behaviour).
+                // This fall-through is safe only because `resolve_type_name` has no default
+                // for `List` / `Set` / `Map` / `Option` / `Tensor` / `Matrix` / `Vector3` /
+                // `Point3`: a silent-None from any of those arms results in no default binding,
+                // so falling through to the user-parametric check below is harmless.
                 // Adding a `resolve_type_name` default for any of those builtins would
                 // silently re-introduce a #2841-shaped wrong-type cascade when a
                 // non-parametric alias body references the builtin with an unresolvable
