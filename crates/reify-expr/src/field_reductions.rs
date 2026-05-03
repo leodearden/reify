@@ -223,6 +223,12 @@ fn arg_coord_from_index(sf: &SampledField, linear_index: usize, domain_type: &Ty
 /// ...
 /// i_0    = i / (s_1 * s_2 * ... * s_{N-1})
 /// ```
+///
+/// Pinned by `argmax_sampled_field_2d_length_domain_returns_point2_at_max_index`
+/// (3×2 shape, max at linear=4 → per-axis (2, 0)) and the symmetric
+/// `argmin_..._2d` counterpart in `tests/field_reductions_tests.rs`.
+/// The N-D loop is generic and the `SampledGridKind` invariant (1/2/3
+/// axes) is reinforced by the `debug_assert!` below.
 fn decompose_index(linear: usize, axis_lengths: &[usize]) -> Vec<usize> {
     debug_assert!(
         matches!(axis_lengths.len(), 1 | 2 | 3),
@@ -242,10 +248,16 @@ fn decompose_index(linear: usize, axis_lengths: &[usize]) -> Vec<usize> {
 ///
 /// - 1-D domain (`Type::Real`, `Type::Int`, `Type::Scalar { dim }`):
 ///   returns a single `Value::Real` (dimensionless) or `Value::Scalar`
-///   (dimensioned). Asserts `coords_si.len() == 1`.
+///   (dimensioned). Asserts `coords_si.len() == 1`. Pinned by
+///   `argmax_sampled_field_1d_length_domain_*` /
+///   `argmax_sampled_field_1d_real_domain_*` and the symmetric
+///   `argmin_..._1d_length_domain_*` test in
+///   `tests/field_reductions_tests.rs`.
 /// - N-D domain (`Type::Point { n, quantity }`): returns
 ///   `Value::Point(per-axis-coords)` where each component follows the
 ///   same per-quantity wrap rule. Asserts `coords_si.len() == n`.
+///   Pinned by `argmax_sampled_field_2d_length_domain_*` /
+///   `argmin_..._2d_length_domain_*` (and 3-D variants in step-13).
 /// - Anything else → `Value::Undef`.
 fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
     match domain_type {
