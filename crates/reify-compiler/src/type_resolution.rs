@@ -1361,13 +1361,23 @@ pub(crate) fn resolve_parameterized_builtin_type(
         // unmatched case: the assert only needs to hold when a named arm ran.
         _ => return None,
     };
-    // Contract: if a named arm matched but inner-arg resolution failed (returns
-    // None via `?`), at least one diagnostic must have been pushed.  Without
-    // this, the call site's `!tmp_diags.is_empty()` guard (task #2841) cannot
-    // distinguish "name matched a builtin but failed" from "name not a builtin
-    // at all", causing it to fall through to a wrong-type default (e.g.
-    // `Scalar` → `Type::length()`).  Any future arm that silently returns None
-    // must push an explicit diagnostic first.
+    // Safety note on this assert: *every* currently existing named arm reaches
+    // the assert only on success (result == Some(_)), because any failure path
+    // uses `?` on `resolve_type_expr_with_aliases(...)`,
+    // `expect_integer_literal_type_arg(...)`, or
+    // `resolve_type_alias_expr_to_dimension(...)`, which short-circuits the
+    // function with `None` before the assert is evaluated.  The `_ => return
+    // None` arm above also short-circuits the unmatched case before reaching
+    // here.
+    //
+    // Consequently, this assert does NOT fire in practice today — it is
+    // forward-looking scaffolding: if a *future* arm is added that synthesises
+    // `None` directly (without `?`), this assert will catch the invariant
+    // violation at test-time in debug builds.  The invariant it protects is:
+    // the caller's `!tmp_diags.is_empty()` guard (tasks #2841 / #2843) requires
+    // that "matched but failed" is distinguishable from "no arm matched" — any
+    // future arm that short-circuits via an explicit `None` (not `?`) must push
+    // at least one diagnostic first so the caller can infer match-state.
     debug_assert!(
         result.is_some() || diagnostics.len() > pre_diag_len,
         "resolve_parameterized_builtin_type: arm for '{}' (arity {}) returned None \
