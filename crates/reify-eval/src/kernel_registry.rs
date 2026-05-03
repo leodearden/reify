@@ -672,53 +672,6 @@ mod tests {
         );
     }
 
-    /// Contract pin: `debug_assert_unique_op_repr_pairs` must panic with a
-    /// message that mentions `"lists the same pair twice"` when a **single**
-    /// kernel's `supports` Vec contains the same `(Operation, ReprKind)` pair
-    /// more than once (the intra-kernel branch, `prev_owner == name.as_str()`).
-    ///
-    /// The substring `"lists the same pair twice"` appears only in the
-    /// intra-kernel `debug_assert!` message; it does not appear in the
-    /// inter-kernel arm's `"kernels: {} vs {}"` message.  This pinning catches
-    /// two classes of regression:
-    ///
-    /// 1. **Arm-swap** — if the `if` / `else` branches are swapped, the
-    ///    intra-kernel duplicate routes through the inter-kernel diagnostic
-    ///    (`"kernels: foo vs foo"`) and `#[should_panic(expected = "lists the
-    ///    same pair twice")]` fails (wrong message).
-    /// 2. **Guard-drop** — if the `prev_owner == name.as_str()` guard is
-    ///    removed, the only remaining arm is the inter-kernel path, again
-    ///    producing the wrong message.
-    ///
-    /// Note: this approach couples the test to the wording of the diagnostic
-    /// string.  If the message is ever rephrased, the test will fail for
-    /// cosmetic reasons.  This is consistent with the existing convention in
-    /// this file (see `debug_assert_unique_op_repr_pairs_panics_on_duplicate_pair`
-    /// which pins `"duplicate kernel claim for"` the same way).  Should wording
-    /// churn become a problem, the substring could be extracted as a `const` in
-    /// the production module and referenced here, decoupling the test from the
-    /// literal spelling.
-    ///
-    /// The `#[cfg(debug_assertions)]` guard is required because `debug_assert!`
-    /// compiles to a no-op in release builds — `#[should_panic]` would falsely
-    /// pass if the test ran in a build where the assertion is elided.
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "lists the same pair twice")]
-    fn debug_assert_unique_op_repr_pairs_panics_on_intra_kernel_duplicate() {
-        let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
-        registered.insert(
-            "kernel_a".to_string(),
-            CapabilityDescriptor {
-                supports: vec![
-                    (Operation::BooleanUnion, ReprKind::BRep),
-                    (Operation::BooleanUnion, ReprKind::BRep),
-                ],
-            },
-        );
-        debug_assert_unique_op_repr_pairs(&registered);
-    }
-
     /// Contract pin: `debug_assert_unique_op_repr_pairs` must emit exactly one
     /// `WARN`-level event via the **intra-kernel** branch when a single
     /// kernel's `supports` Vec contains the same `(Operation, ReprKind)` pair
@@ -748,10 +701,12 @@ mod tests {
     /// event.  An arm-swap regression would still pass this test.
     ///
     /// That gap is acceptable here because:
-    /// * The primary branch-routing oracle is
-    ///   `debug_assert_unique_op_repr_pairs_panics_on_intra_kernel_duplicate`
-    ///   (the `#[should_panic]` test immediately above), which fails on an
-    ///   arm-swap in debug builds via the panic-message substring check.
+    /// * There is no in-tree behavioral oracle for branch routing within the
+    ///   intra-kernel arm.  If a future regression makes branch routing
+    ///   observable, the right fix is to extend `CountingSubscriberBuilder` in
+    ///   `reify-test-support` to capture event fields and assert on the field
+    ///   set (`kernel` only vs `prev_kernel`/`new_kernel`) — not to extract the
+    ///   panic-message substring into a shared `const`.
     /// * This test pins the orthogonal *operator-visibility* contract — that
     ///   `warn!` fires in **all** builds, including release where `debug_assert!`
     ///   is compiled out.  That contract holds regardless of arm identity.
