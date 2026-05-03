@@ -70,7 +70,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], DimensionVector::FORCE).is_none() {
                 return Some(Value::Undef);
             }
-            make_load_map("point_load", &[
+            make_load_map("point_load", vec![
                 ("force", args[1].clone()),
                 ("point", args[0].clone()),
             ])
@@ -94,7 +94,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                     None => return Some(Value::Undef),
                 }
             };
-            make_load_map("pressure_load", &[
+            make_load_map("pressure_load", vec![
                 ("direction", direction),
                 ("face", args[0].clone()),
                 ("magnitude", args[1].clone()),
@@ -110,7 +110,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], DimensionVector::PRESSURE).is_none() {
                 return Some(Value::Undef);
             }
-            make_load_map("traction_load", &[
+            make_load_map("traction_load", vec![
                 ("face", args[0].clone()),
                 ("traction", args[1].clone()),
             ])
@@ -125,7 +125,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], force_density_dim()).is_none() {
                 return Some(Value::Undef);
             }
-            make_load_map("body_force", &[
+            make_load_map("body_force", vec![
                 ("body", args[0].clone()),
                 ("force_density", args[1].clone()),
             ])
@@ -140,34 +140,25 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                         Value::Scalar { si_value: 0.0, dimension: accel_dim },
                         Value::Scalar { si_value: -EARTH_GRAVITY, dimension: accel_dim },
                     ]);
-                    make_load_map("gravity", &[("acceleration", acceleration)])
+                    make_load_map("gravity", vec![("acceleration", acceleration)])
                 }
                 1 => {
-                    // Dispatch on input shape: Vector3 passes through unchanged;
-                    // Scalar places magnitude in -Z (with sign flip).
-                    match &args[0] {
-                        Value::Vector(_) => {
-                            // Explicit Vector3<Acceleration>: validate dim/length/finiteness
-                            // and round-trip unchanged (no sign flip, no Z-axis remap).
-                            if validate_dimensioned_vec3(&args[0], accel_dim).is_none() {
-                                return Some(Value::Undef);
-                            }
-                            make_load_map("gravity", &[("acceleration", args[0].clone())])
-                        }
-                        Value::Scalar { .. } => {
-                            // Scalar<Acceleration>: magnitude in -Z direction (sign flip).
-                            let magnitude = match validate_dimensioned_scalar(&args[0], accel_dim) {
-                                Some(m) => m,
-                                None => return Some(Value::Undef),
-                            };
-                            let acceleration = Value::Vector(vec![
-                                Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                                Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                                Value::Scalar { si_value: -magnitude, dimension: accel_dim },
-                            ]);
-                            make_load_map("gravity", &[("acceleration", acceleration)])
-                        }
-                        _ => return Some(Value::Undef),
+                    // Try scalar interpretation first: Scalar<Acceleration> → magnitude
+                    // placed in -Z with sign flip.  Then try Vector3/Tensor/Point
+                    // interpretation (same as point_load / traction_load / body_force):
+                    // any 3-component dimensioned vector accepted and round-tripped
+                    // unchanged (no sign flip, no Z-axis remap).
+                    if let Some(magnitude) = validate_dimensioned_scalar(&args[0], accel_dim) {
+                        let acceleration = Value::Vector(vec![
+                            Value::Scalar { si_value: 0.0, dimension: accel_dim },
+                            Value::Scalar { si_value: 0.0, dimension: accel_dim },
+                            Value::Scalar { si_value: -magnitude, dimension: accel_dim },
+                        ]);
+                        make_load_map("gravity", vec![("acceleration", acceleration)])
+                    } else if validate_dimensioned_vec3(&args[0], accel_dim).is_some() {
+                        make_load_map("gravity", vec![("acceleration", args[0].clone())])
+                    } else {
+                        return Some(Value::Undef);
                     }
                 }
                 _ => return Some(Value::Undef),
@@ -184,14 +175,16 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
 /// Fields are inserted into a `BTreeMap`, which sorts them alphabetically.
 /// The `kind` key is always included.  Callers pass extra `(name, value)` pairs
 /// in any order — alphabetical order is guaranteed by `BTreeMap`.
-fn make_load_map(kind: &str, fields: &[(&str, Value)]) -> Value {
+///
+/// Takes `Vec<(&str, Value)>` so values are moved into the map (not cloned).
+fn make_load_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
     let mut m = BTreeMap::new();
     m.insert(
         Value::String("kind".to_string()),
         Value::String(kind.to_string()),
     );
     for (k, v) in fields {
-        m.insert(Value::String(k.to_string()), v.clone());
+        m.insert(Value::String(k.to_string()), v);
     }
     Value::Map(m)
 }
@@ -202,8 +195,8 @@ fn make_load_map(kind: &str, fields: &[(&str, Value)]) -> Value {
 /// numeric components with a consistent dimension matching `expected_dim`,
 /// all finite.
 ///
-/// Returns `Some([x, y, z])` on success, `None` on any failure.
-fn validate_dimensioned_vec3(v: &Value, expected_dim: DimensionVector) -> Option<[f64; 3]> {
+/// Returns `Some(())` on success, `None` on any failure.
+fn validate_dimensioned_vec3(v: &Value, expected_dim: DimensionVector) -> Option<()> {
     let (vals, dim) = tensor_components_f64(v)?;
     if vals.len() != 3 {
         return None;
@@ -214,7 +207,7 @@ fn validate_dimensioned_vec3(v: &Value, expected_dim: DimensionVector) -> Option
     if vals.iter().any(|x| !x.is_finite()) {
         return None;
     }
-    Some([vals[0], vals[1], vals[2]])
+    Some(())
 }
 
 /// Validate that `v` is a `Value::Scalar` with dimension matching `expected_dim`
