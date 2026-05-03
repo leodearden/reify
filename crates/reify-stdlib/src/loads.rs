@@ -693,4 +693,98 @@ mod tests {
             "traction should round-trip"
         );
     }
+
+    // ── traction_load: failure modes ─────────────────────────────────────────
+
+    #[test]
+    fn traction_load_traction_force_dim_returns_undef() {
+        let bad = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("traction_load", &[face_selector_stub(), bad]).is_undef(),
+            "traction with FORCE dim → Undef"
+        );
+    }
+
+    #[test]
+    fn traction_load_traction_dimensionless_returns_undef() {
+        let bad = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("traction_load", &[face_selector_stub(), bad]).is_undef(),
+            "dimensionless traction → Undef"
+        );
+    }
+
+    #[test]
+    fn traction_load_traction_nan_returns_undef() {
+        let nan_vec = make_scalar_vec3([f64::NAN, 0.0, 0.0], DimensionVector::PRESSURE);
+        assert!(
+            eval_builtin("traction_load", &[face_selector_stub(), nan_vec]).is_undef(),
+            "NaN traction component → Undef"
+        );
+    }
+
+    #[test]
+    fn traction_load_traction_vec2_returns_undef() {
+        let vec2 = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::PRESSURE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::PRESSURE,
+            },
+        ]);
+        assert!(
+            eval_builtin("traction_load", &[face_selector_stub(), vec2]).is_undef(),
+            "2-component traction → Undef"
+        );
+    }
+
+    #[test]
+    fn traction_load_traction_real_returns_undef() {
+        assert!(
+            eval_builtin("traction_load", &[face_selector_stub(), Value::Real(1.0)]).is_undef(),
+            "traction = Real → Undef"
+        );
+    }
+
+    #[test]
+    fn traction_load_selector_int_returns_undef() {
+        let traction = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::PRESSURE);
+        assert!(
+            eval_builtin("traction_load", &[Value::Int(7), traction]).is_undef(),
+            "selector = Int → Undef"
+        );
+    }
+
+    #[test]
+    fn traction_load_zero_args_returns_undef() {
+        assert!(eval_builtin("traction_load", &[]).is_undef(), "0 args → Undef");
+    }
+
+    #[test]
+    fn traction_load_one_arg_returns_undef() {
+        assert!(
+            eval_builtin("traction_load", &[face_selector_stub()]).is_undef(),
+            "1 arg → Undef"
+        );
+    }
+
+    #[test]
+    fn traction_load_three_args_returns_undef() {
+        let traction = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::PRESSURE);
+        assert!(
+            eval_builtin(
+                "traction_load",
+                &[face_selector_stub(), traction.clone(), traction]
+            )
+            .is_undef(),
+            "3 args → Undef"
+        );
+    }
 }
