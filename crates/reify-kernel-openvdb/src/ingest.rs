@@ -105,19 +105,21 @@ pub struct IngestOutcome {
 
 /// Lower an in-memory OpenVDB grid to a [`SampledField`].
 ///
-/// Step-2 minimal implementation: handles the `Regular1D` arm only. Step-4
-/// extends this to `Regular2D` and `Regular3D`.
+/// Handles `Regular1D` / `Regular2D` / `Regular3D` arms uniformly, mapping
+/// each to the corresponding [`SampledGridKind`] and constructing per-axis
+/// grids via [`linspace_inclusive`].
 ///
 /// # Errors
 ///
-/// Returns [`IngestError`] for any fatal ingestion failure. For step-2
-/// the only failure variant is [`IngestError::FfiNotImplemented`] (not
-/// reachable from this entry point — only [`read_vdb_file`] returns it).
+/// Returns [`IngestError`] for any fatal ingestion failure. Step-6 adds
+/// unit-mismatch / unknown-unit / unsupported-codomain failures; step-10
+/// adds the empty-grid / data-shape-mismatch / invalid-spacing pre-flight
+/// guards.
 ///
 /// # Codomain type
 ///
-/// `codomain_type` is currently unused in step-2 (unit validation is
-/// added in step-6). Marked `_codomain_type` for now.
+/// `codomain_type` is currently unused (unit validation is added in
+/// step-6). Marked `_codomain_type` for now.
 pub fn lower_to_sampled(
     grid: &OpenVdbGridSource,
     name: &str,
