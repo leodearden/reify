@@ -320,3 +320,44 @@ fn min_sampled_field_with_pressure_codomain_returns_dimensioned_scalar() {
         "min of pressure-codomain field should preserve PRESSURE dimension"
     );
 }
+
+// ── Step 9: argmin over a 1-D Length-domain Sampled field ───────────────────
+
+/// `argmin(field)` over a Sampled 1-D Length-domain Real-codomain field
+/// returns the coord at the index of the data buffer's minimum, wrapped
+/// per the field's `domain_type` (here `Type::Scalar { LENGTH }`).
+///
+/// Mirrors `argmax_sampled_field_1d_length_domain_returns_coord_at_max_index`
+/// for the symmetric min case: data `[1, 5, 3, 4, 2]` -> min at index 0
+/// -> coord 0.0m.
+#[test]
+fn argmin_sampled_field_1d_length_domain_returns_coord_at_min_index() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    // axis = [0,1,2,3,4]; data = [1,5,3,4,2] -> min at index 0 -> coord 0.0m
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(field) over 1-D LENGTH domain should return the coord of the data min"
+    );
+}
