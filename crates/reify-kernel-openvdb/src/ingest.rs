@@ -396,6 +396,87 @@ pub fn validate_grid_units(
     Ok(())
 }
 
+/// v0.2 stub for the file-read entry point.
+///
+/// Real OpenVDB FFI is deferred to a follow-up task per the
+/// `reify-kernel-openvdb` crate doc. This function returns
+/// [`IngestError::FfiNotImplemented`] carrying `path` so the caller can
+/// distinguish the v0.2 surface-scaffold case from a real read failure.
+/// The signature is final — once the FFI lands, only the body changes.
+///
+/// # Parameters
+///
+/// - `path`: filesystem path to the `.vdb` file. The stub names this back
+///   in the error variant and Display message.
+/// - `grid_name`: name of the grid inside the multi-grid `.vdb` file.
+///   Currently unused (the stub returns before reading); pinned in the
+///   public signature so the follow-up FFI body has the contract.
+/// - `codomain_type`: codomain type the field declaration declared.
+///   Currently unused (the stub returns before validation); pinned in the
+///   public signature so the follow-up FFI body can pre-validate units.
+pub fn read_vdb_file(
+    path: &str,
+    _grid_name: &str,
+    _codomain_type: &Type,
+) -> Result<IngestOutcome, IngestError> {
+    Err(IngestError::FfiNotImplemented {
+        path: path.to_string(),
+    })
+}
+
+impl std::fmt::Display for IngestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IngestError::FfiNotImplemented { path } => write!(
+                f,
+                "OpenVDB file ingestion is not yet implemented; \
+                 reify-kernel-openvdb's read_vdb_file is a v0.2 \
+                 ingestion-API surface scaffold for task 2666. \
+                 Real OpenVDB FFI is a follow-up task. (path = {path})"
+            ),
+            IngestError::UnitMismatch {
+                expected_dimension,
+                found_dimension,
+                found_unit,
+            } => write!(
+                f,
+                "OpenVDB grid unit '{found_unit}' has dimension {found_dimension:?} \
+                 but field codomain expects dimension {expected_dimension:?}"
+            ),
+            IngestError::UnknownUnit { unit } => write!(
+                f,
+                "OpenVDB grid declares unrecognised unit string '{unit}'; \
+                 not present in reify-kernel-openvdb's v0.2 KNOWN_UNITS table"
+            ),
+            IngestError::UnsupportedCodomain { type_repr } => write!(
+                f,
+                "field codomain type '{type_repr}' is not a meaningful \
+                 numeric codomain for OpenVDB-imported data"
+            ),
+            IngestError::EmptyGrid => write!(
+                f,
+                "OpenVDB grid carries no data values (empty data buffer)"
+            ),
+            IngestError::DataShapeMismatch {
+                expected,
+                actual,
+                shape,
+            } => write!(
+                f,
+                "OpenVDB grid data length {actual} does not match grid shape \
+                 ({shape}); expected {expected} elements (row-major, \
+                 axis-0 outermost)"
+            ),
+            IngestError::InvalidSpacing { axis, value } => write!(
+                f,
+                "OpenVDB grid axis {axis} spacing must be positive and finite, got {value}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for IngestError {}
+
 /// Look up a unit string in [`KNOWN_UNITS`].
 fn lookup_unit_dimension(unit: &str) -> Option<DimensionVector> {
     KNOWN_UNITS
