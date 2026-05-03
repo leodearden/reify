@@ -12,7 +12,7 @@
 
 use reify_kernel_openvdb::ingest::{
     IngestError, IngestOutcome, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation,
-    lower_to_sampled,
+    lower_to_sampled, read_vdb_file,
 };
 use reify_types::{DiagnosticCode, DimensionVector, InterpolationKind, SampledGridKind, Severity, Type};
 
@@ -399,4 +399,43 @@ fn lower_to_sampled_non_positive_spacing_returns_invalid_spacing() {
             "expected Err(IngestError::InvalidSpacing {{ … }}), got {other:?}"
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Step-11 RED: read_vdb_file v0.2 stub contract
+// ---------------------------------------------------------------------------
+
+/// Step-11: `read_vdb_file` is the v0.2 stub for the file-read entry point.
+/// Pins the FfiNotImplemented variant + the Display contract that a
+/// follow-up FFI implementation must preserve (so consumers' error parsing
+/// continues to work after the body is swapped in).
+#[test]
+fn read_vdb_file_returns_ffi_not_implemented_with_path() {
+    let result = read_vdb_file("path/to/example.vdb", "voxel_grid", &Type::length());
+    let err = match result {
+        Err(IngestError::FfiNotImplemented { path }) => {
+            assert_eq!(path, "path/to/example.vdb");
+            IngestError::FfiNotImplemented { path }
+        }
+        other => panic!(
+            "expected Err(IngestError::FfiNotImplemented {{ path }}), got {other:?}"
+        ),
+    };
+
+    // Pin the Display contract: the message names OpenVDB, the task that
+    // owns the v0.2 stub (so triage can follow up), and the path so
+    // operators can identify the offending file in a multi-import workflow.
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("OpenVDB"),
+        "Display message must mention OpenVDB; got {msg:?}"
+    );
+    assert!(
+        msg.contains("task 2666"),
+        "Display message must mention task 2666 for triage; got {msg:?}"
+    );
+    assert!(
+        msg.contains("path/to/example.vdb"),
+        "Display message must include the path; got {msg:?}"
+    );
 }
