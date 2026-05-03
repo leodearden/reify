@@ -1,0 +1,28 @@
+// Stdlib: FEA Material Traits
+//
+// Provides the dimensioned `ElasticMaterial` trait + a starter library of four
+// canonical engineering materials (Steel_AISI_1045, Aluminium_6061_T6,
+// Titanium_Ti6Al4V, ABS_Plastic) needed by the v0.3 structural-analysis FEA
+// solver. Each material carries per-property provenance metadata referencing
+// a public reference (matweb / MMPDS / ASM Handbook).
+//
+// PRD reference: docs/prds/v0_3/structural-analysis-fea.md task #1.
+//
+// Citation policy: every property value cites a public, durable reference —
+// typically matweb's online material property database, the MMPDS metallic
+// design data handbook, or the ASM Handbook series. Each property also
+// carries a free-text `notes` field describing any caveats (heat treatment,
+// alloy variant, ductile-to-brittle transition, etc.) so downstream FEA
+// reports can reproduce the citation chain.
+//
+// Relationship to existing material traits:
+//   - This module's `ElasticMaterial` is a NEW, dimensioned trait designed for
+//     the FEA solver. It uses `Pressure` (kg·m⁻¹·s⁻²) and `Density` (kg·m⁻³)
+//     dimensioned types and constrains `poisson_ratio` to the half-open
+//     interval `[0, 0.5)`.
+//   - The pre-existing `Elastic` trait in `materials_mechanical.ri` uses
+//     `Real` placeholders, mixes `shear_modulus` alongside `youngs_modulus`,
+//     and carries no Poisson-ratio range constraint. It is retained verbatim
+//     for legacy consumers (47 callers in tests/examples).
+//   - Neither trait supersedes the other; they coexist for different
+//     purposes. New FEA-bound code should depend on `ElasticMaterial`.
