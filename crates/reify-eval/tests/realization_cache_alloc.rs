@@ -103,12 +103,16 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     // flakiness was ever observed) tolerates these background allocations while still
     // catching the pre-fix regression where `entity.to_owned()` ran unconditionally on
     // every call — that case produces `delta ≈ 256`, a value far above the threshold.
-    // The threshold is set at 4: approximately 2× the observed libtest noise floor (≤ 2),
-    // which preserves a small safety margin while restoring discriminating power against
-    // intermediate regressions (e.g. one extra alloc per call would push delta to ~256,
-    // cleanly above 4).  4 is far below the bug-case delta (~256).  If CI later observes
-    // a noise floor above 2 from libtest's output thread, raise to 8 — but do NOT return
-    // to 16 absent empirical evidence of a 16-alloc noise window.
+    // The threshold is set at 4: the regression this test guards against
+    // (`entity.to_owned()` on every call) produces delta = 256, well above
+    // either 4 or 16 — so the specific value makes no difference for catching
+    // the known bug.  Tightening to 4 buys protection only against hypothetical
+    // intermediate regressions; the honest justification is that CI consistently
+    // observes ≤ 2 allocations from libtest's output-capture thread, and a
+    // tighter bound costs nothing as long as the noise floor stays there.
+    // (This binary has a single `#[test]`, so background-thread noise comes
+    // exclusively from libtest's own output-capture thread — `--test-threads`
+    // parallelism between tests is not a factor.)
     assert!(
         delta <= 4,
         "rejected inserts under existing entity must allocate at most a handful of times \
