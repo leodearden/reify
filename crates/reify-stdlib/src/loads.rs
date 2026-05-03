@@ -1025,6 +1025,104 @@ mod tests {
         );
     }
 
+    // ── gravity constructor: failure modes ────────────────────────────────────
+
+    #[test]
+    fn gravity_scalar_length_dim_returns_undef() {
+        // Scalar with LENGTH dimension (not acceleration).
+        let bad = Value::Scalar {
+            si_value: 9.81,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("gravity", &[bad]).is_undef(),
+            "Scalar<LENGTH> → Undef"
+        );
+    }
+
+    #[test]
+    fn gravity_scalar_force_dim_returns_undef() {
+        // Scalar with FORCE dimension (not acceleration).
+        let bad = Value::Scalar {
+            si_value: 9.81,
+            dimension: DimensionVector::FORCE,
+        };
+        assert!(
+            eval_builtin("gravity", &[bad]).is_undef(),
+            "Scalar<FORCE> → Undef"
+        );
+    }
+
+    #[test]
+    fn gravity_scalar_nan_returns_undef() {
+        use super::acceleration_dim;
+        let bad = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: acceleration_dim(),
+        };
+        assert!(
+            eval_builtin("gravity", &[bad]).is_undef(),
+            "Scalar NaN → Undef"
+        );
+    }
+
+    #[test]
+    fn gravity_vector3_length_dim_returns_undef() {
+        use super::acceleration_dim;
+        // Vector3 with LENGTH instead of acceleration dim.
+        let bad = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::LENGTH);
+        assert!(
+            eval_builtin("gravity", &[bad]).is_undef(),
+            "Vector3<LENGTH> → Undef"
+        );
+    }
+
+    #[test]
+    fn gravity_vector2_acceleration_dim_returns_undef() {
+        use super::acceleration_dim;
+        let dim = acceleration_dim();
+        let vec2 = Value::Vector(vec![
+            Value::Scalar { si_value: 0.0, dimension: dim },
+            Value::Scalar { si_value: -9.81, dimension: dim },
+        ]);
+        assert!(
+            eval_builtin("gravity", &[vec2]).is_undef(),
+            "Vector2<acceleration> → Undef"
+        );
+    }
+
+    #[test]
+    fn gravity_vector3_inf_component_returns_undef() {
+        use super::acceleration_dim;
+        let bad = make_scalar_vec3([0.0, 0.0, f64::INFINITY], acceleration_dim());
+        assert!(
+            eval_builtin("gravity", &[bad]).is_undef(),
+            "Vector3 with Inf → Undef"
+        );
+    }
+
+    #[test]
+    fn gravity_bare_real_returns_undef() {
+        // Value::Real is not a dimensioned Scalar.
+        assert!(
+            eval_builtin("gravity", &[Value::Real(9.81)]).is_undef(),
+            "Real(9.81) → Undef"
+        );
+    }
+
+    #[test]
+    fn gravity_two_args_returns_undef() {
+        use super::acceleration_dim;
+        let s = Value::Scalar {
+            si_value: 9.81,
+            dimension: acceleration_dim(),
+        };
+        assert!(
+            eval_builtin("gravity", &[s.clone(), s]).is_undef(),
+            "2 args → Undef"
+        );
+    }
+
     // ── gravity constructor: 1-arg Vector3<Acceleration> form ────────────────
 
     #[test]
