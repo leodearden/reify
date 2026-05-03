@@ -29,6 +29,13 @@ use reify_types::SourceLocationInfo;
 ///
 /// Returns `None` when the entity or member is not found, or when the input
 /// does not match either accepted form (e.g., bare member name, empty string).
+///
+/// # Migration
+///
+/// **Behavior change vs. pre-refactor CLI:** the prior CLI implementation
+/// also matched bare member names (e.g., `"width"`) across all templates;
+/// this is intentionally dropped for parity with the GUI surface — callers
+/// must use the `Entity.member` form.
 pub fn resolve_entity_source_location(
     compiled: &CompiledModule,
     source: &str,
