@@ -14,7 +14,7 @@ use reify_kernel_openvdb::ingest::{
     IngestError, IngestOutcome, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation,
     lower_to_sampled,
 };
-use reify_types::{DimensionVector, InterpolationKind, SampledGridKind, Type};
+use reify_types::{DiagnosticCode, DimensionVector, InterpolationKind, SampledGridKind, Severity, Type};
 
 /// Step-1 happy path: a 1D `Length` grid lowered with linear interpolation
 /// produces a `SampledField` whose semantic content (kind, bounds, spacing,
@@ -197,4 +197,89 @@ fn validate_grid_units_unsupported_codomain_returns_error() {
             "expected Err(IngestError::UnsupportedCodomain {{ … }}), got {other:?}"
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Step-7 RED: interpolation-mapping tests
+// ---------------------------------------------------------------------------
+
+/// Helper: minimal valid 1D Length grid with the given interpolation, used
+/// by the interpolation-mapping tests.
+fn interp_test_grid(interpolation: OpenVdbInterpolation) -> OpenVdbGridSource {
+    OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0, 2.0, 3.0],
+        units: Some("m".to_string()),
+        interpolation,
+    }
+}
+
+/// Step-7(a): linear interpolation maps to InterpolationKind::Linear with
+/// no warnings emitted.
+#[test]
+fn lower_to_sampled_linear_interpolation_emits_no_warnings() {
+    let grid = interp_test_grid(OpenVdbInterpolation::Linear);
+    let outcome = lower_to_sampled(&grid, "linf", &Type::length()).unwrap();
+    assert_eq!(outcome.field.interpolation, InterpolationKind::Linear);
+    assert!(
+        outcome.warnings.is_empty(),
+        "linear interpolation must not emit deferred warnings"
+    );
+}
+
+/// Step-7(b): quadratic interpolation maps to InterpolationKind::Cubic with
+/// a single InterpolationDeferred warning that names both modes.
+#[test]
+fn lower_to_sampled_quadratic_interpolation_maps_to_cubic_with_deferred_warning() {
+    let grid = interp_test_grid(OpenVdbInterpolation::Quadratic);
+    let outcome = lower_to_sampled(&grid, "quadf", &Type::length()).unwrap();
+    assert_eq!(outcome.field.interpolation, InterpolationKind::Cubic);
+    assert_eq!(
+        outcome.warnings.len(),
+        1,
+        "quadratic mapping must emit exactly one deferred warning"
+    );
+    let w = &outcome.warnings[0];
+    assert_eq!(w.code, Some(DiagnosticCode::InterpolationDeferred));
+    assert_eq!(w.severity, Severity::Warning);
+    assert!(
+        w.message.contains("quadratic"),
+        "warning message must name 'quadratic'; got {:?}",
+        w.message
+    );
+    assert!(
+        w.message.contains("Cubic"),
+        "warning message must name target 'Cubic'; got {:?}",
+        w.message
+    );
+}
+
+/// Step-7(c): staggered interpolation maps to InterpolationKind::Linear with
+/// a single InterpolationDeferred warning that names both modes.
+#[test]
+fn lower_to_sampled_staggered_interpolation_maps_to_linear_with_deferred_warning() {
+    let grid = interp_test_grid(OpenVdbInterpolation::Staggered);
+    let outcome = lower_to_sampled(&grid, "stagf", &Type::length()).unwrap();
+    assert_eq!(outcome.field.interpolation, InterpolationKind::Linear);
+    assert_eq!(
+        outcome.warnings.len(),
+        1,
+        "staggered mapping must emit exactly one deferred warning"
+    );
+    let w = &outcome.warnings[0];
+    assert_eq!(w.code, Some(DiagnosticCode::InterpolationDeferred));
+    assert_eq!(w.severity, Severity::Warning);
+    assert!(
+        w.message.contains("staggered"),
+        "warning message must name 'staggered'; got {:?}",
+        w.message
+    );
+    assert!(
+        w.message.contains("Linear"),
+        "warning message must name target 'Linear'; got {:?}",
+        w.message
+    );
 }
