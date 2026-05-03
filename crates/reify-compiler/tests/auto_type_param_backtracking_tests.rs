@@ -1977,3 +1977,182 @@ structure def WaterCooled : Cooled {
         diagnostics
     );
 }
+
+// ─── step-1 (task 2661): free-mode ≥2 cross-product feasibles ─────────────────
+// → NonUnique Warning + lex-first success shape
+
+/// Two `AutoTypeParam`s `[T : Seal (free=true), U : Cooled (free=true)]` with
+/// 2 candidates each (4 cross-product leaves). A single constraint is added to
+/// the template so the `MockConstraintChecker`'s queue fires per-leaf.
+///
+/// Queue `[Satisfied, Violated, Satisfied, Violated]` drives:
+/// - Leaf 1 `(ORingSeal, AirCooled)`   → Satisfied → **feasible**
+/// - Leaf 2 `(ORingSeal, WaterCooled)` → Violated  → infeasible
+/// - Leaf 3 `(RubberSeal, AirCooled)`  → Satisfied → **feasible**
+/// - Leaf 4 `(RubberSeal, WaterCooled)`→ Violated  → infeasible
+///
+/// → exactly 2 cross-product feasibles; lex-first = `(ORingSeal, AirCooled)`.
+///
+/// **Current behavior (pre-task-2661):** free-mode stops at the first feasible
+/// leaf (`max_feasible_to_collect = 1`) and emits ZERO diagnostics.  This test
+/// FAILS because it requires a `AutoTypeParamNonUnique` warning AND that the
+/// search collects ALL feasibles before selecting.
+///
+/// Pins:
+/// (a) `per_param == [(T, Selected("ORingSeal")), (U, Selected("AirCooled"))]`
+///     — full length-N success shape, lex-first selected.
+/// (b) `substitution == [(T, "ORingSeal"), (U, "AirCooled")]`
+/// (c) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity `Warning`
+/// (d) `diagnostics[0].candidates == ["ORingSeal", "AirCooled"]`
+///     — FQN-only invariant: bare FQNs of the lex-first leaf (task 2860)
+/// (e) message contains "ORingSeal", "RubberSeal", "AirCooled"
+///     (both feasible witnesses are rendered)
+#[test]
+fn dfs_free_mode_two_feasible_cross_products_emits_non_unique_warning_and_picks_lex_first() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // One constraint on the template so the per-call queue verdict fires at
+    // each leaf (with an empty constraints slice, `check()` would never be
+    // called and every leaf would be trivially feasible regardless of the queue).
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    // Queue [S, V, S, V]: leaves 1 and 3 feasible, leaves 2 and 4 infeasible.
+    // → 2 cross-product feasibles: (ORingSeal, AirCooled) and (RubberSeal, AirCooled).
+    // lex-first = (ORingSeal, AirCooled) (first discovered in DFS order).
+    let checker = MockConstraintChecker::new().with_call_queue(vec![
+        Satisfaction::Satisfied,
+        Satisfaction::Violated,
+        Satisfaction::Satisfied,
+        Satisfaction::Violated,
+    ]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // (a) Full N-length per_param — success shape, not length-1 Ambiguous shape.
+    assert_eq!(
+        outcome.per_param,
+        vec![
+            ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+            ("U".to_string(), SelectionResult::Selected("AirCooled".to_string())),
+        ],
+        "all-free ≥2 NonUnique path must produce length-2 per_param with Selected \
+         entries (success shape, not Ambiguous); got: {:?}",
+        outcome.per_param
+    );
+    // (b) Full substitution Vec in declared order.
+    assert_eq!(
+        outcome.substitution,
+        vec![
+            ("T".to_string(), "ORingSeal".to_string()),
+            ("U".to_string(), "AirCooled".to_string()),
+        ],
+        "all-free ≥2 NonUnique path must produce full substitution Vec; got: {:?}",
+        outcome.substitution
+    );
+    // (c) Exactly one NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "all-free ≥2 feasibles must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "all-free ≥2 diagnostic must be AutoTypeParamNonUnique, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity (not Error)"
+    );
+    // (d) FQN-only candidates invariant: lex-first leaf's bare FQN list.
+    assert_eq!(
+        diagnostics[0].candidates,
+        vec!["ORingSeal".to_string(), "AirCooled".to_string()],
+        "Diagnostic.candidates must be the lex-first leaf's bare FQN list \
+         (FQN-only invariant, task 2860); got: {:?}",
+        diagnostics[0].candidates
+    );
+    // Candidates must be bare FQNs — no '=' or ',' composite tuples.
+    for entry in &diagnostics[0].candidates {
+        assert!(
+            !entry.contains('='),
+            "Diagnostic.candidates entries must be bare FQNs (no '='); got: {:?}",
+            entry
+        );
+        assert!(
+            !entry.contains(','),
+            "Diagnostic.candidates entries must be bare FQNs (no ','); got: {:?}",
+            entry
+        );
+    }
+    // (e) Both feasible witnesses appear in the message body.
+    assert!(
+        diagnostics[0].message.contains("ORingSeal"),
+        "message must mention ORingSeal (from lex-first witness); got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("RubberSeal"),
+        "message must mention RubberSeal (from second feasible witness); got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("AirCooled"),
+        "message must mention AirCooled (appears in both feasible witnesses); got: {:?}",
+        diagnostics[0].message
+    );
+}
