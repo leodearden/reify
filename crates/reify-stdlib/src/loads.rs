@@ -26,9 +26,9 @@ pub(crate) const EARTH_GRAVITY: f64 = 9.80665;
 
 /// Canonical set of load kinds recognized by this module.
 ///
-/// Analogous to `joints::JOINT_KINDS`. Future FEA-solver consumers can use
-/// this constant for load-kind membership checks.
-#[allow(dead_code)]
+/// Analogous to `joints::JOINT_KINDS`.  Consumed by `is_load_value` and
+/// guarded by the `load_kinds_all_dispatched_by_eval_loads` partition test to
+/// prevent silent drift between this list and `eval_loads`'s dispatch arms.
 pub(crate) const LOAD_KINDS: &[&str] = &[
     "point_load",
     "pressure_load",
@@ -36,6 +36,20 @@ pub(crate) const LOAD_KINDS: &[&str] = &[
     "body_force",
     "gravity",
 ];
+
+/// Returns `true` if `v` is a load `Value::Map` produced by this module —
+/// i.e., a Map with a `kind` field whose value is one of `LOAD_KINDS`.
+///
+/// Analogous to `joints::is_joint_value`.
+pub(crate) fn is_load_value(v: &Value) -> bool {
+    match v {
+        Value::Map(m) => m
+            .get(&Value::String("kind".to_string()))
+            .and_then(|k| if let Value::String(s) = k { Some(s.as_str()) } else { None })
+            .map_or(false, |s| LOAD_KINDS.contains(&s)),
+        _ => false,
+    }
+}
 
 /// Returns the acceleration dimension: m·s⁻² (LENGTH / TIME²).
 ///
@@ -1181,5 +1195,70 @@ mod tests {
 
         // magnitude 9.81 m/s², placed in -Z.
         assert_vector3_approx!(Vector, accel.clone(), [0.0, 0.0, -9.81]);
+    }
+
+    // ── LOAD_KINDS partition test ─────────────────────────────────────────────
+
+    /// Guard that every kind listed in `LOAD_KINDS` is actually dispatched by
+    /// `eval_loads`.  If a kind is renamed or removed in `eval_loads` but not
+    /// updated in `LOAD_KINDS` (or vice versa), this test will catch it.
+    #[test]
+    fn load_kinds_all_dispatched_by_eval_loads() {
+        use super::{acceleration_dim, eval_loads, force_density_dim, is_load_value, LOAD_KINDS};
+
+        let stub_selector = Value::Map({
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String("stub".to_string()),
+            );
+            m
+        });
+        let force_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
+        let pressure_mag = Value::Scalar {
+            si_value: 1e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let pressure_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::PRESSURE);
+        let fd_vec = make_scalar_vec3([1.0, 0.0, 0.0], force_density_dim());
+        let accel_vec = make_scalar_vec3([0.0, 0.0, -9.81], acceleration_dim());
+
+        for kind in LOAD_KINDS {
+            let result = match *kind {
+                "point_load" => {
+                    eval_loads(kind, &[stub_selector.clone(), force_vec.clone()])
+                }
+                "pressure_load" => {
+                    eval_loads(kind, &[stub_selector.clone(), pressure_mag.clone()])
+                }
+                "traction_load" => {
+                    eval_loads(kind, &[stub_selector.clone(), pressure_vec.clone()])
+                }
+                "body_force" => {
+                    eval_loads(kind, &[stub_selector.clone(), fd_vec.clone()])
+                }
+                "gravity" => eval_loads(kind, &[accel_vec.clone()]),
+                other => panic!(
+                    "LOAD_KINDS contains '{}' but no fixture is defined for it — \
+                     add a fixture arm to this test and an arm to eval_loads",
+                    other
+                ),
+            };
+
+            assert!(
+                result.is_some(),
+                "eval_loads('{}', ...) returned None — LOAD_KINDS is out of sync \
+                 with eval_loads dispatch arms",
+                kind
+            );
+
+            // Also verify the returned Map is recognized by is_load_value.
+            let value = result.unwrap();
+            assert!(
+                is_load_value(&value),
+                "is_load_value should recognize a Map produced by eval_loads('{}', ...)",
+                kind
+            );
+        }
     }
 }
