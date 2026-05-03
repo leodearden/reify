@@ -672,6 +672,104 @@ mod tests {
         );
     }
 
+    /// Contract pin: `debug_assert_unique_op_repr_pairs` must panic with a
+    /// message that mentions `"lists the same pair twice"` when a **single**
+    /// kernel's `supports` Vec contains the same `(Operation, ReprKind)` pair
+    /// more than once (the intra-kernel branch, `prev_owner == name.as_str()`).
+    ///
+    /// The substring `"lists the same pair twice"` appears only in the
+    /// intra-kernel `debug_assert!` message; it does not appear in the
+    /// inter-kernel arm's `"kernels: {} vs {}"` message.  This pinning catches
+    /// two classes of regression:
+    ///
+    /// 1. **Arm-swap** — if the `if` / `else` branches are swapped, the
+    ///    intra-kernel duplicate routes through the inter-kernel diagnostic
+    ///    (`"kernels: foo vs foo"`) and `#[should_panic(expected = "lists the
+    ///    same pair twice")]` fails (wrong message).
+    /// 2. **Guard-drop** — if the `prev_owner == name.as_str()` guard is
+    ///    removed, the only remaining arm is the inter-kernel path, again
+    ///    producing the wrong message.
+    ///
+    /// The `#[cfg(debug_assertions)]` guard is required because `debug_assert!`
+    /// compiles to a no-op in release builds — `#[should_panic]` would falsely
+    /// pass if the test ran in a build where the assertion is elided.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "lists the same pair twice")]
+    fn debug_assert_unique_op_repr_pairs_panics_on_intra_kernel_duplicate() {
+        let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        registered.insert(
+            "kernel_a".to_string(),
+            CapabilityDescriptor {
+                supports: vec![
+                    (Operation::BooleanUnion, ReprKind::BRep),
+                    (Operation::BooleanUnion, ReprKind::BRep),
+                ],
+            },
+        );
+        debug_assert_unique_op_repr_pairs(&registered);
+    }
+
+    /// Contract pin: `debug_assert_unique_op_repr_pairs` must emit exactly one
+    /// `WARN`-level event via the **intra-kernel** branch when a single
+    /// kernel's `supports` Vec contains the same `(Operation, ReprKind)` pair
+    /// more than once.
+    ///
+    /// This mirrors
+    /// `debug_assert_unique_op_repr_pairs_always_emits_warn_on_duplicate`
+    /// (the inter-kernel warn test) which covers the inter-kernel branch.  A
+    /// separate test is needed here because an arm-swap regression that drops
+    /// only the intra-kernel `tracing::warn!` would still pass the inter-kernel
+    /// test (inter-kernel scenario unchanged).  Pinning the warn count for the
+    /// intra-kernel fixture independently ensures the `warn!` call is present
+    /// in both branches.
+    ///
+    /// The `tracing::warn!` call is straight-line code that precedes the
+    /// `debug_assert!`, so it always fires — even in release builds where the
+    /// panic is compiled out.  In debug builds the helper panics after emitting
+    /// WARN; we wrap the call in `std::panic::catch_unwind` inside the
+    /// subscriber scope so `warn_count` is incremented before we assert on it.
+    #[test]
+    fn debug_assert_unique_op_repr_pairs_always_emits_warn_on_intra_kernel_duplicate() {
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_eval::kernel_registry")
+            .build();
+        let warn_count = counters[&tracing::Level::WARN].clone();
+
+        let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        registered.insert(
+            "kernel_a".to_string(),
+            CapabilityDescriptor {
+                supports: vec![
+                    (Operation::BooleanUnion, ReprKind::BRep),
+                    (Operation::BooleanUnion, ReprKind::BRep),
+                ],
+            },
+        );
+
+        // In debug builds the helper panics after emitting WARN.  Catch the
+        // panic inside the subscriber scope so warn_count is incremented before
+        // we assert on it.
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                debug_assert_unique_op_repr_pairs(&registered);
+            }));
+        });
+
+        assert_eq!(
+            warn_count.load(Ordering::Acquire),
+            1,
+            "debug_assert_unique_op_repr_pairs must emit exactly one WARN event \
+             at reify_eval::kernel_registry when a single kernel's supports Vec \
+             lists the same (op, repr) pair twice — intra-kernel operator \
+             visibility contract: warn! fires in all builds, not just debug",
+        );
+    }
+
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
     /// *smaller* kernel when multiple registrations are present.
     ///
