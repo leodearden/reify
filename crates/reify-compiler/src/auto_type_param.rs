@@ -1797,6 +1797,24 @@ fn check_constraints_leaf(
 /// param-index set — NOT max over any single constraint's blame, and NOT min
 /// over the union.
 ///
+/// Concretely, this is:
+/// ```ignore
+/// let union: BTreeSet<usize> = violated
+///     .iter()
+///     .filter_map(|id| blame_map.get(id))
+///     .flatten()
+///     .copied()
+///     .collect();
+/// union.iter().max().copied()
+/// ```
+///
+/// **Do not** use `violated.iter().filter_map(|id| blame_map.get(id).and_then(|s| s.iter().max())).max()`
+/// — that takes the max over each individual constraint's blame set before
+/// combining, which gives the wrong answer when two constraints blame different
+/// params. Example: c0 blames {T(0)}, c1 blames {U(1)}; max-per-constraint
+/// gives max(0, 1) = 1 in this particular case but the formula is semantically
+/// wrong because it does not first form the union {0,1}.
+///
 /// Rationale (soundness): every variable in the union is referenced by at
 /// least one violated constraint. Changing any candidate strictly above the
 /// deepest blamed index `J` cannot satisfy the violated constraints; the
