@@ -1,7 +1,8 @@
 /**
  * Discovers the set of MCP tool names registered in the Rust tools source tree.
  *
- * Scans every `*.rs` file under `toolsDir` using two targeted patterns that
+ * Recursively scans every `*.rs` file under `toolsDir` (including nested
+ * subdirectories) using two targeted patterns that
  * together cover both registration forms without admitting comment/error-string
  * false positives:
  *
@@ -28,8 +29,7 @@
  * layer stays casing-agnostic so it stays valid if the policy is ever relaxed).
  *
  * Canonical contract: `crates/reify-mcp/tests/tools_tests.rs::EXPECTED_TOOLS`
- * That file pins the exact tool count and names; the floor assertion in
- * system-prompt.test.ts (`>= 16`) is derived from it.
+ * That file pins the exact tool count and names.
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -80,7 +80,7 @@ const REGISTER_IDENT_RE = /registry\.register\s*\(\s*(?:\w+::)*([A-Za-z_]\w*)\s*
 export function discoverRegisteredTools(toolsDir: string): Set<string> {
   let entries: string[];
   try {
-    entries = readdirSync(toolsDir);
+    entries = readdirSync(toolsDir, { recursive: true }) as string[];
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
