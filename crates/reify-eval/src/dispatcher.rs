@@ -1249,9 +1249,19 @@ mod tests {
     ///   - 2-conversion chain → N=2, expected = req^(1/2) × 0.8
     ///   - 3-conversion chain → N=3, expected = req^(1/3) × 0.8
     ///
-    /// The expected RHS is computed by calling `per_stage_tolerance` directly
-    /// so the assertion catches any wiring divergence without embedding magic
-    /// numbers or duplicating the geometric-split formula here.
+    /// Each case has two complementary assertions:
+    ///
+    /// 1. **Delegation assertion** (`assert_eq!` against `per_stage_tolerance`
+    ///    directly): catches wiring divergence between the two functions — e.g.
+    ///    if `per_stage_tolerance_for_plan` stopped delegating and hard-coded a
+    ///    wrong exponent.
+    ///
+    /// 2. **Hand-computed numeric pin** (`assert!` with `abs() < 1e-12`): catches
+    ///    a shared formula bug where BOTH `per_stage_tolerance` and
+    ///    `per_stage_tolerance_for_plan` are broken identically (e.g. both drop
+    ///    `SAFETY_FACTOR`), which would leave the delegation `assert_eq!` green
+    ///    while the actual output is wrong. The epsilon `1e-12` matches the
+    ///    convention in `tolerance_budget::tests::geometric_split_multi_stages`.
     ///
     /// This test fails before step-4: the skeleton returns `requested_tol`,
     /// which equals `per_stage_tolerance(req, 1)` only for N=1 (which isn't
@@ -1272,6 +1282,15 @@ mod tests {
             per_stage_tolerance(req, plan_two.conversions.len()),
             "2-conversion chain must delegate to per_stage_tolerance(req, 2) verbatim",
         );
+        // Hand-computed numeric pin: catches a regression where per_stage_tolerance
+        // and per_stage_tolerance_for_plan break identically (e.g. both drop
+        // SAFETY_FACTOR), which the delegation-equality assertion above would miss.
+        let expected_two = 0.001_f64.powf(0.5) * 0.8;
+        assert!(
+            (per_stage_tolerance_for_plan(&plan_two, req) - expected_two).abs() < 1e-12,
+            "2-conversion chain must equal req^(1/2) * 0.8 = {expected_two}, got {}",
+            per_stage_tolerance_for_plan(&plan_two, req),
+        );
 
         // 3-conversion chain: BRep → Mesh → Sdf → Voxel (N = 3).
         let plan_three = DispatchPlan {
@@ -1286,6 +1305,12 @@ mod tests {
             per_stage_tolerance_for_plan(&plan_three, req),
             per_stage_tolerance(req, plan_three.conversions.len()),
             "3-conversion chain must delegate to per_stage_tolerance(req, 3) verbatim",
+        );
+        let expected_three = 0.001_f64.powf(1.0 / 3.0) * 0.8;
+        assert!(
+            (per_stage_tolerance_for_plan(&plan_three, req) - expected_three).abs() < 1e-12,
+            "3-conversion chain must equal req^(1/3) * 0.8 = {expected_three}, got {}",
+            per_stage_tolerance_for_plan(&plan_three, req),
         );
     }
 
