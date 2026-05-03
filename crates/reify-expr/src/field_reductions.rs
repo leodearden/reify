@@ -119,8 +119,18 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
 ///
 /// `find_min == false` → maximum; `find_min == true` → minimum.
 ///
-/// NaN/non-finite values are skipped. Empty / all-non-finite buffers
-/// return `Value::Undef`.
+/// # NaN / non-finite / empty handling
+///
+/// Non-finite values (NaN and ±∞) are skipped via `is_finite()` —
+/// stricter than `!is_nan()` and matching the `sanitize_value`
+/// discipline in `crates/reify-stdlib/src/helpers.rs`. The fold tracks
+/// `Option<f64>` so that an empty data buffer or all-non-finite buffer
+/// returns `Value::Undef` (no extremum exists).
+///
+/// Pinned by `max_sampled_with_nan_skips_nan_values`,
+/// `all_reductions_sampled_all_nan_returns_undef`, and
+/// `all_reductions_sampled_empty_data_returns_undef` in
+/// `tests/field_reductions_tests.rs` (step-17 of plan 2913).
 fn reduce_sampled_extremum(sf: &SampledField, codomain_type: &Type, find_min: bool) -> Value {
     let extremum = sf.data.iter().copied().filter(|x| x.is_finite()).fold(
         None::<f64>,
@@ -181,9 +191,18 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
 /// IEEE 754 totalOrder consistency (matches `Value::Real`/`Scalar`
 /// `Ord` impls).
 ///
-/// Returns `None` when `data` is empty or contains no finite values.
-/// Tie-break: lowest linear index wins (strict `<`/`>` rather than
-/// `<=`/`>=` keeps the first-seen extremum on equal values).
+/// Non-finite values (NaN and ±∞) are skipped via `is_finite()` —
+/// stricter than `!is_nan()` and matching the `sanitize_value`
+/// discipline elsewhere. Returns `None` when `data` is empty or
+/// contains no finite values. Tie-break: lowest linear index wins
+/// (strict `<`/`>` rather than `<=`/`>=` keeps the first-seen
+/// extremum on equal values).
+///
+/// Pinned by `argmax_sampled_with_nan_skips_nan_values` and the
+/// all-NaN/empty-data branches of
+/// `all_reductions_sampled_all_nan_returns_undef` /
+/// `all_reductions_sampled_empty_data_returns_undef` in
+/// `tests/field_reductions_tests.rs` (step-17 of plan 2913).
 fn argmax_argmin_index(data: &[f64], find_min: bool) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, &v) in data.iter().enumerate() {
