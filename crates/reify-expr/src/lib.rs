@@ -7,6 +7,7 @@
 mod analysis;
 mod calculus;
 mod complex;
+mod field_reductions;
 pub mod interp;
 pub mod kleene;
 pub mod sampled;
@@ -342,6 +343,20 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         && matches!(&evaluated_args[0], Value::Field { .. }) =>
                 {
                     analysis::compute_safety_factor(&evaluated_args[0], &evaluated_args[1])
+                }
+                // Field reductions (eager): collapse a Sampled field to a
+                // single scalar (max/min) or a single point (argmax/argmin).
+                // The 1-arg-Field gate keeps the binary `max(a, b)` /
+                // `min(a, b)` numeric forms (`reify-stdlib::numeric.rs`)
+                // unaffected — when `args.len() == 2` or the first arg is
+                // not a `Value::Field`, control falls through to
+                // `eval_builtin`. `argmax` / `argmin` have no binary form;
+                // for non-Field args they fall through to `eval_builtin`
+                // which returns `Value::Undef` (no binding).
+                "max" if evaluated_args.len() == 1
+                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    field_reductions::compute_max(&evaluated_args[0])
                 }
                 // flat_map(list, lambda): apply `lambda` to each element of
                 // `list`, expect each call to return a list, and concatenate
