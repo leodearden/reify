@@ -1,7 +1,7 @@
 # PRD: Structural Analysis (Linear Elastostatic FEA)
 
 Status: deferred — tentatively v0.3. First concrete `ComputeNode` realization in the language.
-Design resolved 2026-05-03 — see "Resolved design decisions" below. Solver, mesher, licensing, BC surface, and architectural extension all settled; one minor open question (failure-mode reporting policy) is implementation-time.
+Design resolved 2026-05-02 — see "Resolved design decisions" below. Solver, mesher, licensing, BC surface, parallelism/determinism strategy, and architectural extension all settled; one minor open question (failure-mode reporting policy) is implementation-time.
 
 ## Goal
 
@@ -94,7 +94,7 @@ The realization request is `(body, ReprKind::VolumeMesh, tol)` where `tol` is so
 
 **Warm start.** The solver's prior iterate (and, when a direct solve is used, its symbolic factorization) is held as `OpaqueState` attached to the ComputeNode — same mechanism as constraint solvers. Engine restarts shed it; in-process re-solves with perturbed inputs reuse it. With a handwritten kernel we own this hook outright, so warm start is a first-class API surface from day one rather than something we hope a wrapped solver supports.
 
-**Caching.** Standard ComputeNode caching: result is content-hashed; downstream consumers (max von Mises feeding a constraint) skip re-evaluation when consecutive solves produce numerically-equivalent fields up to tolerance. Significance threshold should be tied to the same per-purpose tolerance the solve was run at.
+**Caching as the determinism anchor.** ComputeNode cache keys are derived from *input* hashes (geometry hash, material/loads/supports value hashes, options hash, mesh content hash) — not from the output. A cache hit returns bit-identical bytes regardless of the underlying mesher/solver determinism on the original miss, so the significance filter, auto-resolve loop, and downstream tolerance checks all see stable inputs across repeated calls. The mesher and solver may run in non-deterministic parallel mode on cold-start; the result of that recomputation seeds subsequent hits and from then on the value is stable for the cache lifespan. Cross-machine reproducibility is provided by the `#deterministic` pragma — opt-in for published designs, CI builds, and reproducibility audits.
 
 ## Pre-conditions for activating
 
@@ -121,7 +121,7 @@ The `solve_elastic_static` signature is designed so MFEM (or CalculiX as a subpr
 
 **Risk acknowledged — "permanent temporary."** The handwritten path silently calcifies because everyone treats it as a stop-gap. Mitigation: when a v0.4+ feature (plasticity, contact, transient) demands wrapping a real solver, treat it as the trigger to replace the linear path too, not just to add the new analysis kind alongside it.
 
-**Element type/order.** Default to second-order tetrahedra (P2 tet); single override in `ElasticOptions` for first-order tets when speed beats accuracy. No higher-order or hex/wedge for v0.3.
+**Element type/order.** Default to first-order tetrahedra (P1 tet) — small system size, fast solve, well-suited to the auto-resolve loop's accuracy needs (it explores parameter space; near-boundary refinement is the answer to accuracy demands, not always-on P2). Single override in `ElasticOptions` selects second-order tets (P2) when stress accuracy near concentrations matters. P1's piecewise-constant per-element stress is smoothed via gradient recovery from displacement (see solver kernel task). No higher-order, no hex/wedge, no shells for v0.3.
 
 **Multi-physics shape.** Sibling functions, not parameterised dispatch — `solve_elastic_static`, future `solve_modal`, future `solve_thermal_static`. Mirrors SciPy `linalg.solve` / `linalg.eigh` style. Cheap to ship, easy to specialise.
 
@@ -143,45 +143,59 @@ Gmsh wins on the speed/maturity/build-cost balance and is deterministic in singl
 
 **`ReprKind` extension.** Adds `VolumeMesh` variant alongside the v0.2 `BRep | Mesh | Sdf | Voxel`. Non-breaking minor as the multi-kernel PRD anticipated. Surface-mesh realizations remain `Mesh`; volume tet meshes are `VolumeMesh`. Cache keys correctly distinguish.
 
+**Parallelism strategy: parallel by default, deterministic by request.** Execution speed is a load-bearing concern for the auto-resolve / slider-driven workflow. Choices:
+
+- **Solver and mesher both default to all available hardware threads** (`num_cpus::get()`). `ElasticOptions.threads` overrides for shared-CI politeness or pinned-config reproducibility. Tiny problems (<10K DOF) auto-fallback to single-threaded since threading overhead exceeds parallel benefit at that size.
+- **Thread count is *not* in the cache key.** The result is the same up to floating-point tolerance regardless of thread count; treating bit-different-but-engineering-equivalent solves as cache misses would defeat the cache for no real benefit.
+- **Tolerance-equivalence at the FEA result boundary.** The significance filter on FEA outputs compares fields against the per-purpose tolerance, not via content hash. This is a deliberate, scoped relaxation of Reify's bit-determinism principle — the only place in the system where it applies. Outside FEA, all values, geometry, and constraint solutions remain bit-deterministic.
+- **`#deterministic` pragma** forces single-threaded execution and bit-stable reductions (pairwise-tree fixed-shape) in both mesher and solver. Increases wallclock 4–8× depending on hardware. Not the default — opt-in for published/archived designs, CI cross-machine reproducibility checks, and debugging.
+- **Determinism via cache, not via execution.** Within any cache lifespan (in-process or persisted), repeated calls with the same inputs return bit-identical bytes regardless of how non-deterministic the underlying engines were on cold-start. The cache is the determinism anchor; the engines are free to run flat-out.
+
+Auto-resolve cold-start nuance: each parameter value the optimiser visits is typically a fresh cache miss (geometry changes per `param thickness = auto` step), so non-determinism can subtly shift the trajectory across cold-start re-runs. Mitigation: cache persists across `reify` invocations on the same machine; for guaranteed cross-machine reproducibility use `#deterministic`.
+
+**Progressive solve as first-class.** ComputeNode `progressive` trait is exercised. First pass uses a coarse mesh and a loose CG tolerance for a fast estimate; refinement passes increase mesh resolution and tighten CG tolerance on demand or near constraint boundaries. The auto-resolve loop benefits disproportionately — exploring infeasible parameter regions doesn't need refined accuracy, and near-boundary cases get refinement automatically.
+
 ## Open design questions
 
 - **Failure-mode reporting policy.** What does "non-converged", "ill-conditioned K", "no supports", "load applied to interior" look like as Reify diagnostics? Need a triage policy: small fixed set of well-known failure causes mapped to actionable messages, everything else surfaces as "solver internal error" with internals attached. Decide during the diagnostic-mapping task itself rather than up-front — not a queueing blocker.
 
 ## Decomposition plan
 
-Twenty tasks. Several depend on v0.2 work (multi-kernel mesh path, per-purpose tolerance, topology selectors); those gates are noted per task. Material/BC/reduction tasks are independent and can land any time the PRD activates.
+Twenty-two tasks. Several depend on v0.2 work (multi-kernel mesh path, per-purpose tolerance, topology selectors); those gates are noted per task. Material/BC/reduction tasks are independent and can land any time the PRD activates.
 
 **Stdlib surface (independent of v0.2 gates):**
 
 1. `ElasticMaterial` trait + starter material library (`Steel_AISI_1045`, `Aluminium_6061_T6`, `Titanium_Ti6Al4V`, `ABS_Plastic`) with per-property provenance metadata. Fields: `youngs_modulus : Pressure`, `poisson_ratio : Number` (constrained `[0, 0.5)`), `density : Density`, `yield_stress : Pressure` (optional).
 2. `Load` stdlib hierarchy: `PointLoad`, `PressureLoad`, `TractionLoad`, `BodyForce` / `Gravity`, all targeting topology selectors. Constructor signatures + selector validation.
 3. `Support` stdlib hierarchy: `FixedSupport`, `DisplacementSupport`, `RollerSupport`. Constructor signatures + selector validation.
-4. `ElasticOptions` stdlib type (element order, mesh-size override, max iterations, convergence tolerance) + `ElasticResult` struct shape (displacement field, stress field, max von Mises, converged, iterations).
+4. `ElasticOptions` stdlib type and `ElasticResult` struct. Options include: `element_order` (default `P1`, override `P2`), `mesh_size` override, `max_iter`, `cg_tolerance`, `threads` (default `num_cpus::get()`, single-threaded auto-fallback under 10K DOF). Result includes: displacement field, stress field, max von Mises, converged flag, iterations.
 5. `von_mises(stress: Tensor<2,3,Pressure>) -> Pressure` and `principal_stresses(...)` tensor reductions in stdlib.
 6. Field `max` / `min` / `argmax` reductions over `Field<_, T : Ordered>` in stdlib.
 
 **Solver kernel crate (depends on tasks 1–4):**
 
-7. `reify-solver-elastic` crate skeleton + P2-tetrahedron reference element: shape functions, gradients, Gauss quadrature.
-8. Element-level stiffness assembly under isotropic linear-elastic constitutive law (engineering strain, Voigt notation).
-9. Global sparse-matrix assembly via `faer-rs` (CSR format, deterministic insertion order).
+7. `reify-solver-elastic` crate skeleton + reference elements for P1 *and* P2 tetrahedra: shape functions, gradients, Gauss quadrature for both orders. Selected per-call via `ElasticOptions.element_order`.
+8. Element-level stiffness assembly under isotropic linear-elastic constitutive law (engineering strain, Voigt notation). Both P1 and P2 paths.
+9. Global sparse-matrix assembly via `faer-rs` (CSR format). Parallel-default with per-thread scratch + fixed-order merge for `#deterministic` mode.
 10. Dirichlet BC application (row-elimination preferred over penalty for cleaner conditioning).
 11. Neumann BC application: surface-traction integrals over selector-targeted faces, body-force integrals over the volume.
-12. CG solver with diagonal (Jacobi) preconditioner via faer-rs. AMG preconditioner deferred — Jacobi is enough for v0.3 first-cut.
-13. Result interpolation: evaluate displacement at any point as `Field<Point3, Vector3<Length>>`; recover stress at any point as `Field<Point3, Tensor<2,3,Pressure>>` (gradient recovery from displacement, not separate solve).
+12. CG solver with diagonal (Jacobi) preconditioner via faer-rs. Parallel-default (row-partitioned SpMV, all hardware threads); `#deterministic` mode forces single-threaded with pairwise-tree reductions. AMG preconditioner deferred — Jacobi is enough for v0.3 first-cut.
+13. Result interpolation: evaluate displacement at any point as `Field<Point3, Vector3<Length>>`; recover stress at any point as `Field<Point3, Tensor<2,3,Pressure>>` via gradient recovery from displacement (smooths P1 piecewise-constant element stress to a continuous field).
 14. Warm-state plumbing: prior-iterate carry-through across solves; opaque state attached to ComputeNode.
+15. Progressive solve framework: coarse-mesh + loose-CG-tolerance first pass; refinement passes increase mesh resolution and tighten CG tolerance on demand. Implements ComputeNode `progressive` trait. Auto-resolve loop reads partial results to short-circuit clearly-infeasible / clearly-feasible parameter regions.
 
-**Engine integration (depends on tasks 7–14, plus v0.2 gates):**
+**Engine integration (depends on solver kernel tasks, plus v0.2 gates):**
 
-15. `solve_elastic_static` `@optimized` registration + ComputeNode wiring: cache-key composition over (realization hash, value hashes, options hash), dependency-edge declaration, OpaqueState attachment. **Gate:** per-purpose tolerance live.
-16. Surface-to-volume tet meshing via Gmsh: extends `ReprKind` with `VolumeMesh` variant; consumes the existing v0.1/v0.2 surface-mesh path; emits second-order tet meshes. Includes a small surface-mesh-repair pre-stage (sliver collapse, near-coincident vertex merging) to keep Gmsh's failure rate manageable on OCCT BRepMesh output. **Gate:** v0.2 multi-kernel basis (task 2640) shipped so the surface-mesh path is stable.
+16. `solve_elastic_static` `@optimized` registration + ComputeNode wiring: cache-key composition over input hashes (geometry hash, value hashes, options hash, mesh content hash — *not* thread count), dependency-edge declaration, OpaqueState attachment. Significance filter at FEA output boundary uses tolerance-equivalence (per-purpose tolerance) instead of content-hash comparison. **Gate:** per-purpose tolerance live.
+17. Surface-to-volume tet meshing via Gmsh (library-linked): extends `ReprKind` with `VolumeMesh` variant; consumes the existing v0.1/v0.2 surface-mesh path; emits P1 or P2 tet meshes per `ElasticOptions.element_order`. Parallel-default (Gmsh HXT all hardware threads); `#deterministic` mode forces serial. Cache keyed by input hash (surface mesh hash + meshing options) so repeated calls with same geometry hit the cache and return bit-identical mesh bytes regardless of cold-start non-determinism. Includes a small surface-mesh-repair pre-stage (sliver collapse, near-coincident vertex merging) to keep Gmsh's failure rate manageable on OCCT BRepMesh output. **Gate:** v0.2 multi-kernel basis shipped so the surface-mesh path is stable.
+18. `#deterministic` pragma plumbing: parsed in compiler, propagates as a flag through `ElasticOptions` and the realization request to both mesher (task 17) and solver (tasks 9, 12). When set, forces single-threaded execution and fixed-shape pairwise-tree reductions in all parallel reductions.
 
 **Validation & polish:**
 
-17. Determinism harness — bit-stable assertion across repeated runs and across thread counts.
-18. Validation suite against analytical references: cantilever beam (tip deflection), pressurised thick-walled cylinder (radial stress profile), simple shear (uniform stress), Boussinesq half-space point load. Tolerance comparisons per case.
-19. Diagnostic mapping for common failure modes: under-constrained body (rigid-body modes), singular K (degenerate mesh), non-convergence, no loads, load-on-interior, BC-on-non-existent-selector. Each mapped to an actionable Reify diagnostic.
-20. End-to-end example file: bracket with `param thickness : Length = auto`, `minimize mass subject to max(von_mises(bracket)) < material.yield_stress`. Closes the design loop demo from the Goal section.
+19. Determinism harness: under `#deterministic`, asserts bit-stable assertion across repeated runs and across thread counts. Under default (parallel) mode, asserts tolerance-equivalence across repeated runs and thread counts. Both run in CI on a representative model.
+20. Validation suite against analytical references: cantilever beam (tip deflection), pressurised thick-walled cylinder (radial stress profile), simple shear (uniform stress), Boussinesq half-space point load. Tolerance comparisons per case at both P1 and P2.
+21. Diagnostic mapping for common failure modes: under-constrained body (rigid-body modes), singular K (degenerate mesh), non-convergence, no loads, load-on-interior, BC-on-non-existent-selector. Each mapped to an actionable Reify diagnostic.
+22. End-to-end example file: bracket with `param thickness : Length = auto`, `minimize mass subject to max(von_mises(bracket)) < material.yield_stress`. Closes the design loop demo from the Goal section.
 
 ## Out of scope for this PRD
 
