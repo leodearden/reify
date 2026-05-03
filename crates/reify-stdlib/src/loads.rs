@@ -344,4 +344,76 @@ mod tests {
             "selector = Undef should return Undef"
         );
     }
+
+    // ── Helper: face selector stub ───────────────────────────────────────────
+
+    fn face_selector_stub() -> Value {
+        Value::Map({
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String("face_stub".to_string()),
+            );
+            m
+        })
+    }
+
+    fn body_selector_stub() -> Value {
+        Value::Map({
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String("body_stub".to_string()),
+            );
+            m
+        })
+    }
+
+    // ── pressure_load constructor: 3-arg happy path ──────────────────────────
+
+    #[test]
+    fn pressure_load_3arg_returns_map_with_correct_fields() {
+        let face = face_selector_stub();
+        let magnitude = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        // Explicit direction: -Z unit vector (dimensionless).
+        let direction = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(-1.0),
+        ]);
+
+        let result = eval_builtin(
+            "pressure_load",
+            &[face.clone(), magnitude.clone(), direction.clone()],
+        );
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("pressure_load".to_string())),
+            "kind should be 'pressure_load'"
+        );
+        assert_eq!(
+            map.get(&Value::String("face".to_string())),
+            Some(&face),
+            "face should round-trip the selector input"
+        );
+        assert_eq!(
+            map.get(&Value::String("magnitude".to_string())),
+            Some(&magnitude),
+            "magnitude should round-trip"
+        );
+        assert_eq!(
+            map.get(&Value::String("direction".to_string())),
+            Some(&direction),
+            "direction should round-trip"
+        );
+    }
 }
