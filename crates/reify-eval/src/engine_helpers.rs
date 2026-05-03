@@ -97,4 +97,15 @@ mod tests {
     fn collect_member_list_panics_in_debug_when_child_missing() {
         collect_member_list(&ValueMap::default(), "Parent", "bolts", "grade", 2);
     }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn collect_member_list_returns_undef_fallback_in_release_when_children_missing() {
+        // Release-mode contract: when child cells are absent, the helper returns
+        // Value::Undef placeholders rather than panicking — preserves the historical
+        // behaviour of the inline closures this helper replaces. Debug builds catch
+        // this via the line-46 debug_assert (covered by the sibling test above).
+        let result = collect_member_list(&ValueMap::default(), "Parent", "bolts", "grade", 2);
+        assert_eq!(result, Value::List(vec![Value::Undef, Value::Undef]));
+    }
 }
