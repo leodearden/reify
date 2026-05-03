@@ -134,3 +134,99 @@ fn material_property_provenance_struct_has_three_string_fields() {
         );
     }
 }
+
+// ─── step-5: ElasticMaterial trait ───────────────────────────────────────────
+
+/// `ElasticMaterial` is the dimensioned FEA-bound material trait that the v0.3
+/// solver consumes. It declares exactly four required members:
+///
+///   - `youngs_modulus : Pressure`            (kg·m⁻¹·s⁻²)
+///   - `poisson_ratio  : Real`                 (dimensionless, [0, 0.5))
+///   - `density        : Density`              (kg·m⁻³)
+///   - `yield_stress   : Option<Pressure>`     (some(Pa) | none)
+///
+/// The trait is *new* and parallel to the existing `Elastic` trait in
+/// `materials_mechanical.ri`; the latter uses `Real` placeholders and bundles
+/// `shear_modulus`, neither of which fits the FEA solver's input shape. See
+/// the file-level header comment in `materials_fea.ri` for the rationale.
+#[test]
+fn elastic_material_trait_has_four_dimensioned_members() {
+    let module = load_stdlib_module();
+
+    let elastic_material = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ElasticMaterial")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected 'ElasticMaterial' trait in std/materials/fea, got traits: {:?}",
+                module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        elastic_material.required_members.len(),
+        4,
+        "ElasticMaterial should have exactly 4 required members, got: {:?}",
+        elastic_material
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+
+    // Each (name, expected type) tuple is asserted against the
+    // RequirementKind::Param payload type.  Using a literal tuple list keeps
+    // the test focused on the dimensioned-trait shape rather than mirroring
+    // implementation order.
+    let expected_members: &[(&str, Type)] = &[
+        (
+            "youngs_modulus",
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        ("poisson_ratio", Type::Real),
+        (
+            "density",
+            Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        ),
+        (
+            "yield_stress",
+            Type::Option(Box::new(Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            })),
+        ),
+    ];
+
+    for (name, expected_ty) in expected_members {
+        let req = elastic_material
+            .required_members
+            .iter()
+            .find(|r| r.name == *name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "ElasticMaterial missing required member '{}'; got: {:?}",
+                    name,
+                    elastic_material
+                        .required_members
+                        .iter()
+                        .map(|r| &r.name)
+                        .collect::<Vec<_>>()
+                )
+            });
+        match &req.kind {
+            RequirementKind::Param(ty) => assert_eq!(
+                ty, expected_ty,
+                "ElasticMaterial.{} should be {:?}, got {:?}",
+                name, expected_ty, ty
+            ),
+            other => panic!(
+                "ElasticMaterial.{} should be a Param requirement, got {:?}",
+                name, other
+            ),
+        }
+    }
+}
