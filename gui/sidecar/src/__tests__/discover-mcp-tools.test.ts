@@ -118,6 +118,45 @@ describe('discoverRegisteredTools', () => {
     expect(result.has('reify_real_in_same_file')).toBe(true);
   });
 
+  // Characterization test — pins the per-file gating constraint.
+  //
+  // The REGISTER_IDENT_RE pre-pass only looks at registry.register(IDENT, ...) calls
+  // within the SAME .rs file as the matching CONST_DECL_RE. A const declared in one
+  // file (e.g. `consts.rs`) and registered from a sibling file (e.g. `register.rs`)
+  // is silently dropped — the gating does not perform a project-wide pre-pass.
+  //
+  // No current Rust file uses cross-file const indirection, so this gap would not be
+  // surfaced by the floor assertion (`>= 16`), which catches wholesale registration
+  // loss but not single-tool drops.
+  //
+  // This test deliberately asserts the CURRENT (limited) behavior:
+  //   result.has('reify_cross_file') === false
+  // If a future task implements a project-wide REGISTER_IDENT_RE pre-pass (building
+  // registeredIdents across all files before filtering CONST_DECL_RE matches), that
+  // task MUST invert this expectation to `true` to reflect the fixed behavior.
+  it('silently_drops_a_const_split_across_files', () => {
+    const dir = makeTempDir();
+    // The const declaration lives in consts.rs …
+    writeFileSync(
+      join(dir, 'consts.rs'),
+      `const SHARED: &str = "reify_cross_file";\n`,
+    );
+    // … but the registry.register(SHARED, …) call lives in a sibling file.
+    writeFileSync(
+      join(dir, 'register.rs'),
+      [
+        'pub fn register(registry: &mut Registry) {',
+        '    registry.register(SHARED, handler);',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const result = discoverRegisteredTools(dir);
+    // The per-file gating drops the const: consts.rs has no registry.register call,
+    // and register.rs has no CONST_DECL_RE match — so reify_cross_file is never added.
+    expect(result.has('reify_cross_file')).toBe(false);
+  });
+
   it('throws an Error containing the resolved path when given a non-existent directory', () => {
     const nonExistent = resolve(tmpdir(), 'reify-tools-does-not-exist-98765');
     expect(() => discoverRegisteredTools(nonExistent)).toThrowError(nonExistent);
