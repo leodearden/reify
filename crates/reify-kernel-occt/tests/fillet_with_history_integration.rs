@@ -15,7 +15,7 @@
 mod common;
 
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{GeometryOp, GeometryQuery, Value};
+use reify_types::{GeometryError, GeometryOp, GeometryQuery, Value};
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
 const BOX_SIDE_M: f64 = 10.0e-3;
@@ -182,4 +182,51 @@ fn fillet_with_history_reports_face_records() {
         &history,
         "fillet",
     );
+}
+
+/// `fillet_with_history` must reject a `BRepKind::Face` input handle with
+/// a descriptive `OperationFailed` error mentioning "Solid" or "BRepKind".
+///
+/// Rationale: `BRepFilletAPI_MakeFillet` iterates parent edges of a Solid;
+/// passing a Face would either crash inside OCCT or silently produce a
+/// misclassified result (the output is always stored as `BRepKind::Solid`).
+/// The up-front kind guard added in task 2821 step-4 makes this rejection
+/// explicit and message-checked (esc-2655-26 issue #4).
+#[test]
+fn fillet_with_history_rejects_non_solid_input() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let kernel = OcctKernelHandle::spawn();
+
+    let box_handle = kernel
+        .execute(&ten_mm_box_op())
+        .expect("box should build");
+
+    let faces = kernel
+        .extract_faces(box_handle.id)
+        .expect("extract_faces should succeed on a solid box");
+    assert!(
+        !faces.is_empty(),
+        "extract_faces should return at least one face for a 10mm box"
+    );
+
+    let face_id = faces[0];
+
+    let result = kernel.fillet_with_history(face_id, FILLET_RADIUS_M);
+    let err = result.expect_err("fillet_with_history should reject a BRepKind::Face input");
+    // Narrowly require an OperationFailed variant (not InvalidReference or other)
+    // whose message identifies the kind mismatch.
+    match &err {
+        GeometryError::OperationFailed(msg) => {
+            assert!(
+                msg.contains("Solid") || msg.contains("BRepKind"),
+                "OperationFailed message should mention 'Solid' or 'BRepKind': {msg}"
+            );
+        }
+        other => panic!(
+            "expected GeometryError::OperationFailed for non-Solid input, got {other:?}"
+        ),
+    }
 }
