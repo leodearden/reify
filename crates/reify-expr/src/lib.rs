@@ -358,6 +358,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 {
                     field_reductions::compute_max(&evaluated_args[0])
                 }
+                "min" if evaluated_args.len() == 1
+                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    field_reductions::compute_min(&evaluated_args[0])
+                }
                 // flat_map(list, lambda): apply `lambda` to each element of
                 // `list`, expect each call to return a list, and concatenate
                 // the per-element results into a single flat list. Intercepted

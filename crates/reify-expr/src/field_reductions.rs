@@ -41,6 +41,21 @@ use reify_types::{FieldSourceKind, SampledField, Type, Value};
 /// Other source kinds return `Value::Undef` (deferred — see module
 /// doc-comment for the staging rationale).
 pub(crate) fn compute_max(field_val: &Value) -> Value {
+    compute_extremum(field_val, false)
+}
+
+/// Compute `min(field)` — return the minimum codomain value of a
+/// `Sampled`-source field, wrapped per the field's `codomain_type`.
+///
+/// Other source kinds return `Value::Undef` (deferred — see module
+/// doc-comment for the staging rationale).
+pub(crate) fn compute_min(field_val: &Value) -> Value {
+    compute_extremum(field_val, true)
+}
+
+/// Shared body for `compute_max` / `compute_min`. `find_min == true`
+/// selects the minimum, `false` selects the maximum.
+fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
     let (codomain_type, source, lambda) = match field_val {
         Value::Field {
             codomain_type,
@@ -53,7 +68,7 @@ pub(crate) fn compute_max(field_val: &Value) -> Value {
 
     match source {
         FieldSourceKind::Sampled => match lambda.as_ref() {
-            Value::SampledField(sf) => reduce_sampled_extremum(sf, codomain_type, false),
+            Value::SampledField(sf) => reduce_sampled_extremum(sf, codomain_type, find_min),
             _ => Value::Undef,
         },
         // TODO(future): numerical optimisation over Analytical/Composed lambda
