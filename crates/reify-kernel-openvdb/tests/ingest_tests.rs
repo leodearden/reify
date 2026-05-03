@@ -439,3 +439,33 @@ fn read_vdb_file_returns_ffi_not_implemented_with_path() {
         "Display message must include the path; got {msg:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Step-15 RED: API-surface contract test
+// ---------------------------------------------------------------------------
+
+/// Step-15: pins the v0.2 ingestion-API public surface that the eventual
+/// task-5 wiring layer (and any future FFI follow-up) will consume.
+/// Compile-RED if any name is not `pub` from the `ingest` module;
+/// runtime-RED if `KNOWN_UNITS` is below the v0.2 minimum size (m / Pa /
+/// MPa / K / kg + at least one prefixed length variant).
+#[test]
+fn ingest_module_public_api_surface_compiles() {
+    use reify_kernel_openvdb::ingest::{
+        IngestError, IngestOutcome, KNOWN_UNITS, OpenVdbGridKind, OpenVdbGridSource,
+        OpenVdbInterpolation, lower_to_sampled, read_vdb_file, validate_grid_units,
+    };
+    // Reference each name once so the use-import is not unused.
+    let _: fn(_, _, _) -> Result<IngestOutcome, IngestError> = lower_to_sampled;
+    let _: fn(_, _, _) -> Result<IngestOutcome, IngestError> = read_vdb_file;
+    let _: fn(_, _) -> Result<(), IngestError> = validate_grid_units;
+    let _: OpenVdbGridKind = OpenVdbGridKind::Regular1D;
+    let _: OpenVdbInterpolation = OpenVdbInterpolation::Linear;
+    let _grid: Option<OpenVdbGridSource> = None;
+    assert!(
+        KNOWN_UNITS.len() >= 6,
+        "v0.2 KNOWN_UNITS must cover at least {{m, Pa, MPa, K, kg}} + ≥1 prefixed length \
+         (≥6 entries); got {}",
+        KNOWN_UNITS.len()
+    );
+}
