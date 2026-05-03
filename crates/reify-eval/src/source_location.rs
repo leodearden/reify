@@ -32,10 +32,8 @@ use reify_types::SourceLocationInfo;
 ///
 /// # Migration
 ///
-/// **Behavior change vs. pre-refactor CLI:** the prior CLI implementation
-/// also matched bare member names (e.g., `"width"`) across all templates;
-/// this is intentionally dropped for parity with the GUI surface — callers
-/// must use the `Entity.member` form.
+/// See the module-level documentation for behavior changes vs. the
+/// pre-refactor CLI implementation (dropped bare-member fallback).
 pub fn resolve_entity_source_location(
     compiled: &CompiledModule,
     source: &str,
@@ -224,52 +222,27 @@ mod tests {
         );
     }
 
-    // (h) Empty entity (".width") — leading-dot input must return None.
-    //     Pins the API contract: malformed inputs return None.
+    // (h-k) Malformed inputs — all must return None.
+    //     h: ".width"          — empty entity (leading dot)
+    //     i: "Bracket."        — empty member (trailing dot)
+    //     j: "Bracket.foo.bar" — member containing a further dot
+    //     k: "Bracket..width"  — consecutive dots (member starts with dot)
+    //
+    // Using a table so all four shapes are covered by a single guard: any
+    // future change to the malformed-input handling is caught by this test,
+    // and adding a new case is a one-liner.
     #[test]
-    fn empty_entity_with_member_returns_none() {
+    fn malformed_inputs_return_none() {
         let compiled = bracket_compiled();
         let source = reify_test_support::bracket_source();
-        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", ".width");
-        assert!(loc.is_none(), "expected None for '.width' (empty entity), got {:?}", loc);
-    }
-
-    // (i) Empty member ("Bracket.") — trailing-dot input must return None.
-    //     Pins the API contract: malformed inputs return None.
-    #[test]
-    fn entity_with_empty_member_returns_none() {
-        let compiled = bracket_compiled();
-        let source = reify_test_support::bracket_source();
-        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.");
-        assert!(loc.is_none(), "expected None for 'Bracket.' (empty member), got {:?}", loc);
-    }
-
-    // (j) Dotted member ("Bracket.foo.bar") — member containing a further '.'
-    //     must return None. Pins the API contract: malformed inputs return None.
-    #[test]
-    fn dotted_member_returns_none() {
-        let compiled = bracket_compiled();
-        let source = reify_test_support::bracket_source();
-        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.foo.bar");
-        assert!(loc.is_none(), "expected None for 'Bracket.foo.bar' (dotted member), got {:?}", loc);
-    }
-
-    // (k) Multiple consecutive dots ("Bracket..width") — pins the API contract:
-    //     malformed inputs return None.  Splitting on the first '.' yields
-    //     entity="Bracket", member=".width"; member.contains('.') is true so
-    //     the guard at line 46 rejects the input.  This case is an independent
-    //     regression vector from (j): a future refactor that special-cases
-    //     multi-dot inputs might catch "foo.bar.baz" but miss the "Bracket..width"
-    //     consecutive-dot shape, so it deserves its own pin.
-    #[test]
-    fn consecutive_dots_returns_none() {
-        let compiled = bracket_compiled();
-        let source = reify_test_support::bracket_source();
-        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket..width");
-        assert!(
-            loc.is_none(),
-            "expected None for 'Bracket..width' (consecutive dots), got {:?}",
-            loc
-        );
+        for &input in &[".width", "Bracket.", "Bracket.foo.bar", "Bracket..width"] {
+            let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", input);
+            assert!(
+                loc.is_none(),
+                "expected None for malformed input {:?}, got {:?}",
+                input,
+                loc
+            );
+        }
     }
 }

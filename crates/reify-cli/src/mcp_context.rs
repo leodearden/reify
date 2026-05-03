@@ -203,10 +203,13 @@ impl ReifyToolContext for CliToolContext {
         let mut result = Vec::new();
 
         if let Some(compiled) = &state.compiled {
-            let file_path = state.active_file.clone().unwrap_or_default();
+            let file_path = state
+                .active_file
+                .as_ref()
+                .ok_or_else(|| ToolError::EngineError("no active file".to_string()))?;
             let source = state
                 .files
-                .get(&file_path)
+                .get(file_path)
                 .map(|f| f.content.as_str())
                 .unwrap_or("");
 
@@ -415,6 +418,12 @@ impl ReifyToolContext for CliToolContext {
             );
         }
         state.compiled = Some(compiled);
+        // NOTE: active_file is intentionally NOT set here.  Callers must
+        // invoke load_file / open_file before update_source-driven edits are
+        // addressable via get_source_location or get_diagnostics (both now
+        // return Err("no active file") when active_file is None).  Fixing
+        // this asymmetry — e.g., initializing active_file on first use — is
+        // a follow-up task; see reviewer suggestion on design_coherence.
 
         Ok(UpdateResult {
             success: true,
@@ -1099,12 +1108,63 @@ mod tests {
                 // Correct: error contains the expected message.
             }
             Ok(loc) => panic!(
-                "expected Err(ToolError::EngineError(\"no active file\")), \
-                 but got Ok(SourceLocationInfo {{ file_path: {:?}, line: {}, column: {} }}) \
-                 — this is the garbage-span bug: update_source without load_file leaves \
-                 active_file=None so file_path falls back to \"\" and byte_offset_to_line_col \
-                 returns (1,1) regardless of the real span",
+                "expected Err(\"no active file\"), \
+                 got Ok(file_path={:?}, line={}, column={})",
                 loc.file_path, loc.line, loc.column
+            ),
+            Err(other) => panic!(
+                "expected Err(ToolError::EngineError(\"no active file\")), got Err({:?})",
+                other
+            ),
+        }
+    }
+
+    /// Happy-path counter-case: `get_source_location` must return `Ok` with a
+    /// non-empty `file_path` when `load_file` is called first.  Locks the
+    /// success arm of the `active_file` guard added in step-2.
+    #[test]
+    fn get_source_location_succeeds_after_load_file() {
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed for bracket.ri");
+        let loc = ctx
+            .get_source_location("Bracket")
+            .expect("get_source_location should return Ok after load_file");
+        assert!(
+            !loc.file_path.is_empty(),
+            "file_path must be non-empty after load_file, got {:?}",
+            loc.file_path
+        );
+        assert!(loc.line >= 1, "line must be 1-based, got {}", loc.line);
+        assert!(loc.column >= 1, "column must be 1-based, got {}", loc.column);
+    }
+
+    /// Regression guard: `get_diagnostics` must return
+    /// `Err(ToolError::EngineError("no active file"))` when no active file is
+    /// set, even when a compiled module exists in state.
+    ///
+    /// Same reachable state as the `get_source_location` regression test:
+    /// `update_source` on a fresh context sets `compiled` and `files` but
+    /// leaves `active_file = None`.
+    #[test]
+    fn get_diagnostics_returns_error_when_no_active_file() {
+        let ctx = fresh_ctx();
+        let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let update = ctx
+            .update_source(BRACKET_PATH, &source)
+            .expect("update_source should succeed with valid content");
+        assert!(update.success, "update_source must succeed so compiled=Some is set");
+        // No load_file / open_file → active_file is still None.
+        let result = ctx.get_diagnostics();
+        match result {
+            Err(ToolError::EngineError(ref msg)) if msg.contains("no active file") => {
+                // Correct: error contains the expected message.
+            }
+            Ok(diags) => panic!(
+                "expected Err(\"no active file\"), \
+                 got Ok({} diagnostics with file_path={:?})",
+                diags.len(),
+                diags.first().map(|d| d.file_path.as_str()).unwrap_or("<empty>")
             ),
             Err(other) => panic!(
                 "expected Err(ToolError::EngineError(\"no active file\")), got Err({:?})",
