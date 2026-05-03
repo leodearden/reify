@@ -54,8 +54,7 @@ pub fn resolve_entity_source_location(
             .find(|vc| vc.id.member == member)
             .map(|vc| vc.span)?
     } else {
-        // Plain template-name form — no dot, so reject names containing any
-        // separator that would make this a different form
+        // Plain template-name form (no '.') — proxy to the first value cell.
         compiled
             .templates
             .iter()
