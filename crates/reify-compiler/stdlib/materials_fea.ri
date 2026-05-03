@@ -26,3 +26,28 @@
 //     for legacy consumers (47 callers in tests/examples).
 //   - Neither trait supersedes the other; they coexist for different
 //     purposes. New FEA-bound code should depend on `ElasticMaterial`.
+
+// ── Provenance ───────────────────────────────────────────────────────────────
+
+// MaterialPropertyProvenance is the citation record attached to a single
+// property value of a concrete material structure. Each material in this
+// module carries four `..._provenance : MaterialPropertyProvenance` fields
+// (one per property) so that downstream FEA reports can reproduce the
+// citation chain end-to-end.
+//
+//   source    — short tag identifying the data origin (e.g. "matweb",
+//               "MMPDS", "ASM Handbook").
+//   reference — the specific record/entry within `source` (alloy + temper,
+//               handbook chapter, table number, etc.).
+//   notes     — free-text caveats: heat treatment range, alloy variant,
+//               ductile-to-brittle transition, averaging assumptions.
+//
+// Declared above all trait blocks so the structure-name set built in the
+// pre-pass sees `MaterialPropertyProvenance` before any material structure
+// references it as a `param ..._provenance : MaterialPropertyProvenance`
+// type. This mirrors the `Provenance` placement convention in `io.ri`.
+structure def MaterialPropertyProvenance {
+    param source : String
+    param reference : String
+    param notes : String
+}
