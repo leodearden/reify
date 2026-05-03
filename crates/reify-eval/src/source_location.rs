@@ -107,7 +107,14 @@ mod tests {
         );
         assert!(loc.line >= 1, "line must be >= 1 (1-based)");
         assert!(loc.column >= 1, "column must be >= 1 (1-based)");
-        assert!(loc.end_column >= 1, "end_column must be >= 1 (1-based)");
+        assert!(
+            loc.end_line > loc.line || loc.end_column >= loc.column,
+            "end position must not precede start: ({},{}) -> ({},{})",
+            loc.line,
+            loc.column,
+            loc.end_line,
+            loc.end_column
+        );
         assert!(
             loc.end_line >= loc.line,
             "end_line ({}) must be >= line ({})",
@@ -211,7 +218,7 @@ mod tests {
     }
 
     // (h) Empty entity (".width") — leading-dot input must return None.
-    //     Pins the `entity.is_empty()` branch of the guard at line 46.
+    //     Pins the API contract: malformed inputs return None.
     #[test]
     fn empty_entity_with_member_returns_none() {
         let compiled = bracket_compiled();
@@ -221,7 +228,7 @@ mod tests {
     }
 
     // (i) Empty member ("Bracket.") — trailing-dot input must return None.
-    //     Pins the `member.is_empty()` branch of the guard at line 46.
+    //     Pins the API contract: malformed inputs return None.
     #[test]
     fn entity_with_empty_member_returns_none() {
         let compiled = bracket_compiled();
@@ -231,8 +238,7 @@ mod tests {
     }
 
     // (j) Dotted member ("Bracket.foo.bar") — member containing a further '.'
-    //     must return None. Pins the `member.contains('.')` branch of the guard
-    //     at line 46 and the documented dotted-member rejection path.
+    //     must return None. Pins the API contract: malformed inputs return None.
     #[test]
     fn dotted_member_returns_none() {
         let compiled = bracket_compiled();
