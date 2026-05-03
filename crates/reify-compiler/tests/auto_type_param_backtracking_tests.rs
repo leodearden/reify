@@ -2935,3 +2935,149 @@ structure def Hot2 : Hot {
         diagnostics[0].message
     );
 }
+
+/// Backjumping uses `max` over the **union** of all violated constraints' blame
+/// sets — not `min`, not "first constraint's blame". With two violated
+/// constraints blaming T(0) and U(1), the conflict set = {0,1} and deepest
+/// blame J = 1 = U, so the search backjumps to the U level rather than to T.
+///
+/// Without this max-over-union rule (e.g., min-over-union returning J=0=T)
+/// the search would backjump past all of ORingSeal, yielding lex-first
+/// `(RubberSeal, AirCooled, Hot1)` instead — observably different.
+#[test]
+fn dfs_backjumps_to_deepest_blamed_param_when_multiple_violated_constraints_blame_different_params()
+{
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+trait Hot {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+
+structure def Hot1 : Hot {
+    param temp : Real = 100.0
+}
+
+structure def Hot2 : Hot {
+    param temp : Real = 200.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template: two cells and two constraints.
+    //   field_t : TypeParam("T") — constraint c0 ValueRefs only field_t → blame={T(0)}
+    //   field_u : TypeParam("U") — constraint c1 ValueRefs only field_u → blame={U(1)}
+    // The mock broadcasts ONE Violated verdict across ALL constraints in the
+    // first leaf's check() call, so both c0 and c1 report Violated for leaf 1.
+    // Blame union = {0} ∪ {1} = {0,1}; max = 1 = U → BackjumpTo(1).
+    let field_t = ValueCellId::new("Coupling", "field_t");
+    let field_u = ValueCellId::new("Coupling", "field_u");
+    let expr_t = CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
+    let expr_u = CompiledExpr::value_ref(field_u.clone(), Type::TypeParam("U".into()));
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .param("Coupling", "field_u", Type::TypeParam("U".into()), None)
+        .constraint("Coupling", 0, None, expr_t)
+        .constraint("Coupling", 1, None, expr_u)
+        .build();
+
+    // Queue: [Violated]; default: Satisfied.
+    // First leaf check → both constraints Violated (one check() call, one pop).
+    // All subsequent checks → Satisfied.
+    let checker = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "W".to_string(),
+            bounds: vec!["Hot".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // WITH max-over-union backjumping:
+    // Leaf 1 = (ORingSeal, AirCooled, Hot1) → Violated → conflict {0,1} → J=1=U
+    // → backjump to U level, skip only (ORingSeal, AirCooled, Hot2)
+    // → next visited leaf = (ORingSeal, WaterCooled, Hot1) → Satisfied
+    // → lex-first feasible = (ORingSeal, WaterCooled, Hot1)
+    //
+    // WITHOUT max-over-union (e.g., min-over-union J=0=T):
+    // → would backjump past all ORingSeal, lex-first = (RubberSeal, AirCooled, Hot1)
+    assert_eq!(
+        outcome.substitution,
+        vec![
+            ("T".to_string(), "ORingSeal".to_string()),
+            ("U".to_string(), "WaterCooled".to_string()),
+            ("W".to_string(), "Hot1".to_string()),
+        ],
+        "WITH max-over-union backjumping: lex-first must be (ORingSeal, WaterCooled, Hot1); \
+         J=max{{0,1}}=1=U so ORingSeal sub-tree is not fully skipped; got: {:?}",
+        outcome.substitution
+    );
+
+    // The resolved substitution started with ORingSeal, confirming we did NOT
+    // backjump past T (which would have skipped the entire ORingSeal sub-tree).
+    assert_eq!(
+        outcome.substitution[0],
+        ("T".to_string(), "ORingSeal".to_string()),
+        "T must resolve to ORingSeal — if T resolved to RubberSeal, the search \
+         incorrectly backjumped to T-level (min-over-union) instead of U-level \
+         (max-over-union); got: {:?}",
+        outcome.substitution
+    );
+
+    // Free-mode: multiple feasibles → exactly one NonUnique diagnostic.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "multiple feasibles must emit exactly one NonUnique diagnostic; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+}
