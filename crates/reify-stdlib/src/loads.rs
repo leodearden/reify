@@ -114,6 +114,21 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                 ("traction", args[1].clone()),
             ])
         }
+        "body_force" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            if validate_selector_target(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            if validate_dimensioned_vec3(&args[1], force_density_dim()).is_none() {
+                return Some(Value::Undef);
+            }
+            make_load_map("body_force", &[
+                ("body", args[0].clone()),
+                ("force_density", args[1].clone()),
+            ])
+        }
         _ => return None,
     })
 }
