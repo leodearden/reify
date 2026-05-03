@@ -1,3 +1,208 @@
+//! Shared AST-builder fixtures for specialization-scope tests.
+//!
+//! These helpers are used by:
+//! - `reify-compiler` unit tests in `specialization_scope_check.rs`
+//! - `reify-compiler` integration tests in `specialization_scope_validation_tests.rs`
+//! - `reify-lsp` regression tests in `diagnostics.rs`
+//!
+//! All helpers are `pub` and consumed via
+//! `use reify_test_support::specialization_fixtures::*;` inside the relevant
+//! test modules — **not** re-exported from the crate root to avoid polluting the
+//! top-level namespace with generic names like `dummy_span`.
+//!
+//! # Span layout
+//!
+//! The span constants below cover byte offsets 0–110.  [`source_stub()`]
+//! produces a 120-char string of ASCII spaces so that every offset maps to a
+//! valid `LSP Position { line: 0, character: N }` without any out-of-bounds
+//! access.
+
+use reify_syntax::{
+    ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl, PortDecl,
+    StructureDef, SubDecl,
+};
+use reify_types::{ContentHash, ModulePath, SourceSpan};
+
+/// Dummy span for structure-level and default-use nodes: bytes 10–20.
+pub fn dummy_span() -> SourceSpan {
+    SourceSpan::new(10, 20)
+}
+
+/// Span for `param` declarations: bytes 30–50.
+pub fn param_span() -> SourceSpan {
+    SourceSpan::new(30, 50)
+}
+
+/// Span for `port` declarations: bytes 60–80.
+pub fn port_span() -> SourceSpan {
+    SourceSpan::new(60, 80)
+}
+
+/// Span for `sub` declarations: bytes 90–110.
+pub fn sub_span() -> SourceSpan {
+    SourceSpan::new(90, 110)
+}
+
+/// Zero span: bytes 0–0.  Used by the compiler integration tests where the
+/// structure-level span is conventionally zero.
+pub fn zero_span() -> SourceSpan {
+    SourceSpan::new(0, 0)
+}
+
+/// Dummy content hash: `ContentHash(0)`.
+pub fn dummy_hash() -> ContentHash {
+    ContentHash(0)
+}
+
+/// Dummy expression: `BoolLiteral(true)` at [`dummy_span()`].
+pub fn dummy_expr() -> Expr {
+    Expr {
+        kind: ExprKind::BoolLiteral(true),
+        span: dummy_span(),
+    }
+}
+
+/// Build a `MemberDecl::Param` with the given `name` and `span`.
+///
+/// All optional fields (`doc`, `type_expr`, `default`, `where_clause`) are
+/// `None`; `annotations` is empty; `content_hash` is [`dummy_hash()`].
+pub fn make_param(name: &str, span: SourceSpan) -> MemberDecl {
+    MemberDecl::Param(ParamDecl {
+        name: name.to_string(),
+        doc: None,
+        type_expr: None,
+        default: None,
+        where_clause: None,
+        annotations: Vec::new(),
+        span,
+        content_hash: dummy_hash(),
+    })
+}
+
+/// Build a `MemberDecl::Port` with the given `name` and `span`.
+///
+/// `direction` is `None`; `type_name` is `"SomePort"`; `members` and
+/// `frame_expr` are empty/`None`; `content_hash` is [`dummy_hash()`].
+pub fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
+    MemberDecl::Port(PortDecl {
+        name: name.to_string(),
+        direction: None,
+        type_name: "SomePort".to_string(),
+        members: Vec::new(),
+        frame_expr: None,
+        span,
+        content_hash: dummy_hash(),
+    })
+}
+
+/// Build a bare (no-body) `MemberDecl::Sub` with the given `name` and `span`.
+///
+/// `structure_name` is `"Foo"`; `body` is `None`; `content_hash` is
+/// [`dummy_hash()`].
+pub fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
+    MemberDecl::Sub(SubDecl {
+        name: name.to_string(),
+        structure_name: "Foo".to_string(),
+        type_args: Vec::new(),
+        args: Vec::new(),
+        is_collection: false,
+        where_clause: None,
+        body: None,
+        span,
+        content_hash: dummy_hash(),
+    })
+}
+
+/// Build a `MemberDecl::Sub` that opens a specialization scope with `body`.
+///
+/// `structure_name` is `"Foo"`; `body` is `Some(body)`; `content_hash` is
+/// [`dummy_hash()`].
+pub fn make_sub_with_body(name: &str, span: SourceSpan, body: Vec<MemberDecl>) -> MemberDecl {
+    MemberDecl::Sub(SubDecl {
+        name: name.to_string(),
+        structure_name: "Foo".to_string(),
+        type_args: Vec::new(),
+        args: Vec::new(),
+        is_collection: false,
+        where_clause: None,
+        body: Some(body),
+        span,
+        content_hash: dummy_hash(),
+    })
+}
+
+/// Build a `MemberDecl::Let` with the given `name`.
+///
+/// Uses [`dummy_span()`] and [`dummy_expr()`] internally; `is_pub` is `false`;
+/// optional fields are `None`/empty.
+pub fn make_let(name: &str) -> MemberDecl {
+    MemberDecl::Let(LetDecl {
+        name: name.to_string(),
+        doc: None,
+        is_pub: false,
+        type_expr: None,
+        value: dummy_expr(),
+        where_clause: None,
+        annotations: Vec::new(),
+        span: dummy_span(),
+        content_hash: dummy_hash(),
+    })
+}
+
+/// Build a `MemberDecl::Constraint` using [`dummy_expr()`] and [`dummy_span()`].
+///
+/// `label` is `None`; `where_clause` is `None`.
+pub fn make_constraint() -> MemberDecl {
+    MemberDecl::Constraint(ConstraintDecl {
+        label: None,
+        expr: dummy_expr(),
+        where_clause: None,
+        span: dummy_span(),
+        content_hash: dummy_hash(),
+    })
+}
+
+/// Build a [`reify_syntax::ParsedModule`] with a single `Structure` named `"S"`
+/// whose top-level members are the supplied `members`.
+///
+/// The structure's span is `structure_span` — pass [`dummy_span()`] for the
+/// compiler unit-test convention or [`zero_span()`] for the integration-test
+/// convention.
+pub fn parsed_module_with_structure_members(
+    members: Vec<MemberDecl>,
+    structure_span: SourceSpan,
+) -> reify_syntax::ParsedModule {
+    reify_syntax::ParsedModule {
+        path: ModulePath::single("test"),
+        declarations: vec![Declaration::Structure(StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: Vec::new(),
+            trait_bounds: Vec::new(),
+            members,
+            span: structure_span,
+            content_hash: dummy_hash(),
+            pragmas: Vec::new(),
+            annotations: Vec::new(),
+        })],
+        errors: Vec::new(),
+        content_hash: dummy_hash(),
+        pragmas: Vec::new(),
+    }
+}
+
+/// A source stub long enough for all span offsets (up to [`sub_span()`]
+/// end = 110) to produce non-zero LSP positions when passed to
+/// `convert_diagnostic`.
+///
+/// All 120 characters are ASCII spaces, so byte offset `N` maps to
+/// `LSP Position { line: 0, character: N }` for every offset used by the
+/// span constants in this module.
+pub fn source_stub() -> String {
+    " ".repeat(120)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
