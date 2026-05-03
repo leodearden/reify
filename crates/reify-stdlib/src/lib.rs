@@ -25,6 +25,7 @@ mod geometry;
 mod joints;
 mod linalg;
 mod list;
+mod loads;
 pub mod loop_closure;
 pub mod loop_closure_solver;
 mod matrix;
