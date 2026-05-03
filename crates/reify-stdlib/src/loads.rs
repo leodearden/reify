@@ -846,4 +846,90 @@ mod tests {
             "force_density_dim() should equal FORCE / VOLUME"
         );
     }
+
+    // ── body_force: failure modes ─────────────────────────────────────────────
+
+    #[test]
+    fn body_force_force_dim_returns_undef() {
+        use super::force_density_dim;
+        // FORCE instead of ForceDensity.
+        let bad = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("body_force", &[body_selector_stub(), bad]).is_undef(),
+            "FORCE dim → Undef"
+        );
+        let _ = force_density_dim(); // ensure it compiles
+    }
+
+    #[test]
+    fn body_force_pressure_dim_returns_undef() {
+        let bad = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::PRESSURE);
+        assert!(
+            eval_builtin("body_force", &[body_selector_stub(), bad]).is_undef(),
+            "PRESSURE dim → Undef"
+        );
+    }
+
+    #[test]
+    fn body_force_inf_component_returns_undef() {
+        use super::force_density_dim;
+        let inf_vec = make_scalar_vec3([f64::INFINITY, 0.0, 0.0], force_density_dim());
+        assert!(
+            eval_builtin("body_force", &[body_selector_stub(), inf_vec]).is_undef(),
+            "Inf component → Undef"
+        );
+    }
+
+    #[test]
+    fn body_force_vec4_returns_undef() {
+        use super::force_density_dim;
+        let dim = force_density_dim();
+        let vec4 = Value::Vector(vec![
+            Value::Scalar { si_value: 0.0, dimension: dim },
+            Value::Scalar { si_value: 0.0, dimension: dim },
+            Value::Scalar { si_value: -77000.0, dimension: dim },
+            Value::Scalar { si_value: 0.0, dimension: dim },
+        ]);
+        assert!(
+            eval_builtin("body_force", &[body_selector_stub(), vec4]).is_undef(),
+            "4-component vector → Undef"
+        );
+    }
+
+    #[test]
+    fn body_force_selector_bool_returns_undef() {
+        use super::force_density_dim;
+        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], force_density_dim());
+        assert!(
+            eval_builtin("body_force", &[Value::Bool(false), fd]).is_undef(),
+            "selector = Bool → Undef"
+        );
+    }
+
+    #[test]
+    fn body_force_zero_args_returns_undef() {
+        assert!(eval_builtin("body_force", &[]).is_undef(), "0 args → Undef");
+    }
+
+    #[test]
+    fn body_force_one_arg_returns_undef() {
+        assert!(
+            eval_builtin("body_force", &[body_selector_stub()]).is_undef(),
+            "1 arg → Undef"
+        );
+    }
+
+    #[test]
+    fn body_force_three_args_returns_undef() {
+        use super::force_density_dim;
+        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], force_density_dim());
+        assert!(
+            eval_builtin(
+                "body_force",
+                &[body_selector_stub(), fd.clone(), fd]
+            )
+            .is_undef(),
+            "3 args → Undef"
+        );
+    }
 }
