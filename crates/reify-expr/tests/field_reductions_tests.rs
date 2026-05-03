@@ -68,6 +68,39 @@ fn make_sampled_1d(name: &str, axis: Vec<f64>, data: Vec<f64>) -> SampledField {
     }
 }
 
+/// Construct a 2-D `Value::SampledField` from two per-axis grid coords and
+/// row-major data (axis-0 outermost: `data[i0 * s1 + i1]`).
+fn make_sampled_2d(
+    name: &str,
+    axis0: Vec<f64>,
+    axis1: Vec<f64>,
+    data: Vec<f64>,
+) -> SampledField {
+    let bounds_min = vec![
+        *axis0.first().expect("axis0 must be non-empty"),
+        *axis1.first().expect("axis1 must be non-empty"),
+    ];
+    let bounds_max = vec![
+        *axis0.last().expect("axis0 must be non-empty"),
+        *axis1.last().expect("axis1 must be non-empty"),
+    ];
+    let spacing = vec![
+        if axis0.len() >= 2 { axis0[1] - axis0[0] } else { 1.0 },
+        if axis1.len() >= 2 { axis1[1] - axis1[0] } else { 1.0 },
+    ];
+    SampledField {
+        name: name.to_string(),
+        kind: SampledGridKind::Regular2D,
+        bounds_min,
+        bounds_max,
+        spacing,
+        axis_grids: vec![axis0, axis1],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
 /// Wrap a `SampledField` in a `Value::Field { source: Sampled, .. }` with
 /// the supplied domain and codomain types.
 fn wrap_sampled_field(sf: SampledField, domain: Type, codomain: Type) -> (Value, Type) {
@@ -359,5 +392,103 @@ fn argmin_sampled_field_1d_length_domain_returns_coord_at_min_index() {
             dimension: DimensionVector::LENGTH,
         },
         "argmin(field) over 1-D LENGTH domain should return the coord of the data min"
+    );
+}
+
+// ── Step 11: argmax / argmin over a 2-D Length-domain Sampled field ─────────
+
+/// `argmax(field)` over a Sampled 2-D `Point2<Length>`-domain Real-codomain
+/// field returns the per-axis coords at the index of the data buffer's
+/// maximum, wrapped as `Value::Point` of two `Value::Scalar { LENGTH }`
+/// components.
+///
+/// Shape 3×2 row-major (axis-0 outermost):
+///   index   (i0, i1)   data
+///     0      (0, 0)     1.0
+///     1      (0, 1)     2.0
+///     2      (1, 0)     3.0
+///     3      (1, 1)     4.0
+///     4      (2, 0)     9.0  ← max
+///     5      (2, 1)     6.0
+/// axis_0 = [0, 1, 2]; axis_1 = [10, 20]. Max at linear index 4 →
+/// per-axis (2, 0) → coord (2.0, 10.0).
+#[test]
+fn argmax_sampled_field_2d_length_domain_returns_point2_at_max_index() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain = Type::point2(length.clone());
+    let sf = make_sampled_2d(
+        "f",
+        vec![0.0, 1.0, 2.0],
+        vec![10.0, 20.0],
+        vec![1.0, 2.0, 3.0, 4.0, 9.0, 6.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        domain.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Point(vec![
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 10.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]),
+        "argmax(field) over 2-D Point2<Length> domain should return the per-axis coords at the data max"
+    );
+}
+
+/// `argmin(field)` over the same 2-D `Point2<Length>` field returns the
+/// coord at the data buffer's minimum (linear index 0 → per-axis (0, 0) →
+/// coord (0.0, 10.0)).
+#[test]
+fn argmin_sampled_field_2d_length_domain_returns_point2_at_min_index() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain = Type::point2(length.clone());
+    let sf = make_sampled_2d(
+        "f",
+        vec![0.0, 1.0, 2.0],
+        vec![10.0, 20.0],
+        vec![1.0, 2.0, 3.0, 4.0, 9.0, 6.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(field, field_type)],
+        domain.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 10.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]),
+        "argmin(field) over 2-D Point2<Length> domain should return the per-axis coords at the data min"
     );
 }
