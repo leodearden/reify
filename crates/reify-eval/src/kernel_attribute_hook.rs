@@ -10,33 +10,38 @@
 //! This module is the analogue for non-BRep (currently: Manifold mesh)
 //! kernels per PRD `docs/prds/v0_2/persistent-naming-v2.md` line 70.
 //!
-//! # Call-site wiring is intentionally staged
+//! # Production call site
 //!
-//! Plan #2657 (this task) lands **only** the dispatcher and the trait
-//! surface ([`reify_types::KernelAttributeHook`] +
-//! [`reify_types::GeometryKernel::attribute_hook`]) — there is *no*
-//! production call site for [`propagate_via_kernel_attribute_hook`] in
-//! this task's diff. Wiring the dispatcher into the engine's op-dispatch
-//! hot path (e.g. `Engine::execute_realization_ops`, alongside the
-//! existing BRep-side `propagate_attributes_via_brepalgoapi_history`
-//! call sites that landed in persistent-naming-v2 tasks 5-8) is
-//! **deliberately out of scope** for plan #2657 — see the "Out of scope"
-//! section of the task analysis — and is deferred to a follow-up task
-//! that will add per-op call sites mirroring the BRep-side pattern.
+//! [`propagate_via_kernel_attribute_hook`] is wired into
+//! `Engine::execute_realization_ops` in `crates/reify-eval/src/engine_build.rs`
+//! (task 2875). The dispatcher is invoked once per parent-having op — i.e.
+//! once per op for which [`crate::parent_handles_for_op`] returns a
+//! non-empty slice — immediately after the existing
+//! `populate_attribute_history` call (BRep-first ordering: OCCT-native
+//! attribute population runs first; the hook is the non-BRep fallback path
+//! that returns `FellThrough` for OCCT shapes and routes to
+//! `propagate_attributes` for kernels that advertise a hook, currently
+//! `ManifoldKernel`).
 //!
-//! Until that follow-up lands, [`propagate_via_kernel_attribute_hook`]
-//! is exercised only by:
+//! Three test layers pin the contract end-to-end:
 //!
-//! - the unit tests in this module
-//!   (`propagate_via_kernel_attribute_hook_routes_to_kernel_when_some`,
-//!   `propagate_via_kernel_attribute_hook_returns_fell_through_with_debug_diagnostic_when_kernel_has_no_hook`);
-//! - the cross-crate integration test
-//!   `crates/reify-kernel-manifold/tests/kernel_attribute_hook_integration.rs`.
+//! 1. **In-module unit tests** (this file): pin the `Some(hook)` routing and
+//!    `None → FellThrough+DEBUG` fallback in isolation
+//!    (`propagate_via_kernel_attribute_hook_routes_to_kernel_when_some`,
+//!    `propagate_via_kernel_attribute_hook_returns_fell_through_with_debug_diagnostic_when_kernel_has_no_hook`).
 //!
-//! The dispatcher and trait surface are stable contracts that the
-//! follow-up call-site task and the eventual real-Manifold-FFI task must
-//! continue to satisfy; if either is changed without updating the call
-//! sites/integration tests in lockstep, the tests above will fail.
+//! 2. **Cross-crate Manifold plumbing** —
+//!    `crates/reify-kernel-manifold/tests/kernel_attribute_hook_integration.rs`:
+//!    pins the trait-object path for `ManifoldKernel` specifically
+//!    (kernel advertises `attribute_hook() = Some(self)`, stub returns
+//!    `Discarded`, dispatcher surfaces `Ok(Discarded)`).
+//!
+//! 3. **Engine-level wiring** —
+//!    `crates/reify-eval/tests/kernel_attribute_hook_wiring.rs` (task 2875):
+//!    pins that the engine dispatches the hook for the right ops with the
+//!    right `(op, parents, result, feature_id)` tuple, that primitives are
+//!    never dispatched, and that `QueryError` from the hook surfaces as a
+//!    `Diagnostic::warning` without regressing `geometry_output` to `None`.
 
 use reify_types::{
     FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, KernelAttributeOutcome, QueryError,
@@ -68,11 +73,11 @@ use reify_types::{
 /// returns `FellThrough` for them and selectors over those reps fall
 /// through to computed selectors.
 ///
-/// **Staging:** in plan #2657 (the task that introduced this module) this
-/// function has no production call site — the per-op call-site wiring is
-/// intentionally deferred to a follow-up task per the plan's "Out of
-/// scope" section. See the module-level docstring for full rationale and
-/// the list of tests that exercise the dispatcher in the meantime.
+/// **Call site:** wired into `Engine::execute_realization_ops` in
+/// `crates/reify-eval/src/engine_build.rs` by task 2875. Invoked once per
+/// parent-having op (per [`crate::parent_handles_for_op`]) immediately after
+/// `populate_attribute_history`. See the module-level docstring for the full
+/// three-layer test contract and the BRep-first ordering rationale.
 pub fn propagate_via_kernel_attribute_hook(
     kernel: &dyn GeometryKernel,
     table: &mut TopologyAttributeTable,
