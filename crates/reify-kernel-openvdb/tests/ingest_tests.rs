@@ -283,3 +283,120 @@ fn lower_to_sampled_staggered_interpolation_maps_to_linear_with_deferred_warning
         w.message
     );
 }
+
+// ---------------------------------------------------------------------------
+// Step-9 RED: grid-shape invariant tests
+// ---------------------------------------------------------------------------
+
+/// Step-9(a): empty data buffer → `IngestError::EmptyGrid`. Defends the
+/// downstream `interp::interpolate_Nd` `assert!` on non-empty data — pinned
+/// in the same shape as `engine_eval::build_sampled_field`'s pre-flight
+/// guards.
+#[test]
+fn lower_to_sampled_empty_data_returns_empty_grid() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        data: vec![],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "empty", &Type::length());
+    match result {
+        Err(IngestError::EmptyGrid) => {}
+        other => panic!("expected Err(IngestError::EmptyGrid), got {other:?}"),
+    }
+}
+
+/// Step-9(b): 1D grid with mismatched data length →
+/// `IngestError::DataShapeMismatch` carrying the expected node count, the
+/// actual data length, and a `"4"` shape rendering for single-axis cases.
+#[test]
+fn lower_to_sampled_data_shape_mismatch_returns_data_shape_mismatch() {
+    // 4 nodes expected (bounds [0,3], spacing 1.0), but data has 5 elements.
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "mismatch1d", &Type::length());
+    match result {
+        Err(IngestError::DataShapeMismatch {
+            expected,
+            actual,
+            shape,
+        }) => {
+            assert_eq!(expected, 4);
+            assert_eq!(actual, 5);
+            assert_eq!(shape, "4");
+        }
+        other => panic!(
+            "expected Err(IngestError::DataShapeMismatch {{ … }}), got {other:?}"
+        ),
+    }
+}
+
+/// Step-9(c): 2D 3×4 grid → 12 expected nodes, but data has 10 → shape
+/// rendering uses the multi-axis `"3×4"` form.
+#[test]
+fn lower_to_sampled_2d_data_shape_mismatch_renders_axis_count() {
+    // bounds_min=[0,0], bounds_max=[2,3], spacing=[1,1] →
+    // axis 0 = 3 nodes (0,1,2), axis 1 = 4 nodes (0,1,2,3); 12 cells expected.
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular2D,
+        bounds_min: vec![0.0, 0.0],
+        bounds_max: vec![2.0, 3.0],
+        spacing: vec![1.0, 1.0],
+        data: vec![0.0; 10],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "mismatch2d", &Type::length());
+    match result {
+        Err(IngestError::DataShapeMismatch {
+            expected,
+            actual,
+            shape,
+        }) => {
+            assert_eq!(expected, 12);
+            assert_eq!(actual, 10);
+            assert_eq!(shape, "3×4");
+        }
+        other => panic!(
+            "expected Err(IngestError::DataShapeMismatch {{ … }}), got {other:?}"
+        ),
+    }
+}
+
+/// Step-9(d): non-positive spacing on any axis →
+/// `IngestError::InvalidSpacing` carrying the offending axis index and
+/// value. Defends the downstream linspace / interp math which assumes
+/// strictly-positive finite spacing per axis.
+#[test]
+fn lower_to_sampled_non_positive_spacing_returns_invalid_spacing() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![0.0],
+        data: vec![0.0, 1.0, 2.0, 3.0],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "zerospace", &Type::length());
+    match result {
+        Err(IngestError::InvalidSpacing { axis, value }) => {
+            assert_eq!(axis, 0);
+            assert_eq!(value, 0.0);
+        }
+        other => panic!(
+            "expected Err(IngestError::InvalidSpacing {{ … }}), got {other:?}"
+        ),
+    }
+}
