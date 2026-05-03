@@ -162,7 +162,7 @@ fn compile_pipeline_invokes_specialization_scope_validator() {
 /// A `MatchArmDeclGroup` nested inside an outer `sub`-with-body must be walked
 /// by `walk_specialization_scope_members`, which recurses into
 /// `MemberDecl::MatchArmDeclGroup` arms.  A `sub` arm that itself has a body
-/// containing a `param` must produce at least two diagnostics:
+/// containing a `param` must produce exactly two diagnostics:
 ///   - one for the arm's `sub head` (forbidden bare-sub in outer scope), and
 ///   - one for the leaf `param x` inside the arm's sub body (forbidden in inner scope).
 ///
@@ -208,9 +208,10 @@ fn forbidden_decl_in_match_arm_sub_body_emits_diagnostic() {
     let compiled = reify_compiler::compile(&parsed);
     let diags = forbidden_diagnostics(&compiled.diagnostics);
 
-    assert!(
-        diags.len() >= 2,
-        "expected at least two SpecializationForbiddenDecl diagnostics \
+    assert_eq!(
+        diags.len(),
+        2,
+        "expected exactly two SpecializationForbiddenDecl diagnostics \
          (arm sub + leaf param), got: {:#?}",
         diags
     );
