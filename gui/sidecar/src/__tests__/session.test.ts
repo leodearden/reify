@@ -2145,8 +2145,9 @@ describe('stdin write error correlation', () => {
  * installs a console.warn spy, dispatches handleMessage, and awaits the tool_call
  * output to confirm the stdin 'error' listener is attached before returning.
  *
- * Returns { mockProc, stdout, msgPromise, warnSpy, finish } where finish() restores
- * the spy, closes the mock process, and resolves the pending handleMessage.
+ * Returns { mockProc, warnSpy, finish } where finish() restores the spy, closes the
+ * mock process (using stdout/msgPromise captured in its closure), and resolves the
+ * pending handleMessage.
  */
 async function setupOrphanStdinErrorScenario(session: SidecarSession) {
   const { mockProc, stdout } = makeMockProc([
@@ -2175,7 +2176,7 @@ async function setupOrphanStdinErrorScenario(session: SidecarSession) {
     await msgPromise;
   };
 
-  return { mockProc, stdout, msgPromise, warnSpy, finish };
+  return { mockProc, warnSpy, finish };
 }
 
 describe('stdin orphan-error diagnostic', () => {
