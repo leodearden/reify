@@ -876,14 +876,27 @@ impl Engine {
                         // curve constructors, Pipe) so vacuous hook calls are never made.
                         let parent_handles = parent_handles_for_op(&geom_op);
                         if !parent_handles.is_empty() {
-                            let _ = crate::kernel_attribute_hook::propagate_via_kernel_attribute_hook(
+                            // All three Ok variants (Propagated / Discarded /
+                            // FellThrough) are intentionally swallowed: the hook
+                            // emits its own tracing::warn! on Discarded, the
+                            // dispatcher emits tracing::debug! on FellThrough, and
+                            // Propagated is the success case.  Only Err(QueryError)
+                            // needs user-facing visibility (mirrors the
+                            // populate_attribute_history failure idiom above and the
+                            // task-2574 "auxiliary metadata MUST NOT regress Failed"
+                            // convention).
+                            if let Err(e) = crate::kernel_attribute_hook::propagate_via_kernel_attribute_hook(
                                 &*kernel,
                                 topology_attribute_table,
                                 &geom_op,
                                 &parent_handles,
                                 handle.id,
                                 &feature_id,
-                            );
+                            ) {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "kernel attribute hook propagation failed for {realization_id} op {op_idx}: {e}"
+                                )));
+                            }
                         }
                         step_handles.push(handle.id);
                     }
