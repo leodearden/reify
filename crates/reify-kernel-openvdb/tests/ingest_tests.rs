@@ -497,6 +497,12 @@ fn lower_to_sampled_non_finite_bounds_returns_invalid_bounds() {
 /// Pins the FfiNotImplemented variant + the Display contract that a
 /// follow-up FFI implementation must preserve (so consumers' error parsing
 /// continues to work after the body is swapped in).
+///
+/// Display contract: the path payload is the structural part — operators
+/// must be able to identify the offending file in a multi-import workflow.
+/// The surrounding prose ("OpenVDB", task ID, etc.) is incidental and
+/// intentionally not pinned, so future rewording (or the FFI body landing)
+/// doesn't have to update test assertions.
 #[test]
 fn read_vdb_file_returns_ffi_not_implemented_with_path() {
     let result = read_vdb_file("path/to/example.vdb", "voxel_grid", &Type::length());
@@ -510,22 +516,101 @@ fn read_vdb_file_returns_ffi_not_implemented_with_path() {
         ),
     };
 
-    // Pin the Display contract: the message names OpenVDB, the task that
-    // owns the v0.2 stub (so triage can follow up), and the path so
-    // operators can identify the offending file in a multi-import workflow.
+    // Pin only the structural payload of the Display: the path. Prose is
+    // incidental and not part of the contract.
     let msg = format!("{err}");
-    assert!(
-        msg.contains("OpenVDB"),
-        "Display message must mention OpenVDB; got {msg:?}"
-    );
-    assert!(
-        msg.contains("task 2666"),
-        "Display message must mention task 2666 for triage; got {msg:?}"
-    );
     assert!(
         msg.contains("path/to/example.vdb"),
         "Display message must include the path; got {msg:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Amendment: extra coverage for documented edge cases
+// ---------------------------------------------------------------------------
+
+/// Amendment: the documented "caller-managed contract" path — when a grid
+/// declares no units (`units = None`), `validate_grid_units` short-circuits
+/// to `Ok(())` and the lowering proceeds. Pins the early-return that the
+/// `sampled { … }` source path also relies on (no metadata, no validation).
+#[test]
+fn lower_to_sampled_no_units_skips_dimension_check() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0, 2.0, 3.0],
+        units: None,
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    // Even though codomain = Pressure, units = None means the caller takes
+    // responsibility for the dimensional contract.
+    let outcome = lower_to_sampled(&grid, "nounits", &pressure_type())
+        .expect("missing units must skip the dimension check");
+    assert_eq!(outcome.field.kind, SampledGridKind::Regular1D);
+    assert!(outcome.warnings.is_empty());
+}
+
+/// Amendment: the PRD's worked example codomain `Tensor<2, 3, Pressure>`
+/// paired with grid units `MPa` (also Pressure) must lower successfully
+/// end-to-end through the public API. Complements the
+/// `extract_codomain_dimension` internal tests which only assert the
+/// recursion in isolation.
+#[test]
+fn lower_to_sampled_tensor_pressure_with_mpa_grid_succeeds() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0, 2.0, 3.0],
+        units: Some("MPa".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let codomain = Type::tensor(
+        2,
+        3,
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        },
+    );
+    let outcome = lower_to_sampled(&grid, "stress", &codomain)
+        .expect("Tensor<2,3,Pressure> + MPa must lower successfully");
+    assert_eq!(outcome.field.kind, SampledGridKind::Regular1D);
+    assert!(outcome.warnings.is_empty());
+}
+
+/// Amendment: a `Type::Real` codomain (dimensionless) paired with a
+/// unit-bearing grid (e.g. `m`) is a common caller mistake. It must
+/// surface as `UnitMismatch` (LENGTH vs DIMENSIONLESS) rather than
+/// silently succeeding.
+#[test]
+fn lower_to_sampled_real_codomain_with_meter_grid_returns_unit_mismatch() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0, 2.0, 3.0],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "real", &Type::Real);
+    match result {
+        Err(IngestError::UnitMismatch {
+            expected_dimension,
+            found_dimension,
+            found_unit,
+        }) => {
+            assert_eq!(expected_dimension, DimensionVector::DIMENSIONLESS);
+            assert_eq!(found_dimension, DimensionVector::LENGTH);
+            assert_eq!(found_unit, "m");
+        }
+        other => panic!(
+            "expected Err(IngestError::UnitMismatch {{ … }}), got {other:?}"
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
