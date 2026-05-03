@@ -43,10 +43,10 @@
 //! the future dispatcher wiring share the cached map and the centralised
 //! tie-break helper [`pick_lexmin_kernel`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
-use reify_types::{CapabilityDescriptor, KernelRegistration};
+use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Memoized BTreeMap of every static-collected [`KernelRegistration`], keyed
 /// by `name`. Allocated once on first call and never rebuilt.
@@ -118,10 +118,12 @@ pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
 /// allocation. Per the PRD's "read once at engine startup" contract,
 /// callers SHOULD NOT call this on the hot dispatch path.
 pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
-    registry()
+    let result: BTreeMap<String, CapabilityDescriptor> = registry()
         .iter()
         .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
-        .collect()
+        .collect();
+    debug_assert_unique_op_repr_pairs(&result);
+    result
 }
 
 /// Emit a structured tracing event recording which kernel was selected and how
@@ -170,6 +172,88 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
         );
     }
     // total == 0: unreachable in debug builds (debug_assert above panics); release-mode no-op.
+}
+
+/// Check that no two kernels in `registered` claim the same
+/// `(Operation, ReprKind)` pair.
+///
+/// # Why a helper is extracted
+///
+/// `collect_registry()` materialises the `BTreeMap<String, CapabilityDescriptor>`
+/// from the inventory walk, so this uniqueness check naturally lives there.
+/// Extracting it as a `pub(crate)` free function lets unit tests drive the
+/// collision path with synthetic [`CapabilityDescriptor`] values without
+/// touching `inventory::submit!` (process-global; would corrupt the
+/// `OnceLock`-memoized registry seen by every other test in the binary).
+/// This is the same testability rationale that motivated extracting
+/// [`emit_kernel_selection`].
+///
+/// # Always-warn / debug-only-panic semantics
+///
+/// On a collision the function always emits a `tracing::warn!` (operator
+/// visibility in release builds where `debug_assert!` compiles to a no-op)
+/// followed by `debug_assert!(false, ...)` that panics in debug builds.
+/// Mirrors [`build_registry`]'s duplicate-name detection pattern verbatim.
+///
+/// # Why `HashMap`, not `BTreeSet`
+///
+/// [`Operation`] derives `Hash + Eq` but **not** `Ord/PartialOrd`, so
+/// `BTreeSet<(Operation, ReprKind)>` would not compile without adding `Ord`
+/// to `Operation` (scope expansion into `reify-types`, not in this task's
+/// listed modules). `HashMap<(Operation, ReprKind), &str>` requires only the
+/// existing `Hash + Eq` and additionally records the previous claimer's name
+/// so the panic message reads `"kernels: {prev} vs {new}"` — a bare
+/// `insert() -> bool` would discard the previous owner's identity.
+/// Iteration-order determinism is preserved by the outer `BTreeMap` iteration
+/// (lexicographic on kernel name) and the inner `Vec` order (`supports`
+/// insertion order); `HashMap` only stores the lookup, not the iteration order.
+pub(crate) fn debug_assert_unique_op_repr_pairs(
+    registered: &BTreeMap<String, CapabilityDescriptor>,
+) {
+    let mut seen: HashMap<(Operation, ReprKind), &str> = HashMap::new();
+    for (name, descriptor) in registered {
+        for &(op, repr) in &descriptor.supports {
+            if let Some(prev_owner) = seen.insert((op, repr), name) {
+                if prev_owner == name.as_str() {
+                    // Intra-kernel: this kernel's own `supports` Vec lists the same
+                    // pair twice (e.g. a copy-paste bug in an adapter's descriptor
+                    // function).  Disambiguate from the inter-kernel case so the
+                    // diagnostic message isn't the confusing "kernels: foo vs foo".
+                    tracing::warn!(
+                        op = ?op,
+                        repr = ?repr,
+                        kernel = %name,
+                        "duplicate kernel claim for (Operation, ReprKind) pair: \
+                         kernel lists the same (op, repr) pair twice in its supports \
+                         table; dispatcher's lex-min tie-break would silently pick a \
+                         winner",
+                    );
+                    debug_assert!(
+                        false,
+                        "duplicate kernel claim for ({:?}, {:?}) — kernel {} lists \
+                         the same pair twice in its supports table",
+                        op, repr, name,
+                    );
+                } else {
+                    // Inter-kernel: two different kernels claim the same pair.
+                    tracing::warn!(
+                        op = ?op,
+                        repr = ?repr,
+                        prev_kernel = prev_owner,
+                        new_kernel = %name,
+                        "duplicate kernel claim for (Operation, ReprKind) pair: \
+                         v0.2 design expects each pair claimed by at most one kernel; \
+                         dispatcher's lex-min tie-break would silently pick a winner",
+                    );
+                    debug_assert!(
+                        false,
+                        "duplicate kernel claim for ({:?}, {:?}) — kernels: {} vs {}",
+                        op, repr, prev_owner, name,
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Walk `inventory::iter::<KernelRegistration>()` once and produce the
@@ -496,6 +580,96 @@ mod tests {
     #[should_panic(expected = "emit_kernel_selection requires total >= 1")]
     fn emit_kernel_selection_panics_when_total_is_zero() {
         emit_kernel_selection("nothing", 0);
+    }
+
+    /// The helper `debug_assert_unique_op_repr_pairs` must panic in debug
+    /// builds when two kernels claim the same `(Operation, ReprKind)` pair.
+    ///
+    /// Constructs a synthetic `BTreeMap<String, CapabilityDescriptor>` with
+    /// two entries — `"kernel_a"` and `"kernel_b"` — both claiming
+    /// `(BooleanUnion, BRep)` in their `supports` tables, then calls the
+    /// helper directly. This bypasses the global `inventory` registry (no
+    /// `OnceLock` mutation, no test pollution) following the same testability
+    /// rationale as the existing `emit_kernel_selection` extraction.
+    ///
+    /// The `#[cfg(debug_assertions)]` guard is required because `debug_assert!`
+    /// compiles to a no-op in release builds — `#[should_panic]` would falsely
+    /// pass if the test ran in a build where the assertion is elided.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "duplicate kernel claim for")]
+    fn debug_assert_unique_op_repr_pairs_panics_on_duplicate_pair() {
+        let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        registered.insert(
+            "kernel_a".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+            },
+        );
+        registered.insert(
+            "kernel_b".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+            },
+        );
+        debug_assert_unique_op_repr_pairs(&registered);
+    }
+
+    /// Contract pin: `debug_assert_unique_op_repr_pairs` must emit exactly one
+    /// `WARN`-level event when a duplicate `(Operation, ReprKind)` pair is
+    /// detected, regardless of whether debug assertions are enabled.
+    ///
+    /// The `tracing::warn!` call is straight-line code that precedes the
+    /// `debug_assert!`, so it always fires — even in release builds where the
+    /// panic is compiled out.  This test pins that "always-warn" contract
+    /// explicitly using `CountingSubscriberBuilder`, complementing the
+    /// `#[should_panic]` test above which only exercises the debug-build path.
+    ///
+    /// In debug builds the helper panics after emitting WARN.  We wrap the
+    /// call in `std::panic::catch_unwind` so the panic does not propagate to
+    /// the test runner before we can read `warn_count`.
+    #[test]
+    fn debug_assert_unique_op_repr_pairs_always_emits_warn_on_duplicate() {
+        use reify_test_support::CountingSubscriberBuilder;
+        use std::sync::atomic::Ordering;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_eval::kernel_registry")
+            .build();
+        let warn_count = counters[&tracing::Level::WARN].clone();
+
+        let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        registered.insert(
+            "kernel_a".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+            },
+        );
+        registered.insert(
+            "kernel_b".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+            },
+        );
+
+        // In debug builds the helper panics after emitting WARN.  Catch the
+        // panic inside the subscriber scope so warn_count is incremented before
+        // we assert on it.
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                debug_assert_unique_op_repr_pairs(&registered);
+            }));
+        });
+
+        assert_eq!(
+            warn_count.load(Ordering::Acquire),
+            1,
+            "debug_assert_unique_op_repr_pairs must emit exactly one WARN event \
+             at reify_eval::kernel_registry when a duplicate (op, repr) pair is \
+             detected — operator visibility contract: warn! fires in all builds, \
+             not just debug",
+        );
     }
 
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
