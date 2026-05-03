@@ -237,7 +237,7 @@ fn argmax_argmin_index(data: &[f64], find_min: bool) -> Option<usize> {
 /// `tests/field_reductions_tests.rs` (`argmax|argmin_sampled_field_*d_*`).
 fn arg_coord_from_index(sf: &SampledField, linear_index: usize, domain_type: &Type) -> Value {
     debug_assert!(
-        matches!(sf.axis_grids.len(), 1 | 2 | 3),
+        matches!(sf.axis_grids.len(), 1..=3),
         "SampledGridKind invariant: 1/2/3 axes only, got {}",
         sf.axis_grids.len()
     );
@@ -276,7 +276,7 @@ fn arg_coord_from_index(sf: &SampledField, linear_index: usize, domain_type: &Ty
 /// axes) is reinforced by the `debug_assert!` below.
 fn decompose_index(linear: usize, axis_lengths: &[usize]) -> Vec<usize> {
     debug_assert!(
-        matches!(axis_lengths.len(), 1 | 2 | 3),
+        matches!(axis_lengths.len(), 1..=3),
         "SampledGridKind invariant: 1/2/3 axes only"
     );
     let mut out = vec![0usize; axis_lengths.len()];
