@@ -2065,3 +2065,159 @@ fn match_arm_decl_group_reverse_collision_suppresses_cluster_registration() {
         bolt_template.match_arm_groups
     );
 }
+
+/// Task 2376 step-1: when an outside Sub AND two match clusters all share the
+/// logical name `head`, the compiler must emit BOTH a collision diagnostic and a
+/// duplicate-cluster diagnostic, in that order (collision before duplicate).
+///
+/// Precedence rule (entity.rs:572): duplicate-check fires before collision-check
+/// for the *first* cluster, but when the first cluster is suppressed by collision,
+/// the second cluster's duplicate status must still surface.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure DefaultHead {}
+/// structure HexHead {}
+/// structure SocketHead {}
+/// structure HexHead2 {}
+/// structure SocketHead2 {}
+/// structure Bolt {
+///     param head_type : HeadType
+///     sub head : DefaultHead              // outside the match block (span 1..5)
+///     match head_type {                   // cluster-1 (span 10..20)
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+///     match head_type {                   // cluster-2 (span 30..40) — duplicate
+///         Hex    => sub head : HexHead2
+///         Socket => sub head : SocketHead2
+///     }
+/// }
+/// ```
+///
+/// Expected: exactly one collision diagnostic AND exactly one duplicate-cluster
+/// diagnostic; collision appears before duplicate in the diagnostics vec.
+#[test]
+fn match_arm_decl_group_duplicate_and_outside_collision_emit_in_order() {
+    let outside_span = span_at(1, 5);
+    let cluster1_span = span_at(10, 20);
+    let cluster2_span = span_at(30, 40);
+
+    let outside_sub = sub_member_with_span("head", "DefaultHead", outside_span);
+
+    let match_group_1 = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: cluster1_span,
+        content_hash: ContentHash(0),
+    });
+
+    let match_group_2 = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead2")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead2")),
+        ],
+        span: cluster2_span,
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            outside_sub,
+            match_group_1,
+            match_group_2,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_duplicate_and_outside_collision_order"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("DefaultHead"),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            empty_structure("HexHead2"),
+            empty_structure("SocketHead2"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Exactly one collision diagnostic.
+    let collision_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .collect();
+    assert_eq!(
+        collision_diags.len(),
+        1,
+        "expected exactly one collision diagnostic, got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) Exactly one duplicate-cluster diagnostic.
+    let duplicate_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("duplicate match-arm cluster name"))
+        .collect();
+    assert_eq!(
+        duplicate_diags.len(),
+        1,
+        "expected exactly one duplicate-cluster diagnostic, got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (c) Collision appears before duplicate in the diagnostics vec.
+    let collision_pos = compiled
+        .diagnostics
+        .iter()
+        .position(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .expect("collision diagnostic not found");
+    let duplicate_pos = compiled
+        .diagnostics
+        .iter()
+        .position(|d| d.message.contains("duplicate match-arm cluster name"))
+        .expect("duplicate-cluster diagnostic not found");
+    assert!(
+        collision_pos < duplicate_pos,
+        "expected collision diagnostic (index {}) to appear before \
+         duplicate-cluster diagnostic (index {})",
+        collision_pos,
+        duplicate_pos
+    );
+}
