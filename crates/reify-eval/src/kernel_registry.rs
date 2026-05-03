@@ -863,33 +863,77 @@ mod tests {
         );
     }
 
-    /// `collect_registry()` must invoke `warn_if_duplicate_op_repr_pairs` at
-    /// most once across repeated calls, mirroring how `build_registry`'s
+    /// `collect_registry()` must invoke `warn_if_duplicate_op_repr_pairs` AT
+    /// MOST once across repeated calls, mirroring how `build_registry`'s
     /// duplicate-NAME walk is amortised by the surrounding `OnceLock`.
     ///
-    /// Pinned by asserting that `UNIQUENESS_CHECKED.load(Acquire) == true`
-    /// after at least one `collect_registry()` call: the flag transitions
-    /// `false → true` exactly once (the gate flips on first call) and never
-    /// reverts, so subsequent calls skip the O(kernels × supports) HashMap
-    /// walk regardless of test ordering or parallelism.
+    /// Pinned by snapshotting `super::UNIQUENESS_CHECK_INVOCATIONS` (an
+    /// `AtomicUsize` incremented INSIDE `collect_registry()`'s gated branch,
+    /// adjacent to the helper call) before and after a sequence of three
+    /// `collect_registry()` calls and asserting the delta is `<= 1`.
     ///
-    /// Test pollution: this test sets the flag for the rest of the binary,
-    /// but other tests are unaffected — `collect_registry()` continues to
-    /// return correct results whether the helper ran or not (the production
-    /// registry has no duplicates; the helper would have been a no-op
-    /// regardless).
+    /// # Why this asserts the right direction
+    ///
+    /// The previous version of this test asserted only
+    /// `super::UNIQUENESS_CHECKED.load(Acquire) == true`, which proves the
+    /// flag was set AT LEAST once — the OPPOSITE of the at-most-once
+    /// contract. A delta-based check on a counter that the gate itself
+    /// upper-bounds (the gate's `compare_exchange(false, true)` flips at
+    /// most once per process, so the adjacent `fetch_add(1)` runs at most
+    /// once) directly pins the AT MOST direction.
+    ///
+    /// # Regression scenarios this catches
+    ///
+    /// * Gate replaced with `if true { … fetch_add … helper(…) }`
+    ///   (always-on): three calls each enter the block → delta = 3 → FAIL.
+    /// * Gate removed but counter increment kept outside an `if` (so it runs
+    ///   unconditionally): same as above, delta = 3 → FAIL.
+    /// * `UNIQUENESS_CHECK_INVOCATIONS` deleted from the module entirely:
+    ///   this test fails to COMPILE with `cannot find value
+    ///   'UNIQUENESS_CHECK_INVOCATIONS' in module 'super'`, surfacing the
+    ///   regression at build time.
+    ///
+    /// # Why parallelism does not invalidate the assertion
+    ///
+    /// Helper-direct tests (`*_panics_on_duplicate_pair`,
+    /// `*_always_emits_warn_on_duplicate`,
+    /// `*_always_emits_warn_on_intra_kernel_duplicate`) call the helper
+    /// bypassing the gate, so they do NOT touch
+    /// `UNIQUENESS_CHECK_INVOCATIONS` (the increment lives INSIDE the gated
+    /// branch in `collect_registry()`, not at the top of the helper itself).
+    /// Other parallel `collect_registry()` callers (e.g.
+    /// `collect_registry_returns_typed_btreemap_smoke`) share the same gate
+    /// and so collectively contribute at most 1 to the global counter. Our
+    /// delta is therefore guaranteed `<= 1` regardless of test ordering or
+    /// thread interleaving.
+    ///
+    /// # Test pollution
+    ///
+    /// This test consumes the gate (if not already consumed by a prior
+    /// `collect_registry()`-calling test) for the rest of the binary, but
+    /// other tests are unaffected — production registry has no duplicates,
+    /// so the gated helper would have been a no-op regardless.
     #[test]
     fn collect_registry_runs_uniqueness_check_at_most_once_across_calls() {
         use std::sync::atomic::Ordering;
 
+        let before = super::UNIQUENESS_CHECK_INVOCATIONS.load(Ordering::Relaxed);
+
         let _ = collect_registry();
         let _ = collect_registry();
         let _ = collect_registry();
 
+        let after = super::UNIQUENESS_CHECK_INVOCATIONS.load(Ordering::Relaxed);
+        let delta = after - before;
+
         assert!(
-            super::UNIQUENESS_CHECKED.load(Ordering::Acquire),
-            "collect_registry() must set UNIQUENESS_CHECKED on its first invocation \
-             so subsequent calls skip the O(kernels × supports) HashMap walk",
+            delta <= 1,
+            "collect_registry() must invoke warn_if_duplicate_op_repr_pairs \
+             AT MOST ONCE across repeated calls (the once-shot AtomicBool \
+             gate mirrors build_registry's OnceLock-amortised duplicate-NAME \
+             walk). Observed delta = {delta} across 3 collect_registry() \
+             calls in this test, which means the gate failed to short-circuit \
+             subsequent helper invocations.",
         );
     }
 }
