@@ -92,13 +92,24 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
     match source {
         FieldSourceKind::Sampled => match lambda.as_ref() {
             Value::SampledField(sf) => reduce_sampled_extremum(sf, codomain_type, find_min),
+            // Defensive: a Sampled source must carry a SampledField in its
+            // lambda slot. Anything else is a malformed runtime value;
+            // return Undef rather than panicking.
             _ => Value::Undef,
         },
         // TODO(future): numerical optimisation over Analytical/Composed lambda
-        // domains; iterate over Sampled subfield for derived (Gradient, VonMises,
-        // MaxShear, ...) wrappers — see PRD docs/prds/v0_3/structural-analysis-fea.md
-        // task #6 (deferred per task description's "Implementation can be staged
-        // — sampled first").
+        // domains (Nelder-Mead / golden-section / coordinate descent); iterate
+        // over Sampled subfield for derived (Gradient, VonMises, MaxShear, ...)
+        // wrappers — see PRD docs/prds/v0_3/structural-analysis-fea.md task #6
+        // (deferred per task description's "Implementation can be staged —
+        // sampled first"). Imported fields carry Value::Undef in their lambda
+        // slot and cannot be reduced without a backing data buffer.
+        //
+        // Pinned by the step-15 negative-path tests:
+        // - all_reductions_on_analytical_field_return_undef
+        // - all_reductions_on_composed_field_return_undef
+        // - all_reductions_on_imported_field_return_undef
+        // - all_reductions_on_derived_field_return_undef
         _ => Value::Undef,
     }
 }
@@ -154,9 +165,13 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
                 Some(linear) => arg_coord_from_index(sf, linear, domain_type),
                 None => Value::Undef,
             },
+            // Defensive: see compute_extremum's matching defensive arm.
             _ => Value::Undef,
         },
-        // TODO(future): see compute_extremum for the deferred-path note.
+        // TODO(future): see compute_extremum for the full deferred-path note.
+        // Same staging rationale applies — argmax/argmin over a non-Sampled
+        // source would require numerical optimisation, not yet in scope.
+        // Pinned by the same step-15 tests as compute_extremum.
         _ => Value::Undef,
     }
 }
