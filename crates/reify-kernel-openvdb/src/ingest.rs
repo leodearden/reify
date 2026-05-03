@@ -574,46 +574,26 @@ fn extract_codomain_dimension(t: &Type) -> Result<DimensionVector, IngestError> 
 }
 
 /// Render a short structural label for an unsupported codomain, sufficient
-/// to identify the variant in error messages (e.g. "Bool", "Int",
-/// "String", "Geometry", "Enum", "Function", "List", …). Avoids depending
-/// on a `Display` impl that may not exist on every variant.
+/// to identify the variant in error messages (e.g. `"Bool"`, `"Int"`,
+/// `"Geometry"`, `"Enum"`, `"Function"`, `"List"`, …).
+///
+/// Mechanically derives the variant tag from `Type`'s derived `Debug`
+/// impl — we take the formatted string and chop at the first space, `{`,
+/// or `(`, which leaves only the bare variant name. This avoids
+/// duplicating `Type`'s variant set in this peer crate: a new `Type`
+/// variant added later automatically gets a sensible label here without
+/// any code change in `reify-kernel-openvdb`.
+///
+/// Trade-off: payload data (e.g. the name inside `Type::Enum("Foo")`) is
+/// dropped — only the variant identity is preserved. That's the correct
+/// granularity for an "unsupported codomain" error message; the variant
+/// identity is the actionable contract.
 fn format_type_repr(t: &Type) -> String {
-    match t {
-        Type::Bool => "Bool".to_string(),
-        Type::Int => "Int".to_string(),
-        Type::String => "String".to_string(),
-        Type::Enum(name) => format!("Enum({name})"),
-        Type::List(_) => "List".to_string(),
-        Type::Set(_) => "Set".to_string(),
-        Type::Map(_, _) => "Map".to_string(),
-        Type::Option(_) => "Option".to_string(),
-        Type::Function { .. } => "Function".to_string(),
-        Type::TypeParam(name) => format!("TypeParam({name})"),
-        Type::StructureRef(name) => format!("StructureRef({name})"),
-        Type::TraitObject(name) => format!("TraitObject({name})"),
-        Type::Field { .. } => "Field".to_string(),
-        Type::Geometry => "Geometry".to_string(),
-        Type::Complex(_) => "Complex".to_string(),
-        Type::Orientation(n) => format!("Orientation({n})"),
-        Type::Frame(n) => format!("Frame({n})"),
-        Type::Transform(n) => format!("Transform({n})"),
-        Type::Range(_) => "Range".to_string(),
-        Type::Plane => "Plane".to_string(),
-        Type::Axis => "Axis".to_string(),
-        Type::BoundingBox => "BoundingBox".to_string(),
-        Type::Error => "Error".to_string(),
-        Type::Union(_) => "Union".to_string(),
-        // The Scalar/Real/Tensor/Vector/Point/Matrix arms are handled by
-        // extract_codomain_dimension before reaching here, so they should
-        // never appear in an UnsupportedCodomain error. Render generically
-        // for completeness.
-        Type::Scalar { .. } => "Scalar".to_string(),
-        Type::Real => "Real".to_string(),
-        Type::Tensor { .. } => "Tensor".to_string(),
-        Type::Vector { .. } => "Vector".to_string(),
-        Type::Point { .. } => "Point".to_string(),
-        Type::Matrix { .. } => "Matrix".to_string(),
-    }
+    let dbg = format!("{t:?}");
+    dbg.split([' ', '{', '('])
+        .next()
+        .unwrap_or(&dbg)
+        .to_string()
 }
 
 #[cfg(test)]
