@@ -137,6 +137,9 @@
 //! ↔ no blame ↔ ordinary backtrack") — preserving 2659/2661 test outcomes when
 //! the deferred type-substitution mechanics are not yet in place.
 //!
+//! Backjumping (task 2660) consumes the violated-constraint channel from the
+//! leaf check via the static blame map built by `build_constraint_blame_map`.
+//!
 //! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
 use std::collections::{BTreeSet, HashMap};
@@ -1733,8 +1736,13 @@ enum DfsControl {
     BackjumpTo(usize),
 }
 
-///   reuse a single owned `Vec` built ONCE by the orchestrator across many
-///   leaf calls, without rebuilding it per leaf.
+/// Thin wrapper around [`check_constraints_leaf`] that returns only the
+/// feasibility `bool` — discarding the violated constraint IDs for callers
+/// that do not need them.
+///
+/// The borrowed-slice signature lets callers (especially the DFS hot path)
+/// reuse a single owned `Vec` built ONCE by the orchestrator across many
+/// leaf calls, without rebuilding it per leaf.
 ///
 /// # Residual per-call allocation
 ///
