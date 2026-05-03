@@ -15,7 +15,8 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// missing cell and the violated invariant. In release builds the fallback
 /// `Value::Undef` is returned for absent cells — this preserves the historical
 /// behaviour of the three inline closures this helper replaces; the
-/// `debug_assert!` masks the regression in dev/test builds.
+/// `debug_assert!` surfaces any invariant violation early in dev/test builds,
+/// while release preserves the historical Undef-fallback behaviour.
 ///
 /// This mirrors the sibling pattern in `reapply_guard_deactivations_post_wave2`
 /// (see `engine_edit.rs`).
@@ -25,13 +26,15 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// - `parent`: entity name that owns the collection sub (e.g. `"Widget"`)
 /// - `sub`: sub-entity name (e.g. `"bolts"`)
 /// - `member`: value-cell member name within each child instance (e.g. `"grade"`)
-/// - `n`: number of child instances (`0..n` is the index range)
+/// - `n`: number of child instances (`0..n` is the index range).
+///   Negative values are clamped to 0 (returns an empty list), matching
+///   the historical behaviour of the inline `0..count` loops this helper replaces.
 ///
 /// # Returns
 /// `Value::List` whose `idx`-th element is the value of
 /// `<parent>.<sub>[idx].<member>` from `values`, or `Value::Undef` if the cell
-/// is absent (release-mode preserved historical behaviour, masked by the
-/// `debug_assert!` in dev/test builds).
+/// is absent (release-mode fallback; in dev/test builds the `debug_assert!`
+/// surfaces the invariant violation before this fallback is reached).
 pub(crate) fn collect_member_list(
     values: &ValueMap,
     parent: &str,
