@@ -117,6 +117,30 @@ pub enum IngestError {
         /// String representation of the offending codomain type.
         type_repr: String,
     },
+    /// The grid carries no data values. Defends downstream
+    /// `interp::interpolate_Nd` which assumes a non-empty data buffer.
+    EmptyGrid,
+    /// The flat data buffer's length does not match the product of
+    /// per-axis node counts (row-major, axis-0 outermost). Defends the
+    /// length-equality `assert!` inside `interp::interpolate_Nd`.
+    DataShapeMismatch {
+        /// Number of data elements the grid shape would require.
+        expected: usize,
+        /// Number of data elements actually supplied.
+        actual: usize,
+        /// `'×'`-joined per-axis node-count rendering (e.g. `"4"` for 1D,
+        /// `"3×4"` for 2D, `"2×2×2"` for 3D).
+        shape: String,
+    },
+    /// A per-axis spacing is non-positive or non-finite. Defends the
+    /// downstream `linspace_inclusive` / `interp::interpolate_Nd` math
+    /// which assumes strictly-positive finite spacing per axis.
+    InvalidSpacing {
+        /// Index of the offending axis (0 = outermost).
+        axis: usize,
+        /// The offending spacing value.
+        value: f64,
+    },
 }
 
 /// v0.2 OpenVDB units → [`DimensionVector`] lookup table.
@@ -195,6 +219,31 @@ pub fn lower_to_sampled(
     debug_assert_eq!(grid.bounds_max.len(), axis_count);
     debug_assert_eq!(grid.spacing.len(), axis_count);
 
+    // Pre-flight invariant checks — mirrors `engine_eval::build_sampled_field`'s
+    // step-24 guards so the lowered SampledField never trips downstream
+    // `interp::interpolate_Nd` `assert!`s on malformed input.
+    //
+    // Order:
+    //   (1) reject empty data buffer first — `EmptyGrid` is more
+    //       descriptive than `DataShapeMismatch { expected: N, actual: 0 }`
+    //       for the common "user forgot to populate data" failure mode.
+    //   (2) reject non-positive / non-finite spacing per axis — surfaces
+    //       a precise per-axis error before linspace collapses to a
+    //       1-node grid.
+    //   (3) reject `data.len() != product(axis_lengths)` last, after the
+    //       axis grids are well-formed enough to compute `expected`.
+    if grid.data.is_empty() {
+        return Err(IngestError::EmptyGrid);
+    }
+    for (i, s) in grid.spacing.iter().enumerate() {
+        if !(*s > 0.0 && s.is_finite()) {
+            return Err(IngestError::InvalidSpacing {
+                axis: i,
+                value: *s,
+            });
+        }
+    }
+
     let kind = match grid.kind {
         OpenVdbGridKind::Regular1D => SampledGridKind::Regular1D,
         OpenVdbGridKind::Regular2D => SampledGridKind::Regular2D,
@@ -204,6 +253,20 @@ pub fn lower_to_sampled(
     let axis_grids: Vec<Vec<f64>> = (0..axis_count)
         .map(|i| linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]))
         .collect();
+
+    let expected: usize = axis_grids.iter().map(|g| g.len()).product();
+    if grid.data.len() != expected {
+        let shape = axis_grids
+            .iter()
+            .map(|g| g.len().to_string())
+            .collect::<Vec<_>>()
+            .join("×");
+        return Err(IngestError::DataShapeMismatch {
+            expected,
+            actual: grid.data.len(),
+            shape,
+        });
+    }
 
     let (interpolation, interp_warning) = map_interpolation(name, grid.interpolation);
 
