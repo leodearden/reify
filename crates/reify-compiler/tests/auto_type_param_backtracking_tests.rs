@@ -281,10 +281,26 @@ structure def WaterCooled : Cooled {
         },
         "DFS multi-param all-feasible (free=true on both) must pick the lex-first cross-product (T=ORingSeal, U=AirCooled)"
     );
-    assert!(
-        diagnostics.is_empty(),
-        "DFS multi-param all-feasible free-mode must emit zero diagnostics in 2659 (NonUnique warning is task 2661's scope), got: {:?}",
+    // Task 2661: all-free ≥2 feasibles now emit AutoTypeParamNonUnique (Warning).
+    // With no constraints, all 4 cross-product leaves are trivially feasible.
+    // The lex-first is still (ORingSeal, AirCooled) — per_param/substitution
+    // unchanged; only the diagnostic count changes from 0 to 1.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS multi-param all-feasible free-mode (4 feasibles) must emit 1 AutoTypeParamNonUnique \
+         diagnostic (task 2661); got: {:?}",
         diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "DFS multi-param all-feasible free-mode diagnostic must be AutoTypeParamNonUnique"
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity"
     );
 }
 
@@ -391,10 +407,27 @@ structure def WaterCooled : Cooled {
         },
         "DFS must backtrack from infeasible leaf (ORingSeal, AirCooled) and pick (ORingSeal, WaterCooled) as the next feasible leaf"
     );
-    assert!(
-        diagnostics.is_empty(),
-        "DFS backtracking happy path (free-mode) must emit zero diagnostics, got: {:?}",
+    // Task 2661: all-free mode now collects ALL feasibles (max_feasible_to_collect=usize::MAX).
+    // After the 2-item queue [Violated, Satisfied] is exhausted, leaves 3 and 4 use the
+    // default Satisfied → 3 feasibles total: (ORingSeal,WaterCooled), (RubberSeal,AirCooled),
+    // (RubberSeal,WaterCooled). Lex-first is still (ORingSeal, WaterCooled).
+    // The backtracking semantics are unchanged; only the diagnostic count changes.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS backtracking free-mode (≥2 feasibles) must emit 1 AutoTypeParamNonUnique \
+         diagnostic (task 2661); got: {:?}",
         diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "DFS backtracking free-mode diagnostic must be AutoTypeParamNonUnique"
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity"
     );
 }
 
