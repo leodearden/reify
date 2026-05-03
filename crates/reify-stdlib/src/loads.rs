@@ -994,4 +994,37 @@ mod tests {
             "acceleration_dim() should equal LENGTH / TIME²"
         );
     }
+
+    // ── gravity constructor: 1-arg Scalar<Acceleration> form ─────────────────
+
+    #[test]
+    fn gravity_scalar_arg_returns_neg_z_vector() {
+        use super::acceleration_dim;
+
+        // Positive magnitude → acceleration in -Z direction.
+        let mag = Value::Scalar {
+            si_value: 9.81,
+            dimension: acceleration_dim(),
+        };
+
+        let result = eval_builtin("gravity", &[mag]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("gravity".to_string())),
+            "kind should be 'gravity'"
+        );
+
+        let accel = map
+            .get(&Value::String("acceleration".to_string()))
+            .expect("acceleration field must exist");
+
+        // magnitude 9.81 m/s², placed in -Z.
+        assert_vector3_approx!(Vector, accel.clone(), [0.0, 0.0, -9.81]);
+    }
 }
