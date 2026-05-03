@@ -706,6 +706,32 @@ pub(crate) enum AliasInnerDiagPolicy {
     Defer,
 }
 
+/// Propagate-gate helper shared by the two inner-diagnostics check sites in
+/// [`resolve_type_alias_expr`]: the builtin-parametric branch (task #2841) and
+/// the user-parametric branch (task #2843).
+///
+/// When `policy` is [`AliasInnerDiagPolicy::Propagate`] and `tmp_diags` is
+/// non-empty, the diagnostics are moved into `diagnostics` and `None` is
+/// returned; the `?` at each call site then short-circuits the enclosing
+/// function with `None`.  Otherwise (Defer policy, or empty tmp_diags), the
+/// vector is dropped and `Some(())` is returned so execution continues.
+///
+/// Ownership of `tmp_diags` is taken because the vector is either consumed via
+/// `extend` (Propagate path) or dropped (Defer / empty path) — the caller has
+/// no use for it after this point.
+fn propagate_inner_diags_if_needed(
+    policy: AliasInnerDiagPolicy,
+    tmp_diags: Vec<Diagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<()> {
+    if policy == AliasInnerDiagPolicy::Propagate && !tmp_diags.is_empty() {
+        diagnostics.extend(tmp_diags);
+        None
+    } else {
+        Some(())
+    }
+}
+
 /// Resolve a type alias's RHS `TypeExpr` to a `Type`.
 ///
 /// Handles three cases:
@@ -792,10 +818,7 @@ pub(crate) fn resolve_type_alias_expr(
                 // required for non-parametric aliases whose body references a user
                 // parametric alias such as `type StringList = Container<String>`
                 // (regression-pinned by `alias_body_references_user_parameterized_alias`).
-                if inner_diag_policy == AliasInnerDiagPolicy::Propagate && !tmp_diags.is_empty() {
-                    diagnostics.extend(tmp_diags);
-                    return None;
-                }
+                propagate_inner_diags_if_needed(inner_diag_policy, tmp_diags, diagnostics)?;
             }
             // Check for user-defined parameterized alias instantiation.
             // Use temporary diagnostics: during DFS pre-pass, type args may
@@ -842,10 +865,7 @@ pub(crate) fn resolve_type_alias_expr(
                 // unresolved type params (e.g. `T`) are expected and must be discarded;
                 // substitution at use-site instantiation via resolve_type_alias_expr_with_subst
                 // will resolve them correctly.
-                if inner_diag_policy == AliasInnerDiagPolicy::Propagate && !tmp_diags.is_empty() {
-                    diagnostics.extend(tmp_diags);
-                    return None;
-                }
+                propagate_inner_diags_if_needed(inner_diag_policy, tmp_diags, diagnostics)?;
                 // Defer: silently return None — deferred to instantiation time
             }
             // Simple name: check builtins, then alias registry
