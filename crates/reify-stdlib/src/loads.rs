@@ -511,4 +511,139 @@ mod tests {
             "magnitude should round-trip"
         );
     }
+
+    // ── pressure_load: failure modes ─────────────────────────────────────────
+
+    #[test]
+    fn pressure_load_magnitude_with_force_dim_returns_undef() {
+        let force_dim_mag = Value::Scalar {
+            si_value: 5000.0,
+            dimension: DimensionVector::FORCE, // wrong: should be PRESSURE
+        };
+        assert!(
+            eval_builtin("pressure_load", &[face_selector_stub(), force_dim_mag]).is_undef(),
+            "magnitude with FORCE dimension should return Undef"
+        );
+    }
+
+    #[test]
+    fn pressure_load_magnitude_not_scalar_returns_undef() {
+        let not_scalar = Value::Real(5.0);
+        assert!(
+            eval_builtin("pressure_load", &[face_selector_stub(), not_scalar]).is_undef(),
+            "magnitude = Real should return Undef"
+        );
+    }
+
+    #[test]
+    fn pressure_load_magnitude_nan_returns_undef() {
+        let nan_mag = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert!(
+            eval_builtin("pressure_load", &[face_selector_stub(), nan_mag]).is_undef(),
+            "magnitude NaN should return Undef"
+        );
+    }
+
+    #[test]
+    fn pressure_load_direction_length_dim_returns_undef() {
+        let pressure_mag = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        // Direction has LENGTH dimension — should be dimensionless.
+        let bad_dir = make_scalar_vec3([0.0, 0.0, -1.0], DimensionVector::LENGTH);
+        assert!(
+            eval_builtin(
+                "pressure_load",
+                &[face_selector_stub(), pressure_mag, bad_dir]
+            )
+            .is_undef(),
+            "direction with LENGTH dimension should return Undef"
+        );
+    }
+
+    #[test]
+    fn pressure_load_direction_zero_vector_returns_undef() {
+        let pressure_mag = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        // Dimensionless zero vector — invalid direction.
+        let zero_dir = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin(
+                "pressure_load",
+                &[face_selector_stub(), pressure_mag, zero_dir]
+            )
+            .is_undef(),
+            "zero direction vector should return Undef"
+        );
+    }
+
+    #[test]
+    fn pressure_load_direction_wrong_string_returns_undef() {
+        let pressure_mag = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let bad_sentinel = Value::String("up".to_string());
+        assert!(
+            eval_builtin(
+                "pressure_load",
+                &[face_selector_stub(), pressure_mag, bad_sentinel]
+            )
+            .is_undef(),
+            "direction string other than \"normal\" should return Undef"
+        );
+    }
+
+    #[test]
+    fn pressure_load_selector_real_returns_undef() {
+        let pressure_mag = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert!(
+            eval_builtin("pressure_load", &[Value::Real(0.0), pressure_mag]).is_undef(),
+            "selector = Real should return Undef"
+        );
+    }
+
+    #[test]
+    fn pressure_load_zero_args_returns_undef() {
+        assert!(eval_builtin("pressure_load", &[]).is_undef(), "0 args → Undef");
+    }
+
+    #[test]
+    fn pressure_load_one_arg_returns_undef() {
+        assert!(
+            eval_builtin("pressure_load", &[face_selector_stub()]).is_undef(),
+            "1 arg → Undef"
+        );
+    }
+
+    #[test]
+    fn pressure_load_four_args_returns_undef() {
+        let pressure_mag = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let dir = Value::String("normal".to_string());
+        let extra = Value::Real(0.0);
+        assert!(
+            eval_builtin(
+                "pressure_load",
+                &[face_selector_stub(), pressure_mag, dir, extra]
+            )
+            .is_undef(),
+            "4 args → Undef"
+        );
+    }
 }
