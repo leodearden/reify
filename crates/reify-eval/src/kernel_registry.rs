@@ -690,6 +690,15 @@ mod tests {
     ///    removed, the only remaining arm is the inter-kernel path, again
     ///    producing the wrong message.
     ///
+    /// Note: this approach couples the test to the wording of the diagnostic
+    /// string.  If the message is ever rephrased, the test will fail for
+    /// cosmetic reasons.  This is consistent with the existing convention in
+    /// this file (see `debug_assert_unique_op_repr_pairs_panics_on_duplicate_pair`
+    /// which pins `"duplicate kernel claim for"` the same way).  Should wording
+    /// churn become a problem, the substring could be extracted as a `const` in
+    /// the production module and referenced here, decoupling the test from the
+    /// literal spelling.
+    ///
     /// The `#[cfg(debug_assertions)]` guard is required because `debug_assert!`
     /// compiles to a no-op in release builds — `#[should_panic]` would falsely
     /// pass if the test ran in a build where the assertion is elided.
@@ -729,6 +738,28 @@ mod tests {
     /// panic is compiled out.  In debug builds the helper panics after emitting
     /// WARN; we wrap the call in `std::panic::catch_unwind` inside the
     /// subscriber scope so `warn_count` is incremented before we assert on it.
+    ///
+    /// ## Coverage note
+    ///
+    /// `CountingSubscriberBuilder` counts events by level and target; it does
+    /// not capture event fields.  Both the intra-kernel and inter-kernel arms
+    /// emit at the same level (`WARN`) and target (`reify_eval::kernel_registry`),
+    /// so this count-only assertion cannot distinguish *which* arm emitted the
+    /// event.  An arm-swap regression would still pass this test.
+    ///
+    /// That gap is acceptable here because:
+    /// * The primary branch-routing oracle is
+    ///   `debug_assert_unique_op_repr_pairs_panics_on_intra_kernel_duplicate`
+    ///   (the `#[should_panic]` test immediately above), which fails on an
+    ///   arm-swap in debug builds via the panic-message substring check.
+    /// * This test pins the orthogonal *operator-visibility* contract — that
+    ///   `warn!` fires in **all** builds, including release where `debug_assert!`
+    ///   is compiled out.  That contract holds regardless of arm identity.
+    ///
+    /// Field-level verification (asserting presence of `kernel` field rather
+    /// than `prev_kernel`/`new_kernel`) would require extending
+    /// `CountingSubscriberBuilder` in `reify-test-support` to capture recorded
+    /// fields — a larger change intentionally deferred.
     #[test]
     fn debug_assert_unique_op_repr_pairs_always_emits_warn_on_intra_kernel_duplicate() {
         use reify_test_support::CountingSubscriberBuilder;
