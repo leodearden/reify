@@ -26,7 +26,7 @@
 //! - [`lower_to_sampled`] — orchestrates the in-memory lowering pipeline.
 //! - [`read_vdb_file`] — v0.2 stub that returns `FfiNotImplemented`.
 
-use reify_types::{InterpolationKind, SampledField, SampledGridKind, Type};
+use reify_types::{DimensionVector, InterpolationKind, SampledField, SampledGridKind, Type};
 
 /// Spatial-grid shape of an OpenVDB source grid.
 ///
@@ -89,7 +89,66 @@ pub enum IngestError {
         /// The path the caller asked to read.
         path: String,
     },
+    /// The OpenVDB grid declared a unit whose dimension does not match the
+    /// codomain type's dimension (e.g. grid units = `m` (Length) but
+    /// codomain = Pressure).
+    UnitMismatch {
+        /// Dimension extracted from the field declaration's codomain type.
+        expected_dimension: DimensionVector,
+        /// Dimension looked up from the OpenVDB grid's units string.
+        found_dimension: DimensionVector,
+        /// The grid units string that was looked up.
+        found_unit: String,
+    },
+    /// The OpenVDB grid declared a units string not present in the v0.2
+    /// [`KNOWN_UNITS`] table. The follow-up FFI task may extend the table
+    /// if a wider corpus of `.vdb` files surfaces missing units.
+    UnknownUnit {
+        /// The unrecognised unit string.
+        unit: String,
+    },
+    /// The codomain type passed to [`lower_to_sampled`] is not a meaningful
+    /// numeric field codomain (e.g. `Type::Bool`, `Type::String`,
+    /// `Type::Geometry`).
+    UnsupportedCodomain {
+        /// String representation of the offending codomain type.
+        type_repr: String,
+    },
 }
+
+/// v0.2 OpenVDB units → [`DimensionVector`] lookup table.
+///
+/// Intentionally small: covers the units the PRD's worked examples and the
+/// common engineering-OpenVDB grid metadata use (m / mm / cm / km;
+/// Pa / kPa / MPa / GPa; K; kg; kg/m^3). Unrecognised unit strings yield
+/// [`IngestError::UnknownUnit`].
+///
+/// # Why not `reify-compiler`'s unit registry?
+///
+/// `reify-kernel-openvdb` is a peer adapter crate that deliberately does
+/// NOT depend on `reify-compiler` (the dependency direction is inverted at
+/// the workspace level — see `Cargo.toml` comment block). Pulling in the
+/// full unit registry would form a cycle. A small static slice is
+/// sufficient for v0.2; the follow-up FFI task can revisit if a wider
+/// corpus of real `.vdb` files surfaces missing units.
+pub static KNOWN_UNITS: &[(&str, DimensionVector)] = &[
+    // Length and prefixed variants — all map to the LENGTH dimension.
+    ("m", DimensionVector::LENGTH),
+    ("mm", DimensionVector::LENGTH),
+    ("cm", DimensionVector::LENGTH),
+    ("km", DimensionVector::LENGTH),
+    // Pressure and prefixed variants.
+    ("Pa", DimensionVector::PRESSURE),
+    ("kPa", DimensionVector::PRESSURE),
+    ("MPa", DimensionVector::PRESSURE),
+    ("GPa", DimensionVector::PRESSURE),
+    // Temperature.
+    ("K", DimensionVector::TEMPERATURE),
+    // Mass.
+    ("kg", DimensionVector::MASS),
+    // Mass density.
+    ("kg/m^3", DimensionVector::MASS_DENSITY),
+];
 
 /// Successful ingestion result: the lowered field plus any non-fatal
 /// warnings (e.g. interpolation deferrals).
@@ -111,20 +170,19 @@ pub struct IngestOutcome {
 ///
 /// # Errors
 ///
-/// Returns [`IngestError`] for any fatal ingestion failure. Step-6 adds
-/// unit-mismatch / unknown-unit / unsupported-codomain failures; step-10
-/// adds the empty-grid / data-shape-mismatch / invalid-spacing pre-flight
-/// guards.
-///
-/// # Codomain type
-///
-/// `codomain_type` is currently unused (unit validation is added in
-/// step-6). Marked `_codomain_type` for now.
+/// Returns [`IngestError`] for any fatal ingestion failure:
+///   - [`IngestError::UnitMismatch`] / [`IngestError::UnknownUnit`] /
+///     [`IngestError::UnsupportedCodomain`] from
+///     [`validate_grid_units`].
+///   - Step-10 adds the empty-grid / data-shape-mismatch / invalid-spacing
+///     pre-flight guards.
 pub fn lower_to_sampled(
     grid: &OpenVdbGridSource,
     name: &str,
-    _codomain_type: &Type,
+    codomain_type: &Type,
 ) -> Result<IngestOutcome, IngestError> {
+    validate_grid_units(grid.units.as_deref(), codomain_type)?;
+
     let axis_count = match grid.kind {
         OpenVdbGridKind::Regular1D => 1,
         OpenVdbGridKind::Regular2D => 2,
@@ -186,4 +244,122 @@ fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Vec<f64> {
     let n_intervals = (span / spacing).round() as usize;
     let count = n_intervals + 1;
     (0..count).map(|i| start + (i as f64) * spacing).collect()
+}
+
+/// Validate that the OpenVDB grid's declared units are dimensionally
+/// compatible with the field declaration's codomain type.
+///
+/// Returns:
+///   - `Ok(())` when both sides agree (or when the grid declares no units —
+///     interpreted as a caller-managed contract; the codomain is still
+///     extracted to surface unsupported-codomain errors regardless).
+///   - `Err(IngestError::UnknownUnit)` when the grid's unit string is not
+///     in [`KNOWN_UNITS`].
+///   - `Err(IngestError::UnitMismatch)` when the grid's unit dimension does
+///     not match the codomain's leaf-Scalar dimension.
+///   - `Err(IngestError::UnsupportedCodomain)` when the codomain is not a
+///     numeric Scalar / Real / Tensor / Vector / Point.
+///
+/// Used internally by [`lower_to_sampled`]; exposed publicly so the
+/// follow-up FFI body and task-5's compiler/eval wiring can pre-validate
+/// before invoking the full lowering pipeline.
+pub fn validate_grid_units(
+    grid_units: Option<&str>,
+    codomain_type: &Type,
+) -> Result<(), IngestError> {
+    let expected_dimension = extract_codomain_dimension(codomain_type)?;
+    let Some(unit_str) = grid_units else {
+        // Grid has no declared units — codomain extraction succeeded, so the
+        // numeric path is at least valid. The caller takes responsibility
+        // for the dimensional contract (matches the `sampled { … }` source
+        // path which has no unit metadata at all).
+        return Ok(());
+    };
+    let found_dimension = lookup_unit_dimension(unit_str).ok_or_else(|| {
+        IngestError::UnknownUnit {
+            unit: unit_str.to_string(),
+        }
+    })?;
+    if found_dimension != expected_dimension {
+        return Err(IngestError::UnitMismatch {
+            expected_dimension,
+            found_dimension,
+            found_unit: unit_str.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Look up a unit string in [`KNOWN_UNITS`].
+fn lookup_unit_dimension(unit: &str) -> Option<DimensionVector> {
+    KNOWN_UNITS
+        .iter()
+        .find(|(s, _)| *s == unit)
+        .map(|(_, d)| *d)
+}
+
+/// Extract the leaf-Scalar dimension from a field codomain type.
+///
+/// Recurses through composite quantity-bearing variants
+/// (`Type::Tensor`/`Vector`/`Point`/`Matrix`) to reach the leaf
+/// `Type::Scalar { dimension }`. `Type::Real` is treated as
+/// [`DimensionVector::DIMENSIONLESS`] for compatibility with the rest of
+/// the language. All other variants (Bool, Int, String, Enum, Function,
+/// Geometry, etc.) are not meaningful field codomains for OpenVDB-imported
+/// numeric data and produce [`IngestError::UnsupportedCodomain`].
+fn extract_codomain_dimension(t: &Type) -> Result<DimensionVector, IngestError> {
+    match t {
+        Type::Scalar { dimension } => Ok(*dimension),
+        Type::Real => Ok(DimensionVector::DIMENSIONLESS),
+        Type::Tensor { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Point { quantity, .. }
+        | Type::Matrix { quantity, .. } => extract_codomain_dimension(quantity),
+        other => Err(IngestError::UnsupportedCodomain {
+            type_repr: format_type_repr(other),
+        }),
+    }
+}
+
+/// Render a short structural label for an unsupported codomain, sufficient
+/// to identify the variant in error messages (e.g. "Bool", "Int",
+/// "String", "Geometry", "Enum", "Function", "List", …). Avoids depending
+/// on a `Display` impl that may not exist on every variant.
+fn format_type_repr(t: &Type) -> String {
+    match t {
+        Type::Bool => "Bool".to_string(),
+        Type::Int => "Int".to_string(),
+        Type::String => "String".to_string(),
+        Type::Enum(name) => format!("Enum({name})"),
+        Type::List(_) => "List".to_string(),
+        Type::Set(_) => "Set".to_string(),
+        Type::Map(_, _) => "Map".to_string(),
+        Type::Option(_) => "Option".to_string(),
+        Type::Function { .. } => "Function".to_string(),
+        Type::TypeParam(name) => format!("TypeParam({name})"),
+        Type::StructureRef(name) => format!("StructureRef({name})"),
+        Type::TraitObject(name) => format!("TraitObject({name})"),
+        Type::Field { .. } => "Field".to_string(),
+        Type::Geometry => "Geometry".to_string(),
+        Type::Complex(_) => "Complex".to_string(),
+        Type::Orientation(n) => format!("Orientation({n})"),
+        Type::Frame(n) => format!("Frame({n})"),
+        Type::Transform(n) => format!("Transform({n})"),
+        Type::Range(_) => "Range".to_string(),
+        Type::Plane => "Plane".to_string(),
+        Type::Axis => "Axis".to_string(),
+        Type::BoundingBox => "BoundingBox".to_string(),
+        Type::Error => "Error".to_string(),
+        Type::Union(_) => "Union".to_string(),
+        // The Scalar/Real/Tensor/Vector/Point/Matrix arms are handled by
+        // extract_codomain_dimension before reaching here, so they should
+        // never appear in an UnsupportedCodomain error. Render generically
+        // for completeness.
+        Type::Scalar { .. } => "Scalar".to_string(),
+        Type::Real => "Real".to_string(),
+        Type::Tensor { .. } => "Tensor".to_string(),
+        Type::Vector { .. } => "Vector".to_string(),
+        Type::Point { .. } => "Point".to_string(),
+        Type::Matrix { .. } => "Matrix".to_string(),
+    }
 }
