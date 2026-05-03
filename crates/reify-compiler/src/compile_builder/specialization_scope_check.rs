@@ -224,7 +224,6 @@ mod tests {
         });
         let parsed = parsed_module_with_structure_members(
             vec![make_sub_with_body("scope", dummy_span(), vec![guarded])],
-            dummy_span(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
@@ -272,7 +271,6 @@ mod tests {
                     make_sub_bare("child", s_span),
                 ],
             )],
-            dummy_span(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
@@ -312,7 +310,6 @@ mod tests {
         );
         let parsed = parsed_module_with_structure_members(
             vec![make_sub_with_body("outer", dummy_span(), vec![inner_sub])],
-            dummy_span(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
@@ -377,7 +374,6 @@ mod tests {
     fn validate_module_emits_no_diagnostic_for_permitted_decls_inside_specialization_scope() {
         let parsed = parsed_module_with_structure_members(
             vec![make_sub_with_body("scope", dummy_span(), vec![make_let("v"), make_constraint()])],
-            dummy_span(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
@@ -400,7 +396,6 @@ mod tests {
         let s_span = sub_span();
         let parsed = parsed_module_with_structure_members(
             vec![make_sub_with_body("scope", dummy_span(), vec![make_sub_bare("child", s_span)])],
-            dummy_span(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
@@ -438,7 +433,6 @@ mod tests {
         let p_span = port_span();
         let parsed = parsed_module_with_structure_members(
             vec![make_sub_with_body("scope", dummy_span(), vec![make_port("p", p_span)])],
-            dummy_span(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
@@ -473,7 +467,6 @@ mod tests {
         // Structure S { sub scope : Foo { param x } }  (hand-built)
         let parsed = parsed_module_with_structure_members(
             vec![make_sub_with_body("scope", dummy_span(), vec![make_param("x", p_span)])],
-            dummy_span(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);

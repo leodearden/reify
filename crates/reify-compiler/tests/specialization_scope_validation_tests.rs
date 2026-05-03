@@ -80,7 +80,6 @@ fn make_match_arm_decl_group(
 fn compile_pipeline_invokes_specialization_scope_validator() {
     let parsed = parsed_module_with_structure_members(
         vec![make_sub_with_body("scope", zero_span(), vec![make_param("x", zero_span())])],
-        zero_span(),
     );
 
     let compiled = reify_compiler::compile(&parsed);
@@ -140,7 +139,6 @@ fn forbidden_decl_in_match_arm_sub_body_emits_diagnostic() {
     // Outer specialization scope: `sub motor : Foo { <match_group> }`
     let parsed = parsed_module_with_structure_members(
         vec![make_sub_with_body("motor", zero_span(), vec![match_group])],
-        zero_span(),
     );
 
     let compiled = reify_compiler::compile(&parsed);

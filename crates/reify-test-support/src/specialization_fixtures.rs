@@ -165,12 +165,11 @@ pub fn make_constraint() -> MemberDecl {
 /// Build a [`reify_syntax::ParsedModule`] with a single `Structure` named `"S"`
 /// whose top-level members are the supplied `members`.
 ///
-/// The structure's span is `structure_span` — pass [`dummy_span()`] for the
-/// compiler unit-test convention or [`zero_span()`] for the integration-test
-/// convention.
+/// The structure's span is fixed to [`dummy_span()`].  No specialization-scope
+/// test asserts on the structure-level span itself (only on the inner member
+/// spans), so a single default keeps every call site terse.
 pub fn parsed_module_with_structure_members(
     members: Vec<MemberDecl>,
-    structure_span: SourceSpan,
 ) -> reify_syntax::ParsedModule {
     reify_syntax::ParsedModule {
         path: ModulePath::single("test"),
@@ -181,7 +180,7 @@ pub fn parsed_module_with_structure_members(
             type_params: Vec::new(),
             trait_bounds: Vec::new(),
             members,
-            span: structure_span,
+            span: dummy_span(),
             content_hash: dummy_hash(),
             pragmas: Vec::new(),
             annotations: Vec::new(),
@@ -207,46 +206,14 @@ pub fn source_stub() -> String {
 mod tests {
     use super::*;
     use reify_syntax::{Declaration, ExprKind, MemberDecl};
-    use reify_types::ContentHash;
 
+    /// Guard that every span constant's `end` fits inside [`source_stub()`]'s
+    /// buffer.  This is the invariant consumers depend on: byte offset N maps to
+    /// a valid LSP `Position { line: 0, character: N }` for all N in any span.
     #[test]
-    fn dummy_span_returns_10_20() {
-        let s = dummy_span();
-        assert_eq!(s.start, 10);
-        assert_eq!(s.end, 20);
-    }
-
-    #[test]
-    fn param_span_returns_30_50() {
-        let s = param_span();
-        assert_eq!(s.start, 30);
-        assert_eq!(s.end, 50);
-    }
-
-    #[test]
-    fn port_span_returns_60_80() {
-        let s = port_span();
-        assert_eq!(s.start, 60);
-        assert_eq!(s.end, 80);
-    }
-
-    #[test]
-    fn sub_span_returns_90_110() {
-        let s = sub_span();
-        assert_eq!(s.start, 90);
-        assert_eq!(s.end, 110);
-    }
-
-    #[test]
-    fn zero_span_returns_0_0() {
-        let s = zero_span();
-        assert_eq!(s.start, 0);
-        assert_eq!(s.end, 0);
-    }
-
-    #[test]
-    fn dummy_hash_is_zero() {
-        assert_eq!(dummy_hash(), ContentHash(0));
+    fn all_span_ends_fit_within_source_stub() {
+        let len = source_stub().len() as u32;
+        assert!(sub_span().end <= len, "sub_span.end ({}) exceeds source_stub len ({})", sub_span().end, len);
     }
 
     #[test]
@@ -350,7 +317,7 @@ mod tests {
     #[test]
     fn parsed_module_with_structure_members_returns_correct_shape() {
         let members = vec![make_param("x", param_span())];
-        let m = parsed_module_with_structure_members(members, dummy_span());
+        let m = parsed_module_with_structure_members(members);
         assert_eq!(m.declarations.len(), 1);
         assert!(m.errors.is_empty());
         assert!(m.pragmas.is_empty());

@@ -1737,7 +1737,6 @@ structure S {
 
         let parsed = parsed_module_with_structure_members(
             vec![make_sub_with_body("scope", dummy_span(), body)],
-            dummy_span(),
         );
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let source = source_stub();
