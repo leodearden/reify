@@ -55,13 +55,18 @@ const CONST_DECL_RE = /const\s+(\w+)\s*:\s*&\s*str\s*=\s*"(reify_[A-Za-z0-9_]+)"
  * first argument is a Rust identifier rather than a string literal.
  * Rust identifiers start with `[A-Za-z_]`, which naturally excludes string
  * literals (starting with `"`), so no negative lookahead is needed.
- * Captures group 1: the identifier name.
+ * Captures group 1: the final identifier name.
+ *
+ * The optional non-capturing prefix `(?:\w+::)*` allows path-qualified forms
+ * such as `registry.register(self::NAME, ...)`, `registry.register(crate::NAME, ...)`,
+ * or `registry.register(MyMod::NAME, ...)`.  The captured group is always the
+ * trailing simple identifier, which is what `CONST_DECL_RE` captures in group 1.
  *
  * Note: This may also capture unrelated identifiers (e.g. helper-function names
  * like `some_func` in `registry.register(some_func(), ...)`); those false-positive
  * identifiers are harmless because they will not match any `CONST_DECL_RE` entry.
  */
-const REGISTER_IDENT_RE = /registry\.register\s*\(\s*([A-Za-z_]\w*)\s*,/g;
+const REGISTER_IDENT_RE = /registry\.register\s*\(\s*(?:\w+::)*([A-Za-z_]\w*)\s*,/g;
 
 /**
  * Discover all MCP tool names registered in the Rust tools source tree.
@@ -90,21 +95,26 @@ export function discoverRegisteredTools(toolsDir: string): Set<string> {
     for (const m of src.matchAll(REGISTER_LITERAL_RE)) {
       tools.add(m[1]);
     }
-    // Build a set of identifiers used as the first arg in registry.register(IDENT, ...)
-    // calls in this file.  Only const declarations whose NAME appears here are added
-    // to `tools` — this gates out stale/test-only consts that are never actually wired
-    // into the registry.
-    const registeredIdents = new Set<string>();
-    for (const m of src.matchAll(REGISTER_IDENT_RE)) {
-      registeredIdents.add(m[1]);
-    }
     // Collect const declarations: const NAME: &str = "reify_*"
     // m[1] = const NAME (identifier), m[2] = the reify_* string value.
-    // Only include the value when NAME is in registeredIdents (i.e. is actively
-    // passed to registry.register in this file).
-    for (const m of src.matchAll(CONST_DECL_RE)) {
-      if (registeredIdents.has(m[1])) {
-        tools.add(m[2]);
+    // We gather matches first so we can skip the REGISTER_IDENT_RE pre-pass
+    // entirely when the file contains no const declarations (the common case).
+    const constMatches = [...src.matchAll(CONST_DECL_RE)];
+    if (constMatches.length > 0) {
+      // Build a set of identifiers used as the first arg in registry.register(IDENT, ...)
+      // calls in this file.  Only const declarations whose NAME appears here are added
+      // to `tools` — this gates out stale/test-only consts that are never actually wired
+      // into the registry.
+      const registeredIdents = new Set<string>();
+      for (const m of src.matchAll(REGISTER_IDENT_RE)) {
+        registeredIdents.add(m[1]);
+      }
+      // Only include the value when NAME is in registeredIdents (i.e. is actively
+      // passed to registry.register in this file).
+      for (const m of constMatches) {
+        if (registeredIdents.has(m[1])) {
+          tools.add(m[2]);
+        }
       }
     }
   }
