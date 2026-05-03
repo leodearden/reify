@@ -25,7 +25,8 @@ use std::sync::atomic::AtomicBool;
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
-    InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Type, Value, ValueMap,
+    InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Type, Value, ValueCellId,
+    ValueMap,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -632,4 +633,117 @@ fn argmin_sampled_field_3d_length_domain_returns_point3_at_min_index() {
         ]),
         "argmin(field) over 3-D Point3<Length> domain should return the per-axis coords at the data min"
     );
+}
+
+// ── Step 15: non-Sampled source kinds return Value::Undef ───────────────────
+
+/// Build a trivial `Value::Lambda` body that returns the supplied tensor.
+fn make_value_lambda(
+    params: Vec<(&str, ValueCellId)>,
+    body: CompiledExpr,
+    captures: ValueMap,
+) -> Value {
+    Value::Lambda {
+        params: params
+            .into_iter()
+            .map(|(n, id)| (n.to_string(), id))
+            .collect(),
+        body: Box::new(body),
+        captures,
+    }
+}
+
+/// Build a `Value::Field` / `Type::Field` pair with an explicit source kind.
+/// Lifted from `field_analysis_tests.rs::make_field_with_source`.
+fn make_field_with_source(
+    domain: Type,
+    codomain: Type,
+    source: FieldSourceKind,
+    lambda: Value,
+) -> (Value, Type) {
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source,
+        lambda: Arc::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+    (field, field_type)
+}
+
+/// Build a constant-Real-codomain analytical field over a `Type::Real` domain.
+/// The lambda body returns `Value::Real(42.0)` regardless of input — none of
+/// the deferred-path tests sample the field, only check the dispatch outcome.
+fn make_constant_real_analytical_field(source: FieldSourceKind) -> (Value, Type) {
+    let x_id = ValueCellId::new("$lambda0.f", "x");
+    let body = CompiledExpr::literal(Value::Real(42.0), Type::Real);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+    make_field_with_source(Type::Real, Type::Real, source, lambda)
+}
+
+/// Helper: assert all four field reductions return `Value::Undef` on a field
+/// constructed with a non-Sampled source kind. Pins the deferred-path
+/// contract for the v0.3 staging.
+fn assert_all_reductions_undef(field: Value, field_type: Type, label: &str) {
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let expr = make_function_call(
+            op,
+            vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+            Type::Real,
+        );
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "{op}(field) on {label} should return Value::Undef (deferred path)"
+        );
+    }
+}
+
+/// `max`/`min`/`argmax`/`argmin` over an `Analytical`-source field return
+/// `Value::Undef` (deferred — would require numerical optimisation over
+/// the lambda's bounded domain).
+#[test]
+fn all_reductions_on_analytical_field_return_undef() {
+    let (field, field_type) =
+        make_constant_real_analytical_field(FieldSourceKind::Analytical);
+    assert_all_reductions_undef(field, field_type, "Analytical");
+}
+
+/// `max`/`min`/`argmax`/`argmin` over a `Composed`-source field return
+/// `Value::Undef`.
+#[test]
+fn all_reductions_on_composed_field_return_undef() {
+    let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::Composed);
+    assert_all_reductions_undef(field, field_type, "Composed");
+}
+
+/// `max`/`min`/`argmax`/`argmin` over an `Imported`-source field return
+/// `Value::Undef`. Imported fields carry `Value::Undef` in the lambda
+/// slot (no numeric data buffer at the runtime layer); reductions
+/// therefore have nothing to iterate over.
+#[test]
+fn all_reductions_on_imported_field_return_undef() {
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::Imported,
+        Value::Undef,
+    );
+    assert_all_reductions_undef(field, field_type, "Imported");
+}
+
+/// `max`/`min`/`argmax`/`argmin` over a derived (e.g. `VonMises`-wrapped)
+/// field return `Value::Undef`. Sampled-subfield reduction for derived
+/// wrappers is deferred — see the TODO(future) note in
+/// `field_reductions.rs`.
+#[test]
+fn all_reductions_on_derived_field_return_undef() {
+    let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::VonMises);
+    assert_all_reductions_undef(field, field_type, "derived (VonMises)");
 }
