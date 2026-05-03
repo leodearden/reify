@@ -3214,3 +3214,147 @@ structure def WaterCooled : Cooled {
         diagnostics[0].severity
     );
 }
+
+/// Backjumping must not break strict-mode `max_feasible_to_collect=2` accumulation.
+///
+/// With a constraint blamed on T(0), the violated first leaf `(ORingSeal,
+/// AirCooled)` backjumps to level 0 (T-level), skipping the entire ORingSeal
+/// sub-tree. The search then finds two feasibles under RubberSeal and stops
+/// early (strict-mode cap). Outcome must be `Ambiguous` with exactly 2
+/// witnesses — proving the `j == K → continue siblings` arm of `DfsControl`
+/// does not break strict-mode early termination.
+///
+/// This test's primary regression target is the `j == K → continue loop` arm
+/// (rather than the `j < K → propagate` arm pinned by steps 5/7/9).
+#[test]
+fn dfs_strict_mode_with_backjumping_still_collects_two_feasibles_for_ambiguous() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template: one cell field_t : TypeParam("T"), one constraint ValueRef'ing
+    // only field_t. Blame = {T(0)}.
+    let field_t = ValueCellId::new("Coupling", "field_t");
+    let expr_t = CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .constraint("Coupling", 0, None, expr_t)
+        .build();
+
+    // Queue: [Violated]; default: Satisfied.
+    // Leaf 1 = (ORingSeal, AirCooled) → Violated → blame {T(0)} → BackjumpTo(0)
+    //   U-loop (level 1): j=0 < K=1 → propagates BackjumpTo(0)
+    //   T-loop (level 0): j=0 == K=0 → pops ORingSeal, tries RubberSeal
+    //   (ORingSeal, WaterCooled) is SKIPPED — entire ORingSeal sub-tree skipped
+    // Leaf 2 = (RubberSeal, AirCooled) → Satisfied → collect (1)
+    // Leaf 3 = (RubberSeal, WaterCooled) → Satisfied → collect (2) → EarlyTerminate
+    let checker = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false, // strict
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false, // strict
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // Ambiguous attaches to the first param's name (same halt-on-first-failure
+    // contract as all other multi-param Ambiguous sites).
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "strict-mode ≥2 feasibles must produce exactly one per_param entry; got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(
+        outcome.per_param[0].0,
+        "T",
+        "Ambiguous must attach to the first param's name; got: {:?}",
+        outcome.per_param[0].0
+    );
+    match &outcome.per_param[0].1 {
+        SelectionResult::Ambiguous(witnesses) => {
+            assert_eq!(
+                witnesses.len(),
+                2,
+                "strict-mode must collect exactly 2 witnesses (max_feasible_to_collect=2); \
+                 even with backjumping past (ORingSeal,*), two feasibles under RubberSeal \
+                 must be found; got witnesses: {:?}",
+                witnesses
+            );
+        }
+        other => panic!(
+            "strict-mode ≥2 feasibles must produce SelectionResult::Ambiguous; got: {:?}",
+            other
+        ),
+    }
+    assert!(
+        outcome.substitution.is_empty(),
+        "Ambiguous must yield empty substitution; got: {:?}",
+        outcome.substitution
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one AutoTypeParamAmbiguous diagnostic; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamAmbiguous),
+        "diagnostic must be AutoTypeParamAmbiguous; got: {:?}",
+        diagnostics[0].code
+    );
+
+    // The two witnesses collected are both under RubberSeal (ORingSeal sub-tree
+    // was backjumped past). The lex-first feasible is (RubberSeal, AirCooled).
+    assert_eq!(
+        diagnostics[0].candidates,
+        vec!["RubberSeal".to_string(), "AirCooled".to_string()],
+        "WITH backjumping to T=0: lex-first feasible must be (RubberSeal, AirCooled), \
+         not (ORingSeal, WaterCooled) (which would imply ordinary backtrack, not backjump); \
+         got: {:?}",
+        diagnostics[0].candidates
+    );
+}
