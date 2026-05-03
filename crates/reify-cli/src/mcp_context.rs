@@ -1069,6 +1069,47 @@ mod tests {
         );
     }
 
+    /// Regression guard: `get_source_location` must return
+    /// `Err(ToolError::EngineError("no active file"))` when no active file is set,
+    /// even when a compiled module exists in state.
+    ///
+    /// This state is reachable via `update_source` on a fresh context (no prior
+    /// `load_file` / `open_file`): `update_source` sets `state.compiled = Some(...)`
+    /// and inserts into `state.files`, but never sets `state.active_file`.  Without
+    /// the fix, `get_source_location` falls through with an empty `file_path` and
+    /// returns `Ok(SourceLocationInfo { file_path: "", line: 1, column: 1, ... })` —
+    /// a garbage span.  The test goes red against the unfixed code and green after
+    /// the fix in step-2.
+    #[test]
+    fn get_source_location_returns_error_when_no_active_file() {
+        let ctx = fresh_ctx();
+        // update_source sets compiled + files but leaves active_file = None.
+        let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let update = ctx
+            .update_source(BRACKET_PATH, &source)
+            .expect("update_source should succeed with valid content");
+        assert!(update.success, "update_source must succeed so compiled=Some is set");
+        // No load_file / open_file → active_file is still None.
+        let result = ctx.get_source_location("Bracket");
+        match result {
+            Err(ToolError::EngineError(ref msg)) if msg.contains("no active file") => {
+                // Correct: error contains the expected message.
+            }
+            Ok(loc) => panic!(
+                "expected Err(ToolError::EngineError(\"no active file\")), \
+                 but got Ok(SourceLocationInfo {{ file_path: {:?}, line: {}, column: {} }}) \
+                 — this is the garbage-span bug: update_source without load_file leaves \
+                 active_file=None so file_path falls back to \"\" and byte_offset_to_line_col \
+                 returns (1,1) regardless of the real span",
+                loc.file_path, loc.line, loc.column
+            ),
+            Err(other) => panic!(
+                "expected Err(ToolError::EngineError(\"no active file\")), got Err({:?})",
+                other
+            ),
+        }
+    }
+
     /// Regression guard: `get_diagnostics` must emit severity strings in
     /// PascalCase wire format (`"Error"`, `"Warning"`, `"Info"`) via
     /// `Severity::as_wire_str()`, not the lowercase `Display` form
