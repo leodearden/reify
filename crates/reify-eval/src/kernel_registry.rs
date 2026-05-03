@@ -836,4 +836,45 @@ mod tests {
              this pins the actual lex-min contract independently of any specific synthetic name",
         );
     }
+
+    /// `collect_registry()` must invoke `warn_if_duplicate_op_repr_pairs` at
+    /// most once across repeated calls, mirroring how `build_registry`'s
+    /// duplicate-NAME walk is amortised by the surrounding `OnceLock`.
+    ///
+    /// Pinned via the underlying `static UNIQUENESS_CHECKED: AtomicBool`:
+    /// (a) after at least one `collect_registry()` call the flag is set
+    ///     (`load(Acquire) == true`);
+    /// (b) a fresh `compare_exchange(false, true, …)` returns `Err` because
+    ///     the flag has already transitioned — proving subsequent
+    ///     `collect_registry()` calls cannot re-enter the gated helper
+    ///     invocation, regardless of test ordering or parallelism.
+    ///
+    /// Test pollution: this test sets the flag for the rest of the binary,
+    /// but other tests are unaffected — `collect_registry()` continues to
+    /// return correct results whether the helper ran or not (the production
+    /// registry has no duplicates; the helper would have been a no-op
+    /// regardless).
+    #[test]
+    fn collect_registry_runs_uniqueness_check_at_most_once_across_calls() {
+        use std::sync::atomic::Ordering;
+
+        let _ = collect_registry();
+        let _ = collect_registry();
+        let _ = collect_registry();
+
+        assert!(
+            super::UNIQUENESS_CHECKED.load(Ordering::Acquire),
+            "collect_registry() must set UNIQUENESS_CHECKED on its first invocation \
+             so subsequent calls skip the O(kernels × supports) HashMap walk",
+        );
+
+        assert!(
+            super::UNIQUENESS_CHECKED
+                .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err(),
+            "Once-shot semantics: after collect_registry() consumes the gate, \
+             a fresh compare_exchange(false, true) must return Err — proving the \
+             helper invocation cannot re-fire on subsequent collect_registry() calls",
+        );
+    }
 }
