@@ -25,6 +25,10 @@
 //! - Cross-product hard cap at 100k assignments (task 2662).
 //! - Rich diagnostic format with smallest infeasibility witness (task 2663).
 //! - Comprehensive v0.1 BFS-failure scenario coverage (task 2664).
+//! - Type-substitution mechanics
+//!   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
+//!   deferred per the PRD's "Constraint-feasibility incremental binding
+//!   deferred" decision.
 //!
 //! The `auto(free)` cross-product NonUnique Warning enumeration (originally
 //! listed here as "task 2661's scope") now lands in this file — see
@@ -32,10 +36,6 @@
 //! `dfs_free_mode_more_than_sixteen_feasibles_emits_non_unique_with_elision_count`,
 //! `dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker`,
 //! and `dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique`.
-//! - Type-substitution mechanics
-//!   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
-//!   deferred per the PRD's "Constraint-feasibility incremental binding
-//!   deferred" decision.
 
 use std::collections::HashMap;
 
@@ -2276,6 +2276,27 @@ structure def WaterCooled : Cooled {
         "message must contain '9 more elided' (25 - DISPLAY_CAP(16) = 9); got: {:?}",
         diagnostics[0].message
     );
+    // (b2) Exactly DISPLAY_CAP=16 witnesses are rendered — not more, not fewer.
+    // Count `; T=` separators: witnesses are joined by `"; "` so inter-witness
+    // separators = (witness count - 1).  With 16 displayed witnesses the
+    // separator count is 15.  (The `selected lexicographically-first '...'`
+    // suffix also contains `T=` but is preceded by `; selected`, not `; T=`,
+    // so it is not counted here.)
+    {
+        let sep_count = diagnostics[0]
+            .message
+            .matches("; T=")
+            .count();
+        assert_eq!(
+            sep_count,
+            15,
+            "message must contain exactly 15 '; T=' separators (== DISPLAY_CAP-1 = 15 \
+             inter-witness separators for 16 displayed witnesses), \
+             got {} — a regression here means the display window was not applied; message: {:?}",
+            sep_count,
+            diagnostics[0].message
+        );
+    }
     // (c) Lex-first T candidate appears in the message.
     assert!(
         diagnostics[0].message.contains("ORingSeal"),
@@ -2447,7 +2468,6 @@ structure def WaterCooled : Cooled {
         ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
         "per_param[0] must be (T, Selected(ORingSeal))"
     );
-    let _ = outcome; // suppress unused warning
 }
 
 // ─── step-1 (task 2661): free-mode ≥2 cross-product feasibles ─────────────────
