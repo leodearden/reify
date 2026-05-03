@@ -2011,6 +2011,144 @@ structure def WaterCooled : Cooled {
     );
 }
 
+// ─── step-3 (task 2661): mixed strict+free ≥2 feasibles → Ambiguous, not NonUnique ──
+
+/// Regression test: when ANY param is strict (`free=false`), ≥2 cross-product
+/// feasibles must produce `AutoTypeParamAmbiguous` (Error), NOT
+/// `AutoTypeParamNonUnique` (Warning).
+///
+/// Fixture: 2 params `[T:Seal (free=false STRICT), U:Cooled (free=true)]` with
+/// 2 candidates each (4 cross-product leaves). Default `MockConstraintChecker`
+/// (every leaf trivially feasible, no constraint on template) → 4 feasibles
+/// found by the DFS (strict mode, `max_feasible_to_collect=2`; stops at 2).
+///
+/// Design decision: `any_strict = params.iter().any(|p| !p.free)`. If ANY param
+/// is strict, the cross-product must be uniquely determined for compilation to
+/// succeed; ambiguity is an error. The new all-free NonUnique path only fires
+/// when `!any_strict`.
+///
+/// Pins:
+/// (a) `diagnostics.len() == 1`, code `AutoTypeParamAmbiguous`, severity `Error`
+///     (NOT `AutoTypeParamNonUnique` Warning)
+/// (b) `outcome.per_param.len() == 1` — Ambiguous shape (length-1, anchored on T)
+/// (c) `outcome.per_param[0].1` is `SelectionResult::Ambiguous(_)` with 2 witnesses
+/// (d) `outcome.substitution.is_empty()`
+///
+/// This test should PASS immediately after step-2's impl (the dispatch is
+/// already in place); it exists as a contract pin so a future refactor cannot
+/// accidentally collapse the strict/free branches.
+#[test]
+fn dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // No constraints on the template → every leaf trivially feasible.
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Satisfied);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false, // ← STRICT: any_strict = true → Ambiguous path
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true, // free, but any_strict is already true because of T
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // (a) Exactly one Ambiguous Error — NOT a NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "mixed strict/free ≥2 feasibles must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamAmbiguous),
+        "mixed strict/free diagnostic must be AutoTypeParamAmbiguous (Error), \
+         NOT AutoTypeParamNonUnique (Warning); got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "AutoTypeParamAmbiguous must be Error severity (not Warning)"
+    );
+    // (b) Ambiguous shape: length-1 per_param anchored on T (params[0]).
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "mixed strict/free Ambiguous must produce length-1 per_param (not length-2 success shape); \
+         got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(
+        outcome.per_param[0].0, "T",
+        "Ambiguous per_param entry must be anchored on params[0].name ('T')"
+    );
+    // (c) SelectionResult::Ambiguous with 2 witnesses (strict-mode cap).
+    match &outcome.per_param[0].1 {
+        SelectionResult::Ambiguous(witnesses) => {
+            assert_eq!(
+                witnesses.len(),
+                2,
+                "strict-mode Ambiguous must carry exactly 2 witnesses \
+                 (max_feasible_to_collect=2 cap); got: {:?}",
+                witnesses
+            );
+        }
+        other => panic!(
+            "mixed strict/free ≥2 feasibles must produce SelectionResult::Ambiguous, got: {:?}",
+            other
+        ),
+    }
+    // (d) Empty substitution on Ambiguous.
+    assert!(
+        outcome.substitution.is_empty(),
+        "mixed strict/free Ambiguous must yield empty substitution; got: {:?}",
+        outcome.substitution
+    );
+}
+
 // ─── step-1 (task 2661): free-mode ≥2 cross-product feasibles ─────────────────
 // → NonUnique Warning + lex-first success shape
 
