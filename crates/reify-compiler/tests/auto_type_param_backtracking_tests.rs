@@ -2149,6 +2149,167 @@ structure def WaterCooled : Cooled {
     );
 }
 
+// ─── step-4 (task 2661): >16 feasibles → NonUnique with elision count ──────────
+
+/// Two `AutoTypeParam`s `[T:Seal (free), U:Cooled (free)]` with 5 candidates
+/// each (25 cross-product leaves). Default `MockConstraintChecker` (every leaf
+/// trivially feasible) → 25 feasibles.
+///
+/// With `DISPLAY_CAP = 16`, expected elision count = 25 - 16 = 9.
+///
+/// **Current behavior (step-2 impl, pre-step-5):** the NonUnique branch was
+/// added but includes ALL 25 witnesses without the elision logic.  This test
+/// FAILS because `message.contains("9 more elided")` is not satisfied.
+///
+/// Pins:
+/// (a) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity Warning
+/// (b) `message.contains("9 more elided")` — exact elision count substring
+/// (c) `message.contains("ORingSeal")` — lex-first T candidate present
+/// (d) `message.contains("AirCooled")` — lex-first U candidate present
+/// (e) `outcome.per_param.len() == 2`, each entry `Selected`
+/// (f) `outcome.per_param[0]` is `(T_name, Selected(lex-first-T))`
+/// (g) `outcome.substitution.len() == 2`
+#[test]
+fn dfs_free_mode_more_than_sixteen_feasibles_emits_non_unique_with_elision_count() {
+    // 5 Seal structures (alphabetical order matters for lex-first):
+    //   ORingSeal < RubberSeal < SilicaSeal < TeflonSeal < UretheSeal
+    // 5 Cooled structures:
+    //   AirCooled < ForcedConvection < LiquidCooled < NaturalConvection < WaterCooled
+    // → 5×5 = 25 cross-product leaves, all trivially feasible (default Satisfied).
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+structure def SilicaSeal : Seal {
+    param hardness : Real = 7.0
+}
+structure def TeflonSeal : Seal {
+    param friction : Real = 0.1
+}
+structure def UretheSeal : Seal {
+    param elasticity : Real = 3.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+structure def ForcedConvection : Cooled {
+    param fan_speed : Real = 3000.0
+}
+structure def LiquidCooled : Cooled {
+    param coolant_flow : Real = 8.0
+}
+structure def NaturalConvection : Cooled {
+    param fin_area : Real = 0.05
+}
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // No constraints → all 25 leaves trivially feasible.
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Satisfied);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // (a) Exactly one NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "25 feasibles must emit exactly one AutoTypeParamNonUnique diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity"
+    );
+    // (b) Exact elision count: 25 - 16 = 9.
+    assert!(
+        diagnostics[0].message.contains("9 more elided"),
+        "message must contain '9 more elided' (25 - DISPLAY_CAP(16) = 9); got: {:?}",
+        diagnostics[0].message
+    );
+    // (c) Lex-first T candidate appears in the message.
+    assert!(
+        diagnostics[0].message.contains("ORingSeal"),
+        "message must contain lex-first T candidate 'ORingSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+    // (d) Lex-first U candidate appears in the message.
+    assert!(
+        diagnostics[0].message.contains("AirCooled"),
+        "message must contain lex-first U candidate 'AirCooled'; got: {:?}",
+        diagnostics[0].message
+    );
+    // (e) Full success shape: 2 per_param entries.
+    assert_eq!(
+        outcome.per_param.len(),
+        2,
+        "25-feasible outcome must have per_param.len() == 2 (success shape); got: {:?}",
+        outcome.per_param
+    );
+    // (f) First param maps to lex-first T candidate.
+    assert_eq!(
+        outcome.per_param[0],
+        ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+        "per_param[0] must be (T, Selected(ORingSeal)) — lex-first T"
+    );
+    // (g) Full substitution Vec.
+    assert_eq!(
+        outcome.substitution.len(),
+        2,
+        "25-feasible outcome must have substitution.len() == 2; got: {:?}",
+        outcome.substitution
+    );
+    assert_eq!(
+        outcome.substitution[0],
+        ("T".to_string(), "ORingSeal".to_string()),
+        "substitution[0] must be (T, ORingSeal)"
+    );
+}
+
 // ─── step-1 (task 2661): free-mode ≥2 cross-product feasibles ─────────────────
 // → NonUnique Warning + lex-first success shape
 
