@@ -16,58 +16,12 @@ pub(crate) fn compile_trait(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    // Extract the name from the Named variant; DimensionalOp can't appear
-                    // as a trait param type annotation.
-                    let name_opt = match &type_expr.kind {
-                        reify_syntax::TypeExprKind::Named { name, type_args } => {
-                            Some((name.as_str(), type_args.as_slice()))
-                        }
-                        reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
-                        reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
-                    };
-                    if let Some((name, type_args)) = name_opt {
-                        if let Some(t) = resolve_type_with_aliases(
-                            name,
-                            &empty_params,
-                            alias_registry,
-                            structure_names,
-                            trait_names,
-                        ) {
-                            t
-                        } else if let Some(t) = resolve_enum_type(name, enum_defs) {
-                            // Enum type defined in the same module; reify enums are
-                            // non-parametric. Emit a user-facing diagnostic if type_args
-                            // are present so the error is visible in release builds too.
-                            if !type_args.is_empty() {
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "enum `{}` does not accept type arguments",
-                                        name
-                                    ))
-                                    .with_label(
-                                        DiagnosticLabel::new(
-                                            type_expr.span,
-                                            "enum types are not generic",
-                                        ),
-                                    ),
-                                );
-                            }
-                            t
-                        } else {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unresolved type in trait '{}': {}",
-                                    trait_decl.name, name
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    type_expr.span,
-                                    "unknown type name",
-                                )),
-                            );
-                            Type::Real // fallback
-                        }
-                    } else {
-                        // DimensionalOp can't appear as a trait param type annotation
+                    // Reject DimensionalOp early with the historical "unexpected
+                    // dimensional expression" wording — the resolver below silently
+                    // returns None for that variant and would otherwise lose the
+                    // more informative diagnostic (pinned by
+                    // type_expr_kind_dispatch_tests::dim_op_in_trait_param_emits_diagnostic).
+                    if matches!(&type_expr.kind, reify_syntax::TypeExprKind::DimensionalOp { .. }) {
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "unresolved type in trait '{}': {}",
@@ -79,6 +33,62 @@ pub(crate) fn compile_trait(
                             )),
                         );
                         Type::Real
+                    } else {
+                        // Use the full type-expression resolver so parameterized builtins
+                        // (`Option<T>`, `List<T>`, `Set<T>`, `Map<K,V>`) and parametric
+                        // alias instantiations work in trait member declarations the same
+                        // way they do in structure params (task 2908 esc-2908-87). The
+                        // pre-existing inline name-only lookup never consulted `type_args`,
+                        // so any parameterized builtin was reported as "unresolved type".
+                        match resolve_type_expr_with_aliases(
+                            type_expr,
+                            &empty_params,
+                            alias_registry,
+                            diagnostics,
+                            structure_names,
+                            trait_names,
+                        ) {
+                            Some(t) => t,
+                            None => {
+                                // Check if it's an enum type defined in the same module.
+                                // Enum resolution is independent of the alias/builtin chain
+                                // because reify enums are non-parametric and live in a
+                                // separate registry (`enum_defs`). Mirrors the structure-param
+                                // path in entity.rs::compile_structure (~line 425).
+                                if let reify_syntax::TypeExprKind::Named { name, type_args } =
+                                    &type_expr.kind
+                                    && let Some(t) = resolve_enum_type(name, enum_defs)
+                                {
+                                    if !type_args.is_empty() {
+                                        diagnostics.push(
+                                            Diagnostic::error(format!(
+                                                "enum `{}` does not accept type arguments",
+                                                name
+                                            ))
+                                            .with_label(
+                                                DiagnosticLabel::new(
+                                                    type_expr.span,
+                                                    "enum types are not generic",
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                    t
+                                } else {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "unresolved type in trait '{}': {}",
+                                            trait_decl.name, type_expr
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "unknown type name",
+                                        )),
+                                    );
+                                    Type::Real // fallback
+                                }
+                            }
+                        }
                     }
                 } else {
                     Type::Real

@@ -1651,3 +1651,112 @@ fn option_list_trait_typed_param_accepts_all_conforming_inner_elements() {
         errors
     );
 }
+
+// ─── Parameterized builtins as trait member types (task 2908 esc-2908-87) ────
+//
+// `param x : Option<Pressure>` (and `List<T>`, `Set<T>`, `Map<K, V>`) was
+// rejected as "unresolved type" when declared inside a trait body even though
+// it worked inside a structure. Root cause: traits.rs::compile_trait routed
+// member type resolution through the simple-name `resolve_type_with_aliases`
+// and never consulted `type_args`, while structures use the full
+// `resolve_type_expr_with_aliases` that handles parameterized builtins.
+// These tests pin parity between trait-member and structure-member resolvers.
+
+/// `param x : Option<Pressure>` in a trait body must resolve to
+/// `Type::Option(Type::Scalar { dimension: PRESSURE })` with no diagnostics.
+/// Direct repro of the FEA `ElasticMaterial.yield_stress` shape.
+#[test]
+fn trait_param_option_pressure_resolves_to_option_scalar() {
+    let source = r#"
+        trait ElasticLike {
+            param yield_stress : Option<Pressure>
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for `param yield_stress : Option<Pressure>` in trait body, got: {:?}",
+        errors
+    );
+
+    let trait_def = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ElasticLike")
+        .expect("ElasticLike trait should be compiled");
+
+    let req = trait_def
+        .required_members
+        .iter()
+        .find(|r| r.name == "yield_stress")
+        .expect("yield_stress should be a required trait member");
+
+    match &req.kind {
+        RequirementKind::Param(ty) => {
+            assert_eq!(
+                ty,
+                &Type::Option(Box::new(Type::Scalar {
+                    dimension: reify_types::DimensionVector::PRESSURE,
+                })),
+                "yield_stress trait member should resolve to Type::Option(Pressure-Scalar), got: {:?}",
+                ty
+            );
+        }
+        other => panic!("expected Param requirement kind, got: {:?}", other),
+    }
+}
+
+/// `param ms : List<MaterialSpec>` in a trait body must resolve through the
+/// parameterized-builtin path the same way it does in a structure body.
+/// Companion to `trait_param_option_pressure_resolves_to_option_scalar`
+/// covering the List<TraitObject> shape.
+#[test]
+fn trait_param_list_traitobject_resolves_through_parameterized_path() {
+    let source = r#"
+        trait HasMaterials {
+            param ms : List<MaterialSpec>
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for `param ms : List<MaterialSpec>` in trait body, got: {:?}",
+        errors
+    );
+
+    let trait_def = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "HasMaterials")
+        .expect("HasMaterials trait should be compiled");
+
+    let req = trait_def
+        .required_members
+        .iter()
+        .find(|r| r.name == "ms")
+        .expect("ms should be a required trait member");
+
+    match &req.kind {
+        RequirementKind::Param(ty) => {
+            assert_eq!(
+                ty,
+                &Type::List(Box::new(Type::TraitObject("MaterialSpec".to_string()))),
+                "ms trait member should resolve to Type::List(Type::TraitObject(\"MaterialSpec\")), got: {:?}",
+                ty
+            );
+        }
+        other => panic!("expected Param requirement kind, got: {:?}", other),
+    }
+}
