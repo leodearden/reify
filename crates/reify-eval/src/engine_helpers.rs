@@ -39,7 +39,7 @@ pub(crate) fn collect_member_list(
     member: &str,
     n: i64,
 ) -> Value {
-    debug_assert!(n >= 0, "collect_member_list: negative count n={n} for {parent}.{sub}");
+    let n = n.max(0);
     let items: Vec<Value> = (0..n)
         .map(|idx| {
             let scoped_id = ValueCellId::new(format!("{}.{}[{}]", parent, sub, idx), member);
