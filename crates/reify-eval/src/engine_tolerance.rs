@@ -76,8 +76,16 @@ impl Engine {
             self.demanded_tolerance_for_output(output_template_name, subject_entity_ref)?;
         // Zero-promise lint (task 2833, option-b continuation): checked BEFORE the
         // strict-`<` insufficient branch. The `f64 == 0.0` comparison is intentional —
-        // the upstream extractor's gate already rejects NaN / ±Inf / negative values,
-        // so any `f64` reaching this point is finite and >= 0.0; equality is well-defined.
+        // the upstream extractor's gate (`!si_value.is_finite() || si_value < 0.0`)
+        // rejects NaN / ±Inf and **strictly negative finite** values, so any `f64`
+        // reaching this point is finite and >= 0.0; equality is well-defined.
+        //
+        // Signed-zero note: `-0.0` is NOT rejected by the upstream gate because
+        // `-0.0 < 0.0` is false in IEEE-754. It therefore reaches this comparator.
+        // IEEE-754 specifies `-0.0 == 0.0`, so the zero-promise branch fires
+        // correctly for both `+0.0` and `-0.0` promises — behavior is identical and
+        // benign. See the Gate-4 audit comment in `tolerance_promise.rs` for the
+        // symmetric upstream note.
         if promise == 0.0 && demanded > 0.0 {
             return Some(
                 crate::tolerance_promise::input_tolerance_promise_is_zero_diagnostic(

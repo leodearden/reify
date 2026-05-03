@@ -137,7 +137,17 @@ pub fn extract_input_tolerance_promise(
     //                                 `>= 0.0` half mirrors
     //                                 `is_promise_insufficient`'s debug-
     //                                 assert `is_finite() && >= 0.0`
-    //                                 invariant.
+    //                                 invariant. Signed-zero note: `-0.0` is
+    //                                 NOT rejected by this gate (since
+    //                                 `-0.0 < 0.0` is false in IEEE-754) and
+    //                                 passes through as an accepted value.
+    //                                 Downstream, `-0.0 == 0.0` (IEEE-754),
+    //                                 so `Engine::check_imported_tolerance_
+    //                                 promise`'s `promise == 0.0` guard fires
+    //                                 identically for `+0.0` and `-0.0` —
+    //                                 behavior is well-defined and benign. See
+    //                                 the signed-zero note in the dispatch
+    //                                 comment in `engine_tolerance.rs`.
     // Every non-match path returns None (or falls through to the trailing
     // None) — no `panic!`, `expect`, or `unwrap` is reachable, so a malformed
     // values map never crashes the engine.
