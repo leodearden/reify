@@ -82,19 +82,9 @@ describe('discoverRegisteredTools', () => {
     expect(result.has('reify_real')).toBe(true);
   });
 
-  // Characterization test — pins current behavior of the comment false-positive gap.
-  //
-  // `REGISTER_IDENT_RE` runs against the raw `.rs` file source, including comment lines.
-  // A commented-out `// registry.register(NAME, ...)` line still matches the regex and
-  // populates `registeredIdents`, which re-admits the stale const that the gating is
-  // supposed to exclude.
-  //
-  // This test deliberately asserts the CURRENT (limited) behavior:
-  //   result.has('reify_stale_commented') === true
-  // If a future task implements comment stripping before applying the regexes
-  // (e.g. `src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')`),
-  // that task MUST invert this expectation to `false` to reflect the fixed behavior.
-  it('admits_a_stale_const_when_register_call_is_commented_out', () => {
+  // Regression test: comment stripping in the REGISTER_IDENT_RE pre-pass prevents
+  // commented-out calls from re-admitting stale consts (see discover-mcp-tools.ts).
+  it('ignores a stale const when its only registry.register call is commented out', () => {
     const dir = makeTempDir();
     writeFileSync(
       join(dir, 'commented.rs'),
@@ -110,31 +100,16 @@ describe('discoverRegisteredTools', () => {
       ].join('\n'),
     );
     const result = discoverRegisteredTools(dir);
-    // The commented-out `// registry.register(STALE, ...)` currently satisfies the
-    // REGISTER_IDENT_RE pre-pass (raw-source scan), so STALE enters registeredIdents
-    // and the stale const value is admitted — this is the known false-positive.
-    expect(result.has('reify_stale_commented')).toBe(true);
+    // Comment stripping removes the `// registry.register(STALE, ...)` line before
+    // REGISTER_IDENT_RE runs — STALE stays out of registeredIdents and is excluded.
+    expect(result.has('reify_stale_commented')).toBe(false);
     // The real inline literal registration in the same file is unaffected.
     expect(result.has('reify_real_in_same_file')).toBe(true);
   });
 
-  // Characterization test — pins the per-file gating constraint.
-  //
-  // The REGISTER_IDENT_RE pre-pass only looks at registry.register(IDENT, ...) calls
-  // within the SAME .rs file as the matching CONST_DECL_RE. A const declared in one
-  // file (e.g. `consts.rs`) and registered from a sibling file (e.g. `register.rs`)
-  // is silently dropped — the gating does not perform a project-wide pre-pass.
-  //
-  // No current Rust file uses cross-file const indirection, so this gap would not be
-  // surfaced by the floor assertion (`>= 16`), which catches wholesale registration
-  // loss but not single-tool drops.
-  //
-  // This test deliberately asserts the CURRENT (limited) behavior:
-  //   result.has('reify_cross_file') === false
-  // If a future task implements a project-wide REGISTER_IDENT_RE pre-pass (building
-  // registeredIdents across all files before filtering CONST_DECL_RE matches), that
-  // task MUST invert this expectation to `true` to reflect the fixed behavior.
-  it('silently_drops_a_const_split_across_files', () => {
+  // Pins the per-file gating constraint — see discover-mcp-tools.ts for the canonical
+  // explanation and the future-hardening option (project-wide pre-pass).
+  it('silently drops a const split across files (known per-file constraint)', () => {
     const dir = makeTempDir();
     // The const declaration lives in consts.rs …
     writeFileSync(

@@ -22,17 +22,10 @@
  *
  * Using narrower call-site and declaration patterns (rather than every string
  * literal in the file) avoids false positives from comments such as
- * `// renamed from "reify_old_name"` or log/error strings.
- *
- * Caveat — `REGISTER_IDENT_RE` runs against the raw file source, including
- * comments. A commented-out `// registry.register(NAME, ...)` line will
- * populate `registeredIdents` and re-admit a stale const that the gating is
- * supposed to exclude. The current Rust source tree contains no such
- * commented-out calls, so this is a theoretical limitation today; see the
- * `admits_a_stale_const_when_register_call_is_commented_out` test in
- * `discover-mcp-tools.test.ts` for the regression pin. Future-hardening
- * option: strip line and block comments before applying the regexes (e.g.
- * `src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')`).
+ * `// renamed from "reify_old_name"` or log/error strings. Line and block
+ * comments are stripped before `REGISTER_IDENT_RE` is applied, so a
+ * commented-out `// registry.register(NAME, ...)` line does not re-admit a
+ * stale const.
  *
  * Per-file constraint — gating is per-file. The `REGISTER_IDENT_RE` pre-pass
  * only looks at `registry.register(IDENT, ...)` calls within the same `.rs`
@@ -43,8 +36,8 @@
  * but the floor assertion (`>= 16`) would not catch a single missing tool.
  * Contract for future contributors: keep the const declaration and its
  * `registry.register(NAME, ...)` call in the same `.rs` file. See the
- * `silently_drops_a_const_split_across_files` test in
- * `discover-mcp-tools.test.ts` for the regression pin. Future-hardening
+ * 'silently drops a const split across files (known per-file constraint)' test
+ * in `discover-mcp-tools.test.ts` for the regression pin. Future-hardening
  * option: do a project-wide `REGISTER_IDENT_RE` pre-pass first, then filter
  * `CONST_DECL_RE` matches against the global set.
  *
@@ -131,7 +124,13 @@ export function discoverRegisteredTools(toolsDir: string): Set<string> {
       // to `tools` — this gates out stale/test-only consts that are never actually wired
       // into the registry.
       const registeredIdents = new Set<string>();
-      for (const m of src.matchAll(REGISTER_IDENT_RE)) {
+      // Strip line and block comments before scanning for identifier-form
+      // register calls so that `// registry.register(NAME, ...)` lines in
+      // comments do not re-admit stale consts via registeredIdents.
+      const srcNoComments = src
+        .replace(/\/\/.*$/gm, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+      for (const m of srcNoComments.matchAll(REGISTER_IDENT_RE)) {
         registeredIdents.add(m[1]);
       }
       // Only include the value when NAME is in registeredIdents (i.e. is actively
