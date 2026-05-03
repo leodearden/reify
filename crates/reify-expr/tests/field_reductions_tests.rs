@@ -136,3 +136,55 @@ fn max_two_arg_scalar_form_unchanged() {
         "binary max(3.0, 5.0) should still resolve via numeric.rs to 5.0"
     );
 }
+
+// ── Step 3: min over a 1-D Real-codomain Sampled field ──────────────────────
+
+/// `min(field)` over a Sampled 1-D Real-codomain field returns the minimum
+/// value in the data buffer wrapped as `Value::Real`.
+#[test]
+fn min_sampled_field_1d_real_returns_min_data_value() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+
+    let expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Real(1.0),
+        "min(sampled 1-D Real-codomain field) should equal min of data buffer"
+    );
+}
+
+/// Regression pin: binary-form `min(a, b)` over two scalar args continues
+/// to dispatch through `reify_stdlib::eval_builtin` -> `numeric.rs::min`.
+#[test]
+fn min_two_arg_scalar_form_unchanged() {
+    let expr = make_function_call(
+        "min",
+        vec![
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::literal(Value::Real(5.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Real(3.0),
+        "binary min(3.0, 5.0) should still resolve via numeric.rs to 3.0"
+    );
+}
