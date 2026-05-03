@@ -52,9 +52,11 @@ describe('SYSTEM_PROMPT MCP tool registry alignment', () => {
   //
   // Canonical Rust contract: crates/reify-mcp/tests/tools_tests.rs::EXPECTED_TOOLS
   // That file pins the exact tool count and names via assert_eq!(tools.len(), 16).
-  // The surviving tests below (sanity + bidirectional alignment) combined with that
-  // Rust-side exact-count assertion cover the regression cases a TS-side floor would
-  // catch — making a redundant floor unnecessary.
+  // The surviving "every reify_* token resolves to a registered tool" test covers
+  // only the prompt→registry direction. TS-side discovery breakage that under-counts
+  // tools is caught by the Rust-side exact-count test (runs in a separate suite)
+  // and, when the missing tool is referenced in SYSTEM_PROMPT, by the alignment
+  // test itself. A redundant TS-side floor would duplicate that cross-suite coverage.
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const TOOLS_DIR = resolve(__dirname, '../../../../crates/reify-mcp/src/tools');
 
