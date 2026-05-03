@@ -172,6 +172,30 @@ fn chamfer_with_history_reports_face_records() {
         );
     }
 
+    // (g2) Underflow-safe lower-bound regression-pin for face_generated count
+    // (esc-2655-26 suggestion #1 / task 2821).
+    //
+    // Formula: strip the 6 modified-original box faces and the 8 corner-chamfer
+    // faces from result_face_count; the remaining faces should all be lateral
+    // chamfer faces (1 per parent edge, 12 for a cube), so face_generated should
+    // account for at least that many records.
+    //
+    // For the standard 10mm cube + 1mm chamfer: result_face_count ≈ 26,
+    // lower = 26 - 6 - 8 = 12. The saturating_sub chain gracefully degrades
+    // to 0 if a future fixture has < 14 result faces, keeping the test safe
+    // without an upstream `if result_face_count >= 14` guard.
+    // Using saturating_sub rather than `-` is mandatory: naive arithmetic would
+    // panic on underflow in debug builds and wrap in release builds.
+    let lower_face_generated = result_face_count.saturating_sub(6).saturating_sub(8) as usize;
+    assert!(
+        history.face_generated.len() >= lower_face_generated,
+        "face_generated should account for at least one face per box edge: \
+         got {} records, lower bound {} (result_face_count={})",
+        history.face_generated.len(),
+        lower_face_generated,
+        result_face_count
+    );
+
     // (h)-(l) Edge-buffer well-formedness: delegated to the shared helper to
     // eliminate duplication with the fillet mirror test. Asserts edge_modified
     // bounds, edge_generated bounds (keyed by VERTEX map), face_deleted empty,
