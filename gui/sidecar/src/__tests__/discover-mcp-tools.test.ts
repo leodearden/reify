@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { discoverRegisteredTools } from './discover-mcp-tools.js';
@@ -85,5 +85,34 @@ describe('discoverRegisteredTools', () => {
   it('throws an Error containing the resolved path when given a non-existent directory', () => {
     const nonExistent = resolve(tmpdir(), 'reify-tools-does-not-exist-98765');
     expect(() => discoverRegisteredTools(nonExistent)).toThrowError(nonExistent);
+  });
+
+  it('discovers a tool registered in a `.rs` file inside a nested subdirectory', () => {
+    const dir = makeTempDir();
+    mkdirSync(join(dir, 'nested'), { recursive: true });
+    writeFileSync(
+      join(dir, 'nested', 'foo.rs'),
+      `pub fn register(registry: &mut Registry) {\n    registry.register("reify_nested_tool", handler);\n}\n`,
+    );
+    const result = discoverRegisteredTools(dir);
+    expect(result.has('reify_nested_tool')).toBe(true);
+  });
+
+  it('discovers tools two or more levels deep and ignores non-.rs files', () => {
+    const dir = makeTempDir();
+    mkdirSync(join(dir, 'nested', 'inner'), { recursive: true });
+    // Two levels deep: nested/inner/bar.rs must be found.
+    writeFileSync(
+      join(dir, 'nested', 'inner', 'bar.rs'),
+      `pub fn register(registry: &mut Registry) {\n    registry.register("reify_deep_tool", handler);\n}\n`,
+    );
+    // A non-.rs sibling containing a registry.register(…) substring must NOT be parsed.
+    writeFileSync(
+      join(dir, 'nested', 'inner', 'notes.md'),
+      `registry.register("reify_should_not_be_found", handler);\n`,
+    );
+    const result = discoverRegisteredTools(dir);
+    expect(result.has('reify_deep_tool')).toBe(true);
+    expect(result.has('reify_should_not_be_found')).toBe(false);
   });
 });

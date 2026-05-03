@@ -1,7 +1,8 @@
 /**
  * Discovers the set of MCP tool names registered in the Rust tools source tree.
  *
- * Scans every `*.rs` file under `toolsDir` using two targeted patterns that
+ * Recursively scans every `*.rs` file under `toolsDir` (including nested
+ * subdirectories) using two targeted patterns that
  * together cover both registration forms without admitting comment/error-string
  * false positives:
  *
@@ -28,12 +29,12 @@
  * layer stays casing-agnostic so it stays valid if the policy is ever relaxed).
  *
  * Canonical contract: `crates/reify-mcp/tests/tools_tests.rs::EXPECTED_TOOLS`
- * That file pins the exact tool count and names; the floor assertion in
- * system-prompt.test.ts (`>= 16`) is derived from it.
+ * That file pins the exact tool count and names.
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import type { Dirent } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Matches inline `registry.register("reify_*", ...)` call-site literals.
@@ -78,9 +79,9 @@ const REGISTER_IDENT_RE = /registry\.register\s*\(\s*(?:\w+::)*([A-Za-z_]\w*)\s*
  *                  `toolsDir` cannot be read (e.g. after a workspace reorg).
  */
 export function discoverRegisteredTools(toolsDir: string): Set<string> {
-  let entries: string[];
+  let entries: Dirent[];
   try {
-    entries = readdirSync(toolsDir);
+    entries = readdirSync(toolsDir, { recursive: true, withFileTypes: true }) as Dirent[];
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -89,8 +90,8 @@ export function discoverRegisteredTools(toolsDir: string): Set<string> {
   }
 
   const tools = new Set<string>();
-  for (const file of entries.filter(f => f.endsWith('.rs'))) {
-    const src = readFileSync(resolve(toolsDir, file), 'utf8');
+  for (const entry of entries.filter(e => e.isFile() && e.name.endsWith('.rs'))) {
+    const src = readFileSync(join(entry.parentPath, entry.name), 'utf8');
     // Collect inline call-site literals: registry.register("reify_*", ...)
     for (const m of src.matchAll(REGISTER_LITERAL_RE)) {
       tools.add(m[1]);
