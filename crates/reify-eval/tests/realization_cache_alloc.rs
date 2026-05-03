@@ -103,12 +103,20 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     // flakiness was ever observed) tolerates these background allocations while still
     // catching the pre-fix regression where `entity.to_owned()` ran unconditionally on
     // every call — that case produces `delta ≈ 256`, a value far above the threshold.
-    // The threshold is set at 16: safely above the observed libtest noise (≤ 2) and
-    // far below the bug-case delta (256).
+    // The threshold is set at 4: the regression this test guards against
+    // (`entity.to_owned()` on every call) produces delta = 256, well above
+    // either 4 or 16 — so the specific value makes no difference for catching
+    // the known bug.  Tightening to 4 buys protection only against hypothetical
+    // intermediate regressions; the honest justification is that CI consistently
+    // observes ≤ 2 allocations from libtest's output-capture thread, and a
+    // tighter bound costs nothing as long as the noise floor stays there.
+    // (This binary has a single `#[test]`, so background-thread noise comes
+    // exclusively from libtest's own output-capture thread — `--test-threads`
+    // parallelism between tests is not a factor.)
     assert!(
-        delta <= 16,
+        delta <= 4,
         "rejected inserts under existing entity must allocate at most a handful of times \
-         (background-thread tolerance ≤ 16); got delta = {delta}.  A delta near 256 \
+         (background-thread tolerance ≤ 4); got delta = {delta}.  A delta near 256 \
          indicates the get_mut fast path is not being taken."
     );
 }
