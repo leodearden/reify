@@ -2310,6 +2310,141 @@ structure def WaterCooled : Cooled {
     );
 }
 
+// ─── step-6 (task 2661): exactly 16 feasibles → no elision marker ──────────────
+
+/// Two `AutoTypeParam`s `[T:Seal (free), U:Cooled (free)]` with 4 candidates
+/// each (16 cross-product leaves). Default `MockConstraintChecker` (all
+/// feasible) → exactly 16 feasibles.
+///
+/// With `DISPLAY_CAP = 16` and `total = 16`: `elided = 16.saturating_sub(16) = 0`
+/// → the elision marker must NOT appear in the message.
+///
+/// This is the off-by-one boundary test: `total > DISPLAY_CAP` (equivalently
+/// `elided > 0`) must use strict `>`, not `>=`, so that exactly 16 feasibles
+/// produces no elision.
+///
+/// Pins:
+/// (a) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity Warning
+/// (b) `!message.contains("elided")` — boundary must NOT produce the elision marker
+/// (c) `!message.contains("more elided")` — belt-and-suspenders
+/// (d) `message.contains("ORingSeal")` — lex-first T candidate present
+#[test]
+fn dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker() {
+    // 4 Seal structures (lex order: ORingSeal < RubberSeal < SilicaSeal < TeflonSeal)
+    // 4 Cooled structures (lex order: AirCooled < ForcedConvection < LiquidCooled < WaterCooled)
+    // → 4×4 = 16 cross-product leaves, all trivially feasible (default Satisfied).
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+structure def SilicaSeal : Seal {
+    param hardness : Real = 7.0
+}
+structure def TeflonSeal : Seal {
+    param friction : Real = 0.1
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+structure def ForcedConvection : Cooled {
+    param fan_speed : Real = 3000.0
+}
+structure def LiquidCooled : Cooled {
+    param coolant_flow : Real = 8.0
+}
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // No constraints → all 16 leaves trivially feasible.
+    let template = TopologyTemplateBuilder::new("Coupling").build();
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Satisfied);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // (a) Exactly one NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "16 feasibles must emit exactly one AutoTypeParamNonUnique diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity"
+    );
+    // (b) Boundary: exactly 16 feasibles (= DISPLAY_CAP) must NOT produce the elision marker.
+    assert!(
+        !diagnostics[0].message.contains("elided"),
+        "boundary case (16 = DISPLAY_CAP): message must NOT contain 'elided' \
+         (elision only fires when total > DISPLAY_CAP); got: {:?}",
+        diagnostics[0].message
+    );
+    // (c) Belt-and-suspenders: no "more elided" substring either.
+    assert!(
+        !diagnostics[0].message.contains("more elided"),
+        "boundary case (16 = DISPLAY_CAP): message must NOT contain 'more elided'; got: {:?}",
+        diagnostics[0].message
+    );
+    // (d) Lex-first T candidate present in message.
+    assert!(
+        diagnostics[0].message.contains("ORingSeal"),
+        "message must contain lex-first T candidate 'ORingSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+    // Success shape: 2 per_param entries, lex-first selected.
+    assert_eq!(outcome.per_param.len(), 2, "success shape must have 2 per_param entries");
+    assert_eq!(
+        outcome.per_param[0],
+        ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+        "per_param[0] must be (T, Selected(ORingSeal))"
+    );
+    let _ = outcome; // suppress unused warning
+}
+
 // ─── step-1 (task 2661): free-mode ≥2 cross-product feasibles ─────────────────
 // → NonUnique Warning + lex-first success shape
 
