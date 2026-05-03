@@ -1856,17 +1856,22 @@ structure S {
     /// resulting LSP diagnostics with code `"SpecializationForbiddenDecl"` match
     /// `expected` exactly.
     ///
-    /// For each `(kind, name)` pair the helper asserts the full canonical
-    /// compiler message:
-    /// `"'{kind}' declaration '{name}' is not permitted in a specialization scope (spec §8.7)"`
+    /// For each `(kind, name)` pair the helper asserts that the compiler
+    /// message contains both `"'{kind}'"` and `"'{name}'"` as substrings
+    /// (mirrors compiler-side substring style in specialization_scope_check.rs
+    /// lines 410-414, 540-548, 580-586, 619-628).  The canonical message
+    /// format is pinned solely by compiler-side tests; the LSP layer checks
+    /// presence-only, eliminating the dual-edit ratchet that arises from
+    /// re-asserting spec-section wording at multiple layers.
     ///
-    /// Both sides are sorted before comparison so the check is
-    /// order-independent and robust against accidental false-positive matches
-    /// that `find()`-based substring lookups can silently pass.
+    /// Both sides are sorted before pairing so the check is order-independent.
     ///
     /// Additionally asserts for every forbidden diagnostic:
     /// - severity `ERROR`, source `"reify"`
-    /// - non-zero range (the declaration's span was carried through the pipeline)
+    /// - `range.start` equals the expected `Position` for that violation
+    ///   (explicit witness that the fixture span was carried through
+    ///   `convert_diagnostic` + `offset_to_position` correctly)
+    /// - non-degenerate range: `range.start != range.end`
     ///
     /// When `expected` has more than one entry the helper additionally asserts
     /// that all range-start positions are distinct (sibling violations must not
@@ -1875,10 +1880,10 @@ structure S {
     /// Pass `expected = &[]` to assert that no such diagnostic is emitted.
     fn assert_specialization_forbidden(
         body: Vec<reify_syntax::MemberDecl>,
-        expected: &[(&str, &str)],
+        expected: &[(&str, &str, lsp_types::Position)],
     ) {
         use fixtures::*;
-        use lsp_types::{DiagnosticSeverity, NumberOrString};
+        use lsp_types::{DiagnosticSeverity, NumberOrString, Position};
 
         let parsed = parsed_module_with_structure_members(
             vec![make_sub_with_body("scope", dummy_span(), body)],
@@ -1908,31 +1913,30 @@ structure S {
             forbidden
         );
 
-        // Assert full canonical messages.  Sorting both sides makes the
-        // comparison order-independent and rules out silent false-positives
-        // from short-token substring matches (e.g. 'x' in an unrelated part
-        // of the message) or find()-based first-match aliasing.
-        let mut expected_msgs: Vec<String> = expected
-            .iter()
-            .map(|&(kind, name)| {
-                format!(
-                    "'{kind}' declaration '{name}' is not permitted \
-                     in a specialization scope (spec §8.7)"
-                )
-            })
-            .collect();
-        expected_msgs.sort();
-        let mut actual_msgs: Vec<String> =
-            forbidden.iter().map(|d| d.message.clone()).collect();
-        actual_msgs.sort();
-        assert_eq!(
-            actual_msgs,
-            expected_msgs,
-            "SpecializationForbiddenDecl messages do not match the canonical compiler format"
-        );
+        // Sort expected by (kind, name) and forbidden by message so pairing is
+        // order-independent (emission order is the compiler's prerogative).
+        let mut expected_sorted: Vec<(&str, &str, Position)> = expected.to_vec();
+        expected_sorted.sort_by_key(|&(kind, name, _)| (kind, name));
+        let mut forbidden_sorted: Vec<&lsp_types::Diagnostic> = forbidden.iter().collect();
+        forbidden_sorted.sort_by(|a, b| a.message.cmp(&b.message));
 
-        // Structural properties — asserted on every forbidden diagnostic.
-        for d in &forbidden {
+        // Per-violation assertions: kind/name substring presence (mirrors
+        // compiler-side style in specialization_scope_check.rs:410-414,
+        // 540-548, 580-586, 619-628), structural properties, and exact
+        // range.start Position.
+        for ((kind, name, expected_pos), d) in
+            expected_sorted.iter().zip(forbidden_sorted.iter())
+        {
+            assert!(
+                d.message.contains(&format!("'{kind}'")),
+                "expected quoted kind '{kind}' in message; got: {:?}",
+                d.message
+            );
+            assert!(
+                d.message.contains(&format!("'{name}'")),
+                "expected quoted name '{name}' in message; got: {:?}",
+                d.message
+            );
             assert_eq!(
                 d.severity,
                 Some(DiagnosticSeverity::ERROR),
@@ -1943,19 +1947,20 @@ structure S {
                 Some("reify"),
                 "expected source 'reify'; diagnostic: {d:#?}"
             );
+            assert_eq!(
+                d.range.start,
+                *expected_pos,
+                "range.start must equal expected Position; \
+                 got {:?}, want {:?}; diagnostic: {d:#?}",
+                d.range.start,
+                expected_pos
+            );
             assert_ne!(
                 d.range.start,
                 d.range.end,
-                "range must be non-zero; got start={:?} end={:?}",
+                "range must be non-degenerate; got start={:?} end={:?}",
                 d.range.start,
                 d.range.end
-            );
-            assert!(
-                d.range.start.line > 0 || d.range.start.character > 0,
-                "range start must not be (0,0) — span was not carried through \
-                 convert_diagnostic; got ({}, {})",
-                d.range.start.line,
-                d.range.start.character
             );
         }
 
@@ -1985,7 +1990,10 @@ structure S {
     fn lsp_compute_diagnostics_emits_no_specialization_forbidden_decl_for_permitted_only_spec_scope(
     ) {
         use fixtures::*;
-        assert_specialization_forbidden(vec![make_let("m"), make_constraint()], &[]);
+        assert_specialization_forbidden(
+            vec![make_let("m"), make_constraint()],
+            &[],
+        );
     }
 
     /// LSP regression lock (task 2371, step-9): a specialization scope with three
@@ -2000,13 +2008,21 @@ structure S {
     #[test]
     fn lsp_compute_diagnostics_surfaces_one_specialization_forbidden_decl_per_sibling_violation() {
         use fixtures::*;
+        use tower_lsp::lsp_types::Position;
+        // source_stub() = " ".repeat(120) — single-line ASCII, so byte offset N
+        // maps to Position::new(0, N) via offset_to_position (UTF-8 + UTF-16
+        // collapse for pure ASCII).
         assert_specialization_forbidden(
             vec![
                 make_param("x", param_span()),
                 make_port("p", port_span()),
                 make_sub_bare("child", sub_span()),
             ],
-            &[("param", "x"), ("port", "p"), ("sub", "child")],
+            &[
+                ("param", "x", Position::new(0, 30)),   // param_span = SourceSpan::new(30, 50)
+                ("port", "p", Position::new(0, 60)),    // port_span  = SourceSpan::new(60, 80)
+                ("sub", "child", Position::new(0, 90)), // sub_span   = SourceSpan::new(90, 110)
+            ],
         );
     }
 
