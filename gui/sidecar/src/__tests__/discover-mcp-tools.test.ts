@@ -97,4 +97,22 @@ describe('discoverRegisteredTools', () => {
     const result = discoverRegisteredTools(dir);
     expect(result.has('reify_nested_tool')).toBe(true);
   });
+
+  it('discovers tools two or more levels deep and ignores non-.rs files', () => {
+    const dir = makeTempDir();
+    mkdirSync(join(dir, 'nested', 'inner'), { recursive: true });
+    // Two levels deep: nested/inner/bar.rs must be found.
+    writeFileSync(
+      join(dir, 'nested', 'inner', 'bar.rs'),
+      `pub fn register(registry: &mut Registry) {\n    registry.register("reify_deep_tool", handler);\n}\n`,
+    );
+    // A non-.rs sibling containing a registry.register(…) substring must NOT be parsed.
+    writeFileSync(
+      join(dir, 'nested', 'inner', 'notes.md'),
+      `registry.register("reify_should_not_be_found", handler);\n`,
+    );
+    const result = discoverRegisteredTools(dir);
+    expect(result.has('reify_deep_tool')).toBe(true);
+    expect(result.has('reify_should_not_be_found')).toBe(false);
+  });
 });
