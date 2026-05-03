@@ -571,7 +571,11 @@ pub mod ffi {
         /// the face's centroid. Honours topological orientation: a REVERSED
         /// face yields the topologically-outward normal.
         fn query_face_normal(shape: &OcctShape) -> Result<Point3>;
-        /// Dihedral angle (radians) between two `TopoDS_Face` shapes.
+        /// Angle (radians) between the outward normals of two `TopoDS_Face` shapes,
+        /// sampled at each face's surface centroid.
+        ///
+        /// Note: this is the angle between outward normals, not a classical
+        /// dihedral angle (which requires a shared edge).
         ///
         /// Algorithm: `acos(clamp(n_a · n_b, -1, 1))` where each `n` is the
         /// face's unit outward normal at its centroid. Honours `TopAbs_REVERSED`
