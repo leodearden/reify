@@ -74,6 +74,31 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                 ("point", args[0].clone()),
             ])
         }
+        "pressure_load" => {
+            // Accept arity 2 (direction defaults to "normal") or 3 (explicit direction).
+            if args.len() != 2 && args.len() != 3 {
+                return Some(Value::Undef);
+            }
+            if validate_selector_target(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            if validate_dimensioned_scalar(&args[1], DimensionVector::PRESSURE).is_none() {
+                return Some(Value::Undef);
+            }
+            let direction = if args.len() == 2 {
+                Value::String("normal".to_string())
+            } else {
+                match validate_pressure_direction(&args[2]) {
+                    Some(d) => d,
+                    None => return Some(Value::Undef),
+                }
+            };
+            make_load_map("pressure_load", &[
+                ("direction", direction),
+                ("face", args[0].clone()),
+                ("magnitude", args[1].clone()),
+            ])
+        }
         _ => return None,
     })
 }
