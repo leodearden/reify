@@ -473,4 +473,42 @@ mod tests {
             Some(&Value::String("pressure_load".to_string())),
         );
     }
+
+    // ── pressure_load: 2-arg form defaults to "normal" ──────────────────────
+
+    #[test]
+    fn pressure_load_2arg_defaults_direction_to_normal() {
+        let face = face_selector_stub();
+        let magnitude = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+
+        let result = eval_builtin("pressure_load", &[face.clone(), magnitude.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("direction".to_string())),
+            Some(&Value::String("normal".to_string())),
+            "2-arg form should default direction to \"normal\""
+        );
+        assert_eq!(
+            map.get(&Value::String("face".to_string())),
+            Some(&face),
+            "face should round-trip"
+        );
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("pressure_load".to_string())),
+        );
+        assert_eq!(
+            map.get(&Value::String("magnitude".to_string())),
+            Some(&magnitude),
+            "magnitude should round-trip"
+        );
+    }
 }
