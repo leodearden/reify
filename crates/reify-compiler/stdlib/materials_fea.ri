@@ -51,3 +51,34 @@ structure def MaterialPropertyProvenance {
     param reference : String
     param notes : String
 }
+
+// ── ElasticMaterial trait ────────────────────────────────────────────────────
+
+// ElasticMaterial is the dimensioned trait the v0.3 FEA solver consumes. It
+// declares the minimum set of constitutive properties needed for linear
+// isotropic elasticity (small-strain regime) plus an optional yield-stress
+// hook for downstream plasticity/limit-state checks.
+//
+// Required properties:
+//   youngs_modulus — Young's modulus E.  SI unit: pascal (kg·m⁻¹·s⁻²).
+//                    Slope of the uniaxial stress/strain curve in the
+//                    linear-elastic regime.
+//   poisson_ratio  — Poisson's ratio ν.  Dimensionless ratio of transverse
+//                    to axial strain under uniaxial load.  Constrained to
+//                    the half-open interval [0, 0.5) by the constraints
+//                    landing in a follow-up step; ν = 0.5 represents
+//                    incompressibility and breaks the linear-elastic bulk
+//                    modulus formula K = E / (3(1 − 2ν)) (singularity).
+//   density        — mass density ρ.  SI unit: kg·m⁻³.  Used by inertial
+//                    and modal analyses; required even for static FEA so
+//                    the same material spec works across solvers.
+//   yield_stress   — uniaxial tensile yield stress σy.  SI unit: pascal.
+//                    Optional because purely linear-elastic FEA does not
+//                    consult it; downstream plasticity / limit-state /
+//                    safety-factor passes do.
+trait ElasticMaterial {
+    param youngs_modulus : Pressure
+    param poisson_ratio : Real
+    param density : Density
+    param yield_stress : Option<Pressure>
+}
