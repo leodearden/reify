@@ -22,11 +22,16 @@
 //! # Out of scope (sibling tasks)
 //!
 //! - Backjumping via "rejected because" channel (task 2660).
-//! - `auto(free)` report-all cross-product enumeration with the
-//!   `AutoTypeParamNonUnique` warning (task 2661).
 //! - Cross-product hard cap at 100k assignments (task 2662).
 //! - Rich diagnostic format with smallest infeasibility witness (task 2663).
 //! - Comprehensive v0.1 BFS-failure scenario coverage (task 2664).
+//!
+//! The `auto(free)` cross-product NonUnique Warning enumeration (originally
+//! listed here as "task 2661's scope") now lands in this file — see
+//! `dfs_free_mode_two_feasible_cross_products_emits_non_unique_warning_and_picks_lex_first`,
+//! `dfs_free_mode_more_than_sixteen_feasibles_emits_non_unique_with_elision_count`,
+//! `dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker`,
+//! and `dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique`.
 //! - Type-substitution mechanics
 //!   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
 //!   deferred per the PRD's "Constraint-feasibility incremental binding
@@ -205,8 +210,8 @@ structure def ORingSeal : Seal {
 /// lexicographic order (T outer, U inner) and stop at the first feasible
 /// leaf. Expected outcome: `substitution == [(T, ORingSeal), (U, AirCooled)]`,
 /// `per_param == [(T, Selected(ORingSeal)), (U, Selected(AirCooled))]`,
-/// zero diagnostics (free-mode `NonUnique` warnings are task 2661's scope —
-/// see file-level out-of-scope note).
+/// one `AutoTypeParamNonUnique` Warning diagnostic (task 2661, now landed —
+/// see `dfs_free_mode_two_feasible_cross_products_emits_non_unique_warning_and_picks_lex_first`).
 ///
 /// Strict-Ambiguous over multiple cross-product feasibles is the inverse
 /// of this test and is exercised by `dfs_strict_mode_with_two_feasible_cross_products_returns_ambiguous`
@@ -2460,10 +2465,9 @@ structure def WaterCooled : Cooled {
 ///
 /// → exactly 2 cross-product feasibles; lex-first = `(ORingSeal, AirCooled)`.
 ///
-/// **Current behavior (pre-task-2661):** free-mode stops at the first feasible
-/// leaf (`max_feasible_to_collect = 1`) and emits ZERO diagnostics.  This test
-/// FAILS because it requires a `AutoTypeParamNonUnique` warning AND that the
-/// search collects ALL feasibles before selecting.
+/// Task 2661 behavior: free-mode collects ALL feasible leaves
+/// (`max_feasible_to_collect = usize::MAX`), emits one `AutoTypeParamNonUnique`
+/// Warning, and returns the lex-first feasible in a full success shape.
 ///
 /// Pins:
 /// (a) `per_param == [(T, Selected("ORingSeal")), (U, Selected("AirCooled"))]`

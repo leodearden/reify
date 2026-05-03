@@ -121,9 +121,9 @@
 //!
 //! Driving PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`. The section
 //! header comment immediately above the function delineates the algorithm's
-//! scope and deferrals to sibling tasks 2660 (backjumping), 2661 (free
-//! enumeration), 2662 (100k cap), 2663 (rich diagnostic format), and 2664
-//! (BFS-failure test suite).
+//! scope and deferrals to sibling tasks 2660 (backjumping), 2662 (100k cap),
+//! 2663 (rich diagnostic format), and 2664 (BFS-failure test suite). Task 2661
+//! (`auto(free)` cross-product NonUnique enumeration) now lands in this module.
 //!
 //! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
@@ -204,6 +204,16 @@ pub struct AutoTypeParam {
 ///   case, or all-success): `per_param` has length N, with each entry
 ///   `(p.name, Selected(template_name))` in declared order — matches BFS's
 ///   success shape.
+///
+/// - **Cross-product all-free NonUnique arm (≥2 feasible cross-product
+///   assignments when every param has `free=true`)**: `per_param` has length
+///   N — the same success shape as the single-feasible (`1 =>`) arm — with
+///   each entry `(p.name, Selected(lex_first_candidate))`. The lex-first
+///   feasible leaf (`feasible_assignments[0]`, DFS visit order) is selected.
+///   One `AutoTypeParamNonUnique` (Warning) diagnostic is attached alongside
+///   the success outcome. Contrast with the strict-mode Ambiguous arm (length
+///   1, `SelectionResult::Ambiguous`) which fires when any param has
+///   `free=false`. (Task 2661.)
 ///
 /// ## Depth-bound discontinuity
 ///
@@ -1043,8 +1053,6 @@ pub fn resolve_auto_type_params(
 /// # Out of scope (sibling tasks layered on top of this foundation)
 ///
 /// - Backjumping via the "rejected because" channel — task 2660.
-/// - `auto(free)` report-all cross-product enumeration with the
-///   `AutoTypeParamNonUnique` warning — task 2661.
 /// - Cross-product hard cap of 100k assignments — task 2662.
 /// - Rich diagnostic format with smallest infeasibility witness — task 2663.
 /// - Comprehensive v0.1 BFS-failure scenario coverage — task 2664.
