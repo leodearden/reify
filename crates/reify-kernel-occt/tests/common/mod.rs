@@ -26,8 +26,9 @@ use reify_types::{GeometryError, GeometryHandleId};
 ///   `parent_subshape_index` values in `face_generated` must equal 12, one per
 ///   parent edge of the 10mm cube. Uses `HashSet` deduplication so the check is
 ///   independent of OCCT's per-edge face count (esc-2655-26 suggestion #1 /
-///   task 2821 amendment). Each record additionally has `parent_index == 0` and
-///   `parent_subshape_index < 12` (mirrors blocks (i)/(j)/(l)).
+///   task 2821 amendment). Each record additionally satisfies the same
+///   per-record bounds checked in blocks (i)/(j)/(l): `parent_index == 0`
+///   and `parent_subshape_index < 12`.
 /// - **(h)** Extracts `result_edge_count` via `kernel.extract_edges(result_id)`.
 /// - **(i)** `edge_modified` per-record well-formedness: `parent_index == 0`,
 ///   `parent_subshape_index < 12` (box edges), `result_subshape_index < result_edge_count`.

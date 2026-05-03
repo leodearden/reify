@@ -52,6 +52,40 @@ fn helper_panics_when_face_generated_parent_subshape_index_out_of_range() {
     );
 }
 
+/// Verify the helper panics with a message containing "face_generated records
+/// always have parent_index" when a `face_generated` record has `parent_index != 0`.
+///
+/// The fixture constructs 12 records with distinct `parent_subshape_index` values
+/// `0..12` (all in-range) but one record with `parent_index == 1`.  The HashSet
+/// cardinality is 12 and all `parent_subshape_index` values are < 12, so those
+/// checks pass.  The per-record `parent_index == 0` assertion must fire.
+///
+/// `GeometryHandleId(0)` is a deliberately bogus id.  It is fine because the
+/// per-record loop fires before block (h)'s `extract_edges` call — same trick
+/// as `helper_panics_when_silent_drop_count_nonzero`.
+#[test]
+#[should_panic(expected = "face_generated records always have parent_index")]
+fn helper_panics_when_face_generated_parent_index_nonzero() {
+    let kernel = OcctKernelHandle::spawn();
+    let face_generated = (0u32..12)
+        .map(|psi| HistoryRecord {
+            parent_index: if psi == 0 { 1 } else { 0 },
+            parent_subshape_index: psi,
+            result_subshape_index: 0,
+        })
+        .collect();
+    let history = LocalFeatureOpHistoryRecords {
+        face_generated,
+        ..Default::default()
+    };
+    common::assert_local_feature_history_well_formed(
+        &kernel,
+        GeometryHandleId(0),
+        &history,
+        "test_op",
+    );
+}
+
 /// Verify the helper panics with a message containing "silently drop" when
 /// `silent_drop_count` is non-zero. Substring match is robust to wording
 /// tweaks while still pinning the specific (g) assertion.
