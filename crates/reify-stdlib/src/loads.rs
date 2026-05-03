@@ -28,6 +28,7 @@ pub(crate) const EARTH_GRAVITY: f64 = 9.80665;
 ///
 /// Analogous to `joints::JOINT_KINDS`. Future FEA-solver consumers can use
 /// this constant for load-kind membership checks.
+#[allow(dead_code)]
 pub(crate) const LOAD_KINDS: &[&str] = &[
     "point_load",
     "pressure_load",
