@@ -11,9 +11,10 @@
 //! OpenVDB ingestion (file read, sample buffer, lowering to `sampled`).
 
 use reify_kernel_openvdb::ingest::{
-    IngestOutcome, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation, lower_to_sampled,
+    IngestError, IngestOutcome, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation,
+    lower_to_sampled,
 };
-use reify_types::{InterpolationKind, SampledGridKind, Type};
+use reify_types::{DimensionVector, InterpolationKind, SampledGridKind, Type};
 
 /// Step-1 happy path: a 1D `Length` grid lowered with linear interpolation
 /// produces a `SampledField` whose semantic content (kind, bounds, spacing,
@@ -109,4 +110,91 @@ fn lower_to_sampled_3d_grid_produces_regular3d_field() {
     assert_eq!(outcome.field.axis_grids[2].len(), 2);
     assert_eq!(outcome.field.data.len(), 8);
     assert!(outcome.warnings.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Step-5 RED: unit-validation tests
+// ---------------------------------------------------------------------------
+
+/// Helper: minimal valid 1D grid with the given units, used by the
+/// unit-validation tests so they share a stable shape.
+fn unit_test_grid(units: Option<&str>) -> OpenVdbGridSource {
+    OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0, 2.0, 3.0],
+        units: units.map(|s| s.to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    }
+}
+
+/// Pressure scalar codomain: `Type::Scalar { dimension: PRESSURE }`.
+fn pressure_type() -> Type {
+    Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    }
+}
+
+/// Step-5(a): grid declares `MPa` (Pressure), codomain is Pressure → Ok.
+#[test]
+fn validate_grid_units_matching_dimension_succeeds() {
+    let grid = unit_test_grid(Some("MPa"));
+    let result = lower_to_sampled(&grid, "p", &pressure_type());
+    assert!(
+        result.is_ok(),
+        "MPa unit on a Pressure codomain must lower successfully, got {result:?}"
+    );
+}
+
+/// Step-5(b): grid declares `m` (Length), codomain is Pressure → UnitMismatch.
+#[test]
+fn validate_grid_units_mismatched_dimension_returns_unit_mismatch() {
+    let grid = unit_test_grid(Some("m"));
+    let result = lower_to_sampled(&grid, "p", &pressure_type());
+    match result {
+        Err(IngestError::UnitMismatch {
+            expected_dimension,
+            found_dimension,
+            found_unit,
+        }) => {
+            assert_eq!(expected_dimension, DimensionVector::PRESSURE);
+            assert_eq!(found_dimension, DimensionVector::LENGTH);
+            assert_eq!(found_unit, "m");
+        }
+        other => panic!(
+            "expected Err(IngestError::UnitMismatch {{ … }}), got {other:?}"
+        ),
+    }
+}
+
+/// Step-5(c): grid declares unrecognised `ZZZ_unknown`, codomain is Length →
+/// UnknownUnit.
+#[test]
+fn validate_grid_units_unknown_string_returns_unknown_unit() {
+    let grid = unit_test_grid(Some("ZZZ_unknown"));
+    let result = lower_to_sampled(&grid, "p", &Type::length());
+    match result {
+        Err(IngestError::UnknownUnit { unit }) => {
+            assert_eq!(unit, "ZZZ_unknown");
+        }
+        other => panic!("expected Err(IngestError::UnknownUnit {{ … }}), got {other:?}"),
+    }
+}
+
+/// Step-5(d): codomain is `Type::Bool` (not a numeric scalar) →
+/// UnsupportedCodomain.
+#[test]
+fn validate_grid_units_unsupported_codomain_returns_error() {
+    let grid = unit_test_grid(Some("m"));
+    let result = lower_to_sampled(&grid, "p", &Type::Bool);
+    match result {
+        Err(IngestError::UnsupportedCodomain { type_repr }) => {
+            assert_eq!(type_repr, "Bool");
+        }
+        other => panic!(
+            "expected Err(IngestError::UnsupportedCodomain {{ … }}), got {other:?}"
+        ),
+    }
 }
