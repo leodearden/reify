@@ -745,10 +745,15 @@ double min_clearance(const OcctShape& a, const OcctShape& b);
 /// query vertex — uninteresting). This ordering mirrors `query_distance` and
 /// `min_clearance` for call-site consistency.
 ///
-/// When the distance is < 1e-10 (interior or on-boundary query) the wrapper
-/// detects the degenerate `PointOnShape1 == query` case and re-runs the
-/// extrema against the outer `TopAbs_SHELL`, so the returned witness is on
-/// the shape's boundary rather than coinciding with the query point.
+/// `BRepExtrema_DistShapeShape` has no inside/outside knowledge — it returns
+/// the distance to the nearest BREP boundary face.  For typical interior
+/// points the reported distance is therefore non-zero; only on-surface (or
+/// coincident) query points yield distance 0.  When the distance is < 1e-10
+/// the wrapper re-runs the extrema against the first shell found via
+/// `TopExp_Explorer(TopAbs_SHELL)`.  For single-shell solids this is the
+/// outer shell; for multi-shell solids (e.g. a solid with internal voids) it
+/// may not be.  The re-run returns a witness on the shell boundary rather
+/// than coinciding with the query point.
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
 
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
