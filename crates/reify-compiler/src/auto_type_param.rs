@@ -1573,11 +1573,14 @@ fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<Str
 /// can map them to param indices in a single pass.
 ///
 /// Handles every composite type arm that can nest a `TypeParam`:
-/// `List`, `Set`, `Map`, `Option`, `Function`, `Field`,
-/// `Point`/`Vector`/`Tensor`/`Complex`/`Range`/`Matrix` quantity slots.
+/// - Single-inner wrappers: `List`, `Set`, `Option`, `Complex`, `Range`
+/// - Two-inner wrappers: `Map`, `Field`
+/// - Multi-inner wrappers: `Function` (params + return_type), `Union` (arms)
+/// - Quantity-slot structs (single `quantity` inner): `Point`, `Vector`, `Tensor`, `Matrix`
+///
 /// Leaf arms with no nested types (`Bool`, `Int`, `Real`, `String`, `Scalar`,
 /// `Enum`, `StructureRef`, `TraitObject`, `Geometry`, `Orientation`, `Frame`,
-/// `Transform`, `Plane`, `Axis`, `BoundingBox`, `Error`, `Union`) are no-ops.
+/// `Transform`, `Plane`, `Axis`, `BoundingBox`, `Error`) are no-ops.
 fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
     match t {
         Type::TypeParam(name) => {
@@ -1607,10 +1610,20 @@ fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
         | Type::Matrix { quantity, .. } => {
             collect_type_param_names_from_type(quantity, out);
         }
+        // Union arms can themselves contain TypeParam — recurse into each.
+        // Note: `is_representable_cell_type` currently rejects Union as a
+        // cell_type, so this arm is latent rather than immediately exercised.
+        // It is included here so that if Union is ever admitted as a cell_type
+        // (e.g., for match-block-decl narrowing), blame extraction stays correct
+        // automatically rather than silently falling back to ordinary backtracking.
+        Type::Union(arms) => {
+            for arm in arms {
+                collect_type_param_names_from_type(arm, out);
+            }
+        }
         // All other arms are terminal (contain no nested Type) — no-ops:
         // Bool, Int, Real, String, Scalar, Enum, StructureRef, TraitObject,
-        // Geometry, Orientation, Frame, Transform, Plane, Axis, BoundingBox,
-        // Error, Union.
+        // Geometry, Orientation, Frame, Transform, Plane, Axis, BoundingBox, Error.
         _ => {}
     }
 }
@@ -1822,14 +1835,14 @@ fn compute_deepest_blame_level(
     violated: &[ConstraintNodeId],
     blame_map: &HashMap<ConstraintNodeId, BTreeSet<usize>>,
 ) -> Option<usize> {
-    // Build the union of all blamed param-index sets, then take the max.
-    let union: BTreeSet<usize> = violated
+    // Take the max over the union of all blamed param-index sets.
+    // One-pass iterator chain avoids the intermediate BTreeSet allocation.
+    violated
         .iter()
         .filter_map(|id| blame_map.get(id))
-        .flatten()
+        .flat_map(|s| s.iter())
         .copied()
-        .collect();
-    union.into_iter().next_back() // BTreeSet is sorted; next_back = max
+        .max()
 }
 
 /// Recursive DFS over the cross-product of per-param Phase A candidate vectors,
@@ -1988,7 +2001,7 @@ mod helper_tests {
 
     /// Empty `constraints_template` slice → vacuously no violations → `feasible == true`.
     #[test]
-    fn check_constraints_violated_returns_false_for_empty_constraints() {
+    fn check_constraints_leaf_returns_feasible_for_empty_constraints() {
         let checker = MockConstraintChecker::new();
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
@@ -2002,7 +2015,7 @@ mod helper_tests {
 
     /// Single constraint, checker returns `Satisfied` → `feasible == true`.
     #[test]
-    fn check_constraints_violated_returns_false_when_all_satisfied() {
+    fn check_constraints_leaf_returns_feasible_when_all_satisfied() {
         let expr = literal_expr();
         let id = ConstraintNodeId::new("C0", 0);
         let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
@@ -2021,7 +2034,7 @@ mod helper_tests {
     /// Single constraint, checker returns `Indeterminate` → `feasible == true`
     /// (architecture §2.5: Indeterminate counts as feasible, does not falsify).
     #[test]
-    fn check_constraints_violated_returns_false_when_all_indeterminate_per_arch_2_5() {
+    fn check_constraints_leaf_returns_feasible_when_all_indeterminate_per_arch_2_5() {
         let expr = literal_expr();
         let id = ConstraintNodeId::new("C0", 0);
         let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
@@ -2039,7 +2052,7 @@ mod helper_tests {
 
     /// Two constraints, checker returns `Violated` for all → `feasible == false`.
     #[test]
-    fn check_constraints_violated_returns_true_when_any_violated() {
+    fn check_constraints_leaf_returns_infeasible_when_any_violated() {
         let expr = literal_expr();
         let id0 = ConstraintNodeId::new("C0", 0);
         let id1 = ConstraintNodeId::new("C1", 1);
@@ -2059,7 +2072,7 @@ mod helper_tests {
     /// Two constraints with distinct ids "C0" and "C1"; C0 → Satisfied, C1 → Violated →
     /// `feasible == false` (any one Violated falsifies).
     #[test]
-    fn check_constraints_violated_returns_true_for_mixed_satisfied_and_violated() {
+    fn check_constraints_leaf_returns_infeasible_for_mixed_satisfied_and_violated() {
         let expr = literal_expr();
         let id0 = ConstraintNodeId::new("C0", 0);
         let id1 = ConstraintNodeId::new("C1", 1);
