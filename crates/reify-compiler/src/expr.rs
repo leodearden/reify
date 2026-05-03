@@ -2635,15 +2635,13 @@ mod tests {
         );
     }
 
-    /// Covers the missing-arm branch of `resolve_cluster_inner_member` with
-    /// `sub_qualifier = None` (self.<cluster>.<inner> call site).  Pins the
-    /// poison-literal return to lock in the anti-cascade contract at the helper
-    /// boundary: when one or more match-arm types lack the requested field the
-    /// helper must name those arms in the diagnostic and return `Type::Error` so
-    /// downstream expressions do not attempt to dereference an absent cell.
-    #[test]
-    fn resolve_cluster_inner_member_missing_arm_unqualified_diagnostic() {
-        let per_arm: Vec<(String, std::collections::BTreeMap<String, Type>)> = vec![
+    /// Builds the shared per-arm fixture for the missing-arm unit tests:
+    /// `HexHead` has `head_thickness : Real`; `SocketHead` is missing it.
+    /// Reuses the canonical Hex/Socket arm-name pairing from the integration
+    /// tests (`match_arm_decl_group_typing_tests.rs`) so both test layers share
+    /// the same conceptual fixture.
+    fn missing_arm_fixture() -> Vec<(String, std::collections::BTreeMap<String, Type>)> {
+        vec![
             (
                 "HexHead".to_string(),
                 [("head_thickness".to_string(), Type::Real)]
@@ -2652,7 +2650,18 @@ mod tests {
             ),
             // SocketHead is missing "head_thickness" → it is the missing arm.
             ("SocketHead".to_string(), std::collections::BTreeMap::new()),
-        ];
+        ]
+    }
+
+    /// Covers the missing-arm branch of `resolve_cluster_inner_member` with
+    /// `sub_qualifier = None` (self.<cluster>.<inner> call site).  Pins the
+    /// poison-literal return to lock in the anti-cascade contract at the helper
+    /// boundary: when one or more match-arm types lack the requested field the
+    /// helper must name those arms in the diagnostic and return `Type::Error` so
+    /// downstream expressions do not attempt to dereference an absent cell.
+    #[test]
+    fn resolve_cluster_inner_member_missing_arm_unqualified_diagnostic() {
+        let per_arm = missing_arm_fixture();
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let result = resolve_cluster_inner_member(
             &per_arm,
@@ -2697,16 +2706,7 @@ mod tests {
     /// in the qualifier-preamble path shows up as a distinct failure.
     #[test]
     fn resolve_cluster_inner_member_missing_arm_qualified_diagnostic() {
-        let per_arm: Vec<(String, std::collections::BTreeMap<String, Type>)> = vec![
-            (
-                "HexHead".to_string(),
-                [("head_thickness".to_string(), Type::Real)]
-                    .into_iter()
-                    .collect(),
-            ),
-            // SocketHead is missing "head_thickness" → it is the missing arm.
-            ("SocketHead".to_string(), std::collections::BTreeMap::new()),
-        ];
+        let per_arm = missing_arm_fixture();
         let mut diagnostics: Vec<Diagnostic> = vec![];
         // scoped_entity uses the external-call shape "Driver.bolt" to mirror the
         // empty-per_arm sibling test's external-case fixture at expr.rs:2618.
