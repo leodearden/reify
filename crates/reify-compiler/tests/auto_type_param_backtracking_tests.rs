@@ -37,16 +37,18 @@
 //! `dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker`,
 //! and `dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use reify_compiler::auto_type_param::{
     AutoTypeParam, MAX_AUTO_TYPE_PARAM_CANDIDATES, MultiParamResolutionOutcome, SelectionResult,
-    resolve_auto_type_params, resolve_auto_type_params_with_backtracking,
+    build_constraint_blame_map, resolve_auto_type_params,
+    resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 use reify_types::{
-    CompiledExpr, CompiledFunction, DiagnosticCode, Satisfaction, Severity, SourceSpan, Type, Value,
+    BinOp, CompiledExpr, CompiledFunction, ConstraintNodeId, DiagnosticCode, Satisfaction,
+    Severity, SourceSpan, Type, Value, ValueCellId,
 };
 
 /// Build the `(template_registry, trait_registry)` pair that
@@ -2645,5 +2647,65 @@ structure def WaterCooled : Cooled {
         diagnostics[0].message.contains("AirCooled"),
         "message must mention AirCooled (appears in both feasible witnesses); got: {:?}",
         diagnostics[0].message
+    );
+}
+
+// ─── step-1 (task 2660): build_constraint_blame_map — basic TypeParam blame ──
+
+/// `build_constraint_blame_map` must return one entry per constraint that
+/// references at least one in-scope `TypeParam`-typed cell. The entry maps
+/// the `ConstraintNodeId` to the `BTreeSet<usize>` of referenced param indices.
+///
+/// Setup: two cells (`field_t : TypeParam("T")`, `field_u : TypeParam("U")`),
+/// one `BinOp(Eq)` constraint whose `ValueRef`s address both cells.
+/// `params = [T(idx=0), U(idx=1)]` → blame set = `{0, 1}`.
+///
+/// Pins the "at least one TypeParam ref → entry present" half of the contract.
+/// The "no ref → absent" half is pinned by
+/// `build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints`.
+#[test]
+fn build_constraint_blame_map_returns_param_indices_referenced_by_constraint_expression() {
+    let field_t = ValueCellId::new("Coupling", "field_t");
+    let field_u = ValueCellId::new("Coupling", "field_u");
+    let expr = CompiledExpr::binop(
+        BinOp::Eq,
+        CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into())),
+        CompiledExpr::value_ref(field_u.clone(), Type::TypeParam("U".into())),
+        Type::Bool,
+    );
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .param("Coupling", "field_u", Type::TypeParam("U".into()), None)
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec![],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec![],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let map = build_constraint_blame_map(&template, &params);
+
+    assert_eq!(
+        map.len(),
+        1,
+        "expect exactly one entry (one constraint with TypeParam refs); got: {:?}",
+        map
+    );
+    let cid = ConstraintNodeId::new("Coupling", 0);
+    assert_eq!(
+        map.get(&cid).cloned().unwrap_or_default(),
+        BTreeSet::from([0_usize, 1_usize]),
+        "constraint referencing both T(idx=0) and U(idx=1) cells must map to {{0, 1}}"
     );
 }
