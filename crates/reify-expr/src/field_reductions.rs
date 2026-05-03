@@ -110,10 +110,20 @@ fn reduce_sampled_extremum(sf: &SampledField, codomain_type: &Type, find_min: bo
     }
 }
 
-/// Wrap an SI f64 in the field's codomain shape. Matches the convention
-/// in `crate::sampled::wrap_result`: dimensionless codomain
-/// (`Type::Real` / `Type::Int`) → `Value::Real`; dimensioned `Type::Scalar`
-/// → `Value::Scalar { si_value, dimension }`.
+/// Wrap an SI f64 in the field's codomain shape.
+///
+/// Mirrors `crate::sampled::wrap_result` exactly:
+/// - `Type::Scalar { dimension }` with non-dimensionless `dimension`
+///   (e.g. `PRESSURE`, `LENGTH`) → `Value::Scalar { si_value, dimension }`,
+///   preserving the field's codomain dimension on the reduction result so
+///   `max(von_mises(stress)) < yield_stress` etc. unify dimensionally.
+/// - `Type::Real`, `Type::Int`, dimensionless `Type::Scalar`, and any
+///   other codomain → `Value::Real(v)` (the `_` arm is the dimensionless
+///   default; the codomain type is otherwise unused for max/min).
+///
+/// Pinned by `max_sampled_field_with_pressure_codomain_returns_dimensioned_scalar`
+/// and the parallel `min_..._returns_dimensioned_scalar` in
+/// `tests/field_reductions_tests.rs`.
 fn wrap_codomain(v: f64, codomain_type: &Type) -> Value {
     match codomain_type {
         Type::Scalar { dimension } if !dimension.is_dimensionless() => Value::Scalar {
