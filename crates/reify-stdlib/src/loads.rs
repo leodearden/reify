@@ -142,17 +142,32 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                     make_load_map("gravity", &[("acceleration", acceleration)])
                 }
                 1 => {
-                    // 1-arg Scalar<Acceleration>: magnitude in -Z (sign flipped).
-                    let magnitude = match validate_dimensioned_scalar(&args[0], accel_dim) {
-                        Some(m) => m,
-                        None => return Some(Value::Undef),
-                    };
-                    let acceleration = Value::Vector(vec![
-                        Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                        Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                        Value::Scalar { si_value: -magnitude, dimension: accel_dim },
-                    ]);
-                    make_load_map("gravity", &[("acceleration", acceleration)])
+                    // Dispatch on input shape: Vector3 passes through unchanged;
+                    // Scalar places magnitude in -Z (with sign flip).
+                    match &args[0] {
+                        Value::Vector(_) => {
+                            // Explicit Vector3<Acceleration>: validate dim/length/finiteness
+                            // and round-trip unchanged (no sign flip, no Z-axis remap).
+                            if validate_dimensioned_vec3(&args[0], accel_dim).is_none() {
+                                return Some(Value::Undef);
+                            }
+                            make_load_map("gravity", &[("acceleration", args[0].clone())])
+                        }
+                        Value::Scalar { .. } => {
+                            // Scalar<Acceleration>: magnitude in -Z direction (sign flip).
+                            let magnitude = match validate_dimensioned_scalar(&args[0], accel_dim) {
+                                Some(m) => m,
+                                None => return Some(Value::Undef),
+                            };
+                            let acceleration = Value::Vector(vec![
+                                Value::Scalar { si_value: 0.0, dimension: accel_dim },
+                                Value::Scalar { si_value: 0.0, dimension: accel_dim },
+                                Value::Scalar { si_value: -magnitude, dimension: accel_dim },
+                            ]);
+                            make_load_map("gravity", &[("acceleration", acceleration)])
+                        }
+                        _ => return Some(Value::Undef),
+                    }
                 }
                 _ => return Some(Value::Undef),
             }
