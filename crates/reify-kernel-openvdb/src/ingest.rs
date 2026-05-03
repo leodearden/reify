@@ -550,3 +550,51 @@ fn format_type_repr(t: &Type) -> String {
         Type::Matrix { .. } => "Matrix".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Internal-only tests for the codomain-dimension extractor.
+    //!
+    //! The integration suite (`tests/ingest_tests.rs`) exercises
+    //! `extract_codomain_dimension` indirectly through `lower_to_sampled`.
+    //! These tests pin the recursion correctness directly so the contract
+    //! is locked in independently of the public lowering pipeline.
+    use super::*;
+
+    /// Step-13(a): a `Tensor<2, 3, Pressure>` codomain → `Ok(PRESSURE)`.
+    /// Pins the `Tensor → quantity` recursion that the PRD's worked
+    /// example (`Tensor<2, 3, Pressure>`) relies on.
+    #[test]
+    fn extract_codomain_dimension_recurses_through_tensor() {
+        let t = Type::tensor(
+            2,
+            3,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+        );
+        assert_eq!(
+            extract_codomain_dimension(&t),
+            Ok(DimensionVector::PRESSURE)
+        );
+    }
+
+    /// Step-13(b): a `Vector<3, Length>` codomain → `Ok(LENGTH)`. Pins the
+    /// `Vector → quantity` recursion arm.
+    #[test]
+    fn extract_codomain_dimension_recurses_through_vector_of_length() {
+        let t = Type::vec3(Type::length());
+        assert_eq!(extract_codomain_dimension(&t), Ok(DimensionVector::LENGTH));
+    }
+
+    /// Step-13(c): `Type::Real` codomain → `Ok(DIMENSIONLESS)`. Pins the
+    /// `Real` arm, which exists for compatibility with the rest of the
+    /// language treating dimensionless numerics as `Type::Real`.
+    #[test]
+    fn extract_codomain_dimension_real_is_dimensionless() {
+        assert_eq!(
+            extract_codomain_dimension(&Type::Real),
+            Ok(DimensionVector::DIMENSIONLESS)
+        );
+    }
+}
