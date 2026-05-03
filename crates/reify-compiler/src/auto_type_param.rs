@@ -127,11 +127,11 @@
 //!
 //! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use reify_types::{
-    CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId, Diagnostic,
-    DiagnosticCode, DiagnosticLabel, SourceSpan,
+    CompiledExprKind, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId,
+    Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type,
 };
 
 use crate::entity::satisfies_trait_bound;
@@ -1537,6 +1537,129 @@ fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<Str
 ///   Architecture §2.5 monotonic-feasible rule: undef does not falsify — only
 ///   `Violated` makes a leaf infeasible.
 /// - The borrowed-slice signature lets callers (especially the DFS hot path)
+// ─── Static blame extraction (task 2660) ─────────────────────────────────────
+
+/// Recursively collect every `Type::TypeParam(name)` string buried in a type.
+///
+/// Used by [`build_constraint_blame_map`] to extract param-name references from
+/// a cell's declared `cell_type`. The set `out` accumulates names so the caller
+/// can map them to param indices in a single pass.
+///
+/// Handles every composite type arm that can nest a `TypeParam`:
+/// `List`, `Set`, `Map`, `Option`, `Function`, `Field`,
+/// `Point`/`Vector`/`Tensor`/`Complex`/`Range`/`Matrix` quantity slots.
+/// Leaf arms with no nested types (`Bool`, `Int`, `Real`, `String`, `Scalar`,
+/// `Enum`, `StructureRef`, `TraitObject`, `Geometry`, `Orientation`, `Frame`,
+/// `Transform`, `Plane`, `Axis`, `BoundingBox`, `Error`, `Union`) are no-ops.
+fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
+    match t {
+        Type::TypeParam(name) => {
+            out.insert(name.clone());
+        }
+        Type::List(inner) | Type::Set(inner) | Type::Option(inner) | Type::Complex(inner)
+        | Type::Range(inner) => {
+            collect_type_param_names_from_type(inner, out);
+        }
+        Type::Map(k, v) => {
+            collect_type_param_names_from_type(k, out);
+            collect_type_param_names_from_type(v, out);
+        }
+        Type::Function { params, return_type } => {
+            for p in params {
+                collect_type_param_names_from_type(p, out);
+            }
+            collect_type_param_names_from_type(return_type, out);
+        }
+        Type::Field { domain, codomain } => {
+            collect_type_param_names_from_type(domain, out);
+            collect_type_param_names_from_type(codomain, out);
+        }
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => {
+            collect_type_param_names_from_type(quantity, out);
+        }
+        // All other arms are terminal (contain no nested Type) — no-ops:
+        // Bool, Int, Real, String, Scalar, Enum, StructureRef, TraitObject,
+        // Geometry, Orientation, Frame, Transform, Plane, Axis, BoundingBox,
+        // Error, Union.
+        _ => {}
+    }
+}
+
+/// Build a static blame map from constraint IDs to the set of `params` indices
+/// that each constraint's expression tree references through `ValueRef` cells
+/// typed as `Type::TypeParam(name)`.
+///
+/// # Algorithm
+///
+/// For each constraint in `template.constraints`:
+/// 1. Walk `constraint.expr` via [`CompiledExpr::walk`].
+/// 2. At every `ValueRef(cell_id)` node, look up the cell's declared type in
+///    `template.value_cells`.
+/// 3. Collect every `Type::TypeParam(name)` buried in that type (recursively,
+///    via [`collect_type_param_names_from_type`]).
+/// 4. Map collected names to `params` indices; drop names not in scope.
+/// 5. If the resulting index set is non-empty, insert an entry into the map.
+///
+/// # "Absent ↔ no blame ↔ ordinary backtrack" contract
+///
+/// Constraints whose final index set is **empty** (no referenced cell is typed
+/// as a `Type::TypeParam`, or all referenced `TypeParam` names are out of scope
+/// for the current `params` slice) are **NOT inserted** into the map.
+///
+/// Callers that look up a constraint ID in the map and find `None` must treat
+/// it as an empty blame set — equivalent to "this constraint cannot drive a
+/// backjump." This is the sentinel that lets [`compute_deepest_blame_level`]
+/// fall back to ordinary backtracking when violated constraints carry no
+/// in-scope type-param blame. Do **not** use `unwrap_or_default()` on the
+/// map lookup without understanding this contract: an absent entry means
+/// "no blame", not "forgot to insert".
+///
+/// See PRD section *"Backjumping reuses existing 'rejected because' channel"*
+/// for the rationale.
+pub fn build_constraint_blame_map(
+    template: &TopologyTemplate,
+    params: &[AutoTypeParam],
+) -> HashMap<ConstraintNodeId, BTreeSet<usize>> {
+    // Build a lookup from ValueCellId → cell_type.
+    let cell_type_map: HashMap<_, &Type> = template
+        .value_cells
+        .iter()
+        .map(|decl| (&decl.id, &decl.cell_type))
+        .collect();
+
+    // Build a lookup from param name → index in `params`.
+    let param_index_map: HashMap<&str, usize> = params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.name.as_str(), i))
+        .collect();
+
+    let mut result: HashMap<ConstraintNodeId, BTreeSet<usize>> = HashMap::new();
+
+    for constraint in &template.constraints {
+        let mut name_set: BTreeSet<String> = BTreeSet::new();
+        constraint.expr.walk(&mut |node| {
+            if let CompiledExprKind::ValueRef(cell_id) = &node.kind {
+                if let Some(cell_type) = cell_type_map.get(cell_id) {
+                    collect_type_param_names_from_type(cell_type, &mut name_set);
+                }
+            }
+        });
+        let indices: BTreeSet<usize> = name_set
+            .iter()
+            .filter_map(|name| param_index_map.get(name.as_str()).copied())
+            .collect();
+        if !indices.is_empty() {
+            result.insert(constraint.id.clone(), indices);
+        }
+    }
+
+    result
+}
+
 ///   reuse a single owned `Vec` built ONCE by the orchestrator across many
 ///   leaf calls, without rebuilding it per leaf.
 ///
