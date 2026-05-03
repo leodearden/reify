@@ -47,7 +47,7 @@ describe('createDefPreviewActivation', () => {
     const getDefPreview = vi.fn();
 
     await new Promise<void>((done) => {
-      createRoot((dispose) => {
+      createRoot(async (dispose) => {
         const editorStore = makeEditorStore(null);
         const viewportStore = makeViewportStore();
         const defPreviewStore = makeDefPreviewStore();
@@ -61,7 +61,7 @@ describe('createDefPreviewActivation', () => {
           debounceMs: 200,
         });
 
-        vi.advanceTimersByTime(500);
+        await vi.advanceTimersByTimeAsync(500);
         expect(getContainingDefinition).not.toHaveBeenCalled();
         dispose();
         done();
