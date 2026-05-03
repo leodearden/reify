@@ -70,6 +70,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = joints::eval_joints(name, args) {
         return v;
     }
+    if let Some(v) = loads::eval_loads(name, args) {
+        return v;
+    }
     if let Some(v) = mechanism::eval_mechanism(name, args) {
         return v;
     }
