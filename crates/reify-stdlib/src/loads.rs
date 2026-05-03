@@ -130,17 +130,32 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             ])
         }
         "gravity" => {
-            if args.len() != 0 {
-                return Some(Value::Undef);
-            }
-            // 0-arg form: Earth standard gravity in -Z direction.
             let accel_dim = acceleration_dim();
-            let acceleration = Value::Vector(vec![
-                Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                Value::Scalar { si_value: -EARTH_GRAVITY, dimension: accel_dim },
-            ]);
-            make_load_map("gravity", &[("acceleration", acceleration)])
+            match args.len() {
+                0 => {
+                    // 0-arg form: Earth standard gravity in -Z direction.
+                    let acceleration = Value::Vector(vec![
+                        Value::Scalar { si_value: 0.0, dimension: accel_dim },
+                        Value::Scalar { si_value: 0.0, dimension: accel_dim },
+                        Value::Scalar { si_value: -EARTH_GRAVITY, dimension: accel_dim },
+                    ]);
+                    make_load_map("gravity", &[("acceleration", acceleration)])
+                }
+                1 => {
+                    // 1-arg Scalar<Acceleration>: magnitude in -Z (sign flipped).
+                    let magnitude = match validate_dimensioned_scalar(&args[0], accel_dim) {
+                        Some(m) => m,
+                        None => return Some(Value::Undef),
+                    };
+                    let acceleration = Value::Vector(vec![
+                        Value::Scalar { si_value: 0.0, dimension: accel_dim },
+                        Value::Scalar { si_value: 0.0, dimension: accel_dim },
+                        Value::Scalar { si_value: -magnitude, dimension: accel_dim },
+                    ]);
+                    make_load_map("gravity", &[("acceleration", acceleration)])
+                }
+                _ => return Some(Value::Undef),
+            }
         }
         _ => return None,
     })
