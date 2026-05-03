@@ -194,6 +194,18 @@ mod tests {
     use reify_types::{DimensionVector, Value};
     use std::collections::BTreeMap;
 
+    /// Build a simple opaque selector stub (Map with kind="point_stub").
+    fn point_selector_stub() -> Value {
+        Value::Map({
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String("point_stub".to_string()),
+            );
+            m
+        })
+    }
+
     // ── point_load constructor: happy path ───────────────────────────────────
 
     #[test]
@@ -230,6 +242,106 @@ mod tests {
             map.get(&Value::String("force".to_string())),
             Some(&force),
             "force field should round-trip the force input"
+        );
+    }
+
+    // ── point_load constructor: failure modes ────────────────────────────────
+
+    #[test]
+    fn point_load_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("point_load", &[]).is_undef(),
+            "zero args should return Undef"
+        );
+    }
+
+    #[test]
+    fn point_load_one_arg_returns_undef() {
+        assert!(
+            eval_builtin("point_load", &[point_selector_stub()]).is_undef(),
+            "one arg should return Undef"
+        );
+    }
+
+    #[test]
+    fn point_load_three_args_returns_undef() {
+        let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("point_load", &[point_selector_stub(), force.clone(), force]).is_undef(),
+            "three args should return Undef"
+        );
+    }
+
+    #[test]
+    fn point_load_force_with_length_dim_returns_undef() {
+        let wrong_dim_force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(
+            eval_builtin("point_load", &[point_selector_stub(), wrong_dim_force]).is_undef(),
+            "force with LENGTH dimension should return Undef"
+        );
+    }
+
+    #[test]
+    fn point_load_force_with_nan_component_returns_undef() {
+        let nan_force = make_scalar_vec3([f64::NAN, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("point_load", &[point_selector_stub(), nan_force]).is_undef(),
+            "force with NaN component should return Undef"
+        );
+    }
+
+    #[test]
+    fn point_load_force_vec2_returns_undef() {
+        // Vector with only 2 components — wrong arity.
+        let vec2 = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::FORCE,
+            },
+        ]);
+        assert!(
+            eval_builtin("point_load", &[point_selector_stub(), vec2]).is_undef(),
+            "force Vec2 should return Undef"
+        );
+    }
+
+    #[test]
+    fn point_load_force_not_a_vector_returns_undef() {
+        let scalar = Value::Real(5.0);
+        assert!(
+            eval_builtin("point_load", &[point_selector_stub(), scalar]).is_undef(),
+            "force = Real should return Undef"
+        );
+    }
+
+    #[test]
+    fn point_load_selector_real_returns_undef() {
+        let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("point_load", &[Value::Real(0.0), force]).is_undef(),
+            "selector = Real should return Undef"
+        );
+    }
+
+    #[test]
+    fn point_load_selector_bool_returns_undef() {
+        let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("point_load", &[Value::Bool(true), force]).is_undef(),
+            "selector = Bool should return Undef"
+        );
+    }
+
+    #[test]
+    fn point_load_selector_undef_returns_undef() {
+        let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("point_load", &[Value::Undef, force]).is_undef(),
+            "selector = Undef should return Undef"
         );
     }
 }
