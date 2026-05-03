@@ -401,6 +401,94 @@ fn lower_to_sampled_non_positive_spacing_returns_invalid_spacing() {
     }
 }
 
+/// Amendment: `kind = Regular3D` paired with single-element axis vectors
+/// is a reachable caller construction mistake (since `OpenVdbGridSource`
+/// has `pub` fields). Returning a structured `AxisLengthMismatch` instead
+/// of panicking on `bounds_min[i]` indexing is the contract.
+#[test]
+fn lower_to_sampled_axis_length_mismatch_returns_structured_error() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular3D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![1.0],
+        spacing: vec![1.0],
+        data: vec![0.0; 8],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "axisbad", &Type::length());
+    match result {
+        Err(IngestError::AxisLengthMismatch {
+            axis_count,
+            bounds_min_len,
+            bounds_max_len,
+            spacing_len,
+        }) => {
+            assert_eq!(axis_count, 3);
+            assert_eq!(bounds_min_len, 1);
+            assert_eq!(bounds_max_len, 1);
+            assert_eq!(spacing_len, 1);
+        }
+        other => panic!(
+            "expected Err(IngestError::AxisLengthMismatch {{ … }}), got {other:?}"
+        ),
+    }
+}
+
+/// Amendment: `bounds_max < bounds_min` is an inversion mistake; without a
+/// dedicated check, `linspace_inclusive` silently collapses to `[start]`
+/// and the user sees an unhelpful `DataShapeMismatch`. Pin the structured
+/// `InvalidBounds` error so the failure mode is reported in the user's
+/// own terms.
+#[test]
+fn lower_to_sampled_inverted_bounds_returns_invalid_bounds() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![3.0],
+        bounds_max: vec![0.0],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0, 2.0, 3.0],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "invbounds", &Type::length());
+    match result {
+        Err(IngestError::InvalidBounds { axis, min, max }) => {
+            assert_eq!(axis, 0);
+            assert_eq!(min, 3.0);
+            assert_eq!(max, 0.0);
+        }
+        other => panic!(
+            "expected Err(IngestError::InvalidBounds {{ … }}), got {other:?}"
+        ),
+    }
+}
+
+/// Amendment: a non-finite bound (NaN / Inf) on any axis must surface as
+/// `InvalidBounds` rather than silently producing a 1-node axis from
+/// linspace.
+#[test]
+fn lower_to_sampled_non_finite_bounds_returns_invalid_bounds() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![f64::NAN],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0, 2.0, 3.0],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "nanbounds", &Type::length());
+    match result {
+        Err(IngestError::InvalidBounds { axis, .. }) => {
+            assert_eq!(axis, 0);
+        }
+        other => panic!(
+            "expected Err(IngestError::InvalidBounds {{ … }}), got {other:?}"
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Step-11 RED: read_vdb_file v0.2 stub contract
 // ---------------------------------------------------------------------------

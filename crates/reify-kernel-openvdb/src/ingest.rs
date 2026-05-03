@@ -141,6 +141,33 @@ pub enum IngestError {
         /// The offending spacing value.
         value: f64,
     },
+    /// One or more of `bounds_min` / `bounds_max` / `spacing` does not have
+    /// length equal to the axis count implied by `kind`. Surfaces a
+    /// caller-side construction mistake (e.g. `kind = Regular3D` paired with
+    /// a 1-element `bounds_min`) as a structured error rather than a panic
+    /// on a downstream `bounds_min[i]` index.
+    AxisLengthMismatch {
+        /// Axis count implied by [`OpenVdbGridSource::kind`] (1/2/3).
+        axis_count: usize,
+        /// Length of the supplied `bounds_min` vector.
+        bounds_min_len: usize,
+        /// Length of the supplied `bounds_max` vector.
+        bounds_max_len: usize,
+        /// Length of the supplied `spacing` vector.
+        spacing_len: usize,
+    },
+    /// A per-axis `bounds_max` is below `bounds_min`, or one of the bounds
+    /// is non-finite. Defends the linspace builder which would otherwise
+    /// silently collapse to a 1-node axis and surface as a confusing
+    /// `DataShapeMismatch` downstream.
+    InvalidBounds {
+        /// Index of the offending axis (0 = outermost).
+        axis: usize,
+        /// The offending `bounds_min[axis]` value.
+        min: f64,
+        /// The offending `bounds_max[axis]` value.
+        max: f64,
+    },
 }
 
 /// v0.2 OpenVDB units → [`DimensionVector`] lookup table.
@@ -215,23 +242,38 @@ pub fn lower_to_sampled(
         OpenVdbGridKind::Regular2D => 2,
         OpenVdbGridKind::Regular3D => 3,
     };
-    debug_assert_eq!(grid.bounds_min.len(), axis_count);
-    debug_assert_eq!(grid.bounds_max.len(), axis_count);
-    debug_assert_eq!(grid.spacing.len(), axis_count);
 
     // Pre-flight invariant checks — mirrors `engine_eval::build_sampled_field`'s
     // step-24 guards so the lowered SampledField never trips downstream
     // `interp::interpolate_Nd` `assert!`s on malformed input.
     //
     // Order:
-    //   (1) reject empty data buffer first — `EmptyGrid` is more
-    //       descriptive than `DataShapeMismatch { expected: N, actual: 0 }`
-    //       for the common "user forgot to populate data" failure mode.
-    //   (2) reject non-positive / non-finite spacing per axis — surfaces
-    //       a precise per-axis error before linspace collapses to a
-    //       1-node grid.
-    //   (3) reject `data.len() != product(axis_lengths)` last, after the
+    //   (0) reject axis-length mismatch first — `OpenVdbGridSource` is a
+    //       `pub` struct with public fields, so a caller-constructed grid
+    //       with `kind = Regular3D` but `bounds_min.len() == 1` is a
+    //       reachable failure mode that must be surfaced before any
+    //       `bounds_min[i]` indexing happens.
+    //   (1) reject empty data buffer — `EmptyGrid` is more descriptive than
+    //       `DataShapeMismatch { expected: N, actual: 0 }` for the common
+    //       "user forgot to populate data" failure mode.
+    //   (2) reject non-positive / non-finite spacing per axis — surfaces a
+    //       precise per-axis error before linspace collapses to a 1-node
+    //       grid.
+    //   (3) reject inverted / non-finite bounds per axis — same reasoning,
+    //       linspace silently collapses to `[start]` for negative span.
+    //   (4) reject `data.len() != product(axis_lengths)` last, after the
     //       axis grids are well-formed enough to compute `expected`.
+    if grid.bounds_min.len() != axis_count
+        || grid.bounds_max.len() != axis_count
+        || grid.spacing.len() != axis_count
+    {
+        return Err(IngestError::AxisLengthMismatch {
+            axis_count,
+            bounds_min_len: grid.bounds_min.len(),
+            bounds_max_len: grid.bounds_max.len(),
+            spacing_len: grid.spacing.len(),
+        });
+    }
     if grid.data.is_empty() {
         return Err(IngestError::EmptyGrid);
     }
@@ -241,6 +283,13 @@ pub fn lower_to_sampled(
                 axis: i,
                 value: *s,
             });
+        }
+    }
+    for i in 0..axis_count {
+        let min = grid.bounds_min[i];
+        let max = grid.bounds_max[i];
+        if !min.is_finite() || !max.is_finite() || max < min {
+            return Err(IngestError::InvalidBounds { axis: i, min, max });
         }
     }
 
@@ -470,6 +519,22 @@ impl std::fmt::Display for IngestError {
             IngestError::InvalidSpacing { axis, value } => write!(
                 f,
                 "OpenVDB grid axis {axis} spacing must be positive and finite, got {value}"
+            ),
+            IngestError::AxisLengthMismatch {
+                axis_count,
+                bounds_min_len,
+                bounds_max_len,
+                spacing_len,
+            } => write!(
+                f,
+                "OpenVDB grid axis-vector length mismatch: kind implies {axis_count} axes \
+                 but bounds_min has {bounds_min_len}, bounds_max has {bounds_max_len}, \
+                 spacing has {spacing_len}"
+            ),
+            IngestError::InvalidBounds { axis, min, max } => write!(
+                f,
+                "OpenVDB grid axis {axis} bounds are invalid: bounds_min={min}, bounds_max={max} \
+                 (max must be finite and >= min)"
             ),
         }
     }
