@@ -2449,3 +2449,97 @@ fn match_arm_decl_group_outside_sub_with_different_name_emits_no_collision() {
         bolt_template.match_arm_groups
     );
 }
+
+/// Task 2376 step-7: when the discriminant param has an unresolved enum type
+/// (`MissingEnum` is not declared in the module), the compiler must emit the
+/// upstream "unresolved type" diagnostic but must NOT emit a spurious
+/// "non-exhaustive match" diagnostic.
+///
+/// Control flow: `param head_type : MissingEnum` resolves to `Type::Real` (fallback)
+/// and emits `"unresolved type: MissingEnum"`.  When `compile_match_arm_decl_group`
+/// calls `scope.resolve("head_type")`, it gets `(cell_id, Type::Real)` → hits the
+/// `"expected an enum"` branch at entity.rs:2152 → returns early at line 2163 —
+/// never reaching the exhaustiveness gate at line 2289.
+///
+/// This test is a regression guard: if a future refactor moves exhaustiveness ahead
+/// of discriminant-resolution, the spurious diagnostic would reappear.
+///
+/// Constructs:
+/// ```text
+/// // NO EnumDecl for MissingEnum
+/// structure HexHead {}
+/// structure Bolt {
+///     param head_type : MissingEnum       // unresolved type — falls back to Real
+///     match head_type {                   // single arm — deliberately under-covering
+///         Hex => sub head : HexHead
+///     }
+/// }
+/// ```
+///
+/// Expected:
+///   (a) at least one diagnostic contains "unresolved type" or "MissingEnum"
+///   (b) zero diagnostics contain "non-exhaustive match"
+#[test]
+fn match_arm_decl_group_unknown_enum_discriminant_emits_no_spurious_non_exhaustive() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        // Single arm — intentionally under-covering whatever MissingEnum *would* have.
+        arms: vec![match_arm_decl("Hex", sub_member("head", "HexHead"))],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            // MissingEnum is intentionally absent from the module declarations.
+            param_member("head_type", "MissingEnum"),
+            match_group,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_unknown_enum_no_spurious_non_exhaustive"),
+        declarations: vec![
+            // No EnumDecl for MissingEnum — that is the point.
+            empty_structure("HexHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) The unresolved-type diagnostic must be present.
+    let has_unresolved = compiled.diagnostics.iter().any(|d| {
+        d.message.contains("unresolved type") || d.message.contains("MissingEnum")
+    });
+    assert!(
+        has_unresolved,
+        "expected a diagnostic containing 'unresolved type' or 'MissingEnum', got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) No spurious "non-exhaustive match" diagnostic must be emitted.
+    let non_exhaustive_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("non-exhaustive match"))
+        .collect();
+    assert!(
+        non_exhaustive_diags.is_empty(),
+        "expected NO 'non-exhaustive match' diagnostic when discriminant type is unresolved, \
+         got: {:#?}",
+        compiled.diagnostics
+    );
+}
