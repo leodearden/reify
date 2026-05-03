@@ -15,16 +15,20 @@
 //! - A `QueryError` returned by the hook surfaces as a
 //!   `Diagnostic::warning` *without* regressing `geometry_output` to
 //!   `None` (auxiliary-metadata invariant per task-2574).
+//! - BRep-first ordering: `populate_attribute_history` (OCCT-native BRep
+//!   population, which calls `kernel.extract_faces`) runs **before** the
+//!   kernel attribute hook's `propagate_attributes`, as required by the
+//!   design decision in the task plan.
 
 use std::sync::{Arc, Mutex};
 
-use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+use reify_compiler::{BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
 use reify_types::{
     AttributeHistory, CompiledExpr, ExportFormat, FeatureId, GeometryError, GeometryHandle,
     GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook,
     KernelAttributeOutcome, Mesh, ModulePath, QueryError, RealizationNodeId, Severity,
-    TessError, TopologyAttributeTable, Type, Value,
+    SweepOpHistoryRecords, TessError, TopologyAttributeTable, Type, Value,
 };
 
 // ─── Shared call-recording type ──────────────────────────────────────────────
@@ -374,5 +378,212 @@ fn engine_build_kernel_attribute_hook_query_error_surfaces_diagnostic_warning_wi
         result.geometry_output.is_some(),
         "geometry_output must be Some after a hook QueryError — the realization \
          succeeded at the kernel level; got None"
+    );
+}
+
+// ─── BRep-first ordering test fixtures ────────────────────────────────────────
+
+/// `KernelAttributeHook` impl that records a "propagate_attributes" event in
+/// the shared event log when `propagate_attributes` is called.  Used by
+/// `OrderingKernel` to assert that `populate_attribute_history`'s
+/// `extract_faces` call is recorded **before** this hook fires.
+struct OrderingHookStub {
+    event_log: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl KernelAttributeHook for OrderingHookStub {
+    fn propagate_attributes(
+        &self,
+        _table: &mut TopologyAttributeTable,
+        _op: &GeometryOp,
+        _parent_handles: &[GeometryHandleId],
+        _result_handle: GeometryHandleId,
+        _splitting_feature_id: &FeatureId,
+    ) -> Result<KernelAttributeOutcome, QueryError> {
+        self.event_log
+            .lock()
+            .unwrap()
+            .push("propagate_attributes");
+        Ok(KernelAttributeOutcome::Propagated)
+    }
+}
+
+/// Mock kernel for the BRep-first ordering test:
+///
+/// 1. Returns `AttributeHistory::Extrude(SweepOpHistoryRecords::default())`
+///    for `GeometryOp::Extrude` ops — this triggers `populate_attribute_history`
+///    to call `kernel.extract_faces` (the BRep population path).
+/// 2. Records a "extract_faces" event in the shared log on each `extract_faces`
+///    call (and returns `Ok(vec![])` so the BRep path proceeds without error).
+/// 3. Returns `Ok(vec![])` from `extract_edges` (needed by
+///    `populate_single_parent_sweep_op` which calls both `extract_faces` and
+///    `extract_edges`).
+/// 4. Advertises `OrderingHookStub` as its hook — so the hook fires for each
+///    parent-having op after `populate_attribute_history` completes.
+struct OrderingKernel {
+    inner: MockGeometryKernel,
+    event_log: Arc<Mutex<Vec<&'static str>>>,
+    hook: OrderingHookStub,
+}
+
+impl OrderingKernel {
+    fn new(event_log: Arc<Mutex<Vec<&'static str>>>) -> Self {
+        Self {
+            inner: MockGeometryKernel::new(),
+            hook: OrderingHookStub {
+                event_log: Arc::clone(&event_log),
+            },
+            event_log,
+        }
+    }
+}
+
+impl GeometryKernel for OrderingKernel {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        self.inner.execute(op)
+    }
+
+    fn execute_with_history(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        let handle = self.inner.execute(op)?;
+        // Return non-None history for Extrude ops so that populate_attribute_history
+        // calls extract_faces (the BRep population path we're ordering against).
+        let history = match op {
+            GeometryOp::Extrude { .. } => {
+                AttributeHistory::Extrude(SweepOpHistoryRecords::default())
+            }
+            _ => AttributeHistory::None,
+        };
+        Ok((handle, history))
+    }
+
+    fn extract_faces(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Record that the BRep population path has entered the kernel.
+        self.event_log.lock().unwrap().push("extract_faces");
+        Ok(vec![])
+    }
+
+    fn extract_edges(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // populate_single_parent_sweep_op calls both extract_faces and extract_edges;
+        // return empty vec so the call succeeds without noise in the event log.
+        Ok(vec![])
+    }
+
+    fn query(&self, q: &GeometryQuery) -> Result<Value, QueryError> {
+        self.inner.query(q)
+    }
+
+    fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), reify_types::ExportError> {
+        self.inner.export(handle, format, writer)
+    }
+
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
+        self.inner.tessellate(handle, tolerance)
+    }
+
+    fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
+        Some(&self.hook)
+    }
+}
+
+/// Synthesised `CompiledModule` with two ops in a single realization:
+/// `[LineSegment(..),  Extrude(Step(0), distance=10mm)]`.
+///
+/// The LineSegment is the profile stand-in (step 0 → handle 1); the Extrude
+/// uses it as its profile (step 1 → handle 2).  With `OrderingKernel`:
+///
+/// - `execute_with_history(LineSegment)` → `(handle 1, AttributeHistory::None)`.
+/// - `execute_with_history(Extrude)` → `(handle 2, AttributeHistory::Extrude(...))`.
+///
+/// This ensures `populate_attribute_history` enters `populate_single_parent_sweep_op`
+/// and calls `extract_faces` × 2 (profile + result handle) before the hook fires.
+fn ordering_test_module() -> reify_compiler::CompiledModule {
+    let line_op = CompiledGeometryOp::Curve {
+        kind: CurveKind::LineSegment,
+        args: vec![
+            ("x1".into(), mm_literal(0.0)),
+            ("y1".into(), mm_literal(0.0)),
+            ("z1".into(), mm_literal(0.0)),
+            ("x2".into(), mm_literal(10.0)),
+            ("y2".into(), mm_literal(0.0)),
+            ("z2".into(), mm_literal(0.0)),
+        ],
+    };
+    let extrude_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![("distance".into(), mm_literal(10.0))],
+    };
+    let template = TopologyTemplateBuilder::new("OrderingTest")
+        .realization("OrderingTest", 0, vec![line_op, extrude_op])
+        .build();
+    CompiledModuleBuilder::new(ModulePath::single("ordering_test"))
+        .template(template)
+        .build()
+}
+
+/// BRep-first ordering contract: `populate_attribute_history` (which calls
+/// `kernel.extract_faces`) must execute **before** the kernel attribute hook's
+/// `propagate_attributes`, per the design decision in the task plan.
+///
+/// Uses a `[LineSegment, Extrude]` module so that the Extrude op:
+/// (a) returns `AttributeHistory::Extrude(...)` from `execute_with_history`,
+///     triggering `populate_attribute_history` → `populate_single_parent_sweep_op`
+///     → `kernel.extract_faces` (the BRep population path), and
+/// (b) has a non-empty `parent_handles_for_op` slice (profile handle only),
+///     so the kernel attribute hook is also invoked.
+///
+/// A regression that swapped the call order — invoking the hook before
+/// `populate_attribute_history`, or skipping the BRep path entirely for
+/// parent-having ops — would cause "propagate_attributes" to precede
+/// "extract_faces" in the event log, failing the position assertion.
+#[test]
+fn engine_build_kernel_attribute_hook_respects_brep_first_ordering() {
+    let module = ordering_test_module();
+    let event_log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let kernel = OrderingKernel::new(Arc::clone(&event_log));
+    let mut engine = reify_eval::Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let _ = engine.build(&module, ExportFormat::Step);
+
+    let log = event_log.lock().unwrap().clone();
+
+    // Both paths must have fired — if either is absent the test setup is wrong.
+    let extract_pos = log
+        .iter()
+        .position(|&e| e == "extract_faces")
+        .expect(
+            "BRep population must call kernel.extract_faces for Extrude ops; \
+             got event log: {log:?}",
+        );
+    let hook_pos = log
+        .iter()
+        .position(|&e| e == "propagate_attributes")
+        .expect(
+            "kernel attribute hook must fire for the parent-having Extrude op; \
+             got event log: {log:?}",
+        );
+
+    // The core ordering assertion: BRep population (extract_faces) must precede
+    // the hook (propagate_attributes).
+    assert!(
+        extract_pos < hook_pos,
+        "BRep-first ordering violated: extract_faces must precede propagate_attributes \
+         in the event log; extract_pos={extract_pos}, hook_pos={hook_pos}, log={log:?}",
     );
 }
