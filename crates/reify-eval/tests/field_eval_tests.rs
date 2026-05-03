@@ -1969,3 +1969,101 @@ structure S {
         "expected S.v = Undef on poisoned sampled field, got {val:?}"
     );
 }
+
+// ── Plan 2913 step-21: end-to-end field reductions integration ───────────
+//
+// Pin the full parse → compile → eval pipeline for the four eager Field
+// reductions added in plan 2913: `max(field)`, `min(field)`,
+// `argmax(field)`, `argmin(field)`. The eval-time dispatch arms in
+// `crates/reify-expr/src/lib.rs:371-390` route 1-arg-Field calls to
+// `field_reductions::compute_*`; the unit tests in
+// `crates/reify-expr/tests/field_reductions_tests.rs` exercise those
+// helpers directly. This test confirms the same pipeline works when the
+// call originates from a parsed `.ri` source — i.e. that no compile-time
+// type-resolution gap blocks `argmax`/`argmin` from reaching the runtime
+// dispatcher even though they are not declared in a stdlib `.ri` file
+// (mirroring how `sample`/`gradient`/`von_mises` are reachable purely
+// via the runtime dispatcher).
+//
+// Source: `field def temperature : Real -> Real { source = sampled
+// { grid = "RegularGrid1" data = [1.0, 5.0, 3.0, 4.0, 2.0] ... } }`.
+// Domain `Real` (dimensionless) and codomain `Real` (dimensionless) make
+// the assertions tightly typed: `xmax`/`xmin` should be `Value::Real(...)`
+// at the dimensionless coord rather than dimensioned `Value::Scalar`.
+//
+// Expected:
+// - `max(temperature) == Real(5.0)` (data buffer maximum)
+// - `min(temperature) == Real(1.0)` (data buffer minimum)
+// - `argmax(temperature) == Real(1.0)` (coord at index 1, where data is max)
+// - `argmin(temperature) == Real(0.0)` (coord at index 0, where data is min)
+
+#[test]
+fn eval_field_reductions_on_sampled_field_returns_expected_values() {
+    let source = r#"
+field def temperature : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(4.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [1.0, 5.0, 3.0, 4.0, 2.0] } }
+
+structure S {
+    let m = max(temperature)
+    let lo = min(temperature)
+    let xmax = argmax(temperature)
+    let xmin = argmin(temperature)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let m = result
+        .values
+        .get(&ValueCellId::new("S", "m"))
+        .unwrap_or_else(|| panic!("'S.m' not found in eval result values"));
+    match m {
+        Value::Real(v) => assert!(
+            (v - 5.0).abs() < 1e-12,
+            "max(temperature) expected 5.0, got {v}"
+        ),
+        other => panic!("expected Value::Real(5.0) for S.m, got: {:?}", other),
+    }
+
+    let lo = result
+        .values
+        .get(&ValueCellId::new("S", "lo"))
+        .unwrap_or_else(|| panic!("'S.lo' not found in eval result values"));
+    match lo {
+        Value::Real(v) => assert!(
+            (v - 1.0).abs() < 1e-12,
+            "min(temperature) expected 1.0, got {v}"
+        ),
+        other => panic!("expected Value::Real(1.0) for S.lo, got: {:?}", other),
+    }
+
+    let xmax = result
+        .values
+        .get(&ValueCellId::new("S", "xmax"))
+        .unwrap_or_else(|| panic!("'S.xmax' not found in eval result values"));
+    match xmax {
+        Value::Real(v) => assert!(
+            (v - 1.0).abs() < 1e-12,
+            "argmax(temperature) expected coord 1.0 (index 1), got {v}"
+        ),
+        other => panic!("expected Value::Real(1.0) for S.xmax, got: {:?}", other),
+    }
+
+    let xmin = result
+        .values
+        .get(&ValueCellId::new("S", "xmin"))
+        .unwrap_or_else(|| panic!("'S.xmin' not found in eval result values"));
+    match xmin {
+        Value::Real(v) => assert!(
+            (v - 0.0).abs() < 1e-12,
+            "argmin(temperature) expected coord 0.0 (index 0), got {v}"
+        ),
+        other => panic!("expected Value::Real(0.0) for S.xmin, got: {:?}", other),
+    }
+}
