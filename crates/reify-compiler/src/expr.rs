@@ -2635,6 +2635,116 @@ mod tests {
         );
     }
 
+    /// Builds the shared per-arm fixture for the missing-arm unit tests:
+    /// `HexHead` has `head_thickness : Real`; `SocketHead` is missing it.
+    /// Reuses the canonical Hex/Socket arm-name pairing from the integration
+    /// tests (`match_arm_decl_group_typing_tests.rs`) so both test layers share
+    /// the same conceptual fixture.
+    fn missing_arm_fixture() -> Vec<(String, std::collections::BTreeMap<String, Type>)> {
+        vec![
+            (
+                "HexHead".to_string(),
+                [("head_thickness".to_string(), Type::Real)]
+                    .into_iter()
+                    .collect(),
+            ),
+            // SocketHead is missing "head_thickness" → it is the missing arm.
+            ("SocketHead".to_string(), std::collections::BTreeMap::new()),
+        ]
+    }
+
+    /// Covers the missing-arm branch of `resolve_cluster_inner_member` with
+    /// `sub_qualifier = None` (self.<cluster>.<inner> call site).  Pins the
+    /// poison-literal return to lock in the anti-cascade contract at the helper
+    /// boundary: when one or more match-arm types lack the requested field the
+    /// helper must name those arms in the diagnostic and return `Type::Error` so
+    /// downstream expressions do not attempt to dereference an absent cell.
+    #[test]
+    fn resolve_cluster_inner_member_missing_arm_unqualified_diagnostic() {
+        let per_arm = missing_arm_fixture();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = resolve_cluster_inner_member(
+            &per_arm,
+            "head_thickness",
+            "Bolt",
+            "head",
+            None,
+            SourceSpan::prelude(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result.result_type,
+            Type::Error,
+            "missing-arm path must return a poison literal (Type::Error); got: {:?}",
+            result.result_type
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "missing-arm path must emit exactly one diagnostic; got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert!(
+            diagnostics[0].message.contains("SocketHead"),
+            "diagnostic must name the missing arm 'SocketHead'; got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            !diagnostics[0].message.contains("sub '"),
+            "unqualified call must not include 'sub \\'' qualifier preamble; got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Covers the missing-arm branch of `resolve_cluster_inner_member` with
+    /// `sub_qualifier = Some("bolt")` (external <sub>.<cluster>.<inner> call site).
+    /// Companion to `resolve_cluster_inner_member_missing_arm_unqualified_diagnostic`
+    /// (unqualified case); the two tests together lock in both qualifier branches of
+    /// the format string at expr.rs:200-203 and 244-248 independently so a regression
+    /// in the qualifier-preamble path shows up as a distinct failure.
+    #[test]
+    fn resolve_cluster_inner_member_missing_arm_qualified_diagnostic() {
+        let per_arm = missing_arm_fixture();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        // scoped_entity uses the external-call shape "Driver.bolt" to mirror the
+        // empty-per_arm sibling test's external-case fixture at expr.rs:2618.
+        let result = resolve_cluster_inner_member(
+            &per_arm,
+            "head_thickness",
+            "Driver.bolt",
+            "head",
+            Some("bolt"),
+            SourceSpan::prelude(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result.result_type,
+            Type::Error,
+            "missing-arm path with qualifier must return Type::Error; got: {:?}",
+            result.result_type
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "missing-arm path must emit exactly one diagnostic; got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert!(
+            diagnostics[0].message.contains("SocketHead"),
+            "diagnostic must name the missing arm 'SocketHead'; got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("sub 'bolt'"),
+            "qualified diagnostic must contain \"sub 'bolt'\"; got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
     /// `compile_expr_guarded` on `self.<cluster>.<inner>` must use the helper's
     /// empty-per_arm diagnostic when the cluster is registered but
     /// `match_arm_group_arm_member_types` has no entry for it (producer-side bug).
