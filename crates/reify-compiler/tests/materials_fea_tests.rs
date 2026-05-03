@@ -14,6 +14,7 @@
 //! in `materials_thermal_tests.rs` and `materials_electrical_tests.rs`.
 
 use reify_compiler::*;
+use reify_test_support::compile_source_with_stdlib;
 use reify_types::*;
 
 /// Look up a structure template by name within the `std/materials/fea` module.
@@ -229,4 +230,77 @@ fn elastic_material_trait_has_four_dimensioned_members() {
             ),
         }
     }
+}
+
+// ─── step-7: Poisson-ratio constraints injected from trait ────────────────────
+
+/// `ElasticMaterial` constrains `poisson_ratio` to the half-open interval
+/// `[0, 0.5)` via two trait-level `constraint` declarations:
+///
+///   constraint poisson_ratio >= 0
+///   constraint poisson_ratio < 0.5
+///
+/// Trait-level constraints are propagated into every conforming structure by
+/// the compiler's constraint-injection pass (see also
+/// `materials_mechanical_tests.rs::strong_constraint_injected_into_steel`,
+/// the precedent this test mirrors). When a structure declares
+/// `: ElasticMaterial`, both Poisson constraints land in `template.constraints`
+/// regardless of whether the default values would satisfy them.
+///
+/// This test compiles a minimal conforming structure with in-range defaults
+/// and asserts the conformer template's `constraints` collection contains at
+/// least two entries — the two Poisson constraints from the trait.
+///
+/// The compile-time injection assertion is the canonical RED→GREEN signal for
+/// the constraint-injection wiring. Runtime constraint-violation semantics
+/// (Satisfaction::Violated when poisson_ratio = 0.7 or -0.1) are exercised in
+/// reify-eval/tests/constraint_def_eval.rs and reify-eval/tests/conformance_runtime.rs
+/// against general engine behavior; we do not duplicate those checks here
+/// because (a) the engine helpers `make_simple_engine` /
+/// `check_source_with_stdlib` are gated behind the `eval-helpers` feature,
+/// which is intentionally NOT enabled in `reify-compiler` dev-deps to avoid a
+/// `reify-compiler` ↔ `reify-eval` dev-dep cycle, and (b) the existing
+/// per-trait pattern in `materials_mechanical_tests.rs` checks only
+/// compile-time injection, not runtime violation semantics.
+#[test]
+fn elastic_material_trait_constrains_poisson_ratio_to_half_open_unit() {
+    let source = r#"
+structure def Conformer : ElasticMaterial {
+    param youngs_modulus : Pressure = 200GPa
+    param poisson_ratio : Real = 0.3
+    param density : Density = 7800kg/m^3
+    param yield_stress : Option<Pressure> = some(250MPa)
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Conformer should compile cleanly with in-range Poisson defaults, got: {:?}",
+        errors
+    );
+
+    let conformer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Conformer")
+        .expect("expected Conformer template in compiled module");
+
+    assert!(
+        conformer.trait_bounds.contains(&"ElasticMaterial".to_string()),
+        "Conformer should carry 'ElasticMaterial' trait bound, got: {:?}",
+        conformer.trait_bounds
+    );
+
+    assert!(
+        conformer.constraints.len() >= 2,
+        "Conformer should inherit at least 2 constraints from ElasticMaterial \
+         (poisson_ratio >= 0 and poisson_ratio < 0.5), got {} constraints",
+        conformer.constraints.len()
+    );
 }
