@@ -346,13 +346,28 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 }
                 // Field reductions (eager): collapse a Sampled field to a
                 // single scalar (max/min) or a single point (argmax/argmin).
-                // The 1-arg-Field gate keeps the binary `max(a, b)` /
-                // `min(a, b)` numeric forms (`reify-stdlib::numeric.rs`)
-                // unaffected — when `args.len() == 2` or the first arg is
-                // not a `Value::Field`, control falls through to
-                // `eval_builtin`. `argmax` / `argmin` have no binary form;
-                // for non-Field args they fall through to `eval_builtin`
-                // which returns `Value::Undef` (no binding).
+                //
+                // # Dispatch gating
+                //
+                // The four arms below all use the gate
+                // `args.len() == 1 && first arg is Value::Field`. This is
+                // narrow on purpose:
+                //
+                // - `max(a, b)` / `min(a, b)` (2 scalar args) — falls through
+                //   to `reify-stdlib::eval_builtin` → `numeric.rs:42` (`min`)
+                //   / `numeric.rs:63` (`max`), which use `as_f64()` operands.
+                // - `max(field, scalar)` (2 args, first is Field) — also
+                //   falls through; the binary numeric form returns `Undef`
+                //   because `Value::Field` has no `as_f64` mapping.
+                // - `argmax(x)` / `argmin(x)` for non-Field args — fall
+                //   through to `eval_builtin`, which has no binding for
+                //   either name and returns `Value::Undef`.
+                //
+                // Pinned by `max_two_arg_scalar_form_unchanged` /
+                // `min_two_arg_scalar_form_unchanged` (binary form
+                // unchanged) and `argcount_gating_*_field_then_extra_arg_*`
+                // (4 tests, step-19) in
+                // `crates/reify-expr/tests/field_reductions_tests.rs`.
                 "max" if evaluated_args.len() == 1
                     && matches!(&evaluated_args[0], Value::Field { .. }) =>
                 {
