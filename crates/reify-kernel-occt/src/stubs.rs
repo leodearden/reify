@@ -4,7 +4,10 @@
 //! OcctKernelHandle, but all operations return errors. This allows
 //! downstream crates to compile and fail gracefully at runtime.
 
-use crate::{BooleanOpHistoryRecords, LoftOpHistoryRecords, SweepOpHistoryRecords};
+use crate::{
+    BooleanOpHistoryRecords, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
+    SweepOpHistoryRecords,
+};
 use reify_types::{
     AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value,
@@ -266,6 +269,30 @@ impl OcctKernelHandle {
         Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub `fillet_with_history` — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernelHandle::fillet_with_history`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`.
+    /// Part of v0.2 persistent-naming-v2 (task 2655, step-2 / task 2821).
+    pub fn fillet_with_history(
+        &self,
+        _shape: GeometryHandleId,
+        _radius: f64,
+    ) -> Result<(GeometryHandleId, LocalFeatureOpHistoryRecords), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub `chamfer_with_history` — always errors because OCCT is
+    /// unavailable. Mirrors the real `OcctKernelHandle::chamfer_with_history`
+    /// signature so call sites compile under both `has_occt` and `!has_occt`.
+    /// Part of v0.2 persistent-naming-v2 (task 2655, step-6 / task 2821).
+    pub fn chamfer_with_history(
+        &self,
+        _shape: GeometryHandleId,
+        _distance: f64,
+    ) -> Result<(GeometryHandleId, LocalFeatureOpHistoryRecords), GeometryError> {
+        Err(GeometryError::OperationFailed(NOT_AVAILABLE.into()))
+    }
+
     /// No-op shutdown (no thread to join).
     pub async fn shutdown(self) {}
 }
@@ -501,6 +528,22 @@ mod tests {
         let kernel = OcctKernel::new();
         let result = kernel.surface_angle(GeometryHandleId(1), GeometryHandleId(2));
         let err = result.expect_err("stub surface_angle should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_handle_fillet_with_history_returns_error() {
+        let handle = OcctKernelHandle::spawn();
+        let result = handle.fillet_with_history(GeometryHandleId(1), 1.0e-3);
+        let err = result.expect_err("stub fillet_with_history should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_handle_chamfer_with_history_returns_error() {
+        let handle = OcctKernelHandle::spawn();
+        let result = handle.chamfer_with_history(GeometryHandleId(1), 1.0e-3);
+        let err = result.expect_err("stub chamfer_with_history should error");
         assert_stub_message(&format!("{err:?}"));
     }
 }

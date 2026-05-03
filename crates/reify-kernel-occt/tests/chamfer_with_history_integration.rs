@@ -172,6 +172,9 @@ fn chamfer_with_history_reports_face_records() {
         );
     }
 
+    // (g2) face_generated per-edge coverage: moved to common::assert_local_feature_history_well_formed
+    // (esc-2655-26 suggestion #1 / task 2821 amendment — see common/mod.rs for the HashSet-based check).
+
     // (h)-(l) Edge-buffer well-formedness: delegated to the shared helper to
     // eliminate duplication with the fillet mirror test. Asserts edge_modified
     // bounds, edge_generated bounds (keyed by VERTEX map), face_deleted empty,
@@ -181,5 +184,58 @@ fn chamfer_with_history_reports_face_records() {
         result_id,
         &history,
         "chamfer",
+    );
+}
+
+/// `chamfer_with_history` must reject non-`BRepKind::Solid` input handles with
+/// a descriptive `OperationFailed` error mentioning "Solid" or "BRepKind".
+///
+/// Rationale: `BRepFilletAPI_MakeChamfer` iterates parent edges of a Solid;
+/// passing a Face or Edge would either crash inside OCCT or silently produce a
+/// misclassified result (the output is always stored as `BRepKind::Solid`).
+/// The up-front kind guard added in task 2821 step-4 makes this rejection
+/// explicit and message-checked (esc-2655-26 issue #4).
+///
+/// Exercises both `BRepKind::Face` and `BRepKind::Edge` to protect against a
+/// future refactor that whitelists one non-Solid kind (esc-2655-26 suggestion #5 /
+/// task 2821 amendment).
+#[test]
+fn chamfer_with_history_rejects_non_solid_input() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+
+    let kernel = OcctKernelHandle::spawn();
+
+    let box_handle = kernel
+        .execute(&ten_mm_box_op())
+        .expect("box should build");
+
+    // (a) Reject BRepKind::Face input.
+    let faces = kernel
+        .extract_faces(box_handle.id)
+        .expect("extract_faces should succeed on a solid box");
+    assert!(
+        !faces.is_empty(),
+        "extract_faces should return at least one face for a 10mm box"
+    );
+    common::assert_local_feature_rejects_non_solid_input(
+        kernel.chamfer_with_history(faces[0], CHAMFER_DISTANCE_M),
+        "BRepKind::Face",
+        "chamfer_with_history",
+    );
+
+    // (b) Reject BRepKind::Edge input (esc-2655-26 suggestion #5 / task 2821 amendment).
+    let edges = kernel
+        .extract_edges(box_handle.id)
+        .expect("extract_edges should succeed on a solid box");
+    assert!(
+        !edges.is_empty(),
+        "extract_edges should return at least one edge for a 10mm box"
+    );
+    common::assert_local_feature_rejects_non_solid_input(
+        kernel.chamfer_with_history(edges[0], CHAMFER_DISTANCE_M),
+        "BRepKind::Edge",
+        "chamfer_with_history",
     );
 }
