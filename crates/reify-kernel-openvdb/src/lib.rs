@@ -35,7 +35,7 @@ pub mod kernel;
 pub mod register;
 
 pub use ingest::{
-    IngestError, IngestOutcome, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation,
-    lower_to_sampled,
+    IngestError, IngestOutcome, KNOWN_UNITS, OpenVdbGridKind, OpenVdbGridSource,
+    OpenVdbInterpolation, lower_to_sampled, read_vdb_file, validate_grid_units,
 };
 pub use kernel::OpenVdbKernel;
