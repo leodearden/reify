@@ -2709,3 +2709,64 @@ fn build_constraint_blame_map_returns_param_indices_referenced_by_constraint_exp
         "constraint referencing both T(idx=0) and U(idx=1) cells must map to {{0, 1}}"
     );
 }
+
+// ─── step-3 (task 2660): build_constraint_blame_map — exclusion invariants ──
+
+/// `build_constraint_blame_map` must NOT insert an entry for constraints whose
+/// blame set would be empty. Two sub-cases:
+///
+/// (a) A cell typed `Type::TypeParam("Z")` where `Z` is NOT in `params=[T,U]`
+///     contributes nothing — the constraint that only ValueRefs that cell must
+///     be absent from the result map.
+///
+/// (b) A constraint whose expression is `CompiledExpr::literal(Value::Bool(true),
+///     Type::Bool)` (no ValueRef, no TypeParam anywhere) is also absent.
+///
+/// Setup: three cells (`field_t:T`, `field_u:U`, `field_z:Z`), two constraints:
+/// - c0: `ValueRef(field_z)` only  → blame={} (Z ∉ params) → absent
+/// - c1: `Bool(true)` literal      → blame={} (no ValueRef)  → absent
+///
+/// Pins the "empty blame → absent" invariant the DFS recursion relies on:
+/// `compute_deepest_blame_level` returns `None` for absent constraints and falls
+/// back to ordinary backtracking, so an accidental `map.insert(id, BTreeSet::new())`
+/// would incorrectly block backjumping even when no TypeParam blame exists.
+#[test]
+fn build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints() {
+    let field_z = ValueCellId::new("Coupling", "field_z");
+    // c0: ValueRef of field_z (typed TypeParam("Z"), out-of-scope)
+    let expr_c0 = CompiledExpr::value_ref(field_z.clone(), Type::TypeParam("Z".into()));
+    // c1: literal Bool(true) — no ValueRef, no TypeParam
+    let expr_c1 = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .param("Coupling", "field_u", Type::TypeParam("U".into()), None)
+        .param("Coupling", "field_z", Type::TypeParam("Z".into()), None)
+        .constraint("Coupling", 0, None, expr_c0)
+        .constraint("Coupling", 1, None, expr_c1)
+        .build();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec![],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec![],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        // Z is intentionally NOT in params — it must be treated as out-of-scope
+    ];
+
+    let map = build_constraint_blame_map(&template, &params);
+
+    assert!(
+        map.is_empty(),
+        "constraints with empty blame sets must not appear in the map (empty map expected); got: {:?}",
+        map
+    );
+}
