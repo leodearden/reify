@@ -932,4 +932,53 @@ mod tests {
             "3 args → Undef"
         );
     }
+
+    // ── gravity constructor: 0-arg form ──────────────────────────────────────
+
+    #[test]
+    fn gravity_zero_args_returns_earth_default_acceleration() {
+        use super::{acceleration_dim, EARTH_GRAVITY};
+
+        let result = eval_builtin("gravity", &[]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("gravity".to_string())),
+            "kind should be 'gravity'"
+        );
+
+        let accel = map
+            .get(&Value::String("acceleration".to_string()))
+            .expect("acceleration field must exist");
+
+        // Verify dimension on first component.
+        let expected_dim = acceleration_dim();
+        assert_vector3_approx!(Vector, accel.clone(), [0.0, 0.0, -EARTH_GRAVITY]);
+
+        // Also check dimension is correct.
+        if let Value::Vector(items) = accel {
+            assert_eq!(
+                items[0].dimension(),
+                expected_dim,
+                "acceleration components should have acceleration dimension"
+            );
+        } else {
+            panic!("acceleration should be Value::Vector");
+        }
+    }
+
+    #[test]
+    fn acceleration_dim_equals_length_div_time_squared() {
+        use super::acceleration_dim;
+        assert_eq!(
+            acceleration_dim(),
+            DimensionVector::LENGTH.div(&DimensionVector::TIME.pow(2)),
+            "acceleration_dim() should equal LENGTH / TIME²"
+        );
+    }
 }
