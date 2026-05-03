@@ -195,7 +195,18 @@ fn argmax_argmin_index(data: &[f64], find_min: bool) -> Option<usize> {
 
 /// Look up the per-axis SI coords at `linear_index` in `sf.axis_grids`
 /// and wrap them per `domain_type`.
+///
+/// The N-D loop below is fully generic across 1/2/3 axes — the
+/// `SampledGridKind` invariant (`Regular1D`/`Regular2D`/`Regular3D`)
+/// is reinforced by the `debug_assert!` here and in `decompose_index`
+/// below. Pinned by the 1-D / 2-D / 3-D test suites in
+/// `tests/field_reductions_tests.rs` (`argmax|argmin_sampled_field_*d_*`).
 fn arg_coord_from_index(sf: &SampledField, linear_index: usize, domain_type: &Type) -> Value {
+    debug_assert!(
+        matches!(sf.axis_grids.len(), 1 | 2 | 3),
+        "SampledGridKind invariant: 1/2/3 axes only, got {}",
+        sf.axis_grids.len()
+    );
     // Decompose the linear index into per-axis indices (axis-0 outermost,
     // row-major).
     let axis_lengths: Vec<usize> = sf.axis_grids.iter().map(|g| g.len()).collect();
