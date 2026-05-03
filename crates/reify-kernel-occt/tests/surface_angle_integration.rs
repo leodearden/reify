@@ -332,12 +332,11 @@ fn cylinder_curved_face_returns_finite_angle() {
     let parse_nz = |face_id| -> f64 {
         match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
             Ok(Value::String(s)) => {
-                // Extract the z value from the JSON string.
-                // Format is always `{"x":<f>,"y":<f>,"z":<f>}`.
-                s.split("\"z\":")
-                    .nth(1)
-                    .and_then(|tail| tail.trim_end_matches('}').parse::<f64>().ok())
-                    .unwrap_or(0.0)
+                // Parse the JSON and extract the z component.
+                // Format is `{"x":<f>,"y":<f>,"z":<f>}`.
+                let parsed: serde_json::Value = serde_json::from_str(&s)
+                    .unwrap_or_else(|e| panic!("failed to parse FaceNormal JSON {s:?}: {e}"));
+                parsed["z"].as_f64().expect("FaceNormal JSON missing z component")
             }
             other => panic!("FaceNormal returned unexpected value: {other:?}"),
         }
