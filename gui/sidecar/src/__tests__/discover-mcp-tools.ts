@@ -24,6 +24,16 @@
  * literal in the file) avoids false positives from comments such as
  * `// renamed from "reify_old_name"` or log/error strings.
  *
+ * Caveat — `REGISTER_IDENT_RE` runs against the raw file source, including
+ * comments. A commented-out `// registry.register(NAME, ...)` line will
+ * populate `registeredIdents` and re-admit a stale const that the gating is
+ * supposed to exclude. The current Rust source tree contains no such
+ * commented-out calls, so this is a theoretical limitation today; see the
+ * `admits_a_stale_const_when_register_call_is_commented_out` test in
+ * `discover-mcp-tools.test.ts` for the regression pin. Future-hardening
+ * option: strip line and block comments before applying the regexes (e.g.
+ * `src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')`).
+ *
  * Uppercase tool names are intentionally supported by `[A-Za-z0-9_]+` in both
  * patterns (the casing policy is enforced by the Rust layer; the TS discovery
  * layer stays casing-agnostic so it stays valid if the policy is ever relaxed).
