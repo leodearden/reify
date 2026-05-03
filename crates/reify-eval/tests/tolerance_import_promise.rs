@@ -209,11 +209,14 @@ fn engine_check_imported_tolerance_promise_returns_none_when_promise_and_demand_
 /// true`, case (d) of
 /// `is_promise_insufficient_returns_true_iff_demanded_strictly_less_than_promise`).
 ///
-/// A regression that widened `&&` to `||` or swapped the operands in the
-/// zero-promise guard would silently steal this case from the strict-`<`
-/// branch, changing `code` from `ImportedTolerancePromiseInsufficient` to
-/// `InputTolerancePromiseIsZero` (or worse, returning `None`) and breaking
-/// the dispatch-matrix truth table without a compile error.
+/// A regression that swapped the operands of the zero-promise guard
+/// (e.g., `demanded == 0.0 && promise > 0.0`) would silently steal this
+/// case from the strict-`<` branch, changing `code` from
+/// `ImportedTolerancePromiseInsufficient` to `InputTolerancePromiseIsZero`
+/// and breaking the dispatch-matrix truth table without a compile error.
+/// (Note: widening `&&` to `||` does NOT steal this case for this fixture —
+/// `promise == 0.0 || demanded > 0.0` evaluates to `false || false = false`
+/// since promise=50µm ≠ 0 and demand=0 is not > 0; the guard still skips.)
 ///
 /// Setup mirrors
 /// `engine_check_imported_tolerance_promise_returns_none_when_promise_and_demand_both_zero`
@@ -257,8 +260,9 @@ fn engine_check_imported_tolerance_promise_emits_insufficient_lint_when_promise_
         "code must be ImportedTolerancePromiseInsufficient, NOT \
          InputTolerancePromiseIsZero — proves the zero-promise branch \
          (promise == 0.0 && demanded > 0.0) correctly skipped because \
-         promise=50µm != 0.0; a guard widened to `||` or with operands \
-         swapped would produce InputTolerancePromiseIsZero here"
+         promise=50µm != 0.0; a guard with swapped operands \
+         (demanded == 0.0 && promise > 0.0) would produce \
+         InputTolerancePromiseIsZero here"
     );
     assert!(
         diag.message.contains("STEPInput"),
