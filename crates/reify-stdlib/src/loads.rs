@@ -99,6 +99,21 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                 ("magnitude", args[1].clone()),
             ])
         }
+        "traction_load" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            if validate_selector_target(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            if validate_dimensioned_vec3(&args[1], DimensionVector::PRESSURE).is_none() {
+                return Some(Value::Undef);
+            }
+            make_load_map("traction_load", &[
+                ("face", args[0].clone()),
+                ("traction", args[1].clone()),
+            ])
+        }
         _ => return None,
     })
 }
