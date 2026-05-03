@@ -194,14 +194,16 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
 
 /// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// `BRepExtrema_DistShapeShape` reports distance 0 and the query point
-/// itself when the point is inside a solid.  The C++ wrapper detects this
-/// (dist < 1e-10) and re-runs extrema against the outer shell, returning a
-/// proper boundary witness instead.  For (1.0, 0.0, 0.0), the unique nearest
-/// boundary point is the perpendicular foot on the +X face at (5.0, 0.0, 0.0),
-/// distance 4.0.  Regression sentinel — pin the exact returned coordinates
-/// within 1e-6 so a future OCCT/cxx upgrade that changes this behaviour is
-/// caught.
+/// `BRepExtrema_DistShapeShape` has no inside/outside knowledge — it returns
+/// the distance to the nearest BREP boundary face, which is non-zero for
+/// typical interior points.  The C++ wrapper applies a defensive
+/// `dist < 1e-10` guard and re-runs the extrema against the first shell found
+/// via `TopExp_Explorer` (`TopAbs_SHELL`).  For single-shell solids like this
+/// 10×10×10 box the first shell is the outer shell, so the witness for
+/// (1.0, 0.0, 0.0) is the perpendicular foot on the +X face at
+/// (5.0, 0.0, 0.0), distance 4.0.  Regression sentinel — pin the exact
+/// returned coordinates within 1e-6 so a future OCCT/cxx upgrade that
+/// changes this behaviour is caught.
 ///
 /// Observed against the OCCT version in use at task 2849.
 #[test]
