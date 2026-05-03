@@ -2250,6 +2250,242 @@ mod tests {
         );
     }
 
+    // ── parent_handles_for_op unit tests ─────────────────────────────────────
+
+    /// Pins the per-variant-family parent extraction semantics of
+    /// `parent_handles_for_op`. Seven cases:
+    ///
+    /// 1. Primitive `Box` → empty (primitives have no parents).
+    /// 2. `Union { left: 1, right: 2 }` → `[1, 2]` (left-then-right order).
+    /// 3. `Difference { left: 3, right: 4 }` → `[3, 4]`.
+    /// 4. `Intersection { left: 5, right: 6 }` → `[5, 6]`.
+    /// 5. `Fillet { target: 7, .. }` → `[7]` (single-target shape-mod).
+    /// 6. `Loft { profiles: [10, 11, 12] }` → `[10, 11, 12]` (multi-profile,
+    ///    ordering preserved).
+    /// 7. `Sweep { profile: 20, path: 21 }` → `[20]` (path excluded — mirrors
+    ///    `populate_attribute_history` parent semantics from
+    ///    engine_build.rs:103-114); `Pipe { path: 30, .. }` → `[]`
+    ///    (kernel-internal circle profile has no user-facing parent).
+    ///
+    /// Fails with compile error until `parent_handles_for_op` is added (step-2).
+    #[test]
+    fn parent_handles_for_op_returns_expected_handles_per_variant_family() {
+        use reify_types::Value;
+
+        // 1. Primitive → empty
+        let box_op = GeometryOp::Box {
+            width: Value::Real(0.01),
+            height: Value::Real(0.02),
+            depth: Value::Real(0.005),
+        };
+        assert!(
+            parent_handles_for_op(&box_op).is_empty(),
+            "Box primitive must produce 0 parents, got: {:?}",
+            parent_handles_for_op(&box_op),
+        );
+
+        // 2. Union → [left, right] in left-then-right order
+        let union_op = GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        };
+        assert_eq!(
+            parent_handles_for_op(&union_op),
+            vec![GeometryHandleId(1), GeometryHandleId(2)],
+            "Union must return [left, right] in left-then-right order",
+        );
+
+        // 3. Difference → [left, right]
+        let diff_op = GeometryOp::Difference {
+            left: GeometryHandleId(3),
+            right: GeometryHandleId(4),
+        };
+        assert_eq!(
+            parent_handles_for_op(&diff_op),
+            vec![GeometryHandleId(3), GeometryHandleId(4)],
+            "Difference must return [left, right]",
+        );
+
+        // 4. Intersection → [left, right]
+        let inter_op = GeometryOp::Intersection {
+            left: GeometryHandleId(5),
+            right: GeometryHandleId(6),
+        };
+        assert_eq!(
+            parent_handles_for_op(&inter_op),
+            vec![GeometryHandleId(5), GeometryHandleId(6)],
+            "Intersection must return [left, right]",
+        );
+
+        // 5. Fillet (single-target shape-mod) → [target]
+        let fillet_op = GeometryOp::Fillet {
+            target: GeometryHandleId(7),
+            radius: Value::Real(0.001),
+        };
+        assert_eq!(
+            parent_handles_for_op(&fillet_op),
+            vec![GeometryHandleId(7)],
+            "Fillet must return [target]",
+        );
+
+        // 6. Loft → all profiles in order
+        let loft_op = GeometryOp::Loft {
+            profiles: vec![
+                GeometryHandleId(10),
+                GeometryHandleId(11),
+                GeometryHandleId(12),
+            ],
+        };
+        assert_eq!(
+            parent_handles_for_op(&loft_op),
+            vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+            "Loft must return all profiles in input order",
+        );
+
+        // 7a. Sweep → [profile] only (path excluded per populate_attribute_history
+        //     convention at engine_build.rs:103-114: the path/spine is not itself
+        //     a parent whose sub-shapes propagate into the result)
+        let sweep_op = GeometryOp::Sweep {
+            profile: GeometryHandleId(20),
+            path: GeometryHandleId(21),
+        };
+        assert_eq!(
+            parent_handles_for_op(&sweep_op),
+            vec![GeometryHandleId(20)],
+            "Sweep must return [profile] only — path is a route/spine, not a parent",
+        );
+
+        // 7b. Pipe → empty (kernel-internal circle profile, no user-facing parent
+        //     per GeometryOp::Pipe docstring)
+        let pipe_op = GeometryOp::Pipe {
+            path: GeometryHandleId(30),
+            radius: Value::Real(0.005),
+        };
+        assert!(
+            parent_handles_for_op(&pipe_op).is_empty(),
+            "Pipe must produce 0 parents (kernel-internal circle profile), got: {:?}",
+            parent_handles_for_op(&pipe_op),
+        );
+    }
+
+    // ── parent_handles_for_op unit tests ─────────────────────────────────────
+
+    /// Pins the parent-handle extraction semantics for every `GeometryOp`
+    /// variant family that `parent_handles_for_op` must classify:
+    ///
+    /// - Primitives (Box/Cylinder/Sphere/Tube) and Pipe → empty (no
+    ///   user-facing parent handles to propagate from).
+    /// - Boolean ops (Union/Difference/Intersection) → `[left, right]` in
+    ///   declaration order.
+    /// - Single-target shape-mods (Fillet/Chamfer/Translate/…) → `[target]`.
+    /// - Sweep ops with a single profile (Extrude/Revolve/Sweep) → `[profile]`
+    ///   (path/spine excluded — mirrors `populate_attribute_history` semantics).
+    /// - Loft/LoftGuided → all profiles in order (guides excluded).
+    ///
+    /// Test fails with a compile error until `parent_handles_for_op` is
+    /// added (step-2).
+    #[test]
+    fn parent_handles_for_op_returns_expected_handles_per_variant_family() {
+        use reify_types::Value;
+
+        // ── (1) Primitive: Box ────────────────────────────────────────────────
+        let box_op = GeometryOp::Box {
+            width: Value::Real(0.01),
+            height: Value::Real(0.01),
+            depth: Value::Real(0.01),
+        };
+        assert_eq!(
+            parent_handles_for_op(&box_op),
+            vec![],
+            "Box is a primitive — no parent handles"
+        );
+
+        // ── (2) Boolean: Union ────────────────────────────────────────────────
+        let union_op = GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        };
+        assert_eq!(
+            parent_handles_for_op(&union_op),
+            vec![GeometryHandleId(1), GeometryHandleId(2)],
+            "Union must return [left, right] in declaration order"
+        );
+
+        // ── (3) Boolean: Difference ───────────────────────────────────────────
+        let diff_op = GeometryOp::Difference {
+            left: GeometryHandleId(3),
+            right: GeometryHandleId(4),
+        };
+        assert_eq!(
+            parent_handles_for_op(&diff_op),
+            vec![GeometryHandleId(3), GeometryHandleId(4)],
+            "Difference must return [left, right]"
+        );
+
+        // ── (4) Boolean: Intersection ─────────────────────────────────────────
+        let inter_op = GeometryOp::Intersection {
+            left: GeometryHandleId(5),
+            right: GeometryHandleId(6),
+        };
+        assert_eq!(
+            parent_handles_for_op(&inter_op),
+            vec![GeometryHandleId(5), GeometryHandleId(6)],
+            "Intersection must return [left, right]"
+        );
+
+        // ── (5) Single-target shape-mod: Fillet ───────────────────────────────
+        let fillet_op = GeometryOp::Fillet {
+            target: GeometryHandleId(7),
+            radius: Value::Real(0.001),
+        };
+        assert_eq!(
+            parent_handles_for_op(&fillet_op),
+            vec![GeometryHandleId(7)],
+            "Fillet must return [target]"
+        );
+
+        // ── (6) Multi-profile: Loft ───────────────────────────────────────────
+        let loft_op = GeometryOp::Loft {
+            profiles: vec![
+                GeometryHandleId(10),
+                GeometryHandleId(11),
+                GeometryHandleId(12),
+            ],
+        };
+        assert_eq!(
+            parent_handles_for_op(&loft_op),
+            vec![
+                GeometryHandleId(10),
+                GeometryHandleId(11),
+                GeometryHandleId(12)
+            ],
+            "Loft must return all profiles in order"
+        );
+
+        // ── (7a) Sweep: profile-only, path excluded ───────────────────────────
+        let sweep_op = GeometryOp::Sweep {
+            profile: GeometryHandleId(20),
+            path: GeometryHandleId(21),
+        };
+        assert_eq!(
+            parent_handles_for_op(&sweep_op),
+            vec![GeometryHandleId(20)],
+            "Sweep must return [profile] only — path is a route/spine, not a parent \
+             whose sub-shapes appear in the result"
+        );
+
+        // ── (7b) Pipe: no user-facing profile (kernel-internal circle) → empty
+        let pipe_op = GeometryOp::Pipe {
+            path: GeometryHandleId(30),
+            radius: Value::Real(0.005),
+        };
+        assert_eq!(
+            parent_handles_for_op(&pipe_op),
+            vec![],
+            "Pipe has a kernel-internal circle profile — no user-facing parent handles"
+        );
+    }
+
     /// End-to-end fallback: when `module.default_tolerance == None`, the value
     /// passed to `kernel.tessellate(...)` must be exactly
     /// `Engine::DEFAULT_TESSELLATION_TOLERANCE`. Pins the same call site for
