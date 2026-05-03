@@ -42,6 +42,7 @@ pub(crate) fn collect_member_list(
     member: &str,
     n: i64,
 ) -> Value {
+    debug_assert!(n >= 0, "collect_member_list: negative count n={n} for {parent}.{sub}");
     let n = n.max(0);
     let items: Vec<Value> = (0..n)
         .map(|idx| {
@@ -86,12 +87,23 @@ mod tests {
         assert_eq!(result, Value::List(vec![]));
     }
 
+    #[cfg(not(debug_assertions))]
     #[test]
     fn collect_member_list_returns_empty_for_negative_n() {
         // Pre-refactor inline 0..count loops silently produced empty list for
-        // negative counts in both debug and release; preserve that contract here.
+        // negative counts in release; the clamp restores that contract for release builds.
+        // Debug builds get a debug_assert! instead (see sibling test below).
         let result = collect_member_list(&ValueMap::default(), "Parent", "bolts", "grade", -3);
         assert_eq!(result, Value::List(vec![]));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "collect_member_list: negative count")]
+    fn collect_member_list_panics_in_debug_for_negative_n() {
+        // In debug builds the debug_assert!(n >= 0) fires before the clamp,
+        // surfacing upstream arithmetic bugs early rather than silently clamping.
+        collect_member_list(&ValueMap::default(), "Parent", "bolts", "grade", -3);
     }
 
     #[cfg(debug_assertions)]
@@ -107,7 +119,8 @@ mod tests {
         // Release-mode contract: when child cells are absent, the helper returns
         // Value::Undef placeholders rather than panicking — preserves the historical
         // behaviour of the inline closures this helper replaces. Debug builds catch
-        // this via the line-46 debug_assert (covered by the sibling test above).
+        // this via the sibling debug_assert! on the values.contains(&scoped_id) check
+        // (see the debug-only test above).
         let result = collect_member_list(&ValueMap::default(), "Parent", "bolts", "grade", 2);
         assert_eq!(result, Value::List(vec![Value::Undef, Value::Undef]));
     }
