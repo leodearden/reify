@@ -747,3 +747,146 @@ fn all_reductions_on_derived_field_return_undef() {
     let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::VonMises);
     assert_all_reductions_undef(field, field_type, "derived (VonMises)");
 }
+
+// ── Step 17: NaN-skip and empty-data semantics ──────────────────────────────
+
+/// Construct a `SampledField` with empty data and a single-element axis —
+/// bypasses the non-empty-data requirement of `build_sampled_field` for the
+/// empty-data defense-in-depth pin. The reduction code must remain safe
+/// when handed a directly-constructed pathological fixture.
+fn make_sampled_empty() -> SampledField {
+    SampledField {
+        name: "empty".to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![0.0],
+        spacing: vec![1.0],
+        axis_grids: vec![vec![0.0]],
+        interpolation: InterpolationKind::Linear,
+        data: vec![],
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// `max(field)` skips NaN values and returns the maximum of the finite
+/// samples — `[1.0, NaN, 5.0, NaN, 3.0]` → `5.0`.
+#[test]
+fn max_sampled_with_nan_skips_nan_values() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, f64::NAN, 5.0, f64::NAN, 3.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+
+    let expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Real(5.0),
+        "max([1.0, NaN, 5.0, NaN, 3.0]) should skip NaN and return 5.0"
+    );
+}
+
+/// `argmax(field)` skips NaN values and returns the coord at the index of
+/// the maximum of the finite samples — `[1.0, NaN, 5.0, NaN, 3.0]` over
+/// axis `[0,1,2,3,4]` → coord at index 2 → 2.0.
+#[test]
+fn argmax_sampled_with_nan_skips_nan_values() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, f64::NAN, 5.0, f64::NAN, 3.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax([1.0, NaN, 5.0, NaN, 3.0]) should skip NaN and return coord at index 2"
+    );
+}
+
+/// All four reductions return `Value::Undef` over a Sampled field whose
+/// entire data buffer is non-finite (all NaN).
+#[test]
+fn all_reductions_sampled_all_nan_returns_undef() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![f64::NAN, f64::NAN]);
+        let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+        let expected_type = match op {
+            "argmax" | "argmin" => length.clone(),
+            _ => Type::Real,
+        };
+        let expr = make_function_call(
+            op,
+            vec![CompiledExpr::literal(field, field_type)],
+            expected_type,
+        );
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "{op}(field) over all-NaN Sampled data should return Value::Undef"
+        );
+    }
+}
+
+/// All four reductions return `Value::Undef` over a Sampled field with an
+/// empty data buffer. Defense-in-depth pin: `build_sampled_field`'s
+/// invariants normally prevent empty data, but the reduction code must
+/// remain safe when constructed directly.
+#[test]
+fn all_reductions_sampled_empty_data_returns_undef() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let sf = make_sampled_empty();
+        let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+        let expected_type = match op {
+            "argmax" | "argmin" => length.clone(),
+            _ => Type::Real,
+        };
+        let expr = make_function_call(
+            op,
+            vec![CompiledExpr::literal(field, field_type)],
+            expected_type,
+        );
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "{op}(field) over empty Sampled data should return Value::Undef"
+        );
+    }
+}
