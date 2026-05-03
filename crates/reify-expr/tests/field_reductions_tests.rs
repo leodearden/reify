@@ -101,6 +101,43 @@ fn make_sampled_2d(
     }
 }
 
+/// Construct a 3-D `Value::SampledField` from three per-axis grid coords
+/// and row-major data (axis-0 outermost: `data[i0*s1*s2 + i1*s2 + i2]`).
+fn make_sampled_3d(
+    name: &str,
+    axis0: Vec<f64>,
+    axis1: Vec<f64>,
+    axis2: Vec<f64>,
+    data: Vec<f64>,
+) -> SampledField {
+    let bounds_min = vec![
+        *axis0.first().expect("axis0 must be non-empty"),
+        *axis1.first().expect("axis1 must be non-empty"),
+        *axis2.first().expect("axis2 must be non-empty"),
+    ];
+    let bounds_max = vec![
+        *axis0.last().expect("axis0 must be non-empty"),
+        *axis1.last().expect("axis1 must be non-empty"),
+        *axis2.last().expect("axis2 must be non-empty"),
+    ];
+    let spacing = vec![
+        if axis0.len() >= 2 { axis0[1] - axis0[0] } else { 1.0 },
+        if axis1.len() >= 2 { axis1[1] - axis1[0] } else { 1.0 },
+        if axis2.len() >= 2 { axis2[1] - axis2[0] } else { 1.0 },
+    ];
+    SampledField {
+        name: name.to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min,
+        bounds_max,
+        spacing,
+        axis_grids: vec![axis0, axis1, axis2],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
 /// Wrap a `SampledField` in a `Value::Field { source: Sampled, .. }` with
 /// the supplied domain and codomain types.
 fn wrap_sampled_field(sf: SampledField, domain: Type, codomain: Type) -> (Value, Type) {
@@ -490,5 +527,109 @@ fn argmin_sampled_field_2d_length_domain_returns_point2_at_min_index() {
             },
         ]),
         "argmin(field) over 2-D Point2<Length> domain should return the per-axis coords at the data min"
+    );
+}
+
+// ── Step 13: argmax / argmin over a 3-D Length-domain Sampled field ─────────
+
+/// `argmax(field)` over a Sampled 3-D `Point3<Length>`-domain Real-codomain
+/// field returns the per-axis coords at the data buffer's maximum, wrapped
+/// as `Value::Point` of three `Value::Scalar { LENGTH }` components.
+///
+/// Shape (s0, s1, s2) = (2, 2, 3) → 12 cells row-major. We place a unique
+/// max at linear index 7. Decomposition (axis-0 outermost, row-major):
+///   i_2 = 7 % 3       = 1
+///   i_1 = (7 / 3) % 2 = 0
+///   i_0 = 7 / (2 * 3) = 1
+/// → per-axis (1, 0, 1) → coord (axis_0[1], axis_1[0], axis_2[1])
+///                      = (1.0, 0.0, 0.25).
+#[test]
+fn argmax_sampled_field_3d_length_domain_returns_point3_at_max_index() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain = Type::point3(length.clone());
+    let sf = make_sampled_3d(
+        "f",
+        vec![0.0, 1.0],
+        vec![0.0, 0.5],
+        vec![0.0, 0.25, 0.5],
+        // 12 reals; max at index 7 (= 99.0). All others smaller and unique.
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 99.0, 8.0, 9.0, 10.0, 11.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        domain.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Point(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.25,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]),
+        "argmax(field) over 3-D Point3<Length> domain should return the per-axis coords at the data max"
+    );
+}
+
+/// `argmin(field)` over the same 3-D `Point3<Length>` field — min at
+/// linear index 0 (= 1.0) → per-axis (0, 0, 0) → coord (0.0, 0.0, 0.0).
+#[test]
+fn argmin_sampled_field_3d_length_domain_returns_point3_at_min_index() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain = Type::point3(length.clone());
+    let sf = make_sampled_3d(
+        "f",
+        vec![0.0, 1.0],
+        vec![0.0, 0.5],
+        vec![0.0, 0.25, 0.5],
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 99.0, 8.0, 9.0, 10.0, 11.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(field, field_type)],
+        domain.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]),
+        "argmin(field) over 3-D Point3<Length> domain should return the per-axis coords at the data min"
     );
 }
