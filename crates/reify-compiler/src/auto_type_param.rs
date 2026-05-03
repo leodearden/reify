@@ -1310,9 +1310,18 @@ pub fn resolve_auto_type_params_with_backtracking(
     let any_strict = params.iter().any(|p| !p.free);
     let max_feasible_to_collect: usize = if any_strict { 2 } else { usize::MAX };
 
+    // Build the static blame map ONCE before recursion. Each constraint's
+    // expression tree is walked to find `ValueRef(cell_id)` nodes whose cell
+    // is typed `Type::TypeParam(name)`. The map drives backjumping: when an
+    // infeasible leaf's violated constraints all blame param J, the search
+    // skips the entire sub-tree and resumes at J (Gaschnig backjumping).
+    // When the map has no entry for any violated constraint, the leaf returns
+    // `DfsControl::Continue` — identical to ordinary backtracking.
+    let blame_map = build_constraint_blame_map(parameterized_template, params);
+
     let mut current: Vec<String> = Vec::with_capacity(params.len());
     let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
-    dfs_search(
+    let _ = dfs_search(
         0,
         &per_param_candidates,
         &mut current,
@@ -1322,6 +1331,7 @@ pub fn resolve_auto_type_params_with_backtracking(
         constraint_checker,
         functions,
         max_feasible_to_collect,
+        &blame_map,
     );
 
     match feasible_assignments.len() {
@@ -1883,7 +1893,7 @@ fn dfs_search(
         // discriminator as v0.1 BFS; `Indeterminate` counts as feasible
         // per arch §2.5's monotonic-feasible rule.
         let verdict =
-            check_constraints_leaf(constraints_template, leaf_values, constraint_checker, functions);
+            check_constraints_leaf(constraints_template, constraint_checker, functions, leaf_values);
         if verdict.feasible {
             feasible_assignments.push(current.clone());
             // Early-terminate once the requested feasible count is reached:
