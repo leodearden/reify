@@ -21,7 +21,6 @@
 //!
 //! # Out of scope (sibling tasks)
 //!
-//! - Backjumping via "rejected because" channel (task 2660).
 //! - Cross-product hard cap at 100k assignments (task 2662).
 //! - Rich diagnostic format with smallest infeasibility witness (task 2663).
 //! - Comprehensive v0.1 BFS-failure scenario coverage (task 2664).
@@ -29,6 +28,10 @@
 //!   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
 //!   deferred per the PRD's "Constraint-feasibility incremental binding
 //!   deferred" decision.
+//!
+//! Task 2660 (backjumping via "rejected because" channel) now lands in this
+//! module. The `dfs_backjumps_*` and `dfs_no_blame_*` tests below pin task
+//! 2660's behavior.
 //!
 //! The `auto(free)` cross-product NonUnique Warning enumeration (originally
 //! listed here as "task 2661's scope") now lands in this file — see

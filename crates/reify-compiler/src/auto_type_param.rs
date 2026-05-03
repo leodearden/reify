@@ -121,9 +121,21 @@
 //!
 //! Driving PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`. The section
 //! header comment immediately above the function delineates the algorithm's
-//! scope and deferrals to sibling tasks 2660 (backjumping), 2662 (100k cap),
-//! 2663 (rich diagnostic format), and 2664 (BFS-failure test suite). Task 2661
-//! (`auto(free)` cross-product NonUnique enumeration) now lands in this module.
+//! scope and deferrals to sibling tasks 2662 (100k cap), 2663 (rich diagnostic
+//! format), and 2664 (BFS-failure test suite). Task 2661 (`auto(free)`
+//! cross-product NonUnique enumeration) and task 2660 (backjumping via the
+//! "rejected because" channel) now land in this module.
+//!
+//! **Backjumping (task 2660):** `build_constraint_blame_map` builds a static
+//! `HashMap<ConstraintNodeId, BTreeSet<usize>>` mapping each constraint to the
+//! `params`-slice indices it references through `ValueRef(cell_id)` nodes typed
+//! as `Type::TypeParam(name)`. At each infeasible leaf, `compute_deepest_blame_level`
+//! takes `max` over the union of violated constraints' blame sets to derive
+//! backjump target `J` — the deepest blamed param level. The `DfsControl::BackjumpTo(J)`
+//! arm unwinds the recursion to level `J`, where the sibling loop resumes.
+//! Constraints with no `TypeParam` references are absent from the map ("absent
+//! ↔ no blame ↔ ordinary backtrack") — preserving 2659/2661 test outcomes when
+//! the deferred type-substitution mechanics are not yet in place.
 //!
 //! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
@@ -1052,10 +1064,12 @@ pub fn resolve_auto_type_params(
 ///
 /// # Out of scope (sibling tasks layered on top of this foundation)
 ///
-/// - Backjumping via the "rejected because" channel — task 2660.
 /// - Cross-product hard cap of 100k assignments — task 2662.
 /// - Rich diagnostic format with smallest infeasibility witness — task 2663.
 /// - Comprehensive v0.1 BFS-failure scenario coverage — task 2664.
+///
+/// Task 2660 (backjumping via the "rejected because" channel) and task 2661
+/// (`auto(free)` cross-product NonUnique enumeration) now land in this module.
 /// - Type-substitution mechanics
 ///   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
 ///   deferred per the PRD's "Constraint-feasibility incremental binding
