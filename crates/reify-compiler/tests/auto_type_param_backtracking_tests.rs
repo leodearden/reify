@@ -3081,3 +3081,133 @@ structure def Hot2 : Hot {
         diagnostics[0].code
     );
 }
+
+/// When the parameterized template's only constraint has no `ValueRef` nodes
+/// (a `Bool(true)` literal), `build_constraint_blame_map` returns an empty map.
+/// At any infeasible leaf, `compute_deepest_blame_level` returns `None`, and the
+/// DFS falls through to `DfsControl::Continue` — identical to ordinary backtracking.
+///
+/// This regression test guards the "no blame ↔ no-op ↔ ordinary backtrack"
+/// contract: wiring in the backjumping infrastructure must not change the
+/// observable behavior when the blame map is empty.
+///
+/// Expected outcome is BIT-FOR-BIT identical to
+/// `dfs_backtracks_when_first_leaf_violated_then_picks_second_feasible`
+/// (task 2659/2661): lex-first = `(ORingSeal, WaterCooled)`, one
+/// `AutoTypeParamNonUnique` Warning diagnostic.
+#[test]
+fn dfs_no_blame_constraint_falls_back_to_ordinary_backtrack() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template with a single Bool(true) literal constraint: no ValueRef, no
+    // TypeParam reference → build_constraint_blame_map returns an empty map.
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    // Verify the blame map is empty for this template + params combination.
+    let blame_map = build_constraint_blame_map(&template, &params);
+    assert!(
+        blame_map.is_empty(),
+        "Bool(true) literal constraint has no ValueRef / TypeParam refs; \
+         blame map must be empty; got: {:?}",
+        blame_map
+    );
+
+    // Queue: [Violated, Satisfied]; default: Satisfied.
+    // Leaf 1 = (ORingSeal, AirCooled) → Violated → blame empty → Continue
+    //   (ordinary backtrack; NOT a backjump)
+    // Leaf 2 = (ORingSeal, WaterCooled) → Satisfied → collect
+    // Leaves 3-4 → default Satisfied → collect
+    // 3 feasibles total; lex-first = (ORingSeal, WaterCooled)
+    let checker = MockConstraintChecker::new()
+        .with_call_queue(vec![Satisfaction::Violated, Satisfaction::Satisfied]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // Outcome must be BIT-FOR-BIT identical to the 2659/2661 baseline test
+    // `dfs_backtracks_when_first_leaf_violated_then_picks_second_feasible`.
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+            ],
+            substitution: vec![
+                ("T".to_string(), "ORingSeal".to_string()),
+                ("U".to_string(), "WaterCooled".to_string()),
+            ],
+        },
+        "no-blame constraint must fall back to ordinary backtrack; \
+         lex-first must be (ORingSeal, WaterCooled); got: {:?}",
+        outcome
+    );
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "3 feasibles must emit exactly one NonUnique diagnostic; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity; got: {:?}",
+        diagnostics[0].severity
+    );
+}
