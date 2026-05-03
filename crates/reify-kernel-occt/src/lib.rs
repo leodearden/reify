@@ -496,11 +496,15 @@ impl OcctKernel {
     /// `BRepBuilderAPI_MakeVertex`. The witness on the input shape is read from
     /// `dist.PointOnShape1(1)`.
     ///
-    /// For points inside the solid, `BRepExtrema_DistShapeShape` reports
-    /// distance 0 and returns the query point itself as the witness.  The C++
-    /// wrapper detects this case (dist < 1e-10) and re-runs extrema against the
-    /// outer shell via `TopExp_Explorer`, returning the nearest boundary point
-    /// instead.  The returned witness therefore always lies on the shape surface.
+    /// `BRepExtrema_DistShapeShape` has no inside/outside knowledge — it
+    /// returns the distance to the nearest BREP boundary face.  For typical
+    /// interior points the reported distance is therefore non-zero; only
+    /// on-surface (or coincident) query points yield distance 0.  The C++
+    /// wrapper applies a defensive `dist < 1e-10` guard and re-runs the
+    /// extrema against the first shell found via `TopExp_Explorer`
+    /// (`TopAbs_SHELL`).  For single-shell solids this is the outer shell;
+    /// for multi-shell solids it may not be.  The re-run returns a witness on
+    /// the shell boundary rather than coinciding with the query point.
     ///
     /// Returns `Err(QueryError::InvalidHandle(handle))` if the handle is unknown.
     /// Returns `Err(QueryError::QueryFailed(...))` if the OCCT call fails.
