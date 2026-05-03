@@ -26,7 +26,10 @@
 //! - [`lower_to_sampled`] — orchestrates the in-memory lowering pipeline.
 //! - [`read_vdb_file`] — v0.2 stub that returns `FfiNotImplemented`.
 
-use reify_types::{DimensionVector, InterpolationKind, SampledField, SampledGridKind, Type};
+use reify_types::{
+    Diagnostic, DiagnosticCode, DimensionVector, InterpolationKind, SampledField, SampledGridKind,
+    Type,
+};
 
 /// Spatial-grid shape of an OpenVDB source grid.
 ///
@@ -202,7 +205,7 @@ pub fn lower_to_sampled(
         .map(|i| linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]))
         .collect();
 
-    let interpolation = InterpolationKind::Linear;
+    let (interpolation, interp_warning) = map_interpolation(name, grid.interpolation);
 
     let field = SampledField {
         name: name.to_string(),
@@ -216,10 +219,50 @@ pub fn lower_to_sampled(
         oob_emitted: std::sync::atomic::AtomicBool::new(false),
     };
 
-    Ok(IngestOutcome {
-        field,
-        warnings: Vec::new(),
-    })
+    let mut warnings = Vec::new();
+    if let Some(w) = interp_warning {
+        warnings.push(w);
+    }
+
+    Ok(IngestOutcome { field, warnings })
+}
+
+/// Map an [`OpenVdbInterpolation`] to the corresponding
+/// [`InterpolationKind`], emitting a deferred-warning diagnostic for
+/// modes that lower lossily.
+///
+/// Mappings:
+///   - `Linear`    → `InterpolationKind::Linear` (no warning)
+///   - `Quadratic` → `InterpolationKind::Cubic` (warning: deferred to v0.2)
+///   - `Staggered` → `InterpolationKind::Linear` (warning: deferred to v0.2)
+///
+/// Mirrors the existing `W_INTERPOLATION_DEFERRED` precedent in
+/// `crates/reify-expr/src/interp.rs` (Rbf/Kriging fallback). A single
+/// shared `DiagnosticCode::InterpolationDeferred` keeps consumer filtering
+/// simple.
+fn map_interpolation(
+    grid_name: &str,
+    vdb: OpenVdbInterpolation,
+) -> (InterpolationKind, Option<Diagnostic>) {
+    match vdb {
+        OpenVdbInterpolation::Linear => (InterpolationKind::Linear, None),
+        OpenVdbInterpolation::Quadratic => {
+            let warn = Diagnostic::warning(format!(
+                "OpenVDB grid '{grid_name}' declares quadratic interpolation; \
+                 mapping to Cubic for v0.2"
+            ))
+            .with_code(DiagnosticCode::InterpolationDeferred);
+            (InterpolationKind::Cubic, Some(warn))
+        }
+        OpenVdbInterpolation::Staggered => {
+            let warn = Diagnostic::warning(format!(
+                "OpenVDB grid '{grid_name}' declares staggered interpolation; \
+                 mapping to Linear for v0.2"
+            ))
+            .with_code(DiagnosticCode::InterpolationDeferred);
+            (InterpolationKind::Linear, Some(warn))
+        }
+    }
 }
 
 /// Inclusive linspace from `start` to `stop` with step `spacing`.
