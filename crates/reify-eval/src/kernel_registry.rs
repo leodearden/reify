@@ -43,10 +43,10 @@
 //! the future dispatcher wiring share the cached map and the centralised
 //! tie-break helper [`pick_lexmin_kernel`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
-use reify_types::{CapabilityDescriptor, KernelRegistration};
+use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Memoized BTreeMap of every static-collected [`KernelRegistration`], keyed
 /// by `name`. Allocated once on first call and never rebuilt.
@@ -118,10 +118,12 @@ pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
 /// allocation. Per the PRD's "read once at engine startup" contract,
 /// callers SHOULD NOT call this on the hot dispatch path.
 pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
-    registry()
+    let result: BTreeMap<String, CapabilityDescriptor> = registry()
         .iter()
         .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
-        .collect()
+        .collect();
+    debug_assert_unique_op_repr_pairs(&result);
+    result
 }
 
 /// Emit a structured tracing event recording which kernel was selected and how
@@ -170,6 +172,65 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
         );
     }
     // total == 0: unreachable in debug builds (debug_assert above panics); release-mode no-op.
+}
+
+/// Check that no two kernels in `registered` claim the same
+/// `(Operation, ReprKind)` pair.
+///
+/// # Why a helper is extracted
+///
+/// `collect_registry()` materialises the `BTreeMap<String, CapabilityDescriptor>`
+/// from the inventory walk, so this uniqueness check naturally lives there.
+/// Extracting it as a `pub(crate)` free function lets unit tests drive the
+/// collision path with synthetic [`CapabilityDescriptor`] values without
+/// touching `inventory::submit!` (process-global; would corrupt the
+/// `OnceLock`-memoized registry seen by every other test in the binary).
+/// This is the same testability rationale that motivated extracting
+/// [`emit_kernel_selection`].
+///
+/// # Always-warn / debug-only-panic semantics
+///
+/// On a collision the function always emits a `tracing::warn!` (operator
+/// visibility in release builds where `debug_assert!` compiles to a no-op)
+/// followed by `debug_assert!(false, ...)` that panics in debug builds.
+/// Mirrors [`build_registry`]'s duplicate-name detection pattern verbatim.
+///
+/// # Why `HashMap`, not `BTreeSet`
+///
+/// [`Operation`] derives `Hash + Eq` but **not** `Ord/PartialOrd`, so
+/// `BTreeSet<(Operation, ReprKind)>` would not compile without adding `Ord`
+/// to `Operation` (scope expansion into `reify-types`, not in this task's
+/// listed modules). `HashMap<(Operation, ReprKind), &str>` requires only the
+/// existing `Hash + Eq` and additionally records the previous claimer's name
+/// so the panic message reads `"kernels: {prev} vs {new}"` — a bare
+/// `insert() -> bool` would discard the previous owner's identity.
+/// Iteration-order determinism is preserved by the outer `BTreeMap` iteration
+/// (lexicographic on kernel name) and the inner `Vec` order (`supports`
+/// insertion order); `HashMap` only stores the lookup, not the iteration order.
+pub(crate) fn debug_assert_unique_op_repr_pairs(
+    registered: &BTreeMap<String, CapabilityDescriptor>,
+) {
+    let mut seen: HashMap<(Operation, ReprKind), &str> = HashMap::new();
+    for (name, descriptor) in registered {
+        for &(op, repr) in &descriptor.supports {
+            if let Some(prev_owner) = seen.insert((op, repr), name) {
+                tracing::warn!(
+                    op = ?op,
+                    repr = ?repr,
+                    prev_kernel = prev_owner,
+                    new_kernel = %name,
+                    "duplicate kernel claim for (Operation, ReprKind) pair: \
+                     v0.2 design expects each pair claimed by at most one kernel; \
+                     dispatcher's lex-min tie-break would silently pick a winner",
+                );
+                debug_assert!(
+                    false,
+                    "duplicate kernel claim for ({:?}, {:?}) — kernels: {} vs {}",
+                    op, repr, prev_owner, name,
+                );
+            }
+        }
+    }
 }
 
 /// Walk `inventory::iter::<KernelRegistration>()` once and produce the
