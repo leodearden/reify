@@ -53,6 +53,18 @@ pub(crate) fn compute_min(field_val: &Value) -> Value {
     compute_extremum(field_val, true)
 }
 
+/// Compute `argmax(field)` — return the domain coord at which a
+/// `Sampled`-source field attains its maximum value, wrapped per the
+/// field's `domain_type`.
+///
+/// Tie-break: lowest linear index wins (the `total_cmp` reduce keeps
+/// the first-seen extremum on equal values).
+///
+/// Other source kinds return `Value::Undef` (deferred).
+pub(crate) fn compute_argmax(field_val: &Value) -> Value {
+    compute_argextremum(field_val, false)
+}
+
 /// Shared body for `compute_max` / `compute_min`. `find_min == true`
 /// selects the minimum, `false` selects the maximum.
 fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
@@ -107,6 +119,174 @@ fn reduce_sampled_extremum(sf: &SampledField, codomain_type: &Type, find_min: bo
     match extremum {
         Some(v) => wrap_codomain(v, codomain_type),
         None => Value::Undef,
+    }
+}
+
+/// Shared body for `compute_argmax` / `compute_argmin`. Locates the
+/// extremum's linear index in the Sampled data buffer, decomposes it
+/// into per-axis coords via `axis_grids`, and wraps the result per
+/// the field's `domain_type`.
+fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
+    let (domain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            source,
+            lambda,
+            ..
+        } => (domain_type, source, lambda),
+        _ => return Value::Undef,
+    };
+
+    match source {
+        FieldSourceKind::Sampled => match lambda.as_ref() {
+            Value::SampledField(sf) => match argmax_argmin_index(&sf.data, find_min) {
+                Some(linear) => arg_coord_from_index(sf, linear, domain_type),
+                None => Value::Undef,
+            },
+            _ => Value::Undef,
+        },
+        // TODO(future): see compute_extremum for the deferred-path note.
+        _ => Value::Undef,
+    }
+}
+
+/// Locate the linear index of the maximum (or minimum, when
+/// `find_min`) finite value in `data`. Uses `total_cmp` for the
+/// IEEE 754 totalOrder consistency (matches `Value::Real`/`Scalar`
+/// `Ord` impls).
+///
+/// Returns `None` when `data` is empty or contains no finite values.
+/// Tie-break: lowest linear index wins (strict `<`/`>` rather than
+/// `<=`/`>=` keeps the first-seen extremum on equal values).
+fn argmax_argmin_index(data: &[f64], find_min: bool) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, &v) in data.iter().enumerate() {
+        if !v.is_finite() {
+            continue;
+        }
+        match best {
+            None => best = Some((i, v)),
+            Some((_, b)) => {
+                let cmp = v.total_cmp(&b);
+                let take = if find_min {
+                    cmp.is_lt()
+                } else {
+                    cmp.is_gt()
+                };
+                if take {
+                    best = Some((i, v));
+                }
+            }
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Look up the per-axis SI coords at `linear_index` in `sf.axis_grids`
+/// and wrap them per `domain_type`.
+fn arg_coord_from_index(sf: &SampledField, linear_index: usize, domain_type: &Type) -> Value {
+    // Decompose the linear index into per-axis indices (axis-0 outermost,
+    // row-major).
+    let axis_lengths: Vec<usize> = sf.axis_grids.iter().map(|g| g.len()).collect();
+    let per_axis = decompose_index(linear_index, &axis_lengths);
+
+    // Look up SI coords from axis_grids.
+    let coords_si: Vec<f64> = per_axis
+        .iter()
+        .enumerate()
+        .map(|(k, &i)| sf.axis_grids[k][i])
+        .collect();
+
+    wrap_coord_for_domain(&coords_si, domain_type)
+}
+
+/// Decompose a row-major linear index into per-axis indices.
+///
+/// Convention: axis-0 outermost (matches `engine_eval::build_sampled_field`
+/// and `interp::interpolate_Nd`'s row-major layout).
+///
+/// For shape `(s0, s1, ..., s_{N-1})` and linear index `i`:
+/// ```text
+/// i_{N-1} = i % s_{N-1}
+/// i_{N-2} = (i / s_{N-1}) % s_{N-2}
+/// ...
+/// i_0    = i / (s_1 * s_2 * ... * s_{N-1})
+/// ```
+fn decompose_index(linear: usize, axis_lengths: &[usize]) -> Vec<usize> {
+    debug_assert!(
+        matches!(axis_lengths.len(), 1 | 2 | 3),
+        "SampledGridKind invariant: 1/2/3 axes only"
+    );
+    let mut out = vec![0usize; axis_lengths.len()];
+    let mut rem = linear;
+    for k in (0..axis_lengths.len()).rev() {
+        let s = axis_lengths[k];
+        out[k] = rem % s;
+        rem /= s;
+    }
+    out
+}
+
+/// Wrap per-axis SI coords as a `Value` per the field's `domain_type`.
+///
+/// - 1-D domain (`Type::Real`, `Type::Int`, `Type::Scalar { dim }`):
+///   returns a single `Value::Real` (dimensionless) or `Value::Scalar`
+///   (dimensioned). Asserts `coords_si.len() == 1`.
+/// - N-D domain (`Type::Point { n, quantity }`): returns
+///   `Value::Point(per-axis-coords)` where each component follows the
+///   same per-quantity wrap rule. Asserts `coords_si.len() == n`.
+/// - Anything else → `Value::Undef`.
+fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
+    match domain_type {
+        Type::Point { n, quantity } => {
+            if coords_si.len() != *n {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[reify-expr] argmax/argmin: coord arity mismatch: domain n={n}, got {} coords",
+                    coords_si.len()
+                );
+                return Value::Undef;
+            }
+            let components: Vec<Value> = coords_si
+                .iter()
+                .map(|&c| wrap_scalar_coord(c, quantity))
+                .collect();
+            Value::Point(components)
+        }
+        // 1-D scalar/dimensionless domain: single coord.
+        Type::Real | Type::Int | Type::Scalar { .. } => {
+            if coords_si.len() != 1 {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[reify-expr] argmax/argmin: coord arity mismatch: 1-D domain, got {} coords",
+                    coords_si.len()
+                );
+                return Value::Undef;
+            }
+            wrap_scalar_coord(coords_si[0], domain_type)
+        }
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] argmax/argmin: unsupported domain type: {:?}",
+                domain_type
+            );
+            Value::Undef
+        }
+    }
+}
+
+/// Wrap a single SI coord per a scalar quantity type.
+///
+/// `Type::Scalar { dimension }` with non-dimensionless dim → `Value::Scalar`;
+/// everything else → `Value::Real`.
+fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Value {
+    match quantity {
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Value::Scalar {
+            si_value: coord_si,
+            dimension: *dimension,
+        },
+        _ => Value::Real(coord_si),
     }
 }
 
