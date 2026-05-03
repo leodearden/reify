@@ -83,6 +83,14 @@ mod tests {
         assert_eq!(result, Value::List(vec![]));
     }
 
+    #[test]
+    fn collect_member_list_returns_empty_for_negative_n() {
+        // Pre-refactor inline 0..count loops silently produced empty list for
+        // negative counts in both debug and release; preserve that contract here.
+        let result = collect_member_list(&ValueMap::default(), "Parent", "bolts", "grade", -3);
+        assert_eq!(result, Value::List(vec![]));
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "child cell not yet evaluated")]
