@@ -669,7 +669,11 @@ impl OcctKernel {
                     "local-feature operation requires a BRepKind::Solid input shape, got {other:?}"
                 )))
             }
-            None => return Err(GeometryError::InvalidReference(shape_id)),
+            // repr unknown (e.g. handle whose repr was lost on warm-start round-trip):
+            // fall through to get_shape below, which returns InvalidReference for
+            // genuinely missing handles without conflating "repr-lost-but-shape-present"
+            // with "handle not found" (esc-2655-26 suggestion #4 / task 2821 amendment).
+            None => {}
         }
         let (result_shape, records) = {
             let shape = self.get_shape(shape_id)?;

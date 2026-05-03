@@ -15,7 +15,7 @@
 mod common;
 
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{GeometryError, GeometryOp, GeometryQuery, Value};
+use reify_types::{GeometryOp, GeometryQuery, Value};
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
 const BOX_SIDE_M: f64 = 10.0e-3;
@@ -172,29 +172,8 @@ fn chamfer_with_history_reports_face_records() {
         );
     }
 
-    // (g2) Underflow-safe lower-bound regression-pin for face_generated count
-    // (esc-2655-26 suggestion #1 / task 2821).
-    //
-    // Formula: strip the 6 modified-original box faces and the 8 corner-chamfer
-    // faces from result_face_count; the remaining faces should all be lateral
-    // chamfer faces (1 per parent edge, 12 for a cube), so face_generated should
-    // account for at least that many records.
-    //
-    // For the standard 10mm cube + 1mm chamfer: result_face_count ≈ 26,
-    // lower = 26 - 6 - 8 = 12. The saturating_sub chain gracefully degrades
-    // to 0 if a future fixture has < 14 result faces, keeping the test safe
-    // without an upstream `if result_face_count >= 14` guard.
-    // Using saturating_sub rather than `-` is mandatory: naive arithmetic would
-    // panic on underflow in debug builds and wrap in release builds.
-    let lower_face_generated = result_face_count.saturating_sub(6).saturating_sub(8) as usize;
-    assert!(
-        history.face_generated.len() >= lower_face_generated,
-        "face_generated should account for at least one face per box edge: \
-         got {} records, lower bound {} (result_face_count={})",
-        history.face_generated.len(),
-        lower_face_generated,
-        result_face_count
-    );
+    // (g2) face_generated per-edge coverage: moved to common::assert_local_feature_history_well_formed
+    // (esc-2655-26 suggestion #1 / task 2821 amendment — see common/mod.rs for the HashSet-based check).
 
     // (h)-(l) Edge-buffer well-formedness: delegated to the shared helper to
     // eliminate duplication with the fillet mirror test. Asserts edge_modified
@@ -208,14 +187,18 @@ fn chamfer_with_history_reports_face_records() {
     );
 }
 
-/// `chamfer_with_history` must reject a `BRepKind::Face` input handle with
+/// `chamfer_with_history` must reject non-`BRepKind::Solid` input handles with
 /// a descriptive `OperationFailed` error mentioning "Solid" or "BRepKind".
 ///
 /// Rationale: `BRepFilletAPI_MakeChamfer` iterates parent edges of a Solid;
-/// passing a Face would either crash inside OCCT or silently produce a
+/// passing a Face or Edge would either crash inside OCCT or silently produce a
 /// misclassified result (the output is always stored as `BRepKind::Solid`).
 /// The up-front kind guard added in task 2821 step-4 makes this rejection
 /// explicit and message-checked (esc-2655-26 issue #4).
+///
+/// Exercises both `BRepKind::Face` and `BRepKind::Edge` to protect against a
+/// future refactor that whitelists one non-Solid kind (esc-2655-26 suggestion #5 /
+/// task 2821 amendment).
 #[test]
 fn chamfer_with_history_rejects_non_solid_input() {
     if !OCCT_AVAILABLE {
@@ -228,6 +211,7 @@ fn chamfer_with_history_rejects_non_solid_input() {
         .execute(&ten_mm_box_op())
         .expect("box should build");
 
+    // (a) Reject BRepKind::Face input.
     let faces = kernel
         .extract_faces(box_handle.id)
         .expect("extract_faces should succeed on a solid box");
@@ -235,22 +219,23 @@ fn chamfer_with_history_rejects_non_solid_input() {
         !faces.is_empty(),
         "extract_faces should return at least one face for a 10mm box"
     );
+    common::assert_local_feature_rejects_non_solid_input(
+        kernel.chamfer_with_history(faces[0], CHAMFER_DISTANCE_M),
+        "BRepKind::Face",
+        "chamfer_with_history",
+    );
 
-    let face_id = faces[0];
-
-    let result = kernel.chamfer_with_history(face_id, CHAMFER_DISTANCE_M);
-    let err = result.expect_err("chamfer_with_history should reject a BRepKind::Face input");
-    // Narrowly require an OperationFailed variant (not InvalidReference or other)
-    // whose message identifies the kind mismatch.
-    match &err {
-        GeometryError::OperationFailed(msg) => {
-            assert!(
-                msg.contains("Solid") || msg.contains("BRepKind"),
-                "OperationFailed message should mention 'Solid' or 'BRepKind': {msg}"
-            );
-        }
-        other => panic!(
-            "expected GeometryError::OperationFailed for non-Solid input, got {other:?}"
-        ),
-    }
+    // (b) Reject BRepKind::Edge input (esc-2655-26 suggestion #5 / task 2821 amendment).
+    let edges = kernel
+        .extract_edges(box_handle.id)
+        .expect("extract_edges should succeed on a solid box");
+    assert!(
+        !edges.is_empty(),
+        "extract_edges should return at least one edge for a 10mm box"
+    );
+    common::assert_local_feature_rejects_non_solid_input(
+        kernel.chamfer_with_history(edges[0], CHAMFER_DISTANCE_M),
+        "BRepKind::Edge",
+        "chamfer_with_history",
+    );
 }
