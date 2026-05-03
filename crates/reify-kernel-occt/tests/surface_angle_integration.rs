@@ -313,7 +313,7 @@ fn cylinder_curved_face_returns_finite_angle() {
                     panic!("surface_angle(face[{i}], face[{j}]) failed: {e:?}")
                 });
             assert!(
-                angle.is_finite() && angle >= 0.0 && angle <= PI + 1e-9,
+                angle.is_finite() && (0.0..=PI + 1e-9).contains(&angle),
                 "surface_angle(face[{i}], face[{j}]) = {angle:.10}, \
                  expected finite value in [0, π]"
             );

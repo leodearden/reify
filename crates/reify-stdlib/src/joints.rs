@@ -3774,7 +3774,7 @@ mod tests {
         let fj = eval_builtin("fixed", &[]);
 
         // (a) Primary case: 1-arg fixed joint → identity Transform
-        let result = eval_builtin("transform_at", &[fj.clone()]);
+        let result = eval_builtin("transform_at", std::slice::from_ref(&fj));
         let (rot, trans) = match &result {
             Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
             other => panic!("transform_at(fixed): expected Transform, got {:?}", other),

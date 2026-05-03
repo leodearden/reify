@@ -90,7 +90,6 @@ fn openvdb_kernel_registration_appears_in_inventory_iter() {
         reify_kernel_openvdb::register::openvdb_capability_descriptor;
 
     let openvdb_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
-        .into_iter()
         .filter(|reg| reg.name == OPENVDB_KERNEL_NAME)
         .collect();
 

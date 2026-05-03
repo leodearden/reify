@@ -105,7 +105,6 @@ fn occt_kernel_registration_appears_in_inventory_iter() {
     }
 
     let occt_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
-        .into_iter()
         .filter(|reg| reg.name == OCCT_KERNEL_NAME)
         .collect();
 

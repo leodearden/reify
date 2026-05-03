@@ -90,7 +90,6 @@ fn fidget_kernel_registration_appears_in_inventory_iter() {
         reify_kernel_fidget::register::fidget_capability_descriptor;
 
     let fidget_entries: Vec<&KernelRegistration> = inventory::iter::<KernelRegistration>()
-        .into_iter()
         .filter(|reg| reg.name == FIDGET_KERNEL_NAME)
         .collect();
 
