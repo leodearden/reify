@@ -2214,9 +2214,10 @@ describe('stdin orphan-error diagnostic', () => {
   it('orphan stdin error one-shot guard fires console.warn exactly once across multiple emits', async () => {
     const { mockProc, warnSpy, finish } = await setupOrphanStdinErrorScenario(session);
 
-    // First orphan EPIPE — should trigger a console.warn
+    // First orphan EPIPE — wait until the warn fires before dispatching the second emit,
+    // so the ordering invariant holds even if the handler ever becomes async.
     mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 1'));
-    await new Promise(setImmediate);
+    await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledTimes(1));
 
     // Second orphan EPIPE with a distinct message — one-shot guard must suppress this
     mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 2 distinct'));
