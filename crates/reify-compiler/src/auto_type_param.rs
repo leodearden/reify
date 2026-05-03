@@ -1552,18 +1552,18 @@ fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<Str
 
 // ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
 
-/// Returns `true` iff any constraint in `constraints_template` is `Satisfied::Violated`
-/// according to `checker`.
-///
-/// # Semantics
-///
-/// - Returns `true` iff at least one [`reify_types::ConstraintResult`] has
-///   `satisfaction == `[`reify_types::Satisfaction::Violated`]`.
-///   Feasibility is the **negation** of this predicate.
-/// - [`reify_types::Satisfaction::Indeterminate`] does **NOT** cause a `true` return.
-///   Architecture §2.5 monotonic-feasible rule: undef does not falsify — only
-///   `Violated` makes a leaf infeasible.
-/// - The borrowed-slice signature lets callers (especially the DFS hot path)
+// Returns `true` iff any constraint in `constraints_template` is `Satisfied::Violated`
+// according to `checker`.
+//
+// # Semantics
+//
+// - Returns `true` iff at least one [`reify_types::ConstraintResult`] has
+//   `satisfaction == `[`reify_types::Satisfaction::Violated`]`.
+//   Feasibility is the **negation** of this predicate.
+// - [`reify_types::Satisfaction::Indeterminate`] does **NOT** cause a `true` return.
+//   Architecture §2.5 monotonic-feasible rule: undef does not falsify — only
+//   `Violated` makes a leaf infeasible.
+// - The borrowed-slice signature lets callers (especially the DFS hot path)
 // ─── Static blame extraction (task 2660) ─────────────────────────────────────
 
 /// Recursively collect every `Type::TypeParam(name)` string buried in a type.
@@ -1669,10 +1669,10 @@ pub fn build_constraint_blame_map(
     for constraint in &template.constraints {
         let mut name_set: BTreeSet<String> = BTreeSet::new();
         constraint.expr.walk(&mut |node| {
-            if let CompiledExprKind::ValueRef(cell_id) = &node.kind {
-                if let Some(cell_type) = cell_type_map.get(cell_id) {
-                    collect_type_param_names_from_type(cell_type, &mut name_set);
-                }
+            if let CompiledExprKind::ValueRef(cell_id) = &node.kind
+                && let Some(cell_type) = cell_type_map.get(cell_id)
+            {
+                collect_type_param_names_from_type(cell_type, &mut name_set);
             }
         });
         let indices: BTreeSet<usize> = name_set
@@ -1734,36 +1734,6 @@ enum DfsControl {
     Continue,
     EarlyTerminate,
     BackjumpTo(usize),
-}
-
-/// Thin wrapper around [`check_constraints_leaf`] that returns only the
-/// feasibility `bool` — discarding the violated constraint IDs for callers
-/// that do not need them.
-///
-/// The borrowed-slice signature lets callers (especially the DFS hot path)
-/// reuse a single owned `Vec` built ONCE by the orchestrator across many
-/// leaf calls, without rebuilding it per leaf.
-///
-/// # Residual per-call allocation
-///
-/// `ConstraintInput::constraints` is owned (`Vec<(ConstraintNodeId, &CompiledExpr)>`),
-/// so this function still clones `constraints_template` via `.to_vec()` on every
-/// call — copying a heap `String` per `ConstraintNodeId`. The orchestrator-level
-/// hoist eliminates the per-leaf *rebuild* (the `iter().map().collect()` traversal
-/// of `parameterized_template.constraints`), but not the per-leaf *clone* of the
-/// already-built slice.
-///
-/// TODO(constraint-input-borrow): change `ConstraintInput::constraints` from
-/// `Vec<(ConstraintNodeId, &CompiledExpr)>` to `&[(ConstraintNodeId, &CompiledExpr)]`
-/// (or `Cow`) so this helper can pass the borrowed slice through without cloning.
-/// That change is in `reify_types::ConstraintInput` (outside this crate's scope).
-fn check_constraints_violated(
-    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
-    checker: &dyn ConstraintChecker,
-    functions: &[CompiledFunction],
-    values: &reify_types::ValueMap,
-) -> bool {
-    !check_constraints_leaf(constraints_template, checker, functions, values).feasible
 }
 
 /// Single-call leaf check that surfaces both feasibility and violated IDs.
