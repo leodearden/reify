@@ -189,3 +189,41 @@ structure def Aluminium_6061_T6 : ElasticMaterial {
             notes: "Tensile yield strength for T6 temper; degrades on prolonged exposure above ~150 °C."
         )
 }
+
+// matweb / ASM Handbook citation: Titanium Ti-6Al-4V (Grade 5), annealed.
+//
+// Titanium_Ti6Al4V is the alpha-beta titanium alloy that dominates aerospace
+// and biomedical-implant applications. Properties below are for the annealed
+// condition. Solution-treated-and-aged (STA) variants reach higher
+// yield_stress at the cost of reduced ductility.
+structure def Titanium_Ti6Al4V : ElasticMaterial {
+    param youngs_modulus : Pressure = 113.8GPa
+    param poisson_ratio : Real = 0.342
+    param density : Density = 4430.0 * 1kg / (1m * 1m * 1m)
+    param yield_stress : Option<Pressure> = some(880MPa)
+
+    param youngs_modulus_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
+            notes: "Typical room-temperature Young's modulus for Grade 5 titanium."
+        )
+    param poisson_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
+            notes: "Typical for alpha-beta titanium alloys."
+        )
+    param density_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
+            notes: "Nominal density of Ti-6Al-4V."
+        )
+    param yield_stress_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
+            notes: "Tensile yield for annealed condition; STA temper reaches higher values."
+        )
+}
