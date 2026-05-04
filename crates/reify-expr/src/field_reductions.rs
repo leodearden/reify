@@ -119,37 +119,29 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
 ///
 /// `find_min == false` → maximum; `find_min == true` → minimum.
 ///
+/// # Single source of truth for scan / tie-break / NaN-skip semantics
+///
+/// Delegates the scan to [`argmax_argmin_index`] and indexes back into
+/// `sf.data` to recover the extremum value. This keeps the
+/// NaN-skip + `total_cmp` + first-occurrence-wins semantics in one
+/// place — the doc-pinned invariants live on `argmax_argmin_index`
+/// alone, and `compute_max` / `compute_min` cannot drift from
+/// `compute_argmax` / `compute_argmin` on equal-valued samples.
+///
 /// # NaN / non-finite / empty handling
 ///
 /// Non-finite values (NaN and ±∞) are skipped via `is_finite()` —
 /// stricter than `!is_nan()` and matching the `sanitize_value`
-/// discipline in `crates/reify-stdlib/src/helpers.rs`. The fold tracks
-/// `Option<f64>` so that an empty data buffer or all-non-finite buffer
-/// returns `Value::Undef` (no extremum exists).
+/// discipline in `crates/reify-stdlib/src/helpers.rs`. An empty
+/// data buffer or all-non-finite buffer returns `Value::Undef`.
 ///
 /// Pinned by `max_sampled_with_nan_skips_nan_values`,
 /// `all_reductions_sampled_all_nan_returns_undef`, and
 /// `all_reductions_sampled_empty_data_returns_undef` in
 /// `tests/field_reductions_tests.rs` (step-17 of plan 2913).
 fn reduce_sampled_extremum(sf: &SampledField, codomain_type: &Type, find_min: bool) -> Value {
-    let extremum = sf.data.iter().copied().filter(|x| x.is_finite()).fold(
-        None::<f64>,
-        |best, candidate| match best {
-            None => Some(candidate),
-            Some(b) => {
-                let cmp = candidate.total_cmp(&b);
-                let take = if find_min {
-                    cmp.is_lt()
-                } else {
-                    cmp.is_gt()
-                };
-                Some(if take { candidate } else { b })
-            }
-        },
-    );
-
-    match extremum {
-        Some(v) => wrap_codomain(v, codomain_type),
+    match argmax_argmin_index(&sf.data, find_min) {
+        Some(linear) => wrap_codomain(sf.data[linear], codomain_type),
         None => Value::Undef,
     }
 }
@@ -227,6 +219,13 @@ fn argmax_argmin_index(data: &[f64], find_min: bool) -> Option<usize> {
     best.map(|(i, _)| i)
 }
 
+/// Maximum number of axes a `SampledField` can carry.
+///
+/// Bounded by the `SampledGridKind` invariant (`Regular1D` / `Regular2D` /
+/// `Regular3D`); used as the stack-array size for axis-length and per-axis
+/// scratch buffers below to avoid heap allocation on the argmax/argmin path.
+const MAX_AXES: usize = 3;
+
 /// Look up the per-axis SI coords at `linear_index` in `sf.axis_grids`
 /// and wrap them per `domain_type`.
 ///
@@ -235,25 +234,34 @@ fn argmax_argmin_index(data: &[f64], find_min: bool) -> Option<usize> {
 /// is reinforced by the `debug_assert!` here and in `decompose_index`
 /// below. Pinned by the 1-D / 2-D / 3-D test suites in
 /// `tests/field_reductions_tests.rs` (`argmax|argmin_sampled_field_*d_*`).
+///
+/// # Allocation
+///
+/// All scratch buffers (`axis_lengths`, `per_axis`, `coords_si`) are
+/// stack-allocated `[_; MAX_AXES]` arrays sliced down to the actual axis
+/// count. No heap allocation on the argmax/argmin path.
 fn arg_coord_from_index(sf: &SampledField, linear_index: usize, domain_type: &Type) -> Value {
+    let n = sf.axis_grids.len();
     debug_assert!(
-        matches!(sf.axis_grids.len(), 1..=3),
-        "SampledGridKind invariant: 1/2/3 axes only, got {}",
-        sf.axis_grids.len()
+        matches!(n, 1..=MAX_AXES),
+        "SampledGridKind invariant: 1/2/3 axes only, got {n}"
     );
+
     // Decompose the linear index into per-axis indices (axis-0 outermost,
-    // row-major).
-    let axis_lengths: Vec<usize> = sf.axis_grids.iter().map(|g| g.len()).collect();
-    let per_axis = decompose_index(linear_index, &axis_lengths);
+    // row-major). Stack-allocated buffers — no heap allocation here.
+    let mut axis_lengths = [0usize; MAX_AXES];
+    for (k, g) in sf.axis_grids.iter().enumerate().take(n) {
+        axis_lengths[k] = g.len();
+    }
+    let per_axis = decompose_index(linear_index, &axis_lengths[..n]);
 
     // Look up SI coords from axis_grids.
-    let coords_si: Vec<f64> = per_axis
-        .iter()
-        .enumerate()
-        .map(|(k, &i)| sf.axis_grids[k][i])
-        .collect();
+    let mut coords_si = [0.0f64; MAX_AXES];
+    for k in 0..n {
+        coords_si[k] = sf.axis_grids[k][per_axis[k]];
+    }
 
-    wrap_coord_for_domain(&coords_si, domain_type)
+    wrap_coord_for_domain(&coords_si[..n], domain_type)
 }
 
 /// Decompose a row-major linear index into per-axis indices.
@@ -269,17 +277,22 @@ fn arg_coord_from_index(sf: &SampledField, linear_index: usize, domain_type: &Ty
 /// i_0    = i / (s_1 * s_2 * ... * s_{N-1})
 /// ```
 ///
+/// # Return shape
+///
+/// Returns a fixed-size `[usize; MAX_AXES]` (stack-allocated) — the caller
+/// reads only the first `axis_lengths.len()` entries; the remainder is
+/// zero-padded. This avoids the per-call heap allocation that a `Vec`
+/// would incur and matches the SampledGridKind invariant (1..=3 axes).
+///
 /// Pinned by `argmax_sampled_field_2d_length_domain_returns_point2_at_max_index`
 /// (3×2 shape, max at linear=4 → per-axis (2, 0)) and the symmetric
 /// `argmin_..._2d` counterpart in `tests/field_reductions_tests.rs`.
-/// The N-D loop is generic and the `SampledGridKind` invariant (1/2/3
-/// axes) is reinforced by the `debug_assert!` below.
-fn decompose_index(linear: usize, axis_lengths: &[usize]) -> Vec<usize> {
+fn decompose_index(linear: usize, axis_lengths: &[usize]) -> [usize; MAX_AXES] {
     debug_assert!(
-        matches!(axis_lengths.len(), 1..=3),
+        matches!(axis_lengths.len(), 1..=MAX_AXES),
         "SampledGridKind invariant: 1/2/3 axes only"
     );
-    let mut out = vec![0usize; axis_lengths.len()];
+    let mut out = [0usize; MAX_AXES];
     let mut rem = linear;
     for k in (0..axis_lengths.len()).rev() {
         let s = axis_lengths[k];
@@ -291,28 +304,42 @@ fn decompose_index(linear: usize, axis_lengths: &[usize]) -> Vec<usize> {
 
 /// Wrap per-axis SI coords as a `Value` per the field's `domain_type`.
 ///
-/// - 1-D domain (`Type::Real`, `Type::Int`, `Type::Scalar { dim }`):
+/// Supported domains:
+/// - **1-D scalar domain** (`Type::Real`, `Type::Scalar { dim }`):
 ///   returns a single `Value::Real` (dimensionless) or `Value::Scalar`
-///   (dimensioned). Asserts `coords_si.len() == 1`. Pinned by
+///   (dimensioned). Requires `coords_si.len() == 1`. Pinned by
 ///   `argmax_sampled_field_1d_length_domain_*` /
 ///   `argmax_sampled_field_1d_real_domain_*` and the symmetric
 ///   `argmin_..._1d_length_domain_*` test in
 ///   `tests/field_reductions_tests.rs`.
-/// - N-D domain (`Type::Point { n, quantity }`): returns
+/// - **N-D Point domain** (`Type::Point { n, quantity }` where
+///   `quantity ∈ { Type::Real, Type::Scalar { .. } }`): returns
 ///   `Value::Point(per-axis-coords)` where each component follows the
-///   same per-quantity wrap rule. Asserts `coords_si.len() == n`.
+///   same per-quantity wrap rule. Requires `coords_si.len() == n`.
 ///   Pinned by `argmax_sampled_field_2d_length_domain_*` /
 ///   `argmin_..._2d_length_domain_*` (and 3-D variants in step-13).
-/// - Anything else → `Value::Undef`.
+///
+/// Unsupported domains (return `Value::Undef`):
+/// - `Type::Int` — `axis_grids` are stored as `f64` and there is no
+///   precise integer round-trip; an Int domain is unsupported rather
+///   than silently coerced to `Value::Real`.
+/// - `Type::Point { quantity }` where `quantity` is `Type::Int` (or
+///   any other non-Real / non-Scalar type) — same rationale.
+/// - Mismatches between `coords_si.len()` and the domain's expected
+///   dimensionality (e.g., 3-D grid wrapped as a 1-D-domain field, or
+///   vice versa) — user-driven via field type/source mistypes.
+/// - Any other domain type.
+///
+/// The eval engine's diagnostic channel is not reachable from here, so
+/// the `Undef` return is the only signal — matching `analysis::*` /
+/// `sampled::wrap_result` conventions.
 fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
     match domain_type {
-        Type::Point { n, quantity } => {
-            if coords_si.len() != *n {
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "[reify-expr] argmax/argmin: coord arity mismatch: domain n={n}, got {} coords",
-                    coords_si.len()
-                );
+        Type::Point { n, quantity } if coords_si.len() == *n => {
+            // Reject Point<Int> (and any other unsupported quantity) up
+            // front so the result is uniformly Undef rather than a
+            // Point of silently-coerced Reals.
+            if !is_supported_scalar_quantity(quantity) {
                 return Value::Undef;
             }
             let components: Vec<Value> = coords_si
@@ -321,33 +348,40 @@ fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
                 .collect();
             Value::Point(components)
         }
-        // 1-D scalar/dimensionless domain: single coord.
-        Type::Real | Type::Int | Type::Scalar { .. } => {
-            if coords_si.len() != 1 {
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "[reify-expr] argmax/argmin: coord arity mismatch: 1-D domain, got {} coords",
-                    coords_si.len()
-                );
-                return Value::Undef;
-            }
+        // 1-D scalar/dimensionless domain: single coord. `Type::Int` is
+        // intentionally NOT in this arm — see doc-comment above.
+        Type::Real | Type::Scalar { .. } if coords_si.len() == 1 => {
             wrap_scalar_coord(coords_si[0], domain_type)
         }
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] argmax/argmin: unsupported domain type: {:?}",
-                domain_type
-            );
-            Value::Undef
-        }
+        _ => Value::Undef,
     }
+}
+
+/// Predicate: is `quantity` a supported per-axis scalar quantity for
+/// `Point`-domain wrapping?
+///
+/// Returns true only for `Type::Real` and `Type::Scalar { .. }`.
+/// `Type::Int` and other types are rejected — see [`wrap_coord_for_domain`]
+/// for the rationale (no precise integer round-trip from `axis_grids`'
+/// `f64` storage).
+fn is_supported_scalar_quantity(ty: &Type) -> bool {
+    matches!(ty, Type::Real | Type::Scalar { .. })
 }
 
 /// Wrap a single SI coord per a scalar quantity type.
 ///
-/// `Type::Scalar { dimension }` with non-dimensionless dim → `Value::Scalar`;
-/// everything else → `Value::Real`.
+/// Contract:
+/// - `Type::Scalar { dimension }` with non-dimensionless `dimension`
+///   → `Value::Scalar { si_value, dimension }`.
+/// - `Type::Real` and `Type::Scalar` with dimensionless `dimension`
+///   → `Value::Real(coord_si)`.
+///
+/// Callers MUST pre-filter `quantity` via [`is_supported_scalar_quantity`]
+/// — passing any other type (e.g. `Type::Int`) hits the catch-all arm
+/// and silently returns `Value::Real`, which is incorrect for the caller's
+/// contract. The `wrap_coord_for_domain` Point arm performs this check.
+/// The 1-D scalar arm only routes `Type::Real` / `Type::Scalar` here, so
+/// it is also safe.
 fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Value {
     match quantity {
         Type::Scalar { dimension } if !dimension.is_dimensionless() => Value::Scalar {
