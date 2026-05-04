@@ -494,7 +494,7 @@ fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() 
 /// fail this test, which is the intended behaviour: any future expansion should
 /// be expressed as a deliberate update here, not silently introduced.
 #[test]
-fn std_materials_fea_module_summary_has_one_trait_one_struct_and_four_materials() {
+fn std_materials_fea_module_summary_has_one_trait_one_provenance_struct_and_four_materials() {
     let module = load_stdlib_module();
 
     // Zero error diagnostics is also asserted in step-1; repeat here so this
