@@ -39,14 +39,19 @@ use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 ///     `per_stage_tolerance(req, 2)` — the integration-usage validation the
 ///     task description asks for ("validated by … integration usage").
 ///
-/// (c) `SAFETY_FACTOR` is reachable via the public crate surface (compile-only
-///     check; the value is pinned by `tolerance_budget::tests::*`).
+/// (c) `SAFETY_FACTOR` is value-pinned to `0.8` here as a redundant-but-defensive
+///     cross-crate guard; the canonical pin lives in `tolerance_budget::tests::*`
+///     inside the crate.
 #[test]
 fn lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end() {
-    // Compile-check: confirms SAFETY_FACTOR is reachable via the public crate
-    // surface. The value is pinned by `tolerance_budget::tests::*`; this just
-    // locks the re-export path so a missing `pub use` drops compilation here.
-    let _ = SAFETY_FACTOR;
+    // Redundant-but-defensive value-pin: the canonical value contract lives in
+    // `tolerance_budget::tests::*` inside the crate. This integration-layer
+    // assertion is redundant with those in-crate pins but defensively catches
+    // lockstep value drift across crate boundaries (e.g. both the const and the
+    // in-crate tests change in tandem while the integration caller is forgotten).
+    // The assert_eq! also still locks the re-export path — a missing `pub use`
+    // drops compilation here just as the old no-op binding did.
+    assert_eq!(SAFETY_FACTOR, 0.8, "public re-export of SAFETY_FACTOR must equal 0.8 — geometric-split per-stage formula req^(1/N) * 0.8");
 
     // ── (a) end-to-end dispatch produces a 2-conversion plan ─────────────────
 
