@@ -93,3 +93,61 @@ trait ElasticMaterial {
     // mixed-formulation solver for incompressible materials (e.g. rubber).
     constraint poisson_ratio < 0.5
 }
+
+// ── Starter material library ─────────────────────────────────────────────────
+//
+// Each concrete material below is a top-level structure conforming to
+// `ElasticMaterial`. Defaults bake in matweb-equivalent public-reference
+// values so a bare `Steel_AISI_1045()` instantiation populates every cell;
+// callers may override individual fields at construction (e.g.
+// `Steel_AISI_1045(yield_stress: some(550MPa))` for a tempered variant).
+//
+// Per-property provenance is encoded as four parallel `..._provenance`
+// fields rather than a single `Map<String, ...>` so:
+//   - typos at the source level become missing-member errors
+//   - downstream FEA reports can pull each citation by name
+//   - refining traits that add properties (shear modulus, hardening, ...)
+//     compose cleanly with the same parallel-slot convention
+//
+// Density literals use the compositional form `<n>.0 * 1kg / (1m * 1m * 1m)`
+// rather than `<n>kg/m^3` because the tree-sitter grammar's quantity_literal
+// is `number + identifier` only — compound `kg/m^3` is not a single token.
+// The compositional form produces the same dimensioned value (kg·m⁻³).
+
+// MMPDS / matweb citation: AISI 1045, hot-rolled, medium-carbon steel.
+//
+// Steel_AISI_1045 is a general-purpose medium-carbon steel widely used for
+// shafts, axles, and machined parts. Properties below are typical-room-
+// temperature values for the hot-rolled, normalised condition; tempered
+// or quenched-and-tempered variants will exhibit higher yield_stress.
+structure def Steel_AISI_1045 : ElasticMaterial {
+    param youngs_modulus : Pressure = 205GPa
+    param poisson_ratio : Real = 0.29
+    param density : Density = 7850.0 * 1kg / (1m * 1m * 1m)
+    param yield_stress : Option<Pressure> = some(310MPa)
+
+    param youngs_modulus_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
+            notes: "Average across heat treatments — matweb material property database. Typical room-temperature value for medium-carbon steel."
+        )
+    param poisson_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
+            notes: "Typical for plain-carbon steel; insensitive to heat treatment."
+        )
+    param density_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
+            notes: "Nominal density of plain-carbon steel."
+        )
+    param yield_stress_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
+            notes: "Tensile yield strength for hot-rolled condition; quenched-and-tempered variants reach higher values."
+        )
+}
