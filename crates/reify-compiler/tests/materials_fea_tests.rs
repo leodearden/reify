@@ -458,3 +458,21 @@ fn aluminium_6061_t6_structure_conforms_with_correct_property_values_and_provena
 fn titanium_ti6al4v_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Titanium_Ti6Al4V");
 }
+
+// ─── step-15: ABS_Plastic starter material ───────────────────────────────────
+
+/// `ABS_Plastic` is the general-purpose acrylonitrile-butadiene-styrene
+/// thermoplastic widely used in injection-moulded consumer parts and FDM
+/// 3D printing. Properties below are room-temperature values for moulded
+/// general-purpose ABS; yield is approximate due to the polymer's
+/// ductile-to-brittle behaviour at higher strain rates / lower
+/// temperatures. Asserts the same eight-cell shape as the other starter
+/// materials via the shared helper.
+///
+/// PRD task #1 cites public matweb-equivalent values:
+///   youngs_modulus = 2.3 GPa, poisson_ratio = 0.35,
+///   density = 1050 kg/m³, yield_stress = some(40 MPa).
+#[test]
+fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() {
+    assert_fea_material_template_shape("ABS_Plastic");
+}
