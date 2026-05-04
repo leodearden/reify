@@ -50,6 +50,9 @@ use reify_types::{
 /// impl.
 #[test]
 fn manifold_kernel_attribute_hook_round_trip_via_geometry_kernel_trait_object() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     let kernel = ManifoldKernel::new();
     let kernel_ref: &dyn GeometryKernel = &kernel;
 

@@ -4,6 +4,74 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+/// Install a permissive global tracing subscriber once per process, so
+/// thread-local `with_default` event-counting tests work reliably under
+/// workspace-parallel cargo runs.
+///
+/// # Why this exists
+///
+/// `tracing` caches each callsite's `Interest` in a process-global atomic
+/// keyed on first-hit-wins. `tracing::subscriber::with_default` installs only
+/// a thread-local default and does NOT trigger `rebuild_interest_cache`. If
+/// any sibling test thread hits a counted callsite first with no subscriber
+/// active, `NoSubscriber::register_callsite` returns `Interest::never` and
+/// the callsite is permanently dead in this process — every later
+/// `with_default` is silently bypassed at the macro level, and the
+/// per-test subscriber receives nothing.
+///
+/// `set_global_default` calls `tracing-core::callsite::register_dispatch`,
+/// which forces `rebuild_interest_cache`. This helper installs a no-op
+/// subscriber that returns `Interest::sometimes` from `register_callsite`
+/// so that:
+///
+/// - The cache is no longer poisoned to `never` by unsubscribed threads.
+/// - Per-event routing is decided by `enabled()` on the *current thread's*
+///   default (the per-test `with_default` subscriber when one is active,
+///   the no-op global otherwise).
+///
+/// # Usage
+///
+/// Call this at the top of any test that asserts the exact count of
+/// `tracing::*` events captured via `tracing::subscriber::with_default` or
+/// `set_default`. `Once`-gated; safe and cheap to call from every such test.
+///
+/// (See `tracing-core` 0.1.x: `callsite.rs::register_dispatch`,
+/// `dispatcher.rs::set_default`, and `NoSubscriber::register_callsite`.)
+pub fn prime_tracing_callsite_cache() {
+    use std::sync::Once;
+    use tracing::span::{Attributes, Id, Record};
+    use tracing::subscriber::Interest;
+    use tracing::{Event, Metadata, Subscriber};
+
+    static INIT: Once = Once::new();
+
+    struct Priming;
+    impl Subscriber for Priming {
+        fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
+            Interest::sometimes()
+        }
+        fn enabled(&self, _: &Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+        fn record(&self, _: &Id, _: &Record<'_>) {}
+        fn record_follows_from(&self, _: &Id, _: &Id) {}
+        fn event(&self, _: &Event<'_>) {}
+        fn enter(&self, _: &Id) {}
+        fn exit(&self, _: &Id) {}
+    }
+
+    INIT.call_once(|| {
+        // Errors only on a second `set_global_default` — the `Once` makes
+        // that impossible from this code path. Anything else racing us
+        // (e.g. another crate's test harness) is fine: their global
+        // already serves the same purpose.
+        let _ = tracing::subscriber::set_global_default(Priming);
+    });
+}
+
 /// Assert that `counter` has advanced by exactly `expected_delta` since the
 /// `before` snapshot.
 ///

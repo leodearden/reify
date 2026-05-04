@@ -609,6 +609,9 @@ fn non_embedding_checker_does_not_panic_on_labeled_constraint() {
 /// from debug instrumentation elsewhere in the crate or its transitive dependencies.
 #[test]
 fn drift_signal_fires_for_non_embedding_checker() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     use reify_test_support::CountingSubscriberBuilder;
     use std::sync::atomic::Ordering;
 

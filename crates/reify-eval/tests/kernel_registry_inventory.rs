@@ -155,6 +155,9 @@ fn engine_with_registered_kernel_picks_occt_for_brep_box_build() {
 /// via `eprintln!` so stub-mode CI produces an observable signal.
 #[test]
 fn engine_with_registered_kernel_emits_one_selection_event() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
             "skipping engine_with_registered_kernel_emits_one_selection_event: \
