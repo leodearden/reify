@@ -404,12 +404,18 @@ fn assert_fea_material_template_shape(name: &str) {
     }
 
     // Trait constraints inject into every conforming structure, so the two
-    // Poisson-ratio constraints declared on `ElasticMaterial` must appear here
-    // alongside any structure-local ones.
-    assert!(
-        template.constraints.len() >= 2,
-        "{} should inherit at least 2 constraints from ElasticMaterial \
-         (poisson_ratio >= 0 and poisson_ratio < 0.5), got {} constraints",
+    // Poisson-ratio constraints declared on `ElasticMaterial` must appear
+    // here. Pinning to exactly 2 (rather than `>= 2`) catches the case of a
+    // structure-local constraint being added without an explicit test
+    // update; the four starter materials in `materials_fea.ri` deliberately
+    // declare zero structure-local constraints, so the trait-injected pair
+    // is the entire set.
+    assert_eq!(
+        template.constraints.len(),
+        2,
+        "{} should inherit exactly 2 constraints from ElasticMaterial \
+         (poisson_ratio >= 0 and poisson_ratio < 0.5) and declare no \
+         structure-local constraints, got {} constraints",
         name,
         template.constraints.len()
     );
