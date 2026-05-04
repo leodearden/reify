@@ -8,12 +8,21 @@
 //
 // PRD reference: docs/prds/v0_3/structural-analysis-fea.md task #1.
 //
+// Module exports:
+//   - `MaterialPropertyProvenance` — citation record (source, reference, notes)
+//   - `ElasticMaterial`            — dimensioned FEA trait
+//   - `Steel_AISI_1045`            — medium-carbon steel (general-purpose)
+//   - `Aluminium_6061_T6`          — precipitation-hardened aerospace aluminium
+//   - `Titanium_Ti6Al4V`           — alpha-beta titanium (aerospace, biomedical)
+//   - `ABS_Plastic`                — general-purpose moulded thermoplastic
+//
 // Citation policy: every property value cites a public, durable reference —
 // typically matweb's online material property database, the MMPDS metallic
 // design data handbook, or the ASM Handbook series. Each property also
 // carries a free-text `notes` field describing any caveats (heat treatment,
 // alloy variant, ductile-to-brittle transition, etc.) so downstream FEA
-// reports can reproduce the citation chain.
+// reports can reproduce the citation chain. Per-material citation sources
+// are tagged in a comment line directly above each `structure def`.
 //
 // Relationship to existing material traits:
 //   - This module's `ElasticMaterial` is a NEW, dimensioned trait designed for
