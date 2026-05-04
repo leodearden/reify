@@ -59,6 +59,6 @@ User-visible: cache is automatic, lives in a known directory, can be cleared via
 ## Relationship to other PRDs and tasks
 
 - **Direct extension of `structural-analysis-fea.md`** — adds persistence layer beneath the existing in-memory ComputeNode cache. No changes to FEA kernel; only to engine cache storage.
-- **Composes with `mesh-morphing.md`** — morphed meshes can be cached the same way; cache key just needs to record morph provenance.
+- **Orthogonal to `mesh-morphing.md`** — morphed meshes are NOT persisted; the persistent cache stores from-scratch results only. The morph is path-dependent (different morph-source meshes can produce different valid morph results for the same target geometry), but the persistent cache key is path-independent — caching morph results would either contaminate the cache with path-dependent state or fragment it with a "morph provenance" key dimension. The two layers compose by being orthogonal: persistent cache covers cross-session exact hits; morph covers within-session incremental updates from the most-recent in-memory mesh. Resolved 2026-05-04 alongside the mesh-morphing PRD.
 - **Composes with `fea-gui-rendering.md`** — opening a saved project hits cache → first-frame stress contour appears immediately.
 - **Generalises naturally to other ComputeNode kinds** — once persistent cache exists for FEA, it can extend to future CFD / EM / CAM ComputeNodes.
