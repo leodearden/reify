@@ -81,4 +81,15 @@ trait ElasticMaterial {
     param poisson_ratio : Real
     param density : Density
     param yield_stress : Option<Pressure>
+
+    // Lower bound: ν >= 0 — auxetic materials (ν < 0) are excluded from the
+    // FEA-bound trait. They exist physically but require specialised
+    // constitutive handling outside the linear-isotropic regime.
+    constraint poisson_ratio >= 0
+    // Upper bound: ν < 0.5 (HALF-OPEN). Exactly 0.5 represents
+    // incompressibility and breaks the linear-elastic bulk-modulus formula
+    //   K = E / (3(1 − 2ν))
+    // which goes singular as ν → 0.5. Use a separate hyper-elastic /
+    // mixed-formulation solver for incompressible materials (e.g. rubber).
+    constraint poisson_ratio < 0.5
 }
