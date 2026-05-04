@@ -313,20 +313,171 @@ structure def Conformer : ElasticMaterial {
 
 // ─── step-9: Steel_AISI_1045 starter material ────────────────────────────────
 
+/// Reduce a `CompiledExpr` to a single SI scalar magnitude by walking the
+/// expression tree. Handles the small subset of node kinds that appear in the
+/// material defaults declared in `materials_fea.ri`:
+///
+///   - `Literal(Value::Scalar { si_value, .. })` — quantity literals like `205GPa`
+///   - `Literal(Value::Real(v))`                 — bare numbers like `0.29` or `7850.0`
+///   - `Literal(Value::Int(v))`                  — bare integers
+///   - `BinOp { Mul | Div | Add | Sub }`         — compositional density form
+///   - `OptionSome(inner)`                       — `some(310MPa)`
+///
+/// Anything else (function calls, struct constructors, conditionals, …) is a
+/// programmer error here: the property defaults in `materials_fea.ri` are
+/// pure dimensioned literals or simple `BinOp` compositions, and we
+/// deliberately reject other shapes so a later refactor that smuggles in,
+/// say, a `lookup_steel_youngs_modulus()` call surfaces immediately rather
+/// than silently bypassing the value check.
+///
+/// This is compile-time numeric extraction — no engine, no `EvalContext` —
+/// so it stays inside the `reify-compiler` test crate without dragging in a
+/// dev-dep on `reify-eval` (which would create a `reify-compiler` ↔
+/// `reify-eval` dev-dep cycle).
+fn compute_si_value(expr: &CompiledExpr) -> f64 {
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value,
+        CompiledExprKind::Literal(Value::Real(v)) => *v,
+        CompiledExprKind::Literal(Value::Int(v)) => *v as f64,
+        CompiledExprKind::BinOp { op, left, right } => {
+            let l = compute_si_value(left);
+            let r = compute_si_value(right);
+            match op {
+                BinOp::Mul => l * r,
+                BinOp::Div => l / r,
+                BinOp::Add => l + r,
+                BinOp::Sub => l - r,
+                other => panic!(
+                    "compute_si_value: unsupported BinOp {:?} in material default expr",
+                    other
+                ),
+            }
+        }
+        CompiledExprKind::OptionSome(inner) => compute_si_value(inner),
+        other => panic!(
+            "compute_si_value: unsupported expression kind in material default: {:?}",
+            other
+        ),
+    }
+}
+
+/// Assert that the named param cell on `template` carries a default
+/// expression whose dimension and SI magnitude match `expected_dim` and
+/// `expected_si`. Uses a 1e-6 relative tolerance — tight enough to catch the
+/// `205kPa` vs `205GPa` class of typo (six orders of magnitude apart) but
+/// loose enough to accommodate float round-off from compositional forms like
+/// `7850.0 * 1kg / (1m * 1m * 1m)`.
+fn assert_property_si_value(
+    template: &TopologyTemplate,
+    member: &str,
+    expected_dim: DimensionVector,
+    expected_si: f64,
+) {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{} missing param '{}'", template.name, member));
+    let expr = cell
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member));
+
+    // Dimension is captured on the expression's typed result, regardless of
+    // whether the expression is a single Literal or a BinOp tree. This is
+    // the type-level half of the check: 205GPa and 205kPa both have
+    // dimension PRESSURE, so this assertion does NOT distinguish them — the
+    // SI value comparison below does.
+    let actual_dim = match &expr.result_type {
+        Type::Scalar { dimension } => dimension.clone(),
+        Type::Option(inner) => match inner.as_ref() {
+            Type::Scalar { dimension } => dimension.clone(),
+            other => panic!(
+                "{}.{} default_expr result_type Option<…> inner is not Scalar: {:?}",
+                template.name, member, other
+            ),
+        },
+        Type::Real => DimensionVector::DIMENSIONLESS,
+        other => panic!(
+            "{}.{} default_expr result_type is not Scalar/Option<Scalar>/Real: {:?}",
+            template.name, member, other
+        ),
+    };
+    assert_eq!(
+        actual_dim, expected_dim,
+        "{}.{} default_expr dimension should be {:?}, got {:?}",
+        template.name, member, expected_dim, actual_dim
+    );
+
+    let actual_si = compute_si_value(expr);
+    let tol = 1e-6 * expected_si.abs().max(1.0);
+    assert!(
+        (actual_si - expected_si).abs() <= tol,
+        "{}.{} default_expr SI value should be {} (within {}), got {} \
+         — guards against `kPa` vs `GPa` etc. unit-prefix typos",
+        template.name,
+        member,
+        expected_si,
+        tol,
+        actual_si
+    );
+}
+
+/// Asserts the four numeric property defaults of a concrete material
+/// evaluate to the expected SI magnitudes, plus that each provenance field
+/// carries a `MaterialPropertyProvenance(...)` constructor as its default
+/// (verified indirectly via `cell_type` + `default_expr.is_some()` in
+/// `assert_fea_material_template_shape`).
+///
+/// `expected_yield_pa = None` would currently be dead code — all four
+/// starter materials declare `some(...)` yields — but the parameter is
+/// `Option<f64>` to keep the door open for a future yield-less material
+/// without forcing a helper redesign.
+fn assert_fea_material_property_values(
+    name: &str,
+    expected_youngs_pa: f64,
+    expected_poisson: f64,
+    expected_density_kgm3: f64,
+    expected_yield_pa: Option<f64>,
+) {
+    let template = find_structure(name);
+    assert_property_si_value(
+        template,
+        "youngs_modulus",
+        DimensionVector::PRESSURE,
+        expected_youngs_pa,
+    );
+    assert_property_si_value(
+        template,
+        "poisson_ratio",
+        DimensionVector::DIMENSIONLESS,
+        expected_poisson,
+    );
+    assert_property_si_value(
+        template,
+        "density",
+        DimensionVector::MASS_DENSITY,
+        expected_density_kgm3,
+    );
+    if let Some(yield_pa) = expected_yield_pa {
+        assert_property_si_value(
+            template,
+            "yield_stress",
+            DimensionVector::PRESSURE,
+            yield_pa,
+        );
+    }
+}
+
 /// Asserts the four-property × four-provenance shape of a concrete material
 /// structure conforming to `ElasticMaterial`. Used by the per-material tests
 /// (Steel_AISI_1045, Aluminium_6061_T6, Titanium_Ti6Al4V, ABS_Plastic) to keep
 /// the eight-value-cell + trait-bound + constraint-injection check uniform.
 ///
-/// Per the file-level note on engine evaluation: this helper is **compile-time
-/// only**. It does not evaluate default expressions to confirm SI numeric
-/// values (e.g. `youngs_modulus ≈ 2.05e11 Pa` for steel) because the
-/// `make_simple_engine` / `engine.eval` helpers live behind the `eval-helpers`
-/// feature, and adding `reify-eval` as a `reify-compiler` dev-dep would create
-/// a `reify-compiler` ↔ `reify-eval` cycle (see step-7 commentary).
-/// The compile-time success of the dimensioned literal `205GPa` etc. already
-/// proves the parse + type-check + dimension-tag path; runtime numeric
-/// equality is exercised by separate engine-level tests in `reify-eval`.
+/// This helper covers structural shape only (cell names, types, default
+/// presence, trait bound, constraint count). Numeric SI values for each
+/// property are asserted by `assert_fea_material_property_values`, called
+/// alongside this helper in each per-material test.
 fn assert_fea_material_template_shape(name: &str) {
     let template = find_structure(name);
 
@@ -433,6 +584,17 @@ fn assert_fea_material_template_shape(name: &str) {
 #[test]
 fn steel_aisi_1045_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Steel_AISI_1045");
+    // matweb-equivalent SI values: 205 GPa, 0.29, 7850 kg/m³, 310 MPa.
+    // The SI check guards against `kPa` vs `GPa` etc. unit-prefix typos
+    // that the shape check (which only verifies dimension == PRESSURE)
+    // cannot detect.
+    assert_fea_material_property_values(
+        "Steel_AISI_1045",
+        205.0e9,
+        0.29,
+        7850.0,
+        Some(310.0e6),
+    );
 }
 
 // ─── step-11: Aluminium_6061_T6 starter material ─────────────────────────────
@@ -447,6 +609,14 @@ fn steel_aisi_1045_structure_conforms_with_correct_property_values_and_provenanc
 #[test]
 fn aluminium_6061_t6_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Aluminium_6061_T6");
+    // matweb-equivalent SI values: 68.9 GPa, 0.33, 2700 kg/m³, 276 MPa.
+    assert_fea_material_property_values(
+        "Aluminium_6061_T6",
+        68.9e9,
+        0.33,
+        2700.0,
+        Some(276.0e6),
+    );
 }
 
 // ─── step-13: Titanium_Ti6Al4V starter material ──────────────────────────────
@@ -463,6 +633,14 @@ fn aluminium_6061_t6_structure_conforms_with_correct_property_values_and_provena
 #[test]
 fn titanium_ti6al4v_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Titanium_Ti6Al4V");
+    // matweb / ASM Handbook SI values: 113.8 GPa, 0.342, 4430 kg/m³, 880 MPa.
+    assert_fea_material_property_values(
+        "Titanium_Ti6Al4V",
+        113.8e9,
+        0.342,
+        4430.0,
+        Some(880.0e6),
+    );
 }
 
 // ─── step-15: ABS_Plastic starter material ───────────────────────────────────
@@ -481,6 +659,15 @@ fn titanium_ti6al4v_structure_conforms_with_correct_property_values_and_provenan
 #[test]
 fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("ABS_Plastic");
+    // matweb SI values: 2.3 GPa, 0.35, 1050 kg/m³, ~40 MPa (approximate
+    // due to ABS's strain-rate-dependent ductile-to-brittle transition).
+    assert_fea_material_property_values(
+        "ABS_Plastic",
+        2.3e9,
+        0.35,
+        1050.0,
+        Some(40.0e6),
+    );
 }
 
 // ─── step-17: module summary regression test ─────────────────────────────────
