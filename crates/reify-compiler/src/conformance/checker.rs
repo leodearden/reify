@@ -108,38 +108,72 @@ pub(super) fn check_phase_resolve_structure_members(
     // poison the downstream requirement check whenever the trait requires a non-Real type
     // (e.g. Length), generating a misleading second diagnostic and obscuring the actual
     // problem for the user.
+    //
+    // Uses the full type-expression resolver `resolve_type_expr_with_aliases` so
+    // parameterized builtins (`Option<T>`, `List<T>`, `Set<T>`, `Map<K,V>`) and
+    // parametric alias instantiations work in structure-member declarations the
+    // same way they do in trait-member declarations (task 2908). The pre-existing
+    // simple-name `resolve_type_with_aliases` call never consulted `type_args`, so
+    // any structure annotation `param x : Option<Pressure>` was rejected as
+    // "unresolved type" inside this conformance pass even when the same shape
+    // resolved cleanly elsewhere (e.g. entity.rs::compile_structure). Mirrors the
+    // parallel fix landed in `traits.rs` (commit 10481423b2).
     let resolve_member_annotation_type =
         |te: &reify_syntax::TypeExpr, diagnostics: &mut Vec<Diagnostic>| -> Type {
-            match &te.kind {
-                reify_syntax::TypeExprKind::Named { name, type_args } => {
-                    resolve_type_with_aliases(
-                        name,
-                        &empty_params,
-                        alias_registry,
-                        structure_names,
-                        trait_names,
-                    )
-                    .or_else(|| {
-                        enum_names.contains(name.as_str()).then(|| {
-                            if !type_args.is_empty() {
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "enum `{}` does not accept type arguments",
-                                        name
-                                    ))
-                                    .with_label(
-                                        DiagnosticLabel::new(te.span, "enum types are not generic"),
-                                    ),
-                                );
-                            }
-                            Type::Enum(name.to_string())
-                        })
-                    })
-                    .unwrap_or_else(|| {
+            // Reject DimensionalOp early with the historical "unexpected dimensional
+            // expression" wording — `resolve_type_expr_with_aliases` silently returns
+            // None for that variant and would otherwise lose the more informative
+            // diagnostic. Mirrors the `traits.rs` early-rejection pattern.
+            if matches!(&te.kind, reify_syntax::TypeExprKind::DimensionalOp { .. }) {
+                diagnostics.push(
+                    Diagnostic::error(format!("unresolved type in conformance check: {}", te))
+                        .with_label(DiagnosticLabel::new(
+                            te.span,
+                            "unexpected dimensional expression",
+                        )),
+                );
+                // Return Type::Error (poison sentinel) so the downstream
+                // `implicitly_converts_to` / `type_compatible` producer-side wildcard
+                // (type_compat.rs:3-26, :119-130) suppresses the cascade "type
+                // mismatch for trait member" diagnostic.
+                return Type::Error;
+            }
+            match resolve_type_expr_with_aliases(
+                te,
+                &empty_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            ) {
+                Some(t) => t,
+                None => {
+                    // Check if it's an enum type defined in the same module.
+                    // Enum resolution is independent of the alias/builtin chain
+                    // because reify enums are non-parametric and live in a
+                    // separate registry (`enum_defs`). Mirrors the structure-param
+                    // path in entity.rs::compile_structure (~line 425).
+                    if let reify_syntax::TypeExprKind::Named { name, type_args } = &te.kind
+                        && enum_names.contains(name.as_str())
+                    {
+                        if !type_args.is_empty() {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "enum `{}` does not accept type arguments",
+                                    name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    te.span,
+                                    "enum types are not generic",
+                                )),
+                            );
+                        }
+                        Type::Enum(name.to_string())
+                    } else {
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "unresolved type in conformance check: {}",
-                                name
+                                te
                             ))
                             .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                         );
@@ -150,30 +184,7 @@ pub(super) fn check_phase_resolve_structure_members(
                         // The diagnostic emitted on the preceding line is the root
                         // cause; a second mismatch diagnostic would mislead the user.
                         Type::Error
-                    })
-                }
-                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
-                    diagnostics.push(
-                        Diagnostic::error(format!("unresolved type in conformance check: {}", te))
-                            .with_label(DiagnosticLabel::new(
-                                te.span,
-                                "unexpected dimensional expression",
-                            )),
-                    );
-                    // Return Type::Error (poison sentinel) — same rationale as the Named
-                    // arm above: suppress downstream "type mismatch for trait member"
-                    // cascade via the type_compat.rs producer-side wildcard.
-                    Type::Error
-                }
-                reify_syntax::TypeExprKind::IntegerLiteral(_) => {
-                    diagnostics.push(
-                        Diagnostic::error(format!("unresolved type in conformance check: {}", te))
-                            .with_label(DiagnosticLabel::new(
-                                te.span,
-                                "integer literal not allowed in this position",
-                            )),
-                    );
-                    Type::Error
+                    }
                 }
             }
         };
