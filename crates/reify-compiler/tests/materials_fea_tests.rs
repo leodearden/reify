@@ -428,3 +428,17 @@ fn assert_fea_material_template_shape(name: &str) {
 fn steel_aisi_1045_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Steel_AISI_1045");
 }
+
+// ─── step-11: Aluminium_6061_T6 starter material ─────────────────────────────
+
+/// `Aluminium_6061_T6` is the precipitation-hardened aerospace-grade aluminium
+/// starter material (T6 = solution-heat-treated + artificially aged).
+/// Asserts the same eight-cell shape as Steel_AISI_1045 via the shared helper.
+///
+/// PRD task #1 cites public matweb-equivalent values:
+///   youngs_modulus = 68.9 GPa, poisson_ratio = 0.33,
+///   density = 2700 kg/m³, yield_stress = some(276 MPa).
+#[test]
+fn aluminium_6061_t6_structure_conforms_with_correct_property_values_and_provenance() {
+    assert_fea_material_template_shape("Aluminium_6061_T6");
+}
