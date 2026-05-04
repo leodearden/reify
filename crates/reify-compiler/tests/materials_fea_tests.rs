@@ -442,3 +442,19 @@ fn steel_aisi_1045_structure_conforms_with_correct_property_values_and_provenanc
 fn aluminium_6061_t6_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("Aluminium_6061_T6");
 }
+
+// ─── step-13: Titanium_Ti6Al4V starter material ──────────────────────────────
+
+/// `Titanium_Ti6Al4V` is the most widely used titanium alloy (Grade 5,
+/// alpha-beta), prized in aerospace and biomedical applications for its
+/// strength-to-weight ratio and corrosion resistance. Properties below are
+/// for the annealed condition. Asserts the same eight-cell shape as the
+/// other starter materials via the shared helper.
+///
+/// PRD task #1 cites public matweb-equivalent values:
+///   youngs_modulus = 113.8 GPa, poisson_ratio = 0.342,
+///   density = 4430 kg/m³, yield_stress = some(880 MPa).
+#[test]
+fn titanium_ti6al4v_structure_conforms_with_correct_property_values_and_provenance() {
+    assert_fea_material_template_shape("Titanium_Ti6Al4V");
+}
