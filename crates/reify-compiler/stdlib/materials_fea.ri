@@ -227,3 +227,44 @@ structure def Titanium_Ti6Al4V : ElasticMaterial {
             notes: "Tensile yield for annealed condition; STA temper reaches higher values."
         )
 }
+
+// matweb citation: ABS, general-purpose, moulded grade.
+//
+// ABS_Plastic is the general-purpose acrylonitrile-butadiene-styrene
+// thermoplastic used in injection moulding and FDM 3D printing. Properties
+// below are room-temperature values for general-purpose moulded ABS.
+// Yield_stress is approximate because ABS exhibits a ductile-to-brittle
+// transition that depends on strain rate and temperature; for FEA-grade
+// limit-state work, refer to the supplier's datasheet for the specific
+// resin grade.
+structure def ABS_Plastic : ElasticMaterial {
+    param youngs_modulus : Pressure = 2.3GPa
+    param poisson_ratio : Real = 0.35
+    param density : Density = 1050.0 * 1kg / (1m * 1m * 1m)
+    param yield_stress : Option<Pressure> = some(40MPa)
+
+    param youngs_modulus_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
+            notes: "Typical room-temperature tensile modulus for general-purpose moulded ABS."
+        )
+    param poisson_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
+            notes: "Typical for amorphous thermoplastics in the linear-elastic regime."
+        )
+    param density_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
+            notes: "Nominal density for general-purpose ABS resins (varies with filler content)."
+        )
+    param yield_stress_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
+            notes: "Approximate yield: ABS exhibits a ductile-to-brittle transition sensitive to strain rate and temperature. Refer to supplier datasheet for limit-state work."
+        )
+}
