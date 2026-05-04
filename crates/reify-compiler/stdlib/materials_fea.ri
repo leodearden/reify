@@ -151,3 +151,41 @@ structure def Steel_AISI_1045 : ElasticMaterial {
             notes: "Tensile yield strength for hot-rolled condition; quenched-and-tempered variants reach higher values."
         )
 }
+
+// matweb citation: Aluminum 6061-T6, precipitation-hardened aerospace alloy.
+//
+// Aluminium_6061_T6 is the workhorse aerospace and structural aluminium
+// alloy. The T6 temper denotes solution-heat-treatment followed by
+// artificial ageing. Properties below are typical room-temperature values;
+// exposure to elevated temperatures degrades the precipitation hardening.
+structure def Aluminium_6061_T6 : ElasticMaterial {
+    param youngs_modulus : Pressure = 68.9GPa
+    param poisson_ratio : Real = 0.33
+    param density : Density = 2700.0 * 1kg / (1m * 1m * 1m)
+    param yield_stress : Option<Pressure> = some(276MPa)
+
+    param youngs_modulus_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Aluminum 6061-T6",
+            notes: "Typical room-temperature Young's modulus for 6061-T6 wrought aluminium."
+        )
+    param poisson_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Aluminum 6061-T6",
+            notes: "Typical for wrought aluminium alloys; insensitive to temper."
+        )
+    param density_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Aluminum 6061-T6",
+            notes: "Nominal density of 6061 wrought aluminium alloy."
+        )
+    param yield_stress_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Aluminum 6061-T6",
+            notes: "Tensile yield strength for T6 temper; degrades on prolonged exposure above ~150 °C."
+        )
+}
