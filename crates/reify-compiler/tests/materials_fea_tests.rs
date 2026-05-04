@@ -310,3 +310,121 @@ structure def Conformer : ElasticMaterial {
         conformer.constraints.len()
     );
 }
+
+// ─── step-9: Steel_AISI_1045 starter material ────────────────────────────────
+
+/// Asserts the four-property × four-provenance shape of a concrete material
+/// structure conforming to `ElasticMaterial`. Used by the per-material tests
+/// (Steel_AISI_1045, Aluminium_6061_T6, Titanium_Ti6Al4V, ABS_Plastic) to keep
+/// the eight-value-cell + trait-bound + constraint-injection check uniform.
+///
+/// Per the file-level note on engine evaluation: this helper is **compile-time
+/// only**. It does not evaluate default expressions to confirm SI numeric
+/// values (e.g. `youngs_modulus ≈ 2.05e11 Pa` for steel) because the
+/// `make_simple_engine` / `engine.eval` helpers live behind the `eval-helpers`
+/// feature, and adding `reify-eval` as a `reify-compiler` dev-dep would create
+/// a `reify-compiler` ↔ `reify-eval` cycle (see step-7 commentary).
+/// The compile-time success of the dimensioned literal `205GPa` etc. already
+/// proves the parse + type-check + dimension-tag path; runtime numeric
+/// equality is exercised by separate engine-level tests in `reify-eval`.
+fn assert_fea_material_template_shape(name: &str) {
+    let template = find_structure(name);
+
+    assert!(
+        template.trait_bounds.contains(&"ElasticMaterial".to_string()),
+        "{} should carry 'ElasticMaterial' trait bound, got: {:?}",
+        name,
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        params.len(),
+        8,
+        "{} should have exactly 8 param cells (4 ElasticMaterial members + 4 \
+         per-property provenance), got: {:?}",
+        name,
+        names
+    );
+
+    // Each (member name, expected cell type) tuple. Provenance cells are typed
+    // as `Type::StructureRef("MaterialPropertyProvenance")` per the structure-
+    // name resolver in type_resolution.rs:658-660.
+    let provenance_ty = Type::StructureRef("MaterialPropertyProvenance".to_string());
+    let expected: &[(&str, Type)] = &[
+        (
+            "youngs_modulus",
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        ("poisson_ratio", Type::Real),
+        (
+            "density",
+            Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        ),
+        (
+            "yield_stress",
+            Type::Option(Box::new(Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            })),
+        ),
+        ("youngs_modulus_provenance", provenance_ty.clone()),
+        ("poisson_ratio_provenance", provenance_ty.clone()),
+        ("density_provenance", provenance_ty.clone()),
+        ("yield_stress_provenance", provenance_ty),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} missing required param '{}'; got: {:?}",
+                    name, member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "{}.{} should be {:?}, got {:?}",
+            name, member, expected_ty, cell.cell_type
+        );
+        assert!(
+            cell.default_expr.is_some(),
+            "{}.{} must carry a default expression so a bare `{}()` instantiation \
+             populates every cell; got default_expr: None",
+            name,
+            member,
+            name
+        );
+    }
+
+    // Trait constraints inject into every conforming structure, so the two
+    // Poisson-ratio constraints declared on `ElasticMaterial` must appear here
+    // alongside any structure-local ones.
+    assert!(
+        template.constraints.len() >= 2,
+        "{} should inherit at least 2 constraints from ElasticMaterial \
+         (poisson_ratio >= 0 and poisson_ratio < 0.5), got {} constraints",
+        name,
+        template.constraints.len()
+    );
+}
+
+/// `Steel_AISI_1045` is the medium-carbon hot-rolled-steel starter material.
+/// Asserts the structure's full shape: the eight expected value cells (four
+/// `ElasticMaterial` parameters + four per-property `MaterialPropertyProvenance`
+/// fields), the `ElasticMaterial` trait bound, that each cell carries a default
+/// expression, and that the two Poisson-ratio constraints inject in.
+///
+/// PRD task #1 cites public matweb-equivalent values:
+///   youngs_modulus = 205 GPa, poisson_ratio = 0.29,
+///   density = 7850 kg/m³, yield_stress = some(310 MPa).
+#[test]
+fn steel_aisi_1045_structure_conforms_with_correct_property_values_and_provenance() {
+    assert_fea_material_template_shape("Steel_AISI_1045");
+}
