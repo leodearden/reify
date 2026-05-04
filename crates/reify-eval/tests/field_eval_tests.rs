@@ -1985,22 +1985,28 @@ structure S {
 // (mirroring how `sample`/`gradient`/`von_mises` are reachable purely
 // via the runtime dispatcher).
 //
-// Source: `field def temperature : Real -> Real { source = sampled
+// Source: `field def temperature : Length -> Real { source = sampled
 // { grid = "RegularGrid1" data = [1.0, 5.0, 3.0, 4.0, 2.0] ... } }`.
-// Domain `Real` (dimensionless) and codomain `Real` (dimensionless) make
-// the assertions tightly typed: `xmax`/`xmin` should be `Value::Real(...)`
-// at the dimensionless coord rather than dimensioned `Value::Scalar`.
+// Using `Length -> Real` (rather than `Real -> Real`) keeps the typing
+// internally consistent with the dimensioned `bbox(point3(0.0m, ...))`
+// bounds and `spacing = 1.0m` — no reliance on the elaborator's
+// dimensionless-coercion path. Domain `Length` resolves to
+// `Type::Scalar { dimension: LENGTH }`, so `argmax`/`argmin` return
+// dimensioned `Value::Scalar { dimension: LENGTH }` coords. Codomain
+// `Real` (dimensionless) keeps `max`/`min` as `Value::Real`.
 //
 // Expected:
 // - `max(temperature) == Real(5.0)` (data buffer maximum)
 // - `min(temperature) == Real(1.0)` (data buffer minimum)
-// - `argmax(temperature) == Real(1.0)` (coord at index 1, where data is max)
-// - `argmin(temperature) == Real(0.0)` (coord at index 0, where data is min)
+// - `argmax(temperature) == Scalar { 1.0, LENGTH }` (coord at index 1)
+// - `argmin(temperature) == Scalar { 0.0, LENGTH }` (coord at index 0)
 
 #[test]
 fn eval_field_reductions_on_sampled_field_returns_expected_values() {
+    use reify_types::DimensionVector;
+
     let source = r#"
-field def temperature : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(4.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [1.0, 5.0, 3.0, 4.0, 2.0] } }
+field def temperature : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(4.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [1.0, 5.0, 3.0, 4.0, 2.0] } }
 
 structure S {
     let m = max(temperature)
@@ -2048,11 +2054,21 @@ structure S {
         .get(&ValueCellId::new("S", "xmax"))
         .unwrap_or_else(|| panic!("'S.xmax' not found in eval result values"));
     match xmax {
-        Value::Real(v) => assert!(
-            (v - 1.0).abs() < 1e-12,
-            "argmax(temperature) expected coord 1.0 (index 1), got {v}"
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "argmax(temperature) coord should carry LENGTH dimension"
+            );
+            assert!(
+                (si_value - 1.0).abs() < 1e-12,
+                "argmax(temperature) expected coord 1.0m (index 1), got {si_value}"
+            );
+        }
+        other => panic!(
+            "expected Value::Scalar {{ LENGTH, 1.0 }} for S.xmax, got: {:?}",
+            other
         ),
-        other => panic!("expected Value::Real(1.0) for S.xmax, got: {:?}", other),
     }
 
     let xmin = result
@@ -2060,10 +2076,20 @@ structure S {
         .get(&ValueCellId::new("S", "xmin"))
         .unwrap_or_else(|| panic!("'S.xmin' not found in eval result values"));
     match xmin {
-        Value::Real(v) => assert!(
-            (v - 0.0).abs() < 1e-12,
-            "argmin(temperature) expected coord 0.0 (index 0), got {v}"
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "argmin(temperature) coord should carry LENGTH dimension"
+            );
+            assert!(
+                (si_value - 0.0).abs() < 1e-12,
+                "argmin(temperature) expected coord 0.0m (index 0), got {si_value}"
+            );
+        }
+        other => panic!(
+            "expected Value::Scalar {{ LENGTH, 0.0 }} for S.xmin, got: {:?}",
+            other
         ),
-        other => panic!("expected Value::Real(0.0) for S.xmin, got: {:?}", other),
     }
 }
