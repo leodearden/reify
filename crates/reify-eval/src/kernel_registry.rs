@@ -45,7 +45,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
@@ -64,6 +64,27 @@ static REGISTRY: OnceLock<BTreeMap<String, &'static KernelRegistration>> = OnceL
 /// flips exactly once per process; subsequent calls observe `Err` and
 /// short-circuit.
 static UNIQUENESS_CHECKED: AtomicBool = AtomicBool::new(false);
+
+/// Counter tracking how many times `collect_registry()`'s gated branch
+/// has actually invoked [`warn_if_duplicate_op_repr_pairs`]. Because the
+/// surrounding [`UNIQUENESS_CHECKED`] gate uses `compare_exchange(false,
+/// true)`, this counter transitions 0 → 1 at most once across all
+/// `collect_registry()` callers in the process — its monotonic upper
+/// bound IS the at-most-once contract.
+///
+/// Crucially the `fetch_add(1)` lives INSIDE the gated branch, NOT at
+/// the top of the helper itself. This means helper-direct tests (which
+/// call the helper with synthetic input to exercise the warn/panic
+/// paths) do NOT inflate the counter and cannot interfere with parallel
+/// `collect_registry()`-based tests reading it.
+///
+/// Exposed at module scope (not `pub(crate)`) so the inner `tests`
+/// module can read it via `super::UNIQUENESS_CHECK_INVOCATIONS`. Pins
+/// the once-shot contract structurally: see
+/// [`tests::collect_registry_runs_uniqueness_check_at_most_once_across_calls`]
+/// which snapshots before/after three `collect_registry()` calls and
+/// asserts `delta <= 1`.
+static UNIQUENESS_CHECK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Borrowed accessor over the memoized registry of [`KernelRegistration`]
 /// records.
@@ -132,12 +153,16 @@ pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
 /// (an O(kernels × supports) `HashMap` walk) is gated behind
 /// `UNIQUENESS_CHECKED` so it runs at most once per process — mirroring
 /// how [`build_registry`]'s duplicate-NAME check is amortised behind the
-/// surrounding `REGISTRY: OnceLock`. The result itself is not memoized by
-/// design: callers receive a fresh, mutable `BTreeMap` each call. Per the
-/// PRD's "read once at engine startup" contract, callers SHOULD NOT call
-/// this on the hot dispatch path; the once-flag enforces that intent
-/// structurally for the diagnostic walk while leaving the result allocation
-/// per-call.
+/// surrounding `REGISTRY: OnceLock`. The invocation count is exposed via
+/// `UNIQUENESS_CHECK_INVOCATIONS` (an `AtomicUsize` incremented inside the
+/// gated branch) so the at-most-once contract can be pinned by unit tests
+/// via a delta snapshot rather than by inspecting the `UNIQUENESS_CHECKED`
+/// flag (which would only prove "at least once" — the opposite direction of
+/// the contract). The result itself is not memoized by design: callers
+/// receive a fresh, mutable `BTreeMap` each call. Per the PRD's "read once
+/// at engine startup" contract, callers SHOULD NOT call this on the hot
+/// dispatch path; the once-flag enforces that intent structurally for the
+/// diagnostic walk while leaving the result allocation per-call.
 pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
     let result: BTreeMap<String, CapabilityDescriptor> = registry()
         .iter()
@@ -147,6 +172,7 @@ pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
+        UNIQUENESS_CHECK_INVOCATIONS.fetch_add(1, Ordering::Relaxed);
         warn_if_duplicate_op_repr_pairs(&result);
     }
     result
