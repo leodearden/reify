@@ -476,3 +476,98 @@ fn titanium_ti6al4v_structure_conforms_with_correct_property_values_and_provenan
 fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() {
     assert_fea_material_template_shape("ABS_Plastic");
 }
+
+// ─── step-17: module summary regression test ─────────────────────────────────
+
+/// Final regression covering the std/materials/fea module's overall shape.
+/// At this point the previous tests already check each entity in detail; this
+/// test exists to lock in the module's *cardinality* — exactly one trait,
+/// exactly five top-level structures (one provenance record + four materials),
+/// zero error diagnostics, every material carries the `ElasticMaterial` trait
+/// bound. Adding or removing a top-level entity from `materials_fea.ri` will
+/// fail this test, which is the intended behaviour: any future expansion should
+/// be expressed as a deliberate update here, not silently introduced.
+#[test]
+fn std_materials_fea_module_summary_has_one_trait_one_struct_and_four_materials() {
+    let module = load_stdlib_module();
+
+    // Zero error diagnostics is also asserted in step-1; repeat here so this
+    // single test fails loudly on any regression rather than silently relying
+    // on the earlier check.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "std/materials/fea should have zero error diagnostics, got: {:?}",
+        errors
+    );
+
+    // Exactly one trait — `ElasticMaterial`.
+    let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        module.trait_defs.len(),
+        1,
+        "std/materials/fea should declare exactly 1 trait, got: {:?}",
+        trait_names
+    );
+    assert!(
+        module.trait_defs.iter().any(|t| t.name == "ElasticMaterial"),
+        "std/materials/fea should contain the 'ElasticMaterial' trait, got: {:?}",
+        trait_names
+    );
+
+    // Exactly five top-level structures — one provenance record + four
+    // starter materials. Filter on `EntityKind::Structure` so future
+    // non-structure additions to the same module (enums, traits, ...)
+    // don't perturb this assertion.
+    let structures: Vec<&str> = module
+        .templates
+        .iter()
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t| t.name.as_str())
+        .collect();
+    let expected_structures = [
+        "MaterialPropertyProvenance",
+        "Steel_AISI_1045",
+        "Aluminium_6061_T6",
+        "Titanium_Ti6Al4V",
+        "ABS_Plastic",
+    ];
+    assert_eq!(
+        structures.len(),
+        expected_structures.len(),
+        "std/materials/fea should declare exactly {} top-level structures, got: {:?}",
+        expected_structures.len(),
+        structures
+    );
+    for expected in &expected_structures {
+        assert!(
+            structures.iter().any(|s| s == expected),
+            "std/materials/fea missing expected structure '{}'; got: {:?}",
+            expected,
+            structures
+        );
+    }
+
+    // Every starter material must carry the `ElasticMaterial` trait bound.
+    // `MaterialPropertyProvenance` is intentionally excluded — it is a plain
+    // citation record with no trait bound.
+    let material_names = [
+        "Steel_AISI_1045",
+        "Aluminium_6061_T6",
+        "Titanium_Ti6Al4V",
+        "ABS_Plastic",
+    ];
+    for material in &material_names {
+        let template = find_structure(material);
+        assert!(
+            template.trait_bounds.contains(&"ElasticMaterial".to_string()),
+            "{} should carry 'ElasticMaterial' trait bound, got: {:?}",
+            material,
+            template.trait_bounds
+        );
+    }
+}
