@@ -114,16 +114,15 @@ fn engine_check_imported_tolerance_promise_emits_warning_when_demand_strictly_ti
 /// STEPOutput(1µm) + manufacturing(1µm) → `min(1µm, 1µm) = 1µm > 0.0`, so
 /// the zero-promise guard fires.
 #[test]
-fn engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_zero_and_demand_positive(
-) {
-    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_zero_promise_lint".to_string(),
-    ]))
-    .template(step_input_template(0.0))
-    .template(step_output_template(1e-6))
-    .template(my_design_template())
-    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
-    .build();
+fn engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_zero_and_demand_positive()
+ {
+    let module =
+        CompiledModuleBuilder::new(ModulePath::new(vec!["test_zero_promise_lint".to_string()]))
+            .template(step_input_template(0.0))
+            .template(step_output_template(1e-6))
+            .template(my_design_template())
+            .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+            .build();
 
     let mut engine = make_engine();
     engine.eval(&module);
@@ -133,7 +132,7 @@ fn engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_
         .check_imported_tolerance_promise("STEPInput", "MyDesign", "STEPOutput")
         .expect(
             "with promise=0.0 and demand=1µm (positive), the check must \
-             return Some(diagnostic) — the zero-promise lint must fire"
+             return Some(diagnostic) — the zero-promise lint must fire",
         );
 
     assert_eq!(
@@ -224,8 +223,8 @@ fn engine_check_imported_tolerance_promise_returns_none_when_promise_and_demand_
 /// STEPOutput(0.0) + manufacturing(0.0) fold to `min(0.0, 0.0) = 0.0` via
 /// `combine_demanded_tolerance`, so demanded = 0.0.
 #[test]
-fn engine_check_imported_tolerance_promise_emits_insufficient_lint_when_promise_positive_and_demand_zero(
-) {
+fn engine_check_imported_tolerance_promise_emits_insufficient_lint_when_promise_positive_and_demand_zero()
+ {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
         "test_positive_promise_zero_demand".to_string(),
     ]))
@@ -292,11 +291,10 @@ fn engine_check_imported_tolerance_promise_returns_none_in_no_op_cases() {
     // (a) No Input template — module has only MyDesign, no STEPInput.
     //     The promise contributor is None, so the `?` short-circuits to None.
     {
-        let module = CompiledModuleBuilder::new(ModulePath::new(vec![
-            "test_no_input_template".to_string(),
-        ]))
-        .template(my_design_template())
-        .build();
+        let module =
+            CompiledModuleBuilder::new(ModulePath::new(vec!["test_no_input_template".to_string()]))
+                .template(my_design_template())
+                .build();
         let mut engine = make_engine();
         engine.eval(&module);
         assert!(

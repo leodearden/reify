@@ -107,10 +107,8 @@ fn substitution_vec_insertion_order_does_not_affect_fingerprint() {
     let mut graph_y = EvaluationGraph::from_templates(&[template]);
 
     // Same logical map, different insertion order.
-    graph_x.auto_type_substitution =
-        vec![("A".into(), "X1".into()), ("B".into(), "Y1".into())];
-    graph_y.auto_type_substitution =
-        vec![("B".into(), "Y1".into()), ("A".into(), "X1".into())];
+    graph_x.auto_type_substitution = vec![("A".into(), "X1".into()), ("B".into(), "Y1".into())];
+    graph_y.auto_type_substitution = vec![("B".into(), "Y1".into()), ("A".into(), "X1".into())];
 
     assert_eq!(
         graph_x.topology_fingerprint(),
@@ -185,7 +183,10 @@ fn substitution_flip_and_revert_restores_topology_fingerprint() {
     let fp_b = graph_b.topology_fingerprint();
 
     // The flip must change the fingerprint.
-    assert_ne!(fp_a, fp_b, "substitution flip must change topology fingerprint");
+    assert_ne!(
+        fp_a, fp_b,
+        "substitution flip must change topology fingerprint"
+    );
 
     // graph_c: substitution_a again (revert).
     let mut graph_c = EvaluationGraph::from_templates(&[template]);
@@ -193,8 +194,14 @@ fn substitution_flip_and_revert_restores_topology_fingerprint() {
     let fp_c = graph_c.topology_fingerprint();
 
     // The revert must restore the original fingerprint.
-    assert_eq!(fp_c, fp_a, "substitution revert must restore original fingerprint");
-    assert_ne!(fp_c, fp_b, "reverted fingerprint must differ from flipped fingerprint");
+    assert_eq!(
+        fp_c, fp_a,
+        "substitution revert must restore original fingerprint"
+    );
+    assert_ne!(
+        fp_c, fp_b,
+        "reverted fingerprint must differ from flipped fingerprint"
+    );
 }
 
 // ─── producer-bug: uniqueness invariant panics in debug ──────────────────────
@@ -243,8 +250,8 @@ fn snapshot_from_compiled_module_propagates_auto_type_substitution_to_graph() {
         "/../../examples/bearing_auto_seal.ri"
     );
 
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/bearing_auto_seal.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/bearing_auto_seal.ri should exist");
 
     // Compile once; stdlib + example is expensive in an integration test.
     // The baseline keeps the default empty auto_type_substitution.
@@ -269,8 +276,7 @@ fn snapshot_from_compiled_module_propagates_auto_type_substitution_to_graph() {
     // The substitution must flip the fingerprint end-to-end through the
     // production path (PRD task 5 acceptance criterion 7).
     assert_ne!(
-        snap_resolved.topology_fingerprint,
-        snap_baseline.topology_fingerprint,
+        snap_resolved.topology_fingerprint, snap_baseline.topology_fingerprint,
         "auto_type_substitution must flip topology_fingerprint end-to-end \
          through Snapshot::from_compiled_module"
     );
@@ -300,8 +306,8 @@ fn multi_param_resolution_outcome_substitution_drives_topology_fingerprint() {
         "/../../examples/bearing_auto_seal.ri"
     );
 
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/bearing_auto_seal.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/bearing_auto_seal.ri should exist");
     let module = parse_and_compile_with_stdlib(&source);
 
     // Build registries (mirrors auto_type_param_determinism_tests.rs::build_registries).

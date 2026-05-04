@@ -784,8 +784,8 @@ mod tests {
     /// `imported_tolerance_promise_diagnostic_renders_human_readable_units`
     /// (task 2790).
     #[test]
-    fn input_tolerance_promise_is_zero_diagnostic_builds_warning_with_code_template_name_and_human_readable_demanded(
-    ) {
+    fn input_tolerance_promise_is_zero_diagnostic_builds_warning_with_code_template_name_and_human_readable_demanded()
+     {
         use reify_types::{DiagnosticCode, Severity};
 
         let diag = input_tolerance_promise_is_zero_diagnostic("STEPInput", 1e-6);

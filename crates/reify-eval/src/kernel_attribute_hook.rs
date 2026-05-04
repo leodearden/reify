@@ -146,7 +146,9 @@ mod tests {
 
     impl GeometryKernel for HookAdvertisingKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            Err(GeometryError::OperationFailed("not used by this test".into()))
+            Err(GeometryError::OperationFailed(
+                "not used by this test".into(),
+            ))
         }
         fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
             Err(QueryError::QueryFailed("not used by this test".into()))
@@ -160,7 +162,9 @@ mod tests {
             Err(ExportError::FormatError("not used by this test".into()))
         }
         fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
-            Err(TessError::TessellationFailed("not used by this test".into()))
+            Err(TessError::TessellationFailed(
+                "not used by this test".into(),
+            ))
         }
         fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
             Some(&self.hook)
@@ -229,8 +233,8 @@ mod tests {
     /// `Some(...)` placeholder, accidentally upgrades the diagnostic to WARN,
     /// or writes to `table` on the no-hook branch is caught here.
     #[test]
-    fn propagate_via_kernel_attribute_hook_returns_fell_through_with_debug_diagnostic_when_kernel_has_no_hook(
-    ) {
+    fn propagate_via_kernel_attribute_hook_returns_fell_through_with_debug_diagnostic_when_kernel_has_no_hook()
+     {
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(tracing::Level::DEBUG)
             .count_level(tracing::Level::WARN)

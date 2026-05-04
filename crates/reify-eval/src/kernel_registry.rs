@@ -506,8 +506,12 @@ mod tests {
         // entries remain distinct after a paired swap, so this `!=` still passes.
         // The content pin below covers the paired-swap blind spot.
         assert_ne!(
-            first.get(test_synthetic_kernel::NAME_A).map(|d| &d.supports),
-            first.get(test_synthetic_kernel::NAME_B).map(|d| &d.supports),
+            first
+                .get(test_synthetic_kernel::NAME_A)
+                .map(|d| &d.supports),
+            first
+                .get(test_synthetic_kernel::NAME_B)
+                .map(|d| &d.supports),
             "descriptor .supports for {:?} and {:?} must differ — \
              they use distinct descriptor functions (descriptor_a vs descriptor_b); \
              equal content would indicate a wiring regression in inventory::submit!",
@@ -521,7 +525,9 @@ mod tests {
         // above (both entries still differ) but fails here: NAME_A would return
         // PrimitiveCylinder/BRep instead of PrimitiveBox/BRep.
         assert_eq!(
-            first.get(test_synthetic_kernel::NAME_A).map(|d| &d.supports),
+            first
+                .get(test_synthetic_kernel::NAME_A)
+                .map(|d| &d.supports),
             Some(&vec![(Operation::PrimitiveBox, ReprKind::BRep)]),
             "NAME_A descriptor must have supports [(PrimitiveBox, BRep)] — \
              descriptor_a() must be wired to NAME_A's inventory::submit!; \
