@@ -247,6 +247,13 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       } else {
         delete document.documentElement.dataset.testMode;
       }
+      // Settle the WebGL canvas so any follow-up screenshot captures the
+      // post-toggle frame. Mirrors the existing screenshot handler idiom
+      // (bridge.ts lines 99-108). No-op when viewport is not yet mounted.
+      const vp = ctx.viewport;
+      if (vp) {
+        vp.renderer.render(vp.scene, vp.camera);
+      }
       return { ok: true, test_mode: enabled };
     },
 
