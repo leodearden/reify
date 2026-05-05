@@ -7,7 +7,10 @@
 //! - External point along +X axis → nearest face at x=5.
 //! - External point along +Y axis → nearest face at y=5.
 //! - Point already on the +X face → distance to returned witness ≤ 1e-6.
-//! - Interior point at origin → witness on nearest boundary face (dist≈5.0; BRepExtrema has no inside/outside knowledge).
+//! - Off-center interior point at (1,0,0) → OCCT returns nearest face point (5,0,0) at distance 4.0 (regression sentinel).
+//! - Oblique external (10,10,10) → corner witness (5,5,5) at distance 5√3.
+//! - Non-solid Face sub-shape input → "any TopoDS_Shape" contract holds (Ok with witness on face, distance ≈ 5.0).
+//! - NaN query coords → `Err(QueryError::QueryFailed(_))` (regression sentinel, OCCT rejects NaN vertex).
 //! - Unknown handle → `QueryError::InvalidHandle`.
 
 #![cfg(has_occt)]
@@ -198,20 +201,18 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
 
 /// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// **OCCT solid-overlap behavior + the shell-recompute compensation:**
-/// when the query vertex is inside a `TopoDS_Solid`, `BRepExtrema_DistShapeShape`
-/// considers the shapes to overlap and reports `dist.Value() = 0` with
-/// `PointOnShape1(1)` returning the query point itself — NOT a witness on the
-/// boundary. To produce a useful witness for interior queries,
-/// `closest_point_on_shape` (occt_wrapper.cpp:2641-2654) detects this overlap
-/// (`dist.Value() < 1e-10`) and re-runs `BRepExtrema_DistShapeShape` against the
-/// outer `TopAbs_SHELL` of the input solid; the shell-vs-vertex extrema then
-/// yields a real boundary witness. For the box center, the six faces are all
-/// 5.0 units away, so the recomputed witness lies on one face and `dist ≈ 5.0`.
+/// `BRepExtrema_DistShapeShape` has no inside/outside knowledge — it returns
+/// the distance to the nearest BREP boundary face.  For this query the
+/// reported distance is 4.0 (X-gap between (1,0,0) and the +X face at x=5),
+/// so the primary `PointOnShape1(1)` path in the C++ wrapper returns
+/// (5.0, 0.0, 0.0) directly.  The C++ wrapper's defensive `dist < 1e-10`
+/// shell-fallback is *not* entered for this query — it fires only for
+/// on-surface or coincident queries where `BRepExtrema` reports distance ≈ 0;
+/// see `closest_point_when_point_lies_on_face` for a test that exercises that
+/// branch.  Regression sentinel — pin the exact returned coordinates within
+/// 1e-6 so a future OCCT/cxx upgrade that changes this behaviour is caught.
 ///
-/// This test locks in that the shell-recompute path runs for interior queries
-/// and produces a boundary witness — NOT raw `BRepExtrema_DistShapeShape`
-/// output, which would be the query point at distance 0.
+/// Observed against the OCCT version in use at task 2849.
 #[test]
 fn closest_point_for_offcenter_interior_point() {
     let (kernel, box_id) = box_kernel();
@@ -220,16 +221,17 @@ fn closest_point_for_offcenter_interior_point() {
     // not entered (it fires only when dist < 1e-10).
     match kernel.closest_point_on_shape(box_id, 1.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
-            // The nearest boundary face is 5.0 units from the origin.
-            // The witness must lie on a box face (one coordinate ≈ ±5, others
-            // within the face extent).
-            let dist = (x * x + y * y + z * z).sqrt();
             assert!(
-                (dist - 5.0).abs() < 1e-6,
-                "expected witness on boundary face ~5.0 from origin \
-                 (closest_point_on_shape's shell-recompute path should run for interior queries — \
-                 BRepExtrema reports dist=0 for solid overlap, then we re-extrema against the outer shell), \
-                 got ({x}, {y}, {z}), dist={dist}"
+                (x - 5.0).abs() < 1e-6,
+                "expected x≈5.0 (nearest face surface for interior query at (1,0,0)), got {x}"
+            );
+            assert!(
+                y.abs() < 1e-6,
+                "expected y≈0.0, got {y}"
+            );
+            assert!(
+                z.abs() < 1e-6,
+                "expected z≈0.0, got {z}"
             );
         }
         Err(e) => panic!("expected Ok([5.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),

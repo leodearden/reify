@@ -129,6 +129,41 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub surface-angle probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::surface_angle` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn surface_angle(
+        &self,
+        _face_a: GeometryHandleId,
+        _face_b: GeometryHandleId,
+    ) -> Result<f64, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub surface-normal-at probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::surface_normal_at` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn surface_normal_at(
+        &self,
+        _handle: GeometryHandleId,
+        _u: f64,
+        _v: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub curvature-at probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::curvature_at` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn curvature_at(
+        &self,
+        _handle: GeometryHandleId,
+        _u: f64,
+        _v: f64,
+    ) -> Result<Curvature, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
     /// Stub point-on-shape membership probe — always errors because OCCT is unavailable.
     /// Mirrors the real `OcctKernel::point_on_shape` signature so call sites
     /// compile under both `has_occt` and `!has_occt`.
@@ -531,6 +566,46 @@ mod tests {
         let kernel = OcctKernel::new();
         let result = kernel.closest_point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0);
         let err = result.expect_err("stub closest_point_on_shape should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_surface_angle_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.surface_angle(GeometryHandleId(1), GeometryHandleId(2));
+        let err = result.expect_err("stub surface_angle should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_handle_fillet_with_history_returns_error() {
+        let handle = OcctKernelHandle::spawn();
+        let result = handle.fillet_with_history(GeometryHandleId(1), 1.0e-3);
+        let err = result.expect_err("stub fillet_with_history should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_handle_chamfer_with_history_returns_error() {
+        let handle = OcctKernelHandle::spawn();
+        let result = handle.chamfer_with_history(GeometryHandleId(1), 1.0e-3);
+        let err = result.expect_err("stub chamfer_with_history should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_surface_normal_at_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.surface_normal_at(GeometryHandleId(1), 0.0, 0.0);
+        let err = result.expect_err("stub surface_normal_at should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_curvature_at_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.curvature_at(GeometryHandleId(1), 0.0, 0.0);
+        let err = result.expect_err("stub curvature_at should error");
         assert_stub_message(&format!("{err:?}"));
     }
 
