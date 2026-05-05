@@ -179,7 +179,7 @@ fn surface_normal_at_unknown_handle_returns_invalid_handle() {
 /// a message containing "not a face".
 #[test]
 fn surface_normal_at_non_face_shape_returns_query_failed_with_not_a_face() {
-    let (mut kernel, cyl_id) = cylinder_kernel(5.0, 10.0);
+    let (kernel, cyl_id) = cylinder_kernel(5.0, 10.0);
     // cyl_id is the solid handle, not a face.
     match kernel.surface_normal_at(cyl_id, 0.0, 0.0) {
         Err(QueryError::QueryFailed(msg)) => {
@@ -539,7 +539,7 @@ fn curvature_at_on_reversed_inner_cylinder_face_pairs_directions_with_min_max() 
         .iter()
         .copied()
         .find(|&f| {
-            kernel.surface_normal_at(f, PI / 2.0, 5.0).map_or(false, |n| {
+            kernel.surface_normal_at(f, PI / 2.0, 5.0).is_ok_and(|n| {
                 n[2].abs() < 0.5 && n[1] < -0.5
             })
         })
@@ -617,7 +617,7 @@ fn curvature_at_unknown_handle_returns_invalid_handle() {
 /// a message containing "not a face".
 #[test]
 fn curvature_at_non_face_shape_returns_query_failed_with_not_a_face() {
-    let (mut kernel, cyl_id) = cylinder_kernel(5.0, 10.0);
+    let (kernel, cyl_id) = cylinder_kernel(5.0, 10.0);
     match kernel.curvature_at(cyl_id, 0.0, 0.0) {
         Err(QueryError::QueryFailed(msg)) => {
             assert!(
