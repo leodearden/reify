@@ -640,6 +640,54 @@ impl OcctKernel {
         })
     }
 
+    /// Test whether the query point `(px, py, pz)` lies on the BREP boundary
+    /// (face/edge/vertex) of the shape identified by `handle`, within `tolerance`.
+    ///
+    /// Uses `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is built
+    /// from the query point, returning `dist.Value() <= tolerance`.
+    ///
+    /// **Interior solid points return `true` (OCCT overlap behavior):**
+    /// `BRepExtrema_DistShapeShape` has NO inside/outside knowledge. When the query
+    /// vertex is strictly inside a `TopoDS_Solid`, OCCT considers the two shapes to
+    /// overlap and reports `dist.Value() = 0` (NOT the distance to the nearest BREP
+    /// face). Therefore this method returns `Ok(true)` for any interior solid point
+    /// at any positive tolerance, and CANNOT distinguish a point on the BREP surface
+    /// from a point inside the solid for `TopoDS_Solid` inputs. Callers needing strict
+    /// surface-only membership must apply a `BRepClass3d_SolidClassifier` pre-filter;
+    /// the integration test `point_on_shape_interior_solid_point_returns_true` locks
+    /// this contract in. See parent task 2324 for stdlib-level wiring decisions.
+    ///
+    /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
+    /// to match OCCT's default confusion threshold. Pass 0.0 for exact-coincidence
+    /// queries (returns `true` only when `dist.Value()` is exactly 0).
+    ///
+    /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+    /// Negative or NaN values map to `Err(QueryError::QueryFailed(_))` rather than
+    /// silently producing misleading results.
+    ///
+    /// **Naming caveat:** The name `point_on_shape` implies surface membership, but
+    /// for `TopoDS_Solid` inputs this method cannot distinguish "on BREP surface" from
+    /// "inside the solid" (see "Interior solid points" note above). A higher-level
+    /// wrapper that applies a `BRepClass3d_SolidClassifier` pre-filter for strict
+    /// surface-only membership is tracked in escalation esc-2829-6 / parent task 2324.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(_))` if `handle` is unknown, or
+    /// `Err(QueryError::QueryFailed(_))` if the OCCT computation fails.
+    pub fn point_on_shape(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        tolerance: f64,
+    ) -> Result<bool, QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        ffi::ffi::point_on_shape(s, px, py, pz, tolerance)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
     /// Fuse `left` and `right` via `BRepAlgoAPI_Fuse` and return the
     /// fused-result handle alongside the per-parent face/edge history
     /// records (Modified / Generated / Deleted).

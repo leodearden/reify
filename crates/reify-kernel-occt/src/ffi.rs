@@ -648,6 +648,34 @@ pub mod ffi {
         fn closest_point_on_shape(shape: &OcctShape, px: f64, py: f64, pz: f64)
             -> Result<Point3>;
 
+        /// Test whether the query point `(px, py, pz)` lies on the BREP boundary
+        /// (face/edge/vertex) of `shape` within `tolerance`.
+        ///
+        /// Uses `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is built
+        /// from the query point, returning `dist.Value() <= tolerance`. Operand ordering
+        /// mirrors `closest_point_on_shape` and `min_clearance`.
+        ///
+        /// **Interior solid points return `true`:** `BRepExtrema_DistShapeShape` treats
+        /// an interior query vertex as overlapping the solid and reports `dist.Value() = 0`,
+        /// so `point_on_shape` returns `true` for any interior `TopoDS_Solid` point at any
+        /// positive tolerance. The primitive cannot distinguish on-surface from inside-solid
+        /// for solids; see the C++ header for the full contract and the
+        /// `BRepClass3d_SolidClassifier` pre-filter escape hatch.
+        ///
+        /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`.
+        ///
+        /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+        /// Negative or NaN values cause the C++ implementation to throw a
+        /// `std::runtime_error`, which maps to `Err(QueryError::QueryFailed(_))` at the
+        /// Rust call site rather than silently returning a misleading `false`.
+        fn point_on_shape(
+            shape: &OcctShape,
+            px: f64,
+            py: f64,
+            pz: f64,
+            tolerance: f64,
+        ) -> Result<bool>;
+
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
 
         /// Compute the full 3×3 inertia tensor (kg·m²) about the centroid.

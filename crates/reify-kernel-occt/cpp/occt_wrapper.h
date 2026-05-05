@@ -756,6 +756,42 @@ double min_clearance(const OcctShape& a, const OcctShape& b);
 /// than coinciding with the query point.
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
 
+/// Test whether the query point (px, py, pz) lies on the BREP boundary
+/// (face/edge/vertex) of `shape` within `tolerance`.
+///
+/// Algorithm: build a `TopoDS_Vertex` from the query point via
+/// `BRepBuilderAPI_MakeVertex(gp_Pnt(px, py, pz))`, run
+/// `BRepExtrema_DistShapeShape(shape, vertex)`, and return
+/// `dist.Value() <= tolerance`. Operand ordering mirrors `closest_point_on_shape`
+/// and `min_clearance` (input shape first, query vertex second).
+///
+/// **Interior solid points return true (OCCT overlap behavior):**
+/// `BRepExtrema_DistShapeShape` has NO inside/outside knowledge. When the query
+/// vertex is strictly inside a `TopoDS_Solid`, OCCT considers the two shapes to
+/// overlap and reports `dist.Value() = 0` (NOT the distance to the nearest BREP
+/// face). Therefore `point_on_shape` returns `true` for any interior solid point
+/// at any positive tolerance. Consequence: this primitive cannot distinguish a
+/// point on the BREP surface from a point inside the solid for `TopoDS_Solid`
+/// inputs. Callers that need strict surface-only membership must apply a
+/// `BRepClass3d_SolidClassifier` pre-filter before this call (see escalation
+/// esc-2829-6 / parent task 2324 for the documented escape hatch).
+///
+/// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
+/// to match OCCT's default confusion threshold. Pass 0.0 for exact-coincidence
+/// queries (returns `true` only when `dist.Value()` is exactly 0).
+///
+/// **Tolerance precondition:** `tolerance` must be a non-negative finite value.
+/// Negative or NaN values cause an immediate `std::runtime_error` rather than
+/// silently returning misleading results (negative → always `false` since
+/// `dist.Value() >= 0`; NaN → always `false` via IEEE 754).
+///
+/// **Naming note:** For `TopoDS_Solid` inputs the function returns `true` for
+/// interior points (not just surface points) due to the OCCT overlap behavior
+/// described above. A higher-level wrapper that applies a `BRepClass3d_SolidClassifier`
+/// pre-filter for strict surface-only membership is tracked in escalation esc-2829-6
+/// and parent task 2324.
+bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance);
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
 /// Compute the full 3×3 inertia tensor about the shape's centroid,
