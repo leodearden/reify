@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { viridisLut, magmaLut, rainbowLut, applyColormap } from '../../viewport/colormap';
+import { viridisLut, magmaLut, rainbowLut, applyColormap, type Range } from '../../viewport/colormap';
 
 // ---------------------------------------------------------------------------
 // Step 1 — LUT shape & published spot-check values
@@ -128,5 +128,53 @@ describe('applyColormap — happy path', () => {
 
     expect(autoResult).toEqual(fixedResult);
     expect(lockedResult).toEqual(fixedResult);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 5 — out-of-range and NaN handling
+// ---------------------------------------------------------------------------
+describe('applyColormap — out-of-range and NaN handling', () => {
+  const range: Range = { mode: 'fixed', min: 0, max: 1 };
+
+  // Default saturation colours
+  it('value > max returns black [0, 0, 0] by default', () => {
+    expect(applyColormap(2, range, 'viridis')).toEqual([0, 0, 0]);
+  });
+
+  it('value < min returns grey [0.5, 0.5, 0.5] by default', () => {
+    expect(applyColormap(-1, range, 'viridis')).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  it('NaN returns grey [0.5, 0.5, 0.5] by default', () => {
+    expect(applyColormap(NaN, range, 'viridis')).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  // Option overrides
+  it('aboveColor option overrides above-max colour', () => {
+    expect(applyColormap(2, range, 'viridis', { aboveColor: [1, 0, 1] })).toEqual([1, 0, 1]);
+  });
+
+  it('belowColor option overrides below-min colour', () => {
+    expect(applyColormap(-1, range, 'viridis', { belowColor: [0, 1, 1] })).toEqual([0, 1, 1]);
+  });
+
+  it('nanColor option overrides NaN colour', () => {
+    expect(applyColormap(NaN, range, 'viridis', { nanColor: [1, 1, 0] })).toEqual([1, 1, 0]);
+  });
+
+  // Boundary inclusivity — exact min/max are in-range
+  it('value exactly equal to range.max maps to viridisLut[255] (in-range)', () => {
+    const [r, g, b] = applyColormap(1, range, 'viridis');
+    expect(r).toBeCloseTo(viridisLut[255 * 3 + 0], 5);
+    expect(g).toBeCloseTo(viridisLut[255 * 3 + 1], 5);
+    expect(b).toBeCloseTo(viridisLut[255 * 3 + 2], 5);
+  });
+
+  it('value exactly equal to range.min maps to viridisLut[0] (in-range)', () => {
+    const [r, g, b] = applyColormap(0, range, 'viridis');
+    expect(r).toBeCloseTo(viridisLut[0], 5);
+    expect(g).toBeCloseTo(viridisLut[1], 5);
+    expect(b).toBeCloseTo(viridisLut[2], 5);
   });
 });
