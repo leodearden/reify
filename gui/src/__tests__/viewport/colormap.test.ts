@@ -255,3 +255,45 @@ describe('bakeColours', () => {
     expect(out.length).toBe(5 * 3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 9 — barrel-export wiring through gui/src/viewport/index.ts
+// ---------------------------------------------------------------------------
+describe('barrel export wiring (viewport/index)', () => {
+  it('applyColormap is re-exported from the viewport barrel', async () => {
+    const barrel = await import('../../viewport/index');
+    expect(typeof barrel.applyColormap).toBe('function');
+  });
+
+  it('bakeColours is re-exported from the viewport barrel', async () => {
+    const barrel = await import('../../viewport/index');
+    expect(typeof barrel.bakeColours).toBe('function');
+  });
+
+  it('Palette, Range, ColormapOptions type shapes are available (runtime smoke)', async () => {
+    // Construct a value of each variant to confirm type compatibility at
+    // runtime (TypeScript structural check is covered by tsc).
+    const barrel = await import('../../viewport/index');
+
+    // Palette literal usage
+    const p1 = 'viridis' satisfies import('../../viewport/colormap').Palette;
+    const p2 = 'magma'   satisfies import('../../viewport/colormap').Palette;
+    const p3 = 'rainbow' satisfies import('../../viewport/colormap').Palette;
+    [p1, p2, p3].forEach(p => expect(typeof barrel.applyColormap(0, { mode: 'fixed', min: 0, max: 1 }, p)).toBe('object'));
+
+    // Range mode variants
+    const autoR:   import('../../viewport/colormap').Range = { mode: 'auto',   min: 0, max: 1 };
+    const fixedR:  import('../../viewport/colormap').Range = { mode: 'fixed',  min: 0, max: 1 };
+    const lockedR: import('../../viewport/colormap').Range = { mode: 'locked', min: 0, max: 1, source: 'test' };
+    [autoR, fixedR, lockedR].forEach(r => expect(barrel.applyColormap(0.5, r, 'viridis').length).toBe(3));
+
+    // ColormapOptions
+    const opts: import('../../viewport/colormap').ColormapOptions = {
+      aboveColor: [1, 0, 0],
+      belowColor: [0, 1, 0],
+      nanColor:   [0, 0, 1],
+    };
+    const out = barrel.applyColormap(NaN, fixedR, 'viridis', opts);
+    expect(out).toEqual([0, 0, 1]); // nanColor
+  });
+});
