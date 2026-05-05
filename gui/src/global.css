@@ -27,6 +27,20 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Test-mode: freeze all CSS animations and transitions so the visual-regression
+ * harness (and any follow-up `screenshot` MCP call) captures pixel-identical
+ * frames across consecutive runs. Activated by the `set_test_mode` MCP tool
+ * (gui/src/debug/bridge.ts), which sets data-test-mode="true" on <html>.
+ * Using !important ensures hover/focus pseudo-class rules are overridden too.
+ * See design decision in .task/plan.json: single global rule preferred over
+ * per-component toggling because the animated surface spans 7+ CSS modules. */
+:root[data-test-mode='true'] *,
+:root[data-test-mode='true'] *::before,
+:root[data-test-mode='true'] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
 /* Shared panel-title bar at the top of each side-panel sub-region. */
 .panel-title {
   display: flex;
