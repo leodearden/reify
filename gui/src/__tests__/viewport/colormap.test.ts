@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { viridisLut, magmaLut, rainbowLut, applyColormap, type Range } from '../../viewport/colormap';
+import { viridisLut, magmaLut, rainbowLut, applyColormap, bakeColours, type Range } from '../../viewport/colormap';
 
 // ---------------------------------------------------------------------------
 // Step 1 — LUT shape & published spot-check values
@@ -176,5 +176,82 @@ describe('applyColormap — out-of-range and NaN handling', () => {
     expect(r).toBeCloseTo(viridisLut[0], 5);
     expect(g).toBeCloseTo(viridisLut[1], 5);
     expect(b).toBeCloseTo(viridisLut[2], 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 7 — bakeColours
+// ---------------------------------------------------------------------------
+describe('bakeColours', () => {
+  const range: Range = { mode: 'fixed', min: 0, max: 1 };
+  const scalars = new Float32Array([0, 0.25, 0.5, 0.75, 1]);
+
+  it('returns Float32Array of length scalars.length * 3', () => {
+    const out = bakeColours(scalars, range, 'viridis');
+    expect(out).toBeInstanceOf(Float32Array);
+    expect(out.length).toBe(scalars.length * 3);
+  });
+
+  it('output matches per-element applyColormap for each scalar', () => {
+    const out = bakeColours(scalars, range, 'viridis');
+    for (let i = 0; i < scalars.length; i++) {
+      const [r, g, b] = applyColormap(scalars[i], range, 'viridis');
+      expect(out[i * 3]).toBeCloseTo(r, 5);
+      expect(out[i * 3 + 1]).toBeCloseTo(g, 5);
+      expect(out[i * 3 + 2]).toBeCloseTo(b, 5);
+    }
+  });
+
+  it('handles NaN and out-of-range values per element', () => {
+    const mixedScalars = new Float32Array([NaN, -1, 2]);
+    const mixedRange: Range = { mode: 'fixed', min: 0, max: 1 };
+    const out = bakeColours(mixedScalars, mixedRange, 'viridis');
+
+    // NaN → grey
+    expect(out[0]).toBeCloseTo(0.5, 5);
+    expect(out[1]).toBeCloseTo(0.5, 5);
+    expect(out[2]).toBeCloseTo(0.5, 5);
+
+    // below-min → grey
+    expect(out[3]).toBeCloseTo(0.5, 5);
+    expect(out[4]).toBeCloseTo(0.5, 5);
+    expect(out[5]).toBeCloseTo(0.5, 5);
+
+    // above-max → black
+    expect(out[6]).toBeCloseTo(0, 5);
+    expect(out[7]).toBeCloseTo(0, 5);
+    expect(out[8]).toBeCloseTo(0, 5);
+  });
+
+  it('options.aboveColor / belowColor / nanColor propagate through bakeColours', () => {
+    const mixedScalars = new Float32Array([NaN, -1, 2]);
+    const opts = {
+      nanColor:   [1, 1, 0] as const,
+      belowColor: [0, 1, 1] as const,
+      aboveColor: [1, 0, 1] as const,
+    };
+    const out = bakeColours(mixedScalars, range, 'viridis', opts);
+
+    // NaN → [1, 1, 0]
+    expect(out[0]).toBeCloseTo(1, 5);
+    expect(out[1]).toBeCloseTo(1, 5);
+    expect(out[2]).toBeCloseTo(0, 5);
+
+    // below-min → [0, 1, 1]
+    expect(out[3]).toBeCloseTo(0, 5);
+    expect(out[4]).toBeCloseTo(1, 5);
+    expect(out[5]).toBeCloseTo(1, 5);
+
+    // above-max → [1, 0, 1]
+    expect(out[6]).toBeCloseTo(1, 5);
+    expect(out[7]).toBeCloseTo(0, 5);
+    expect(out[8]).toBeCloseTo(1, 5);
+  });
+
+  it('single-allocation contract: output.length === scalars.length * 3', () => {
+    const out = bakeColours(scalars, range, 'viridis');
+    // If bakeColours allocates exactly once, the result must be exactly
+    // scalars.length * 3 — not larger (no slack buffer) and not a slice.
+    expect(out.length).toBe(5 * 3);
   });
 });
