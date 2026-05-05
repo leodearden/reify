@@ -200,6 +200,21 @@ describe('debug bridge set_test_mode', () => {
     expect(document.documentElement.dataset.testMode).toBeUndefined();
   });
 
+  it('testMode signal is exposed on window.__REIFY_DEBUG__ after initDebugBridge', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // testMode accessor must be a function on the context
+    expect(typeof window.__REIFY_DEBUG__?.testMode).toBe('function');
+
+    // Initially false
+    expect(window.__REIFY_DEBUG__!.testMode!()).toBe(false);
+
+    // After set_test_mode { enabled: true } request, accessor returns true
+    await capturedHandler!({ payload: { id: 20, command: 'set_test_mode', params: { enabled: true } } });
+    expect(window.__REIFY_DEBUG__!.testMode!()).toBe(true);
+  });
+
   it('set_test_mode calls renderer.render(scene, camera) when viewport is wired', async () => {
     const mockRender = vi.fn();
     const mockScene = {} as any;
