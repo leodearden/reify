@@ -42,6 +42,11 @@ pub mod tolerance_combine;
 pub(crate) mod tolerance_format;
 pub mod tolerance_promise;
 pub(crate) mod tolerance_scope;
+pub mod morph_stage_b;
+pub use morph_stage_b::{
+    stage_b_eligible, BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind,
+    SubShapeSide,
+};
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
