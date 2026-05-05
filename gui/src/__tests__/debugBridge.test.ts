@@ -1,6 +1,6 @@
 /**
- * Minimal unit tests for the debug bridge store_state / viewport_state handlers.
- * Verifies that selection.selectedEntities is included in the debug output.
+ * Unit tests for the debug bridge handlers.
+ * Covers: store_state / viewport_state selectedEntities; set_test_mode.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -18,6 +18,7 @@ vi.mock('three', () => ({
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
+import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
@@ -142,5 +143,60 @@ describe('debug bridge store_state includes selectedEntities', () => {
     const payload = responseCall![1] as { id: number; result: string };
     const result = JSON.parse(payload.result);
     expect(result.selection.selectedEntities).toEqual(['X', 'Y']);
+  });
+});
+
+describe('debug bridge set_test_mode', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    // Clean up DOM attribute and reset signal so tests don't leak
+    delete document.documentElement.dataset.testMode;
+    setTestMode(false);
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('set_test_mode { enabled: true } returns { ok: true, test_mode: true } and sets data-test-mode', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    await capturedHandler!({ payload: { id: 10, command: 'set_test_mode', params: { enabled: true } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result).toEqual({ ok: true, test_mode: true });
+    expect(document.documentElement.dataset.testMode).toBe('true');
+  });
+
+  it('set_test_mode { enabled: false } returns { ok: true, test_mode: false } and clears data-test-mode', async () => {
+    // First enable, then disable
+    document.documentElement.dataset.testMode = 'true';
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await capturedHandler!({ payload: { id: 11, command: 'set_test_mode', params: { enabled: false } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result).toEqual({ ok: true, test_mode: false });
+    expect(document.documentElement.dataset.testMode).toBeUndefined();
   });
 });
