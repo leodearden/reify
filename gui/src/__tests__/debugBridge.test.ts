@@ -199,4 +199,33 @@ describe('debug bridge set_test_mode', () => {
     expect(result).toEqual({ ok: true, test_mode: false });
     expect(document.documentElement.dataset.testMode).toBeUndefined();
   });
+
+  it('set_test_mode calls renderer.render(scene, camera) when viewport is wired', async () => {
+    const mockRender = vi.fn();
+    const mockScene = {} as any;
+    const mockCamera = {} as any;
+    const mockRenderer = {
+      render: mockRender,
+      domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,abc') },
+    } as any;
+
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Wire a stub viewport onto the context after init
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: mockScene,
+      camera: mockCamera,
+      renderer: mockRenderer,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+    };
+
+    await capturedHandler!({ payload: { id: 12, command: 'set_test_mode', params: { enabled: true } } });
+
+    expect(mockRender).toHaveBeenCalledOnce();
+    expect(mockRender).toHaveBeenCalledWith(mockScene, mockCamera);
+  });
 });
