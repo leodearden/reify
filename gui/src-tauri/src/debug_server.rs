@@ -164,6 +164,20 @@ fn tool_defs() -> Vec<ToolDef> {
                 "required": ["path"]
             }),
         },
+        ToolDef {
+            name: "set_test_mode",
+            description: "Freeze time-driven UI (CSS animations, transitions, pulses) so visual-regression screenshots are pixel-stable. Frontend-mediated. Returns { ok: true, test_mode: bool }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "true to freeze animations, false to resume"
+                    }
+                },
+                "required": ["enabled"]
+            }),
+        },
     ]
 }
 
