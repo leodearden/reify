@@ -524,3 +524,44 @@ pub async fn spawn_debug_server(
         .await
         .map_err(|e| format!("debug server error: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_defs_contains_set_test_mode() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "set_test_mode")
+            .expect("set_test_mode must be present in tool_defs()");
+
+        // Description must be non-empty
+        assert!(
+            !entry.description.is_empty(),
+            "set_test_mode description must not be empty"
+        );
+
+        // input_schema must declare an object with required boolean 'enabled'
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        let enabled_prop = &schema["properties"]["enabled"];
+        assert_eq!(
+            enabled_prop["type"].as_str(),
+            Some("boolean"),
+            "properties.enabled.type must be 'boolean'"
+        );
+        let required = schema["required"]
+            .as_array()
+            .expect("input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("enabled")),
+            "'enabled' must be listed in required"
+        );
+    }
+}
