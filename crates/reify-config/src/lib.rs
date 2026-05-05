@@ -57,6 +57,8 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 
+pub mod cache;
+
 /// Default cap on the cross-product depth of `auto:` type-parameter resolution.
 ///
 /// Per `docs/prds/v0_2/auto-resolution-backtracking.md` "Resolved design
