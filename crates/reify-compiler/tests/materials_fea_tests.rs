@@ -389,9 +389,9 @@ fn assert_property_si_value(
     // dimension PRESSURE, so this assertion does NOT distinguish them — the
     // SI value comparison below does.
     let actual_dim = match &expr.result_type {
-        Type::Scalar { dimension } => dimension.clone(),
+        Type::Scalar { dimension } => *dimension,
         Type::Option(inner) => match inner.as_ref() {
-            Type::Scalar { dimension } => dimension.clone(),
+            Type::Scalar { dimension } => *dimension,
             other => panic!(
                 "{}.{} default_expr result_type Option<…> inner is not Scalar: {:?}",
                 template.name, member, other

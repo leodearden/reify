@@ -1082,7 +1082,6 @@ mod tests {
 
     #[test]
     fn gravity_vector3_length_dim_returns_undef() {
-        use super::acceleration_dim;
         // Vector3 with LENGTH instead of acceleration dim.
         let bad = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::LENGTH);
         assert!(
@@ -1146,7 +1145,7 @@ mod tests {
         // Moon gravity in +X direction (sideways) to distinguish from the -Z sign-flip path.
         let moon_gravity = make_scalar_vec3([1.62, 0.0, 0.0], acceleration_dim());
 
-        let result = eval_builtin("gravity", &[moon_gravity.clone()]);
+        let result = eval_builtin("gravity", std::slice::from_ref(&moon_gravity));
 
         let map = match result {
             Value::Map(m) => m,
@@ -1243,7 +1242,7 @@ mod tests {
                 "body_force" => {
                     eval_loads(kind, &[stub_selector.clone(), fd_vec.clone()])
                 }
-                "gravity" => eval_loads(kind, &[accel_vec.clone()]),
+                "gravity" => eval_loads(kind, std::slice::from_ref(&accel_vec)),
                 other => panic!(
                     "LOAD_KINDS contains '{}' but no fixture is defined for it — \
                      add a fixture arm to this test and an arm to eval_loads",
