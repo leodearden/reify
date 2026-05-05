@@ -8,6 +8,7 @@ import { convertRawGuiState } from '../types';
 import type { RawGuiState } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
+import { setTestMode } from './testMode';
 
 type CommandHandler = (params: Record<string, unknown>) => unknown;
 
@@ -236,6 +237,17 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       if (!vp) return { error: 'viewport not ready' };
       vp.fitToView();
       return { ok: true };
+    },
+
+    set_test_mode: (params) => {
+      const enabled = !!params.enabled;
+      setTestMode(enabled);
+      if (enabled) {
+        document.documentElement.dataset.testMode = 'true';
+      } else {
+        delete document.documentElement.dataset.testMode;
+      }
+      return { ok: true, test_mode: enabled };
     },
 
     open_file: (params) => {
