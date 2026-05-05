@@ -8,7 +8,7 @@ import { convertRawGuiState } from '../types';
 import type { RawGuiState } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
-import { setTestMode } from './testMode';
+import { testMode, setTestMode } from './testMode';
 
 type CommandHandler = (params: Record<string, unknown>) => unknown;
 
@@ -284,7 +284,7 @@ interface DebugRequest {
 }
 
 export async function initDebugBridge(stores: DebugStores): Promise<() => void> {
-  const ctx: ReifyDebugContext = { stores };
+  const ctx: ReifyDebugContext = { stores, testMode };
   window.__REIFY_DEBUG__ = ctx;
 
   const handlers = buildHandlers(ctx);

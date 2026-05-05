@@ -3,6 +3,7 @@
 import type { Scene, PerspectiveCamera, WebGLRenderer } from 'three';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { EditorView } from '@codemirror/view';
+import type { Accessor } from 'solid-js';
 import type { FileData, GuiState } from '../types';
 
 /** Store references captured at App init time. */
@@ -61,6 +62,8 @@ export interface ReifyDebugContext {
   stores: DebugStores;
   viewport?: DebugViewport;
   editorView?: EditorView;
+  /** Reactive accessor — true when test-mode is enabled (animations frozen). */
+  testMode?: Accessor<boolean>;
 }
 
 declare global {
