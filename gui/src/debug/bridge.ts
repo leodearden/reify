@@ -272,7 +272,24 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         return { error: 'zoom must be a positive finite number' };
       }
 
-      return { ok: true };
+      const { camera, scene, renderer, controls } = vp;
+
+      // Apply pose
+      camera.position.set(...position);
+      if (controls) controls.target.set(...target);
+      if (up !== undefined) camera.up.set(...up);
+      if (zoom !== undefined) camera.zoom = zoom;
+
+      // Update matrices and render
+      camera.updateMatrixWorld();
+      camera.updateProjectionMatrix();
+      if (controls) controls.update();
+      renderer.render(scene, camera);
+
+      return {
+        ok: true,
+        applied: { position, target, up, zoom },
+      };
     },
 
     set_test_mode: (params) => {
