@@ -19,8 +19,8 @@ use reify_types::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 use crate::entity::PendingBoundCheck;
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
-    CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule, CompiledPurpose,
-    CompiledTrait, CompiledUnit, TopologyTemplate,
+    AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
+    CompiledPurpose, CompiledTrait, CompiledUnit, TopologyTemplate,
 };
 use crate::units::UnitRegistry;
 use reify_types::CompiledFunction;
@@ -168,8 +168,8 @@ impl CompilationCtx {
             // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
             kernel_pragma: None,
             // Populated by a future producer task that adds `auto:` parser
-            // support; empty Vec until then (see CompiledModule.auto_type_substitution).
-            auto_type_substitution: Vec::new(),
+            // support; empty until then (see AutoTypeSubstitution).
+            auto_type_substitution: AutoTypeSubstitution::default(),
             diagnostics: self.diagnostics,
             content_hash,
         }

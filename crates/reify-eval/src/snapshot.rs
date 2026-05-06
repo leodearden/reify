@@ -68,7 +68,7 @@ impl Snapshot {
             "CompiledModule.auto_type_substitution: param names must be unique; \
              duplicates are a producer bug (see EvaluationGraph::topology_fingerprint)"
         );
-        graph.auto_type_substitution = module.auto_type_substitution.clone();
+        graph.auto_type_substitution = module.auto_type_substitution.clone().into_inner();
         let topology_fingerprint = graph.topology_fingerprint();
 
         // Initialize all value cells: Auto cells get (Undef, Auto),

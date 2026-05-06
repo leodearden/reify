@@ -1,6 +1,6 @@
 use reify_compiler::{
-    CompiledField, CompiledImport, CompiledModule, CompiledPurpose, CompiledTrait,
-    CompiledTypeAlias, TopologyTemplate,
+    AutoTypeSubstitution, CompiledField, CompiledImport, CompiledModule, CompiledPurpose,
+    CompiledTrait, CompiledTypeAlias, TopologyTemplate,
 };
 use reify_types::{ContentHash, SourceSpan};
 
@@ -150,7 +150,7 @@ impl CompiledModuleBuilder {
             declared_version: None,
             solver_pragma: None,
             kernel_pragma: None,
-            auto_type_substitution: Vec::new(),
+            auto_type_substitution: AutoTypeSubstitution::default(),
             diagnostics: self.diagnostics,
             content_hash,
         }

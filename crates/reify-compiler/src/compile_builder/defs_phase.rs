@@ -257,7 +257,7 @@ pub(crate) fn build_constraint_def_registry<'a>(
 mod tests {
     use super::build_constraint_def_registry;
     use crate::CompiledModule;
-    use crate::types::CompiledConstraintDef;
+    use crate::types::{AutoTypeSubstitution, CompiledConstraintDef};
     use reify_types::{ContentHash, ModulePath, SourceSpan};
 
     fn mk_cd(name: &str, is_pub: bool, span: SourceSpan) -> CompiledConstraintDef {
@@ -293,7 +293,7 @@ mod tests {
             declared_version: None,
             solver_pragma: None,
             kernel_pragma: None,
-            auto_type_substitution: Vec::new(),
+            auto_type_substitution: AutoTypeSubstitution::default(),
             diagnostics: vec![],
             content_hash: ContentHash::of_str(""),
         }
