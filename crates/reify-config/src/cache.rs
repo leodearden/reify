@@ -288,4 +288,26 @@ mod tests {
             other => panic!("expected CacheError::Parse(_), got {:?}", other),
         }
     }
+
+    #[test]
+    fn resolve_cache_all_defaults() {
+        // When every layer is absent, the resolver falls through to the
+        // PRD-decided default cache directory (`$HOME/.cache/reify/fea`)
+        // and the default max-bytes cap (25 GiB), and reports both
+        // sources as `Default`.
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: None,
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("all-defaults resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/h/.cache/reify/fea"));
+        assert_eq!(resolved.max_bytes, DEFAULT_CACHE_MAX_BYTES);
+        assert_eq!(resolved.dir_source, CacheDirSource::Default);
+        assert_eq!(resolved.max_bytes_source, CacheMaxBytesSource::Default);
+    }
 }
