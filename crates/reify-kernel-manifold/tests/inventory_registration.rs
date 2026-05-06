@@ -13,10 +13,9 @@
 //! `crates/reify-kernel-occt/tests/inventory_registration.rs:1-152`.
 
 // Shared compile-time guard: requires `stub_register` feature.
-// Source of truth lives in `tests/common/feature_guard.rs`; add new test
-// binaries by including the same line below.
-#[path = "common/feature_guard.rs"]
-mod feature_guard;
+// Source of truth lives in `tests/common/mod.rs`; add new test binaries
+// by including the same `mod common;` line below.
+mod common;
 
 use reify_kernel_manifold::register::MANIFOLD_KERNEL_NAME;
 use reify_types::{GeometryKernel, KernelRegistration, Operation, ReprKind};
