@@ -12,6 +12,7 @@
 //! - Non-solid Face sub-shape input → "any TopoDS_Shape" contract holds (Ok with witness on face, distance ≈ 5.0).
 //! - NaN query coords → `Err(QueryError::QueryFailed(_))` (regression sentinel, OCCT rejects NaN vertex).
 //! - Unknown handle → `QueryError::InvalidHandle`.
+//! - Interior origin (0,0,0) → shell-fallback witness on box face at distance ≈5.0 (regression sentinel for `dist < 1e-10` path).
 
 #![cfg(has_occt)]
 
@@ -235,6 +236,53 @@ fn closest_point_for_offcenter_interior_point() {
             );
         }
         Err(e) => panic!("expected Ok([5.0, 0.0, 0.0]) for off-centre interior query at (1,0,0), got Err({e:?})"),
+    }
+}
+
+/// Query point (0.0, 0.0, 0.0) lies at the centre of the 10×10×10 box.
+///
+/// For a `TopoDS_Solid`, `BRepExtrema_DistShapeShape` considers the query
+/// vertex to overlap the solid and returns `dist.Value() = 0`.  The C++
+/// wrapper's `dist < 1e-10` shell-fallback (`cpp/occt_wrapper.cpp:2789–2799`,
+/// introduced by task 2780) then fires: it re-runs `BRepExtrema_DistShapeShape`
+/// against the first shell (`TopExp_Explorer(shape, TopAbs_SHELL)`) and
+/// returns a boundary witness from the shell.
+///
+/// This test verifies the shell-fallback contract:
+/// - The returned witness is at distance ≈ 5.0 from the origin (each face
+///   plane of a centred 10×10×10 box is 5 units away).
+/// - At least one coordinate of the witness is ≈ ±5, confirming the witness
+///   lies on a face plane rather than being an arbitrary interior point.
+///
+/// Complementary to `closest_point_for_offcenter_interior_point` which
+/// queries `(1,0,0)` and exercises the *primary* BRepExtrema path where the
+/// shell-fallback is NOT entered (dist=4.0 > 1e-10).
+///
+/// **If this test fails, that is a real bug in the shell-recompute path —
+/// do NOT weaken the assertion; escalate instead.**
+#[test]
+fn closest_point_for_interior_origin_returns_face_witness_after_shell_recompute() {
+    let (kernel, box_id) = box_kernel();
+    match kernel.closest_point_on_shape(box_id, 0.0, 0.0, 0.0) {
+        Ok([x, y, z]) => {
+            let dist = (x * x + y * y + z * z).sqrt();
+            assert!(
+                (dist - 5.0).abs() < 1e-6,
+                "expected shell-fallback witness at distance ≈5.0 from origin, \
+                 got ({x}, {y}, {z}), dist={dist}"
+            );
+            let on_face = (x.abs() - 5.0).abs() < 1e-6
+                || (y.abs() - 5.0).abs() < 1e-6
+                || (z.abs() - 5.0).abs() < 1e-6;
+            assert!(
+                on_face,
+                "expected witness on a box face after shell-recompute \
+                 (at least one coord ≈ ±5), got ({x}, {y}, {z})"
+            );
+        }
+        Err(e) => panic!(
+            "expected Ok([...]) for interior origin query after shell-fallback, got Err({e:?})"
+        ),
     }
 }
 
