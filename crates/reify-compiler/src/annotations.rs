@@ -610,4 +610,23 @@ mod tests {
             d.message
         );
     }
+
+    // ── @solid annotation tests ──────────────────────────────────────────────
+
+    /// Bare `@solid` on entity contexts (structure, occurrence) validates
+    /// without diagnostics. The annotation is a bare marker; no arguments are
+    /// expected.
+    #[test]
+    fn solid_valid_on_entity_contexts() {
+        for context in ["structure", "occurrence"] {
+            let anns = vec![ann(reify_types::SOLID_ANNOTATION, vec![])];
+            let mut diagnostics = Vec::new();
+            validate_annotations(&anns, context, &mut diagnostics);
+            assert!(
+                diagnostics.is_empty(),
+                "context={context} produced unexpected diagnostics: {:?}",
+                diagnostics
+            );
+        }
+    }
 }
