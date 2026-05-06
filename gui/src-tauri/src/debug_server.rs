@@ -164,6 +164,20 @@ fn tool_defs() -> Vec<ToolDef> {
                 "required": ["path"]
             }),
         },
+        ToolDef {
+            name: "set_test_mode",
+            description: "Freeze time-driven UI (CSS animations, transitions, pulses) so visual-regression screenshots are pixel-stable. Frontend-mediated. Returns { ok: true, test_mode: bool }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "true to freeze animations, false to resume"
+                    }
+                },
+                "required": ["enabled"]
+            }),
+        },
     ]
 }
 
@@ -523,4 +537,39 @@ pub async fn spawn_debug_server(
     axum::serve(listener, app.into_make_service())
         .await
         .map_err(|e| format!("debug server error: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_defs_contains_set_test_mode() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "set_test_mode")
+            .expect("set_test_mode must be present in tool_defs()");
+
+        // input_schema must declare an object with required boolean 'enabled'
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        let enabled_prop = &schema["properties"]["enabled"];
+        assert_eq!(
+            enabled_prop["type"].as_str(),
+            Some("boolean"),
+            "properties.enabled.type must be 'boolean'"
+        );
+        let required = schema["required"]
+            .as_array()
+            .expect("input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("enabled")),
+            "'enabled' must be listed in required"
+        );
+    }
 }

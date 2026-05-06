@@ -8,6 +8,7 @@ import { convertRawGuiState } from '../types';
 import type { RawGuiState } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
+import { testMode, setTestMode } from './testMode';
 
 type CommandHandler = (params: Record<string, unknown>) => unknown;
 
@@ -238,6 +239,21 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true };
     },
 
+    set_test_mode: (params) => {
+      const enabled = !!params.enabled;
+      setTestMode(enabled);
+      if (enabled) {
+        document.documentElement.dataset.testMode = 'true';
+      } else {
+        delete document.documentElement.dataset.testMode;
+      }
+      // test-mode only affects CSS (animations/transitions via the global
+      // data-test-mode rule in global.css). There is no Three.js scene-graph
+      // subscriber, so a WebGL re-render here would not change what a
+      // follow-up screenshot captures and is therefore omitted.
+      return { ok: true, test_mode: enabled };
+    },
+
     open_file: (params) => {
       const path = params.path as string;
       const content = params.content as string;
@@ -265,7 +281,7 @@ interface DebugRequest {
 }
 
 export async function initDebugBridge(stores: DebugStores): Promise<() => void> {
-  const ctx: ReifyDebugContext = { stores };
+  const ctx: ReifyDebugContext = { stores, testMode };
   window.__REIFY_DEBUG__ = ctx;
 
   const handlers = buildHandlers(ctx);
