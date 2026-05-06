@@ -142,6 +142,26 @@ fn occt_kernel_registration_appears_in_inventory_iter() {
     let inventory_factory = occt_entries[0].factory;
     let direct_factory: fn() -> Box<dyn GeometryKernel> =
         reify_kernel_occt::register::occt_factory;
+    // `std::ptr::fn_addr_eq` is documented to permit false negatives: codegen
+    // deduplication or inlining can assign the same source-level function to
+    // distinct addresses, so a future build configuration could trip a
+    // false-negative here even when `inventory_factory` and `direct_factory`
+    // genuinely refer to the same function.
+    //
+    // The descriptor side has a defence-in-depth behavioural fallback — see
+    // the `inventory_supports == direct_supports` set-equality check below —
+    // that catches divergence by content rather than pointer identity, so an
+    // `fn_addr_eq` false-negative there would not go undetected.
+    //
+    // The factory pin has no analogous behavioural fallback: `occt_factory()`
+    // spawns a real OCCT worker thread, making a behavioural smoke check
+    // costly.  A doc comment is the cheap path here; if a more robust check
+    // is needed it can be added separately.
+    //
+    // If this assertion ever fails in CI, consider a false-negative before
+    // assuming a real divergence (e.g. manifold factory wired by copy-paste):
+    // inspect codegen / inlining settings and check whether both symbols
+    // resolve to the same address under a less-aggressive optimisation level.
     assert!(
         std::ptr::fn_addr_eq(inventory_factory, direct_factory),
         "the inventory-submitted factory must be the same function pointer as \
