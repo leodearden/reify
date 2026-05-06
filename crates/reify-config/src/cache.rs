@@ -488,6 +488,20 @@ mod tests {
         }
     }
 
+    /// `[cache].max_bytes = 0` must surface as a parse error. A zero-byte
+    /// cap is meaningless (a zero-byte cache cannot store anything) and
+    /// is almost certainly a misconfiguration. Remove the key to fall
+    /// through to the next layer or use a positive integer.
+    #[test]
+    fn parse_cache_config_rejects_zero_max_bytes() {
+        let err = parse_cache_config("[cache]\nmax_bytes = 0\n")
+            .expect_err("[cache].max_bytes = 0 should be rejected");
+        match err {
+            CacheError::ZeroMaxBytes => {}
+            other => panic!("expected CacheError::ZeroMaxBytes, got {:?}", other),
+        }
+    }
+
     #[test]
     fn resolve_cache_all_defaults() {
         // When every layer is absent, the resolver falls through to the
