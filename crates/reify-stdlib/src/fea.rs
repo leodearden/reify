@@ -16,6 +16,15 @@
 //! SafetyFactor / Gradient / Divergence / Curl / Laplacian) return
 //! `Value::Undef` — the deferred path would require numerical reduction
 //! across a Map of lambda-domains, out of scope for this task.
+//!
+//! # Per-index reduction invariants (mirrored)
+//!
+//! The per-grid-point reduction in `envelope_reduce` mirrors the
+//! NaN-skip + `total_cmp` + first-occurrence-wins discipline documented
+//! on `reify-expr::field_reductions::argmax_argmin_index` (around
+//! line 198): non-finite values are skipped via `is_finite()`, extrema
+//! are selected via IEEE 754 `total_cmp`, and the first finite case at
+//! each index wins on ties (strict `is_lt`/`is_gt`, not `is_le`/`is_ge`).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
