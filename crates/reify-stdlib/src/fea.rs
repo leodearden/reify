@@ -443,6 +443,22 @@ mod tests {
         assert_eq!(sf.data, vec![1.0, 5.0, 3.0]);
     }
 
+    // ── empty-Map edge ──────────────────────────────────────────────────────
+
+    #[test]
+    fn envelope_max_empty_map_returns_undef() {
+        let map = Value::Map(BTreeMap::new());
+        let result = eval_fea("envelope_max", &[map]).unwrap();
+        assert!(result.is_undef());
+    }
+
+    #[test]
+    fn envelope_min_empty_map_returns_undef() {
+        let map = Value::Map(BTreeMap::new());
+        let result = eval_fea("envelope_min", &[map]).unwrap();
+        assert!(result.is_undef());
+    }
+
     #[test]
     fn envelope_max_all_nan_at_index_yields_nan() {
         let axis = vec![0.0, 1.0, 2.0];
