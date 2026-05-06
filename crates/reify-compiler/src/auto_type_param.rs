@@ -1999,7 +1999,7 @@ fn dfs_search(
 #[cfg(test)]
 mod helper_tests {
     use super::check_constraints_leaf;
-    use reify_test_support::MockConstraintChecker;
+    use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder};
     use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
 
     fn literal_expr() -> reify_types::CompiledExpr {
@@ -2096,6 +2096,46 @@ mod helper_tests {
         assert!(
             !result.feasible,
             "mixed Satisfied+Violated must not be feasible (any one Violated falsifies)"
+        );
+    }
+
+    /// `build_constraints_template` maps each `CompiledConstraint` in the
+    /// `TopologyTemplate` to a `(ConstraintNodeId, &CompiledExpr)` pair,
+    /// preserving order and borrowing (not cloning) the expr.
+    #[test]
+    fn build_constraints_template_returns_pairs_for_each_template_constraint() {
+        let expr0 = literal_expr();
+        let expr1 = reify_types::CompiledExpr::literal(Value::Bool(false), Type::Bool);
+        let template = TopologyTemplateBuilder::new("Bearing")
+            .constraint("Bearing", 0, None, expr0)
+            .constraint("Bearing", 1, None, expr1)
+            .build();
+
+        let pairs = super::build_constraints_template(&template);
+
+        // (a) one pair per constraint
+        assert_eq!(pairs.len(), 2, "must return one pair per template constraint");
+
+        // (b) order preserved — entry 0 matches template.constraints[0]
+        assert_eq!(
+            pairs[0].0,
+            template.constraints[0].id,
+            "entry 0 id must match template.constraints[0].id"
+        );
+        assert_eq!(
+            pairs[1].0,
+            template.constraints[1].id,
+            "entry 1 id must match template.constraints[1].id"
+        );
+
+        // (c) borrow, not clone — raw-pointer equality pins the no-copy contract
+        assert!(
+            std::ptr::eq(pairs[0].1, &template.constraints[0].expr),
+            "entry 0 expr pointer must equal &template.constraints[0].expr (no clone)"
+        );
+        assert!(
+            std::ptr::eq(pairs[1].1, &template.constraints[1].expr),
+            "entry 1 expr pointer must equal &template.constraints[1].expr (no clone)"
         );
     }
 }
