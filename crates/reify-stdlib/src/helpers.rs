@@ -1462,4 +1462,94 @@ mod tests {
             "Undef should return None"
         );
     }
+
+    // ── make_kind_map ─────────────────────────────────────────────────────────
+    //
+    // Hoisted from supports.rs (make_support_map) and loads.rs (make_load_map),
+    // which were byte-for-byte identical. Builds a Value::Map with a `kind`
+    // discriminator key plus extra fields, all sorted alphabetically by BTreeMap.
+
+    #[test]
+    fn make_kind_map_kind_field_matches_input_string() {
+        let result = make_kind_map("my_kind", vec![]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("my_kind".to_string())),
+            "kind field should equal the input string"
+        );
+    }
+
+    #[test]
+    fn make_kind_map_extra_fields_appear_under_expected_keys() {
+        let result = make_kind_map("test", vec![
+            ("alpha", Value::Real(1.0)),
+            ("beta", Value::Int(42)),
+        ]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("alpha".to_string())),
+            Some(&Value::Real(1.0)),
+            "alpha field should round-trip"
+        );
+        assert_eq!(
+            map.get(&Value::String("beta".to_string())),
+            Some(&Value::Int(42)),
+            "beta field should round-trip"
+        );
+    }
+
+    #[test]
+    fn make_kind_map_btreemap_orders_keys_alphabetically() {
+        // Insert in non-alpha order: zulu, alpha, mike. BTreeMap sorts.
+        let result = make_kind_map("test", vec![
+            ("zulu", Value::Int(3)),
+            ("alpha", Value::Int(1)),
+            ("mike", Value::Int(2)),
+        ]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        // Iteration order on BTreeMap<Value, Value> follows Value's Ord impl.
+        // For Value::String("alpha") < Value::String("kind") < Value::String("mike")
+        // < Value::String("test") < Value::String("zulu"), the iteration order
+        // is alpha, kind, mike, zulu.
+        let keys: Vec<&Value> = map.keys().collect();
+        let expected = vec![
+            Value::String("alpha".to_string()),
+            Value::String("kind".to_string()),
+            Value::String("mike".to_string()),
+            Value::String("zulu".to_string()),
+        ];
+        let expected_refs: Vec<&Value> = expected.iter().collect();
+        assert_eq!(
+            keys, expected_refs,
+            "BTreeMap should iterate keys in alphabetical order"
+        );
+    }
+
+    #[test]
+    fn make_kind_map_empty_fields_produces_only_kind_key() {
+        let result = make_kind_map("only_kind", vec![]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.len(),
+            1,
+            "Empty fields should produce a Map with only the kind key"
+        );
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("only_kind".to_string())),
+        );
+    }
 }
