@@ -16,7 +16,10 @@
 //!   `ManifestError::Parse(_)` (strict schema; mirrors the convention on
 //!   `[kernels]` / `[kernels.<id>]`).
 
-use reify_config::{DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH, Manifest, ManifestError};
+use reify_config::{
+    DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE, DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH, Manifest,
+    ManifestError,
+};
 
 /// When a manifest has no `[auto_type_params]` section, the parsed
 /// `AutoTypeParamsConfig` falls back to the PRD-decided default of 6.
@@ -69,6 +72,32 @@ fn custom_max_cross_product_size_round_trips() {
         manifest.auto_type_params().max_cross_product_size,
         200_000,
         "parsed max_cross_product_size must override the default of 100,000"
+    );
+}
+
+/// When a manifest has no `[auto_type_params]` section, the parsed
+/// `AutoTypeParamsConfig` falls back to the PRD-decided default of 100,000
+/// for `max_cross_product_size`.
+///
+/// Also pins that the public constant
+/// `reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE` equals
+/// 100_000 — the single-source-of-truth that the compiler crate's eventual
+/// call-site will consume via
+/// `Manifest::auto_type_params().max_cross_product_size`. Mirrors
+/// `default_max_depth_is_six_when_section_omitted` for the task 2662
+/// cross-product hard cap.
+#[test]
+fn default_max_cross_product_size_is_100k_when_section_omitted() {
+    let manifest =
+        Manifest::from_toml_str("").expect("empty manifest must parse to defaults");
+    assert_eq!(
+        manifest.auto_type_params().max_cross_product_size,
+        100_000,
+        "default max_cross_product_size must be 100,000 (PRD-decided v0.2 default)"
+    );
+    assert_eq!(
+        DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE, 100_000,
+        "DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE constant must equal 100,000"
     );
 }
 
