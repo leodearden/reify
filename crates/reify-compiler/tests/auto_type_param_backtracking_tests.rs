@@ -100,7 +100,7 @@ fn build_n_seal_structures(count: usize) -> String {
     src
 }
 
-// ─── step-15: DFS empty-params is a vacuous success (parity with BFS) ──────
+// ─── DFS empty-params is a vacuous success (parity with BFS) ───────────────
 
 /// Invoking `resolve_auto_type_params_with_backtracking` with an empty
 /// `params` slice is a vacuous no-op — exactly mirroring v0.1 BFS's
@@ -141,7 +141,7 @@ fn dfs_empty_params_returns_vacuous_success() {
     );
 }
 
-// ─── step-17: DFS single-param parity with BFS happy path ─────────────────
+// ─── DFS single-param parity with BFS happy path ───────────────────────────
 
 /// One `AutoTypeParam` `[T : Seal]` whose bounds are satisfied by exactly
 /// one in-scope structure (`ORingSeal : Seal`). DFS at `max_depth = 6`
@@ -204,7 +204,7 @@ structure def ORingSeal : Seal {
     );
 }
 
-// ─── step-19: DFS multi-param all-feasible picks lex-first cross-product ───
+// ─── DFS multi-param all-feasible picks lex-first cross-product ─────────────
 
 /// Two `AutoTypeParam`s `[T : Seal, U : Cooled]` where:
 /// - T has two candidates (Seal lex order: `ORingSeal`, `RubberSeal`),
@@ -219,8 +219,8 @@ structure def ORingSeal : Seal {
 /// see `dfs_free_mode_two_feasible_cross_products_emits_non_unique_warning_and_picks_lex_first`).
 ///
 /// Strict-Ambiguous over multiple cross-product feasibles is the inverse
-/// of this test and is exercised by `dfs_strict_mode_with_two_feasible_cross_products_returns_ambiguous`
-/// in step-23.
+/// of this test and is exercised by
+/// `dfs_strict_mode_with_two_feasible_cross_products_returns_ambiguous`.
 #[test]
 fn dfs_multi_param_all_feasible_picks_lex_first_cross_product() {
     let source = r#"
@@ -314,7 +314,7 @@ structure def WaterCooled : Cooled {
     );
 }
 
-// ─── step-21: DFS backtracks when first leaf violated, picks second ────────
+// ─── DFS backtracks when first leaf violated, picks second ──────────────────
 
 /// Two `AutoTypeParam`s `[T : Seal, U : Cooled]` with two candidates each
 /// (4 cross-product leaves total: `(ORingSeal, AirCooled)`, `(ORingSeal,
@@ -441,7 +441,7 @@ structure def WaterCooled : Cooled {
     );
 }
 
-// ─── step-23: DFS strict-mode ≥2 feasible cross-products → Ambiguous ───────
+// ─── DFS strict-mode ≥2 feasible cross-products → Ambiguous ────────────────
 
 /// Two `AutoTypeParam`s `[T : Seal, U : Cooled]` with two candidates each
 /// (4 cross-product leaves total). With the default `MockConstraintChecker`
@@ -457,7 +457,7 @@ structure def WaterCooled : Cooled {
 ///
 /// Asserts exactly 2 witnesses (strict-mode cap, max_feasible_to_collect=2),
 /// no exact witness format, so this test stays decoupled from the
-/// witness-string formatting decision pinned in step-24. Richer per-witness
+/// witness-string formatting decision. Richer per-witness
 /// format with the smallest-infeasibility witness is task 2663's scope.
 ///
 /// Pins:
@@ -558,7 +558,7 @@ structure def WaterCooled : Cooled {
         outcome.substitution,
     );
 
-    // Exactly one Ambiguous diagnostic emitted by step-24's strict dispatch.
+    // Exactly one Ambiguous diagnostic emitted by the strict dispatch.
     assert_eq!(
         diagnostics.len(),
         1,
@@ -622,7 +622,7 @@ structure def WaterCooled : Cooled {
     //     Message-body witness format is left uncoupled for task 2663.
 }
 
-// ─── step-25: DFS Phase A overflow on first param halts before recursion ───
+// ─── DFS Phase A overflow on first param halts before recursion ─────────────
 
 /// When the first param's bounds match more than `MAX_AUTO_TYPE_PARAM_CANDIDATES`
 /// in-scope structures (overflow), DFS halts after recording the first param's
@@ -716,7 +716,7 @@ fn dfs_phase_a_overflow_on_first_param_halts_before_recursion() {
     );
 }
 
-// ─── step-27: DFS Phase A empty pool on first param halts before recursion ──
+// ─── DFS Phase A empty pool on first param halts before recursion ───────────
 
 /// When the first param's bounds match zero in-scope structures, Phase A
 /// returns `CandidateEnumeration::Empty` for that param, and the DFS
@@ -822,7 +822,7 @@ structure def AirCooled : Cooled {
     );
 }
 
-// ─── step-29: DFS above max_depth emits warning + falls back to BFS ────────
+// ─── DFS above max_depth emits warning + falls back to BFS ──────────────────
 
 /// Seven `AutoTypeParam`s (one per distinct trait with one matching structure
 /// each). Calling DFS with `max_depth = 6` triggers the depth-bound fallback:
@@ -836,7 +836,8 @@ structure def AirCooled : Cooled {
 ///   `AutoTypeParamDepthBoundExceeded` (Warning) and message containing both
 ///   "7" (params count) and "6" (max_depth).
 /// - The depth-bound check uses strict `>`: 7 > 6 ⇒ fallback fires; the
-///   boundary case 6 == 6 is exercised in step-31.
+///   boundary case 6 == 6 is exercised in
+///   `dfs_at_max_depth_runs_dfs_no_fallback_diagnostic`.
 #[test]
 fn dfs_above_max_depth_emits_warning_and_falls_back_to_bfs() {
     // Seven distinct traits, each with a single implementing structure.
@@ -938,7 +939,7 @@ structure def S7 : T7 { param x : Real = 7.0 }
     );
 }
 
-// ─── step-31: DFS at max_depth runs DFS (no fallback diagnostic) ───────────
+// ─── DFS at max_depth runs DFS (no fallback diagnostic) ─────────────────────
 
 /// Six `AutoTypeParam`s — boundary case `params.len() == max_depth`. Each
 /// has a single feasible candidate. Calling DFS with `max_depth = 6` must
@@ -946,7 +947,8 @@ structure def S7 : T7 { param x : Real = 7.0 }
 /// strict-greater, so `6 > 6` is false.
 ///
 /// Pins the off-by-one boundary: `>` triggers fallback, `==` does not.
-/// This test is the lower-bound mirror of step-29's upper-bound test.
+/// This test is the lower-bound mirror of
+/// `dfs_above_max_depth_emits_warning_and_falls_back_to_bfs`.
 ///
 /// Pins:
 /// - `outcome.per_param.len() == 6` and every entry is `Selected`
@@ -1039,7 +1041,7 @@ structure def S6 : T6 { param x : Real = 6.0 }
     );
 }
 
-// ─── step-32: depth-bound boundary — per_param shape discontinuity ──────────
+// ─── depth-bound boundary — per_param shape discontinuity ───────────────────
 
 /// Parity test for the `per_param` shape discontinuity at the DFS / BFS-fallback
 /// boundary.
@@ -1884,8 +1886,8 @@ structure def RubberSeal : Seal {
 /// exactly **once** per leaf when the orchestrator routes through the true
 /// multi-param DFS branch (`params.len() >= 2`).
 ///
-/// **Coverage gap closed by this test:** the step-3 test
-/// (`dfs_leaf_invokes_constraint_checker_exactly_once_per_leaf_with_multi_constraint_template`)
+/// **Coverage gap closed by this test:**
+/// `dfs_leaf_invokes_constraint_checker_exactly_once_per_leaf_with_multi_constraint_template`
 /// uses `params.len() == 1`, which triggers the early-return at
 /// `resolve_auto_type_params_with_backtracking::{single-param branch}` and
 /// routes through `filter_feasible_candidates` — so `dfs_search`,
@@ -2021,7 +2023,7 @@ structure def WaterCooled : Cooled {
     );
 }
 
-// ─── step-3 (task 2661): mixed strict+free ≥2 feasibles → Ambiguous, not NonUnique ──
+// ─── mixed strict+free ≥2 feasibles → Ambiguous, not NonUnique ──────────────
 
 /// Regression test: when ANY param is strict (`free=false`), ≥2 cross-product
 /// feasibles must produce `AutoTypeParamAmbiguous` (Error), NOT
@@ -2044,9 +2046,8 @@ structure def WaterCooled : Cooled {
 /// (c) `outcome.per_param[0].1` is `SelectionResult::Ambiguous(_)` with 2 witnesses
 /// (d) `outcome.substitution.is_empty()`
 ///
-/// This test should PASS immediately after step-2's impl (the dispatch is
-/// already in place); it exists as a contract pin so a future refactor cannot
-/// accidentally collapse the strict/free branches.
+/// This test exists as a contract pin so a future refactor cannot accidentally
+/// collapse the strict/free branches.
 #[test]
 fn dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique() {
     let source = r#"
@@ -2159,7 +2160,7 @@ structure def WaterCooled : Cooled {
     );
 }
 
-// ─── step-4 (task 2661): >16 feasibles → NonUnique with elision count ──────────
+// ─── >16 feasibles → NonUnique with elision count ───────────────────────────
 
 /// Two `AutoTypeParam`s `[T:Seal (free), U:Cooled (free)]` with 5 candidates
 /// each (25 cross-product leaves). Default `MockConstraintChecker` (every leaf
@@ -2344,7 +2345,7 @@ structure def WaterCooled : Cooled {
     );
 }
 
-// ─── step-6 (task 2661): exactly 16 feasibles → no elision marker ──────────────
+// ─── exactly NON_UNIQUE_DISPLAY_CAP feasibles → no elision marker ───────────
 
 /// Two `AutoTypeParam`s `[T:Seal (free), U:Cooled (free)]` with 4 candidates
 /// each (16 cross-product leaves). Default `MockConstraintChecker` (all
@@ -2481,7 +2482,7 @@ structure def WaterCooled : Cooled {
     );
 }
 
-// ─── step-1 (task 2661): free-mode ≥2 cross-product feasibles ─────────────────
+// ─── free-mode ≥2 cross-product feasibles ───────────────────────────────────
 // → NonUnique Warning + lex-first success shape
 
 /// Two `AutoTypeParam`s `[T : Seal (free=true), U : Cooled (free=true)]` with
@@ -2659,7 +2660,7 @@ structure def WaterCooled : Cooled {
     );
 }
 
-// ─── step-1 (task 2660): build_constraint_blame_map — basic TypeParam blame ──
+// ─── build_constraint_blame_map — basic TypeParam blame ─────────────────────
 
 /// `build_constraint_blame_map` must return one entry per constraint that
 /// references at least one in-scope `TypeParam`-typed cell. The entry maps
@@ -2719,7 +2720,7 @@ fn build_constraint_blame_map_returns_param_indices_referenced_by_constraint_exp
     );
 }
 
-// ─── step-3 (task 2660): build_constraint_blame_map — exclusion invariants ──
+// ─── build_constraint_blame_map — exclusion invariants ──────────────────────
 
 /// `build_constraint_blame_map` must NOT insert an entry for constraints whose
 /// blame set would be empty. Two sub-cases:
@@ -2780,7 +2781,7 @@ fn build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam
     );
 }
 
-// ─── step-5 (task 2660): DFS backjumps to lex-first-param blame ──────────────
+// ─── DFS backjumps to lex-first-param blame ─────────────────────────────────
 
 /// When the first leaf's constraint violation blames only `T` (the lex-first /
 /// outermost param, index 0), the DFS must backjump directly to the T-level and
