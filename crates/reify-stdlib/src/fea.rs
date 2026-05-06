@@ -892,11 +892,24 @@ mod tests {
     // Each branch of the argument-shape contract gets its own focused test
     // so a regression points directly at the failing rejection path rather
     // than reporting a generic bundled-test failure.
+    //
+    // Helpers below are parametric on `name` ("envelope_max" / "envelope_min")
+    // so each #[test] shell is a one-liner and a regression bisects directly
+    // to the failing branch.
+
+    fn assert_zero_args_returns_undef(name: &str) {
+        assert!(eval_fea(name, &[]).unwrap().is_undef());
+    }
 
     #[test]
     fn envelope_max_zero_args_returns_undef() {
         // arity must be exactly 1 (Map<String, Field>).
-        assert!(eval_fea("envelope_max", &[]).unwrap().is_undef());
+        assert_zero_args_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_zero_args_returns_undef() {
+        assert_zero_args_returns_undef("envelope_min");
     }
 
     #[test]
