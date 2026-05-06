@@ -80,4 +80,60 @@ mod tests {
         let dir = default_cache_dir(std::path::Path::new("/h"), Some(""));
         assert_eq!(dir, PathBuf::from("/h/.cache/reify/fea"));
     }
+
+    #[test]
+    fn parse_cache_config_empty_input_returns_default() {
+        // Empty document — the `[cache]` table is absent altogether.
+        let cfg = parse_cache_config("").expect("empty input should parse");
+        assert_eq!(cfg, CacheConfig::default());
+        assert_eq!(cfg.dir, None);
+        assert_eq!(cfg.max_bytes, None);
+    }
+
+    #[test]
+    fn parse_cache_config_empty_cache_table_returns_default() {
+        // `[cache]` table is declared but has no fields. Should be
+        // semantically equivalent to the absent-table case.
+        let cfg = parse_cache_config("[cache]\n").expect("empty [cache] should parse");
+        assert_eq!(cfg, CacheConfig::default());
+    }
+
+    #[test]
+    fn parse_cache_config_dir_only() {
+        let cfg = parse_cache_config("[cache]\ndir = \"/some/path\"\n")
+            .expect("dir-only [cache] should parse");
+        assert_eq!(
+            cfg,
+            CacheConfig {
+                dir: Some(PathBuf::from("/some/path")),
+                max_bytes: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cache_config_max_bytes_only() {
+        let cfg = parse_cache_config("[cache]\nmax_bytes = 1024\n")
+            .expect("max_bytes-only [cache] should parse");
+        assert_eq!(
+            cfg,
+            CacheConfig {
+                dir: None,
+                max_bytes: Some(1024),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cache_config_both_fields_round_trip() {
+        let cfg = parse_cache_config("[cache]\ndir = \"/c\"\nmax_bytes = 42\n")
+            .expect("both-fields [cache] should parse");
+        assert_eq!(
+            cfg,
+            CacheConfig {
+                dir: Some(PathBuf::from("/c")),
+                max_bytes: Some(42),
+            }
+        );
+    }
 }
