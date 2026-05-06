@@ -668,13 +668,41 @@ mod tests {
         );
     }
 
+    /// `@solid(arg)` on a non-entity context (e.g. `function`) produces exactly
+    /// one diagnostic — the context-mismatch warning — not two. The args-shape
+    /// warning is suppressed because the wrong-context branch short-circuits via
+    /// `else if`.
+    ///
+    /// This test pins the single-warning-per-error contract so a future refactor
+    /// that accidentally emits both warnings is caught immediately.
+    #[test]
+    fn solid_on_function_with_args_emits_one_warning() {
+        let anns = vec![ann(
+            reify_types::SOLID_ANNOTATION,
+            vec![reify_types::AnnotationArg::Real(0.5)],
+        )];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "function", &mut diagnostics);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 diagnostic (context-mismatch only), got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0].message.contains("@solid is not valid on function"),
+            "expected context-mismatch message, got: {}",
+            diagnostics[0].message
+        );
+    }
+
     /// Any argument shape passed to `@solid` on a valid entity context (structure)
     /// produces exactly one diagnostic whose message mentions `"takes no arguments"`.
     ///
     /// `@solid` is a bare marker — force-tet is unconditional, no parameter
     /// controls its behaviour. The grid documents that every arg variant is
-    /// rejected uniformly, distinguishing the contract from `@shell`'s
-    /// "numeric ok / non-numeric warn" shape.
+    /// rejected uniformly, distinguishing it from annotations that accept typed
+    /// args (e.g. `@optimized` requires a string literal target).
     #[test]
     fn solid_with_any_arg_warns() {
         let arg_shapes: &[(&str, Vec<reify_types::AnnotationArg>)] = &[

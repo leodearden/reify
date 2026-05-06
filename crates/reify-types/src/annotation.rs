@@ -29,6 +29,10 @@ pub const SOLVER_HINT_ANNOTATION: &str = "solver_hint";
 /// Marks an entity declaration as a solid body to bypass medial-axis extraction
 /// and force tet meshing in the T18 auto-classification dispatcher. The annotation
 /// is a bare marker — no arguments are accepted.
+///
+/// Note: as of this commit only the parse/validate path is wired; the T18
+/// dispatcher consumer is tracked separately and the annotation has no runtime
+/// effect until that lands.
 pub const SOLID_ANNOTATION: &str = "solid";
 
 /// A compiled annotation — resolved from a parsed `@name(args...)` syntax annotation.
