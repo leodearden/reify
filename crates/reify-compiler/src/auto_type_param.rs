@@ -626,7 +626,10 @@ pub fn filter_feasible_candidates(
 
     for candidate in candidates {
         let input = ConstraintInput {
-            constraints: Cow::Owned(constraints_template.clone()),
+            // constraints_template is hoisted above the loop and does not change
+            // across candidates in Phase B; borrow it directly to avoid an
+            // O(candidates × constraints) ConstraintNodeId-String clone.
+            constraints: Cow::Borrowed(&constraints_template),
             values: &empty_values,
             functions,
             determinacy: None,
@@ -2125,6 +2128,13 @@ mod helper_tests {
         // Build TopologyTemplate directly from crate-internal types to avoid the
         // "two versions of reify_compiler" diamond dependency that arises when
         // using TopologyTemplateBuilder from reify_test_support inside cfg(test).
+        //
+        // Intentional construction surface: this test enumerates every field so it
+        // fails to compile when `TopologyTemplate` gains a new field without a
+        // corresponding addition here. The tested contract is narrow (id-order +
+        // ptr-equality of expr borrow), but exhaustive field coverage is the
+        // cheapest way to keep the fixture honest. When adding a new field to
+        // `TopologyTemplate`, add it here too (default or empty is fine).
         let template = crate::TopologyTemplate {
             name: "Bearing".into(),
             entity_kind: crate::EntityKind::Structure,

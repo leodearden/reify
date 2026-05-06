@@ -567,18 +567,15 @@ mod tests {
             determinacy: None,
         };
 
-        // (a) variant is Borrowed
-        assert!(
-            matches!(input.constraints, Cow::Borrowed(_)),
-            "hot-path must pass Cow::Borrowed, not Cow::Owned"
-        );
-        // (b) Deref to &[T] is transparent
+        // (a) Deref to &[T] is transparent (compile-check: Cow::Borrowed(&v[..]) in
+        // field position already pins the API — the matches! assertion is a tautology)
         assert_eq!(
             input.constraints.len(),
             v.len(),
             "Cow::Borrowed deref must report the correct length"
         );
-        // (c) zero-copy: borrowed-slice pointer equals source
+        // (b) zero-copy: borrowed-slice pointer equals source — this is the genuine
+        // regression guard; a hidden .to_owned() call would change the pointer.
         assert!(
             std::ptr::eq(input.constraints.as_ref(), v.as_slice()),
             "Cow::Borrowed pointer must equal source slice pointer (no hidden copy)"
@@ -601,11 +598,9 @@ mod tests {
             determinacy: None,
         };
 
-        // Variant is Owned and Deref still works
-        assert!(
-            matches!(input.constraints, Cow::Owned(_)),
-            "ad-hoc construction must remain Cow::Owned"
-        );
+        // Compile-check: Cow::Owned(vec![...]) in field position already pins the API.
+        // The matches! variant assertion is a tautology — Deref transparency is the
+        // meaningful contract here.
         assert_eq!(input.constraints.len(), 1);
     }
 }
