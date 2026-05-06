@@ -367,3 +367,64 @@ fn elastic_options_constrains_max_iter_and_cg_tolerance_positive() {
         );
     }
 }
+
+// ─── step-11: ElasticResult param shape ──────────────────────────────────────
+
+/// `ElasticResult` is the FEA solver-output container. It must declare
+/// exactly five params with the canonical names and types:
+///
+///   - `displacement  : Real`     (Real placeholder for Field<Point3<Length>, Vector3<Length>>)
+///   - `stress        : Real`     (Real placeholder for Field<Point3<Length>, Tensor<2,3,Pressure>>)
+///   - `max_von_mises : Pressure`
+///   - `converged     : Bool`
+///   - `iterations    : Int`
+///
+/// `displacement` and `stress` use `Real` placeholders pending Field<X,Y>
+/// support in `param` positions (see plan.json design decision). The runtime
+/// FEA solver (PRD task #16) populates these as Field-typed Maps regardless
+/// of the static `param` annotation. This test pins the placeholder type so
+/// a future Field<X,Y> migration becomes a deliberate update rather than a
+/// silent type drift.
+#[test]
+fn elastic_result_struct_has_correct_param_shape() {
+    let template = find_structure("ElasticResult");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        5,
+        "ElasticResult should have exactly 5 param cells, got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("displacement", Type::Real),
+        ("stress", Type::Real),
+        (
+            "max_von_mises",
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
+        ("converged", Type::Bool),
+        ("iterations", Type::Int),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "ElasticResult missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ElasticResult.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
