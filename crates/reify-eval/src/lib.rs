@@ -48,7 +48,7 @@ pub use morph_stage_b::{
     SubShapeSide,
 };
 pub mod structural_classifier;
-pub use structural_classifier::{classify_cell, ParameterClass};
+pub use structural_classifier::{classify_cell, realization_graph_shape_hash, ParameterClass};
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;

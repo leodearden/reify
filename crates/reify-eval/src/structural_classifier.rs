@@ -21,7 +21,7 @@
 //! This module is pure Rust and does **not** call any geometry kernel.
 //! It operates solely on [`EvaluationGraph`] and [`reify_types::ValueMap`].
 
-use reify_types::{Type, ValueCellId};
+use reify_types::{ContentHash, Type, ValueCellId};
 
 use crate::graph::EvaluationGraph;
 
@@ -49,6 +49,30 @@ pub enum ParameterClass {
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
+
+/// Compute the shape hash of a realization graph.
+///
+/// This is Stage A's *shape primitive* (PRD line 33). It produces a
+/// deterministic hash of the feature DAG structure — value cells, constraints,
+/// realizations, resolutions, guarded groups, connections, and auto-type
+/// substitution — **excluding** the runtime [`reify_types::ValueMap`].
+///
+/// The runtime value map is precisely what the PRD means by "leaf parameter
+/// values": it lives in the engine's snapshot, not in the graph. Two graphs
+/// with identical shape hashes have identical structural topology, so a
+/// differing value map reflects only parameter-value changes (which Stage A
+/// then audits cell-by-cell via [`classify_cell`]).
+///
+/// # Implementation
+///
+/// Delegates to [`EvaluationGraph::topology_fingerprint`]
+/// (`crates/reify-eval/src/graph.rs:507–693`). Using the existing fingerprint
+/// ensures Stage A and the realization cache key over the same hash, so a
+/// future fingerprint bucket addition automatically applies to Stage A too.
+pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
+    graph.topology_fingerprint()
+}
+
 
 /// Classify a single value cell as [`ParameterClass::Dimensional`] or
 /// [`ParameterClass::Structural`].
