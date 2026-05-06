@@ -84,8 +84,10 @@ pub(crate) struct CompilationScope<'u> {
     /// only retains the last arm's members (last write wins), so per-arm
     /// differentiation requires this parallel map.
     ///
-    /// Populated in the entity.rs MatchArmDeclGroup pre-pass alongside
-    /// `sub_member_types`.
+    /// Populated in `compile_match_arm_decl_group` (entity.rs) on the success
+    /// path, atomically with `register_match_arm_group` — the producer-side
+    /// invariant `match_arm_groups.keys() == match_arm_group_arm_member_types.keys()`
+    /// is enforced by a `debug_assert!` in `compile_entity` (task 2872).
     pub(crate) match_arm_group_arm_member_types: HashMap<String, Vec<ArmMemberMap>>,
     /// External-scope match-arm clusters declared on each sub's child
     /// structure (task 2373).
