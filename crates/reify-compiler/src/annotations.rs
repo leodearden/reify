@@ -640,4 +640,24 @@ mod tests {
             );
         }
     }
+
+    /// `@solid` on a non-entity context (`function`) produces exactly one
+    /// diagnostic whose message mentions `"@solid is not valid on function"`.
+    #[test]
+    fn solid_on_function_context_warns() {
+        let anns = vec![ann(reify_types::SOLID_ANNOTATION, vec![])];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "function", &mut diagnostics);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0].message.contains("@solid is not valid on function"),
+            "unexpected message: {}",
+            diagnostics[0].message
+        );
+    }
 }
