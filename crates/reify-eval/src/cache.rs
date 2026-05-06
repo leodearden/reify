@@ -3657,4 +3657,35 @@ mod tests {
             "unrelated path must remain None"
         );
     }
+
+    /// Verifies the three branches of the `imported_file_hash_changed` invalidation predicate.
+    ///
+    /// (a) No prior recording → returns `true` (cold start → must invalidate).
+    /// (b) Recorded hash matches candidate → returns `false` (cache hit).
+    /// (c) Recorded hash differs from candidate → returns `true` (content changed → invalidate).
+    #[test]
+    fn cache_store_imported_file_hash_changed_returns_true_on_first_seen_or_differing_hash() {
+        let mut store = CacheStore::new();
+
+        // (a) No recording → changed == true.
+        assert!(
+            store.imported_file_hash_changed("foo.vdb", ContentHash::of_str("A")),
+            "no prior recording must signal invalidation (changed == true)"
+        );
+
+        // Record hash A.
+        store.record_imported_file_hash("foo.vdb", ContentHash::of_str("A"));
+
+        // (b) Same hash → changed == false (cache hit).
+        assert!(
+            !store.imported_file_hash_changed("foo.vdb", ContentHash::of_str("A")),
+            "matching recorded hash must signal cache hit (changed == false)"
+        );
+
+        // (c) Different hash → changed == true (content changed).
+        assert!(
+            store.imported_file_hash_changed("foo.vdb", ContentHash::of_str("B")),
+            "differing hash must signal invalidation (changed == true)"
+        );
+    }
 }
