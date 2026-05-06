@@ -89,7 +89,19 @@ pub fn parse_cache_config(s: &str) -> Result<CacheConfig, CacheError> {
     })
 }
 
-/// Errors returned by cache-config parsing.
+/// Read and parse a cache config document (`~/.config/reify/config.toml`
+/// or `<project>/.reify/config.toml`) from `path`.
+///
+/// Filesystem errors (missing file, permissions, …) surface as
+/// [`CacheError::Io`]; parse-time errors surface via the same variants
+/// as [`parse_cache_config`] (mirrors the
+/// `Manifest::load_from_path` shape).
+pub fn load_cache_config_from_path(path: &Path) -> Result<CacheConfig, CacheError> {
+    let contents = std::fs::read_to_string(path).map_err(CacheError::Io)?;
+    parse_cache_config(&contents)
+}
+
+/// Errors returned by cache-config parsing and loading.
 #[derive(Debug)]
 pub enum CacheError {
     /// The TOML document failed to parse, or an unknown section / key was
@@ -97,17 +109,30 @@ pub enum CacheError {
     /// formatted diagnostic from the underlying `toml` crate (line/column
     /// information is preserved).
     Parse(String),
+    /// Reading the cache config from disk failed (e.g. missing file,
+    /// permission denied). The wrapped `io::Error` is exposed via
+    /// [`std::error::Error::source`] so callers can introspect it.
+    /// Mirrors `ManifestError::Io`.
+    Io(std::io::Error),
 }
 
 impl fmt::Display for CacheError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CacheError::Parse(msg) => write!(f, "failed to parse cache config: {}", msg),
+            CacheError::Io(err) => write!(f, "failed to read cache config: {}", err),
         }
     }
 }
 
-impl std::error::Error for CacheError {}
+impl std::error::Error for CacheError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CacheError::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 /// On-disk shape for the cache config file (`~/.config/reify/config.toml`
 /// or `<project>/.reify/config.toml`).
