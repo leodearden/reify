@@ -1,5 +1,6 @@
 // Split from lib.rs (task 2032) — constraints methods.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
@@ -41,12 +42,12 @@ impl Engine {
         // allocations and go directly to the checker — same code path as before
         // Task 273 introduced the bucketing logic.
         if self.optimization_registry.is_empty() {
-            let constraints = entries
+            let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = entries
                 .into_iter()
                 .map(|(id, expr, _target)| (id, expr))
                 .collect();
             let input = ConstraintInput {
-                constraints,
+                constraints: Cow::Owned(constraints),
                 values,
                 functions,
                 determinacy,
@@ -119,7 +120,7 @@ impl Engine {
                     indices.len(),
                 )));
                 let fallback_input = ConstraintInput {
-                    constraints: input.constraints,
+                    constraints: Cow::Owned(input.constraints),
                     values,
                     functions,
                     determinacy,
@@ -157,7 +158,7 @@ impl Engine {
             let (indices, constraints): (Vec<usize>, Vec<(ConstraintNodeId, &'a CompiledExpr)>) =
                 fallback.into_iter().unzip();
             let input = ConstraintInput {
-                constraints,
+                constraints: Cow::Owned(constraints),
                 values,
                 functions,
                 determinacy,

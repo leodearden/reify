@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -12,7 +13,14 @@ use crate::value::{DeterminacyState, Satisfaction, Value, ValueMap};
 #[derive(Debug)]
 pub struct ConstraintInput<'a> {
     /// The constraints to check, keyed by their node ID.
-    pub constraints: Vec<(ConstraintNodeId, &'a CompiledExpr)>,
+    ///
+    /// Use `Cow::Borrowed(&slice)` when the caller already holds a long-lived
+    /// slice (e.g., the DFS hot path in `auto_type_param`) to avoid a per-leaf
+    /// clone of the `ConstraintNodeId` strings. Use `Cow::Owned(vec![...])` for
+    /// ad-hoc construction in tests and one-off call sites — the `Deref` to
+    /// `&[T]` means all read-only consumers (`iter()`, `len()`, `is_empty()`,
+    /// `for (id, _) in &input.constraints`) are zero-touch.
+    pub constraints: Cow<'a, [(ConstraintNodeId, &'a CompiledExpr)]>,
     /// Current values of all cells referenced by constraints.
     pub values: &'a ValueMap,
     /// User-defined functions available for evaluation within constraint expressions.
