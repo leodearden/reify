@@ -225,6 +225,39 @@ mod tests {
 
     // ── test helpers ────────────────────────────────────────────────────────
 
+    /// Construct a 2-D `SampledField` from per-axis grid coords and data
+    /// (axis-0 outermost, row-major).
+    fn make_sampled_2d(
+        name: &str,
+        axis0: Vec<f64>,
+        axis1: Vec<f64>,
+        data: Vec<f64>,
+    ) -> SampledField {
+        let bounds_min = vec![
+            *axis0.first().expect("axis0 must be non-empty"),
+            *axis1.first().expect("axis1 must be non-empty"),
+        ];
+        let bounds_max = vec![
+            *axis0.last().expect("axis0 must be non-empty"),
+            *axis1.last().expect("axis1 must be non-empty"),
+        ];
+        let spacing = vec![
+            if axis0.len() >= 2 { axis0[1] - axis0[0] } else { 1.0 },
+            if axis1.len() >= 2 { axis1[1] - axis1[0] } else { 1.0 },
+        ];
+        SampledField {
+            name: name.to_string(),
+            kind: SampledGridKind::Regular2D,
+            bounds_min,
+            bounds_max,
+            spacing,
+            axis_grids: vec![axis0, axis1],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
     /// Construct a 1-D `SampledField` from per-axis grid coords and data.
     fn make_sampled_1d(name: &str, axis: Vec<f64>, data: Vec<f64>) -> SampledField {
         let bounds_min = vec![*axis.first().expect("axis must be non-empty")];
@@ -465,6 +498,99 @@ mod tests {
         let map = Value::Map(BTreeMap::new());
         let result = eval_fea("envelope_min", &[map]).unwrap();
         assert!(result.is_undef());
+    }
+
+    // ── grid / type mismatch rejection ──────────────────────────────────────
+
+    #[test]
+    fn envelope_max_grid_axis_lengths_mismatch_returns_undef() {
+        let case_a = wrap_sampled_field(
+            make_sampled_1d(
+                "a",
+                vec![0.0, 1.0, 2.0, 3.0, 4.0],
+                vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            ),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_max_grid_bounds_min_mismatch_returns_undef() {
+        let case_a = wrap_sampled_field(
+            make_sampled_1d(
+                "a",
+                vec![0.0, 1.0, 2.0, 3.0],
+                vec![1.0, 2.0, 3.0, 4.0],
+            ),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d(
+                "b",
+                vec![1.0, 2.0, 3.0, 4.0],
+                vec![1.0, 2.0, 3.0, 4.0],
+            ),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_max_grid_kind_mismatch_returns_undef() {
+        // case_a is Regular1D (4 grid points), case_b is Regular2D (2x2=4 grid
+        // points). Same data length so any data-length-only check would miss
+        // this; the grid-kind / axis-count check rejects.
+        let case_a = wrap_sampled_field(
+            make_sampled_1d(
+                "a",
+                vec![0.0, 1.0, 2.0, 3.0],
+                vec![1.0, 2.0, 3.0, 4.0],
+            ),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_2d(
+                "b",
+                vec![0.0, 1.0],
+                vec![0.0, 1.0],
+                vec![1.0, 2.0, 3.0, 4.0],
+            ),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_max_codomain_type_mismatch_returns_undef() {
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
     }
 
     #[test]
