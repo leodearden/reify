@@ -1291,7 +1291,7 @@ pub fn resolve_auto_type_params_with_backtracking(
     let cross_product_size: usize = per_param_candidates
         .iter()
         .map(|v| v.len())
-        .fold(1usize, |acc, n| acc.checked_mul(n).unwrap_or(usize::MAX));
+        .fold(1usize, |acc, n| acc.saturating_mul(n));
     if cross_product_size > max_cross_product_size {
         let (_joined_bounds, label_message) =
             render_auto_type_param_label(&params[0].bounds);
