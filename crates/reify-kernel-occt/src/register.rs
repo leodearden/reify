@@ -142,20 +142,28 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
 ///
 /// # Always-defined (regardless of `cfg(has_occt)`)
 ///
-/// Unlike the `inventory::submit!` block below (which stays `#[cfg(has_occt)]`),
-/// this function is unconditionally compiled and `pub` so that
-/// `tests/inventory_registration.rs` can pin its pointer identity via
-/// `std::ptr::fn_addr_eq` even in stub-mode CI builds where no OCCT C++ libs
-/// are present. The function body references `crate::OcctKernelHandle::spawn()`,
-/// which resolves to the real handle under `cfg(has_occt)` and to the stub
+/// Unconditionally compiled (rather than `#[cfg(has_occt)]`) so that
+/// `tests/inventory_registration.rs`, which references `register::occt_factory`
+/// outside any cfg gate, *compiles* under stub-mode builds. This is a
+/// compile-time requirement: the test binary must type-check in stub mode even
+/// though the factory pin assertion is never reached at runtime (the test
+/// early-returns when `OCCT_AVAILABLE` is false — stub-mode runs are a no-op).
+///
+/// Note the deliberate asymmetry with Manifold: Manifold twin-gates both
+/// `manifold_factory` and its `inventory::submit!` under
+/// `#[cfg(feature = "stub_register")]`. OCCT cannot follow that pattern because
+/// `cfg(has_occt)` is set only when building the OCCT crate itself, not when
+/// compiling the integration-test binary — so `occt_factory` must stay ungated
+/// for the test binary to compile under stub mode.
+///
+/// The function body references `crate::OcctKernelHandle::spawn()`, which
+/// resolves to the real handle under `cfg(has_occt)` and to the stub
 /// (`crates/reify-kernel-occt/src/stubs.rs`) otherwise — both define
 /// `pub fn spawn() -> Self` and `impl GeometryKernel for OcctKernelHandle`, so
-/// the return type compiles in both modes.
-///
-/// Under stub mode the returned handle's every geometry operation surfaces an
-/// "OCCT not available" error; callers must check
-/// `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` before invoking the
-/// factory — the `inventory::submit!` gate already prevents stub-mode dispatch.
+/// the return type compiles in both modes. Under stub mode the returned handle's
+/// every geometry operation surfaces an "OCCT not available" error; callers must
+/// check `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` before invoking
+/// the factory — the `inventory::submit!` gate already prevents stub-mode dispatch.
 pub fn occt_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::OcctKernelHandle::spawn())
 }
