@@ -80,4 +80,15 @@ structure def ElasticOptions {
     param max_iter : Int = 1000
     param cg_tolerance : Real = 0.000001
     param threads : Option<Int> = none
+
+    // A non-positive `max_iter` would let the solver exit before doing any
+    // work; declaring the lower bound at the structure-def level makes the
+    // contract explicit in production code rather than relying solely on
+    // test coverage (task 2544 convention).
+    constraint max_iter > 0
+    // `cg_tolerance` is a relative residual norm — must be strictly positive
+    // for the convergence test `||r||/||b|| < cg_tolerance` to terminate.
+    // Zero or negative would mean "never converge" and silently exhaust
+    // `max_iter` on every solve.
+    constraint cg_tolerance > 0
 }
