@@ -456,9 +456,8 @@ mod tests {
 
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
-        LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization,
-        long_chain_diagnostic, long_chain_threshold_from_env_value,
-        per_stage_tolerance_for_plan,
+        LONG_CHAIN_THRESHOLD_ENV_VAR, dispatch, is_long_chain_realization, long_chain_diagnostic,
+        long_chain_threshold_from_env_value, per_stage_tolerance_for_plan,
     };
     use crate::tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance};
     use std::time::Duration;
@@ -472,7 +471,10 @@ mod tests {
     #[test]
     fn long_chain_constants_are_pinned() {
         assert_eq!(LONG_CHAIN_DEFAULT_THRESHOLD_MS, 500);
-        assert_eq!(LONG_CHAIN_THRESHOLD_ENV_VAR, "REIFY_LONG_CHAIN_THRESHOLD_MS");
+        assert_eq!(
+            LONG_CHAIN_THRESHOLD_ENV_VAR,
+            "REIFY_LONG_CHAIN_THRESHOLD_MS"
+        );
         assert_eq!(LONG_CHAIN_MIN_STAGES, 2);
     }
 
@@ -794,7 +796,12 @@ mod tests {
         let mut available: HashSet<ReprKind> = HashSet::new();
         available.insert(ReprKind::BRep);
 
-        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::BRep, &available);
+        let plan = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::BRep,
+            &available,
+        );
         assert_eq!(
             plan,
             Some(DispatchPlan {
@@ -816,7 +823,9 @@ mod tests {
         // occt only knows how to tessellate BRep into Mesh.
         let occt = CapabilityDescriptor {
             supports: vec![(
-                Operation::Convert { from: ReprKind::BRep },
+                Operation::Convert {
+                    from: ReprKind::BRep,
+                },
                 ReprKind::Mesh,
             )],
         };
@@ -831,8 +840,13 @@ mod tests {
         let mut available: HashSet<ReprKind> = HashSet::new();
         available.insert(ReprKind::BRep);
 
-        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
-            .expect("a single-stage chain BRep→Mesh→Union must be findable");
+        let plan = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+            &available,
+        )
+        .expect("a single-stage chain BRep→Mesh→Union must be findable");
 
         assert_eq!(
             plan.kernel, "manifold",
@@ -860,14 +874,29 @@ mod tests {
         let alpha = CapabilityDescriptor {
             supports: vec![
                 (Operation::BooleanUnion, ReprKind::Mesh),
-                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
             ],
         };
         let beta = CapabilityDescriptor {
             supports: vec![
                 (Operation::BooleanUnion, ReprKind::Mesh),
-                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Sdf),
-                (Operation::Convert { from: ReprKind::Sdf }, ReprKind::Mesh),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Sdf,
+                ),
+                (
+                    Operation::Convert {
+                        from: ReprKind::Sdf,
+                    },
+                    ReprKind::Mesh,
+                ),
             ],
         };
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
@@ -877,8 +906,13 @@ mod tests {
         let mut available: HashSet<ReprKind> = HashSet::new();
         available.insert(ReprKind::BRep);
 
-        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
-            .expect("a 1-stage chain via alpha must be findable");
+        let plan = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+            &available,
+        )
+        .expect("a 1-stage chain via alpha must be findable");
 
         assert_eq!(
             plan.conversions.len(),
@@ -915,14 +949,18 @@ mod tests {
         // alpha: converts BRep → Sdf only. No direct BRep→Mesh anywhere.
         let alpha = CapabilityDescriptor {
             supports: vec![(
-                Operation::Convert { from: ReprKind::BRep },
+                Operation::Convert {
+                    from: ReprKind::BRep,
+                },
                 ReprKind::Sdf,
             )],
         };
         // beta: converts Sdf → Mesh only.
         let beta = CapabilityDescriptor {
             supports: vec![(
-                Operation::Convert { from: ReprKind::Sdf },
+                Operation::Convert {
+                    from: ReprKind::Sdf,
+                },
                 ReprKind::Mesh,
             )],
         };
@@ -938,8 +976,13 @@ mod tests {
         let mut available: HashSet<ReprKind> = HashSet::new();
         available.insert(ReprKind::BRep);
 
-        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
-            .expect("a 2-stage chain BRep→Sdf→Mesh→Union must be findable");
+        let plan = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+            &available,
+        )
+        .expect("a 2-stage chain BRep→Sdf→Mesh→Union must be findable");
 
         assert_eq!(
             plan.conversions.len(),
@@ -980,14 +1023,18 @@ mod tests {
         // kappa: converts BRep → Mesh in one step.
         let kappa = CapabilityDescriptor {
             supports: vec![(
-                Operation::Convert { from: ReprKind::BRep },
+                Operation::Convert {
+                    from: ReprKind::BRep,
+                },
                 ReprKind::Mesh,
             )],
         };
         // lambda: converts Sdf → Mesh in one step.
         let lambda = CapabilityDescriptor {
             supports: vec![(
-                Operation::Convert { from: ReprKind::Sdf },
+                Operation::Convert {
+                    from: ReprKind::Sdf,
+                },
                 ReprKind::Mesh,
             )],
         };
@@ -1007,8 +1054,13 @@ mod tests {
         available.insert(ReprKind::BRep);
         available.insert(ReprKind::Sdf);
 
-        let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
-            .expect("kappa (BRep→Mesh) path must be findable");
+        let plan = dispatch(
+            &registry,
+            Operation::BooleanUnion,
+            ReprKind::Mesh,
+            &available,
+        )
+        .expect("kappa (BRep→Mesh) path must be findable");
 
         assert_eq!(
             plan.kernel, "manifold",
@@ -1050,8 +1102,13 @@ mod tests {
 
         // Repeat 5x: every call must return the same kernel name.
         for trial in 0..5 {
-            let plan = dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
-                .expect("both kernels can answer the demand directly");
+            let plan = dispatch(
+                &registry,
+                Operation::BooleanUnion,
+                ReprKind::Mesh,
+                &available,
+            )
+            .expect("both kernels can answer the demand directly");
             assert_eq!(
                 plan.kernel, "alpha",
                 "trial {trial}: lexicographically smaller name 'alpha' must win over 'manifold', got {plan:?}",
@@ -1079,7 +1136,12 @@ mod tests {
         let mut available: HashSet<ReprKind> = HashSet::new();
         available.insert(ReprKind::BRep);
         assert_eq!(
-            dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available),
+            dispatch(
+                &registry,
+                Operation::BooleanUnion,
+                ReprKind::Mesh,
+                &available
+            ),
             None,
             "(a) demanded repr Mesh unreachable from {{BRep}} via no conversions ⇒ None",
         );
@@ -1089,7 +1151,12 @@ mod tests {
         //     into scope. Frontier seeded empty ⇒ never enters the probe.
         let empty_available: HashSet<ReprKind> = HashSet::new();
         assert_eq!(
-            dispatch(&registry, Operation::BooleanUnion, ReprKind::BRep, &empty_available),
+            dispatch(
+                &registry,
+                Operation::BooleanUnion,
+                ReprKind::BRep,
+                &empty_available
+            ),
             None,
             "(b) demanded BRep is in occt's supports table but `available` is empty ⇒ None",
         );
@@ -1097,7 +1164,12 @@ mod tests {
         // (c) Op not in any descriptor (registry has only Convert + a single
         //     boolean) — query a Modify op and expect None.
         assert_eq!(
-            dispatch(&registry, Operation::ModifyFillet, ReprKind::BRep, &available),
+            dispatch(
+                &registry,
+                Operation::ModifyFillet,
+                ReprKind::BRep,
+                &available
+            ),
             None,
             "(c) ModifyFillet not in any kernel's supports ⇒ None",
         );
@@ -1105,7 +1177,12 @@ mod tests {
         // Edge case: empty registry. Frontier is seeded but nothing matches.
         let empty_registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
         assert_eq!(
-            dispatch(&empty_registry, Operation::BooleanUnion, ReprKind::Mesh, &available),
+            dispatch(
+                &empty_registry,
+                Operation::BooleanUnion,
+                ReprKind::Mesh,
+                &available
+            ),
             None,
             "edge: empty registry ⇒ None",
         );
@@ -1136,7 +1213,12 @@ mod tests {
                 (Operation::PrimitiveBox, ReprKind::BRep),
                 (Operation::PrimitiveCylinder, ReprKind::BRep),
                 (Operation::PrimitiveSphere, ReprKind::BRep),
-                (Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
             ],
         };
         // manifold: Mesh booleans (Union/Difference/Intersection).
@@ -1324,9 +1406,7 @@ mod tests {
     fn per_stage_tolerance_for_plan_single_conversion_applies_safety_factor() {
         let plan = DispatchPlan {
             kernel: "occt".to_string(),
-            conversions: vec![
-                ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
-            ],
+            conversions: vec![("occt".to_string(), ReprKind::BRep, ReprKind::Mesh)],
         };
         let req = 1e-3_f64;
         // N=1: no powf, so bit-exact multiply.

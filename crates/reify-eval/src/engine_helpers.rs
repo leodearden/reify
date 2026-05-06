@@ -27,8 +27,10 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// - `sub`: sub-entity name (e.g. `"bolts"`)
 /// - `member`: value-cell member name within each child instance (e.g. `"grade"`)
 /// - `n`: number of child instances (`0..n` is the index range).
-///   Negative values are clamped to 0 (returns an empty list), matching
-///   the historical behaviour of the inline `0..count` loops this helper replaces.
+///   In debug/test builds a `debug_assert!` fires on negative `n`, surfacing
+///   upstream arithmetic bugs early. In release builds negative values are
+///   clamped to 0 (returns an empty list), matching the historical behaviour
+///   of the inline `0..count` loops this helper replaces.
 ///
 /// # Returns
 /// `Value::List` whose `idx`-th element is the value of
@@ -42,8 +44,11 @@ pub(crate) fn collect_member_list(
     member: &str,
     n: i64,
 ) -> Value {
-    debug_assert!(n >= 0, "collect_member_list: negative count n={n} for {parent}.{sub}");
-    let n = n.max(0);
+    debug_assert!(
+        n >= 0,
+        "collect_member_list: negative count n={n} for {parent}.{sub}"
+    );
+    let n = n.max(0); // Release-only safety net (debug_assert above panics first in dev/test).
     let items: Vec<Value> = (0..n)
         .map(|idx| {
             let scoped_id = ValueCellId::new(format!("{}.{}[{}]", parent, sub, idx), member);

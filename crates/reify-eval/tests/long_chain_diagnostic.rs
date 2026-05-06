@@ -33,7 +33,10 @@ fn lib_re_exports_long_chain_api() {
     // Constants — pin the re-exported literal values so a typo or rename
     // in either the const decl or the re-export line is caught here.
     assert_eq!(LONG_CHAIN_DEFAULT_THRESHOLD_MS, 500);
-    assert_eq!(LONG_CHAIN_THRESHOLD_ENV_VAR, "REIFY_LONG_CHAIN_THRESHOLD_MS");
+    assert_eq!(
+        LONG_CHAIN_THRESHOLD_ENV_VAR,
+        "REIFY_LONG_CHAIN_THRESHOLD_MS"
+    );
     assert_eq!(LONG_CHAIN_MIN_STAGES, 2);
 
     // Build a 3-stage plan that trips both gates: stage-count > 2 and

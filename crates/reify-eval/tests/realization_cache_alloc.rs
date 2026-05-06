@@ -69,7 +69,10 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     // heap-allocates regardless of length — but the length guard makes the intent
     // explicit for future readers.
     let entity = "long_entity_name_to_defeat_any_potential_short_string_optimization_buffer_xxxxx";
-    assert!(entity.len() >= 64, "entity must be ≥64 bytes (belt-and-suspenders guard)");
+    assert!(
+        entity.len() >= 64,
+        "entity must be ≥64 bytes (belt-and-suspenders guard)"
+    );
 
     // Warm-up: the first insert legitimately allocates the entity String key once.
     let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.001, 1u32);

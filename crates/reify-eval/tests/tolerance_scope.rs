@@ -7,7 +7,9 @@
 //! `Engine::active_tolerance_for`.
 
 use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_test_support::{make_engine, manufacturing_purpose_with_inner_name, my_design_template_with_subs};
+use reify_test_support::{
+    make_engine, manufacturing_purpose_with_inner_name, my_design_template_with_subs,
+};
 use reify_types::{ModulePath, Type};
 
 /// Build a minimal CompiledModule with templates `MyDesign` (sub `head: Head`)
@@ -141,8 +143,7 @@ fn build_module_with_overlapping_purposes(
         .build();
     // Two siblings so `loose`'s descendant propagation reaches BOTH `head`
     // and `tail`, while `tight` overrides only `head`.
-    let my_design_template =
-        my_design_template_with_subs(&[("head", "Head"), ("tail", "Head")]);
+    let my_design_template = my_design_template_with_subs(&[("head", "Head"), ("tail", "Head")]);
 
     let loose = manufacturing_purpose_with_inner_name(loose_name, "Bracket", loose_tol);
     let tight = manufacturing_purpose_with_inner_name(tight_name, "Head", tight_tol);

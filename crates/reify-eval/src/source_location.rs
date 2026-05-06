@@ -88,8 +88,7 @@ mod tests {
     /// Build a CompiledModule from bracket_source() using the stdlib pipeline.
     fn bracket_compiled() -> reify_compiler::CompiledModule {
         let source = reify_test_support::bracket_source();
-        let parsed =
-            reify_compiler::parse_with_stdlib(source, ModulePath::single("bracket"));
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("bracket"));
         reify_compiler::compile_with_stdlib(&parsed)
     }
 
@@ -136,10 +135,16 @@ mod tests {
         let source = reify_test_support::bracket_source();
         let by_name = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket")
             .expect("'Bracket' must resolve");
-        let by_id = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
-            .expect("'Bracket.width' must resolve");
+        let by_id =
+            resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
+                .expect("'Bracket.width' must resolve");
         assert_eq!(
-            (by_name.line, by_name.column, by_name.end_line, by_name.end_column),
+            (
+                by_name.line,
+                by_name.column,
+                by_name.end_line,
+                by_name.end_column
+            ),
             (by_id.line, by_id.column, by_id.end_line, by_id.end_column),
             "template-name resolution must proxy to the first value cell (width), \
              so its span must match 'Bracket.width'"
@@ -172,8 +177,7 @@ mod tests {
     fn unknown_entity_name_returns_none() {
         let compiled = bracket_compiled();
         let source = reify_test_support::bracket_source();
-        let loc =
-            resolve_entity_source_location(&compiled, source, "bracket.ri", "Nonexistent");
+        let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Nonexistent");
         assert!(
             loc.is_none(),
             "expected None for unknown entity 'Nonexistent', got {:?}",

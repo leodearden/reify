@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{
     dispatch, per_stage_tolerance_for_plan,
-    tolerance_budget::{per_stage_tolerance, SAFETY_FACTOR},
+    tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance},
 };
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
@@ -57,13 +57,17 @@ fn lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end() {
     //   manifold: BooleanUnion on Mesh (final-stage kernel, no conversion edges)
     let alpha = CapabilityDescriptor {
         supports: vec![(
-            Operation::Convert { from: ReprKind::BRep },
+            Operation::Convert {
+                from: ReprKind::BRep,
+            },
             ReprKind::Sdf,
         )],
     };
     let beta = CapabilityDescriptor {
         supports: vec![(
-            Operation::Convert { from: ReprKind::Sdf },
+            Operation::Convert {
+                from: ReprKind::Sdf,
+            },
             ReprKind::Mesh,
         )],
     };
@@ -79,9 +83,13 @@ fn lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end() {
     let mut available: HashSet<ReprKind> = HashSet::new();
     available.insert(ReprKind::BRep);
 
-    let plan =
-        dispatch(&registry, Operation::BooleanUnion, ReprKind::Mesh, &available)
-            .expect("2-stage chain BRep→Sdf→Mesh + BooleanUnion must be findable");
+    let plan = dispatch(
+        &registry,
+        Operation::BooleanUnion,
+        ReprKind::Mesh,
+        &available,
+    )
+    .expect("2-stage chain BRep→Sdf→Mesh + BooleanUnion must be findable");
 
     assert_eq!(
         plan.conversions.len(),

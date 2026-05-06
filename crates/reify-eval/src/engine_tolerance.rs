@@ -95,11 +95,13 @@ impl Engine {
             );
         }
         if crate::tolerance_promise::is_promise_insufficient(demanded, promise) {
-            Some(crate::tolerance_promise::imported_tolerance_promise_diagnostic(
-                input_template_name,
-                demanded,
-                promise,
-            ))
+            Some(
+                crate::tolerance_promise::imported_tolerance_promise_diagnostic(
+                    input_template_name,
+                    demanded,
+                    promise,
+                ),
+            )
         } else {
             None
         }
