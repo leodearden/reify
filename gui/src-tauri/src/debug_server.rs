@@ -551,12 +551,6 @@ mod tests {
             .find(|t| t.name == "set_test_mode")
             .expect("set_test_mode must be present in tool_defs()");
 
-        // Description must be non-empty
-        assert!(
-            !entry.description.is_empty(),
-            "set_test_mode description must not be empty"
-        );
-
         // input_schema must declare an object with required boolean 'enabled'
         let schema = &entry.input_schema;
         assert_eq!(

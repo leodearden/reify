@@ -247,13 +247,10 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       } else {
         delete document.documentElement.dataset.testMode;
       }
-      // Settle the WebGL canvas so any follow-up screenshot captures the
-      // post-toggle frame. Mirrors the existing screenshot handler idiom
-      // (bridge.ts lines 99-108). No-op when viewport is not yet mounted.
-      const vp = ctx.viewport;
-      if (vp) {
-        vp.renderer.render(vp.scene, vp.camera);
-      }
+      // test-mode only affects CSS (animations/transitions via the global
+      // data-test-mode rule in global.css). There is no Three.js scene-graph
+      // subscriber, so a WebGL re-render here would not change what a
+      // follow-up screenshot captures and is therefore omitted.
       return { ok: true, test_mode: enabled };
     },
 

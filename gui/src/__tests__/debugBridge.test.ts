@@ -215,32 +215,31 @@ describe('debug bridge set_test_mode', () => {
     expect(window.__REIFY_DEBUG__!.testMode!()).toBe(true);
   });
 
-  it('set_test_mode calls renderer.render(scene, camera) when viewport is wired', async () => {
-    const mockRender = vi.fn();
-    const mockScene = {} as any;
-    const mockCamera = {} as any;
-    const mockRenderer = {
-      render: mockRender,
-      domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,abc') },
-    } as any;
-
+  it('set_test_mode does not throw when a viewport is wired', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
 
     // Wire a stub viewport onto the context after init
     window.__REIFY_DEBUG__!.viewport = {
-      scene: mockScene,
-      camera: mockCamera,
-      renderer: mockRenderer,
+      scene: {} as any,
+      camera: {} as any,
+      renderer: {
+        render: vi.fn(),
+        domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,abc') },
+      } as any,
       getMeshes: vi.fn().mockReturnValue(new Map()),
       getGhostMeshes: vi.fn().mockReturnValue(new Map()),
       fitToView: vi.fn(),
       flyToEntity: vi.fn(),
     };
 
+    // Should complete without throwing and return the expected payload
     await capturedHandler!({ payload: { id: 12, command: 'set_test_mode', params: { enabled: true } } });
 
-    expect(mockRender).toHaveBeenCalledOnce();
-    expect(mockRender).toHaveBeenCalledWith(mockScene, mockCamera);
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as { id: number; result: string }).result);
+    expect(result).toEqual({ ok: true, test_mode: true });
   });
 });
