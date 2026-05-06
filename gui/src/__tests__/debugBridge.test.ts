@@ -210,6 +210,41 @@ describe('debug bridge set_camera', () => {
     return JSON.parse(payload.result);
   }
 
+  it('happy path: applies full pose and returns {ok: true, applied: {...}}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera as any,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: stub.controls as any,
+    };
+
+    const result = await dispatch(capturedHandler!, 300, {
+      position: [10, 20, 30],
+      target: [1, 2, 3],
+      up: [0, 0, 1],
+      zoom: 2.5,
+    });
+
+    // Camera mutations
+    expect(stub.cameraPositionSet).toHaveBeenCalledWith(10, 20, 30);
+    expect(stub.controlsTargetSet).toHaveBeenCalledWith(1, 2, 3);
+    expect(stub.cameraUpSet).toHaveBeenCalledWith(0, 0, 1);
+    expect(stub.camera.zoom).toBe(2.5);
+    expect(stub.camera.updateMatrixWorld).toHaveBeenCalled();
+    expect(stub.camera.updateProjectionMatrix).toHaveBeenCalled();
+    expect(stub.controls.update).toHaveBeenCalled();
+    expect(stub.rendererRender).toHaveBeenCalledWith(stub.scene, stub.camera);
+    // Response
+    expect(result).toEqual({ ok: true, applied: { position: [10, 20, 30], target: [1, 2, 3], up: [0, 0, 1], zoom: 2.5 } });
+  });
+
   describe('input validation', () => {
     let stub: ReturnType<typeof makeViewportStub>;
 
