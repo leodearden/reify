@@ -214,6 +214,14 @@ pub struct CacheStore {
     /// that caused them to be dirty. A node stays dirty until ALL its dirty
     /// reasons have been resolved (e.g., by early cutoffs on upstream nodes).
     dirty_reasons: HashMap<NodeId, std::collections::HashSet<ValueCellId>>,
+    /// Per-path content-hash cache for imported field source files (PRD task 4 / task 2668).
+    ///
+    /// Stores the most-recently-observed `ContentHash` for each user-supplied path string.
+    /// Used by PRD task 5's wire site in `elaborate_field` to detect file-content changes
+    /// between evaluations via `imported_file_hash_changed`. Hashes are byte-only — see
+    /// `engine_eval::hash_imported_file_content`. Keys are literal path strings as written
+    /// by the user (not canonicalised); see design decision in plan 2668 for rationale.
+    imported_file_hashes: HashMap<String, ContentHash>,
     /// Count of successful mark_pending() calls since last reset.
     /// Used to verify that Pending intermediate state is actually applied
     /// during edit_param() evaluation.
@@ -230,6 +238,7 @@ impl CacheStore {
         Self {
             caches: HashMap::new(),
             dirty_reasons: HashMap::new(),
+            imported_file_hashes: HashMap::new(),
             pending_transition_count: 0,
             version: VersionId(0),
         }
@@ -284,10 +293,35 @@ impl CacheStore {
         self.caches.is_empty()
     }
 
-    /// Remove all cached entries and dirty state.
+    /// Remove all cached entries, dirty state, and imported-file content hashes.
     pub fn clear(&mut self) {
         self.caches.clear();
         self.dirty_reasons.clear();
+    }
+
+    /// Record the most-recently-observed content hash for an imported file path.
+    ///
+    /// Per-path content-hash side-table for imported field source files (PRD task 4 / task 2668).
+    /// Overwrites any prior recording for `path`. The key is the literal user-supplied path
+    /// string — not canonicalised (see design decision in plan 2668).
+    ///
+    /// Companion to [`CacheStore::get_imported_file_hash`] and
+    /// [`CacheStore::imported_file_hash_changed`]. PRD task 5's wire site in `elaborate_field`
+    /// calls this after reading a file with `engine_eval::hash_imported_file_content` to
+    /// update the recorded hash.
+    pub fn record_imported_file_hash(&mut self, path: &str, hash: ContentHash) {
+        self.imported_file_hashes.insert(path.to_string(), hash);
+    }
+
+    /// Retrieve the most-recently-recorded content hash for an imported file path.
+    ///
+    /// Returns `None` when no hash has been recorded yet for `path` (cold start or after
+    /// [`CacheStore::clear`]). Returns `Some(hash)` once
+    /// [`CacheStore::record_imported_file_hash`] has been called for that path.
+    ///
+    /// `ContentHash` is `Copy`, so this returns the value directly rather than a reference.
+    pub fn get_imported_file_hash(&self, path: &str) -> Option<ContentHash> {
+        self.imported_file_hashes.get(path).copied()
     }
 
     /// Record an evaluation result and determine if it changed (early cutoff).
