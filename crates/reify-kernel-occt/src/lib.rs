@@ -771,9 +771,13 @@ impl OcctKernel {
     /// Gaussian, mean, and principal curvatures at the parametric point
     /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
     ///
-    /// Uses `GeomLProp_SLProps`. Sign convention for `mean` and the principal
-    /// curvatures follows the outward normal (negated for `TopAbs_REVERSED`
-    /// faces); Gaussian curvature `K = κ₁·κ₂` is invariant.
+    /// Uses `BRepAdaptor_Surface::D2` — the same surface abstraction as
+    /// `surface_normal_at` — so both APIs honour `TopoLoc_Location` and agree
+    /// in world frame on faces with non-identity locations. Curvature is derived
+    /// from the first/second fundamental forms with an orientation-aware outward
+    /// normal; sign convention for `mean` and principal curvatures follows that
+    /// outward normal (correct for both FORWARD and REVERSED faces). Gaussian
+    /// curvature `K = κ₁·κ₂` is invariant.
     ///
     /// The return type is `Curvature` — a plain Rust struct with `f64` and
     /// `[f64; 3]` fields defined in both `has_occt` and `!has_occt` builds so

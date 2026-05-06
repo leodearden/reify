@@ -618,9 +618,12 @@ pub mod ffi {
         /// Gaussian, mean, and principal curvatures at the parametric point
         /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
         ///
-        /// Uses `GeomLProp_SLProps(surf, u, v, degree=2, resolution=1e-9)`.
-        /// Sign convention for H and κ follows the outward normal (negated for
-        /// `TopAbs_REVERSED` faces); Gaussian K is invariant.
+        /// Uses `BRepAdaptor_Surface::D2` — same abstraction as `surface_normal_at`
+        /// — so both APIs agree in world frame on faces with non-identity
+        /// `TopoLoc_Location`. Curvature is derived from the first/second
+        /// fundamental forms with an orientation-aware outward normal; sign
+        /// convention for H and κ follows that normal (correct for both FORWARD
+        /// and REVERSED faces without a post-hoc swap). Gaussian K is invariant.
         ///
         /// Throws (surfaces as `Err`) if the shape is not a face, has no
         /// underlying surface, or curvature is undefined at `(u, v)`.
