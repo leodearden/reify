@@ -33,3 +33,15 @@
 //   3. Number-literal grammar is `\d+(\.\d+)?` (no scientific notation),
 //      so the PRD's `1e-6` defaults to `0.000001` here.
 //   4. PRD's `Number` and `Integer` map to Reify's `Real` and `Int` builtins.
+
+// ── ElementOrder enum ────────────────────────────────────────────────────────
+
+// `ElementOrder` selects between first-order (P1, linear) and second-order
+// (P2, quadratic) tetrahedral elements for the FEA mesh. P1 is the default
+// (fast, linear shape functions, single mesh-pass cost) and P2 is the
+// override (quadratic shape functions, captures stress concentrations and
+// curved boundaries more accurately, ~2× DOF count). Variant order is
+// canonical: a future re-ordering would silently change downstream
+// integer-tag encodings, so the variant list is asserted in the
+// solver_elastic_tests fixture.
+enum ElementOrder { P1, P2 }
