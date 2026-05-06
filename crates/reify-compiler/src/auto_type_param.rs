@@ -281,6 +281,15 @@ pub struct MultiParamResolutionOutcome {
 /// alphabetically (by FQN) are reported.
 pub const MAX_AUTO_TYPE_PARAM_CANDIDATES: usize = 10;
 
+/// Maximum number of composite witness strings rendered in an
+/// `AutoTypeParamNonUnique` (all-free NonUnique) diagnostic message.
+///
+/// When the total number of feasible assignments exceeds this cap, the message
+/// gets a `"(N more elided)"` suffix where `N = total - NON_UNIQUE_DISPLAY_CAP`.
+/// Governs only the all-free NonUnique display path in
+/// `resolve_auto_type_params_with_backtracking`.
+pub const NON_UNIQUE_DISPLAY_CAP: usize = 16;
+
 /// Render the `bounds` slice for diagnostic display and produce the
 /// matching label-message string in one step.
 ///
@@ -1466,14 +1475,12 @@ pub fn resolve_auto_type_params_with_backtracking(
                 // feasible as a full length-N success shape — mirroring the `1 =>`
                 // arm (single-feasible success) but with an attached Warning.
                 //
-                // Display cap (task 2661 step-5): at most DISPLAY_CAP witness strings
-                // are rendered; if more feasibles exist, append "(N more elided)".
-                // DISPLAY_CAP is local to this branch to minimise blast radius —
-                // it only governs the v0.2 all-free NonUnique message rendering.
-                const DISPLAY_CAP: usize = 16;
+                // At most NON_UNIQUE_DISPLAY_CAP witness strings are rendered;
+                // if more feasibles exist, append "(N more elided)".
+                // See module-level NON_UNIQUE_DISPLAY_CAP for the rendering invariant.
                 let total = feasible_assignments.len();
-                let display_count = total.min(DISPLAY_CAP);
-                let elided = total.saturating_sub(DISPLAY_CAP);
+                let display_count = total.min(NON_UNIQUE_DISPLAY_CAP);
+                let elided = total.saturating_sub(NON_UNIQUE_DISPLAY_CAP);
 
                 // Build composite witness strings for the displayed portion only.
                 // Format: "T=ORingSeal,U=AirCooled" — mirrors strict-Ambiguous.
