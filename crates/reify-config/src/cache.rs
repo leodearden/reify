@@ -473,4 +473,69 @@ mod tests {
         assert_eq!(resolved.dir, PathBuf::from("/cli"));
         assert_eq!(resolved.dir_source, CacheDirSource::CliFlag);
     }
+
+    #[test]
+    fn resolve_cache_env_dir_beats_configs() {
+        // env_dir set, no CLI, both config layers also set: env wins.
+        let user = CacheConfig {
+            dir: Some(PathBuf::from("/u")),
+            max_bytes: None,
+        };
+        let project = CacheConfig {
+            dir: Some(PathBuf::from("/p")),
+            max_bytes: None,
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: Some("/env"),
+            env_max_bytes: None,
+            user_config: Some(&user),
+            project_config: Some(&project),
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("env-beats-configs resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/env"));
+        assert_eq!(resolved.dir_source, CacheDirSource::EnvVar);
+    }
+
+    /// Empty-string env vars are treated as unset (XDG / POSIX
+    /// convention). `REIFY_CACHE_DIR=""` falls through to the next
+    /// layer rather than forcing the cache to `""` (CWD).
+    #[test]
+    fn resolve_cache_empty_env_dir_falls_through_to_user_config() {
+        let user = CacheConfig {
+            dir: Some(PathBuf::from("/u")),
+            max_bytes: None,
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: Some(""),
+            env_max_bytes: None,
+            user_config: Some(&user),
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("empty-env resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/u"));
+        assert_eq!(resolved.dir_source, CacheDirSource::UserConfig);
+    }
+
+    #[test]
+    fn resolve_cache_cli_beats_env_when_both_set() {
+        // Regression-pin: CLI > env in the precedence chain.
+        let inputs = CacheResolverInputs {
+            cli_dir: Some(Path::new("/cli")),
+            env_dir: Some("/env"),
+            env_max_bytes: None,
+            user_config: None,
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("cli+env resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/cli"));
+        assert_eq!(resolved.dir_source, CacheDirSource::CliFlag);
+    }
 }
