@@ -195,7 +195,8 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use reify_types::{
-        FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Type, Value,
+        DimensionVector, FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Type,
+        Value,
     };
 
     // ── test helpers ────────────────────────────────────────────────────────
@@ -366,5 +367,39 @@ mod tests {
         assert_eq!(sf.data, vec![1.0, 2.0, 3.0, 1.0, 2.0]);
         assert_eq!(sf.axis_grids, vec![axis]);
         assert_eq!(sf.kind, SampledGridKind::Regular1D);
+    }
+
+    // ── codomain dimension preservation ─────────────────────────────────────
+
+    #[test]
+    fn envelope_max_pressure_codomain_preserves_dimension() {
+        let axis = vec![0.0, 1.0, 2.0];
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![100e6, 250e6, 180e6]),
+            Type::Real,
+            pressure.clone(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![150e6, 200e6, 220e6]),
+            Type::Real,
+            pressure.clone(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_max", &[map]).unwrap();
+
+        // The reduction must NOT drop or rewrite codomain_type — it lives on
+        // the outer Value::Field and should propagate from the reference case.
+        match &result {
+            Value::Field { codomain_type, .. } => assert_eq!(*codomain_type, pressure),
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+
+        // And the per-index data is still correctly reduced.
+        let sf = extract_sampled(&result);
+        assert_eq!(sf.data, vec![150e6, 250e6, 220e6]);
     }
 }
