@@ -965,4 +965,214 @@ mod tests {
             );
         }
     }
+
+    // ── validate_dimensionless_unit_axis_vec3 ─────────────────────────────────
+    //
+    // Unified helper hoisted from supports::validate_unit_axis_vec3,
+    // joints::validate_axis, and the non-sentinel branch of
+    // loads::validate_pressure_direction. Returns the raw (un-normalized)
+    // [x, y, z] components on success; rejects wrong arity, wrong dimension,
+    // non-finite components, zero magnitude, and squared-magnitude overflow
+    // (e.g. `[f64::MAX, 0, 0]` whose `mag_sq` is `+inf`).
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_real_vector_returns_components() {
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let result = validate_dimensionless_unit_axis_vec3(&v);
+        assert_eq!(
+            result,
+            Some([1.0, 2.0, 3.0]),
+            "Vector of dimensionless Reals should return raw (un-normalized) components"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_dimensionless_tensor_returns_components() {
+        let v = Value::Tensor(vec![
+            Value::Real(0.5),
+            Value::Real(-0.25),
+            Value::Real(1.5),
+        ]);
+        assert_eq!(
+            validate_dimensionless_unit_axis_vec3(&v),
+            Some([0.5, -0.25, 1.5]),
+            "Tensor of dimensionless Reals should return raw components"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_dimensionless_point_returns_components() {
+        let v = Value::Point(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        assert_eq!(
+            validate_dimensionless_unit_axis_vec3(&v),
+            Some([0.0, 0.0, 1.0]),
+            "Point of dimensionless Reals should return raw components"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_vec2_returns_none() {
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "Vec2 (wrong arity) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_vec4_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+            Value::Real(4.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "Vec4 (wrong arity) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_nan_component_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "NaN component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_pos_inf_component_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "+Inf component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_neg_inf_component_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(f64::NEG_INFINITY),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "-Inf component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_zero_vector_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "Zero-magnitude vector should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_overflow_magnitude_returns_none() {
+        // Regression: `[f64::MAX, 0.0, 0.0]` has `mag_sq` = f64::MAX^2 → +inf.
+        // This is the consistency-hole assertion: the loads.rs
+        // validate_pressure_direction copy on main does not guard against
+        // `mag_sq.is_finite()` and silently accepts this input.
+        let v = Value::Vector(vec![
+            Value::Real(f64::MAX),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "[f64::MAX, 0, 0] (mag_sq overflow to +inf) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_length_dimensioned_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "LENGTH-dimensioned vector should return None (not DIMENSIONLESS)"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_real_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Real(1.0)).is_none(),
+            "Bare Real should return None (not a Tensor/Vector/Point)"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_int_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Int(1)).is_none(),
+            "Int should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_bool_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Bool(true)).is_none(),
+            "Bool should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_undef_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Undef).is_none(),
+            "Undef should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_string_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::String("normal".to_string())).is_none(),
+            "String should return None (no sentinel handling at this layer)"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_empty_vector_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Vector(vec![])).is_none(),
+            "Empty Vector should return None"
+        );
+    }
 }
