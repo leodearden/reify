@@ -84,6 +84,7 @@ export function Viewport(props: ViewportProps) {
         getGhostMeshes: () => meshManager.getGhostMeshes(),
         fitToView: () => selection.fitToView(),
         flyToEntity: (entityPath: string) => selection.flyToEntity(entityPath),
+        controls: controls.controls,
       };
     }
 
