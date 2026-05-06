@@ -858,37 +858,21 @@ impl OcctKernel {
         let (result_shape, records) = {
             let l = self.get_shape(left)?;
             let r = self.get_shape(right)?;
-            let mut history = ffi::ffi::boolean_fuse_with_history(l, r)
+            let history = ffi::ffi::boolean_fuse_with_history(l, r)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            let face_modified =
-                decode_history_records(ffi::ffi::boolean_op_history_face_modified(&history));
-            let face_generated =
-                decode_history_records(ffi::ffi::boolean_op_history_face_generated(&history));
-            let face_deleted =
-                decode_deleted_records(ffi::ffi::boolean_op_history_face_deleted(&history));
-            let edge_modified =
-                decode_history_records(ffi::ffi::boolean_op_history_edge_modified(&history));
-            let edge_generated =
-                decode_history_records(ffi::ffi::boolean_op_history_edge_generated(&history));
-            let edge_deleted =
-                decode_deleted_records(ffi::ffi::boolean_op_history_edge_deleted(&history));
-            let silent_drop_count =
-                ffi::ffi::boolean_op_history_silent_drop_count(&history);
-            // Take the result shape last, after all record buffers have
-            // been read off — `take_result_shape` leaves `history` with
-            // an empty result pointer, but the record buffers are still
-            // live (separate `std::vector`s in the wrapper).
-            let result_shape = ffi::ffi::boolean_op_history_take_result_shape(history.pin_mut());
-            let records = BooleanOpHistoryRecords {
-                silent_drop_count,
-                face_modified,
-                face_generated,
-                face_deleted,
-                edge_modified,
-                edge_generated,
-                edge_deleted,
-            };
-            (result_shape, records)
+            decode_six_buffer_history(
+                history,
+                &BOOLEAN_OP_ACCESSORS,
+                |raw| BooleanOpHistoryRecords {
+                    silent_drop_count: raw.silent_drop_count,
+                    face_modified: raw.face_modified,
+                    face_generated: raw.face_generated,
+                    face_deleted: raw.face_deleted,
+                    edge_modified: raw.edge_modified,
+                    edge_generated: raw.edge_generated,
+                    edge_deleted: raw.edge_deleted,
+                },
+            )
         };
         let handle = self.store_with_repr(result_shape, BRepKind::Solid);
         Ok((handle, records))
