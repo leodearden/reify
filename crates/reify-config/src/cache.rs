@@ -219,4 +219,35 @@ mod tests {
             }
         );
     }
+
+    /// Unknown keys inside `[cache]` (e.g. a typo `dirr` for `dir`) must
+    /// surface as a parse error — silently accepting them would let a
+    /// misconfiguration ship without warning, defeating the point of the
+    /// override.
+    #[test]
+    fn parse_cache_config_rejects_unknown_field_in_cache_table() {
+        let err = parse_cache_config("[cache]\nfoo = \"bar\"\n")
+            .expect_err("unknown field in [cache] should be rejected");
+        match err {
+            CacheError::Parse(_) => {}
+            // CacheError currently has only Parse, but match exhaustively
+            // anyway so future variants force this test to be revisited.
+            #[allow(unreachable_patterns)]
+            other => panic!("expected CacheError::Parse(_), got {:?}", other),
+        }
+    }
+
+    /// Unknown top-level sections (e.g. a typo `[caceh]` for `[cache]`)
+    /// must surface as a parse error rather than parsing silently to
+    /// `CacheConfig::default()`. Mirrors the `ManifestRaw` convention.
+    #[test]
+    fn parse_cache_config_rejects_unknown_top_level_section() {
+        let err = parse_cache_config("[unknown]\nx = 1\n")
+            .expect_err("unknown top-level section should be rejected");
+        match err {
+            CacheError::Parse(_) => {}
+            #[allow(unreachable_patterns)]
+            other => panic!("expected CacheError::Parse(_), got {:?}", other),
+        }
+    }
 }
