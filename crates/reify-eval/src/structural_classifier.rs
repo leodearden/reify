@@ -275,6 +275,75 @@ mod tests {
         assert_eq!(classify_cell(&g, &unknown_id), ParameterClass::Structural);
     }
 
+    // ── Step-15: stage_a_eligible asymmetric ValueMap membership ──────────
+
+    #[test]
+    fn stage_a_eligible_dimensional_cell_only_in_new_returns_true() {
+        use reify_types::{Value, ValueMap};
+
+        // Graphs are identical (same shape hash). new_values contains a
+        // Scalar[LENGTH] entry absent from old_values. Dimensional cell →
+        // diff allowed → eligible.
+        let id = ValueCellId::new("Part", "width");
+        let g1 = graph_with_cell(&id, Type::length());
+        let g2 = g1.clone();
+        let v1 = ValueMap::new(); // cell absent from old
+        let mut v2 = ValueMap::new();
+        v2.insert(id.clone(), Value::length(0.10)); // present only in new
+        assert!(
+            stage_a_eligible(&g1, &g2, &v1, &v2),
+            "dimensional cell only in new_values must be eligible (Some vs None → Dimensional)"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_structural_cell_only_in_new_returns_false() {
+        use reify_types::{Value, ValueMap};
+
+        let id = ValueCellId::new("Part", "mode");
+        let g1 = graph_with_cell(&id, Type::Enum("Mode".to_string()));
+        let g2 = g1.clone();
+        let v1 = ValueMap::new();
+        let mut v2 = ValueMap::new();
+        v2.insert(id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "loft".to_string() });
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "structural cell only in new_values must not be eligible"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_cell_only_in_old_dimensional_returns_true() {
+        use reify_types::{Value, ValueMap};
+
+        let id = ValueCellId::new("Part", "height");
+        let g1 = graph_with_cell(&id, Type::length());
+        let g2 = g1.clone();
+        let mut v1 = ValueMap::new();
+        v1.insert(id.clone(), Value::length(0.05)); // present only in old
+        let v2 = ValueMap::new(); // absent from new
+        assert!(
+            stage_a_eligible(&g1, &g2, &v1, &v2),
+            "dimensional cell only in old_values must be eligible"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_cell_only_in_old_structural_returns_false() {
+        use reify_types::{Value, ValueMap};
+
+        let id = ValueCellId::new("Part", "mode");
+        let g1 = graph_with_cell(&id, Type::Enum("Mode".to_string()));
+        let g2 = g1.clone();
+        let mut v1 = ValueMap::new();
+        v1.insert(id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "sketch".to_string() });
+        let v2 = ValueMap::new();
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "structural cell only in old_values must not be eligible"
+        );
+    }
+
     // ── Step-13: stage_a_eligible shape-gate dominance ────────────────────
 
     #[test]
