@@ -279,6 +279,33 @@ describe('debug bridge set_camera', () => {
     expect(result).toEqual({ ok: true, applied: { position: [10, 20, 30], target: [1, 2, 3], up: [0, 0, 1], zoom: 2.5 } });
   });
 
+  it('succeeds gracefully when viewport.controls is undefined', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    // Install viewport WITHOUT controls
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera as any,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: undefined,
+    };
+
+    const result = await dispatch(capturedHandler!, 400, {
+      position: [1, 2, 3],
+      target: [0, 0, 0],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(stub.cameraPositionSet).toHaveBeenCalledWith(1, 2, 3);
+    expect(stub.camera.updateMatrixWorld).toHaveBeenCalled();
+    expect(stub.rendererRender).toHaveBeenCalledWith(stub.scene, stub.camera);
+  });
+
   describe('input validation', () => {
     let stub: ReturnType<typeof makeViewportStub>;
 
