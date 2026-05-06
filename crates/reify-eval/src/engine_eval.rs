@@ -2849,3 +2849,80 @@ mod invariant_tests {
         ])));
     }
 }
+
+/// Tests for `hash_imported_file_content`.
+///
+/// Deliberately NOT inside `#[cfg(all(test, debug_assertions))] mod invariant_tests`
+/// because file-content hashing is not a debug-only invariant — it must run in
+/// release-mode test builds too (PRD task 4 / task 2668).
+#[cfg(test)]
+mod imported_file_hash_tests {
+    use std::fs;
+    use reify_types::ContentHash;
+
+    use super::hash_imported_file_content;
+
+    /// Pins three contracts in one assertion bundle:
+    ///
+    /// (a) Round-trip: `hash_imported_file_content` returns
+    ///     `Ok(ContentHash::of(&bytes))` for known byte content.
+    ///
+    /// (b) Path-independence: two distinct paths with identical byte content
+    ///     produce the same `ContentHash` — the path string is intentionally
+    ///     NOT mixed into the hash domain (PRD acceptance: "file-path change
+    ///     with same content → cache hit").
+    ///
+    /// (c) IO-error propagation: calling the helper on a guaranteed-nonexistent
+    ///     path returns `Err(e)` with `e.kind() == std::io::ErrorKind::NotFound`.
+    #[test]
+    fn hash_imported_file_content_byte_round_trip_path_independent_and_propagates_io_error() {
+        let dir = std::env::temp_dir()
+            .join(format!("reify_2668_step1_{}", std::process::id()));
+
+        // Idempotent cleanup from any prior run.
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        let bytes: &[u8] = b"some vdb file bytes \x00\x01\x02";
+
+        // (a) Round-trip: hash matches ContentHash::of(&bytes).
+        let path1 = dir.join("file_a.vdb");
+        fs::write(&path1, bytes).expect("write file_a");
+        let path1_str = path1.to_str().expect("path1 utf8");
+
+        let result1 = hash_imported_file_content(path1_str)
+            .expect("hash_imported_file_content should succeed for file_a");
+        assert_eq!(
+            result1,
+            ContentHash::of(bytes),
+            "round-trip: hash must equal ContentHash::of(&bytes)"
+        );
+
+        // (b) Path-independence: different path, same content → same hash.
+        let path2 = dir.join("file_b.vdb");
+        fs::write(&path2, bytes).expect("write file_b");
+        let path2_str = path2.to_str().expect("path2 utf8");
+
+        let result2 = hash_imported_file_content(path2_str)
+            .expect("hash_imported_file_content should succeed for file_b");
+        assert_eq!(
+            result1,
+            result2,
+            "path-independence: same content at different paths must yield the same ContentHash"
+        );
+
+        // (c) NotFound propagation.
+        let missing = dir.join("does_not_exist.vdb");
+        let missing_str = missing.to_str().expect("missing utf8");
+        let err = hash_imported_file_content(missing_str)
+            .expect_err("must return Err for nonexistent path");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::NotFound,
+            "IO error kind must be NotFound for missing file"
+        );
+
+        // Cleanup.
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
