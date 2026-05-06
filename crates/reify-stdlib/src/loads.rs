@@ -675,6 +675,33 @@ mod tests {
     }
 
     #[test]
+    fn pressure_load_direction_overflow_vector_returns_undef() {
+        // Regression: `[f64::MAX, 0.0, 0.0]` has squared magnitude
+        // f64::MAX² → +inf. The pre-hoist `validate_pressure_direction`
+        // only checked `mag_sq == 0.0` and silently accepted this input.
+        // Routing through `helpers::validate_dimensionless_unit_axis_vec3`
+        // applies the `mag_sq.is_finite()` guard uniformly with
+        // `validate_axis` (joints) and `validate_unit_axis_vec3` (supports).
+        let pressure_mag = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let overflow_dir = Value::Vector(vec![
+            Value::Real(f64::MAX),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin(
+                "pressure_load",
+                &[face_selector_stub(), pressure_mag, overflow_dir]
+            )
+            .is_undef(),
+            "direction with squared-magnitude overflow (+inf) should return Undef"
+        );
+    }
+
+    #[test]
     fn pressure_load_direction_wrong_string_returns_undef() {
         let pressure_mag = Value::Scalar {
             si_value: 5e6,
