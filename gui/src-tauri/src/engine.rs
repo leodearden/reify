@@ -426,6 +426,17 @@ impl EngineSession {
         diagnostics_to_info(&compiled.diagnostics, file_path, source)
     }
 
+    /// Returns `true` once a complete parse+compile+check cycle has been
+    /// committed to this session (i.e., the session has settled state and is
+    /// ready to serve GUI queries).
+    ///
+    /// This is `false` on a freshly-constructed `EngineSession` (before any
+    /// `load_from_source` or `update_source` call) and `true` afterward, as
+    /// long as the last cycle succeeded without errors.
+    pub fn is_idle(&self) -> bool {
+        self.compiled.is_some() && self.last_check.is_some()
+    }
+
     /// Build the full GUI state from the current engine state.
     pub fn build_gui_state(&mut self) -> Result<GuiState, String> {
         let (compiled, check) = match (self.compiled.as_ref(), self.last_check.as_ref()) {
