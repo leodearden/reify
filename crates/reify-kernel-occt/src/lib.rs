@@ -282,6 +282,172 @@ fn decode_deleted_records(flat: Vec<u32>) -> Vec<DeletedRecord> {
 }
 
 #[cfg(has_occt)]
+/// Raw decoded values from the six-buffer history layout shared by
+/// `boolean_fuse_with_history` and `run_local_feature_with_history`.
+///
+/// Both `BooleanOpHistoryRecords` and `LocalFeatureOpHistoryRecords` have
+/// identical field shapes (`silent_drop_count: u32`, four `Vec<HistoryRecord>`,
+/// two `Vec<DeletedRecord>`).  This struct is the common intermediate: the
+/// shared decoder fills it and returns it; call sites convert to their specific
+/// output type via `From<SixBufferHistoryDecoded>`.
+struct SixBufferHistoryDecoded {
+    silent_drop_count: u32,
+    face_modified: Vec<HistoryRecord>,
+    face_generated: Vec<HistoryRecord>,
+    face_deleted: Vec<DeletedRecord>,
+    edge_modified: Vec<HistoryRecord>,
+    edge_generated: Vec<HistoryRecord>,
+    edge_deleted: Vec<DeletedRecord>,
+}
+
+#[cfg(has_occt)]
+/// Function-pointer accessors for the eight FFI entry points that comprise
+/// the shared six-buffer-history protocol.
+///
+/// Two const instances exist, one per history type:
+/// [`BOOLEAN_OP_ACCESSORS`] and [`LOCAL_FEATURE_OP_ACCESSORS`].
+/// Both are consumed by [`decode_six_buffer_history`].
+///
+/// The eight fields map 1-to-1 to the cxx-bridge free functions declared in
+/// `crates/reify-kernel-occt/src/ffi.rs`:
+/// - six record-buffer readers (`fn(&H) -> Vec<u32>`)
+/// - one silent-drop-count reader (`fn(&H) -> u32`)
+/// - one shape-taker (`fn(Pin<&mut H>) -> UniquePtr<OcctShape>`)
+struct SixBufferHistoryAccessors<H> {
+    face_modified: fn(&H) -> Vec<u32>,
+    face_generated: fn(&H) -> Vec<u32>,
+    face_deleted: fn(&H) -> Vec<u32>,
+    edge_modified: fn(&H) -> Vec<u32>,
+    edge_generated: fn(&H) -> Vec<u32>,
+    edge_deleted: fn(&H) -> Vec<u32>,
+    silent_drop_count: fn(&H) -> u32,
+    take_result_shape: fn(std::pin::Pin<&mut H>) -> cxx::UniquePtr<ffi::ffi::OcctShape>,
+}
+
+#[cfg(has_occt)]
+/// Decode the six record buffers plus `silent_drop_count` from an FFI
+/// history wrapper `H`, take the result shape, and return both as a pair.
+/// The caller's output type `R` must implement `From<SixBufferHistoryDecoded>`.
+///
+/// ## Six-buffer protocol
+///
+/// Both `boolean_fuse_with_history` (via `BooleanOpHistory`) and
+/// `run_local_feature_with_history` (via `LocalFeatureOpHistory`) share the
+/// same decode shape:
+///
+/// 1. Six buffer reads via FFI accessors: `face_modified`, `face_generated`,
+///    `face_deleted`, `edge_modified`, `edge_generated`, `edge_deleted`.
+/// 2. `silent_drop_count` — number of records the C++ wrapper dropped because
+///    their result geometry was not found in the output map.
+/// 3. `take_result_shape` — called after all record buffer reads (see below).
+///
+/// ## Read order (defensive convention)
+///
+/// All six buffers are read before `take_result_shape` is called.  The C++
+/// wrapper stores the result shape and record buffers as separate members, so
+/// reading buffers after the take is technically safe with the current wrapper.
+/// This function preserves the original inline order as a defensive convention:
+/// it guards against future C++ wrapper changes that might move a buffer into
+/// the result shape and make pre-take reads essential.
+///
+/// ## Cross-references
+///
+/// - [`decode_history_records`]: decodes flat `Vec<u32>` triples into
+///   `Vec<HistoryRecord>` (used for `*_modified` and `*_generated` buffers).
+/// - [`decode_deleted_records`]: decodes flat `Vec<u32>` pairs into
+///   `Vec<DeletedRecord>` (used for `*_deleted` buffers).
+/// - [`BOOLEAN_OP_ACCESSORS`]: accessor table for `BooleanOpHistory`.
+/// - [`LOCAL_FEATURE_OP_ACCESSORS`]: accessor table for `LocalFeatureOpHistory`.
+fn decode_six_buffer_history<H, R>(
+    mut history: cxx::UniquePtr<H>,
+    accessors: &SixBufferHistoryAccessors<H>,
+) -> (cxx::UniquePtr<ffi::ffi::OcctShape>, R)
+where
+    H: cxx::memory::UniquePtrTarget,
+    R: From<SixBufferHistoryDecoded>,
+{
+    let face_modified = decode_history_records((accessors.face_modified)(&history));
+    let face_generated = decode_history_records((accessors.face_generated)(&history));
+    let face_deleted = decode_deleted_records((accessors.face_deleted)(&history));
+    let edge_modified = decode_history_records((accessors.edge_modified)(&history));
+    let edge_generated = decode_history_records((accessors.edge_generated)(&history));
+    let edge_deleted = decode_deleted_records((accessors.edge_deleted)(&history));
+    let silent_drop_count = (accessors.silent_drop_count)(&history);
+    // Take the result shape last — see "Read order" in the doc-comment above.
+    let result_shape = (accessors.take_result_shape)(history.pin_mut());
+    let decoded = SixBufferHistoryDecoded {
+        silent_drop_count,
+        face_modified,
+        face_generated,
+        face_deleted,
+        edge_modified,
+        edge_generated,
+        edge_deleted,
+    };
+    (result_shape, decoded.into())
+}
+
+#[cfg(has_occt)]
+impl From<SixBufferHistoryDecoded> for BooleanOpHistoryRecords {
+    fn from(raw: SixBufferHistoryDecoded) -> Self {
+        Self {
+            silent_drop_count: raw.silent_drop_count,
+            face_modified: raw.face_modified,
+            face_generated: raw.face_generated,
+            face_deleted: raw.face_deleted,
+            edge_modified: raw.edge_modified,
+            edge_generated: raw.edge_generated,
+            edge_deleted: raw.edge_deleted,
+        }
+    }
+}
+
+#[cfg(has_occt)]
+impl From<SixBufferHistoryDecoded> for LocalFeatureOpHistoryRecords {
+    fn from(raw: SixBufferHistoryDecoded) -> Self {
+        Self {
+            silent_drop_count: raw.silent_drop_count,
+            face_modified: raw.face_modified,
+            face_generated: raw.face_generated,
+            face_deleted: raw.face_deleted,
+            edge_modified: raw.edge_modified,
+            edge_generated: raw.edge_generated,
+            edge_deleted: raw.edge_deleted,
+        }
+    }
+}
+
+#[cfg(has_occt)]
+/// Accessor table for `BooleanOpHistory`.  Consumed by
+/// [`decode_six_buffer_history`] in `boolean_fuse_with_history`.
+const BOOLEAN_OP_ACCESSORS: SixBufferHistoryAccessors<ffi::ffi::BooleanOpHistory> =
+    SixBufferHistoryAccessors {
+        face_modified: ffi::ffi::boolean_op_history_face_modified,
+        face_generated: ffi::ffi::boolean_op_history_face_generated,
+        face_deleted: ffi::ffi::boolean_op_history_face_deleted,
+        edge_modified: ffi::ffi::boolean_op_history_edge_modified,
+        edge_generated: ffi::ffi::boolean_op_history_edge_generated,
+        edge_deleted: ffi::ffi::boolean_op_history_edge_deleted,
+        silent_drop_count: ffi::ffi::boolean_op_history_silent_drop_count,
+        take_result_shape: ffi::ffi::boolean_op_history_take_result_shape,
+    };
+
+#[cfg(has_occt)]
+/// Accessor table for `LocalFeatureOpHistory`.  Consumed by
+/// [`decode_six_buffer_history`] in `run_local_feature_with_history`.
+const LOCAL_FEATURE_OP_ACCESSORS: SixBufferHistoryAccessors<ffi::ffi::LocalFeatureOpHistory> =
+    SixBufferHistoryAccessors {
+        face_modified: ffi::ffi::local_feature_op_history_face_modified,
+        face_generated: ffi::ffi::local_feature_op_history_face_generated,
+        face_deleted: ffi::ffi::local_feature_op_history_face_deleted,
+        edge_modified: ffi::ffi::local_feature_op_history_edge_modified,
+        edge_generated: ffi::ffi::local_feature_op_history_edge_generated,
+        edge_deleted: ffi::ffi::local_feature_op_history_edge_deleted,
+        silent_drop_count: ffi::ffi::local_feature_op_history_silent_drop_count,
+        take_result_shape: ffi::ffi::local_feature_op_history_take_result_shape,
+    };
+
+#[cfg(has_occt)]
 /// OpenCASCADE geometry kernel (raw, `!Send + !Sync`).
 ///
 /// Contains `cxx::UniquePtr<OcctShape>` handles which are `!Send`, so the
@@ -716,37 +882,9 @@ impl OcctKernel {
         let (result_shape, records) = {
             let l = self.get_shape(left)?;
             let r = self.get_shape(right)?;
-            let mut history = ffi::ffi::boolean_fuse_with_history(l, r)
+            let history = ffi::ffi::boolean_fuse_with_history(l, r)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            let face_modified =
-                decode_history_records(ffi::ffi::boolean_op_history_face_modified(&history));
-            let face_generated =
-                decode_history_records(ffi::ffi::boolean_op_history_face_generated(&history));
-            let face_deleted =
-                decode_deleted_records(ffi::ffi::boolean_op_history_face_deleted(&history));
-            let edge_modified =
-                decode_history_records(ffi::ffi::boolean_op_history_edge_modified(&history));
-            let edge_generated =
-                decode_history_records(ffi::ffi::boolean_op_history_edge_generated(&history));
-            let edge_deleted =
-                decode_deleted_records(ffi::ffi::boolean_op_history_edge_deleted(&history));
-            let silent_drop_count =
-                ffi::ffi::boolean_op_history_silent_drop_count(&history);
-            // Take the result shape last, after all record buffers have
-            // been read off — `take_result_shape` leaves `history` with
-            // an empty result pointer, but the record buffers are still
-            // live (separate `std::vector`s in the wrapper).
-            let result_shape = ffi::ffi::boolean_op_history_take_result_shape(history.pin_mut());
-            let records = BooleanOpHistoryRecords {
-                silent_drop_count,
-                face_modified,
-                face_generated,
-                face_deleted,
-                edge_modified,
-                edge_generated,
-                edge_deleted,
-            };
-            (result_shape, records)
+            decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
         let handle = self.store_with_repr(result_shape, BRepKind::Solid);
         Ok((handle, records))
@@ -800,37 +938,9 @@ impl OcctKernel {
         }
         let (result_shape, records) = {
             let shape = self.get_shape(shape_id)?;
-            let mut history = build(shape)
+            let history = build(shape)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-            let face_modified = decode_history_records(
-                ffi::ffi::local_feature_op_history_face_modified(&history));
-            let face_generated = decode_history_records(
-                ffi::ffi::local_feature_op_history_face_generated(&history));
-            let face_deleted = decode_deleted_records(
-                ffi::ffi::local_feature_op_history_face_deleted(&history));
-            let edge_modified = decode_history_records(
-                ffi::ffi::local_feature_op_history_edge_modified(&history));
-            let edge_generated = decode_history_records(
-                ffi::ffi::local_feature_op_history_edge_generated(&history));
-            let edge_deleted = decode_deleted_records(
-                ffi::ffi::local_feature_op_history_edge_deleted(&history));
-            let silent_drop_count =
-                ffi::ffi::local_feature_op_history_silent_drop_count(&history);
-            // Take the result shape last, after all record buffers have been
-            // read off — `take_result_shape` leaves `history` with an empty
-            // result pointer, but the record buffers are still live.
-            let result_shape =
-                ffi::ffi::local_feature_op_history_take_result_shape(history.pin_mut());
-            let records = LocalFeatureOpHistoryRecords {
-                silent_drop_count,
-                face_modified,
-                face_generated,
-                face_deleted,
-                edge_modified,
-                edge_generated,
-                edge_deleted,
-            };
-            (result_shape, records)
+            decode_six_buffer_history(history, &LOCAL_FEATURE_OP_ACCESSORS)
         };
         let handle = self.store_with_repr(result_shape, BRepKind::Solid);
         Ok((handle, records))
