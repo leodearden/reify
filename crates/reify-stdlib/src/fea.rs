@@ -153,6 +153,12 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
         oob_emitted: AtomicBool::new(false),
     };
 
+    // codomain_type and domain_type are propagated unchanged from the
+    // validated reference case — pinned by
+    // `envelope_max_pressure_codomain_preserves_dimension`. Future
+    // refactors must NOT silently rewrap (e.g. coerce to Type::Real) or
+    // a Pressure-codomain envelope would be incompatible with downstream
+    // dimensional comparisons (`max(envelope) < yield_stress`).
     Value::Field {
         domain_type: ref_domain.clone(),
         codomain_type: ref_codomain.clone(),
