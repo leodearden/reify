@@ -61,6 +61,10 @@ pub fn revolve_synthesis_post_sort_for_test(input: &[u32]) -> RevolveSynthesisPo
 mod floor_constants;
 pub use floor_constants::RUST_GUARD_MARKER;
 pub mod register;
+// `types` is always compiled so `Curvature` exists in both `has_occt` and
+// `!has_occt` builds without a `#[cfg]`-gated duplicate definition.
+mod types;
+pub use types::Curvature;
 #[cfg(has_occt)]
 mod handle;
 #[cfg(has_occt)]
@@ -496,11 +500,15 @@ impl OcctKernel {
     /// `BRepBuilderAPI_MakeVertex`. The witness on the input shape is read from
     /// `dist.PointOnShape1(1)`.
     ///
-    /// For points inside the solid, `BRepExtrema_DistShapeShape` reports
-    /// distance 0 and returns the query point itself as the witness.  The C++
-    /// wrapper detects this case (dist < 1e-10) and re-runs extrema against the
-    /// outer shell via `TopExp_Explorer`, returning the nearest boundary point
-    /// instead.  The returned witness therefore always lies on the shape surface.
+    /// `BRepExtrema_DistShapeShape` has no inside/outside knowledge — it
+    /// returns the distance to the nearest BREP boundary face.  For typical
+    /// interior points the reported distance is therefore non-zero; only
+    /// on-surface (or coincident) query points yield distance 0.  The C++
+    /// wrapper applies a defensive `dist < 1e-10` guard and re-runs the
+    /// extrema against the first shell found via `TopExp_Explorer`
+    /// (`TopAbs_SHELL`).  For single-shell solids this is the outer shell;
+    /// for multi-shell solids it may not be.  The re-run returns a witness on
+    /// the shell boundary rather than coinciding with the query point.
     ///
     /// Returns `Err(QueryError::InvalidHandle(handle))` if the handle is unknown.
     /// Returns `Err(QueryError::QueryFailed(...))` if the OCCT call fails.
@@ -562,6 +570,121 @@ impl OcctKernel {
             .get_shape(face_b)
             .map_err(|_| QueryError::InvalidHandle(face_b))?;
         ffi::ffi::surface_angle(s1, s2)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
+    /// Unit outward normal at the parametric point `(u, v)` on `face`.
+    ///
+    /// Algorithm: `BRepAdaptor_Surface::D1(u, v)` → `Du × Dv` → magnitude
+    /// check → `TopAbs_REVERSED` orientation flip → normalize.
+    ///
+    /// The return type is `[f64; 3]` rather than the FFI-internal `Point3`
+    /// struct: `Point3` is a cxx-bridge type unavailable in stub builds
+    /// (`!has_occt`), so the public API uses a plain array for both paths
+    /// (same convention as `closest_point_on_shape`).
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, yields a degenerate normal, or any OCCT call fails.
+    pub fn surface_normal_at(
+        &self,
+        handle: GeometryHandleId,
+        u: f64,
+        v: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let p = ffi::ffi::surface_normal_at(s, u, v)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok([p.x, p.y, p.z])
+    }
+
+    /// Gaussian, mean, and principal curvatures at the parametric point
+    /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
+    ///
+    /// Uses `GeomLProp_SLProps`. Sign convention for `mean` and the principal
+    /// curvatures follows the outward normal (negated for `TopAbs_REVERSED`
+    /// faces); Gaussian curvature `K = κ₁·κ₂` is invariant.
+    ///
+    /// The return type is `Curvature` — a plain Rust struct with `f64` and
+    /// `[f64; 3]` fields defined in both `has_occt` and `!has_occt` builds so
+    /// callers compile under either mode.
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, curvature is undefined at `(u, v)`, or any OCCT
+    ///   call fails.
+    pub fn curvature_at(
+        &self,
+        handle: GeometryHandleId,
+        u: f64,
+        v: f64,
+    ) -> Result<Curvature, QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let c = ffi::ffi::curvature_at(s, u, v)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok(Curvature {
+            gaussian: c.gaussian,
+            mean: c.mean,
+            kappa_min: c.kappa_min,
+            kappa_max: c.kappa_max,
+            dir_min: [c.dir_min.x, c.dir_min.y, c.dir_min.z],
+            dir_max: [c.dir_max.x, c.dir_max.y, c.dir_max.z],
+        })
+    }
+
+    /// Test whether the query point `(px, py, pz)` lies on the BREP boundary
+    /// (face/edge/vertex) of the shape identified by `handle`, within `tolerance`.
+    ///
+    /// Uses `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is built
+    /// from the query point, returning `dist.Value() <= tolerance`.
+    ///
+    /// **Interior solid points return `true` (OCCT overlap behavior):**
+    /// `BRepExtrema_DistShapeShape` has NO inside/outside knowledge. When the query
+    /// vertex is strictly inside a `TopoDS_Solid`, OCCT considers the two shapes to
+    /// overlap and reports `dist.Value() = 0` (NOT the distance to the nearest BREP
+    /// face). Therefore this method returns `Ok(true)` for any interior solid point
+    /// at any positive tolerance, and CANNOT distinguish a point on the BREP surface
+    /// from a point inside the solid for `TopoDS_Solid` inputs. Callers needing strict
+    /// surface-only membership must apply a `BRepClass3d_SolidClassifier` pre-filter;
+    /// the integration test `point_on_shape_interior_solid_point_returns_true` locks
+    /// this contract in. See parent task 2324 for stdlib-level wiring decisions.
+    ///
+    /// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
+    /// to match OCCT's default confusion threshold. Pass 0.0 for exact-coincidence
+    /// queries (returns `true` only when `dist.Value()` is exactly 0).
+    ///
+    /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+    /// Negative or NaN values map to `Err(QueryError::QueryFailed(_))` rather than
+    /// silently producing misleading results.
+    ///
+    /// **Naming caveat:** The name `point_on_shape` implies surface membership, but
+    /// for `TopoDS_Solid` inputs this method cannot distinguish "on BREP surface" from
+    /// "inside the solid" (see "Interior solid points" note above). A higher-level
+    /// wrapper that applies a `BRepClass3d_SolidClassifier` pre-filter for strict
+    /// surface-only membership is tracked in escalation esc-2829-6 / parent task 2324.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(_))` if `handle` is unknown, or
+    /// `Err(QueryError::QueryFailed(_))` if the OCCT computation fails.
+    pub fn point_on_shape(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        tolerance: f64,
+    ) -> Result<bool, QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        ffi::ffi::point_on_shape(s, px, py, pz, tolerance)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 

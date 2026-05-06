@@ -165,143 +165,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_syntax::{
-        ConstraintDecl, Declaration, Expr, ExprKind, GuardedGroupDecl, LetDecl, MemberDecl,
-        ParamDecl, PortDecl, SubDecl, StructureDef,
-    };
-    use reify_types::{ContentHash, Diagnostic, DiagnosticCode, ModulePath, Severity, SourceSpan};
+    use reify_syntax::{GuardedGroupDecl, MemberDecl};
+    use reify_types::{Diagnostic, DiagnosticCode, ModulePath, Severity};
+    use reify_test_support::specialization_fixtures::*;
 
     fn parse_module(source: &str) -> ParsedModule {
         reify_syntax::parse(source, ModulePath::single("test"))
-    }
-
-    // ── AST helpers ──────────────────────────────────────────────────────────
-
-    fn dummy_span() -> SourceSpan {
-        SourceSpan::new(10, 20)
-    }
-
-    fn param_span() -> SourceSpan {
-        SourceSpan::new(30, 50)
-    }
-
-    fn port_span() -> SourceSpan {
-        SourceSpan::new(60, 80)
-    }
-
-    fn sub_span() -> SourceSpan {
-        SourceSpan::new(90, 110)
-    }
-
-    fn dummy_hash() -> ContentHash {
-        ContentHash(0)
-    }
-
-    fn dummy_expr() -> Expr {
-        Expr {
-            kind: ExprKind::BoolLiteral(true),
-            span: dummy_span(),
-        }
-    }
-
-    fn make_param(name: &str, span: SourceSpan) -> MemberDecl {
-        MemberDecl::Param(ParamDecl {
-            name: name.to_string(),
-            doc: None,
-            type_expr: None,
-            default: None,
-            where_clause: None,
-            annotations: Vec::new(),
-            span,
-            content_hash: dummy_hash(),
-        })
-    }
-
-    fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
-        MemberDecl::Port(PortDecl {
-            name: name.to_string(),
-            direction: None,
-            type_name: "SomePort".to_string(),
-            members: Vec::new(),
-            frame_expr: None,
-            span,
-            content_hash: dummy_hash(),
-        })
-    }
-
-    fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
-        MemberDecl::Sub(SubDecl {
-            name: name.to_string(),
-            structure_name: "Foo".to_string(),
-            type_args: Vec::new(),
-            args: Vec::new(),
-            is_collection: false,
-            where_clause: None,
-            body: None,
-            span,
-            content_hash: dummy_hash(),
-        })
-    }
-
-    fn make_sub_with_body(name: &str, span: SourceSpan, body: Vec<MemberDecl>) -> MemberDecl {
-        MemberDecl::Sub(SubDecl {
-            name: name.to_string(),
-            structure_name: "Foo".to_string(),
-            type_args: Vec::new(),
-            args: Vec::new(),
-            is_collection: false,
-            where_clause: None,
-            body: Some(body),
-            span,
-            content_hash: dummy_hash(),
-        })
-    }
-
-    fn make_let(name: &str) -> MemberDecl {
-        MemberDecl::Let(LetDecl {
-            name: name.to_string(),
-            doc: None,
-            is_pub: false,
-            type_expr: None,
-            value: dummy_expr(),
-            where_clause: None,
-            annotations: Vec::new(),
-            span: dummy_span(),
-            content_hash: dummy_hash(),
-        })
-    }
-
-    fn make_constraint() -> MemberDecl {
-        MemberDecl::Constraint(ConstraintDecl {
-            label: None,
-            expr: dummy_expr(),
-            where_clause: None,
-            span: dummy_span(),
-            content_hash: dummy_hash(),
-        })
-    }
-
-    /// Build a ParsedModule with a single Structure whose top-level members
-    /// are the supplied `members` slice.
-    fn parsed_module_with_structure_members(members: Vec<MemberDecl>) -> ParsedModule {
-        ParsedModule {
-            path: ModulePath::single("test"),
-            declarations: vec![Declaration::Structure(StructureDef {
-                name: "S".to_string(),
-                doc: None,
-                is_pub: false,
-                type_params: Vec::new(),
-                trait_bounds: Vec::new(),
-                members,
-                span: dummy_span(),
-                content_hash: dummy_hash(),
-                pragmas: Vec::new(),
-                annotations: Vec::new(),
-            })],
-            errors: Vec::new(),
-            content_hash: dummy_hash(),
-            pragmas: Vec::new(),
-        }
     }
 
     // ── existing regression test ─────────────────────────────────────────────
@@ -353,11 +222,9 @@ mod tests {
             span: dummy_span(),
             content_hash: dummy_hash(),
         });
-        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-            "scope",
-            dummy_span(),
-            vec![guarded],
-        )]);
+        let parsed = parsed_module_with_structure_members(
+            vec![make_sub_with_body("scope", dummy_span(), vec![guarded])],
+        );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
@@ -394,11 +261,17 @@ mod tests {
         let po_span = port_span();
         let s_span = sub_span();
         // Structure S { sub scope : Foo { param x; port p; sub child : Foo } }
-        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-            "scope",
-            dummy_span(),
-            vec![make_param("x", p_span), make_port("p", po_span), make_sub_bare("child", s_span)],
-        )]);
+        let parsed = parsed_module_with_structure_members(
+            vec![make_sub_with_body(
+                "scope",
+                dummy_span(),
+                vec![
+                    make_param("x", p_span),
+                    make_port("p", po_span),
+                    make_sub_bare("child", s_span),
+                ],
+            )],
+        );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
@@ -435,11 +308,9 @@ mod tests {
             inner_sub_span,
             vec![make_param("x", leaf_param_span)],
         );
-        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-            "outer",
-            dummy_span(),
-            vec![inner_sub],
-        )]);
+        let parsed = parsed_module_with_structure_members(
+            vec![make_sub_with_body("outer", dummy_span(), vec![inner_sub])],
+        );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
@@ -501,11 +372,9 @@ mod tests {
     /// impl in place, this test passes immediately.
     #[test]
     fn validate_module_emits_no_diagnostic_for_permitted_decls_inside_specialization_scope() {
-        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-            "scope",
-            dummy_span(),
-            vec![make_let("v"), make_constraint()],
-        )]);
+        let parsed = parsed_module_with_structure_members(
+            vec![make_sub_with_body("scope", dummy_span(), vec![make_let("v"), make_constraint()])],
+        );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
         assert!(
@@ -525,11 +394,9 @@ mod tests {
     #[test]
     fn validate_module_emits_forbidden_decl_diagnostic_for_bare_sub_inside_specialization_scope() {
         let s_span = sub_span();
-        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-            "scope",
-            dummy_span(),
-            vec![make_sub_bare("child", s_span)],
-        )]);
+        let parsed = parsed_module_with_structure_members(
+            vec![make_sub_with_body("scope", dummy_span(), vec![make_sub_bare("child", s_span)])],
+        );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
@@ -564,11 +431,9 @@ mod tests {
     #[test]
     fn validate_module_emits_forbidden_decl_diagnostic_for_port_inside_specialization_scope() {
         let p_span = port_span();
-        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-            "scope",
-            dummy_span(),
-            vec![make_port("p", p_span)],
-        )]);
+        let parsed = parsed_module_with_structure_members(
+            vec![make_sub_with_body("scope", dummy_span(), vec![make_port("p", p_span)])],
+        );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 
@@ -600,11 +465,9 @@ mod tests {
     fn validate_module_emits_forbidden_decl_diagnostic_for_param_inside_specialization_scope() {
         let p_span = param_span();
         // Structure S { sub scope : Foo { param x } }  (hand-built)
-        let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-            "scope",
-            dummy_span(),
-            vec![make_param("x", p_span)],
-        )]);
+        let parsed = parsed_module_with_structure_members(
+            vec![make_sub_with_body("scope", dummy_span(), vec![make_param("x", p_span)])],
+        );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         validate_module(&parsed, &mut diagnostics);
 

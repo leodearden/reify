@@ -39,14 +39,15 @@ use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 ///     `per_stage_tolerance(req, 2)` — the integration-usage validation the
 ///     task description asks for ("validated by … integration usage").
 ///
-/// (c) `SAFETY_FACTOR` is reachable via the public crate surface (compile-only
-///     check; the value is pinned by `tolerance_budget::tests::*`).
+/// (c) `SAFETY_FACTOR` is value-pinned to `0.8` at the public surface; the
+///     canonical contract lives in `tolerance_budget::tests::*` inside the
+///     crate. The assertion also locks the re-export path (compile-time).
 #[test]
 fn lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end() {
-    // Compile-check: confirms SAFETY_FACTOR is reachable via the public crate
-    // surface. The value is pinned by `tolerance_budget::tests::*`; this just
-    // locks the re-export path so a missing `pub use` drops compilation here.
-    let _ = SAFETY_FACTOR;
+    // Value pin at the public surface: the canonical contract lives in
+    // `tolerance_budget::tests::*` inside the crate. This assertion also
+    // locks the re-export path — a missing `pub use` drops compilation here.
+    assert_eq!(SAFETY_FACTOR, 0.8, "SAFETY_FACTOR public value contract");
 
     // ── (a) end-to-end dispatch produces a 2-conversion plan ─────────────────
 

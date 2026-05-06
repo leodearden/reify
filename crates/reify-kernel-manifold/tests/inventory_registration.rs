@@ -5,15 +5,21 @@
 //!
 //! Unlike the OCCT counterpart (`crates/reify-kernel-occt/tests/inventory_registration.rs`),
 //! these tests are NOT gated on an `OCCT_AVAILABLE`-style flag — the manifold
-//! adapter submits unconditionally in this v0.2 scaffold task (no
-//! `cfg(has_manifold)` gate; see design decisions in `src/register.rs`).
+//! adapter gates its `inventory::submit!` on `feature = "stub_register"` and
+//! activates that feature for test binaries via a self-dev-dep in `Cargo.toml`.
 //!
 //! # Design template
 //!
 //! `crates/reify-kernel-occt/tests/inventory_registration.rs:1-152`.
 
+// Shared compile-time guard: requires `stub_register` feature.
+// Source of truth lives in `tests/common/feature_guard.rs`; add new test
+// binaries by including the same line below.
+#[path = "common/feature_guard.rs"]
+mod feature_guard;
+
 use reify_kernel_manifold::register::MANIFOLD_KERNEL_NAME;
-use reify_types::{KernelRegistration, Operation, ReprKind};
+use reify_types::{GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// Manifold's capability descriptor must enumerate exactly the three
 /// mesh-Boolean operations Manifold supports.
@@ -59,10 +65,13 @@ fn manifold_capability_descriptor_lists_mesh_booleans() {
 /// plumbing pin: a missing or incorrectly-gated `inventory::submit!` would be
 /// caught here.
 ///
-/// The submitted registration's `descriptor()` must be function-pointer-
-/// identical to `register::manifold_capability_descriptor` — a divergence
-/// would indicate two parallel descriptor sources. Set-equality of the
-/// materialised `supports` is also asserted as defence-in-depth.
+/// Pins all three `KernelRegistration` fields:
+/// - `name` — checked via the `.filter()` above (exactly one entry).
+/// - `descriptor` — function-pointer identity to `manifold_capability_descriptor`
+///   (plus set-equality of the materialised `supports` as defence-in-depth).
+/// - `factory` — function-pointer identity to `manifold_factory` (catches a
+///   copy-paste regression that wires OCCT's factory into the Manifold submit;
+///   neither the `name` nor `descriptor` pins would catch that divergence).
 ///
 /// # Design template
 ///
@@ -92,6 +101,21 @@ fn manifold_kernel_registration_appears_in_inventory_iter() {
         "the inventory-submitted descriptor must be the same function pointer as \
          `register::manifold_capability_descriptor` — a divergence indicates two \
          parallel descriptor sources",
+    );
+
+    // Pin the factory pointer for the same reason: a copy-paste regression
+    // wiring `occt_factory` into the Manifold `inventory::submit!` would
+    // compile cleanly but silently route Mesh Booleans through the wrong stub.
+    // Neither the `name` pin above nor the `descriptor` pin catches this
+    // because those fields live independently.
+    let inventory_factory = manifold_entries[0].factory;
+    let direct_factory: fn() -> Box<dyn GeometryKernel> =
+        reify_kernel_manifold::register::manifold_factory;
+    assert!(
+        std::ptr::fn_addr_eq(inventory_factory, direct_factory),
+        "the inventory-submitted factory must be the same function pointer as \
+         `register::manifold_factory` — a divergence (e.g. OCCT factory wired \
+         by copy-paste) would not be caught by the descriptor or name pins alone",
     );
 
     // Also pin the materialised result as a HashSet (set equality —

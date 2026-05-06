@@ -3,7 +3,6 @@
 .claude/
 /target
 **/*.rs.bk
-Cargo.lock
 .task/
 .worktrees/
 .eval-worktrees/

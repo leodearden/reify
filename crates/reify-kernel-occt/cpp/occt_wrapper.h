@@ -745,11 +745,52 @@ double min_clearance(const OcctShape& a, const OcctShape& b);
 /// query vertex — uninteresting). This ordering mirrors `query_distance` and
 /// `min_clearance` for call-site consistency.
 ///
-/// When the distance is < 1e-10 (interior or on-boundary query) the wrapper
-/// detects the degenerate `PointOnShape1 == query` case and re-runs the
-/// extrema against the outer `TopAbs_SHELL`, so the returned witness is on
-/// the shape's boundary rather than coinciding with the query point.
+/// `BRepExtrema_DistShapeShape` has no inside/outside knowledge — it returns
+/// the distance to the nearest BREP boundary face.  For typical interior
+/// points the reported distance is therefore non-zero; only on-surface (or
+/// coincident) query points yield distance 0.  When the distance is < 1e-10
+/// the wrapper re-runs the extrema against the first shell found via
+/// `TopExp_Explorer(TopAbs_SHELL)`.  For single-shell solids this is the
+/// outer shell; for multi-shell solids (e.g. a solid with internal voids) it
+/// may not be.  The re-run returns a witness on the shell boundary rather
+/// than coinciding with the query point.
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
+
+/// Test whether the query point (px, py, pz) lies on the BREP boundary
+/// (face/edge/vertex) of `shape` within `tolerance`.
+///
+/// Algorithm: build a `TopoDS_Vertex` from the query point via
+/// `BRepBuilderAPI_MakeVertex(gp_Pnt(px, py, pz))`, run
+/// `BRepExtrema_DistShapeShape(shape, vertex)`, and return
+/// `dist.Value() <= tolerance`. Operand ordering mirrors `closest_point_on_shape`
+/// and `min_clearance` (input shape first, query vertex second).
+///
+/// **Interior solid points return true (OCCT overlap behavior):**
+/// `BRepExtrema_DistShapeShape` has NO inside/outside knowledge. When the query
+/// vertex is strictly inside a `TopoDS_Solid`, OCCT considers the two shapes to
+/// overlap and reports `dist.Value() = 0` (NOT the distance to the nearest BREP
+/// face). Therefore `point_on_shape` returns `true` for any interior solid point
+/// at any positive tolerance. Consequence: this primitive cannot distinguish a
+/// point on the BREP surface from a point inside the solid for `TopoDS_Solid`
+/// inputs. Callers that need strict surface-only membership must apply a
+/// `BRepClass3d_SolidClassifier` pre-filter before this call (see escalation
+/// esc-2829-6 / parent task 2324 for the documented escape hatch).
+///
+/// Callers commonly pass `Precision::Confusion()` (~1e-7) for `tolerance`
+/// to match OCCT's default confusion threshold. Pass 0.0 for exact-coincidence
+/// queries (returns `true` only when `dist.Value()` is exactly 0).
+///
+/// **Tolerance precondition:** `tolerance` must be a non-negative finite value.
+/// Negative or NaN values cause an immediate `std::runtime_error` rather than
+/// silently returning misleading results (negative → always `false` since
+/// `dist.Value() >= 0`; NaN → always `false` via IEEE 754).
+///
+/// **Naming note:** For `TopoDS_Solid` inputs the function returns `true` for
+/// interior points (not just surface points) due to the OCCT overlap behavior
+/// described above. A higher-level wrapper that applies a `BRepClass3d_SolidClassifier`
+/// pre-filter for strict surface-only membership is tracked in escalation esc-2829-6
+/// and parent task 2324.
+bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance);
 
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
@@ -846,6 +887,43 @@ Point3 query_face_normal(const OcctShape& shape);
 ///
 /// Returns radians in `[0, π]`.
 double surface_angle(const OcctShape& face_a, const OcctShape& face_b);
+
+/// Unit outward normal at the parametric point `(u, v)` on `face`.
+///
+/// The shape MUST be a `TopoDS_Face`. Algorithm:
+///   (a) `BRepAdaptor_Surface::D1(u, v, p, du, dv)` — first derivatives,
+///   (b) cross product `n = Du × Dv`,
+///   (c) reject if `|n| < CPP_DIR_MAG_MIN` (degenerate point),
+///   (d) flip if `face.Orientation() == TopAbs_REVERSED`,
+///   (e) normalize.
+///
+/// Throws `std::runtime_error` if the shape is not a face, has no underlying
+/// surface, or yields a degenerate (zero-magnitude) normal at `(u, v)`.
+Point3 surface_normal_at(const OcctShape& face, double u, double v);
+
+/// Curvature properties at the parametric point `(u, v)` on a face surface.
+/// Defined by the cxx bridge (ffi.rs); forward-declared here for use in the
+/// `curvature_at` function signature.
+struct CurvatureProps;
+
+/// Gaussian, mean, and principal curvatures at the parametric point `(u, v)`
+/// on `face`, plus the principal curvature direction tangent vectors.
+///
+/// The shape MUST be a `TopoDS_Face`. Algorithm:
+///   (a) `GeomLProp_SLProps(surf, u, v, degree=2, resolution=1e-9)`,
+///   (b) reject if `IsCurvatureDefined()` is false,
+///   (c) extract K, H, κ_max, κ_min and direction vectors d_max, d_min,
+///   (d) for `TopAbs_REVERSED` faces: negate H, κ_max, κ_min (K invariant);
+///       then swap (κ_min, κ_max) and (d_min, d_max) together, since the
+///       sign flip reverses the ordering — what was the larger value paired
+///       with d_max is now the smaller (more negative) value, so it becomes
+///       the new κ_min/d_min and vice versa. The tangent-plane vectors
+///       themselves are unchanged; only their min/max *labels* swap so the
+///       (κ, direction) pairing remains correct under the new normal.
+///
+/// Throws `std::runtime_error` if the shape is not a face, has no underlying
+/// surface, or curvature is undefined at `(u, v)` (e.g. at a singular point).
+CurvatureProps curvature_at(const OcctShape& face, double u, double v);
 
 // --- Conformance queries ---
 

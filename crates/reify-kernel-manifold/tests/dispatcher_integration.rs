@@ -32,10 +32,9 @@
 //! dev-dep transitivity.
 //!
 //! Keeping the dep on manifold's side isolates its link closure to manifold's
-//! own test binaries and prevents both breakage paths. The `cfg(has_manifold)`
-//! gate at `crates/reify-kernel-manifold/src/register.rs:70-78` is the
-//! eventual structural enforcement; dep-direction inversion is the current
-//! defensive isolation until that gate lands.
+//! own test binaries and prevents both breakage paths. The `stub_register`
+//! feature gate at `crates/reify-kernel-manifold/src/register.rs` is the
+//! structural enforcement; dep-direction inversion is the defensive isolation.
 //!
 //! # What this test covers
 //!
@@ -44,6 +43,12 @@
 //! - `dispatcher::dispatch(...)` for `(BooleanUnion, Mesh)` with `Mesh` as the
 //!   sole available repr selects `"manifold"` with zero conversion stages
 //!   (zero-conversion path: input repr already matches the demanded repr).
+
+// Shared compile-time guard: requires `stub_register` feature.
+// Source of truth lives in `tests/common/feature_guard.rs`; add new test
+// binaries by including the same line below.
+#[path = "common/feature_guard.rs"]
+mod feature_guard;
 
 use std::collections::{BTreeMap, HashSet};
 

@@ -30,7 +30,12 @@
 //! `crates/reify-kernel-occt/src/stubs.rs` — stub kernel pattern.
 //! `crates/reify-test-support/src/mocks.rs` — `FailingMockGeometryKernel`.
 
+pub mod ingest;
 pub mod kernel;
 pub mod register;
 
+pub use ingest::{
+    IngestError, IngestOutcome, KNOWN_UNITS, OpenVdbGridKind, OpenVdbGridSource,
+    OpenVdbInterpolation, lower_to_sampled, read_vdb_file, validate_grid_units,
+};
 pub use kernel::OpenVdbKernel;

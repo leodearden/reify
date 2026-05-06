@@ -1685,171 +1685,17 @@ structure S {
 
     // ── specialization-scope LSP regression locks (task 2371) ──────────────
     //
-    // AST-builder helpers for hand-constructed ParsedModules are collected in
-    // `mod fixtures` below.  The helpers mirror the fixtures in
-    // `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs::tests`
-    // (lines 178-305) — kept here as a private sub-module to avoid crossing
-    // crate boundaries.
-    //
     // Each test builds a ParsedModule with a specialization scope
     // (`MemberDecl::Sub { body: Some(_) }`), drives it through
     // `reify_compiler::compile_with_stdlib`, converts every compiler diagnostic
     // through `convert::convert_diagnostic` (mirroring the post-parse half of
     // `compute_diagnostics`), then filters to
     // `code == "SpecializationForbiddenDecl"` before asserting.
-
-    // TODO: The helpers below duplicate ~125 lines from
-    // `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs::tests`
-    // (lines 178-305).  Any change to `MemberDecl`/`SubDecl`/`ParamDecl` field
-    // shapes must be applied to BOTH copies.  When that next happens, converge
-    // them into a shared `reify-test-fixtures` dev-dep crate, or expose them
-    // from `reify-syntax` behind a `test-utils` feature flag.
-    mod fixtures {
-        use reify_syntax::{
-            ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl,
-            PortDecl, StructureDef, SubDecl,
-        };
-        use reify_types::{ContentHash, ModulePath, SourceSpan};
-
-        pub fn dummy_span() -> SourceSpan {
-            SourceSpan::new(10, 20)
-        }
-
-        pub fn param_span() -> SourceSpan {
-            SourceSpan::new(30, 50)
-        }
-
-        pub fn port_span() -> SourceSpan {
-            SourceSpan::new(60, 80)
-        }
-
-        pub fn sub_span() -> SourceSpan {
-            SourceSpan::new(90, 110)
-        }
-
-        pub fn dummy_hash() -> ContentHash {
-            ContentHash(0)
-        }
-
-        pub fn dummy_expr() -> Expr {
-            Expr {
-                kind: ExprKind::BoolLiteral(true),
-                span: dummy_span(),
-            }
-        }
-
-        pub fn make_param(name: &str, span: SourceSpan) -> MemberDecl {
-            MemberDecl::Param(ParamDecl {
-                name: name.to_string(),
-                doc: None,
-                type_expr: None,
-                default: None,
-                where_clause: None,
-                annotations: Vec::new(),
-                span,
-                content_hash: dummy_hash(),
-            })
-        }
-
-        pub fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
-            MemberDecl::Port(PortDecl {
-                name: name.to_string(),
-                direction: None,
-                type_name: "SomePort".to_string(),
-                members: Vec::new(),
-                frame_expr: None,
-                span,
-                content_hash: dummy_hash(),
-            })
-        }
-
-        pub fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
-            MemberDecl::Sub(SubDecl {
-                name: name.to_string(),
-                structure_name: "Foo".to_string(),
-                type_args: Vec::new(),
-                args: Vec::new(),
-                is_collection: false,
-                where_clause: None,
-                body: None,
-                span,
-                content_hash: dummy_hash(),
-            })
-        }
-
-        pub fn make_sub_with_body(
-            name: &str,
-            span: SourceSpan,
-            body: Vec<MemberDecl>,
-        ) -> MemberDecl {
-            MemberDecl::Sub(SubDecl {
-                name: name.to_string(),
-                structure_name: "Foo".to_string(),
-                type_args: Vec::new(),
-                args: Vec::new(),
-                is_collection: false,
-                where_clause: None,
-                body: Some(body),
-                span,
-                content_hash: dummy_hash(),
-            })
-        }
-
-        pub fn make_let(name: &str) -> MemberDecl {
-            MemberDecl::Let(LetDecl {
-                name: name.to_string(),
-                doc: None,
-                is_pub: false,
-                type_expr: None,
-                value: dummy_expr(),
-                where_clause: None,
-                annotations: Vec::new(),
-                span: dummy_span(),
-                content_hash: dummy_hash(),
-            })
-        }
-
-        pub fn make_constraint() -> MemberDecl {
-            MemberDecl::Constraint(ConstraintDecl {
-                label: None,
-                expr: dummy_expr(),
-                where_clause: None,
-                span: dummy_span(),
-                content_hash: dummy_hash(),
-            })
-        }
-
-        /// Build a ParsedModule with a single Structure named "S" whose
-        /// top-level members are the supplied `members`.
-        pub fn parsed_module_with_structure_members(
-            members: Vec<MemberDecl>,
-        ) -> reify_syntax::ParsedModule {
-            reify_syntax::ParsedModule {
-                path: ModulePath::single("test"),
-                declarations: vec![Declaration::Structure(StructureDef {
-                    name: "S".to_string(),
-                    doc: None,
-                    is_pub: false,
-                    type_params: Vec::new(),
-                    trait_bounds: Vec::new(),
-                    members,
-                    span: dummy_span(),
-                    content_hash: dummy_hash(),
-                    pragmas: Vec::new(),
-                    annotations: Vec::new(),
-                })],
-                errors: Vec::new(),
-                content_hash: dummy_hash(),
-                pragmas: Vec::new(),
-            }
-        }
-
-        /// A source stub long enough for all span offsets (up to sub_span end=110)
-        /// to produce non-zero LSP positions when passed to `convert_diagnostic`.
-        pub fn source_stub() -> String {
-            " ".repeat(120)
-        }
-    }
+    //
+    // AST-builder helpers are imported from
+    // `reify_test_support::specialization_fixtures` — the canonical shared
+    // module that eliminates the prior duplication across compiler and LSP
+    // test files.
 
     /// Drive the specialization-scope pipeline for `body` (the contents of a
     /// `sub scope : Foo { body }` node inside structure S) and assert that the
@@ -1886,7 +1732,7 @@ structure S {
         body: Vec<reify_syntax::MemberDecl>,
         expected: &[(&str, &str, lsp_types::Position)],
     ) {
-        use fixtures::*;
+        use reify_test_support::specialization_fixtures::*;
         use lsp_types::{DiagnosticSeverity, NumberOrString};
 
         let parsed = parsed_module_with_structure_members(
@@ -1978,7 +1824,7 @@ structure S {
     #[test]
     fn lsp_compute_diagnostics_emits_no_specialization_forbidden_decl_for_permitted_only_spec_scope(
     ) {
-        use fixtures::*;
+        use reify_test_support::specialization_fixtures::*;
         assert_specialization_forbidden(
             vec![make_let("m"), make_constraint()],
             &[],
@@ -1996,7 +1842,7 @@ structure S {
     /// wire form must NOT collapse sibling violations.
     #[test]
     fn lsp_compute_diagnostics_surfaces_one_specialization_forbidden_decl_per_sibling_violation() {
-        use fixtures::*;
+        use reify_test_support::specialization_fixtures::*;
         use tower_lsp::lsp_types::Position;
         // source_stub() = " ".repeat(120) — single-line ASCII, so byte offset N
         // maps to Position::new(0, N) via offset_to_position (UTF-8 + UTF-16

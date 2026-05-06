@@ -24,71 +24,11 @@
 //! to isolate the relevant diagnostics from unrelated noise (e.g. unresolved-name
 //! diagnostics from stub types like `"Foo"`).
 
-use reify_syntax::{
-    Declaration, Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
-    ParsedModule, ParamDecl, StructureDef, SubDecl,
-};
-use reify_types::{ContentHash, DiagnosticCode, ModulePath, Severity, SourceSpan};
+use reify_syntax::{Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl};
+use reify_types::{DiagnosticCode, Severity, SourceSpan};
+use reify_test_support::specialization_fixtures::*;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn zero_span() -> SourceSpan {
-    SourceSpan::new(0, 0)
-}
-
-fn dummy_hash() -> ContentHash {
-    ContentHash(0)
-}
-
-fn make_param(name: &str, span: SourceSpan) -> MemberDecl {
-    MemberDecl::Param(ParamDecl {
-        name: name.to_string(),
-        doc: None,
-        type_expr: None,
-        default: None,
-        where_clause: None,
-        annotations: Vec::new(),
-        span,
-        content_hash: dummy_hash(),
-    })
-}
-
-fn make_sub_with_body(name: &str, span: SourceSpan, body: Vec<MemberDecl>) -> MemberDecl {
-    MemberDecl::Sub(SubDecl {
-        name: name.to_string(),
-        structure_name: "Foo".to_string(),
-        type_args: Vec::new(),
-        args: Vec::new(),
-        is_collection: false,
-        where_clause: None,
-        body: Some(body),
-        span,
-        content_hash: dummy_hash(),
-    })
-}
-
-/// Build a `ParsedModule` with a single `Structure` whose top-level members
-/// are the supplied `members` slice.
-fn parsed_module_with_structure_members(members: Vec<MemberDecl>) -> ParsedModule {
-    ParsedModule {
-        path: ModulePath::single("test"),
-        declarations: vec![Declaration::Structure(StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: Vec::new(),
-            trait_bounds: Vec::new(),
-            members,
-            span: zero_span(),
-            content_hash: dummy_hash(),
-            pragmas: Vec::new(),
-            annotations: Vec::new(),
-        })],
-        errors: Vec::new(),
-        content_hash: dummy_hash(),
-        pragmas: Vec::new(),
-    }
-}
 
 /// Filter a slice of diagnostics to only those with
 /// `code == DiagnosticCode::SpecializationForbiddenDecl`.
@@ -138,11 +78,9 @@ fn make_match_arm_decl_group(
 /// Shape: `structure S { sub scope : Foo { param x } }`
 #[test]
 fn compile_pipeline_invokes_specialization_scope_validator() {
-    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-        "scope",
-        zero_span(),
-        vec![make_param("x", zero_span())],
-    )]);
+    let parsed = parsed_module_with_structure_members(
+        vec![make_sub_with_body("scope", zero_span(), vec![make_param("x", zero_span())])],
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let diags = forbidden_diagnostics(&compiled.diagnostics);
@@ -199,11 +137,9 @@ fn forbidden_decl_in_match_arm_sub_body_emits_diagnostic() {
         make_match_arm_decl_group("head_type", vec![make_match_arm_decl("Hex", arm_sub)]);
 
     // Outer specialization scope: `sub motor : Foo { <match_group> }`
-    let parsed = parsed_module_with_structure_members(vec![make_sub_with_body(
-        "motor",
-        zero_span(),
-        vec![match_group],
-    )]);
+    let parsed = parsed_module_with_structure_members(
+        vec![make_sub_with_body("motor", zero_span(), vec![match_group])],
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let diags = forbidden_diagnostics(&compiled.diagnostics);

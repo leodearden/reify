@@ -1551,6 +1551,9 @@ structure def S : TraitX + TraitY + TraitZ {
 /// branch). Any future removal of that emission will be caught here.
 #[test]
 fn trait_merge_name_conflict_emits_debug_event() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     // TraitA contributes `let x` (Let kind); TraitB contributes `param x` (Param kind).
     // Both are pushed into ctx.defaults by collect_all_requirements (different dedup maps).
     // The pre-registration loop registers x from TraitA (was_new=true) then tries to
@@ -1579,11 +1582,6 @@ structure def S : TraitA + TraitB {
             .expect("DEBUG counter registered"),
     );
 
-    // NOTE: with_default installs a thread-local subscriber; DEBUG events emitted
-    // on other threads spawned by the compile path would be missed. This test
-    // relies on compile_first_template (defined in this same test module) running
-    // the compile pipeline on the calling thread — if that ever dispatches to
-    // rayon/spawned tasks, switch to set_global_default in a std::sync::Once.
     // Run the compilation under the scoped subscriber so we capture any DEBUG
     // events from reify_compiler::conformance targets.
     let _ = tracing::subscriber::with_default(subscriber, || compile_first_template(source));

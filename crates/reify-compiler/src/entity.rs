@@ -257,6 +257,27 @@ pub(crate) fn substitute_expr(
 /// Guarded groups follow the same two-pass + incremental-classification pattern
 /// via `register_guarded_names` and `compile_guarded_members` (guards.rs).
 ///
+/// Emit the duplicate-match-arm-cluster diagnostic.
+///
+/// Shared by the pre-pass (when the first cluster with this name was suppressed by an
+/// outside-match collision so `scope.match_arm_groups` never has the entry and pass 2
+/// cannot detect the duplicate) and pass 2 (the normal case) to keep the message
+/// wording and label structure identical across both emission sites.
+fn emit_duplicate_match_arm_cluster(
+    diagnostics: &mut Vec<Diagnostic>,
+    name: &str,
+    span: SourceSpan,
+) {
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "duplicate match-arm cluster name '{}' — two match blocks declare \
+             the same logical name in this structure",
+            name
+        ))
+        .with_label(DiagnosticLabel::new(span, "duplicate cluster")),
+    );
+}
+
 /// Emit the outside-match-collision diagnostic and record the cluster name in
 /// `collisions`.
 ///
@@ -568,10 +589,28 @@ pub(crate) fn compile_entity(
                     m.arms.first().and_then(|a| arm_member_name(&a.member));
 
                 if let Some(logical_name) = maybe_logical_name {
-                    // Duplicate cluster — skip pre-pass; pass 2 emits the diagnostic.
+                    // Duplicate cluster — skip pre-pass; pass 2 normally emits the
+                    // diagnostic via scope.match_arm_groups.contains_key(...).
                     // Precedence: duplicate-check fires before collision-check when
                     // both apply — the first cluster with this name is canonical.
+                    //
+                    // Exception: if the *first* cluster with this name was suppressed
+                    // by an outside-match collision (clusters_with_outside_collision),
+                    // scope.match_arm_groups will never have the entry, so pass 2
+                    // won't be able to detect the duplicate. Emit the duplicate-cluster
+                    // diagnostic here in the pre-pass instead. (task 2376, step-2)
                     if !seen_match_arm_cluster_names.insert(logical_name.to_string()) {
+                        if clusters_with_outside_collision.contains(logical_name) {
+                            // The first cluster with this name was suppressed by an
+                            // outside-match collision, so scope.match_arm_groups will
+                            // never have the entry and pass 2 cannot detect the
+                            // duplicate. Emit here in the pre-pass instead.
+                            emit_duplicate_match_arm_cluster(diagnostics, logical_name, m.span);
+                        }
+                        // If the first cluster was NOT collision-suppressed, pass 2
+                        // detects the duplicate via scope.match_arm_groups.contains_key
+                        // (see compile_match_arm_decl_group) and emits the diagnostic
+                        // there — so no pre-pass emission is needed in that branch.
                         continue;
                     }
 
@@ -2258,19 +2297,9 @@ fn compile_match_arm_decl_group(
 
     // Guard against duplicate cluster names BEFORE the per-arm loop so that
     // sub_components and guarded_groups are never polluted with ghost entries from
-    // the rejected cluster.  (Suggestion 1 from review: check early, before pushes.)
+    // the rejected cluster.
     if scope.match_arm_groups.contains_key(logical_name.as_str()) {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "duplicate match-arm cluster name '{}' — two match blocks declare \
-                 the same logical name in this structure",
-                logical_name
-            ))
-            .with_label(DiagnosticLabel::new(
-                m.span,
-                "duplicate cluster",
-            )),
-        );
+        emit_duplicate_match_arm_cluster(diagnostics, logical_name.as_str(), m.span);
         return;
     }
 

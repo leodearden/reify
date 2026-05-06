@@ -25,6 +25,7 @@ mod geometry;
 mod joints;
 mod linalg;
 mod list;
+mod loads;
 pub mod loop_closure;
 pub mod loop_closure_solver;
 mod matrix;
@@ -67,6 +68,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = joints::eval_joints(name, args) {
+        return v;
+    }
+    if let Some(v) = loads::eval_loads(name, args) {
         return v;
     }
     if let Some(v) = mechanism::eval_mechanism(name, args) {

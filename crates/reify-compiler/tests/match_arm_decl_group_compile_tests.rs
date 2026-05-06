@@ -2065,3 +2065,487 @@ fn match_arm_decl_group_reverse_collision_suppresses_cluster_registration() {
         bolt_template.match_arm_groups
     );
 }
+
+/// Task 2376 step-1: when an outside Sub AND two match clusters all share the
+/// logical name `head`, the compiler must emit BOTH a collision diagnostic and a
+/// duplicate-cluster diagnostic, in that order (collision before duplicate).
+///
+/// Precedence rule (entity.rs:572): duplicate-check fires before collision-check
+/// for the *first* cluster, but when the first cluster is suppressed by collision,
+/// the second cluster's duplicate status must still surface.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure DefaultHead {}
+/// structure HexHead {}
+/// structure SocketHead {}
+/// structure HexHead2 {}
+/// structure SocketHead2 {}
+/// structure Bolt {
+///     param head_type : HeadType
+///     sub head : DefaultHead              // outside the match block (span 1..5)
+///     match head_type {                   // cluster-1 (span 10..20)
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+///     match head_type {                   // cluster-2 (span 30..40) — duplicate
+///         Hex    => sub head : HexHead2
+///         Socket => sub head : SocketHead2
+///     }
+/// }
+/// ```
+///
+/// Expected: exactly one collision diagnostic AND exactly one duplicate-cluster
+/// diagnostic; collision appears before duplicate in the diagnostics vec.
+#[test]
+fn match_arm_decl_group_duplicate_and_outside_collision_emit_in_order() {
+    let outside_span = span_at(1, 5);
+    let cluster1_span = span_at(10, 20);
+    let cluster2_span = span_at(30, 40);
+
+    let outside_sub = sub_member_with_span("head", "DefaultHead", outside_span);
+
+    let match_group_1 = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: cluster1_span,
+        content_hash: ContentHash(0),
+    });
+
+    let match_group_2 = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead2")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead2")),
+        ],
+        span: cluster2_span,
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            outside_sub,
+            match_group_1,
+            match_group_2,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_duplicate_and_outside_collision_order"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("DefaultHead"),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            empty_structure("HexHead2"),
+            empty_structure("SocketHead2"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Exactly one collision diagnostic.
+    let collision_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .collect();
+    assert_eq!(
+        collision_diags.len(),
+        1,
+        "expected exactly one collision diagnostic, got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) Exactly one duplicate-cluster diagnostic.
+    let duplicate_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("duplicate match-arm cluster name"))
+        .collect();
+    assert_eq!(
+        duplicate_diags.len(),
+        1,
+        "expected exactly one duplicate-cluster diagnostic, got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (c) Collision appears before duplicate in the diagnostics vec.
+    // This asserts insertion order, which IS the contract today: the
+    // forward-collision check fires in the pre-pass when the cluster is
+    // first encountered; the duplicate-cluster check fires later when the
+    // second cluster is processed. Both follow source order. If a future
+    // change introduces a diagnostics sort pass, update this assertion to
+    // compare diagnostic spans instead of vec indices.
+    let collision_pos = compiled
+        .diagnostics
+        .iter()
+        .position(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .expect("collision diagnostic not found");
+    let duplicate_pos = compiled
+        .diagnostics
+        .iter()
+        .position(|d| d.message.contains("duplicate match-arm cluster name"))
+        .expect("duplicate-cluster diagnostic not found");
+    assert!(
+        collision_pos < duplicate_pos,
+        "expected collision diagnostic (index {}) to appear before \
+         duplicate-cluster diagnostic (index {})",
+        collision_pos,
+        duplicate_pos
+    );
+}
+
+/// Task 2376 step-3: an outside Sub declared BEFORE the match AND another outside
+/// Sub declared AFTER the match, both named `head`, must trigger exactly ONE
+/// collision diagnostic — forward + reverse do not double-fire.
+///
+/// The forward collision (cluster vs. the before-Sub) marks the cluster in
+/// `clusters_with_outside_collision` and skips populating
+/// `match_arm_cluster_logical_names`.  The after-Sub's reverse check finds no
+/// entry in `match_arm_cluster_logical_names` and therefore emits nothing.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure DefaultHeadBefore {}
+/// structure HexHead {}
+/// structure SocketHead {}
+/// structure DefaultHeadAfter {}
+/// structure Bolt {
+///     param head_type : HeadType
+///     sub head : DefaultHeadBefore        // before the match (span 1..5)
+///     match head_type {                   // cluster (span 10..20)
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+///     sub head : DefaultHeadAfter         // after the match (span 30..35)
+/// }
+/// ```
+///
+/// Expected: exactly one collision diagnostic; its second label points at the
+/// before-Sub (forward direction, span 1..5).
+#[test]
+fn match_arm_decl_group_outside_sub_before_and_after_match_emits_single_collision() {
+    let before_span = span_at(1, 5);
+    let cluster_span = span_at(10, 20);
+    let after_span = span_at(30, 35);
+
+    let outside_sub_before = sub_member_with_span("head", "DefaultHeadBefore", before_span);
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: cluster_span,
+        content_hash: ContentHash(0),
+    });
+
+    let outside_sub_after = sub_member_with_span("head", "DefaultHeadAfter", after_span);
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            outside_sub_before,
+            match_group,
+            outside_sub_after,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_before_and_after_sub_single_collision"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("DefaultHeadBefore"),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            empty_structure("DefaultHeadAfter"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Exactly one collision diagnostic (forward + reverse must not double-fire).
+    let collision_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .collect();
+    assert_eq!(
+        collision_diags.len(),
+        1,
+        "expected exactly one collision diagnostic (no double-fire), got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // The single diagnostic is the forward-direction one: labels[1] points at the
+    // before-Sub (span 1..5), not the after-Sub (span 30..35).
+    let diag = &collision_diags[0];
+    assert_eq!(diag.labels.len(), 2, "collision diagnostic must have exactly two labels");
+    assert_eq!(
+        diag.labels[0].span, cluster_span,
+        "first label must point to the cluster"
+    );
+    assert_eq!(
+        diag.labels[1].span, before_span,
+        "second label must point to the before-Sub (forward collision direction)"
+    );
+}
+
+/// Task 2376 step-5: when the outside Sub has a *different* name (`foot`) from
+/// the match cluster (`head`), no collision diagnostic must be emitted, and the
+/// cluster registers successfully in `match_arm_groups`.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure DefaultFoot {}
+/// structure HexHead {}
+/// structure SocketHead {}
+/// structure Bolt {
+///     param head_type : HeadType
+///     sub foot : DefaultFoot      // different name — must NOT collide with `head`
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+/// }
+/// ```
+///
+/// Expected: zero collision diagnostics; `bolt_template.match_arm_groups` contains
+/// the `head` cluster.
+#[test]
+fn match_arm_decl_group_outside_sub_with_different_name_emits_no_collision() {
+    let outside_sub = sub_member("foot", "DefaultFoot");
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            param_member("head_type", "HeadType"),
+            outside_sub,
+            match_group,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_different_name_no_collision"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("DefaultFoot"),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No collision diagnostic — different names cannot collide.
+    let collision_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("match-arm cluster")
+                && d.message.contains("outside the match block")
+        })
+        .collect();
+    assert!(
+        collision_diags.is_empty(),
+        "expected no collision diagnostic when outside Sub 'foot' and cluster 'head' differ, \
+         got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // Positive: the `head` cluster must be registered successfully.
+    let bolt_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("Bolt template should be compiled");
+    assert!(
+        bolt_template.match_arm_groups.iter().any(|g| g.name == "head"),
+        "expected 'head' cluster in match_arm_groups (no collision suppression), got: {:#?}",
+        bolt_template.match_arm_groups
+    );
+}
+
+/// Task 2376 step-7: when the discriminant param has an unresolved enum type
+/// (`MissingEnum` is not declared in the module), the compiler must emit the
+/// upstream "unresolved type" diagnostic but must NOT emit a spurious
+/// "non-exhaustive match" diagnostic.
+///
+/// Control flow: `param head_type : MissingEnum` resolves to `Type::Real` (fallback)
+/// and emits `"unresolved type: MissingEnum"`.  When `compile_match_arm_decl_group`
+/// calls `scope.resolve("head_type")`, it gets `(cell_id, Type::Real)` → hits the
+/// `"expected an enum"` branch at entity.rs:2152 → returns early at line 2163 —
+/// never reaching the exhaustiveness gate at line 2289.
+///
+/// This test is a regression guard: if a future refactor moves exhaustiveness ahead
+/// of discriminant-resolution, the spurious diagnostic would reappear.
+///
+/// Constructs:
+/// ```text
+/// // NO EnumDecl for MissingEnum
+/// structure HexHead {}
+/// structure Bolt {
+///     param head_type : MissingEnum       // unresolved type — falls back to Real
+///     match head_type {                   // single arm — deliberately under-covering
+///         Hex => sub head : HexHead
+///     }
+/// }
+/// ```
+///
+/// Expected:
+///   (a) at least one diagnostic contains "unresolved type" or "MissingEnum"
+///   (b) zero diagnostics contain "non-exhaustive match"
+#[test]
+fn match_arm_decl_group_unknown_enum_discriminant_emits_no_spurious_non_exhaustive() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        // Single arm — intentionally under-covering whatever MissingEnum *would* have.
+        arms: vec![match_arm_decl("Hex", sub_member("head", "HexHead"))],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            // MissingEnum is intentionally absent from the module declarations.
+            param_member("head_type", "MissingEnum"),
+            match_group,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_unknown_enum_no_spurious_non_exhaustive"),
+        declarations: vec![
+            // No EnumDecl for MissingEnum — that is the point.
+            empty_structure("HexHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) The unresolved-type diagnostic must be present.
+    let has_unresolved = compiled.diagnostics.iter().any(|d| {
+        d.message.contains("unresolved type") || d.message.contains("MissingEnum")
+    });
+    assert!(
+        has_unresolved,
+        "expected a diagnostic containing 'unresolved type' or 'MissingEnum', got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) No spurious "non-exhaustive match" diagnostic must be emitted.
+    let non_exhaustive_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("non-exhaustive match"))
+        .collect();
+    assert!(
+        non_exhaustive_diags.is_empty(),
+        "expected NO 'non-exhaustive match' diagnostic when discriminant type is unresolved, \
+         got: {:#?}",
+        compiled.diagnostics
+    );
+}

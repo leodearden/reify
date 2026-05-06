@@ -21,7 +21,6 @@
 //!
 //! # Out of scope (sibling tasks)
 //!
-//! - Backjumping via "rejected because" channel (task 2660).
 //! - Cross-product hard cap at 100k assignments (task 2662).
 //! - Rich diagnostic format with smallest infeasibility witness (task 2663).
 //! - Comprehensive v0.1 BFS-failure scenario coverage (task 2664).
@@ -30,6 +29,10 @@
 //!   deferred per the PRD's "Constraint-feasibility incremental binding
 //!   deferred" decision.
 //!
+//! Task 2660 (backjumping via "rejected because" channel) now lands in this
+//! module. The `dfs_backjumps_*` and `dfs_no_blame_*` tests below pin task
+//! 2660's behavior.
+//!
 //! The `auto(free)` cross-product NonUnique Warning enumeration (originally
 //! listed here as "task 2661's scope") now lands in this file — see
 //! `dfs_free_mode_two_feasible_cross_products_emits_non_unique_warning_and_picks_lex_first`,
@@ -37,16 +40,18 @@
 //! `dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker`,
 //! and `dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use reify_compiler::auto_type_param::{
     AutoTypeParam, MAX_AUTO_TYPE_PARAM_CANDIDATES, MultiParamResolutionOutcome, SelectionResult,
-    resolve_auto_type_params, resolve_auto_type_params_with_backtracking,
+    build_constraint_blame_map, resolve_auto_type_params,
+    resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 use reify_types::{
-    CompiledExpr, CompiledFunction, DiagnosticCode, Satisfaction, Severity, SourceSpan, Type, Value,
+    BinOp, CompiledExpr, CompiledFunction, ConstraintNodeId, DiagnosticCode, Satisfaction,
+    Severity, SourceSpan, Type, Value, ValueCellId,
 };
 
 /// Build the `(template_registry, trait_registry)` pair that
@@ -2645,5 +2650,711 @@ structure def WaterCooled : Cooled {
         diagnostics[0].message.contains("AirCooled"),
         "message must mention AirCooled (appears in both feasible witnesses); got: {:?}",
         diagnostics[0].message
+    );
+}
+
+// ─── step-1 (task 2660): build_constraint_blame_map — basic TypeParam blame ──
+
+/// `build_constraint_blame_map` must return one entry per constraint that
+/// references at least one in-scope `TypeParam`-typed cell. The entry maps
+/// the `ConstraintNodeId` to the `BTreeSet<usize>` of referenced param indices.
+///
+/// Setup: two cells (`field_t : TypeParam("T")`, `field_u : TypeParam("U")`),
+/// one `BinOp(Eq)` constraint whose `ValueRef`s address both cells.
+/// `params = [T(idx=0), U(idx=1)]` → blame set = `{0, 1}`.
+///
+/// Pins the "at least one TypeParam ref → entry present" half of the contract.
+/// The "no ref → absent" half is pinned by
+/// `build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints`.
+#[test]
+fn build_constraint_blame_map_returns_param_indices_referenced_by_constraint_expression() {
+    let field_t = ValueCellId::new("Coupling", "field_t");
+    let field_u = ValueCellId::new("Coupling", "field_u");
+    let expr = CompiledExpr::binop(
+        BinOp::Eq,
+        CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into())),
+        CompiledExpr::value_ref(field_u.clone(), Type::TypeParam("U".into())),
+        Type::Bool,
+    );
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .param("Coupling", "field_u", Type::TypeParam("U".into()), None)
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec![],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec![],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let map = build_constraint_blame_map(&template, &params);
+
+    assert_eq!(
+        map.len(),
+        1,
+        "expect exactly one entry (one constraint with TypeParam refs); got: {:?}",
+        map
+    );
+    let cid = ConstraintNodeId::new("Coupling", 0);
+    assert_eq!(
+        map.get(&cid).cloned().unwrap_or_default(),
+        BTreeSet::from([0_usize, 1_usize]),
+        "constraint referencing both T(idx=0) and U(idx=1) cells must map to {{0, 1}}"
+    );
+}
+
+// ─── step-3 (task 2660): build_constraint_blame_map — exclusion invariants ──
+
+/// `build_constraint_blame_map` must NOT insert an entry for constraints whose
+/// blame set would be empty. Two sub-cases:
+///
+/// (a) A cell typed `Type::TypeParam("Z")` where `Z` is NOT in `params=[T,U]`
+///     contributes nothing — the constraint that only ValueRefs that cell must
+///     be absent from the result map.
+///
+/// (b) A constraint whose expression is `CompiledExpr::literal(Value::Bool(true),
+///     Type::Bool)` (no ValueRef, no TypeParam anywhere) is also absent.
+///
+/// Setup: three cells (`field_t:T`, `field_u:U`, `field_z:Z`), two constraints:
+/// - c0: `ValueRef(field_z)` only  → blame={} (Z ∉ params) → absent
+/// - c1: `Bool(true)` literal      → blame={} (no ValueRef)  → absent
+///
+/// Pins the "empty blame → absent" invariant the DFS recursion relies on:
+/// `compute_deepest_blame_level` returns `None` for absent constraints and falls
+/// back to ordinary backtracking, so an accidental `map.insert(id, BTreeSet::new())`
+/// would incorrectly block backjumping even when no TypeParam blame exists.
+#[test]
+fn build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints() {
+    let field_z = ValueCellId::new("Coupling", "field_z");
+    // c0: ValueRef of field_z (typed TypeParam("Z"), out-of-scope)
+    let expr_c0 = CompiledExpr::value_ref(field_z.clone(), Type::TypeParam("Z".into()));
+    // c1: literal Bool(true) — no ValueRef, no TypeParam
+    let expr_c1 = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .param("Coupling", "field_u", Type::TypeParam("U".into()), None)
+        .param("Coupling", "field_z", Type::TypeParam("Z".into()), None)
+        .constraint("Coupling", 0, None, expr_c0)
+        .constraint("Coupling", 1, None, expr_c1)
+        .build();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec![],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec![],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        // Z is intentionally NOT in params — it must be treated as out-of-scope
+    ];
+
+    let map = build_constraint_blame_map(&template, &params);
+
+    assert!(
+        map.is_empty(),
+        "constraints with empty blame sets must not appear in the map (empty map expected); got: {:?}",
+        map
+    );
+}
+
+// ─── step-5 (task 2660): DFS backjumps to lex-first-param blame ──────────────
+
+/// When the first leaf's constraint violation blames only `T` (the lex-first /
+/// outermost param, index 0), the DFS must backjump directly to the T-level and
+/// skip the entire remaining `(ORingSeal, *, *)` sub-tree.
+///
+/// # Setup
+///
+/// - 3 free params: `[T:Seal, U:Cooled, W:Hot]`, two candidates each.
+///   Cross-product: 8 leaves, DFS order T outer × U mid × W inner.
+/// - Template: one cell `field_t : TypeParam("T")`, one constraint
+///   `ValueRef(field_t, TypeParam("T"))` → blame = {T(0)}.
+/// - Mock: `with_call_queue(vec![Violated])`, default `Satisfied`.
+///   → leaf 1 check Violated; all subsequent checks Satisfied.
+///
+/// # Expected visit sequence WITH backjumping
+///
+/// 1. `(ORingSeal, AirCooled, Hot1)` → Violated → blame={0} (T) → BackjumpTo(0)
+///    - W-loop (level=2): j=0 < K=2 → propagate
+///    - U-loop (level=1): j=0 < K=1 → propagate
+///    - T-loop (level=0): j=0 == K=0 → pop ORingSeal, try RubberSeal
+/// 2. `(RubberSeal, AirCooled, Hot1)` → Satisfied → record
+/// 3. `(RubberSeal, AirCooled, Hot2)` → Satisfied → record
+/// 4. `(RubberSeal, WaterCooled, Hot1)` → Satisfied → record
+/// 5. `(RubberSeal, WaterCooled, Hot2)` → Satisfied → record
+///
+/// 4 feasibles; lex-first = `(RubberSeal, AirCooled, Hot1)`.
+///
+/// # Distinguishes backjump-on from backjump-off
+///
+/// WITHOUT backjumping, the search also visits `(ORingSeal, AirCooled, Hot2)`,
+/// `(ORingSeal, WaterCooled, Hot1)`, `(ORingSeal, WaterCooled, Hot2)` — all
+/// Satisfied — giving 7 feasibles with lex-first `(ORingSeal, AirCooled, Hot2)`.
+/// The substitution result diverges visibly:
+/// - WITH backjump:    `T=RubberSeal, U=AirCooled, W=Hot1`
+/// - WITHOUT backjump: `T=ORingSeal,  U=AirCooled, W=Hot2`
+///
+/// The diagnostic message also differs: with backjumping, ORingSeal is never
+/// recorded as feasible and must NOT appear in the NonUnique witness list.
+#[test]
+fn dfs_backjumps_to_blamed_param_when_leaf_violation_blames_only_lex_first_param() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+trait Hot {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+
+structure def Hot1 : Hot {
+    param temp : Real = 100.0
+}
+
+structure def Hot2 : Hot {
+    param temp : Real = 200.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template: one cell `field_t : TypeParam("T")`, one constraint that
+    // ValueRefs field_t. Blame = {T(0)} — only T is referenced.
+    let field_t = ValueCellId::new("Coupling", "field_t");
+    let constraint_expr =
+        CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .constraint("Coupling", 0, None, constraint_expr)
+        .build();
+
+    // Queue: [Violated]; default: Satisfied.
+    // → leaf 1 check = Violated; all subsequent checks = Satisfied.
+    let checker = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "W".to_string(),
+            bounds: vec!["Hot".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // WITH backjumping: lex-first feasible is (RubberSeal, AirCooled, Hot1)
+    // because the entire (ORingSeal, *, *) sub-tree is skipped after the
+    // first leaf's Violated verdict blames only T(0).
+    assert_eq!(
+        outcome.substitution,
+        vec![
+            ("T".to_string(), "RubberSeal".to_string()),
+            ("U".to_string(), "AirCooled".to_string()),
+            ("W".to_string(), "Hot1".to_string()),
+        ],
+        "WITH backjumping: lex-first must be (RubberSeal, AirCooled, Hot1) \
+         (ORingSeal sub-tree entirely skipped); got: {:?}",
+        outcome.substitution
+    );
+
+    // WITH backjumping: only 4 feasible witnesses (all under RubberSeal).
+    // ORingSeal must NOT appear in the NonUnique diagnostic message.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "4 feasibles must emit exactly one NonUnique diagnostic; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert!(
+        !diagnostics[0].message.contains("ORingSeal"),
+        "WITH backjumping: ORingSeal sub-tree is never visited as feasible; \
+         message must NOT mention 'ORingSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("RubberSeal"),
+        "WITH backjumping: all 4 feasibles are under RubberSeal; \
+         message must contain 'RubberSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+}
+
+/// Backjumping uses `max` over the **union** of all violated constraints' blame
+/// sets — not `min`, not "first constraint's blame". With two violated
+/// constraints blaming T(0) and U(1), the conflict set = {0,1} and deepest
+/// blame J = 1 = U, so the search backjumps to the U level rather than to T.
+///
+/// Without this max-over-union rule (e.g., min-over-union returning J=0=T)
+/// the search would backjump past all of ORingSeal, yielding lex-first
+/// `(RubberSeal, AirCooled, Hot1)` instead — observably different.
+#[test]
+fn dfs_backjumps_to_deepest_blamed_param_when_multiple_violated_constraints_blame_different_params()
+{
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+trait Hot {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+
+structure def Hot1 : Hot {
+    param temp : Real = 100.0
+}
+
+structure def Hot2 : Hot {
+    param temp : Real = 200.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template: two cells and two constraints.
+    //   field_t : TypeParam("T") — constraint c0 ValueRefs only field_t → blame={T(0)}
+    //   field_u : TypeParam("U") — constraint c1 ValueRefs only field_u → blame={U(1)}
+    // The mock broadcasts ONE Violated verdict across ALL constraints in the
+    // first leaf's check() call, so both c0 and c1 report Violated for leaf 1.
+    // Blame union = {0} ∪ {1} = {0,1}; max = 1 = U → BackjumpTo(1).
+    let field_t = ValueCellId::new("Coupling", "field_t");
+    let field_u = ValueCellId::new("Coupling", "field_u");
+    let expr_t = CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
+    let expr_u = CompiledExpr::value_ref(field_u.clone(), Type::TypeParam("U".into()));
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .param("Coupling", "field_u", Type::TypeParam("U".into()), None)
+        .constraint("Coupling", 0, None, expr_t)
+        .constraint("Coupling", 1, None, expr_u)
+        .build();
+
+    // Queue: [Violated]; default: Satisfied.
+    // First leaf check → both constraints Violated (one check() call, one pop).
+    // All subsequent checks → Satisfied.
+    let checker = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "W".to_string(),
+            bounds: vec!["Hot".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // WITH max-over-union backjumping:
+    // Leaf 1 = (ORingSeal, AirCooled, Hot1) → Violated → conflict {0,1} → J=1=U
+    // → backjump to U level, skip only (ORingSeal, AirCooled, Hot2)
+    // → next visited leaf = (ORingSeal, WaterCooled, Hot1) → Satisfied
+    // → lex-first feasible = (ORingSeal, WaterCooled, Hot1)
+    //
+    // WITHOUT max-over-union (e.g., min-over-union J=0=T):
+    // → would backjump past all ORingSeal, lex-first = (RubberSeal, AirCooled, Hot1)
+    assert_eq!(
+        outcome.substitution,
+        vec![
+            ("T".to_string(), "ORingSeal".to_string()),
+            ("U".to_string(), "WaterCooled".to_string()),
+            ("W".to_string(), "Hot1".to_string()),
+        ],
+        "WITH max-over-union backjumping: lex-first must be (ORingSeal, WaterCooled, Hot1); \
+         J=max{{0,1}}=1=U so ORingSeal sub-tree is not fully skipped; got: {:?}",
+        outcome.substitution
+    );
+
+    // The resolved substitution started with ORingSeal, confirming we did NOT
+    // backjump past T (which would have skipped the entire ORingSeal sub-tree).
+    assert_eq!(
+        outcome.substitution[0],
+        ("T".to_string(), "ORingSeal".to_string()),
+        "T must resolve to ORingSeal — if T resolved to RubberSeal, the search \
+         incorrectly backjumped to T-level (min-over-union) instead of U-level \
+         (max-over-union); got: {:?}",
+        outcome.substitution
+    );
+
+    // Free-mode: multiple feasibles → exactly one NonUnique diagnostic.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "multiple feasibles must emit exactly one NonUnique diagnostic; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+}
+
+/// When the parameterized template's only constraint has no `ValueRef` nodes
+/// (a `Bool(true)` literal), `build_constraint_blame_map` returns an empty map.
+/// At any infeasible leaf, `compute_deepest_blame_level` returns `None`, and the
+/// DFS falls through to `DfsControl::Continue` — identical to ordinary backtracking.
+///
+/// This regression test guards the "no blame ↔ no-op ↔ ordinary backtrack"
+/// contract: wiring in the backjumping infrastructure must not change the
+/// observable behavior when the blame map is empty.
+///
+/// Expected outcome is BIT-FOR-BIT identical to
+/// `dfs_backtracks_when_first_leaf_violated_then_picks_second_feasible`
+/// (task 2659/2661): lex-first = `(ORingSeal, WaterCooled)`, one
+/// `AutoTypeParamNonUnique` Warning diagnostic.
+#[test]
+fn dfs_no_blame_constraint_falls_back_to_ordinary_backtrack() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template with a single Bool(true) literal constraint: no ValueRef, no
+    // TypeParam reference → build_constraint_blame_map returns an empty map.
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    // Verify the blame map is empty for this template + params combination.
+    let blame_map = build_constraint_blame_map(&template, &params);
+    assert!(
+        blame_map.is_empty(),
+        "Bool(true) literal constraint has no ValueRef / TypeParam refs; \
+         blame map must be empty; got: {:?}",
+        blame_map
+    );
+
+    // Queue: [Violated, Satisfied]; default: Satisfied.
+    // Leaf 1 = (ORingSeal, AirCooled) → Violated → blame empty → Continue
+    //   (ordinary backtrack; NOT a backjump)
+    // Leaf 2 = (ORingSeal, WaterCooled) → Satisfied → collect
+    // Leaves 3-4 → default Satisfied → collect
+    // 3 feasibles total; lex-first = (ORingSeal, WaterCooled)
+    let checker = MockConstraintChecker::new()
+        .with_call_queue(vec![Satisfaction::Violated, Satisfaction::Satisfied]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // Outcome must be BIT-FOR-BIT identical to the 2659/2661 baseline test
+    // `dfs_backtracks_when_first_leaf_violated_then_picks_second_feasible`.
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("ORingSeal".to_string())),
+                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+            ],
+            substitution: vec![
+                ("T".to_string(), "ORingSeal".to_string()),
+                ("U".to_string(), "WaterCooled".to_string()),
+            ],
+        },
+        "no-blame constraint must fall back to ordinary backtrack; \
+         lex-first must be (ORingSeal, WaterCooled); got: {:?}",
+        outcome
+    );
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "3 feasibles must emit exactly one NonUnique diagnostic; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Warning severity; got: {:?}",
+        diagnostics[0].severity
+    );
+}
+
+/// Backjumping must not break strict-mode `max_feasible_to_collect=2` accumulation.
+///
+/// With a constraint blamed on T(0), the violated first leaf `(ORingSeal,
+/// AirCooled)` backjumps to level 0 (T-level), skipping the entire ORingSeal
+/// sub-tree. The search then finds two feasibles under RubberSeal and stops
+/// early (strict-mode cap). Outcome must be `Ambiguous` with exactly 2
+/// witnesses — proving the `j == K → continue siblings` arm of `DfsControl`
+/// does not break strict-mode early termination.
+///
+/// This test's primary regression target is the `j == K → continue loop` arm
+/// (rather than the `j < K → propagate` arm pinned by steps 5/7/9).
+#[test]
+fn dfs_strict_mode_with_backjumping_still_collects_two_feasibles_for_ambiguous() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template: one cell field_t : TypeParam("T"), one constraint ValueRef'ing
+    // only field_t. Blame = {T(0)}.
+    let field_t = ValueCellId::new("Coupling", "field_t");
+    let expr_t = CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .constraint("Coupling", 0, None, expr_t)
+        .build();
+
+    // Queue: [Violated]; default: Satisfied.
+    // Leaf 1 = (ORingSeal, AirCooled) → Violated → blame {T(0)} → BackjumpTo(0)
+    //   U-loop (level 1): j=0 < K=1 → propagates BackjumpTo(0)
+    //   T-loop (level 0): j=0 == K=0 → pops ORingSeal, tries RubberSeal
+    //   (ORingSeal, WaterCooled) is SKIPPED — entire ORingSeal sub-tree skipped
+    // Leaf 2 = (RubberSeal, AirCooled) → Satisfied → collect (1)
+    // Leaf 3 = (RubberSeal, WaterCooled) → Satisfied → collect (2) → EarlyTerminate
+    let checker = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false, // strict
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false, // strict
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        &mut diagnostics,
+    );
+
+    // Ambiguous attaches to the first param's name (same halt-on-first-failure
+    // contract as all other multi-param Ambiguous sites).
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "strict-mode ≥2 feasibles must produce exactly one per_param entry; got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(
+        outcome.per_param[0].0,
+        "T",
+        "Ambiguous must attach to the first param's name; got: {:?}",
+        outcome.per_param[0].0
+    );
+    match &outcome.per_param[0].1 {
+        SelectionResult::Ambiguous(witnesses) => {
+            assert_eq!(
+                witnesses.len(),
+                2,
+                "strict-mode must collect exactly 2 witnesses (max_feasible_to_collect=2); \
+                 even with backjumping past (ORingSeal,*), two feasibles under RubberSeal \
+                 must be found; got witnesses: {:?}",
+                witnesses
+            );
+        }
+        other => panic!(
+            "strict-mode ≥2 feasibles must produce SelectionResult::Ambiguous; got: {:?}",
+            other
+        ),
+    }
+    assert!(
+        outcome.substitution.is_empty(),
+        "Ambiguous must yield empty substitution; got: {:?}",
+        outcome.substitution
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one AutoTypeParamAmbiguous diagnostic; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamAmbiguous),
+        "diagnostic must be AutoTypeParamAmbiguous; got: {:?}",
+        diagnostics[0].code
+    );
+
+    // The two witnesses collected are both under RubberSeal (ORingSeal sub-tree
+    // was backjumped past). The lex-first feasible is (RubberSeal, AirCooled).
+    assert_eq!(
+        diagnostics[0].candidates,
+        vec!["RubberSeal".to_string(), "AirCooled".to_string()],
+        "WITH backjumping to T=0: lex-first feasible must be (RubberSeal, AirCooled), \
+         not (ORingSeal, WaterCooled) (which would imply ordinary backtrack, not backjump); \
+         got: {:?}",
+        diagnostics[0].candidates
     );
 }

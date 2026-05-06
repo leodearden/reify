@@ -112,6 +112,9 @@
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 
+// OCCT local surface properties (curvature via GeomLProp_SLProps)
+#include <GeomLProp_SLProps.hxx>
+
 // OCCT BRep serialization
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
@@ -194,34 +197,69 @@ namespace {
 
 /// Compute the unit outward normal of `face` at its surface centroid.
 ///
+/// Compute the outward unit normal of `face` at parametric coordinates `(u, v)`.
+///
 /// Steps:
 ///   0. reject null face (IsNull guard)
-///   1. centroid via `BRepGProp::SurfaceProperties`
-///   2. project to (u,v) via `BRep_Tool::Surface` + `ShapeAnalysis_Surface::ValueOfUV`
-///   3. first derivatives via `BRepAdaptor_Surface::D1`
-///   4. cross product `Du × Dv`; reject if magnitude < `CPP_DIR_MAG_MIN`
-///   5. flip if `face.Orientation() == TopAbs_REVERSED`
-///   6. normalize
+///   1. fetch underlying `Geom_Surface` (existence guard for clear errors —
+///      `BRepAdaptor_Surface` would fail less informatively)
+///   2. first derivatives via `BRepAdaptor_Surface::D1`
+///   3. cross product `Du × Dv`; reject if magnitude < `CPP_DIR_MAG_MIN`
+///   4. flip if `face.Orientation() == TopAbs_REVERSED`
+///   5. normalize
 ///
-/// `who` is a caller-supplied prefix for error messages, e.g.
-/// `"surface_angle: face_a"`. Callers must pre-validate that `face` is a
-/// `TopoDS_FACE` before calling this helper (the `TopAbs_FACE` check must
-/// happen before `TopoDS::Face()` so errors mention the right operation).
+/// Shared helper for `face_outward_unit_normal` (centroid-derived (u,v)) and
+/// the FFI `surface_normal_at` entry point (caller-supplied (u,v)). Keeping
+/// the orientation/magnitude/error semantics in one place prevents drift
+/// between the two normal-producing paths.
 ///
-/// Returns the normalized outward normal vector.
-static gp_Vec face_outward_unit_normal(const TopoDS_Face& face, const char* who) {
-    // 0. Null guard — TopoDS::Face() on a non-face shape won't necessarily
-    //    set IsNull(), but a genuinely null face should be caught early.
+/// `who` is a caller-supplied prefix for error messages. Callers must
+/// pre-validate that `face` is a `TopoDS_FACE` before calling this helper.
+static gp_Vec face_outward_unit_normal_at_uv(
+    const TopoDS_Face& face, double u, double v, const char* who
+) {
     if (face.IsNull()) {
         throw std::runtime_error(std::string(who) + ": face is null");
     }
 
-    // 1. Compute the face centroid via SurfaceProperties + CentreOfMass.
+    Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+    if (surf.IsNull()) {
+        throw std::runtime_error(std::string(who) + ": face has no underlying surface");
+    }
+
+    BRepAdaptor_Surface adaptor(face);
+    gp_Pnt p;
+    gp_Vec du, dv;
+    adaptor.D1(u, v, p, du, dv);
+
+    gp_Vec n = du.Crossed(dv);
+    double mag = n.Magnitude();
+    if (mag < CPP_DIR_MAG_MIN) {
+        throw std::runtime_error(std::string(who) + ": degenerate surface (zero normal)");
+    }
+
+    if (face.Orientation() == TopAbs_REVERSED) {
+        n.Reverse();
+    }
+
+    return gp_Vec(n.X() / mag, n.Y() / mag, n.Z() / mag);
+}
+
+/// Compute the outward unit normal of `face` at its surface centroid.
+///
+/// Projects the 3D centroid back to (u, v) via
+/// `ShapeAnalysis_Surface::ValueOfUV`, then delegates to
+/// `face_outward_unit_normal_at_uv` for the derivative/orientation/normalize
+/// steps. Used by `query_face_normal` and `surface_angle`.
+static gp_Vec face_outward_unit_normal(const TopoDS_Face& face, const char* who) {
+    if (face.IsNull()) {
+        throw std::runtime_error(std::string(who) + ": face is null");
+    }
+
     GProp_GProps props;
     BRepGProp::SurfaceProperties(face, props);
     gp_Pnt centroid = props.CentreOfMass();
 
-    // 2. Project the 3D centroid back to (u, v) parametric coordinates.
     Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
     if (surf.IsNull()) {
         throw std::runtime_error(std::string(who) + ": face has no underlying surface");
@@ -229,26 +267,7 @@ static gp_Vec face_outward_unit_normal(const TopoDS_Face& face, const char* who)
     ShapeAnalysis_Surface analyzer(surf);
     gp_Pnt2d uv = analyzer.ValueOfUV(centroid, 1e-9);
 
-    // 3. First derivatives at (u, v) via BRepAdaptor_Surface.
-    BRepAdaptor_Surface adaptor(face);
-    gp_Pnt p;
-    gp_Vec du, dv;
-    adaptor.D1(uv.X(), uv.Y(), p, du, dv);
-
-    // 4. Cross product gives the surface normal (Du × Dv).
-    gp_Vec n = du.Crossed(dv);
-    double mag = n.Magnitude();
-    if (mag < CPP_DIR_MAG_MIN) {
-        throw std::runtime_error(std::string(who) + ": degenerate surface (zero normal)");
-    }
-
-    // 5. Account for face orientation: REVERSED flips the parametric cross-product.
-    if (face.Orientation() == TopAbs_REVERSED) {
-        n.Reverse();
-    }
-
-    // 6. Normalize.
-    return gp_Vec(n.X() / mag, n.Y() / mag, n.Z() / mag);
+    return face_outward_unit_normal_at_uv(face, uv.X(), uv.Y(), who);
 }
 
 } // anonymous namespace (face_outward_unit_normal)
@@ -2608,6 +2627,88 @@ double surface_angle(const OcctShape& face_a, const OcctShape& face_b) {
     });
 }
 
+Point3 surface_normal_at(const OcctShape& shape, double u, double v) {
+    return wrap_occt_call("surface_normal_at", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error(
+                "surface_normal_at: shape is not a face"
+            );
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        gp_Vec n = face_outward_unit_normal_at_uv(
+            face, u, v, "surface_normal_at"
+        );
+        return Point3{ n.X(), n.Y(), n.Z() };
+    });
+}
+
+CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
+    return wrap_occt_call("curvature_at", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error("curvature_at: shape is not a face");
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("curvature_at: face is null");
+        }
+        Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+        if (surf.IsNull()) {
+            throw std::runtime_error(
+                "curvature_at: face has no underlying surface"
+            );
+        }
+
+        // NOTE: curvature properties are evaluated on the raw Geom_Surface
+        // obtained from BRep_Tool::Surface, while surface_normal_at uses
+        // BRepAdaptor_Surface::D1.  For faces with a non-identity BRep_TFace
+        // location (e.g. transformed or composed surfaces), these two
+        // abstractions can evaluate on slightly different geometric entities,
+        // so numerical agreement between the two APIs is not guaranteed on
+        // such faces.  For standard primitives (sphere, cylinder, plane)
+        // produced by BRepPrimAPI, the location is identity and both
+        // approaches agree numerically.
+        GeomLProp_SLProps props(surf, u, v, /*degree=*/2, /*resolution=*/1e-9);
+        if (!props.IsCurvatureDefined()) {
+            throw std::runtime_error(
+                "curvature_at: curvature undefined at (u, v)"
+            );
+        }
+
+        double K = props.GaussianCurvature();
+        double H = props.MeanCurvature();
+        double k_max_raw = props.MaxCurvature();
+        double k_min_raw = props.MinCurvature();
+        gp_Dir d_max, d_min;
+        props.CurvatureDirections(d_max, d_min);
+
+        // When the face orientation is REVERSED our outward normal is flipped,
+        // so mean curvature H and both principal curvatures change sign.
+        // Gaussian curvature K = κ₁·κ₂ is invariant (both flip → product is
+        // unchanged).  The tangent-plane *vectors* themselves are
+        // direction-of-the-normal independent, but the *labels* "min" vs
+        // "max" follow the curvature ordering — so once both curvatures flip
+        // sign, what was previously paired with d_max (the larger value)
+        // becomes the smaller (more negative) value, i.e. the new kappa_min;
+        // we therefore swap both the curvature pair and the direction pair so
+        // that (kappa_min, d_min) and (kappa_max, d_max) remain correctly
+        // associated with the post-orientation normal.
+        if (face.Orientation() == TopAbs_REVERSED) {
+            H = -H;
+            k_max_raw = -k_max_raw;
+            k_min_raw = -k_min_raw;
+            std::swap(k_min_raw, k_max_raw);
+            std::swap(d_min, d_max);
+        }
+
+        double kappa_min = k_min_raw;
+        double kappa_max = k_max_raw;
+
+        Point3 dmin{ d_min.X(), d_min.Y(), d_min.Z() };
+        Point3 dmax{ d_max.X(), d_max.Y(), d_max.Z() };
+        return CurvatureProps{ K, H, kappa_min, kappa_max, dmin, dmax };
+    });
+}
+
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
         GProp_GProps props;
@@ -2678,10 +2779,13 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
         if (dist.NbSolution() < 1) {
             throw std::runtime_error("closest_point_on_shape: no solution found");
         }
-        // When the query point is inside a solid, OCCT reports distance 0 and
-        // PointOnShape1 returns the query point itself — not the nearest surface
-        // point.  In that case re-run the extrema against the outer shell so the
-        // returned witness lies on the boundary.
+        // BRepExtrema_DistShapeShape has no inside/outside knowledge — it
+        // returns the distance to the nearest BREP boundary face, which is
+        // non-zero for typical interior points and 0 only for on-surface
+        // (or coincident) queries.  When dist < 1e-10 re-run the extrema
+        // against the first shell found via TopExp_Explorer so the returned
+        // witness lies on the shell boundary rather than coinciding with the
+        // query point.
         if (dist.Value() < 1e-10) {
             for (TopExp_Explorer exp(shape.shape, TopAbs_SHELL); exp.More(); exp.Next()) {
                 BRepExtrema_DistShapeShape shell_dist(exp.Current(), vertex);
@@ -2689,11 +2793,37 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
                     gp_Pnt p = shell_dist.PointOnShape1(1);
                     return Point3{p.X(), p.Y(), p.Z()};
                 }
-                break; // only need the first (outer) shell
+                break; // use the first shell found; for multi-shell solids
+                       // this may not be the outer shell
             }
         }
         gp_Pnt p = dist.PointOnShape1(1);
         return Point3{p.X(), p.Y(), p.Z()};
+    });
+}
+
+bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance) {
+    // Validate tolerance early: negative or non-finite values silently produce wrong results.
+    // Negative → always false (dist >= 0 means dist <= negative is never true).
+    // NaN      → dist.Value() <= NaN is always false (IEEE 754).
+    if (!(std::isfinite(tolerance) && tolerance >= 0.0)) {
+        throw std::runtime_error(
+            "point_on_shape: tolerance must be a non-negative finite value");
+    }
+    return wrap_occt_call("point_on_shape", [&]() {
+        gp_Pnt query_pnt(px, py, pz);
+        BRepBuilderAPI_MakeVertex vertex_maker(query_pnt);
+        if (!vertex_maker.IsDone()) {
+            throw std::runtime_error("point_on_shape: vertex construction failed");
+        }
+        BRepExtrema_DistShapeShape dist(shape.shape, vertex_maker.Vertex());
+        if (!dist.IsDone()) {
+            throw std::runtime_error("point_on_shape: BRepExtrema_DistShapeShape failed");
+        }
+        if (dist.NbSolution() < 1) {
+            throw std::runtime_error("point_on_shape: no solution found");
+        }
+        return dist.Value() <= tolerance;
     });
 }
 

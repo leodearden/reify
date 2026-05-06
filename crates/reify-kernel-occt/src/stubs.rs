@@ -5,7 +5,7 @@
 //! downstream crates to compile and fail gracefully at runtime.
 
 use crate::{
-    BooleanOpHistoryRecords, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
+    BooleanOpHistoryRecords, Curvature, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
     SweepOpHistoryRecords,
 };
 use reify_types::{
@@ -137,6 +137,52 @@ impl OcctKernel {
         _face_a: GeometryHandleId,
         _face_b: GeometryHandleId,
     ) -> Result<f64, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub surface-normal-at probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::surface_normal_at` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn surface_normal_at(
+        &self,
+        _handle: GeometryHandleId,
+        _u: f64,
+        _v: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub curvature-at probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::curvature_at` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn curvature_at(
+        &self,
+        _handle: GeometryHandleId,
+        _u: f64,
+        _v: f64,
+    ) -> Result<Curvature, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
+    /// Stub point-on-shape membership probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::point_on_shape` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    ///
+    /// The real implementation uses `BRepExtrema_DistShapeShape(shape, vertex)`
+    /// returning `dist.Value() <= tolerance`. See `lib.rs` for the full contract,
+    /// including: the OCCT solid-overlap behavior (interior solid points return `true`
+    /// because `dist = 0` under overlap); the recommended `Precision::Confusion()`
+    /// (~1e-7) default tolerance; the tolerance precondition (non-negative finite
+    /// `f64`); and the naming caveat that this primitive cannot distinguish on-surface
+    /// from inside-solid for `TopoDS_Solid` inputs.
+    pub fn point_on_shape(
+        &self,
+        _handle: GeometryHandleId,
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+        _tolerance: f64,
+    ) -> Result<bool, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 }
@@ -544,6 +590,30 @@ mod tests {
         let handle = OcctKernelHandle::spawn();
         let result = handle.chamfer_with_history(GeometryHandleId(1), 1.0e-3);
         let err = result.expect_err("stub chamfer_with_history should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_surface_normal_at_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.surface_normal_at(GeometryHandleId(1), 0.0, 0.0);
+        let err = result.expect_err("stub surface_normal_at should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_curvature_at_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.curvature_at(GeometryHandleId(1), 0.0, 0.0);
+        let err = result.expect_err("stub curvature_at should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_point_on_shape_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0, 1e-7);
+        let err = result.expect_err("stub point_on_shape should error");
         assert_stub_message(&format!("{err:?}"));
     }
 }

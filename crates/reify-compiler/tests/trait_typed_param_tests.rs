@@ -1651,3 +1651,209 @@ fn option_list_trait_typed_param_accepts_all_conforming_inner_elements() {
         errors
     );
 }
+
+// ─── Parameterized builtins as trait member types (task 2908 esc-2908-87) ────
+//
+// `param x : Option<Pressure>` (and `List<T>`, `Set<T>`, `Map<K, V>`) was
+// rejected as "unresolved type" when declared inside a trait body even though
+// it worked inside a structure. Root cause: traits.rs::compile_trait routed
+// member type resolution through the simple-name `resolve_type_with_aliases`
+// and never consulted `type_args`, while structures use the full
+// `resolve_type_expr_with_aliases` that handles parameterized builtins.
+// These tests pin parity between trait-member and structure-member resolvers.
+
+/// `param x : Option<Pressure>` in a trait body must resolve to
+/// `Type::Option(Type::Scalar { dimension: PRESSURE })` with no diagnostics.
+/// Direct repro of the FEA `ElasticMaterial.yield_stress` shape.
+#[test]
+fn trait_param_option_pressure_resolves_to_option_scalar() {
+    let source = r#"
+        trait ElasticLike {
+            param yield_stress : Option<Pressure>
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for `param yield_stress : Option<Pressure>` in trait body, got: {:?}",
+        errors
+    );
+
+    let trait_def = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ElasticLike")
+        .expect("ElasticLike trait should be compiled");
+
+    let req = trait_def
+        .required_members
+        .iter()
+        .find(|r| r.name == "yield_stress")
+        .expect("yield_stress should be a required trait member");
+
+    match &req.kind {
+        RequirementKind::Param(ty) => {
+            assert_eq!(
+                ty,
+                &Type::Option(Box::new(Type::Scalar {
+                    dimension: reify_types::DimensionVector::PRESSURE,
+                })),
+                "yield_stress trait member should resolve to Type::Option(Pressure-Scalar), got: {:?}",
+                ty
+            );
+        }
+        other => panic!("expected Param requirement kind, got: {:?}", other),
+    }
+}
+
+/// `param ms : List<MaterialSpec>` in a trait body must resolve through the
+/// parameterized-builtin path the same way it does in a structure body.
+/// Companion to `trait_param_option_pressure_resolves_to_option_scalar`
+/// covering the List<TraitObject> shape.
+#[test]
+fn trait_param_list_traitobject_resolves_through_parameterized_path() {
+    let source = r#"
+        trait HasMaterials {
+            param ms : List<MaterialSpec>
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for `param ms : List<MaterialSpec>` in trait body, got: {:?}",
+        errors
+    );
+
+    let trait_def = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "HasMaterials")
+        .expect("HasMaterials trait should be compiled");
+
+    let req = trait_def
+        .required_members
+        .iter()
+        .find(|r| r.name == "ms")
+        .expect("ms should be a required trait member");
+
+    match &req.kind {
+        RequirementKind::Param(ty) => {
+            assert_eq!(
+                ty,
+                &Type::List(Box::new(Type::TraitObject("MaterialSpec".to_string()))),
+                "ms trait member should resolve to Type::List(Type::TraitObject(\"MaterialSpec\")), got: {:?}",
+                ty
+            );
+        }
+        other => panic!("expected Param requirement kind, got: {:?}", other),
+    }
+}
+
+// ─── Parameterized builtins as conforming-structure member types (task 2908) ─
+//
+// Companion to the `trait_param_option_pressure_resolves_to_option_scalar` /
+// `trait_param_list_traitobject_resolves_through_parameterized_path` pair that
+// pinned the trait-side fix. The trait-side resolver and the conformance-side
+// resolver each carry their own type-expression lookup; the previous fix only
+// patched the trait side. When a structure declares `: SomeTrait` AND uses a
+// parameterized builtin (`Option<Pressure>`, `List<TraitObject>`, ...) in one
+// of its own member annotations, the conformance pass independently re-resolves
+// that annotation to compare it against the trait's required-member type.
+// `conformance/checker.rs::check_phase_resolve_structure_members` previously
+// routed this re-resolution through the simple-name `resolve_type_with_aliases`
+// and never consulted `type_args`, so any structure-side parameterized builtin
+// was rejected as "unresolved type in conformance check" — even when the same
+// shape resolved cleanly on the structure-compile path through `entity.rs`.
+// These tests pin parity between the conformance-side and trait-side resolvers.
+
+/// A conforming structure whose member declares `Option<Pressure>` must compile
+/// with no errors. Direct repro of the FEA `Steel_AISI_1045 : ElasticMaterial
+/// { param yield_stress : Option<Pressure> = some(310MPa) }` shape.
+#[test]
+fn structure_conforming_with_option_pressure_param_resolves_in_conformance_check() {
+    let source = r#"
+        trait HasYield {
+            param yield_stress : Option<Pressure>
+        }
+        structure def MyMaterial : HasYield {
+            param yield_stress : Option<Pressure> = some(250MPa)
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for `param yield_stress : Option<Pressure>` on a structure \
+         conforming to a trait, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "MyMaterial")
+        .expect("MyMaterial template should be compiled");
+
+    assert!(
+        template.trait_bounds.contains(&"HasYield".to_string()),
+        "MyMaterial should carry 'HasYield' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+}
+
+/// Companion test: a conforming structure whose member declares
+/// `List<MaterialSpec>` must compile with no errors. Pins parity for the
+/// `List<TraitObject>` shape on the conformance-side resolver.
+#[test]
+fn structure_conforming_with_list_traitobject_param_resolves_in_conformance_check() {
+    let source = r#"
+        trait HasMaterials {
+            param ms : List<MaterialSpec>
+        }
+        structure def MyHolder : HasMaterials {
+            param ms : List<MaterialSpec> = []
+        }
+    "#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for `param ms : List<MaterialSpec>` on a structure \
+         conforming to a trait, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "MyHolder")
+        .expect("MyHolder template should be compiled");
+
+    assert!(
+        template.trait_bounds.contains(&"HasMaterials".to_string()),
+        "MyHolder should carry 'HasMaterials' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+}

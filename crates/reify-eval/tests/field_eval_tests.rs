@@ -1969,3 +1969,127 @@ structure S {
         "expected S.v = Undef on poisoned sampled field, got {val:?}"
     );
 }
+
+// ── Plan 2913 step-21: end-to-end field reductions integration ───────────
+//
+// Pin the full parse → compile → eval pipeline for the four eager Field
+// reductions added in plan 2913: `max(field)`, `min(field)`,
+// `argmax(field)`, `argmin(field)`. The eval-time dispatch arms in
+// `crates/reify-expr/src/lib.rs:371-390` route 1-arg-Field calls to
+// `field_reductions::compute_*`; the unit tests in
+// `crates/reify-expr/tests/field_reductions_tests.rs` exercise those
+// helpers directly. This test confirms the same pipeline works when the
+// call originates from a parsed `.ri` source — i.e. that no compile-time
+// type-resolution gap blocks `argmax`/`argmin` from reaching the runtime
+// dispatcher even though they are not declared in a stdlib `.ri` file
+// (mirroring how `sample`/`gradient`/`von_mises` are reachable purely
+// via the runtime dispatcher).
+//
+// Source: `field def temperature : Length -> Real { source = sampled
+// { grid = "RegularGrid1" data = [1.0, 5.0, 3.0, 4.0, 2.0] ... } }`.
+// Using `Length -> Real` (rather than `Real -> Real`) keeps the typing
+// internally consistent with the dimensioned `bbox(point3(0.0m, ...))`
+// bounds and `spacing = 1.0m` — no reliance on the elaborator's
+// dimensionless-coercion path. Domain `Length` resolves to
+// `Type::Scalar { dimension: LENGTH }`, so `argmax`/`argmin` return
+// dimensioned `Value::Scalar { dimension: LENGTH }` coords. Codomain
+// `Real` (dimensionless) keeps `max`/`min` as `Value::Real`.
+//
+// Expected:
+// - `max(temperature) == Real(5.0)` (data buffer maximum)
+// - `min(temperature) == Real(1.0)` (data buffer minimum)
+// - `argmax(temperature) == Scalar { 1.0, LENGTH }` (coord at index 1)
+// - `argmin(temperature) == Scalar { 0.0, LENGTH }` (coord at index 0)
+
+#[test]
+fn eval_field_reductions_on_sampled_field_returns_expected_values() {
+    use reify_types::DimensionVector;
+
+    let source = r#"
+field def temperature : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(4.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [1.0, 5.0, 3.0, 4.0, 2.0] } }
+
+structure S {
+    let m = max(temperature)
+    let lo = min(temperature)
+    let xmax = argmax(temperature)
+    let xmin = argmin(temperature)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let m = result
+        .values
+        .get(&ValueCellId::new("S", "m"))
+        .unwrap_or_else(|| panic!("'S.m' not found in eval result values"));
+    match m {
+        Value::Real(v) => assert!(
+            (v - 5.0).abs() < 1e-12,
+            "max(temperature) expected 5.0, got {v}"
+        ),
+        other => panic!("expected Value::Real(5.0) for S.m, got: {:?}", other),
+    }
+
+    let lo = result
+        .values
+        .get(&ValueCellId::new("S", "lo"))
+        .unwrap_or_else(|| panic!("'S.lo' not found in eval result values"));
+    match lo {
+        Value::Real(v) => assert!(
+            (v - 1.0).abs() < 1e-12,
+            "min(temperature) expected 1.0, got {v}"
+        ),
+        other => panic!("expected Value::Real(1.0) for S.lo, got: {:?}", other),
+    }
+
+    let xmax = result
+        .values
+        .get(&ValueCellId::new("S", "xmax"))
+        .unwrap_or_else(|| panic!("'S.xmax' not found in eval result values"));
+    match xmax {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "argmax(temperature) coord should carry LENGTH dimension"
+            );
+            assert!(
+                (si_value - 1.0).abs() < 1e-12,
+                "argmax(temperature) expected coord 1.0m (index 1), got {si_value}"
+            );
+        }
+        other => panic!(
+            "expected Value::Scalar {{ LENGTH, 1.0 }} for S.xmax, got: {:?}",
+            other
+        ),
+    }
+
+    let xmin = result
+        .values
+        .get(&ValueCellId::new("S", "xmin"))
+        .unwrap_or_else(|| panic!("'S.xmin' not found in eval result values"));
+    match xmin {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "argmin(temperature) coord should carry LENGTH dimension"
+            );
+            assert!(
+                (si_value - 0.0).abs() < 1e-12,
+                "argmin(temperature) expected coord 0.0m (index 0), got {si_value}"
+            );
+        }
+        other => panic!(
+            "expected Value::Scalar {{ LENGTH, 0.0 }} for S.xmin, got: {:?}",
+            other
+        ),
+    }
+}

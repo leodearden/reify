@@ -199,7 +199,7 @@ fn engine_check_imported_tolerance_promise_returns_none_when_promise_and_demand_
 /// symmetric mirror of the `(zero_promise, positive_demand)` row pinned by
 /// `engine_check_imported_tolerance_promise_emits_zero_promise_lint_when_promise_zero_and_demand_positive`.
 ///
-/// Confirms that the zero-promise check at `engine_tolerance.rs:81`
+/// Confirms that the zero-promise check at `Engine::check_imported_tolerance_promise in engine_tolerance.rs`
 /// (introduced by task 2833) does **NOT** intercept the `(positive, 0.0)`
 /// row: the guard `promise == 0.0 && demanded > 0.0` skips because
 /// `promise != 0.0`. The strict-`<` branch then fires because
@@ -274,7 +274,7 @@ fn engine_check_imported_tolerance_promise_emits_insufficient_lint_when_promise_
 /// Pinned by the no-op rows of `check_imported_tolerance_promise`'s truth
 /// table. Mirrors the four-block precedent
 /// `engine_demanded_tolerance_for_output_handles_partial_inputs` in
-/// `tests/tolerance_combine.rs:115-215`. Each scoped sub-block exercises
+/// `tests/tolerance_combine.rs`. Each scoped sub-block exercises
 /// a distinct path that must return `None`:
 ///
 /// - (a) Promise absent (no STEPInput template) — silent-skip on the

@@ -242,6 +242,9 @@ fn assert_ok_or_nonempty_err(
 /// to other threads that don't have the guard.  current_thread avoids this.
 #[tokio::test(flavor = "current_thread")]
 async fn set_default_guard_captures_warn_on_current_thread() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     let (_guard, warn_count) = warn_counting_guard();
 
     tracing::warn!("test");

@@ -121,17 +121,32 @@
 //!
 //! Driving PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`. The section
 //! header comment immediately above the function delineates the algorithm's
-//! scope and deferrals to sibling tasks 2660 (backjumping), 2662 (100k cap),
-//! 2663 (rich diagnostic format), and 2664 (BFS-failure test suite). Task 2661
-//! (`auto(free)` cross-product NonUnique enumeration) now lands in this module.
+//! scope and deferrals to sibling tasks 2662 (100k cap), 2663 (rich diagnostic
+//! format), and 2664 (BFS-failure test suite). Task 2661 (`auto(free)`
+//! cross-product NonUnique enumeration) and task 2660 (backjumping via the
+//! "rejected because" channel) now land in this module.
+//!
+//! **Backjumping (task 2660):** `build_constraint_blame_map` builds a static
+//! `HashMap<ConstraintNodeId, BTreeSet<usize>>` mapping each constraint to the
+//! `params`-slice indices it references through `ValueRef(cell_id)` nodes typed
+//! as `Type::TypeParam(name)`. At each infeasible leaf, `compute_deepest_blame_level`
+//! takes `max` over the union of violated constraints' blame sets to derive
+//! backjump target `J` — the deepest blamed param level. The `DfsControl::BackjumpTo(J)`
+//! arm unwinds the recursion to level `J`, where the sibling loop resumes.
+//! Constraints with no `TypeParam` references are absent from the map ("absent
+//! ↔ no blame ↔ ordinary backtrack") — preserving 2659/2661 test outcomes when
+//! the deferred type-substitution mechanics are not yet in place.
+//!
+//! Backjumping (task 2660) consumes the violated-constraint channel from the
+//! leaf check via the static blame map built by `build_constraint_blame_map`.
 //!
 //! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use reify_types::{
-    CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId, Diagnostic,
-    DiagnosticCode, DiagnosticLabel, SourceSpan,
+    CompiledExprKind, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId,
+    Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type,
 };
 
 use crate::entity::satisfies_trait_bound;
@@ -1052,10 +1067,12 @@ pub fn resolve_auto_type_params(
 ///
 /// # Out of scope (sibling tasks layered on top of this foundation)
 ///
-/// - Backjumping via the "rejected because" channel — task 2660.
 /// - Cross-product hard cap of 100k assignments — task 2662.
 /// - Rich diagnostic format with smallest infeasibility witness — task 2663.
 /// - Comprehensive v0.1 BFS-failure scenario coverage — task 2664.
+///
+/// Task 2660 (backjumping via the "rejected because" channel) and task 2661
+/// (`auto(free)` cross-product NonUnique enumeration) now land in this module.
 /// - Type-substitution mechanics
 ///   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
 ///   deferred per the PRD's "Constraint-feasibility incremental binding
@@ -1310,9 +1327,18 @@ pub fn resolve_auto_type_params_with_backtracking(
     let any_strict = params.iter().any(|p| !p.free);
     let max_feasible_to_collect: usize = if any_strict { 2 } else { usize::MAX };
 
+    // Build the static blame map ONCE before recursion. Each constraint's
+    // expression tree is walked to find `ValueRef(cell_id)` nodes whose cell
+    // is typed `Type::TypeParam(name)`. The map drives backjumping: when an
+    // infeasible leaf's violated constraints all blame param J, the search
+    // skips the entire sub-tree and resumes at J (Gaschnig backjumping).
+    // When the map has no entry for any violated constraint, the leaf returns
+    // `DfsControl::Continue` — identical to ordinary backtracking.
+    let blame_map = build_constraint_blame_map(parameterized_template, params);
+
     let mut current: Vec<String> = Vec::with_capacity(params.len());
     let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
-    dfs_search(
+    let _ = dfs_search(
         0,
         &per_param_candidates,
         &mut current,
@@ -1322,6 +1348,7 @@ pub fn resolve_auto_type_params_with_backtracking(
         constraint_checker,
         functions,
         max_feasible_to_collect,
+        &blame_map,
     );
 
     match feasible_assignments.len() {
@@ -1525,40 +1552,230 @@ fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<Str
 
 // ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
 
-/// Returns `true` iff any constraint in `constraints_template` is `Satisfied::Violated`
-/// according to `checker`.
+// Returns `true` iff any constraint in `constraints_template` is `Satisfied::Violated`
+// according to `checker`.
+//
+// # Semantics
+//
+// - Returns `true` iff at least one [`reify_types::ConstraintResult`] has
+//   `satisfaction == `[`reify_types::Satisfaction::Violated`]`.
+//   Feasibility is the **negation** of this predicate.
+// - [`reify_types::Satisfaction::Indeterminate`] does **NOT** cause a `true` return.
+//   Architecture §2.5 monotonic-feasible rule: undef does not falsify — only
+//   `Violated` makes a leaf infeasible.
+// - The borrowed-slice signature lets callers (especially the DFS hot path)
+// ─── Static blame extraction (task 2660) ─────────────────────────────────────
+
+/// Recursively collect every `Type::TypeParam(name)` string buried in a type.
 ///
-/// # Semantics
+/// Used by [`build_constraint_blame_map`] to extract param-name references from
+/// a cell's declared `cell_type`. The set `out` accumulates names so the caller
+/// can map them to param indices in a single pass.
 ///
-/// - Returns `true` iff at least one [`reify_types::ConstraintResult`] has
-///   `satisfaction == `[`reify_types::Satisfaction::Violated`]`.
-///   Feasibility is the **negation** of this predicate.
-/// - [`reify_types::Satisfaction::Indeterminate`] does **NOT** cause a `true` return.
-///   Architecture §2.5 monotonic-feasible rule: undef does not falsify — only
-///   `Violated` makes a leaf infeasible.
-/// - The borrowed-slice signature lets callers (especially the DFS hot path)
-///   reuse a single owned `Vec` built ONCE by the orchestrator across many
-///   leaf calls, without rebuilding it per leaf.
+/// Handles every composite type arm that can nest a `TypeParam`:
+/// - Single-inner wrappers: `List`, `Set`, `Option`, `Complex`, `Range`
+/// - Two-inner wrappers: `Map`, `Field`
+/// - Multi-inner wrappers: `Function` (params + return_type), `Union` (arms)
+/// - Quantity-slot structs (single `quantity` inner): `Point`, `Vector`, `Tensor`, `Matrix`
 ///
-/// # Residual per-call allocation
+/// Leaf arms with no nested types (`Bool`, `Int`, `Real`, `String`, `Scalar`,
+/// `Enum`, `StructureRef`, `TraitObject`, `Geometry`, `Orientation`, `Frame`,
+/// `Transform`, `Plane`, `Axis`, `BoundingBox`, `Error`) are no-ops.
+fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
+    match t {
+        Type::TypeParam(name) => {
+            out.insert(name.clone());
+        }
+        Type::List(inner) | Type::Set(inner) | Type::Option(inner) | Type::Complex(inner)
+        | Type::Range(inner) => {
+            collect_type_param_names_from_type(inner, out);
+        }
+        Type::Map(k, v) => {
+            collect_type_param_names_from_type(k, out);
+            collect_type_param_names_from_type(v, out);
+        }
+        Type::Function { params, return_type } => {
+            for p in params {
+                collect_type_param_names_from_type(p, out);
+            }
+            collect_type_param_names_from_type(return_type, out);
+        }
+        Type::Field { domain, codomain } => {
+            collect_type_param_names_from_type(domain, out);
+            collect_type_param_names_from_type(codomain, out);
+        }
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => {
+            collect_type_param_names_from_type(quantity, out);
+        }
+        // Union arms can themselves contain TypeParam — recurse into each.
+        // Note: `is_representable_cell_type` currently rejects Union as a
+        // cell_type, so this arm is latent rather than immediately exercised.
+        // It is included here so that if Union is ever admitted as a cell_type
+        // (e.g., for match-block-decl narrowing), blame extraction stays correct
+        // automatically rather than silently falling back to ordinary backtracking.
+        Type::Union(arms) => {
+            for arm in arms {
+                collect_type_param_names_from_type(arm, out);
+            }
+        }
+        // All other arms are terminal (contain no nested Type) — no-ops:
+        // Bool, Int, Real, String, Scalar, Enum, StructureRef, TraitObject,
+        // Geometry, Orientation, Frame, Transform, Plane, Axis, BoundingBox, Error.
+        _ => {}
+    }
+}
+
+/// Build a static blame map from constraint IDs to the set of `params` indices
+/// that each constraint's expression tree references through `ValueRef` cells
+/// typed as `Type::TypeParam(name)`.
 ///
-/// `ConstraintInput::constraints` is owned (`Vec<(ConstraintNodeId, &CompiledExpr)>`),
-/// so this function still clones `constraints_template` via `.to_vec()` on every
-/// call — copying a heap `String` per `ConstraintNodeId`. The orchestrator-level
-/// hoist eliminates the per-leaf *rebuild* (the `iter().map().collect()` traversal
-/// of `parameterized_template.constraints`), but not the per-leaf *clone* of the
-/// already-built slice.
+/// # Algorithm
 ///
-/// TODO(constraint-input-borrow): change `ConstraintInput::constraints` from
-/// `Vec<(ConstraintNodeId, &CompiledExpr)>` to `&[(ConstraintNodeId, &CompiledExpr)]`
-/// (or `Cow`) so this helper can pass the borrowed slice through without cloning.
-/// That change is in `reify_types::ConstraintInput` (outside this crate's scope).
-fn check_constraints_violated(
+/// For each constraint in `template.constraints`:
+/// 1. Walk `constraint.expr` via [`CompiledExpr::walk`].
+/// 2. At every `ValueRef(cell_id)` node, look up the cell's declared type in
+///    `template.value_cells`.
+/// 3. Collect every `Type::TypeParam(name)` buried in that type (recursively,
+///    via [`collect_type_param_names_from_type`]).
+/// 4. Map collected names to `params` indices; drop names not in scope.
+/// 5. If the resulting index set is non-empty, insert an entry into the map.
+///
+/// # "Absent ↔ no blame ↔ ordinary backtrack" contract
+///
+/// Constraints whose final index set is **empty** (no referenced cell is typed
+/// as a `Type::TypeParam`, or all referenced `TypeParam` names are out of scope
+/// for the current `params` slice) are **NOT inserted** into the map.
+///
+/// Callers that look up a constraint ID in the map and find `None` must treat
+/// it as an empty blame set — equivalent to "this constraint cannot drive a
+/// backjump." This is the sentinel that lets [`compute_deepest_blame_level`]
+/// fall back to ordinary backtracking when violated constraints carry no
+/// in-scope type-param blame. Do **not** use `unwrap_or_default()` on the
+/// map lookup without understanding this contract: an absent entry means
+/// "no blame", not "forgot to insert".
+///
+/// See PRD section *"Backjumping reuses existing 'rejected because' channel"*
+/// for the rationale.
+pub fn build_constraint_blame_map(
+    template: &TopologyTemplate,
+    params: &[AutoTypeParam],
+) -> HashMap<ConstraintNodeId, BTreeSet<usize>> {
+    // Build a lookup from ValueCellId → cell_type.
+    let cell_type_map: HashMap<_, &Type> = template
+        .value_cells
+        .iter()
+        .map(|decl| (&decl.id, &decl.cell_type))
+        .collect();
+
+    // Build a lookup from param name → index in `params`.
+    let param_index_map: HashMap<&str, usize> = params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.name.as_str(), i))
+        .collect();
+
+    let mut result: HashMap<ConstraintNodeId, BTreeSet<usize>> = HashMap::new();
+
+    for constraint in &template.constraints {
+        let mut name_set: BTreeSet<String> = BTreeSet::new();
+        constraint.expr.walk(&mut |node| {
+            if let CompiledExprKind::ValueRef(cell_id) = &node.kind
+                && let Some(cell_type) = cell_type_map.get(cell_id)
+            {
+                collect_type_param_names_from_type(cell_type, &mut name_set);
+            }
+        });
+        let indices: BTreeSet<usize> = name_set
+            .iter()
+            .filter_map(|name| param_index_map.get(name.as_str()).copied())
+            .collect();
+        if !indices.is_empty() {
+            result.insert(constraint.id.clone(), indices);
+        }
+    }
+
+    result
+}
+
+// ─── Leaf-check verdict and DFS control types (task 2660) ────────────────────
+
+/// The result of a single DFS leaf feasibility check.
+///
+/// Returned by [`check_constraints_leaf`]; carries both the feasibility
+/// decision (so the DFS can push a feasible leaf into `feasible_assignments`)
+/// and the violated constraint IDs (so [`compute_deepest_blame_level`] can
+/// derive the backjump target without a second `checker.check()` call).
+///
+/// The "single check() call per leaf" invariant is preserved:
+/// [`check_constraints_leaf`] calls `checker.check()` exactly once and
+/// partitions the results into the two fields below. The
+/// [`reify_test_support::MockConstraintChecker::with_call_queue`] FIFO model
+/// therefore still gives one queue-pop per leaf.
+struct LeafVerdict {
+    /// `true` iff no constraint in this call returned `Satisfaction::Violated`.
+    /// (Both `Satisfied` and `Indeterminate` count as feasible — arch §2.5.)
+    feasible: bool,
+    /// The `ConstraintNodeId`s of every violated constraint in this call.
+    /// Empty when `feasible == true`.
+    violated_constraints: Vec<ConstraintNodeId>,
+}
+
+/// Control-flow token returned by [`dfs_search`] to its caller.
+///
+/// Three arms cover the three outcomes the DFS needs to communicate:
+///
+/// | Arm | Meaning |
+/// |-----|---------|
+/// | `Continue` | This sub-tree completed normally; try the next sibling. |
+/// | `EarlyTerminate` | The requested `max_feasible_to_collect` count was reached; unwind immediately. |
+/// | `BackjumpTo(j)` | An infeasible leaf was blamed on param `j`; unwind to level `j`. |
+///
+/// At level `K`, after receiving a `BackjumpTo(j)` from a recursive call:
+/// - `j < K` → propagate (the backjump target is above this level).
+/// - `j == K` → consume: pop the current candidate and continue the sibling
+///   loop (equivalent to ordinary backtrack at `K`).
+/// - `j > K` → unreachable (`debug_assert!`): the inner level at `K+1` would
+///   have consumed `j == K+1` rather than propagating it, so `j > K` cannot
+///   reach level `K` by induction.
+///
+/// See PRD *"Backjumping reuses existing 'rejected because' channel"* and the
+/// design-decision "3-arm DfsControl enum" for the rationale.
+enum DfsControl {
+    Continue,
+    EarlyTerminate,
+    BackjumpTo(usize),
+}
+
+/// Single-call leaf check that surfaces both feasibility and violated IDs.
+///
+/// Calls `checker.check(&input)` **exactly once**. Partitions the results
+/// into:
+/// - `violated_constraints`: the IDs of every `Satisfaction::Violated` result.
+/// - `feasible`: `true` iff `violated_constraints` is empty.
+///
+/// This is the hot-path entry point for the DFS leaf branch. The returned
+/// [`LeafVerdict`] is consumed by two callers:
+/// - The DFS pushes a feasible leaf into `feasible_assignments`.
+/// - [`compute_deepest_blame_level`] looks up the violated IDs in the static
+///   blame map to derive the backjump target.
+///
+/// The "single check() call per leaf" invariant is preserved: the
+/// [`reify_test_support::MockConstraintChecker::with_call_queue`] FIFO model
+/// therefore gives exactly one queue-pop per leaf — the same property that
+/// `dfs_leaf_invokes_constraint_checker_exactly_once_per_leaf_with_multi_constraint_template_two_params`
+/// pins.
+///
+/// Inherits arch §2.5's monotonic-feasible rule: `Indeterminate` counts as
+/// feasible; only `Violated` falsifies.
+fn check_constraints_leaf(
     constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
     checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
     values: &reify_types::ValueMap,
-) -> bool {
+) -> LeafVerdict {
     use reify_types::ConstraintInput;
     let input = ConstraintInput {
         constraints: constraints_template.to_vec(),
@@ -1567,60 +1784,115 @@ fn check_constraints_violated(
         determinacy: None,
     };
     let results = checker.check(&input);
-    results
+    let violated_constraints: Vec<ConstraintNodeId> = results
+        .into_iter()
+        .filter(|r| r.satisfaction == reify_types::Satisfaction::Violated)
+        .map(|r| r.id)
+        .collect();
+    let feasible = violated_constraints.is_empty();
+    LeafVerdict { feasible, violated_constraints }
+}
+
+/// Compute the deepest (max-index) blamed param level from a set of violated
+/// constraint IDs and the static blame map.
+///
+/// # Graph-based / Gaschnig backjumping semantics
+///
+/// Returns `max` over the **union** of every violated constraint's referenced-
+/// param-index set — NOT max over any single constraint's blame, and NOT min
+/// over the union.
+///
+/// Concretely, this is:
+/// ```ignore
+/// let union: BTreeSet<usize> = violated
+///     .iter()
+///     .filter_map(|id| blame_map.get(id))
+///     .flatten()
+///     .copied()
+///     .collect();
+/// union.iter().max().copied()
+/// ```
+///
+/// **Do not** use `violated.iter().filter_map(|id| blame_map.get(id).and_then(|s| s.iter().max())).max()`
+/// — that takes the max over each individual constraint's blame set before
+/// combining, which gives the wrong answer when two constraints blame different
+/// params. Example: c0 blames {T(0)}, c1 blames {U(1)}; max-per-constraint
+/// gives max(0, 1) = 1 in this particular case but the formula is semantically
+/// wrong because it does not first form the union {0,1}.
+///
+/// Rationale (soundness): every variable in the union is referenced by at
+/// least one violated constraint. Changing any candidate strictly above the
+/// deepest blamed index `J` cannot satisfy the violated constraints; the
+/// search can safely jump to `J`.
+///
+/// When the union is empty (`violated` is empty, or no violated constraint
+/// is in the blame map), returns `None` — the recursion falls back to
+/// ordinary backtracking.
+///
+/// See PRD section *"Backjumping reuses existing 'rejected because' channel"*
+/// and the design-decision "Aggregate deepest blame as J = max(union …)".
+fn compute_deepest_blame_level(
+    violated: &[ConstraintNodeId],
+    blame_map: &HashMap<ConstraintNodeId, BTreeSet<usize>>,
+) -> Option<usize> {
+    // Take the max over the union of all blamed param-index sets.
+    // One-pass iterator chain avoids the intermediate BTreeSet allocation.
+    violated
         .iter()
-        .any(|r| r.satisfaction == reify_types::Satisfaction::Violated)
+        .filter_map(|id| blame_map.get(id))
+        .flat_map(|s| s.iter())
+        .copied()
+        .max()
 }
 
-/// True iff the current cross-product leaf assignment is feasible.
-///
-/// A thin wrapper around [`check_constraints_violated`] — returns the
-/// negation of that predicate: `true` iff no constraint in
-/// `constraints_template` is `Satisfaction::Violated`.
-///
-/// The "single check per leaf" shape is preserved: `check_constraints_violated`
-/// calls `constraint_checker.check()` exactly once per leaf, which is what
-/// makes the [`reify_test_support::MockConstraintChecker::with_call_queue`]
-/// FIFO model useful for backtracking tests: one queue pop drives one leaf
-/// verdict.
-///
-/// Inherits the monotonic-feasible rule (architecture §2.5):
-/// `Indeterminate` counts as feasible — only `Satisfaction::Violated`
-/// makes a leaf infeasible.
-fn dfs_leaf_feasible(
-    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
-    values: &reify_types::ValueMap,
-    constraint_checker: &dyn ConstraintChecker,
-    functions: &[CompiledFunction],
-) -> bool {
-    !check_constraints_violated(constraints_template, constraint_checker, functions, values)
-}
-
-/// Recursive DFS over the cross-product of per-param Phase A candidate vectors.
+/// Recursive DFS over the cross-product of per-param Phase A candidate vectors,
+/// with graph-based / Gaschnig backjumping via the static blame map.
 ///
 /// Visits leaves in declared-order × lexicographic-within-param order: at
 /// `level`, iterates `per_param_candidates[level]` in the order Phase A
 /// produced (alphabetical FQN), pushes the candidate onto `current`,
 /// recurses, then pops. At the leaf (`level == per_param_candidates.len()`),
-/// calls [`dfs_leaf_feasible`]; if feasible, pushes the leaf into
+/// calls [`check_constraints_leaf`]; if feasible, pushes the leaf into
 /// `feasible_assignments`.
 ///
-/// Returns `true` when the caller should early-terminate (unwind out of the
-/// recursion immediately). The leaf branch returns `true` when, after
-/// recording a feasible leaf, `feasible_assignments.len() >=
-/// max_feasible_to_collect`. With `max_feasible_to_collect = 1` (free-mode),
-/// the first feasible leaf halts the search; with
-/// `max_feasible_to_collect = 2` (strict-mode), the search continues past
-/// the first feasible leaf and stops once two are found — enough to encode
-/// `Ambiguous` without enumerating the entire cross-product.
+/// # Return value — `DfsControl`
+///
+/// `DfsControl::Continue` — this sub-tree completed normally; the caller should
+/// try its next sibling.
+///
+/// `DfsControl::EarlyTerminate` — `max_feasible_to_collect` was reached; unwind
+/// immediately without collecting more.
+///
+/// `DfsControl::BackjumpTo(j)` — an infeasible leaf blamed param `j`; the caller
+/// at level `j` should pop its current candidate and try the next one, while
+/// callers at levels `k > j` should propagate this value upward.
+///
+/// # Backjumping control flow (at level K, after a recursive call returns)
+///
+/// - `Continue` → pop, try next sibling at K.
+/// - `EarlyTerminate` → pop, propagate.
+/// - `BackjumpTo(j)` where `j < K` → pop, propagate (continue unwinding).
+/// - `BackjumpTo(j)` where `j == K` → pop, continue sibling loop (equivalent
+///   to ordinary backtrack at K — the target reached its home level).
+/// - `BackjumpTo(j)` where `j > K` → `debug_assert!(false)`: the inner level
+///   at `K+1` would have consumed `j == K+1` or propagated `j < K+1`. `j > K`
+///   is unreachable by induction.
+///
+/// # Blame-map absent ↔ ordinary backtrack
+///
+/// When the blame map contains no entry for any violated constraint (empty
+/// blame, e.g. when the constraint is a `Bool(true)` literal with no
+/// `ValueRef`), `compute_deepest_blame_level` returns `None`. The leaf then
+/// returns `DfsControl::Continue`, which degenerates to ordinary backtracking —
+/// the 2659/2661 test outcomes are preserved without behavioral change.
 //
 // `#[allow(clippy::too_many_arguments)]`: this recursive helper threads
 // recursion state (`level`, `current`, `feasible_assignments`) alongside
 // shared search context (`per_param_candidates`, `constraints_template`,
-// `constraint_checker`, `functions`, `max_feasible_to_collect`). Wrapping the
-// shared context in a struct would force every recursive call site to deref
-// through the wrapper for what is effectively a flat parameter pack; the
-// ambient crate convention (see `resolve_auto_type_params_with_backtracking`
+// `constraint_checker`, `functions`, `max_feasible_to_collect`, `blame_map`).
+// Wrapping the shared context in a struct would force every recursive call
+// site to deref through the wrapper for what is effectively a flat parameter
+// pack; the ambient crate convention (see `resolve_auto_type_params_with_backtracking`
 // above and the 35+ other sites) is to allow the lint here.
 #[allow(clippy::too_many_arguments)]
 fn dfs_search(
@@ -1633,31 +1905,43 @@ fn dfs_search(
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
     max_feasible_to_collect: usize,
-) -> bool {
+    blame_map: &HashMap<ConstraintNodeId, BTreeSet<usize>>,
+) -> DfsControl {
     if level == per_param_candidates.len() {
-        // Leaf branch: this cross-product assignment is feasible iff
-        // `dfs_leaf_feasible` returns `true`. The leaf-feasibility predicate
-        // uses `check_constraints_violated`'s `Satisfaction::Violated`
-        // discriminator: a leaf is infeasible iff its single-call constraint
-        // check produces a Violated result, and feasible otherwise. This
-        // inherits architecture §2.5's monotonic-feasible rule —
-        // `Indeterminate` counts as feasible (only `Violated` falsifies).
-        // Backtracking is therefore driven by the same three-arm satisfaction
-        // enum that v0.1 BFS uses; the only change at v0.2 is that
-        // infeasibility unwinds to the next sibling at the deepest open level
-        // rather than halting the orchestrator.
-        if dfs_leaf_feasible(constraints_template, leaf_values, constraint_checker, functions) {
+        // Leaf branch: call the constraint checker ONCE for this leaf.
+        // The `check_constraints_leaf` helper surfaces both feasibility and
+        // the violated constraint IDs in a single `checker.check()` invocation.
+        //
+        // Backtracking is driven by the same `Satisfaction::Violated`
+        // discriminator as v0.1 BFS; `Indeterminate` counts as feasible
+        // per arch §2.5's monotonic-feasible rule.
+        let verdict =
+            check_constraints_leaf(constraints_template, constraint_checker, functions, leaf_values);
+        if verdict.feasible {
             feasible_assignments.push(current.clone());
             // Early-terminate once the requested feasible count is reached:
-            // free-mode (max=1) stops at the first feasible; strict-mode
-            // (max=2) stops once Ambiguous is provable.
-            return feasible_assignments.len() >= max_feasible_to_collect;
+            // free-mode (max=usize::MAX) collects all; strict-mode (max=2)
+            // stops once Ambiguous is provable.
+            if feasible_assignments.len() >= max_feasible_to_collect {
+                return DfsControl::EarlyTerminate;
+            }
+            return DfsControl::Continue;
         }
-        return false;
+        // Infeasible leaf: try to compute a backjump target from the blame map.
+        // When `compute_deepest_blame_level` returns `Some(j)`, the search
+        // skips every remaining assignment in the entire (current[0..=j-1], *)
+        // sub-tree by propagating `BackjumpTo(j)` up to level j.
+        // When it returns `None` (empty blame), fall back to `Continue` —
+        // identical to ordinary backtracking.
+        if let Some(j) = compute_deepest_blame_level(&verdict.violated_constraints, blame_map) {
+            return DfsControl::BackjumpTo(j);
+        }
+        return DfsControl::Continue;
     }
+
     for candidate in &per_param_candidates[level] {
         current.push(candidate.clone());
-        let early = dfs_search(
+        let control = dfs_search(
             level + 1,
             per_param_candidates,
             current,
@@ -1667,20 +1951,47 @@ fn dfs_search(
             constraint_checker,
             functions,
             max_feasible_to_collect,
+            blame_map,
         );
         current.pop();
-        if early {
-            return true;
+        match control {
+            DfsControl::Continue => {
+                // Normal completion of the child sub-tree; try the next sibling
+                // at this level.
+            }
+            DfsControl::EarlyTerminate => {
+                // Requested feasible count reached; propagate unwind immediately.
+                return DfsControl::EarlyTerminate;
+            }
+            DfsControl::BackjumpTo(j) => {
+                if j < level {
+                    // Backjump target is above this level; propagate upward.
+                    return DfsControl::BackjumpTo(j);
+                } else if j == level {
+                    // Backjump target reached this level: pop the current
+                    // candidate (already done above) and continue the sibling
+                    // loop — equivalent to ordinary backtrack at this level.
+                    // Nothing to return; fall through to the next iteration.
+                } else {
+                    // j > level: unreachable by induction (see function-level doc).
+                    debug_assert!(
+                        false,
+                        "DfsControl::BackjumpTo({j}) arrived at level {level}: \
+                         j > level is unreachable; inner level would have consumed j==level"
+                    );
+                    // In release mode, treat as Continue (safe fallback: next sibling).
+                }
+            }
         }
     }
-    false
+    DfsControl::Continue
 }
 
 // ─── Unit tests for private helpers ──────────────────────────────────────────
 
 #[cfg(test)]
 mod helper_tests {
-    use super::check_constraints_violated;
+    use super::check_constraints_leaf;
     use reify_test_support::MockConstraintChecker;
     use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
 
@@ -1688,23 +1999,23 @@ mod helper_tests {
         reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool)
     }
 
-    /// Empty `constraints_template` slice → vacuously no violations → `false`.
+    /// Empty `constraints_template` slice → vacuously no violations → `feasible == true`.
     #[test]
-    fn check_constraints_violated_returns_false_for_empty_constraints() {
+    fn check_constraints_leaf_returns_feasible_for_empty_constraints() {
         let checker = MockConstraintChecker::new();
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&[], &checker, functions, &values);
+        let result = check_constraints_leaf(&[], &checker, functions, &values);
         assert!(
-            !result,
-            "empty constraints slice must return false (vacuously no violations)"
+            result.feasible,
+            "empty constraints slice must be feasible (vacuously no violations)"
         );
     }
 
-    /// Single constraint, checker returns `Satisfied` → `false`.
+    /// Single constraint, checker returns `Satisfied` → `feasible == true`.
     #[test]
-    fn check_constraints_violated_returns_false_when_all_satisfied() {
+    fn check_constraints_leaf_returns_feasible_when_all_satisfied() {
         let expr = literal_expr();
         let id = ConstraintNodeId::new("C0", 0);
         let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
@@ -1713,17 +2024,17 @@ mod helper_tests {
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
-            !result,
-            "all-Satisfied constraints must return false (no violations)"
+            result.feasible,
+            "all-Satisfied constraints must be feasible (no violations)"
         );
     }
 
-    /// Single constraint, checker returns `Indeterminate` → `false`
+    /// Single constraint, checker returns `Indeterminate` → `feasible == true`
     /// (architecture §2.5: Indeterminate counts as feasible, does not falsify).
     #[test]
-    fn check_constraints_violated_returns_false_when_all_indeterminate_per_arch_2_5() {
+    fn check_constraints_leaf_returns_feasible_when_all_indeterminate_per_arch_2_5() {
         let expr = literal_expr();
         let id = ConstraintNodeId::new("C0", 0);
         let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
@@ -1732,16 +2043,16 @@ mod helper_tests {
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
-            !result,
-            "Indeterminate constraints must return false (undef does not falsify, arch §2.5)"
+            result.feasible,
+            "Indeterminate constraints must be feasible (undef does not falsify, arch §2.5)"
         );
     }
 
-    /// Two constraints, checker returns `Violated` for all → `true`.
+    /// Two constraints, checker returns `Violated` for all → `feasible == false`.
     #[test]
-    fn check_constraints_violated_returns_true_when_any_violated() {
+    fn check_constraints_leaf_returns_infeasible_when_any_violated() {
         let expr = literal_expr();
         let id0 = ConstraintNodeId::new("C0", 0);
         let id1 = ConstraintNodeId::new("C1", 1);
@@ -1751,17 +2062,17 @@ mod helper_tests {
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
-            result,
-            "all-Violated constraints must return true (any one Violated falsifies)"
+            !result.feasible,
+            "all-Violated constraints must not be feasible (any one Violated falsifies)"
         );
     }
 
-    /// Two constraints with distinct ids "C0" and "C1"; C0 → Satisfied, C1 → Violated → `true`
-    /// (any one Violated falsifies).
+    /// Two constraints with distinct ids "C0" and "C1"; C0 → Satisfied, C1 → Violated →
+    /// `feasible == false` (any one Violated falsifies).
     #[test]
-    fn check_constraints_violated_returns_true_for_mixed_satisfied_and_violated() {
+    fn check_constraints_leaf_returns_infeasible_for_mixed_satisfied_and_violated() {
         let expr = literal_expr();
         let id0 = ConstraintNodeId::new("C0", 0);
         let id1 = ConstraintNodeId::new("C1", 1);
@@ -1774,10 +2085,10 @@ mod helper_tests {
         let functions: &[CompiledFunction] = &[];
         let values = reify_types::ValueMap::new();
 
-        let result = check_constraints_violated(&constraints, &checker, functions, &values);
+        let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
-            result,
-            "mixed Satisfied+Violated must return true (any one Violated falsifies)"
+            !result.feasible,
+            "mixed Satisfied+Violated must not be feasible (any one Violated falsifies)"
         );
     }
 }

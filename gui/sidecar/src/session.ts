@@ -141,6 +141,7 @@ export class SidecarSession {
 
     const args = [
       '--print',
+      '--verbose',
       '--output-format', 'stream-json',
       '--include-partial-messages',
       '--input-format', 'stream-json',

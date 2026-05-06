@@ -7,6 +7,7 @@
 mod analysis;
 mod calculus;
 mod complex;
+mod field_reductions;
 pub mod interp;
 pub mod kleene;
 pub mod sampled;
@@ -342,6 +343,50 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         && matches!(&evaluated_args[0], Value::Field { .. }) =>
                 {
                     analysis::compute_safety_factor(&evaluated_args[0], &evaluated_args[1])
+                }
+                // Field reductions (eager): collapse a Sampled field to a
+                // single scalar (max/min) or a single point (argmax/argmin).
+                //
+                // # Dispatch gating
+                //
+                // The four arms below all use the gate
+                // `args.len() == 1 && first arg is Value::Field`. This is
+                // narrow on purpose:
+                //
+                // - `max(a, b)` / `min(a, b)` (2 scalar args) — falls through
+                //   to `reify-stdlib::eval_builtin` → `numeric.rs:42` (`min`)
+                //   / `numeric.rs:63` (`max`), which use `as_f64()` operands.
+                // - `max(field, scalar)` (2 args, first is Field) — also
+                //   falls through; the binary numeric form returns `Undef`
+                //   because `Value::Field` has no `as_f64` mapping.
+                // - `argmax(x)` / `argmin(x)` for non-Field args — fall
+                //   through to `eval_builtin`, which has no binding for
+                //   either name and returns `Value::Undef`.
+                //
+                // Pinned by `max_two_arg_scalar_form_unchanged` /
+                // `min_two_arg_scalar_form_unchanged` (binary form
+                // unchanged) and `argcount_gating_*_field_then_extra_arg_*`
+                // (4 tests, step-19) in
+                // `crates/reify-expr/tests/field_reductions_tests.rs`.
+                "max" if evaluated_args.len() == 1
+                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    field_reductions::compute_max(&evaluated_args[0])
+                }
+                "min" if evaluated_args.len() == 1
+                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    field_reductions::compute_min(&evaluated_args[0])
+                }
+                "argmax" if evaluated_args.len() == 1
+                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    field_reductions::compute_argmax(&evaluated_args[0])
+                }
+                "argmin" if evaluated_args.len() == 1
+                    && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    field_reductions::compute_argmin(&evaluated_args[0])
                 }
                 // flat_map(list, lambda): apply `lambda` to each element of
                 // `list`, expect each call to return a list, and concatenate

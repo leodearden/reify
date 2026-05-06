@@ -1,6 +1,6 @@
 # PRD: GUI Rendering of FEA Results
 
-Status: stub — deferred, GUI milestone within v0.3. Sibling to `structural-analysis-fea.md`. Filed 2026-05-02 from FEA PRD spillover.
+Status: design resolved + decomposed (2026-05-04) — deferred, GUI milestone within v0.3. Sibling to `structural-analysis-fea.md`. Filed 2026-05-02 from FEA PRD spillover.
 
 ## Goal
 
@@ -38,19 +38,48 @@ Six pieces, each separately useful:
 
 ## Pre-conditions for activating
 
-- v0.3 FEA kernel (`structural-analysis-fea.md` tasks #16, #17, #20) shipped — concrete consumer with validated outputs.
-- GUI architecture extension for field rendering (some new components in the Tauri/React layer).
-- Existing surface-mesh rendering pipeline can accept per-vertex scalar/vector attributes (probably needs a small extension).
+- v0.3 FEA kernel: ElasticResult typed contract (#2911), result interpolation (#2920), engine integration with `@optimized` + ComputeNode wiring (#2924), and Gmsh volume mesher (#2925) shipped — gives the GUI a concrete consumer with validated displacement / stress fields.
+- Visual regression infrastructure (debug MCP extensions + harness) shipped — see "Prerequisite: visual regression infrastructure" below.
+- Existing surface-mesh rendering pipeline extended to accept per-vertex scalar attributes (currently MeshData carries only positions / indices / normals). Plumbed by task GUI-1.
 
-## Open design questions
+## Prerequisite: visual regression infrastructure
 
-- **Rendering pipeline** — extend the existing surface-mesh viewer (cleaner integration), or new dedicated FEA viewport (cleaner separation)? Lean: extend, with a "FEA mode" toggle.
-- **Colormap conventions** — engineering-rainbow is what users expect from commercial CAD-FEA tools but is perceptually misleading. Default to perceptually-uniform (viridis), provide rainbow as opt-in. Document the choice.
-- **Field-rendering perf** — large stress fields (millions of points) need GPU-side sampling. Current GUI rendering is mostly CPU-side; FEA pushes the limits.
-- **Live update vs. on-completion** — during a long solve, do we render partial results progressively, or wait until done? Lean: progressive when the solver supports it (progressive trait, FEA task #15); batched otherwise.
-- **Probe persistence** — pinned probes survive parameter changes? (Lean: yes, re-evaluated against new result.) Survive geometry changes? (Probably not, hard to map a 3D point through topology.)
-- **Auto-resolve overlay layout** — how much screen real estate? Probably collapsible side-panel, default visible during active auto-resolve.
-- **Multi-result comparison** — for "before/after" or "load case A vs B" comparisons, side-by-side viewport? Out of scope for v0.3 lean; revisit.
+The existing Vitest harness covers component-level logic but cannot verify "does the contour render correctly under this stress field." Before FEA-specific GUI work begins, the debug MCP at `127.0.0.1:3939` (gated by `REIFY_DEBUG=1`) is extended into a deterministic GUI driver suitable for pixel-stable visual regression. Five tasks:
+
+1. **`screenshot_window`** — full-window capture (panels, overlays, probe popups), not just the WebGL canvas. Frontend-mediated like the existing `screenshot` tool: dispatched through `query_frontend` to a `bridge.ts` handler that calls `html-to-image`'s `toPng()` over `document.documentElement`. The Three.js renderer is configured with `preserveDrawingBuffer: true` so html-to-image can read the WebGL canvas inline (no separate compositing pass needed). Complements the existing `screenshot` tool (which stays as the WebGL-only fast path). Note: Tauri 2 has no native `WebviewWindow::capture()` API; cross-platform native capture would require either OS-level screen capture (window-region/occlusion risks) or platform-specific webview FFI (3× code paths). The DOM-to-image route stays in-process and matches the rest of `debug_server.rs`'s frontend-delegation pattern.
+2. **`wait_for_idle`** — block until the engine has settled and a fresh frame has rendered. Removes the polling shim that tests currently need around `engine_state` after `open_file`.
+3. **`set_camera`** — explicit camera state (position + target + zoom). Without this, the same model framed differently produces different pixels. Required for stable diffs.
+4. **`set_test_mode`** — freeze any animated UI (spinners, pulsing toasts) during a shot so animation phase doesn't introduce diffs. Likely small if any.
+5. **Visual regression harness** — Node-side test driver that talks JSON-RPC to the MCP, takes named screenshots, diffs against PNG baselines under `gui/test/screenshots/` using SSIM-tolerant comparison (`pixelmatch` with threshold ≥0.99). Wires into CI as a separate job from Vitest.
+
+Rationale: the MCP route is preferred over Playwright / tauri-driver because (a) it runs in-process and can wait deterministically on engine state without external polling, (b) it sidesteps the SolidJS-component-test vs. webkit2gtk-render impedance mismatch, and (c) the four tool additions are independently useful for non-FEA GUI work.
+
+## Resolved design decisions (2026-05-04)
+
+Captured from the design discussion:
+
+- **Rendering pipeline**: extend the existing surface-mesh viewer with a "FEA mode" toggle. Rejected dedicated viewport — would duplicate camera, raycasting, BVH, selection, splitter integration for no payoff. Migration path to `ShaderMaterial` exists if range-scrubbing perf ever demands it.
+- **Per-vertex attribute pipeline**: extend MeshData to carry optional Float32Array channels for scalar attributes (`vonMises`, `displacement_magnitude`, etc.) plus a packed displaced-position channel. Switch to `MeshPhongMaterial { vertexColors: true }` only when scalars are present. Plumbed through the Tauri IPC.
+- **Colormap default**: viridis. Engineering-rainbow available via dropdown with a one-line tooltip on the rationale. Magma offered for hot-spot work. Range modes: auto (default), user-fixed, lock-to-current — the third is critical for side-by-side comparison without misleading auto-rescaling.
+- **Field-rendering perf**: ship CPU-side per-vertex colour baking. Typical Reify mesh (10k–100k surface vertices) is well within JS budget. Bypass meshManager and directly mutate the colour `BufferAttribute` on range / colormap changes (no full mesh re-sync). Defer GPU-side sampling until a real workload demands it; migration to `ShaderMaterial` is a contained refactor when needed.
+- **Live update vs. on-completion**: render coarse result once (post-coarse-solve), keep convergence-trace overlay live (cheap scalar plot), re-mesh + re-render only on solve completion. True progressive geometry display deferred to v0.4 — refinement changes vertex count and inflicts visible jitter without value.
+- **Probe persistence**: probes survive parameter changes (re-evaluated against new ElasticResult on the same mesh — cheap point query). Probes do *not* silently vanish on topology change; render as greyed "stale" markers with last-known value and a "re-pin?" affordance. Pin by `(entity_path, face_id, barycentric_uv)` — when mesh-morphing PRD ships, probes follow the morph for free; surviving full re-mesh is out of scope.
+- **Auto-resolve overlay**: another tab in the existing right-sidebar tab set (alongside PropertyEditor / DesignTree / MechanismPanel / ChatPanel). Auto-promotes to visible when an auto-resolve loop becomes active; auto-restores the user's prior layout on completion. No floating viewport overlay.
+- **Multi-result comparison (v0.3 scope)**: out of scope as planned, but note for future: `DualViewport` already exists in the codebase. Wiring two ElasticResults into it for parameter-comparison views is mostly state management, not new architecture. The genuinely-new v0.4 feature is *load-case envelope visualization* (per `multi-load-case-fea.md`).
+- **Failed-solve viewport state**: clear scalar attributes (revert to monochrome material), keep geometry visible, show diagnostic overlay layer. Don't leave stale colours from a prior successful solve — it implies a result that doesn't exist.
+
+## Test plan
+
+Visual regression baselines drive verification of FEA rendering. Reference scenes under `gui/test/fixtures/fea/` cover:
+
+- Cantilever under tip load — contour rendering, deformed-shape view at warp 1× / 100×.
+- Pressurised cylinder — von Mises contour, principal-stress probe popup.
+- Unconstrained body (intentional failure) — diagnostic overlay with rigid-body-mode arrows.
+- Bracket with `param x = auto` driven by max-stress constraint — auto-resolve panel layout, iteration history line chart.
+
+For each scene: deterministic camera (via `set_camera`), `wait_for_idle`, capture, diff against PNG baseline. SSIM tolerance ≥0.99; per-platform baselines if needed. CI failure on diff outside tolerance.
+
+Determinism is required end-to-end: same `.ri` input → same residual → same final mesh → same pixels. The FEA PRD's `#deterministic` opt-in and cache-as-determinism-anchor decisions cover the kernel side; the visual regression harness verifies the GUI side preserves it.
 
 ## Out of scope for this PRD
 

@@ -55,10 +55,16 @@ echo "==> Installing gui dependencies + building frontend..."
 echo "==> Building reify-gui (release)..."
 cargo build -p reify-gui --bin reify-gui --features gui --release
 
-# -- 5. Export OCCT LD_LIBRARY_PATH (bundled snap freecad libs) ----------------
+# -- 5. Export OCCT LD_LIBRARY_PATH (snap freecad only) ------------------------
 # Mirrors .cargo/run-with-occt.sh; required for direct binary invocation since
 # the cargo runner only fires for `cargo run`, not for direct target/* exec.
-export LD_LIBRARY_PATH="/snap/freecad/current/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Only prepend the snap path if it exists — the PPA install (default in
+# scripts/setup-dev.sh) puts OCCT in /usr/lib where the loader finds it
+# without help.
+SNAP_OCCT_LIB="/snap/freecad/current/usr/lib"
+if [ -d "$SNAP_OCCT_LIB" ]; then
+    export LD_LIBRARY_PATH="$SNAP_OCCT_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 
 # -- 6. Launch ----------------------------------------------------------------
 echo "==> Launching target/release/reify-gui $FILE"

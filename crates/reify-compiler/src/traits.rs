@@ -1,5 +1,102 @@
 use super::*;
 
+/// Resolve a trait-member type annotation (`param x : T` or `let x : T = ...`).
+///
+/// Control flow:
+///   1. Early-reject `DimensionalOp` with the historical "unexpected dimensional
+///      expression" wording (the resolver silently returns None for it; pinned by
+///      `type_expr_kind_dispatch_tests::dim_op_in_trait_param_emits_diagnostic`).
+///   2. Early-reject `IntegerLiteral` — `resolve_type_expr_with_aliases` pushes its
+///      own "integer literal `N` is only allowed as a type argument of Tensor or
+///      Matrix" diagnostic and returns None; without an early skip we would emit a
+///      second, less-useful "unknown type name" cascade.
+///   3. Otherwise call `resolve_type_expr_with_aliases` (handles parameterized
+///      builtins `Option<T>`/`List<T>`/`Set<T>`/`Map<K,V>`, parametric aliases,
+///      structures, traits). On `None`, fall back to enum lookup, then the
+///      "unresolved type in trait" diagnostic.
+///
+/// All error paths return `Type::Real` for downstream error-recovery so subsequent
+/// trait machinery has a concrete type to work with.
+#[allow(clippy::too_many_arguments)]
+fn resolve_trait_member_type_annotation(
+    type_expr: &reify_syntax::TypeExpr,
+    trait_decl: &reify_syntax::TraitDecl,
+    enum_defs: &[reify_types::EnumDef],
+    empty_params: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Type {
+    match &type_expr.kind {
+        reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unresolved type in trait '{}': {}",
+                    trait_decl.name, type_expr
+                ))
+                .with_label(DiagnosticLabel::new(
+                    type_expr.span,
+                    "unexpected dimensional expression",
+                )),
+            );
+            return Type::Real;
+        }
+        reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+            // Let the resolver emit its specific diagnostic by calling it once for
+            // its side effect, then return Real without adding a cascade.
+            let _ = resolve_type_expr_with_aliases(
+                type_expr,
+                empty_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            );
+            return Type::Real;
+        }
+        _ => {}
+    }
+    match resolve_type_expr_with_aliases(
+        type_expr,
+        empty_params,
+        alias_registry,
+        diagnostics,
+        structure_names,
+        trait_names,
+    ) {
+        Some(t) => t,
+        None => {
+            if let reify_syntax::TypeExprKind::Named { name, type_args } = &type_expr.kind
+                && let Some(t) = resolve_enum_type(name, enum_defs)
+            {
+                if !type_args.is_empty() {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "enum `{}` does not accept type arguments",
+                            name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            type_expr.span,
+                            "enum types are not generic",
+                        )),
+                    );
+                }
+                t
+            } else {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "unresolved type in trait '{}': {}",
+                        trait_decl.name, type_expr
+                    ))
+                    .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
+                );
+                Type::Real
+            }
+        }
+    }
+}
+
 pub(crate) fn compile_trait(
     trait_decl: &reify_syntax::TraitDecl,
     enum_defs: &[reify_types::EnumDef],
@@ -16,70 +113,16 @@ pub(crate) fn compile_trait(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    // Extract the name from the Named variant; DimensionalOp can't appear
-                    // as a trait param type annotation.
-                    let name_opt = match &type_expr.kind {
-                        reify_syntax::TypeExprKind::Named { name, type_args } => {
-                            Some((name.as_str(), type_args.as_slice()))
-                        }
-                        reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
-                        reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
-                    };
-                    if let Some((name, type_args)) = name_opt {
-                        if let Some(t) = resolve_type_with_aliases(
-                            name,
-                            &empty_params,
-                            alias_registry,
-                            structure_names,
-                            trait_names,
-                        ) {
-                            t
-                        } else if let Some(t) = resolve_enum_type(name, enum_defs) {
-                            // Enum type defined in the same module; reify enums are
-                            // non-parametric. Emit a user-facing diagnostic if type_args
-                            // are present so the error is visible in release builds too.
-                            if !type_args.is_empty() {
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "enum `{}` does not accept type arguments",
-                                        name
-                                    ))
-                                    .with_label(
-                                        DiagnosticLabel::new(
-                                            type_expr.span,
-                                            "enum types are not generic",
-                                        ),
-                                    ),
-                                );
-                            }
-                            t
-                        } else {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unresolved type in trait '{}': {}",
-                                    trait_decl.name, name
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    type_expr.span,
-                                    "unknown type name",
-                                )),
-                            );
-                            Type::Real // fallback
-                        }
-                    } else {
-                        // DimensionalOp can't appear as a trait param type annotation
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "unresolved type in trait '{}': {}",
-                                trait_decl.name, type_expr
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                type_expr.span,
-                                "unexpected dimensional expression",
-                            )),
-                        );
-                        Type::Real
-                    }
+                    resolve_trait_member_type_annotation(
+                        type_expr,
+                        trait_decl,
+                        enum_defs,
+                        &empty_params,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        diagnostics,
+                    )
                 } else {
                     Type::Real
                 };
@@ -106,52 +149,22 @@ pub(crate) fn compile_trait(
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // Let bindings always have a value expression → default.
                 // Resolve the annotation type when present; None when absent.
-                let cell_type = if let Some(type_expr) = &let_decl.type_expr {
-                    // Extract name from Named variant; DimensionalOp can't be a let type annotation.
-                    let name_opt = match &type_expr.kind {
-                        reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
-                        reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
-                        reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
-                    };
-                    if let Some(name) = name_opt {
-                        match resolve_type_with_aliases(
-                            name,
-                            &empty_params,
-                            alias_registry,
-                            structure_names,
-                            trait_names,
-                        ) {
-                            Some(t) => Some(t),
-                            None => {
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "unresolved type in trait '{}': {}",
-                                        trait_decl.name, name
-                                    ))
-                                    .with_label(
-                                        DiagnosticLabel::new(type_expr.span, "unknown type name"),
-                                    ),
-                                );
-                                Some(Type::Real) // error-recovery fallback
-                            }
-                        }
-                    } else {
-                        // DimensionalOp can't appear as a let type annotation in a trait
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "unresolved type in trait '{}': {}",
-                                trait_decl.name, type_expr
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                type_expr.span,
-                                "unexpected dimensional expression",
-                            )),
-                        );
-                        Some(Type::Real)
-                    }
-                } else {
-                    None // no annotation → no cell_type
-                };
+                // Shares the trait Param resolver so let-typed annotations support the
+                // same parameterized builtins (`Option<T>`, `List<T>`, etc.) and produce
+                // identical diagnostics for unresolved / DimensionalOp / IntegerLiteral
+                // type expressions.
+                let cell_type = let_decl.type_expr.as_ref().map(|type_expr| {
+                    resolve_trait_member_type_annotation(
+                        type_expr,
+                        trait_decl,
+                        enum_defs,
+                        &empty_params,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        diagnostics,
+                    )
+                });
                 defaults.push(TraitDefault {
                     name: Some(let_decl.name.clone()),
                     kind: DefaultKind::Let {

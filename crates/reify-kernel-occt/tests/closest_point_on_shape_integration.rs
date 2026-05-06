@@ -131,6 +131,13 @@ fn closest_point_for_oblique_external_point_resolves_to_corner_witness() {
 
 /// Query point (5.0, 0.0, 0.0) lies exactly on the +X face.
 /// The returned witness point must be within 1e-6 of the query point.
+///
+/// When the query is on the surface, `BRepExtrema_DistShapeShape` reports
+/// distance ≈ 0, which triggers the C++ wrapper's `dist < 1e-10`
+/// shell-fallback: the wrapper re-runs extrema against the first shell via
+/// `TopExp_Explorer` (`TopAbs_SHELL`) and returns the shell result.  This
+/// test therefore exercises the shell-fallback branch; the shell re-run
+/// returns the same (5.0, 0.0, 0.0) witness that lies on the +X face.
 #[test]
 fn closest_point_when_point_lies_on_face() {
     let (kernel, box_id) = box_kernel();
@@ -194,21 +201,24 @@ fn closest_point_on_face_subshape_satisfies_any_shape_contract() {
 
 /// Query point (1.0, 0.0, 0.0) lies strictly inside the 10×10×10 box.
 ///
-/// `BRepExtrema_DistShapeShape` reports distance 0 and the query point
-/// itself when the point is inside a solid.  The C++ wrapper detects this
-/// (dist < 1e-10) and re-runs extrema against the outer shell, returning a
-/// proper boundary witness instead.  For (1.0, 0.0, 0.0), the unique nearest
-/// boundary point is the perpendicular foot on the +X face at (5.0, 0.0, 0.0),
-/// distance 4.0.  Regression sentinel — pin the exact returned coordinates
-/// within 1e-6 so a future OCCT/cxx upgrade that changes this behaviour is
-/// caught.
+/// `BRepExtrema_DistShapeShape` has no inside/outside knowledge — it returns
+/// the distance to the nearest BREP boundary face.  For this query the
+/// reported distance is 4.0 (X-gap between (1,0,0) and the +X face at x=5),
+/// so the primary `PointOnShape1(1)` path in the C++ wrapper returns
+/// (5.0, 0.0, 0.0) directly.  The C++ wrapper's defensive `dist < 1e-10`
+/// shell-fallback is *not* entered for this query — it fires only for
+/// on-surface or coincident queries where `BRepExtrema` reports distance ≈ 0;
+/// see `closest_point_when_point_lies_on_face` for a test that exercises that
+/// branch.  Regression sentinel — pin the exact returned coordinates within
+/// 1e-6 so a future OCCT/cxx upgrade that changes this behaviour is caught.
 ///
 /// Observed against the OCCT version in use at task 2849.
 #[test]
 fn closest_point_for_offcenter_interior_point() {
     let (kernel, box_id) = box_kernel();
-    // For an interior query, the C++ wrapper's shell-search detour returns the
-    // nearest surface point (5.0, 0.0, 0.0) instead of the query vertex itself.
+    // BRepExtrema returns distance 4.0 for this interior query and the
+    // perpendicular foot on the +X face directly; the shell-search detour is
+    // not entered (it fires only when dist < 1e-10).
     match kernel.closest_point_on_shape(box_id, 1.0, 0.0, 0.0) {
         Ok([x, y, z]) => {
             assert!(

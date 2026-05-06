@@ -50,6 +50,9 @@ fn event_counting_subscriber() -> (impl tracing::Subscriber, Arc<AtomicUsize>, A
 /// one generic "solver completed" and one conditional "solver hit iteration limit".
 #[test]
 fn consolidated_debug_event_on_max_iters_reached() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     let (subscriber, debug_count, _warn_count) = event_counting_subscriber();
 
     let solver = DimensionalSolver;
@@ -127,6 +130,9 @@ fn consolidated_debug_event_on_max_iters_reached() {
 /// adds a warn! to the normal solve path, this test catches it.
 #[test]
 fn normal_solve_emits_zero_warns() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     let (subscriber, _debug_count, warn_count) = event_counting_subscriber();
 
     let solver = DimensionalSolver;
@@ -228,6 +234,9 @@ fn no_best_param_returns_no_progress_with_reason() {
 /// tracing events during a solve.
 #[test]
 fn event_counter_ignores_foreign_targets() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     let (subscriber, debug_count, warn_count) = event_counting_subscriber();
 
     tracing::subscriber::with_default(subscriber, || {

@@ -5,6 +5,27 @@ edition.workspace = true
 license.workspace = true
 description = "Manifold mesh-Boolean kernel adapter"
 
+[features]
+# Pure compile-gate: no implicit deps.  Activating this feature causes
+# `inventory::submit!` and `manifold_factory()` in `src/register.rs` to
+# compile in, registering the Manifold stub kernel in the inventory-driven
+# multi-kernel registry.
+#
+# In production builds this feature is OFF — the stub kernel is NOT
+# registered, preventing "manifold" < "occt" lex-min selection from silently
+# routing geometry ops through an unimplemented stub.
+#
+# For integration test binaries in `tests/` (separate compilation units that
+# do NOT inherit `cfg(test)` from the parent crate) this feature is activated
+# via the self-dev-dep below — mirroring the pattern at:
+#   crates/reify-eval/Cargo.toml (`test-instrumentation`)
+#   crates/reify-kernel-occt/Cargo.toml (`test-fixtures`)
+#
+# When real Manifold C++ FFI ships, rename this feature to `has_manifold`
+# (matching OCCT's `has_occt` build.rs gate) and drop the self-dev-dep in
+# favour of the build.rs detection mechanism.
+stub_register = []
+
 [dependencies]
 reify-types.workspace = true
 inventory.workspace = true
@@ -21,3 +42,10 @@ tracing.workspace = true
 [dev-dependencies]
 reify-eval.workspace = true
 reify-test-support.workspace = true
+# Self-dev-dep: activates `stub_register` for all integration test binaries
+# in `tests/` (which are separate compilation units — they do NOT inherit
+# `cfg(test)` from the parent crate, so `cfg(test)` alone cannot reach the
+# gated `inventory::submit!`).  This is the same pattern used by:
+#   crates/reify-eval/Cargo.toml:21  (reify-eval activating test-instrumentation)
+#   crates/reify-kernel-occt/Cargo.toml:27 (reify-kernel-occt activating test-fixtures)
+reify-kernel-manifold = { path = ".", features = ["stub_register"] }

@@ -82,6 +82,56 @@ describe('discoverRegisteredTools', () => {
     expect(result.has('reify_real')).toBe(true);
   });
 
+  // Regression test: comment stripping in the REGISTER_IDENT_RE pre-pass prevents
+  // commented-out calls from re-admitting stale consts (see discover-mcp-tools.ts).
+  it('ignores a stale const when its only registry.register call is commented out', () => {
+    const dir = makeTempDir();
+    writeFileSync(
+      join(dir, 'commented.rs'),
+      [
+        '// Stale const that is wired only via a commented-out register call:',
+        'const STALE: &str = "reify_stale_commented";',
+        '',
+        'pub fn register(registry: &mut Registry) {',
+        '    // registry.register(STALE, handler);   <-- commented out!',
+        '    registry.register("reify_real_in_same_file", handler);',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const result = discoverRegisteredTools(dir);
+    // Comment stripping removes the `// registry.register(STALE, ...)` line before
+    // REGISTER_IDENT_RE runs — STALE stays out of registeredIdents and is excluded.
+    expect(result.has('reify_stale_commented')).toBe(false);
+    // The real inline literal registration in the same file is unaffected.
+    expect(result.has('reify_real_in_same_file')).toBe(true);
+  });
+
+  // Pins the per-file gating constraint — see discover-mcp-tools.ts for the canonical
+  // explanation and the future-hardening option (project-wide pre-pass).
+  it('silently drops a const split across files (known per-file constraint)', () => {
+    const dir = makeTempDir();
+    // The const declaration lives in consts.rs …
+    writeFileSync(
+      join(dir, 'consts.rs'),
+      `const SHARED: &str = "reify_cross_file";\n`,
+    );
+    // … but the registry.register(SHARED, …) call lives in a sibling file.
+    writeFileSync(
+      join(dir, 'register.rs'),
+      [
+        'pub fn register(registry: &mut Registry) {',
+        '    registry.register(SHARED, handler);',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const result = discoverRegisteredTools(dir);
+    // The per-file gating drops the const: consts.rs has no registry.register call,
+    // and register.rs has no CONST_DECL_RE match — so reify_cross_file is never added.
+    expect(result.has('reify_cross_file')).toBe(false);
+  });
+
   it('throws an Error containing the resolved path when given a non-existent directory', () => {
     const nonExistent = resolve(tmpdir(), 'reify-tools-does-not-exist-98765');
     expect(() => discoverRegisteredTools(nonExistent)).toThrowError(nonExistent);

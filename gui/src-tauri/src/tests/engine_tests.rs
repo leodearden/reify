@@ -825,6 +825,9 @@ structure Kinematic {
 
 #[test]
 fn collect_snapshot_bind_pairs_stays_silent_for_empty_bind_list() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     // snapshot(m1, []) has an empty bind list — case (b) per the telemetry
     // refinement plan.  An empty list is valid stdlib usage and must NOT emit
     // a DEBUG event.
@@ -879,6 +882,9 @@ structure Kinematic {
 
 #[test]
 fn collect_snapshot_bind_pairs_stays_silent_for_one_arg_call() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     // Regression-pin for the args.len() < 2 carve-out.  A 1-arg snapshot()
     // call cannot contribute bind pairs and must NOT emit any telemetry at
     // the snapshot_bind_pairs target.
@@ -939,6 +945,9 @@ structure Kinematic {
 
 #[test]
 fn collect_snapshot_bind_pairs_emits_debug_when_args1_not_listliteral() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     // Regression-pin for case (a): snapshot() with a non-ListLiteral second
     // arg must emit exactly 1 DEBUG event at the snapshot_bind_pairs target.
     let mut session = make_session();
@@ -986,6 +995,9 @@ structure Kinematic {
 
 #[test]
 fn collect_snapshot_bind_pairs_emits_debug_when_list_has_no_valid_binds() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     // Regression-pin for case (c): non-empty bind list whose entries all fail
     // the bind(Ident, Ident) filter must emit exactly 1 DEBUG event.
     let mut session = make_session();
@@ -1021,6 +1033,9 @@ fn collect_snapshot_bind_pairs_emits_debug_when_list_has_no_valid_binds() {
 
 #[test]
 fn resolve_driving_params_emits_debug_for_param_checked_match() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
     // Step 6 RED: SNAPSHOT_PARAM_BIND_SOURCE has bind(y_axis, y_pos) where
     // y_pos is a Param.  After step-7's impl, resolve_driving_params_from_ast
     // must emit exactly one DEBUG event when a Param-checked match resolves.

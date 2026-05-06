@@ -1,0 +1,279 @@
+// Stdlib: FEA Material Traits
+//
+// Provides the dimensioned `ElasticMaterial` trait + a starter library of four
+// canonical engineering materials (Steel_AISI_1045, Aluminium_6061_T6,
+// Titanium_Ti6Al4V, ABS_Plastic) needed by the v0.3 structural-analysis FEA
+// solver. Each material carries per-property provenance metadata referencing
+// a public reference (matweb / MMPDS / ASM Handbook).
+//
+// PRD reference: docs/prds/v0_3/structural-analysis-fea.md task #1.
+//
+// Module exports:
+//   - `MaterialPropertyProvenance` — citation record (source, reference, notes)
+//   - `ElasticMaterial`            — dimensioned FEA trait
+//   - `Steel_AISI_1045`            — medium-carbon steel (general-purpose)
+//   - `Aluminium_6061_T6`          — precipitation-hardened aerospace aluminium
+//   - `Titanium_Ti6Al4V`           — alpha-beta titanium (aerospace, biomedical)
+//   - `ABS_Plastic`                — general-purpose moulded thermoplastic
+//
+// Citation policy: every property value cites a public, durable reference —
+// typically matweb's online material property database, the MMPDS metallic
+// design data handbook, or the ASM Handbook series. Each property also
+// carries a free-text `notes` field describing any caveats (heat treatment,
+// alloy variant, ductile-to-brittle transition, etc.) so downstream FEA
+// reports can reproduce the citation chain. Per-material citation sources
+// are tagged in a comment line directly above each `structure def`.
+//
+// Relationship to existing material traits:
+//   - This module's `ElasticMaterial` is a NEW, dimensioned trait designed for
+//     the FEA solver. It uses `Pressure` (kg·m⁻¹·s⁻²) and `Density` (kg·m⁻³)
+//     dimensioned types and constrains `poisson_ratio` to the half-open
+//     interval `[0, 0.5)`.
+//   - The pre-existing `Elastic` trait in `materials_mechanical.ri` uses
+//     `Real` placeholders, mixes `shear_modulus` alongside `youngs_modulus`,
+//     and carries no Poisson-ratio range constraint. It is retained verbatim
+//     for legacy consumers (47 callers in tests/examples).
+//   - Neither trait supersedes the other; they coexist for different
+//     purposes. New FEA-bound code should depend on `ElasticMaterial`.
+
+// ── Provenance ───────────────────────────────────────────────────────────────
+
+// MaterialPropertyProvenance is the citation record attached to a single
+// property value of a concrete material structure. Each material in this
+// module carries four `..._provenance : MaterialPropertyProvenance` fields
+// (one per property) so that downstream FEA reports can reproduce the
+// citation chain end-to-end.
+//
+//   source    — short tag identifying the data origin (e.g. "matweb",
+//               "MMPDS", "ASM Handbook").
+//   reference — the specific record/entry within `source` (alloy + temper,
+//               handbook chapter, table number, etc.).
+//   notes     — free-text caveats: heat treatment range, alloy variant,
+//               ductile-to-brittle transition, averaging assumptions.
+//
+// Declared above all trait blocks so the structure-name set built in the
+// pre-pass sees `MaterialPropertyProvenance` before any material structure
+// references it as a `param ..._provenance : MaterialPropertyProvenance`
+// type. This mirrors the `Provenance` placement convention in `io.ri`.
+structure def MaterialPropertyProvenance {
+    param source : String
+    param reference : String
+    param notes : String
+}
+
+// ── ElasticMaterial trait ────────────────────────────────────────────────────
+
+// ElasticMaterial is the dimensioned trait the v0.3 FEA solver consumes. It
+// declares the minimum set of constitutive properties needed for linear
+// isotropic elasticity (small-strain regime) plus an optional yield-stress
+// hook for downstream plasticity/limit-state checks.
+//
+// Required properties:
+//   youngs_modulus — Young's modulus E.  SI unit: pascal (kg·m⁻¹·s⁻²).
+//                    Slope of the uniaxial stress/strain curve in the
+//                    linear-elastic regime.
+//   poisson_ratio  — Poisson's ratio ν.  Dimensionless ratio of transverse
+//                    to axial strain under uniaxial load.  Constrained to
+//                    the half-open interval [0, 0.5) by the constraints
+//                    landing in a follow-up step; ν = 0.5 represents
+//                    incompressibility and breaks the linear-elastic bulk
+//                    modulus formula K = E / (3(1 − 2ν)) (singularity).
+//   density        — mass density ρ.  SI unit: kg·m⁻³.  Used by inertial
+//                    and modal analyses; required even for static FEA so
+//                    the same material spec works across solvers.
+//   yield_stress   — uniaxial tensile yield stress σy.  SI unit: pascal.
+//                    Optional because purely linear-elastic FEA does not
+//                    consult it; downstream plasticity / limit-state /
+//                    safety-factor passes do.
+trait ElasticMaterial {
+    param youngs_modulus : Pressure
+    param poisson_ratio : Real
+    param density : Density
+    param yield_stress : Option<Pressure>
+
+    // Lower bound: ν >= 0 — auxetic materials (ν < 0) are excluded from the
+    // FEA-bound trait. They exist physically but require specialised
+    // constitutive handling outside the linear-isotropic regime.
+    constraint poisson_ratio >= 0
+    // Upper bound: ν < 0.5 (HALF-OPEN). Exactly 0.5 represents
+    // incompressibility and breaks the linear-elastic bulk-modulus formula
+    //   K = E / (3(1 − 2ν))
+    // which goes singular as ν → 0.5. Use a separate hyper-elastic /
+    // mixed-formulation solver for incompressible materials (e.g. rubber).
+    constraint poisson_ratio < 0.5
+}
+
+// ── Starter material library ─────────────────────────────────────────────────
+//
+// Each concrete material below is a top-level structure conforming to
+// `ElasticMaterial`. Defaults bake in matweb-equivalent public-reference
+// values so a bare `Steel_AISI_1045()` instantiation populates every cell;
+// callers may override individual fields at construction (e.g.
+// `Steel_AISI_1045(yield_stress: some(550MPa))` for a tempered variant).
+//
+// Per-property provenance is encoded as four parallel `..._provenance`
+// fields rather than a single `Map<String, ...>` so:
+//   - typos at the source level become missing-member errors
+//   - downstream FEA reports can pull each citation by name
+//   - refining traits that add properties (shear modulus, hardening, ...)
+//     compose cleanly with the same parallel-slot convention
+//
+// Density literals use the compositional form `<n>.0 * 1kg / (1m * 1m * 1m)`
+// rather than `<n>kg/m^3` because the tree-sitter grammar's quantity_literal
+// is `number + identifier` only — compound `kg/m^3` is not a single token.
+// The compositional form produces the same dimensioned value (kg·m⁻³).
+
+// MMPDS / matweb citation: AISI 1045, hot-rolled, medium-carbon steel.
+//
+// Steel_AISI_1045 is a general-purpose medium-carbon steel widely used for
+// shafts, axles, and machined parts. Properties below are typical-room-
+// temperature values for the hot-rolled, normalised condition; tempered
+// or quenched-and-tempered variants will exhibit higher yield_stress.
+structure def Steel_AISI_1045 : ElasticMaterial {
+    param youngs_modulus : Pressure = 205GPa
+    param poisson_ratio : Real = 0.29
+    param density : Density = 7850.0 * 1kg / (1m * 1m * 1m)
+    param yield_stress : Option<Pressure> = some(310MPa)
+
+    param youngs_modulus_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
+            notes: "Average across heat treatments — matweb material property database. Typical room-temperature value for medium-carbon steel."
+        )
+    param poisson_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
+            notes: "Typical for plain-carbon steel; insensitive to heat treatment."
+        )
+    param density_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
+            notes: "Nominal density of plain-carbon steel."
+        )
+    param yield_stress_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "AISI 1045 Steel, hot rolled, 19-32 mm round",
+            notes: "Tensile yield strength for hot-rolled condition; quenched-and-tempered variants reach higher values."
+        )
+}
+
+// matweb citation: Aluminum 6061-T6, precipitation-hardened aerospace alloy.
+//
+// Aluminium_6061_T6 is the workhorse aerospace and structural aluminium
+// alloy. The T6 temper denotes solution-heat-treatment followed by
+// artificial ageing. Properties below are typical room-temperature values;
+// exposure to elevated temperatures degrades the precipitation hardening.
+structure def Aluminium_6061_T6 : ElasticMaterial {
+    param youngs_modulus : Pressure = 68.9GPa
+    param poisson_ratio : Real = 0.33
+    param density : Density = 2700.0 * 1kg / (1m * 1m * 1m)
+    param yield_stress : Option<Pressure> = some(276MPa)
+
+    param youngs_modulus_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Aluminum 6061-T6",
+            notes: "Typical room-temperature Young's modulus for 6061-T6 wrought aluminium."
+        )
+    param poisson_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Aluminum 6061-T6",
+            notes: "Typical for wrought aluminium alloys; insensitive to temper."
+        )
+    param density_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Aluminum 6061-T6",
+            notes: "Nominal density of 6061 wrought aluminium alloy."
+        )
+    param yield_stress_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Aluminum 6061-T6",
+            notes: "Tensile yield strength for T6 temper; degrades on prolonged exposure above ~150 °C."
+        )
+}
+
+// matweb / ASM Handbook citation: Titanium Ti-6Al-4V (Grade 5), annealed.
+//
+// Titanium_Ti6Al4V is the alpha-beta titanium alloy that dominates aerospace
+// and biomedical-implant applications. Properties below are for the annealed
+// condition. Solution-treated-and-aged (STA) variants reach higher
+// yield_stress at the cost of reduced ductility.
+structure def Titanium_Ti6Al4V : ElasticMaterial {
+    param youngs_modulus : Pressure = 113.8GPa
+    param poisson_ratio : Real = 0.342
+    param density : Density = 4430.0 * 1kg / (1m * 1m * 1m)
+    param yield_stress : Option<Pressure> = some(880MPa)
+
+    param youngs_modulus_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
+            notes: "Typical room-temperature Young's modulus for Grade 5 titanium."
+        )
+    param poisson_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
+            notes: "Typical for alpha-beta titanium alloys."
+        )
+    param density_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
+            notes: "Nominal density of Ti-6Al-4V."
+        )
+    param yield_stress_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Titanium Ti-6Al-4V (Grade 5), Annealed",
+            notes: "Tensile yield for annealed condition; STA temper reaches higher values."
+        )
+}
+
+// matweb citation: ABS, general-purpose, moulded grade.
+//
+// ABS_Plastic is the general-purpose acrylonitrile-butadiene-styrene
+// thermoplastic used in injection moulding and FDM 3D printing. Properties
+// below are room-temperature values for general-purpose moulded ABS.
+// Yield_stress is approximate because ABS exhibits a ductile-to-brittle
+// transition that depends on strain rate and temperature; for FEA-grade
+// limit-state work, refer to the supplier's datasheet for the specific
+// resin grade.
+structure def ABS_Plastic : ElasticMaterial {
+    param youngs_modulus : Pressure = 2.3GPa
+    param poisson_ratio : Real = 0.35
+    param density : Density = 1050.0 * 1kg / (1m * 1m * 1m)
+    param yield_stress : Option<Pressure> = some(40MPa)
+
+    param youngs_modulus_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
+            notes: "Typical room-temperature tensile modulus for general-purpose moulded ABS."
+        )
+    param poisson_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
+            notes: "Typical for amorphous thermoplastics in the linear-elastic regime."
+        )
+    param density_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
+            notes: "Nominal density for general-purpose ABS resins (varies with filler content)."
+        )
+    param yield_stress_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "matweb",
+            reference: "Acrylonitrile Butadiene Styrene (ABS), General Purpose, Molded",
+            notes: "Approximate yield: ABS exhibits a ductile-to-brittle transition sensitive to strain rate and temperature. Refer to supplier datasheet for limit-state work."
+        )
+}

@@ -45,12 +45,46 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Memoized BTreeMap of every static-collected [`KernelRegistration`], keyed
 /// by `name`. Allocated once on first call and never rebuilt.
 static REGISTRY: OnceLock<BTreeMap<String, &'static KernelRegistration>> = OnceLock::new();
+
+/// Once-shot gate around `collect_registry()`'s call to
+/// [`warn_if_duplicate_op_repr_pairs`]. Mirrors how the surrounding
+/// `REGISTRY: OnceLock` amortises [`build_registry`]'s duplicate-NAME
+/// walk: the (Operation, ReprKind) uniqueness verdict is stable across
+/// calls because descriptor function pointers are fixed at link time, so
+/// running the O(kernels × supports) HashMap walk on every
+/// `collect_registry()` invocation would burn CPU for no diagnostic
+/// benefit. Consumed via `compare_exchange(false, true)` so the gate
+/// flips exactly once per process; subsequent calls observe `Err` and
+/// short-circuit.
+static UNIQUENESS_CHECKED: AtomicBool = AtomicBool::new(false);
+
+/// Counter tracking how many times `collect_registry()`'s gated branch
+/// has actually invoked [`warn_if_duplicate_op_repr_pairs`]. Because the
+/// surrounding [`UNIQUENESS_CHECKED`] gate uses `compare_exchange(false,
+/// true)`, this counter transitions 0 → 1 at most once across all
+/// `collect_registry()` callers in the process — its monotonic upper
+/// bound IS the at-most-once contract.
+///
+/// Crucially the `fetch_add(1)` lives INSIDE the gated branch, NOT at
+/// the top of the helper itself. This means helper-direct tests (which
+/// call the helper with synthetic input to exercise the warn/panic
+/// paths) do NOT inflate the counter and cannot interfere with parallel
+/// `collect_registry()`-based tests reading it.
+///
+/// Exposed at module scope (not `pub(crate)`) so the inner `tests`
+/// module can read it via `super::UNIQUENESS_CHECK_INVOCATIONS`. Pins
+/// the once-shot contract structurally: see
+/// [`tests::collect_registry_runs_uniqueness_check_at_most_once_across_calls`]
+/// which snapshots before/after three `collect_registry()` calls and
+/// asserts `delta <= 1`.
+static UNIQUENESS_CHECK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Borrowed accessor over the memoized registry of [`KernelRegistration`]
 /// records.
@@ -115,14 +149,32 @@ pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
 /// Internally delegates to the memoized [`registry`] accessor so the
 /// inventory walk is never repeated; the per-call cost is one descriptor
 /// invocation per registered kernel plus the surrounding `BTreeMap`
-/// allocation. Per the PRD's "read once at engine startup" contract,
-/// callers SHOULD NOT call this on the hot dispatch path.
+/// allocation. The [`warn_if_duplicate_op_repr_pairs`] uniqueness check
+/// (an O(kernels × supports) `HashMap` walk) is gated behind
+/// `UNIQUENESS_CHECKED` so it runs at most once per process — mirroring
+/// how [`build_registry`]'s duplicate-NAME check is amortised behind the
+/// surrounding `REGISTRY: OnceLock`. The invocation count is exposed via
+/// `UNIQUENESS_CHECK_INVOCATIONS` (an `AtomicUsize` incremented inside the
+/// gated branch) so the at-most-once contract can be pinned by unit tests
+/// via a delta snapshot rather than by inspecting the `UNIQUENESS_CHECKED`
+/// flag (which would only prove "at least once" — the opposite direction of
+/// the contract). The result itself is not memoized by design: callers
+/// receive a fresh, mutable `BTreeMap` each call. Per the PRD's "read once
+/// at engine startup" contract, callers SHOULD NOT call this on the hot
+/// dispatch path; the once-flag enforces that intent structurally for the
+/// diagnostic walk while leaving the result allocation per-call.
 pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
     let result: BTreeMap<String, CapabilityDescriptor> = registry()
         .iter()
         .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
         .collect();
-    debug_assert_unique_op_repr_pairs(&result);
+    if UNIQUENESS_CHECKED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        UNIQUENESS_CHECK_INVOCATIONS.fetch_add(1, Ordering::Relaxed);
+        warn_if_duplicate_op_repr_pairs(&result);
+    }
     result
 }
 
@@ -207,7 +259,7 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
 /// Iteration-order determinism is preserved by the outer `BTreeMap` iteration
 /// (lexicographic on kernel name) and the inner `Vec` order (`supports`
 /// insertion order); `HashMap` only stores the lookup, not the iteration order.
-pub(crate) fn debug_assert_unique_op_repr_pairs(
+pub(crate) fn warn_if_duplicate_op_repr_pairs(
     registered: &BTreeMap<String, CapabilityDescriptor>,
 ) {
     let mut seen: HashMap<(Operation, ReprKind), &str> = HashMap::new();
@@ -588,7 +640,7 @@ mod tests {
         emit_kernel_selection("nothing", 0);
     }
 
-    /// The helper `debug_assert_unique_op_repr_pairs` must panic in debug
+    /// The helper `warn_if_duplicate_op_repr_pairs` must panic in debug
     /// builds when two kernels claim the same `(Operation, ReprKind)` pair.
     ///
     /// Constructs a synthetic `BTreeMap<String, CapabilityDescriptor>` with
@@ -604,7 +656,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "duplicate kernel claim for")]
-    fn debug_assert_unique_op_repr_pairs_panics_on_duplicate_pair() {
+    fn warn_if_duplicate_op_repr_pairs_panics_on_duplicate_pair() {
         let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
         registered.insert(
             "kernel_a".to_string(),
@@ -618,10 +670,10 @@ mod tests {
                 supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
             },
         );
-        debug_assert_unique_op_repr_pairs(&registered);
+        warn_if_duplicate_op_repr_pairs(&registered);
     }
 
-    /// Contract pin: `debug_assert_unique_op_repr_pairs` must emit exactly one
+    /// Contract pin: `warn_if_duplicate_op_repr_pairs` must emit exactly one
     /// `WARN`-level event when a duplicate `(Operation, ReprKind)` pair is
     /// detected, regardless of whether debug assertions are enabled.
     ///
@@ -635,7 +687,7 @@ mod tests {
     /// call in `std::panic::catch_unwind` so the panic does not propagate to
     /// the test runner before we can read `warn_count`.
     #[test]
-    fn debug_assert_unique_op_repr_pairs_always_emits_warn_on_duplicate() {
+    fn warn_if_duplicate_op_repr_pairs_always_emits_warn_on_duplicate() {
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -664,27 +716,27 @@ mod tests {
         // we assert on it.
         tracing::subscriber::with_default(subscriber, || {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                debug_assert_unique_op_repr_pairs(&registered);
+                warn_if_duplicate_op_repr_pairs(&registered);
             }));
         });
 
         assert_eq!(
             warn_count.load(Ordering::Acquire),
             1,
-            "debug_assert_unique_op_repr_pairs must emit exactly one WARN event \
+            "warn_if_duplicate_op_repr_pairs must emit exactly one WARN event \
              at reify_eval::kernel_registry when a duplicate (op, repr) pair is \
              detected — operator visibility contract: warn! fires in all builds, \
              not just debug",
         );
     }
 
-    /// Contract pin: `debug_assert_unique_op_repr_pairs` must emit exactly one
+    /// Contract pin: `warn_if_duplicate_op_repr_pairs` must emit exactly one
     /// `WARN`-level event via the **intra-kernel** branch when a single
     /// kernel's `supports` Vec contains the same `(Operation, ReprKind)` pair
     /// more than once.
     ///
     /// This mirrors
-    /// `debug_assert_unique_op_repr_pairs_always_emits_warn_on_duplicate`
+    /// `warn_if_duplicate_op_repr_pairs_always_emits_warn_on_duplicate`
     /// (the inter-kernel warn test) which covers the inter-kernel branch.  A
     /// separate test is needed here because an arm-swap regression that drops
     /// only the intra-kernel `tracing::warn!` would still pass the inter-kernel
@@ -722,7 +774,7 @@ mod tests {
     /// `CountingSubscriberBuilder` in `reify-test-support` to capture recorded
     /// fields — a larger change intentionally deferred.
     #[test]
-    fn debug_assert_unique_op_repr_pairs_always_emits_warn_on_intra_kernel_duplicate() {
+    fn warn_if_duplicate_op_repr_pairs_always_emits_warn_on_intra_kernel_duplicate() {
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -748,14 +800,14 @@ mod tests {
         // we assert on it.
         tracing::subscriber::with_default(subscriber, || {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                debug_assert_unique_op_repr_pairs(&registered);
+                warn_if_duplicate_op_repr_pairs(&registered);
             }));
         });
 
         assert_eq!(
             warn_count.load(Ordering::Acquire),
             1,
-            "debug_assert_unique_op_repr_pairs must emit exactly one WARN event \
+            "warn_if_duplicate_op_repr_pairs must emit exactly one WARN event \
              at reify_eval::kernel_registry when a single kernel's supports Vec \
              lists the same (op, repr) pair twice — intra-kernel operator \
              visibility contract: warn! fires in all builds, not just debug",
@@ -840,6 +892,80 @@ mod tests {
             registry().keys().next().unwrap().as_str(),
             "pick_lexmin_kernel must return the BTreeMap-minimum key; \
              this pins the actual lex-min contract independently of any specific synthetic name",
+        );
+    }
+
+    /// `collect_registry()` must invoke `warn_if_duplicate_op_repr_pairs` AT
+    /// MOST once across repeated calls, mirroring how `build_registry`'s
+    /// duplicate-NAME walk is amortised by the surrounding `OnceLock`.
+    ///
+    /// Pinned by snapshotting `super::UNIQUENESS_CHECK_INVOCATIONS` (an
+    /// `AtomicUsize` incremented INSIDE `collect_registry()`'s gated branch,
+    /// adjacent to the helper call) before and after a sequence of three
+    /// `collect_registry()` calls and asserting the delta is `<= 1`.
+    ///
+    /// # Why this asserts the right direction
+    ///
+    /// The previous version of this test asserted only
+    /// `super::UNIQUENESS_CHECKED.load(Acquire) == true`, which proves the
+    /// flag was set AT LEAST once — the OPPOSITE of the at-most-once
+    /// contract. A delta-based check on a counter that the gate itself
+    /// upper-bounds (the gate's `compare_exchange(false, true)` flips at
+    /// most once per process, so the adjacent `fetch_add(1)` runs at most
+    /// once) directly pins the AT MOST direction.
+    ///
+    /// # Regression scenarios this catches
+    ///
+    /// * Gate replaced with `if true { … fetch_add … helper(…) }`
+    ///   (always-on): three calls each enter the block → delta = 3 → FAIL.
+    /// * Gate removed but counter increment kept outside an `if` (so it runs
+    ///   unconditionally): same as above, delta = 3 → FAIL.
+    /// * `UNIQUENESS_CHECK_INVOCATIONS` deleted from the module entirely:
+    ///   this test fails to COMPILE with `cannot find value
+    ///   'UNIQUENESS_CHECK_INVOCATIONS' in module 'super'`, surfacing the
+    ///   regression at build time.
+    ///
+    /// # Why parallelism does not invalidate the assertion
+    ///
+    /// Helper-direct tests (`*_panics_on_duplicate_pair`,
+    /// `*_always_emits_warn_on_duplicate`,
+    /// `*_always_emits_warn_on_intra_kernel_duplicate`) call the helper
+    /// bypassing the gate, so they do NOT touch
+    /// `UNIQUENESS_CHECK_INVOCATIONS` (the increment lives INSIDE the gated
+    /// branch in `collect_registry()`, not at the top of the helper itself).
+    /// Other parallel `collect_registry()` callers (e.g.
+    /// `collect_registry_returns_typed_btreemap_smoke`) share the same gate
+    /// and so collectively contribute at most 1 to the global counter. Our
+    /// delta is therefore guaranteed `<= 1` regardless of test ordering or
+    /// thread interleaving.
+    ///
+    /// # Test pollution
+    ///
+    /// This test consumes the gate (if not already consumed by a prior
+    /// `collect_registry()`-calling test) for the rest of the binary, but
+    /// other tests are unaffected — production registry has no duplicates,
+    /// so the gated helper would have been a no-op regardless.
+    #[test]
+    fn collect_registry_runs_uniqueness_check_at_most_once_across_calls() {
+        use std::sync::atomic::Ordering;
+
+        let before = super::UNIQUENESS_CHECK_INVOCATIONS.load(Ordering::Relaxed);
+
+        let _ = collect_registry();
+        let _ = collect_registry();
+        let _ = collect_registry();
+
+        let after = super::UNIQUENESS_CHECK_INVOCATIONS.load(Ordering::Relaxed);
+        let delta = after - before;
+
+        assert!(
+            delta <= 1,
+            "collect_registry() must invoke warn_if_duplicate_op_repr_pairs \
+             AT MOST ONCE across repeated calls (the once-shot AtomicBool \
+             gate mirrors build_registry's OnceLock-amortised duplicate-NAME \
+             walk). Observed delta = {delta} across 3 collect_registry() \
+             calls in this test, which means the gate failed to short-circuit \
+             subsequent helper invocations.",
         );
     }
 }

@@ -11,6 +11,7 @@ pub mod ignore_hygiene;
 pub mod kernel_assertions;
 pub mod lsp_fixtures;
 pub mod mocks;
+pub mod specialization_fixtures;
 pub mod tolerance_fixtures;
 pub mod tracing_support;
 pub mod value_decompose;

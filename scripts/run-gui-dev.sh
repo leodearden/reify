@@ -148,7 +148,13 @@ cargo build -p reify-gui --bin reify-gui --features gui
 # gui/src-tauri/src/main.rs). LD_LIBRARY_PATH is required for direct binary
 # invocation since the cargo runner only fires for `cargo run`.
 export REIFY_DEBUG=1
-export LD_LIBRARY_PATH="/snap/freecad/current/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Only prepend the snap path if it exists — the PPA install (default in
+# scripts/setup-dev.sh) puts OCCT in /usr/lib where the loader finds it
+# without help.
+SNAP_OCCT_LIB="/snap/freecad/current/usr/lib"
+if [ -d "$SNAP_OCCT_LIB" ]; then
+    export LD_LIBRARY_PATH="$SNAP_OCCT_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 
 # -- 8. Run reify-gui as a backgrounded CHILD (not exec) ---------------------
 # Critical: do NOT use `exec` here — `exec` replaces the shell process with
