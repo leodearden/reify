@@ -1739,6 +1739,43 @@ structure S {
         );
     }
 
+    /// Find the unique index in `forbidden` of an unconsumed diagnostic whose message
+    /// contains both `'{kind}'` and `'{name}'`. Panics if zero or more than one such
+    /// diagnostic exists in the unconsumed pool.
+    ///
+    /// Used by `assert_specialization_forbidden` to enforce a bijection between
+    /// expected `(kind, name, position)` entries and `SpecializationForbiddenDecl`
+    /// diagnostics — each expected entry consumes a distinct diagnostic.
+    fn find_unique_unconsumed_match(
+        forbidden: &[lsp_types::Diagnostic],
+        consumed: &std::collections::HashSet<usize>,
+        kind: &str,
+        name: &str,
+    ) -> usize {
+        let matches: Vec<usize> = forbidden
+            .iter()
+            .enumerate()
+            .filter(|(idx, d)| {
+                !consumed.contains(idx)
+                    && d.message.contains(&format!("'{kind}'"))
+                    && d.message.contains(&format!("'{name}'"))
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one unconsumed SpecializationForbiddenDecl diagnostic \
+             containing kind='{kind}' and name='{name}'; found {}; \
+             matched indices: {matches:#?}; consumed: {consumed:?}; \
+             all diagnostics: {forbidden:#?}",
+            matches.len()
+        );
+
+        matches[0]
+    }
+
     /// Drive the specialization-scope pipeline for `body` (the contents of a
     /// `sub scope : Foo { body }` node inside structure S) and assert that the
     /// resulting LSP diagnostics with code `"SpecializationForbiddenDecl"` match
