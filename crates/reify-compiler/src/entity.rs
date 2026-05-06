@@ -2114,6 +2114,30 @@ pub(crate) fn compile_entity(
     validate_annotations(&annotations, context, diagnostics);
     validate_pragmas(structure.pragmas, context, diagnostics);
 
+    // Invariant: the key sets of match_arm_groups and match_arm_group_arm_member_types
+    // must always be identical — every cluster registration must be paired with exactly
+    // one per-arm-maps insertion, and vice versa. Any early-return in
+    // compile_match_arm_decl_group (logical-name mismatch, unsupported discriminant,
+    // non-exhaustive, outside-collision, etc.) that skips register_match_arm_group must
+    // also skip inserting into match_arm_group_arm_member_types. (task 2872)
+    debug_assert!(
+        {
+            let groups: HashSet<&str> =
+                scope.match_arm_groups.keys().map(|s| s.as_str()).collect();
+            let per_arm: HashSet<&str> = scope
+                .match_arm_group_arm_member_types
+                .keys()
+                .map(|s| s.as_str())
+                .collect();
+            groups == per_arm
+        },
+        "match_arm_groups vs match_arm_group_arm_member_types key-set mismatch in entity '{}': \
+         groups={:?} per_arm={:?} (orphan per-arm entries indicate a producer-side bug — task 2872)",
+        entity_name,
+        scope.match_arm_groups.keys().collect::<Vec<_>>(),
+        scope.match_arm_group_arm_member_types.keys().collect::<Vec<_>>(),
+    );
+
     TopologyTemplate {
         name: entity_name.to_string(),
         entity_kind,
