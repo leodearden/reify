@@ -21,6 +21,82 @@
 //! This module is pure Rust and does **not** call any geometry kernel.
 //! It operates solely on [`EvaluationGraph`] and [`reify_types::ValueMap`].
 
+use reify_types::{Type, ValueCellId};
+
+use crate::graph::EvaluationGraph;
+
+// ── Public types ──────────────────────────────────────────────────────────────
+
+/// Classification of a design-tree value cell for Stage A mesh-morphing
+/// eligibility.
+///
+/// The conservative default is `Structural` — anything that is not clearly a
+/// dimensioned scalar, real, or integer is treated as structural. This biases
+/// Stage A toward false-rejection (one extra remesh) rather than
+/// false-eligibility (a topology-changing edit slipping through to Stage B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterClass {
+    /// The cell holds a dimensioned or numeric quantity whose change cannot
+    /// affect feature topology. Includes `Type::Scalar { .. }`, `Type::Real`,
+    /// and `Type::Int` (subject to the `structure_controlling` and
+    /// `collection_subs` overrides in [`classify_cell`]).
+    Dimensional,
+    /// The cell controls topology — feature suppression toggles, pattern
+    /// counts, enum-typed mode selectors, or any type not whitelisted as
+    /// Dimensional. A differing Structural cell makes the edit Stage-A
+    /// ineligible.
+    Structural,
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Classify a single value cell as [`ParameterClass::Dimensional`] or
+/// [`ParameterClass::Structural`].
+///
+/// Resolution order (first matching rule wins):
+///
+/// 1. **Cell absent** — cell not in `graph.value_cells` → `Structural`
+///    (conservative: unknown cells are assumed topology-controlling).
+/// 2. **`structure_controlling`** — cell is in `graph.structure_controlling`
+///    → `Structural`. This catches feature-suppression toggles (guard cells
+///    added by `EvaluationGraph::from_templates` at graph.rs:442).
+/// 3. **Collection count** — cell appears as `count_cell` of any entry in
+///    `graph.collection_subs` → `Structural`. Pattern/array counts have
+///    `Type::Int` but drive topology via collection elaboration
+///    (graph.rs:300–320).
+/// 4. **Type dispatch** — `Type::Scalar { .. } | Type::Real | Type::Int`
+///    → `Dimensional`; everything else → `Structural`.
+pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> ParameterClass {
+    // Rule 1: missing cell → Structural.
+    let Some(node) = graph.value_cells.get(cell_id) else {
+        return ParameterClass::Structural;
+    };
+
+    // Rule 2: structure-controlling override (feature-suppression toggles,
+    // guard cells). Checked before type dispatch so a Bool guard that also
+    // happens to be Scalar-shaped is still classified Structural.
+    if graph.structure_controlling.contains(cell_id) {
+        return ParameterClass::Structural;
+    }
+
+    // Rule 3: collection-count override. Pattern/array counts have Type::Int
+    // (which would otherwise be Dimensional) but structurally drive collection
+    // elaboration (graph.rs:300–320).
+    if graph
+        .collection_subs
+        .iter()
+        .any(|sub| &sub.count_cell == cell_id)
+    {
+        return ParameterClass::Structural;
+    }
+
+    // Rule 4: type-based dispatch.
+    match &node.cell_type {
+        Type::Scalar { .. } | Type::Real | Type::Int => ParameterClass::Dimensional,
+        _ => ParameterClass::Structural,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
