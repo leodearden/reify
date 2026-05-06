@@ -336,10 +336,17 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true, path };
     },
 
-    wait_for_idle: async (_params) => {
+    wait_for_idle: async (params) => {
+      const timeoutMs =
+        typeof params.timeout_ms === 'number' && params.timeout_ms > 0
+          ? params.timeout_ms
+          : 30000;
       const start = performance.now();
       // Poll evalStatus.phase at ~60 Hz until the engine settles to idle.
       while (ctx.stores.engine.state.evalStatus.phase !== 'idle') {
+        if (performance.now() - start >= timeoutMs) {
+          return { error: 'timeout' };
+        }
         await new Promise((r) => setTimeout(r, 16));
       }
       // Await one requestAnimationFrame tick so Solid has flushed its render pass
