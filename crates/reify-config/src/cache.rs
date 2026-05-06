@@ -907,6 +907,42 @@ mod tests {
         );
     }
 
+    /// Pin the user-facing rendering of `EmptyDir` and `ZeroMaxBytes`.
+    ///
+    /// Each rendered message must identify the offending `[cache]` key by
+    /// name (`"dir"` / `"max_bytes"`) so users can locate the
+    /// misconfiguration without reading the source code. Mirrors
+    /// `invalid_max_bytes_display_mentions_input_and_variable`
+    /// (cache.rs:828-842) — a runtime-behavior check on diagnostic quality.
+    #[test]
+    fn empty_dir_and_zero_max_bytes_display_mention_offending_keys() {
+        let empty_dir = CacheError::EmptyDir;
+        let rendered = format!("{}", empty_dir);
+        assert!(
+            rendered.contains("dir"),
+            "EmptyDir Display must mention the key name 'dir': {}",
+            rendered
+        );
+        assert!(
+            rendered.contains("[cache]"),
+            "EmptyDir Display must identify it as a [cache] key: {}",
+            rendered
+        );
+
+        let zero_bytes = CacheError::ZeroMaxBytes;
+        let rendered = format!("{}", zero_bytes);
+        assert!(
+            rendered.contains("max_bytes"),
+            "ZeroMaxBytes Display must mention the key name 'max_bytes': {}",
+            rendered
+        );
+        assert!(
+            rendered.contains("[cache]"),
+            "ZeroMaxBytes Display must identify it as a [cache] key: {}",
+            rendered
+        );
+    }
+
     /// End-to-end shape: parse_cache_config + resolve_cache compose
     /// cleanly, user beats project, and the source-of-truth tags are
     /// available for the `reify cache stats` diagnostics use case.
