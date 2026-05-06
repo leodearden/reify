@@ -377,13 +377,16 @@ async fn claude_send_message(
 ) -> Result<String, String> {
     use std::sync::Arc;
 
-    // Resolve the sidecar binary path relative to the app bundle.
-    // In development, the sidecar is in the adjacent sidecar/ directory.
+    // Resolve the sidecar binary path. Tauri's externalBin (declared in
+    // tauri.conf.json) copies the sidecar binary to `<resource_dir>/<basename>`
+    // in both dev (`target/<profile>/reify-sidecar`) and bundled builds —
+    // it does NOT place it in a `sidecar/` subdirectory of resource_dir,
+    // despite the source layout being `gui/src-tauri/sidecar/...`.
     let sidecar_path = app
         .path()
         .resource_dir()
-        .map(|p| p.join("sidecar").join("reify-sidecar"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("sidecar/reify-sidecar"));
+        .map(|p| p.join("reify-sidecar"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("reify-sidecar"));
 
     let app_for_events = app.clone();
     let engine = Arc::clone(&state.engine);
