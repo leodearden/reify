@@ -91,6 +91,9 @@ pub fn parse_cache_config(s: &str) -> Result<CacheConfig, CacheError> {
                 return Err(CacheError::EmptyDir);
             }
         }
+        if c.max_bytes == Some(0) {
+            return Err(CacheError::ZeroMaxBytes);
+        }
     }
     let cache = raw.cache.unwrap_or_default();
     Ok(CacheConfig {
@@ -288,6 +291,12 @@ pub enum CacheError {
     /// through (parity: both paths now refuse to treat `""` as a valid
     /// cache root). Remove the key to fall through to the next layer.
     EmptyDir,
+    /// `[cache].max_bytes` is set to `0` in the config file.
+    /// A zero-byte cache cap is meaningless — a cache of zero bytes cannot
+    /// store anything and will immediately evict every entry. This value
+    /// is almost certainly a misconfiguration. Remove the key to fall
+    /// through to the next layer or set it to a positive integer.
+    ZeroMaxBytes,
 }
 
 impl fmt::Display for CacheError {
@@ -304,6 +313,12 @@ impl fmt::Display for CacheError {
                 f,
                 "[cache].dir is set to the empty string; \
                  remove the key to fall through to the next layer"
+            ),
+            CacheError::ZeroMaxBytes => write!(
+                f,
+                "[cache].max_bytes is set to 0; \
+                 remove the key to fall through to the next layer \
+                 or use a positive integer"
             ),
         }
     }
