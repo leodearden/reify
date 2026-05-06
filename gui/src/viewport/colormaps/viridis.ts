@@ -262,5 +262,6 @@ const _raw: number[] = [
   0.993248, 0.906157, 0.143936,
 ];
 
-/** Matplotlib viridis LUT: Float32Array of 768 values (256 × RGB, interleaved). */
-export const viridisLut = new Float32Array(_raw);
+/** Matplotlib viridis LUT: Float32Array of 768 values (256 × RGB, interleaved).
+ *  Do not mutate — this array is shared across all `applyColormap` / `bakeColours` calls. */
+export const viridisLut: Readonly<Float32Array> = new Float32Array(_raw);

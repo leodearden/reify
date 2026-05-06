@@ -15,7 +15,7 @@ function buildRainbow(): Float32Array {
     else if (h < 120) { r = x; g = c; b = 0; }
     else if (h < 180) { r = 0; g = c; b = x; }
     else if (h < 240) { r = 0; g = x; b = c; }
-    else              { r = 0; g = 0; b = c; }
+    else              { r = 0; g = 0; b = c; } // reached only at i=0 where h==240 exactly (same as h<240 branch with x=0)
     // m = V - c = 0 since S=V=1
     out[i * 3]     = r;
     out[i * 3 + 1] = g;
@@ -25,5 +25,6 @@ function buildRainbow(): Float32Array {
 }
 
 /** Engineering rainbow LUT: Float32Array of 768 values (256 × RGB, interleaved).
- *  Hue sweeps 240° → 0° (blue → red), S=V=1. */
-export const rainbowLut: Float32Array = buildRainbow();
+ *  Hue sweeps 240° → 0° (blue → red), S=V=1.
+ *  Do not mutate — this array is shared across all `applyColormap` / `bakeColours` calls. */
+export const rainbowLut: Readonly<Float32Array> = buildRainbow();

@@ -63,7 +63,7 @@ const DEFAULT_ABOVE: readonly [number, number, number] = [0, 0, 0];
 const DEFAULT_BELOW: readonly [number, number, number] = [0.5, 0.5, 0.5];
 const DEFAULT_NAN:   readonly [number, number, number] = [0.5, 0.5, 0.5];
 
-function resolveLut(palette: Palette): Float32Array {
+function resolveLut(palette: Palette): Readonly<Float32Array> {
   switch (palette) {
     case 'viridis': return viridisLut;
     case 'magma':   return magmaLut;
@@ -75,7 +75,7 @@ function resolveLut(palette: Palette): Float32Array {
  * Linearly interpolate a single scalar through the LUT.
  * `t` is pre-clamped to [0, 1] by the caller.
  */
-function lutLerp(lut: Float32Array, t: number): [number, number, number] {
+function lutLerp(lut: Readonly<Float32Array>, t: number): [number, number, number] {
   const f   = t * 255;
   const lo  = Math.floor(f);
   const hi  = Math.min(lo + 1, 255);
@@ -98,6 +98,13 @@ function lutLerp(lut: Float32Array, t: number): [number, number, number] {
  * @param palette - Palette name: 'viridis' | 'magma' | 'rainbow'.
  * @param options - Optional saturation/NaN colour overrides.
  * @returns       Tuple `[r, g, b]` of normalized floats in [0, 1].
+ *
+ * @note Precondition: `range.min <= range.max` (inverted range is not validated).
+ *       Non-finite bounds (`NaN`, `Infinity`) return the `nanColor` sentinel.
+ *
+ * @note For bulk conversion over large scalar arrays, use `bakeColours` — it writes
+ *       directly into a `Float32Array` and avoids a per-element tuple allocation.
+ *       `applyColormap` is intended for one-off and UI use.
  */
 export function applyColormap(
   value:   number,
@@ -108,6 +115,11 @@ export function applyColormap(
   const aboveColor = options?.aboveColor ?? DEFAULT_ABOVE;
   const belowColor = options?.belowColor ?? DEFAULT_BELOW;
   const nanColor   = options?.nanColor   ?? DEFAULT_NAN;
+
+  // Guard: non-finite bounds produce undefined lerp results; return NaN colour.
+  if (!Number.isFinite(range.min) || !Number.isFinite(range.max)) {
+    return [nanColor[0], nanColor[1], nanColor[2]];
+  }
 
   // NaN check must come first — comparisons with NaN are always false.
   if (Number.isNaN(value)) return [nanColor[0], nanColor[1], nanColor[2]];
@@ -144,6 +156,16 @@ export function bakeColours(
   const belowColor = options?.belowColor ?? DEFAULT_BELOW;
   const nanColor   = options?.nanColor   ?? DEFAULT_NAN;
 
+  // Guard: non-finite bounds produce undefined lerp results; fill all with NaN colour.
+  if (!Number.isFinite(range.min) || !Number.isFinite(range.max)) {
+    for (let i = 0; i < scalars.length; i++) {
+      out[i * 3]     = nanColor[0];
+      out[i * 3 + 1] = nanColor[1];
+      out[i * 3 + 2] = nanColor[2];
+    }
+    return out;
+  }
+
   const span = range.max - range.min;
 
   for (let i = 0; i < scalars.length; i++) {
@@ -157,6 +179,8 @@ export function bakeColours(
     } else if (v < range.min) {
       r = belowColor[0]; g = belowColor[1]; b = belowColor[2];
     } else {
+      // Lerp inlined from lutLerp() to avoid allocating a [r,g,b] tuple per
+      // element — bakeColours is the hot path for large meshes (10k–100k vertices).
       const t  = span === 0 ? 0 : (v - range.min) / span;
       const f  = t * 255;
       const lo = Math.floor(f);

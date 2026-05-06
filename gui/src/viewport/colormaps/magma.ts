@@ -262,5 +262,6 @@ const _raw: number[] = [
   0.987053, 0.991438, 0.749504,
 ];
 
-/** Matplotlib magma LUT: Float32Array of 768 values (256 × RGB, interleaved). */
-export const magmaLut = new Float32Array(_raw);
+/** Matplotlib magma LUT: Float32Array of 768 values (256 × RGB, interleaved).
+ *  Do not mutate — this array is shared across all `applyColormap` / `bakeColours` calls. */
+export const magmaLut: Readonly<Float32Array> = new Float32Array(_raw);
