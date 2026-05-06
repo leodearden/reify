@@ -142,6 +142,7 @@
 //!
 //! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 
 use reify_types::{
@@ -625,7 +626,7 @@ pub fn filter_feasible_candidates(
 
     for candidate in candidates {
         let input = ConstraintInput {
-            constraints: constraints_template.clone(),
+            constraints: Cow::Owned(constraints_template.clone()),
             values: &empty_values,
             functions,
             determinacy: None,
@@ -1788,7 +1789,7 @@ fn check_constraints_leaf(
 ) -> LeafVerdict {
     use reify_types::ConstraintInput;
     let input = ConstraintInput {
-        constraints: constraints_template.to_vec(),
+        constraints: Cow::Owned(constraints_template.to_vec()),
         values,
         functions,
         determinacy: None,
