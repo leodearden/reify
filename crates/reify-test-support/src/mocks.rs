@@ -1269,6 +1269,7 @@ mod tests {
     use crate::assert_value_approx;
     use crate::values::{meters, mm2, mm3, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
+    use std::borrow::Cow;
     use std::sync::atomic::Ordering;
     use std::sync::Barrier;
 
@@ -1301,7 +1302,7 @@ mod tests {
         let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let values = ValueMap::new();
         let input = ConstraintInput {
-            constraints: vec![(cnid.clone(), &expr)],
+            constraints: Cow::Owned(vec![(cnid.clone(), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -1333,7 +1334,7 @@ mod tests {
         let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let values = ValueMap::new();
         let make_input = || ConstraintInput {
-            constraints: vec![(cnid.clone(), &expr)],
+            constraints: Cow::Owned(vec![(cnid.clone(), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,

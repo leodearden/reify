@@ -142,6 +142,7 @@
 //!
 //! [`AutoTypeParamDepthBoundExceeded`]: reify_types::DiagnosticCode::AutoTypeParamDepthBoundExceeded
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 
 use reify_types::{
@@ -614,26 +615,21 @@ pub fn filter_feasible_candidates(
     let empty_values = ValueMap::new();
 
     // Build the template's constraint list once — it does not change across
-    // candidates in Phase B.  When the deferred type-substitution pass lands
-    // (substituting Type::TypeParam(T) → Type::StructureRef(candidate)), this
-    // will need to move back inside the loop with per-candidate ValueMap setup.
-    //
-    // NOTE: an identical build (with identical TODO) also lives in
-    // `resolve_auto_type_params_with_backtracking` for the DFS hot path.
-    // Both copies must be migrated together when the substitution pass lands.
-    let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
-        parameterized_template
-            .constraints
-            .iter()
-            .map(|c| (c.id.clone(), &c.expr))
-            .collect();
+    // candidates in Phase B.
+    // TODO(post-substitution-mechanics): revert this hoist when the substitution
+    // pass lands (see `build_constraints_template` for the full deferred-substitution
+    // note and migration instructions).
+    let constraints_template = build_constraints_template(parameterized_template);
 
     let mut accepted: Vec<String> = Vec::new();
     let mut rejected: Vec<RejectedCandidate> = Vec::new();
 
     for candidate in candidates {
         let input = ConstraintInput {
-            constraints: constraints_template.clone(),
+            // constraints_template is hoisted above the loop and does not change
+            // across candidates in Phase B; borrow it directly to avoid an
+            // O(candidates × constraints) ConstraintNodeId-String clone.
+            constraints: Cow::Borrowed(&constraints_template),
             values: &empty_values,
             functions,
             determinacy: None,
@@ -1170,30 +1166,14 @@ pub fn resolve_auto_type_params_with_backtracking(
     }
 
     // Build the parameterized template's constraint list ONCE here so the
-    // DFS leaf-feasibility predicate (`check_constraints_violated`, called
-    // at every cross-product leaf via `dfs_leaf_feasible`) borrows a single
-    // owned `Vec` rather than rebuilding it on every leaf. With max_depth=6
-    // and ~10 candidates per param the worst case is 10^6 leaves; the
-    // per-leaf rebuild was a measurable hot-path allocation pin.
-    //
-    // NOTE: an identical build (with identical TODO) also lives in
-    // `filter_feasible_candidates` for the Phase B / single-param path.
-    // Both copies must be migrated together when the substitution pass lands.
-    //
-    // TODO(post-substitution-mechanics): once the deferred type-substitution
-    // pass lands (substituting `Type::TypeParam(T)` → `Type::StructureRef(candidate)`
-    // — see the `TODO(post-substitution-mechanics)` block at the BFS-fallback
-    // branch above and the matching note in `filter_feasible_candidates`),
-    // per-candidate `ValueMap`s will differ across leaves and this hoist
-    // becomes unsound — `constraints_template` will need to move back inside
-    // the leaf with per-candidate value setup. Revert this hoist when that
-    // task lands.
-    let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
-        parameterized_template
-            .constraints
-            .iter()
-            .map(|c| (c.id.clone(), &c.expr))
-            .collect();
+    // DFS leaf-feasibility predicate borrows a single owned `Vec` rather than
+    // rebuilding it on every leaf. With max_depth=6 and ~10 candidates per
+    // param the worst case is 10^6 leaves; the per-leaf rebuild was a
+    // measurable hot-path allocation pin.
+    // TODO(post-substitution-mechanics): revert this hoist when the substitution
+    // pass lands (see `build_constraints_template` for the full deferred-substitution
+    // note and migration instructions).
+    let constraints_template = build_constraints_template(parameterized_template);
     // The empty ValueMap used by every DFS leaf: built once here alongside
     // `constraints_template` so `dfs_leaf_feasible` doesn't construct a new
     // (zero-heap-allocation but non-trivial stack init) empty map per call.
@@ -1756,6 +1736,33 @@ enum DfsControl {
     BackjumpTo(usize),
 }
 
+/// Build the flat `(id, &expr)` pair list from a [`TopologyTemplate`]'s
+/// constraints.
+///
+/// Collects each [`CompiledConstraint`] into a `(ConstraintNodeId, &CompiledExpr)`
+/// pair, borrowing the expression in-place (no clone of the expr).
+///
+/// # Deferred-substitution note
+///
+/// This helper is intentionally hoisted outside any per-candidate or per-leaf
+/// loop because the template's constraints do not change across candidates
+/// under the current (pre-substitution) mechanics.
+///
+/// NOTE: When the deferred type-substitution pass lands (substituting
+/// `Type::TypeParam(T)` → `Type::StructureRef(candidate)`), the build will
+/// need to move back inside the per-candidate / per-leaf loop with
+/// per-candidate `ValueMap` setup. At that point this helper must be migrated
+/// or removed together with the `filter_feasible_candidates` and
+/// `resolve_auto_type_params_with_backtracking` callers.
+///
+/// TODO(post-substitution-mechanics): revert this hoist when the substitution
+/// pass lands (see matching TODOs at both call sites).
+fn build_constraints_template(
+    template: &TopologyTemplate,
+) -> Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> {
+    template.constraints.iter().map(|c| (c.id.clone(), &c.expr)).collect()
+}
+
 /// Single-call leaf check that surfaces both feasibility and violated IDs.
 ///
 /// Calls `checker.check(&input)` **exactly once**. Partitions the results
@@ -1777,6 +1784,9 @@ enum DfsControl {
 ///
 /// Inherits arch §2.5's monotonic-feasible rule: `Indeterminate` counts as
 /// feasible; only `Violated` falsifies.
+///
+/// Passes `constraints_template` through as `Cow::Borrowed`, so no per-leaf
+/// clone occurs (see task 2900).
 fn check_constraints_leaf(
     constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
     checker: &dyn ConstraintChecker,
@@ -1785,7 +1795,7 @@ fn check_constraints_leaf(
 ) -> LeafVerdict {
     use reify_types::ConstraintInput;
     let input = ConstraintInput {
-        constraints: constraints_template.to_vec(),
+        constraints: Cow::Borrowed(constraints_template),
         values,
         functions,
         determinacy: None,
@@ -1998,7 +2008,7 @@ fn dfs_search(
 
 #[cfg(test)]
 mod helper_tests {
-    use super::check_constraints_leaf;
+    use super::{build_constraints_template, check_constraints_leaf};
     use reify_test_support::MockConstraintChecker;
     use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
 
@@ -2096,6 +2106,143 @@ mod helper_tests {
         assert!(
             !result.feasible,
             "mixed Satisfied+Violated must not be feasible (any one Violated falsifies)"
+        );
+    }
+
+    /// `build_constraints_template` maps each `CompiledConstraint` in the
+    /// `TopologyTemplate` to a `(ConstraintNodeId, &CompiledExpr)` pair,
+    /// preserving order and borrowing (not cloning) the expr.
+    ///
+    /// Note: `TopologyTemplateBuilder` from `reify_test_support` cannot be used here
+    /// because it links against the compiled `reify_compiler` library artifact, causing
+    /// a "two versions of the same crate" mismatch in the `#[cfg(test)]` context.
+    /// Instead the template is constructed directly from `crate::` types so both sides
+    /// of the borrow refer to the same compilation unit.
+    #[test]
+    fn build_constraints_template_returns_pairs_for_each_template_constraint() {
+        use reify_types::{ContentHash, SourceSpan};
+
+        let expr0 = literal_expr();
+        let expr1 = reify_types::CompiledExpr::literal(Value::Bool(false), Type::Bool);
+
+        // Build TopologyTemplate directly from crate-internal types to avoid the
+        // "two versions of reify_compiler" diamond dependency that arises when
+        // using TopologyTemplateBuilder from reify_test_support inside cfg(test).
+        //
+        // Intentional construction surface: this test enumerates every field so it
+        // fails to compile when `TopologyTemplate` gains a new field without a
+        // corresponding addition here. The tested contract is narrow (id-order +
+        // ptr-equality of expr borrow), but exhaustive field coverage is the
+        // cheapest way to keep the fixture honest. When adding a new field to
+        // `TopologyTemplate`, add it here too (default or empty is fine).
+        let template = crate::TopologyTemplate {
+            name: "Bearing".into(),
+            entity_kind: crate::EntityKind::Structure,
+            visibility: crate::Visibility::Private,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells: vec![],
+            constraints: vec![
+                crate::CompiledConstraint {
+                    id: ConstraintNodeId::new("Bearing", 0),
+                    label: None,
+                    expr: expr0,
+                    span: SourceSpan::new(0, 0),
+                    domain: None,
+                    optimized_target: None,
+                },
+                crate::CompiledConstraint {
+                    id: ConstraintNodeId::new("Bearing", 1),
+                    label: None,
+                    expr: expr1,
+                    span: SourceSpan::new(0, 0),
+                    domain: None,
+                    optimized_target: None,
+                },
+            ],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: Default::default(),
+            objective: None,
+            meta: Default::default(),
+            content_hash: ContentHash::of(b"test-bearing"),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+        };
+
+        let pairs = build_constraints_template(&template);
+
+        // (a) one pair per constraint
+        assert_eq!(pairs.len(), 2, "must return one pair per template constraint");
+
+        // (b) order preserved — entry 0 matches template.constraints[0]
+        assert_eq!(
+            pairs[0].0,
+            template.constraints[0].id,
+            "entry 0 id must match template.constraints[0].id"
+        );
+        assert_eq!(
+            pairs[1].0,
+            template.constraints[1].id,
+            "entry 1 id must match template.constraints[1].id"
+        );
+
+        // (c) borrow, not clone — raw-pointer equality pins the no-copy contract
+        assert!(
+            std::ptr::eq(pairs[0].1, &template.constraints[0].expr),
+            "entry 0 expr pointer must equal &template.constraints[0].expr (no clone)"
+        );
+        assert!(
+            std::ptr::eq(pairs[1].1, &template.constraints[1].expr),
+            "entry 1 expr pointer must equal &template.constraints[1].expr (no clone)"
+        );
+    }
+
+    /// Pins the no-per-leaf-clone invariant: `check_constraints_leaf` must pass
+    /// `Cow::Borrowed` to the checker, not `Cow::Owned` (task 2900, step 5/6).
+    ///
+    /// Uses `BorrowAssertingChecker` — a tiny in-test impl that records whether
+    /// `input.constraints` was `Cow::Borrowed` at call time. The test fires
+    /// `false` as long as step-4's temporary `Cow::Owned(constraints_template.to_vec())`
+    /// is still in place; step-6's switch to `Cow::Borrowed` makes it `true`.
+    #[test]
+    fn check_constraints_leaf_passes_constraints_as_cow_borrowed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use reify_types::{ConstraintChecker, ConstraintInput, ConstraintResult};
+
+        struct BorrowAssertingChecker {
+            saw_borrowed: AtomicBool,
+        }
+
+        impl ConstraintChecker for BorrowAssertingChecker {
+            fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+                let is_borrowed = matches!(input.constraints, std::borrow::Cow::Borrowed(_));
+                self.saw_borrowed.store(is_borrowed, Ordering::SeqCst);
+                Vec::new()
+            }
+        }
+
+        let expr0 = literal_expr();
+        let expr1 = reify_types::CompiledExpr::literal(Value::Bool(false), Type::Bool);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(ConstraintNodeId::new("C0", 0), &expr0),
+                 (ConstraintNodeId::new("C1", 1), &expr1)];
+
+        let checker = BorrowAssertingChecker { saw_borrowed: AtomicBool::new(false) };
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        check_constraints_leaf(&constraints, &checker, functions, &values);
+
+        assert!(
+            checker.saw_borrowed.load(Ordering::SeqCst),
+            "check_constraints_leaf must pass Cow::Borrowed to the checker (no per-leaf clone)"
         );
     }
 }

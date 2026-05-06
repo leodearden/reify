@@ -99,6 +99,8 @@ impl ConstraintChecker for SimpleConstraintChecker {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
     use reify_types::{
         BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type,
@@ -135,7 +137,7 @@ mod tests {
         values.insert(vcid("Bracket", "thickness"), mm(5.0));
 
         let input = ConstraintInput {
-            constraints: vec![(cnid("Bracket", 0), &expr)],
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -154,7 +156,7 @@ mod tests {
         values.insert(vcid("Bracket", "thickness"), mm(1.0));
 
         let input = ConstraintInput {
-            constraints: vec![(cnid("Bracket", 0), &expr)],
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -172,7 +174,7 @@ mod tests {
         let values = ValueMap::new(); // thickness is Undef
 
         let input = ConstraintInput {
-            constraints: vec![(cnid("Bracket", 0), &expr)],
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -198,7 +200,7 @@ mod tests {
         values.insert(vcid("Bracket", "width"), mm(80.0));
 
         let input = ConstraintInput {
-            constraints: vec![(cnid("Bracket", 0), &expr)],
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -226,7 +228,7 @@ mod tests {
         values.insert(vcid("Bracket", "width"), mm(80.0));
 
         let input = ConstraintInput {
-            constraints: vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)],
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -254,7 +256,7 @@ mod tests {
         values.insert(vcid("Bracket", "y"), mm(10.0));
 
         let input = ConstraintInput {
-            constraints: vec![(cnid("Bracket", 0), &expr)],
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -274,7 +276,7 @@ mod tests {
         let values = ValueMap::new(); // thickness is Undef
 
         let input = ConstraintInput {
-            constraints: vec![(cnid("Bracket", 0), &expr)],
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -301,7 +303,7 @@ mod tests {
         values.insert(vcid("Bracket", "thickness"), mm(1.0));
 
         let input = ConstraintInput {
-            constraints: vec![(cnid("Bracket", 0), &expr)],
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,
@@ -328,7 +330,7 @@ mod tests {
         let values = ValueMap::new();
 
         let input = ConstraintInput {
-            constraints: vec![(cnid("Bracket", 0), &expr)],
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
             values: &values,
             functions: &[],
             determinacy: None,

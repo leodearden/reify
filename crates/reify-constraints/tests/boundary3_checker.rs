@@ -2,6 +2,8 @@
 //!
 //! These tests verify the SimpleConstraintChecker against the ConstraintChecker trait.
 
+use std::borrow::Cow;
+
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::*;
 use reify_types::{
@@ -22,7 +24,7 @@ fn satisfied() {
     values.insert(vcid("Bracket", "thickness"), mm(5.0));
 
     let input = ConstraintInput {
-        constraints: vec![(cnid("Bracket", 0), &expr)],
+        constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
         values: &values,
         functions: &[],
         determinacy: None,
@@ -40,7 +42,7 @@ fn violated() {
     values.insert(vcid("Bracket", "thickness"), mm(1.0));
 
     let input = ConstraintInput {
-        constraints: vec![(cnid("Bracket", 0), &expr)],
+        constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
         values: &values,
         functions: &[],
         determinacy: None,
@@ -57,7 +59,7 @@ fn indeterminate_undef() {
     let values = ValueMap::new(); // thickness is Undef
 
     let input = ConstraintInput {
-        constraints: vec![(cnid("Bracket", 0), &expr)],
+        constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
         values: &values,
         functions: &[],
         determinacy: None,
@@ -82,7 +84,7 @@ fn compound_constraint_satisfied() {
     values.insert(vcid("Bracket", "width"), mm(80.0));
 
     let input = ConstraintInput {
-        constraints: vec![(cnid("Bracket", 0), &expr)],
+        constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
         values: &values,
         functions: &[],
         determinacy: None,
@@ -108,7 +110,7 @@ fn batch_independent_results() {
     values.insert(vcid("Bracket", "width"), mm(80.0));
 
     let input = ConstraintInput {
-        constraints: vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)],
+        constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)]),
         values: &values,
         functions: &[],
         determinacy: None,
@@ -136,7 +138,7 @@ fn division_by_zero_does_not_panic() {
     values.insert(vcid("B", "y"), mm(10.0));
 
     let input = ConstraintInput {
-        constraints: vec![(cnid("B", 0), &expr)],
+        constraints: Cow::Owned(vec![(cnid("B", 0), &expr)]),
         values: &values,
         functions: &[],
         determinacy: None,
@@ -170,7 +172,7 @@ fn bracket_all_constraints_satisfied() {
         .collect();
 
     let input = ConstraintInput {
-        constraints: constraint_exprs,
+        constraints: Cow::Owned(constraint_exprs),
         values: &values,
         functions: &[],
         determinacy: None,

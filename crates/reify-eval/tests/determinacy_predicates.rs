@@ -7,6 +7,8 @@
 //! Programmatic construction via TopologyTemplateBuilder is used for states
 //! unreachable through .ri source (e.g., Provisional).
 
+use std::borrow::Cow;
+
 use reify_eval::Engine;
 use reify_test_support::{make_engine, parse_and_compile};
 use reify_types::{
@@ -893,7 +895,7 @@ fn simple_constraint_checker_evaluates_determinacy_predicate() {
 
     // Construct ConstraintInput with determinacy context.
     let input = ConstraintInput {
-        constraints: constraint_pairs,
+        constraints: Cow::Owned(constraint_pairs),
         values: &eval_result.values,
         functions: &compiled.functions,
         determinacy: Some(det_map),
