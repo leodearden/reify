@@ -151,6 +151,41 @@ fn tool_defs() -> Vec<ToolDef> {
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
+            name: "set_camera",
+            description: "Set the viewport camera to an explicit pose. Used by the visual regression harness for deterministic framing — same input → same camera frame → same pixels.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "position": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "description": "Camera world-space position [x, y, z]"
+                    },
+                    "target": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "description": "Look-at target [x, y, z]"
+                    },
+                    "up": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "description": "Optional up vector [x, y, z]"
+                    },
+                    "zoom": {
+                        "type": "number",
+                        "description": "Optional positive zoom factor"
+                    }
+                },
+                "required": ["position", "target"]
+            }),
+        },
+        ToolDef {
             name: "open_file",
             description: "Open a .ri file from disk into the editor and engine. Reads the file, loads it into the engine for evaluation, and opens it in the frontend editor.",
             input_schema: json!({
@@ -542,6 +577,68 @@ pub async fn spawn_debug_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_defs_includes_set_camera() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "set_camera")
+            .expect("set_camera must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+
+        // position: array of number, minItems/maxItems = 3
+        let position = &schema["properties"]["position"];
+        assert_eq!(position["type"].as_str(), Some("array"), "position.type must be 'array'");
+        assert_eq!(position["items"]["type"].as_str(), Some("number"), "position.items.type must be 'number'");
+        assert_eq!(position["minItems"].as_i64(), Some(3), "position.minItems must be 3");
+        assert_eq!(position["maxItems"].as_i64(), Some(3), "position.maxItems must be 3");
+
+        // target: same shape as position
+        let target = &schema["properties"]["target"];
+        assert_eq!(target["type"].as_str(), Some("array"), "target.type must be 'array'");
+        assert_eq!(target["items"]["type"].as_str(), Some("number"), "target.items.type must be 'number'");
+        assert_eq!(target["minItems"].as_i64(), Some(3), "target.minItems must be 3");
+        assert_eq!(target["maxItems"].as_i64(), Some(3), "target.maxItems must be 3");
+
+        // up: array of number, minItems/maxItems = 3 (optional — not in required)
+        let up = &schema["properties"]["up"];
+        assert_eq!(up["type"].as_str(), Some("array"), "up.type must be 'array'");
+        assert_eq!(up["items"]["type"].as_str(), Some("number"), "up.items.type must be 'number'");
+        assert_eq!(up["minItems"].as_i64(), Some(3), "up.minItems must be 3");
+        assert_eq!(up["maxItems"].as_i64(), Some(3), "up.maxItems must be 3");
+
+        // zoom: number (optional — not in required)
+        let zoom = &schema["properties"]["zoom"];
+        assert_eq!(zoom["type"].as_str(), Some("number"), "zoom.type must be 'number'");
+
+        // required must contain position and target but NOT up or zoom
+        let required = schema["required"]
+            .as_array()
+            .expect("input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("position")),
+            "'position' must be in required"
+        );
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("target")),
+            "'target' must be in required"
+        );
+        assert!(
+            !required.iter().any(|v| v.as_str() == Some("up")),
+            "'up' must NOT be in required"
+        );
+        assert!(
+            !required.iter().any(|v| v.as_str() == Some("zoom")),
+            "'zoom' must NOT be in required"
+        );
+    }
 
     #[test]
     fn tool_defs_contains_set_test_mode() {
