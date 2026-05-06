@@ -221,6 +221,17 @@ pub struct CacheStore {
     /// between evaluations via `imported_file_hash_changed`. Hashes are byte-only — see
     /// `engine_eval::hash_imported_file_content`. Keys are literal path strings as written
     /// by the user (not canonicalised); see design decision in plan 2668 for rationale.
+    ///
+    /// **Growth policy:** this map grows monotonically with each distinct path string
+    /// observed, and shrinks only when [`CacheStore::clear`] is called. In normal
+    /// interactive use the set of active import paths is bounded by the design tree, so
+    /// the map stays small. Stale entries from edited-away `import` declarations will
+    /// linger until the next `clear()` call; a future eviction hook (keyed on the
+    /// active import set at the start of each eval cycle) could reclaim them if memory
+    /// pressure from long-lived sessions proves to be an issue.
+    ///
+    /// **Non-UTF-8 paths:** keys are `String`, so paths that are not valid UTF-8 cannot
+    /// be recorded in this side-table. See `record_imported_file_hash` for details.
     imported_file_hashes: HashMap<String, ContentHash>,
     /// Count of successful mark_pending() calls since last reset.
     /// Used to verify that Pending intermediate state is actually applied
@@ -308,6 +319,12 @@ impl CacheStore {
     /// Per-path content-hash side-table for imported field source files (PRD task 4 / task 2668).
     /// Overwrites any prior recording for `path`. The key is the literal user-supplied path
     /// string — not canonicalised (see design decision in plan 2668).
+    ///
+    /// **Non-UTF-8 paths:** `path` is a `&str`, so callers that have a `PathBuf` or `OsStr`
+    /// must convert to UTF-8 first. Paths that are not valid UTF-8 cannot be recorded in this
+    /// side-table. In practice the surface-language `imported { path = "..." }` literal is
+    /// always UTF-8, so this is not expected to be a practical limitation. If non-UTF-8 support
+    /// becomes necessary, the key type should change to `OsString` / `PathBuf`.
     ///
     /// Companion to [`CacheStore::get_imported_file_hash`] and
     /// [`CacheStore::imported_file_hash_changed`]. PRD task 5's wire site in `elaborate_field`

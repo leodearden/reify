@@ -672,6 +672,12 @@ pub(crate) fn elaborate_field(
 pub(crate) fn hash_imported_file_content(
     path: &str,
 ) -> std::io::Result<reify_types::ContentHash> {
+    // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
+    // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
+    // allocation per call.  If `ContentHash` (or `xxhash_rust::xxh3`) later exposes an
+    // incremental/streaming constructor, replace this with `BufReader` + chunk-by-chunk
+    // update to avoid the temporary buffer.  The wire site in PRD task 5 is the natural
+    // place to evaluate whether the allocation cost is measurable in practice.
     Ok(reify_types::ContentHash::of(&std::fs::read(path)?))
 }
 
