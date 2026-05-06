@@ -10,7 +10,7 @@ import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
 import { testMode, setTestMode } from './testMode';
 
-type CommandHandler = (params: Record<string, unknown>) => unknown;
+type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
 /** Returns true iff v is a 3-element array of finite numbers. */
 function validVec3(v: unknown): v is [number, number, number] {
@@ -335,6 +335,13 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
 
       return { ok: true, path };
     },
+
+    wait_for_idle: async (_params) => {
+      const start = performance.now();
+      // Await one requestAnimationFrame tick (ensures a fresh frame has rendered).
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      return { ok: true, idle_after_ms: Math.round(performance.now() - start) };
+    },
   };
 }
 
@@ -359,7 +366,7 @@ export async function initDebugBridge(stores: DebugStores): Promise<() => void> 
       if (!handler) {
         result = { error: `unknown command: ${command}` };
       } else {
-        result = handler(params ?? {});
+        result = await handler(params ?? {});
       }
     } catch (e) {
       result = { error: e instanceof Error ? e.message : String(e) };
