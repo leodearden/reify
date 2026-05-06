@@ -928,13 +928,18 @@ mod tests {
         assert_two_args_returns_undef("envelope_min");
     }
 
+    fn assert_non_map_arg_returns_undef(name: &str) {
+        assert!(eval_fea(name, &[Value::Real(1.0)]).unwrap().is_undef());
+    }
+
     #[test]
     fn envelope_max_non_map_arg_returns_undef() {
-        assert!(
-            eval_fea("envelope_max", &[Value::Real(1.0)])
-                .unwrap()
-                .is_undef()
-        );
+        assert_non_map_arg_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_non_map_arg_returns_undef() {
+        assert_non_map_arg_returns_undef("envelope_min");
     }
 
     #[test]
