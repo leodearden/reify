@@ -7,7 +7,7 @@
 //! kernel itself in `crates/reify-kernel-occt/src/lib.rs:22-83`.
 
 use reify_kernel_occt::register::OCCT_KERNEL_NAME;
-use reify_types::{KernelRegistration, Operation, ReprKind};
+use reify_types::{GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// OCCT's capability descriptor must enumerate every operation routed
 /// through `OcctKernelHandle::execute`, paired with `ReprKind::BRep`.
@@ -86,14 +86,20 @@ fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
 
 /// OCCT submits exactly one `KernelRegistration` named `"occt"` into the
 /// `inventory::iter::<KernelRegistration>()` set. This is the inventory-
-/// plumbing pin: an `inventory::submit!` that is missing or wrapped in the
-/// wrong cfg gate is caught here.
+/// plumbing pin: a missing or incorrectly-gated `inventory::submit!` would be
+/// caught here.
 ///
-/// The submitted registration's `descriptor()` must produce a
-/// `CapabilityDescriptor` byte-equal (modulo `Vec` ordering) to
-/// `register::occt_capability_descriptor()` — both must come from the same
-/// underlying function pointer, so this assertion would only fire if a
-/// future drift introduces two divergent descriptor functions.
+/// Pins all three `KernelRegistration` fields:
+/// - `name` — checked via the `.filter()` above (exactly one entry).
+/// - `descriptor` — function-pointer identity to `occt_capability_descriptor`
+///   (plus set-equality of the materialised `supports` as defence-in-depth).
+/// - `factory` — function-pointer identity to `occt_factory` (catches a
+///   copy-paste regression that wires Manifold's factory into the OCCT submit;
+///   neither the `name` nor `descriptor` pins would catch that divergence).
+///
+/// # Design template
+///
+/// `crates/reify-kernel-manifold/tests/inventory_registration.rs:79-136`.
 #[test]
 fn occt_kernel_registration_appears_in_inventory_iter() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -130,6 +136,21 @@ fn occt_kernel_registration_appears_in_inventory_iter() {
         "the inventory-submitted descriptor must be the same function pointer as \
          `register::occt_capability_descriptor` — a divergence indicates two \
          parallel descriptor sources",
+    );
+
+    // Pin the factory pointer for the same reason: a copy-paste regression
+    // wiring `manifold_factory` into the OCCT `inventory::submit!` would
+    // compile cleanly but silently route BRep ops through the wrong stub.
+    // Neither the `name` pin above nor the `descriptor` pin catches this
+    // because those fields live independently.
+    let inventory_factory = occt_entries[0].factory;
+    let direct_factory: fn() -> Box<dyn GeometryKernel> =
+        reify_kernel_occt::register::occt_factory;
+    assert!(
+        std::ptr::fn_addr_eq(inventory_factory, direct_factory),
+        "the inventory-submitted factory must be the same function pointer as \
+         `register::occt_factory` — a divergence (e.g. manifold factory wired \
+         by copy-paste) would not be caught by the descriptor or name pins alone",
     );
 
     // Also pin the materialised result as a HashSet (set equality —
