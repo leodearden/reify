@@ -177,6 +177,160 @@ describe('debug bridge set_camera', () => {
     const result = JSON.parse(payload.result);
     expect(result).toEqual({ error: 'viewport not ready' });
   });
+
+  // Helper to build a viewport stub with spy functions
+  function makeViewportStub() {
+    const cameraPositionSet = vi.fn();
+    const cameraUpSet = vi.fn();
+    const controlsTargetSet = vi.fn();
+    const rendererRender = vi.fn();
+    const camera = {
+      position: { set: cameraPositionSet, x: 0, y: 0, z: 0 },
+      up: { set: cameraUpSet, x: 0, y: 1, z: 0 },
+      zoom: 1,
+      updateProjectionMatrix: vi.fn(),
+      updateMatrixWorld: vi.fn(),
+    };
+    const controls = {
+      target: { set: controlsTargetSet, x: 0, y: 0, z: 0 },
+      update: vi.fn(),
+    };
+    const renderer = { render: rendererRender, domElement: { toDataURL: vi.fn() } };
+    const scene = {} as any;
+    return { camera, controls, renderer, scene, cameraPositionSet, cameraUpSet, controlsTargetSet, rendererRender };
+  }
+
+  async function dispatch(handler: DebugRequestHandler, id: number, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await handler({ payload: { id, command: 'set_camera', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  describe('input validation', () => {
+    let stub: ReturnType<typeof makeViewportStub>;
+
+    beforeEach(async () => {
+      const stores = makeStores();
+      await initDebugBridge(stores);
+      stub = makeViewportStub();
+      window.__REIFY_DEBUG__!.viewport = {
+        scene: stub.scene,
+        camera: stub.camera as any,
+        renderer: stub.renderer as any,
+        getMeshes: vi.fn().mockReturnValue(new Map()),
+        getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+        fitToView: vi.fn(),
+        flyToEntity: vi.fn(),
+        controls: stub.controls as any,
+      };
+    });
+
+    it('rejects missing position', async () => {
+      const result = await dispatch(capturedHandler!, 200, { target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects position that is not an array', async () => {
+      const result = await dispatch(capturedHandler!, 201, { position: 'bad', target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects position with length != 3', async () => {
+      const result = await dispatch(capturedHandler!, 202, { position: [1, 2], target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects position containing NaN', async () => {
+      const result = await dispatch(capturedHandler!, 203, { position: [1, NaN, 3], target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects position containing Infinity', async () => {
+      const result = await dispatch(capturedHandler!, 204, { position: [1, 2, Infinity], target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects missing target', async () => {
+      const result = await dispatch(capturedHandler!, 205, { position: [1, 2, 3] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects target not an array', async () => {
+      const result = await dispatch(capturedHandler!, 206, { position: [1, 2, 3], target: 42 });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects target with length != 3', async () => {
+      const result = await dispatch(capturedHandler!, 207, { position: [1, 2, 3], target: [0, 0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects target containing NaN', async () => {
+      const result = await dispatch(capturedHandler!, 208, { position: [1, 2, 3], target: [NaN, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects target containing Infinity', async () => {
+      const result = await dispatch(capturedHandler!, 209, { position: [1, 2, 3], target: [0, -Infinity, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects up that is not an array when provided', async () => {
+      const result = await dispatch(capturedHandler!, 210, { position: [1, 2, 3], target: [0, 0, 0], up: 'bad' });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects up with length != 3 when provided', async () => {
+      const result = await dispatch(capturedHandler!, 211, { position: [1, 2, 3], target: [0, 0, 0], up: [0, 1] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects up containing NaN when provided', async () => {
+      const result = await dispatch(capturedHandler!, 212, { position: [1, 2, 3], target: [0, 0, 0], up: [0, NaN, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects zoom that is NaN when provided', async () => {
+      const result = await dispatch(capturedHandler!, 213, { position: [1, 2, 3], target: [0, 0, 0], zoom: NaN });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects zoom that is Infinity when provided', async () => {
+      const result = await dispatch(capturedHandler!, 214, { position: [1, 2, 3], target: [0, 0, 0], zoom: Infinity });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects zoom <= 0 when provided', async () => {
+      const result = await dispatch(capturedHandler!, 215, { position: [1, 2, 3], target: [0, 0, 0], zoom: -1 });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects zoom = 0 when provided', async () => {
+      const result = await dispatch(capturedHandler!, 216, { position: [1, 2, 3], target: [0, 0, 0], zoom: 0 });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('debug bridge set_test_mode', () => {
