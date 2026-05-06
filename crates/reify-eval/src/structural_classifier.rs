@@ -214,6 +214,24 @@ mod tests {
         assert_eq!(classify_cell(&g, &unknown_id), ParameterClass::Structural);
     }
 
+    // ── Step-9: stage_a_eligible – identical graph and values ─────────────
+
+    #[test]
+    fn stage_a_eligible_identical_graph_and_values_returns_true() {
+        use reify_types::ValueMap;
+
+        let id = ValueCellId::new("Part", "width");
+        let g1 = graph_with_cell(&id, Type::length());
+        let g2 = g1.clone(); // O(1) structural-sharing clone
+        let mut v1 = ValueMap::new();
+        v1.insert(id.clone(), reify_types::Value::length(0.08));
+        let v2 = v1.clone();
+        assert!(
+            stage_a_eligible(&g1, &g2, &v1, &v2),
+            "identical graph and values must be stage-A eligible"
+        );
+    }
+
     // ── Step-7: realization_graph_shape_hash ──────────────────────────────
 
     #[test]
