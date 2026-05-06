@@ -535,4 +535,69 @@ mod tests {
         // Can be used as Box<dyn ConstraintSolver>
         let _boxed: Box<dyn ConstraintSolver> = Box::new(MockSolver);
     }
+
+    /// `ConstraintInput::constraints` can be constructed with `Cow::Borrowed`,
+    /// allowing the hot path to pass a slice through without cloning.
+    ///
+    /// Asserts:
+    /// (a) the variant is `Cow::Borrowed` (no hidden `.to_owned()` call),
+    /// (b) dereferencing via `Deref<Target=[T]>` works (`.len()` is transparent),
+    /// (c) the borrowed-slice pointer equals the source slice (zero-copy).
+    #[test]
+    fn constraint_input_constraints_field_accepts_cow_borrowed() {
+        use std::borrow::Cow;
+
+        let expr = make_literal_expr();
+        let v: Vec<(ConstraintNodeId, &CompiledExpr)> =
+            vec![(ConstraintNodeId::new("C0", 0), &expr)];
+        let empty_values = crate::value::ValueMap::new();
+
+        let input = ConstraintInput {
+            constraints: Cow::Borrowed(&v[..]),
+            values: &empty_values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        // (a) variant is Borrowed
+        assert!(
+            matches!(input.constraints, Cow::Borrowed(_)),
+            "hot-path must pass Cow::Borrowed, not Cow::Owned"
+        );
+        // (b) Deref to &[T] is transparent
+        assert_eq!(
+            input.constraints.len(),
+            v.len(),
+            "Cow::Borrowed deref must report the correct length"
+        );
+        // (c) zero-copy: borrowed-slice pointer equals source
+        assert!(
+            std::ptr::eq(input.constraints.as_ref(), v.as_slice()),
+            "Cow::Borrowed pointer must equal source slice pointer (no hidden copy)"
+        );
+    }
+
+    /// `ConstraintInput::constraints` can also be constructed with `Cow::Owned`,
+    /// preserving the ergonomic inline `vec![...]` pattern for all non-hot-path callers.
+    #[test]
+    fn constraint_input_constraints_field_accepts_cow_owned() {
+        use std::borrow::Cow;
+
+        let expr = make_literal_expr();
+        let empty_values = crate::value::ValueMap::new();
+
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(ConstraintNodeId::new("C0", 0), &expr)]),
+            values: &empty_values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        // Variant is Owned and Deref still works
+        assert!(
+            matches!(input.constraints, Cow::Owned(_)),
+            "ad-hoc construction must remain Cow::Owned"
+        );
+        assert_eq!(input.constraints.len(), 1);
+    }
 }
