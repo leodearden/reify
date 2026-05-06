@@ -1,0 +1,13 @@
+#no_prelude
+// Stdlib: Multi-Load-Case FEA
+//
+// Placeholder for the v0.3.x multi-load-case FEA module. Will eventually host
+// the LoadCase and MultiCaseResult structure definitions plus convenience
+// helpers (envelope_von_mises, worst_case, ...) — see PRD task #1
+// (docs/prds/v0_3/structural-analysis-fea.md, "Multi-load-case FEA" section).
+//
+// This file is intentionally documentation-only for task #3006. The
+// `envelope_max` / `envelope_min` builtins are name-dispatched in
+// `crates/reify-stdlib/src/fea.rs` — no `.ri` registration is required for
+// them to be callable. PRD task #1 will populate this file with structure
+// defs and wire it into `crates/reify-compiler/src/stdlib_loader.rs`.

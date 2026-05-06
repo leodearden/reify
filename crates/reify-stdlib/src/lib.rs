@@ -21,6 +21,7 @@ mod test_fixtures;
 
 mod analysis;
 mod complex;
+mod fea;
 mod geometry;
 mod joints;
 mod linalg;
@@ -72,6 +73,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = loads::eval_loads(name, args) {
+        return v;
+    }
+    if let Some(v) = fea::eval_fea(name, args) {
         return v;
     }
     if let Some(v) = supports::eval_supports(name, args) {
