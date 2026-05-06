@@ -1,12 +1,42 @@
 //! FEA support (boundary-condition) constructors for the stdlib.
 //!
-//! Provides `FixedSupport`, `DisplacementSupport`, and `RollerSupport`
-//! constructors.  Each returns a `Value::Map` with a `kind` discriminator
-//! field, matching the loads/joints constructor pattern.
+//! Provides `FixedSupport`, `PinnedSupport`, `DisplacementSupport`, and
+//! `RollerSupport` constructors.  Each returns a `Value::Map` with a `kind`
+//! discriminator field, matching the loads/joints constructor pattern.
 //!
 //! Selector-target validation is delegated to
 //! [`crate::helpers::validate_selector_target`] (see that helper's doc-comment
 //! for the rationale on why opaque pass-through is currently the right policy).
+//!
+//! ## BC framework (v0.4 shell-aware contract — PRD T15)
+//!
+//! The following contracts apply at solver time (task T8 — shell BC
+//! application).  At constructor time (this module) the selector target is an
+//! opaque pass-through because topology selectors are not yet distinguishable
+//! by entity kind; see `helpers::validate_selector_target` and PRD task 16.
+//!
+//! * **`FixedSupport` on a shell entity** — the solver (T8) automatically
+//!   clamps all 6 DOFs: 3 translational + 3 rotational.  This is the
+//!   shell-specific extension relative to tet behaviour.
+//!
+//! * **`PinnedSupport` on a shell entity** — explicit-pin opt-out from the
+//!   rotational auto-clamp.  Constrains translational DOFs only (3-DOF pin),
+//!   leaving rotational DOFs free.  Use `PinnedSupport` when the physical BC
+//!   is a pin joint rather than a rigid wall attachment.
+//!
+//! * **`FixedSupport` on a tet entity** — unchanged semantics (3 translational
+//!   DOFs constrained; tet elements carry no rotational DOFs).
+//!
+//! * **`PinnedSupport` on a tet entity** — semantically equivalent to
+//!   `FixedSupport` on a tet (both constrain the same 3 translational DOFs).
+//!   The solver (T8) is responsible for emitting a diagnostic warning when
+//!   `PinnedSupport` is applied to a tet target, because the distinction is
+//!   meaningful only for shell elements.
+//!
+//! Selector-target type-compatibility (shell-vs-tet detection) is a
+//! solver-side concern at the time of writing.  See
+//! `docs/prds/v0_4/structural-analysis-shells.md` § "BC framework" for the
+//! full design rationale.
 
 use reify_types::{DimensionVector, Value};
 
