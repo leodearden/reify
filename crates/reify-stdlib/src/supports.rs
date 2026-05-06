@@ -59,6 +59,15 @@ pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
             }
             make_kind_map("fixed_support", vec![("target", args[0].clone())])
         }
+        "PinnedSupport" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            if validate_selector_target(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            make_kind_map("pinned_support", vec![("target", args[0].clone())])
+        }
         "DisplacementSupport" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
