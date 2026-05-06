@@ -155,6 +155,45 @@ pub fn complex_phase(re: f64, im: f64) -> Value {
     }
 }
 
+/// Validate that `v` is a `Value::Vector` (or Tensor/Point) of exactly 3
+/// dimensionless components, all finite, with a non-zero, finite squared
+/// magnitude — and return the raw (un-normalized) `[x, y, z]` components.
+///
+/// Returns `None` for any of:
+/// - Non-Tensor/Vector/Point input (Real, Int, Bool, Undef, String, …) or empty container.
+/// - Wrong arity (length ≠ 3).
+/// - Non-DIMENSIONLESS dimension (e.g. LENGTH-dimensioned vector).
+/// - Any non-finite component (NaN, ±Inf).
+/// - Zero-magnitude vector `[0, 0, 0]`.
+/// - Squared magnitude overflows to `+inf` (e.g. `[f64::MAX, 0, 0]`).
+///
+/// The `mag_sq.is_finite()` guard is required to catch overflow inputs like
+/// `[f64::MAX, 0, 0]` whose squared magnitude is `+inf`. Without this guard
+/// such inputs would be silently accepted as valid axes — the very
+/// consistency hole this unified helper closes.
+///
+/// Used by `supports::eval_supports` (RollerSupport), `loads::validate_pressure_direction`
+/// (non-sentinel branch), and `joints::validate_axis` (one-line wrapper preserved
+/// for rustdoc cross-references and the 8 existing call sites).
+pub(crate) fn validate_dimensionless_unit_axis_vec3(v: &Value) -> Option<[f64; 3]> {
+    let (comps, dim) = tensor_components_f64(v)?;
+    if comps.len() != 3 {
+        return None;
+    }
+    if dim != DimensionVector::DIMENSIONLESS {
+        return None;
+    }
+    let [x, y, z] = [comps[0], comps[1], comps[2]];
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return None;
+    }
+    let mag_sq = x * x + y * y + z * z;
+    if mag_sq == 0.0 || !mag_sq.is_finite() {
+        return None;
+    }
+    Some([x, y, z])
+}
+
 /// Extract numeric components and consistent dimension from a Tensor value.
 ///
 /// Returns `Some((values, dimension))` if:
