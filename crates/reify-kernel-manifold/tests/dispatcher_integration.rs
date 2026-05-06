@@ -45,10 +45,9 @@
 //!   (zero-conversion path: input repr already matches the demanded repr).
 
 // Shared compile-time guard: requires `stub_register` feature.
-// Source of truth lives in `tests/common/feature_guard.rs`; add new test
-// binaries by including the same line below.
-#[path = "common/feature_guard.rs"]
-mod feature_guard;
+// Source of truth lives in `tests/common/mod.rs`; add new test binaries
+// by including the same `mod common;` line below.
+mod common;
 
 use std::collections::{BTreeMap, HashSet};
 

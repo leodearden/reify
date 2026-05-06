@@ -48,7 +48,7 @@
 //! compilation units that do not inherit `cfg(test)` from the parent
 //! crate, so the self-dev-dep is the only reliable activation path.
 //! Note: `cfg(test)` is NOT used here — the `compile_error!` guard in
-//! each integration test binary (see `tests/common/feature_guard.rs`)
+//! each integration test binary (see `tests/common/mod.rs`)
 //! provides an actionable compile-time message if the self-dev-dep
 //! activation is ever removed, making `cfg(test)` as a fallback
 //! unnecessary.
@@ -91,7 +91,7 @@ pub fn manifold_factory() -> Box<dyn GeometryKernel> {
 // (separate compilation units that don't see the parent crate's
 // `cfg(test)`).  A `cfg(test)` fallback is intentionally omitted to
 // match OCCT's gate shape — the `compile_error!` guard in
-// `tests/common/feature_guard.rs` provides an actionable compile-time
+// `tests/common/mod.rs` provides an actionable compile-time
 // error if the self-dev-dep activation is ever removed.
 //
 // Both items are gated together: `manifold_factory` is only called from this
