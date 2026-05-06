@@ -324,6 +324,34 @@ impl CacheStore {
         self.imported_file_hashes.get(path).copied()
     }
 
+    /// Invalidation predicate for PRD task 5's wire site in `elaborate_field`.
+    ///
+    /// Returns `true` (i.e. "invalidate") in two cases:
+    /// - The path has no recorded hash yet (cold start — `None` in the side-table).
+    /// - The recorded hash differs from `new_hash` (file content changed).
+    ///
+    /// Returns `false` (i.e. "cache hit") only when an exact match is recorded.
+    ///
+    /// ## Three branches
+    ///
+    /// 1. **No prior recording** → `true` (cold start; must re-read).
+    /// 2. **Recorded hash == `new_hash`** → `false` (content unchanged; cache hits).
+    /// 3. **Recorded hash != `new_hash`** → `true` (content changed; must invalidate).
+    ///
+    /// ## PRD acceptance properties
+    ///
+    /// - File-content change → different hash → returns `true` → invalidation signal.
+    /// - File-path change with same content → same hash (from `engine_eval::hash_imported_file_content`,
+    ///   which hashes bytes only) → returns `false` → cache hit.
+    ///
+    /// Companion to [`CacheStore::record_imported_file_hash`] and
+    /// [`CacheStore::get_imported_file_hash`].
+    pub fn imported_file_hash_changed(&self, path: &str, new_hash: ContentHash) -> bool {
+        self.imported_file_hashes
+            .get(path)
+            .map_or(true, |h| *h != new_hash)
+    }
+
     /// Record an evaluation result and determine if it changed (early cutoff).
     ///
     /// Thin wrapper around [`CacheStore::record_evaluation_with_freshness`] that always
