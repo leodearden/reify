@@ -1560,6 +1560,30 @@ structure def S4B : T4 { param x : Real = 4.5 }
          fallback), got: {:?}",
         cap_diagnostics
     );
+
+    // Total-diagnostic pin: with 4 free params each having 2 candidates, DFS
+    // visits 16 feasible cross-product leaves and routes through the all-free
+    // NonUnique branch, which emits exactly one `AutoTypeParamNonUnique`
+    // Warning (lex-first selected). Asserting `diagnostics.len() == 1` and
+    // pinning the sole code to NonUnique closes the off-by-one boundary in
+    // both directions: a regression that fired the cap warning at the
+    // boundary AND ran the all-free NonUnique path (double-emission)
+    // would not be caught by the `cap_diagnostics.is_empty()` filter alone.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS at max_cross_product_size boundary must emit exactly one diagnostic \
+         (the all-free NonUnique Warning) — no cap warning, no extras; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "the sole boundary-case diagnostic must be `AutoTypeParamNonUnique` \
+         (4 free params × 2 candidates ⇒ 16 feasibles ⇒ all-free NonUnique \
+         emits a single Warning); got: {:?}",
+        diagnostics[0].code
+    );
 }
 
 // ─── DFS empty-params with small cap returns vacuous success (task 2662) ──
