@@ -1452,6 +1452,116 @@ structure def S4B : T4 { param x : Real = 4.5 }
     );
 }
 
+// ─── DFS at max_cross_product_size runs DFS (no fallback diagnostic) (task 2662) ──
+
+/// Four `AutoTypeParam`s, each with 2 implementing structures (4 × 2 = 16
+/// cross-product) — boundary case `cross_product_size == max_cross_product_size`.
+/// Calling DFS with `max_depth = 6` and `max_cross_product_size = 16` must run
+/// DFS proper (NOT the BFS fallback) — `cross_product_size > max_cross_product_size`
+/// is strict-greater, so `16 > 16` is false.
+///
+/// Pins the off-by-one boundary: `>` triggers fallback, `==` does not.
+/// This test is the upper-bound mirror of
+/// `dfs_above_max_cross_product_size_emits_warning_and_falls_back_to_bfs`,
+/// and parallels `dfs_at_max_depth_runs_dfs_no_fallback_diagnostic` for the
+/// task 2662 cross-product cap.
+///
+/// Pins:
+/// - `outcome.per_param.len() == 4` and every entry is `Selected`
+/// - `outcome.substitution.len() == 4` in declared order
+/// - zero `AutoTypeParamCrossProductSizeExceeded` diagnostics in the
+///   diagnostics vector (the cap branch must NOT fire when n == cap)
+#[test]
+fn dfs_at_max_cross_product_size_runs_dfs_no_fallback_diagnostic() {
+    // Four distinct traits, each with 2 implementing structures.
+    let source = r#"
+trait T1 {}
+trait T2 {}
+trait T3 {}
+trait T4 {}
+
+structure def S1A : T1 { param x : Real = 1.0 }
+structure def S1B : T1 { param x : Real = 1.5 }
+structure def S2A : T2 { param x : Real = 2.0 }
+structure def S2B : T2 { param x : Real = 2.5 }
+structure def S3A : T3 { param x : Real = 3.0 }
+structure def S3B : T3 { param x : Real = 3.5 }
+structure def S4A : T4 { param x : Real = 4.0 }
+structure def S4B : T4 { param x : Real = 4.5 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params: Vec<AutoTypeParam> = (1..=4)
+        .map(|i| AutoTypeParam {
+            name: format!("P{}", i),
+            // free=true so 4 free params don't trigger NonUnique on multiple
+            // feasibles (every trait has 2 candidates, so each param has 2
+            // feasibles and the cross-product has 16 distinct feasible leaves).
+            // free-mode picks the lex-first feasible deterministically.
+            bounds: vec![format!("T{}", i)],
+            free: true,
+            use_site_span: SourceSpan::new(10 * i, 10 * i + 5),
+        })
+        .collect();
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        16, // strict `>`: 16 > 16 is false → DFS path
+        &mut diagnostics,
+    );
+
+    // Four Selected entries in declared order, lex-first within each param:
+    // P1 ↦ S1A, P2 ↦ S2A, P3 ↦ S3A, P4 ↦ S4A.
+    assert_eq!(
+        outcome.per_param.len(),
+        4,
+        "DFS at max_cross_product_size boundary must produce 4 per_param entries \
+         (no fallback truncation), got: {:?}",
+        outcome.per_param
+    );
+    for (name, sel) in &outcome.per_param {
+        assert!(
+            matches!(sel, SelectionResult::Selected(_)),
+            "per_param entry for {} must be Selected (DFS ran end-to-end), got: {:?}",
+            name, sel
+        );
+    }
+    assert_eq!(
+        outcome.substitution.len(),
+        4,
+        "DFS at max_cross_product_size boundary must produce 4 substitution \
+         entries, got: {:?}",
+        outcome.substitution
+    );
+
+    // Critical assertion: NO `AutoTypeParamCrossProductSizeExceeded` diagnostic.
+    // The cap branch uses strict `>`, so `16 > 16` is false — the search runs
+    // DFS proper, not the BFS fallback.
+    let cap_diagnostics: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded))
+        .collect();
+    assert!(
+        cap_diagnostics.is_empty(),
+        "DFS at max_cross_product_size boundary (n == cap) must NOT emit \
+         AutoTypeParamCrossProductSizeExceeded (strict `>`: only n > cap triggers \
+         fallback), got: {:?}",
+        cap_diagnostics
+    );
+}
+
 // ─── amend (post-verification): coverage gaps surfaced in code review ──────
 
 /// Multi-param scenario where Phase A succeeds for every param but every
