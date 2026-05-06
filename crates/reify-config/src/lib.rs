@@ -175,6 +175,11 @@ impl Manifest {
                 if raw_atp.max_depth == 0 {
                     return Err(ManifestError::InvalidMaxDepth(raw_atp.max_depth));
                 }
+                if raw_atp.max_cross_product_size == 0 {
+                    return Err(ManifestError::InvalidMaxCrossProductSize(
+                        raw_atp.max_cross_product_size,
+                    ));
+                }
                 AutoTypeParamsConfig {
                     max_depth: raw_atp.max_depth,
                     max_cross_product_size: raw_atp.max_cross_product_size,
@@ -265,6 +270,14 @@ pub enum ManifestError {
     /// is rejected at parse time. The wrapped `usize` is the offending
     /// value, surfaced verbatim in the rendered message.
     InvalidMaxDepth(usize),
+    /// `[auto_type_params].max_cross_product_size` was non-positive (i.e.
+    /// `0`). Every search must visit at least one leaf assignment, so `0`
+    /// is meaningless (DFS would always fall back to BFS unconditionally
+    /// for any non-empty params slice) and is rejected at parse time. The
+    /// wrapped `usize` is the offending value, surfaced verbatim in the
+    /// rendered message. Mirrors `InvalidMaxDepth` for the task 2662
+    /// cross-product hard cap.
+    InvalidMaxCrossProductSize(usize),
 }
 
 impl fmt::Display for ManifestError {
@@ -292,6 +305,13 @@ impl fmt::Display for ManifestError {
             }
             ManifestError::InvalidMaxDepth(n) => {
                 write!(f, "auto_type_params.max_depth must be > 0; got {}", n)
+            }
+            ManifestError::InvalidMaxCrossProductSize(n) => {
+                write!(
+                    f,
+                    "auto_type_params.max_cross_product_size must be > 0; got {}",
+                    n
+                )
             }
         }
     }
