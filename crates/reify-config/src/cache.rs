@@ -212,12 +212,32 @@ pub fn resolve_cache(inputs: &CacheResolverInputs<'_>) -> Result<CacheResolution
             CacheDirSource::Default,
         )
     };
-    let _ = inputs.env_max_bytes;
+    // max_bytes ladder, parallel to dir but minus the CLI layer (the PRD
+    // does not define a CLI flag for max-bytes).
+    let (max_bytes, max_bytes_source) = if let Some(env) = inputs
+        .env_max_bytes
+        .filter(|s| !s.is_empty())
+    {
+        // Empty-string env vars are treated as unset (XDG / POSIX
+        // convention, matching env_dir). On parse failure surface
+        // `CacheError::InvalidMaxBytes` so callers can render the
+        // offending input back to the user.
+        let n: u64 = env
+            .parse()
+            .map_err(|_| CacheError::InvalidMaxBytes(env.to_string()))?;
+        (n, CacheMaxBytesSource::EnvVar)
+    } else if let Some(user_n) = inputs.user_config.and_then(|c| c.max_bytes) {
+        (user_n, CacheMaxBytesSource::UserConfig)
+    } else if let Some(project_n) = inputs.project_config.and_then(|c| c.max_bytes) {
+        (project_n, CacheMaxBytesSource::ProjectConfig)
+    } else {
+        (DEFAULT_CACHE_MAX_BYTES, CacheMaxBytesSource::Default)
+    };
     Ok(CacheResolution {
         dir,
-        max_bytes: DEFAULT_CACHE_MAX_BYTES,
+        max_bytes,
         dir_source,
-        max_bytes_source: CacheMaxBytesSource::Default,
+        max_bytes_source,
     })
 }
 
@@ -246,6 +266,11 @@ pub enum CacheError {
     /// [`std::error::Error::source`] so callers can introspect it.
     /// Mirrors `ManifestError::Io`.
     Io(std::io::Error),
+    /// `REIFY_CACHE_MAX_BYTES` was set to a value that did not parse as
+    /// `u64` (e.g. `"not-a-number"`, `"-5"`). The wrapped string is the
+    /// offending input verbatim, so the caller can quote it back to the
+    /// user.
+    InvalidMaxBytes(String),
 }
 
 impl fmt::Display for CacheError {
@@ -253,6 +278,11 @@ impl fmt::Display for CacheError {
         match self {
             CacheError::Parse(msg) => write!(f, "failed to parse cache config: {}", msg),
             CacheError::Io(err) => write!(f, "failed to read cache config: {}", err),
+            CacheError::InvalidMaxBytes(input) => write!(
+                f,
+                "REIFY_CACHE_MAX_BYTES is not a valid u64: '{}'",
+                input
+            ),
         }
     }
 }
