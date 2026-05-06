@@ -190,6 +190,83 @@ mod tests {
         assert_eq!(classify_cell(&g, &unknown_id), ParameterClass::Structural);
     }
 
+    // ── Step-7: realization_graph_shape_hash ──────────────────────────────
+
+    #[test]
+    fn realization_graph_shape_hash_two_identical_graphs_produce_equal_hashes() {
+        // Two graphs built with the same content must hash identically.
+        let id = ValueCellId::new("Part", "width");
+        let g1 = graph_with_cell(&id, Type::length());
+        let g2 = graph_with_cell(&id, Type::length());
+        assert_eq!(
+            realization_graph_shape_hash(&g1),
+            realization_graph_shape_hash(&g2),
+            "identical graphs must produce equal hashes"
+        );
+    }
+
+    #[test]
+    fn realization_graph_shape_hash_added_realization_diverges() {
+        use reify_types::RealizationNodeId;
+        use crate::graph::RealizationNodeData;
+
+        let id = ValueCellId::new("Part", "width");
+        let g1 = graph_with_cell(&id, Type::length());
+        let mut g2 = g1.clone();
+        // Insert an extra realization node into g2.
+        let rid = RealizationNodeId::new("Part", 99);
+        g2.realizations.insert(
+            rid.clone(),
+            RealizationNodeData {
+                id: rid,
+                operations: vec![],
+                content_hash: reify_types::ContentHash::of_str("extra-realization"),
+            },
+        );
+        assert_ne!(
+            realization_graph_shape_hash(&g1),
+            realization_graph_shape_hash(&g2),
+            "adding a realization must change the shape hash"
+        );
+    }
+
+    #[test]
+    fn realization_graph_shape_hash_added_value_cell_diverges() {
+        let id = ValueCellId::new("Part", "width");
+        let g1 = graph_with_cell(&id, Type::length());
+        let mut g2 = g1.clone();
+        // Insert an additional value cell into g2.
+        let extra_id = ValueCellId::new("Part", "height");
+        g2.value_cells.insert(
+            extra_id.clone(),
+            ValueCellNode {
+                id: extra_id.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: ContentHash::of_str(&format!("{}", extra_id)),
+            },
+        );
+        assert_ne!(
+            realization_graph_shape_hash(&g1),
+            realization_graph_shape_hash(&g2),
+            "adding a value cell must change the shape hash"
+        );
+    }
+
+    #[test]
+    fn realization_graph_shape_hash_matches_topology_fingerprint() {
+        // Locks the delegation contract: realization_graph_shape_hash must
+        // exactly equal graph.topology_fingerprint() — no forked implementation.
+        let id = ValueCellId::new("Part", "width");
+        let g = graph_with_cell(&id, Type::length());
+        assert_eq!(
+            realization_graph_shape_hash(&g),
+            g.topology_fingerprint(),
+            "realization_graph_shape_hash must delegate to topology_fingerprint"
+        );
+    }
+
     // ── Step-5: collection_subs count_cell overrides Int → Dimensional ────
 
     #[test]
