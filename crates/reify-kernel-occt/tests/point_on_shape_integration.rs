@@ -25,6 +25,7 @@
 //! - Zero tolerance with exact face point (5,0,0) → true (dist=0 exactly).
 //! - Off-face coplanar point (5,100,100): on plane x=5 but outside face extent → false.
 //! - Non-solid (wire) fixture: point 1 unit off the wire returns false (no OCCT overlap).
+//! - Negative tolerance → `Err(QueryError::QueryFailed(_))` with message 'non-negative finite' (regression sentinel).
 
 #![cfg(has_occt)]
 
@@ -267,6 +268,48 @@ fn wire_kernel() -> (OcctKernel, GeometryHandleId) {
         })
         .expect("line segment creation should succeed");
     (kernel, handle.id)
+}
+
+// ---------------------------------------------------------------------------
+// Tolerance precondition — early-validation throw site regression sentinels
+// ---------------------------------------------------------------------------
+
+/// Regression sentinel for the early-validation throw at
+/// `cpp/occt_wrapper.cpp:2809–2812`.
+///
+/// The C++ wrapper validates the tolerance argument before calling
+/// `BRepExtrema_DistShapeShape`:
+///
+/// ```cpp
+/// if (tolerance < 0.0 || !std::isfinite(tolerance))
+///     throw std::runtime_error(
+///         "point_on_shape: tolerance must be a non-negative finite value");
+/// ```
+///
+/// The contract is documented at all five layers: `cpp/occt_wrapper.cpp`,
+/// `cpp/occt_wrapper.h`, `crates/reify-kernel-occt/src/ffi.rs`,
+/// `crates/reify-kernel-occt/src/lib.rs`, and
+/// `crates/reify-types/src/stubs.rs`.  This test locks the throw site:
+/// if it starts returning `Ok(_)` or a different error message, the early
+/// check was silently removed or its wording changed.
+#[test]
+fn point_on_shape_negative_tolerance_returns_error() {
+    let (kernel, box_id) = box_kernel();
+    let result = kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, -1.0);
+    match result {
+        Err(QueryError::QueryFailed(ref msg)) => {
+            assert!(
+                msg.contains("non-negative finite"),
+                "expected message to contain 'non-negative finite', got {msg:?}"
+            );
+        }
+        Ok(v) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for tolerance=-1.0, got Ok({v:?})"
+        ),
+        Err(e) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for tolerance=-1.0, got Err({e:?})"
+        ),
+    }
 }
 
 /// Query point (0.0, 1.0, 0.0) is 1.0 unit away from the wire (which lies on
