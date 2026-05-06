@@ -660,4 +660,39 @@ mod tests {
             diagnostics[0].message
         );
     }
+
+    /// Any argument shape passed to `@solid` on a valid entity context (structure)
+    /// produces exactly one diagnostic whose message mentions `"takes no arguments"`.
+    ///
+    /// `@solid` is a bare marker — force-tet is unconditional, no parameter
+    /// controls its behaviour. The grid documents that every arg variant is
+    /// rejected uniformly, distinguishing the contract from `@shell`'s
+    /// "numeric ok / non-numeric warn" shape.
+    #[test]
+    fn solid_with_any_arg_warns() {
+        let arg_shapes: &[(&str, Vec<reify_types::AnnotationArg>)] = &[
+            ("Real(0.5)",   vec![reify_types::AnnotationArg::Real(0.5)]),
+            ("Int(2)",      vec![reify_types::AnnotationArg::Int(2)]),
+            ("String(foo)", vec![reify_types::AnnotationArg::String("foo".into())]),
+            ("Bool(true)",  vec![reify_types::AnnotationArg::Bool(true)]),
+            ("Ident(id)",   vec![reify_types::AnnotationArg::Ident("ident".into())]),
+            ("two reals",   vec![reify_types::AnnotationArg::Real(0.5), reify_types::AnnotationArg::Real(0.6)]),
+        ];
+        for (label, args) in arg_shapes {
+            let anns = vec![ann(reify_types::SOLID_ANNOTATION, args.clone())];
+            let mut diagnostics = Vec::new();
+            validate_annotations(&anns, "structure", &mut diagnostics);
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "arg shape {label}: expected exactly 1 diagnostic, got: {:?}",
+                diagnostics
+            );
+            assert!(
+                diagnostics[0].message.contains("takes no arguments"),
+                "arg shape {label}: unexpected message: {}",
+                diagnostics[0].message
+            );
+        }
+    }
 }
