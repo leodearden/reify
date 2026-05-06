@@ -424,4 +424,46 @@ mod tests {
         assert_eq!(resolved.dir_source, CacheDirSource::Default);
         assert_eq!(resolved.max_bytes_source, CacheMaxBytesSource::Default);
     }
+
+    #[test]
+    fn resolve_cache_cli_dir_used_when_only_layer_set() {
+        let inputs = CacheResolverInputs {
+            cli_dir: Some(Path::new("/cli")),
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: None,
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("cli-only resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/cli"));
+        assert_eq!(resolved.dir_source, CacheDirSource::CliFlag);
+    }
+
+    #[test]
+    fn resolve_cache_cli_beats_all_other_layers() {
+        // Pin the precedence policy: CLI flag is the highest layer and
+        // wins over env vars and both config layers.
+        let user = CacheConfig {
+            dir: Some(PathBuf::from("/u")),
+            max_bytes: None,
+        };
+        let project = CacheConfig {
+            dir: Some(PathBuf::from("/p")),
+            max_bytes: None,
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: Some(Path::new("/cli")),
+            env_dir: Some("/env"),
+            env_max_bytes: None,
+            user_config: Some(&user),
+            project_config: Some(&project),
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("cli-wins resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/cli"));
+        assert_eq!(resolved.dir_source, CacheDirSource::CliFlag);
+    }
 }
