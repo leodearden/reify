@@ -1283,6 +1283,164 @@ structure def ORingSeal : Seal {
     );
 }
 
+// ─── DFS above max_cross_product_size emits warning + falls back to BFS (task 2662) ──
+
+/// Four `AutoTypeParam`s, each with 2 implementing structures (4 × 2 = 16
+/// cross-product leaf assignments). Calling DFS with `max_depth = 6` and
+/// `max_cross_product_size = 10` triggers the cap fallback: 16 > 10 ⇒
+/// orchestrator emits `AutoTypeParamCrossProductSizeExceeded` (Warning) and
+/// delegates back to `resolve_auto_type_params` (v0.1 BFS).
+///
+/// Mirrors `dfs_above_max_depth_emits_warning_and_falls_back_to_bfs` for the
+/// task 2662 cross-product hard cap. Pins:
+/// - DFS outcome equals what BFS would have returned for the same inputs.
+/// - Exactly one extra diagnostic compared to BFS's clean run, with code
+///   `AutoTypeParamCrossProductSizeExceeded` (Warning), message containing
+///   the cross-product size "16", the cap "10", a param name, and a
+///   substring like "falling back" or "BFS".
+/// - The label anchor is on `params[0].use_site_span` (declared-order halt
+///   anchors on the first param — same convention as the depth-bound branch).
+/// - The cap check uses strict `>`: `cross_product_size > max_cross_product_size`
+///   ⇒ fallback fires; the boundary case `==` is exercised in
+///   `dfs_at_max_cross_product_size_runs_dfs_no_fallback_diagnostic`.
+#[test]
+fn dfs_above_max_cross_product_size_emits_warning_and_falls_back_to_bfs() {
+    // Four distinct traits, each with 2 implementing structures.
+    let source = r#"
+trait T1 {}
+trait T2 {}
+trait T3 {}
+trait T4 {}
+
+structure def S1A : T1 { param x : Real = 1.0 }
+structure def S1B : T1 { param x : Real = 1.5 }
+structure def S2A : T2 { param x : Real = 2.0 }
+structure def S2B : T2 { param x : Real = 2.5 }
+structure def S3A : T3 { param x : Real = 3.0 }
+structure def S3B : T3 { param x : Real = 3.5 }
+structure def S4A : T4 { param x : Real = 4.0 }
+structure def S4B : T4 { param x : Real = 4.5 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+
+    let p0_span = SourceSpan::new(10, 15);
+    let params: Vec<AutoTypeParam> = (1..=4)
+        .map(|i| AutoTypeParam {
+            name: format!("P{}", i),
+            bounds: vec![format!("T{}", i)],
+            free: false,
+            use_site_span: if i == 1 {
+                p0_span
+            } else {
+                SourceSpan::new(10 * i, 10 * i + 5)
+            },
+        })
+        .collect();
+
+    // Capture BFS's outcome on the same inputs for parity comparison.
+    let mut bfs_diagnostics = Vec::new();
+    let bfs_outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut bfs_diagnostics,
+    );
+
+    // Now run DFS with `max_depth = 6` and `max_cross_product_size = 10`
+    // (cross-product size 4 × 2 × 2 × 2 = 16 > 10 ⇒ cap fallback fires).
+    let mut dfs_diagnostics = Vec::new();
+    let dfs_outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        10,
+        &mut dfs_diagnostics,
+    );
+
+    // Outcome parity: DFS-with-cap-fallback must match BFS exactly.
+    assert_eq!(
+        dfs_outcome, bfs_outcome,
+        "DFS above max_cross_product_size must delegate to BFS — outcome must \
+         match BFS's identical-input outcome. DFS: {:?}, BFS: {:?}",
+        dfs_outcome, bfs_outcome
+    );
+
+    // Diagnostic delta: DFS emits one EXTRA `AutoTypeParamCrossProductSizeExceeded`
+    // Warning beyond BFS's diagnostics (BFS itself emits zero diagnostics on
+    // a clean 4-param happy path).
+    assert_eq!(
+        dfs_diagnostics.len(),
+        bfs_diagnostics.len() + 1,
+        "DFS above max_cross_product_size must emit exactly one extra diagnostic \
+         beyond BFS. DFS diagnostics: {:?}, BFS diagnostics: {:?}",
+        dfs_diagnostics, bfs_diagnostics
+    );
+    let extra = dfs_diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded))
+        .expect(
+            "DFS must emit exactly one AutoTypeParamCrossProductSizeExceeded \
+             diagnostic when cross_product_size > max_cross_product_size",
+        );
+    assert_eq!(
+        extra.severity,
+        Severity::Warning,
+        "AutoTypeParamCrossProductSizeExceeded must be a Warning severity, got: {:?}",
+        extra.severity
+    );
+    assert!(
+        extra.message.contains("16"),
+        "cap diagnostic must mention the cross-product size '16'; got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("10"),
+        "cap diagnostic must mention the max_cross_product_size '10'; got: {:?}",
+        extra.message
+    );
+    let mentions_param_name = extra.message.contains("P1")
+        || extra.message.contains("P2")
+        || extra.message.contains("P3")
+        || extra.message.contains("P4");
+    assert!(
+        mentions_param_name,
+        "cap diagnostic must name at least one auto-type-param (PRD: \"naming the parameters\"); got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("falling back") || extra.message.contains("BFS"),
+        "cap diagnostic must include the canonical 'falling back'/'BFS' suffix \
+         shared with the depth-bound diagnostic; got: {:?}",
+        extra.message
+    );
+
+    // Label anchor: declared-order halt anchors on the first param's use-site span.
+    assert_eq!(
+        extra.labels.len(),
+        1,
+        "cap diagnostic must carry exactly one label; got: {:?}",
+        extra.labels
+    );
+    assert_eq!(
+        extra.labels[0].span, p0_span,
+        "cap diagnostic label must anchor on params[0].use_site_span (declared-order \
+         halt anchors on the first param); got: {:?}",
+        extra.labels[0].span
+    );
+}
+
 // ─── amend (post-verification): coverage gaps surfaced in code review ──────
 
 /// Multi-param scenario where Phase A succeeds for every param but every
