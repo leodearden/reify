@@ -53,6 +53,15 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// extrema are selected via IEEE 754 `total_cmp`, and the first finite
 /// case at each index wins on ties.
 fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
+    // Argument-shape validation contract (pinned by
+    // `envelope_max_argument_shape_negative_paths_return_undef`):
+    //   1. arity must be exactly 1 (Map<String, Field>).
+    //   2. args[0] must be `Value::Map(_)`.
+    //   3. each Map value must be `Value::Field { source: Sampled, .. }`
+    //      with `lambda.as_ref() == Value::SampledField(_)` — non-Field
+    //      values, non-Sampled sources, and lambda-slot mismatches all
+    //      reject to `Value::Undef` (defensive arms in the loops below
+    //      mirror `field_reductions.rs:96-99`).
     if args.len() != 1 {
         return Value::Undef;
     }
