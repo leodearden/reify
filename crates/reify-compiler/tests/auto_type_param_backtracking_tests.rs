@@ -1613,6 +1613,123 @@ fn dfs_empty_params_with_small_cap_returns_vacuous_success() {
     );
 }
 
+// ─── DFS Phase A overflow halts before cap check (task 2662) ──
+
+/// Phase A overflow on the first param + paranoid small `max_cross_product_size = 1`.
+/// Pins that Phase A's overflow early-return precedes the cap check — the
+/// cap branch is placed AFTER the Phase A enumeration loop in
+/// `resolve_auto_type_params_with_backtracking`, so any Phase A early-return
+/// (Empty or Overflow) returns from the function before the cap is computed
+/// or compared.
+///
+/// Drives the overflow path using `build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1)`
+/// to push T's pool above `MAX_AUTO_TYPE_PARAM_CANDIDATES = 10`. Two params
+/// declared so the call falls under multi-param dispatch (single-param
+/// short-circuit doesn't apply).
+///
+/// Pins:
+/// - outcome is the Phase-A-overflow shape
+///   (`per_param == [(T, Ambiguous(overflow_vec))]`, `substitution.is_empty()`)
+/// - the diagnostics contain a `AutoTypeParamPoolOverflow` (from Phase A)
+/// - the diagnostics contain ZERO `AutoTypeParamCrossProductSizeExceeded` —
+///   pinning that Phase A early-return short-circuits the cap evaluation.
+#[test]
+fn dfs_phase_a_overflow_on_first_param_halts_before_cap_check() {
+    // Drive Phase A's overflow path: 11 structures all implementing Seal,
+    // pushing the candidate pool above MAX_AUTO_TYPE_PARAM_CANDIDATES = 10.
+    let mut source = build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1);
+    // Add a second trait (Cooled) with one structure so the multi-param
+    // dispatch is exercised (single-param short-circuit would otherwise apply).
+    source.push_str("trait Cooled {}\n");
+    source.push_str("structure def AirCooled : Cooled { param x : Real = 1.0 }\n");
+    let module = parse_and_compile(&source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()], // 11 structures ⇒ Phase A Overflow
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        1, // paranoid: smallest legal cap value
+        &mut diagnostics,
+    );
+
+    // Phase-A-overflow shape: length-1 [(T, Ambiguous(overflow_vec))].
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "DFS Phase A overflow halt must produce length-1 per_param (only the \
+         failing param recorded), got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(
+        outcome.per_param[0].0, "T",
+        "Phase A overflow halt must anchor on the failing param 'T', got: {:?}",
+        outcome.per_param[0].0
+    );
+    match &outcome.per_param[0].1 {
+        SelectionResult::Ambiguous(_) => {}
+        other => panic!(
+            "Phase A overflow halt must produce SelectionResult::Ambiguous \
+             (overflow_vec); got: {:?}",
+            other
+        ),
+    }
+    assert!(
+        outcome.substitution.is_empty(),
+        "Phase A overflow halt must yield empty substitution, got: {:?}",
+        outcome.substitution
+    );
+
+    // Phase A pushed the overflow diagnostic.
+    let overflow_count = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamPoolOverflow))
+        .count();
+    assert_eq!(
+        overflow_count, 1,
+        "Phase A must emit exactly one AutoTypeParamPoolOverflow diagnostic, \
+         got: {:?}",
+        diagnostics
+    );
+
+    // Critical assertion: NO `AutoTypeParamCrossProductSizeExceeded` — the
+    // Phase A overflow early-return precedes the cap check.
+    let cap_count = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded))
+        .count();
+    assert_eq!(
+        cap_count, 0,
+        "Phase A overflow halt must short-circuit before the cap evaluation, \
+         so zero AutoTypeParamCrossProductSizeExceeded diagnostics; got: {:?}",
+        diagnostics
+    );
+}
+
 // ─── amend (post-verification): coverage gaps surfaced in code review ──────
 
 /// Multi-param scenario where Phase A succeeds for every param but every
