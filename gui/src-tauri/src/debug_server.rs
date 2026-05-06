@@ -561,13 +561,36 @@ async fn handle_rest(
 }
 
 async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(30_000);
+    // Validate and canonicalize timeout_ms here so the Rust oneshot and the
+    // frontend handler both use the same effective timeout with no drift
+    // between two independent parsers.
+    let timeout_ms: u64 = match params.get("timeout_ms") {
+        None => 30_000,
+        Some(v) => match v.as_u64().filter(|&n| n > 0) {
+            Some(n) => n,
+            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
+        },
+    };
+
+    // Fast Rust-side pre-check: if the engine session has never completed a
+    // compile/check cycle, return immediately rather than delegating to the
+    // frontend where `evalStatus` starts as `'idle'` by default and would
+    // produce a false-positive ok response on a fresh (un-loaded) session.
+    {
+        let engine = state.engine.lock().unwrap();
+        if !engine.is_idle() {
+            return Ok(json!({"error": "engine_not_started"}));
+        }
+    }
+
+    // Build a canonical params object so the frontend receives a validated value.
+    let canonical_params = json!({ "timeout_ms": timeout_ms });
     // Add a 5-second buffer so the Rust-side oneshot fires *after* the frontend
     // has had a chance to return its own {error: "timeout"} response.
     let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
     state
         .debug_bridge
-        .query_frontend_with_timeout("wait_for_idle", params, rust_timeout)
+        .query_frontend_with_timeout("wait_for_idle", canonical_params, rust_timeout)
         .await
 }
 

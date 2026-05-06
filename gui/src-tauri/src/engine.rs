@@ -427,12 +427,22 @@ impl EngineSession {
     }
 
     /// Returns `true` once a complete parse+compile+check cycle has been
-    /// committed to this session (i.e., the session has settled state and is
-    /// ready to serve GUI queries).
+    /// committed to this session — i.e., both `compiled` and `last_check` are
+    /// populated.  This is `false` on a freshly-constructed `EngineSession`
+    /// (before the first `load_from_source` or `update_source` call) and
+    /// `true` afterward.
     ///
-    /// This is `false` on a freshly-constructed `EngineSession` (before any
-    /// `load_from_source` or `update_source` call) and `true` afterward, as
-    /// long as the last cycle succeeded without errors.
+    /// **Note:** a cycle that produced compile or check diagnostics still
+    /// returns `true` — this predicate only checks that *a* cycle has
+    /// completed, not that it was error-free.
+    ///
+    /// Used by `handle_wait_for_idle` as a fast pre-check that guards against
+    /// false-positive idle responses on a fresh session (where the frontend's
+    /// `evalStatus` starts as `'idle'` by default).  The full wait delegates
+    /// to the frontend's `evalStatus` polling for the authoritative "idle
+    /// including pending UI re-render" signal, because the Rust engine is
+    /// fully synchronous — any in-progress work completes before the
+    /// Tauri command returns.
     pub fn is_idle(&self) -> bool {
         self.compiled.is_some() && self.last_check.is_some()
     }
