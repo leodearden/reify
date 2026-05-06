@@ -782,4 +782,62 @@ mod tests {
         assert_eq!(resolved.max_bytes, 999);
         assert_eq!(resolved.max_bytes_source, CacheMaxBytesSource::UserConfig);
     }
+
+    #[test]
+    fn resolve_cache_invalid_max_bytes_not_a_number() {
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: Some("not-a-number"),
+            user_config: None,
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let err = resolve_cache(&inputs).expect_err("non-numeric env should fail");
+        match err {
+            CacheError::InvalidMaxBytes(s) => assert_eq!(s, "not-a-number"),
+            other => panic!("expected CacheError::InvalidMaxBytes, got {:?}", other),
+        }
+    }
+
+    /// Negative numbers don't parse as `u64` — the offending input must
+    /// surface via `InvalidMaxBytes`, not as a silent overflow / wrap.
+    #[test]
+    fn resolve_cache_invalid_max_bytes_negative() {
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: Some("-5"),
+            user_config: None,
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let err = resolve_cache(&inputs).expect_err("negative env should fail");
+        match err {
+            CacheError::InvalidMaxBytes(s) => assert_eq!(s, "-5"),
+            other => panic!("expected CacheError::InvalidMaxBytes, got {:?}", other),
+        }
+    }
+
+    /// Display rendering must include both the offending input (so the
+    /// user can spot the typo) and the env-var name (so the user knows
+    /// where to look). Mirrors the `ManifestError::InvalidMaxDepth`
+    /// rendering style.
+    #[test]
+    fn invalid_max_bytes_display_mentions_input_and_variable() {
+        let err = CacheError::InvalidMaxBytes("not-a-number".to_string());
+        let rendered = format!("{}", err);
+        assert!(
+            rendered.contains("not-a-number"),
+            "Display must include offending input: {}",
+            rendered
+        );
+        assert!(
+            rendered.contains("REIFY_CACHE_MAX_BYTES"),
+            "Display must include the env-var name: {}",
+            rendered
+        );
+    }
 }
