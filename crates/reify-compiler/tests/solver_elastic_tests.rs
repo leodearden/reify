@@ -185,3 +185,114 @@ fn elastic_options_struct_has_correct_param_shape() {
         );
     }
 }
+
+// ─── step-7: ElasticOptions defaults ─────────────────────────────────────────
+
+/// Look up the named param cell on `template` and return its `default_expr`.
+/// Panics with a clear message if the cell or its default is missing.
+fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a CompiledExpr {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{}.{} missing", template.name, member));
+    cell.default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
+}
+
+/// Each `ElasticOptions` param must carry the canonical default declared in
+/// the PRD (with the encoding adjustments documented in the file header):
+///
+///   element_order = ElementOrder.P1
+///   mesh_size     = none
+///   max_iter      = 1000
+///   cg_tolerance  = 0.000001
+///   threads       = none
+///
+/// The defaults pin the standard solver setup so a bare `ElasticOptions()`
+/// instantiation compiles. `0.000001` is asserted with a 1e-9 tolerance to
+/// accommodate float round-off.
+#[test]
+fn elastic_options_param_defaults_match_spec() {
+    let template = find_structure("ElasticOptions");
+
+    // element_order = ElementOrder.P1
+    let element_order_default = require_default(template, "element_order");
+    match &element_order_default.kind {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+            assert_eq!(
+                type_name, "ElementOrder",
+                "element_order default should be ElementOrder.P1, got type_name {:?}",
+                type_name
+            );
+            assert_eq!(
+                variant, "P1",
+                "element_order default should be ElementOrder.P1, got variant {:?}",
+                variant
+            );
+        }
+        other => panic!(
+            "element_order default should be Literal(Value::Enum {{ ElementOrder, P1 }}), got: {:?}",
+            other
+        ),
+    }
+
+    // mesh_size = none, with result_type Option<Length>
+    let mesh_size_default = require_default(template, "mesh_size");
+    assert!(
+        matches!(&mesh_size_default.kind, CompiledExprKind::OptionNone),
+        "mesh_size default should be OptionNone, got: {:?}",
+        mesh_size_default.kind
+    );
+    assert_eq!(
+        mesh_size_default.result_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        })),
+        "mesh_size default's result_type should be Option<Length>, got: {:?}",
+        mesh_size_default.result_type
+    );
+
+    // max_iter = 1000
+    let max_iter_default = require_default(template, "max_iter");
+    match &max_iter_default.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
+            *v, 1000,
+            "max_iter default should be 1000, got: {}",
+            v
+        ),
+        other => panic!(
+            "max_iter default should be Literal(Value::Int(1000)), got: {:?}",
+            other
+        ),
+    }
+
+    // cg_tolerance = 0.000001 (within 1e-9 to absorb float round-off)
+    let cg_tolerance_default = require_default(template, "cg_tolerance");
+    match &cg_tolerance_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert!(
+            (*v - 0.000001).abs() < 1e-9,
+            "cg_tolerance default should be 0.000001 (within 1e-9), got: {}",
+            v
+        ),
+        other => panic!(
+            "cg_tolerance default should be Literal(Value::Real(0.000001)), got: {:?}",
+            other
+        ),
+    }
+
+    // threads = none, with result_type Option<Int>
+    let threads_default = require_default(template, "threads");
+    assert!(
+        matches!(&threads_default.kind, CompiledExprKind::OptionNone),
+        "threads default should be OptionNone, got: {:?}",
+        threads_default.kind
+    );
+    assert_eq!(
+        threads_default.result_type,
+        Type::Option(Box::new(Type::Int)),
+        "threads default's result_type should be Option<Int>, got: {:?}",
+        threads_default.result_type
+    );
+}
