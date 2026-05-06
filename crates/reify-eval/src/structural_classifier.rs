@@ -275,6 +275,123 @@ mod tests {
         assert_eq!(classify_cell(&g, &unknown_id), ParameterClass::Structural);
     }
 
+    // ── Step-11: stage_a_eligible classifier-driven decisions ─────────────
+
+    #[test]
+    fn stage_a_eligible_only_dimensional_value_differs_returns_true() {
+        use reify_types::{Value, ValueMap};
+
+        let id = ValueCellId::new("Part", "width");
+        let g1 = graph_with_cell(&id, Type::length());
+        let g2 = g1.clone();
+        let mut v1 = ValueMap::new();
+        v1.insert(id.clone(), Value::length(0.05));
+        let mut v2 = ValueMap::new();
+        v2.insert(id.clone(), Value::length(0.10)); // dimensional diff — allowed
+        assert!(
+            stage_a_eligible(&g1, &g2, &v1, &v2),
+            "a dimensional-only diff must be stage-A eligible"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_structural_value_differs_returns_false() {
+        use reify_types::{Value, ValueMap};
+
+        let id = ValueCellId::new("Part", "mode");
+        let g1 = graph_with_cell(&id, Type::Enum("Mode".to_string()));
+        let g2 = g1.clone();
+        let mut v1 = ValueMap::new();
+        v1.insert(id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "sketch".to_string() });
+        let mut v2 = ValueMap::new();
+        v2.insert(id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "loft".to_string() }); // structural diff
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "a structural (Enum) diff must not be stage-A eligible"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_structure_controlling_value_differs_returns_false() {
+        use reify_types::{Value, ValueMap};
+
+        // A Bool cell in structure_controlling must be Structural even
+        // though Bool is otherwise handled by the conservative default.
+        let id = ValueCellId::new("Part", "has_hole");
+        let mut g1 = graph_with_cell(&id, Type::Bool);
+        g1.structure_controlling.insert(id.clone());
+        let g2 = g1.clone();
+        let mut v1 = ValueMap::new();
+        v1.insert(id.clone(), Value::Bool(true));
+        let mut v2 = ValueMap::new();
+        v2.insert(id.clone(), Value::Bool(false));
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "a structure_controlling guard-cell diff must not be stage-A eligible"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_collection_count_value_differs_returns_false() {
+        use reify_types::{Value, ValueMap};
+
+        let id = ValueCellId::new("Part", "__count_bolts");
+        let mut g1 = graph_with_cell(&id, Type::Int);
+        g1.collection_subs.push(CollectionSubInfo {
+            parent_entity: "Part".to_string(),
+            sub_name: "bolts".to_string(),
+            structure_name: "Bolt".to_string(),
+            count_cell: id.clone(),
+            child_value_cells: vec![],
+        });
+        let g2 = g1.clone();
+        let mut v1 = ValueMap::new();
+        v1.insert(id.clone(), Value::Int(3));
+        let mut v2 = ValueMap::new();
+        v2.insert(id.clone(), Value::Int(5)); // pattern count diff — structural
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "a collection-count diff must not be stage-A eligible"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_mixed_dimensional_and_structural_diff_returns_false() {
+        use reify_types::{Value, ValueMap};
+
+        // Both a Length cell AND an Enum cell differ. The Enum makes it ineligible
+        // even though the Length diff would be allowed in isolation.
+        let len_id = ValueCellId::new("Part", "width");
+        let enum_id = ValueCellId::new("Part", "mode");
+        let mut g1 = EvaluationGraph::default();
+        for (id, ty) in [
+            (len_id.clone(), Type::length()),
+            (enum_id.clone(), Type::Enum("Mode".to_string())),
+        ] {
+            g1.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: ty,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(&format!("{}", id)),
+                },
+            );
+        }
+        let g2 = g1.clone();
+        let mut v1 = ValueMap::new();
+        v1.insert(len_id.clone(), Value::length(0.05));
+        v1.insert(enum_id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "sketch".to_string() });
+        let mut v2 = ValueMap::new();
+        v2.insert(len_id.clone(), Value::length(0.10)); // dimensional diff
+        v2.insert(enum_id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "loft".to_string() }); // structural diff
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "any structural diff must not be stage-A eligible, even alongside dimensional diffs"
+        );
+    }
+
     // ── Step-9: stage_a_eligible – identical graph and values ─────────────
 
     #[test]
