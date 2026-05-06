@@ -46,8 +46,9 @@
 
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
+use reify_types::GeometryKernel;
 #[cfg(has_occt)]
-use reify_types::{GeometryKernel, KernelRegistration};
+use reify_types::KernelRegistration;
 
 /// Stable identifier for the OCCT kernel in the v0.2 multi-kernel registry.
 ///
@@ -138,8 +139,24 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
 /// process-global state stays on one OS thread (per CLAUDE.md and the
 /// `gui/src-tauri/src/kernel_status.rs` "register only when available"
 /// pattern this submit mirrors).
-#[cfg(has_occt)]
-fn occt_factory() -> Box<dyn GeometryKernel> {
+///
+/// # Always-defined (regardless of `cfg(has_occt)`)
+///
+/// Unlike the `inventory::submit!` block below (which stays `#[cfg(has_occt)]`),
+/// this function is unconditionally compiled and `pub` so that
+/// `tests/inventory_registration.rs` can pin its pointer identity via
+/// `std::ptr::fn_addr_eq` even in stub-mode CI builds where no OCCT C++ libs
+/// are present. The function body references `crate::OcctKernelHandle::spawn()`,
+/// which resolves to the real handle under `cfg(has_occt)` and to the stub
+/// (`crates/reify-kernel-occt/src/stubs.rs`) otherwise — both define
+/// `pub fn spawn() -> Self` and `impl GeometryKernel for OcctKernelHandle`, so
+/// the return type compiles in both modes.
+///
+/// Under stub mode the returned handle's every geometry operation surfaces an
+/// "OCCT not available" error; callers must check
+/// `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)` before invoking the
+/// factory — the `inventory::submit!` gate already prevents stub-mode dispatch.
+pub fn occt_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::OcctKernelHandle::spawn())
 }
 
