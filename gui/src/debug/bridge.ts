@@ -342,8 +342,15 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
           ? params.timeout_ms
           : 30000;
       const start = performance.now();
-      // Poll evalStatus.phase at ~60 Hz until the engine settles to idle.
-      while (ctx.stores.engine.state.evalStatus.phase !== 'idle') {
+      // Poll evalStatus.phase at ~60 Hz until the engine settles.
+      while (true) {
+        const phase = ctx.stores.engine.state.evalStatus.phase;
+        if (phase === 'idle') break;
+        // Terminal non-idle phase (e.g. 'error'): return immediately so the
+        // harness can distinguish a stuck engine from one that finished with errors.
+        if (phase !== 'evaluating') {
+          return { error: 'engine_phase', phase };
+        }
         if (performance.now() - start >= timeoutMs) {
           return { error: 'timeout' };
         }

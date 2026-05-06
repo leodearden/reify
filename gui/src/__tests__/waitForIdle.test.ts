@@ -175,6 +175,39 @@ describe('wait_for_idle: returns ok after engine becomes idle', () => {
   });
 });
 
+describe('wait_for_idle: terminal non-idle phases', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    // rAF stub — fires synchronously (only reached on success path)
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('returns {error: "engine_phase", phase: "error"} immediately when phase is "error"', async () => {
+    // Start with error phase — the engine failed, not just busy.
+    const stores = makeStores('error');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    const result = await dispatchAndGetResult(capturedHandler!, 5, 'wait_for_idle', {});
+    expect(result).toEqual({ error: 'engine_phase', phase: 'error' });
+  });
+});
+
 describe('wait_for_idle: timeout enforcement', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 
