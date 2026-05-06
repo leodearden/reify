@@ -182,38 +182,47 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
 
     // Per-grid-point reduction: NaN-skip + total_cmp + first-occurrence-wins.
     //
+    // Iteration order: outer over cases, inner over indices (zipped). This
+    // (a) lets the compiler vectorise the inner loop — sequential reads
+    // from one slice and one shared output vec, no per-index Option<f64>
+    // setup — and (b) eliminates the per-access bounds checks: the slices
+    // are equal-length (validated by `metadata_matches`), so `iter_mut()
+    // .zip(slice.iter())` rides on the iterator's bounds-check-free path.
+    //
+    // The NaN-as-sentinel encoding: `out_data` is initialised to NaN at
+    // every index. Since we only ever write finite values (after the
+    // `is_finite` skip), `out.is_finite()` cleanly doubles as the
+    // "we've seen a finite value at index i before" predicate. Indices
+    // where no case had a finite value retain the NaN sentinel — pinned
+    // by `envelope_{max,min}_all_nan_at_index_yields_nan`. The sentinel
+    // lets downstream `max(envelope_max(...))` skip the index uniformly
+    // via the same `is_finite()` discipline.
+    //
     // Per-index protocol:
-    //   1. `best: Option<f64>` starts None.
-    //   2. For each case's `data[i]`, skip non-finite via `is_finite()`
-    //      (rejects both NaN and ±∞, matching `sanitize_value`'s discipline).
-    //   3. Fold finite values into `best` via IEEE 754 `total_cmp`, with
-    //      strict `is_lt`/`is_gt` so the first finite case wins on ties.
-    //   4. After the inner scan completes, `best.unwrap_or(f64::NAN)` writes
-    //      the NaN sentinel when no case at index `i` is finite — pinned by
-    //      `envelope_max_all_nan_at_index_yields_nan`. The sentinel allows
-    //      downstream `max(envelope_max(...))` to skip the index uniformly
-    //      via the same `is_finite()` discipline.
+    //   1. Skip non-finite cases via `is_finite()` (rejects both NaN and
+    //      ±∞, matching `sanitize_value`'s discipline).
+    //   2. First finite at index `i` initialises `out` (no comparison).
+    //   3. Subsequent finites compare against `out` via IEEE 754
+    //      `total_cmp` with strict `is_lt`/`is_gt` so the first finite
+    //      case wins on ties.
     let n = ref_sf.data.len();
-    let mut out_data = Vec::with_capacity(n);
-    for i in 0..n {
-        let mut best: Option<f64> = None;
-        for &slice in &cases_data {
-            let v = slice[i];
+    let mut out_data: Vec<f64> = vec![f64::NAN; n];
+    for slice in &cases_data {
+        for (out, &v) in out_data.iter_mut().zip(slice.iter()) {
             if !v.is_finite() {
                 continue;
             }
-            match best {
-                None => best = Some(v),
-                Some(b) => {
-                    let cmp = v.total_cmp(&b);
-                    let take = if find_min { cmp.is_lt() } else { cmp.is_gt() };
-                    if take {
-                        best = Some(v);
-                    }
+            if !out.is_finite() {
+                // First finite at this index — initialise without compare.
+                *out = v;
+            } else {
+                let cmp = v.total_cmp(out);
+                let take = if find_min { cmp.is_lt() } else { cmp.is_gt() };
+                if take {
+                    *out = v;
                 }
             }
         }
-        out_data.push(best.unwrap_or(f64::NAN));
     }
 
     let result_sf = SampledField {
