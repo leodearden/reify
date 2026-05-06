@@ -832,6 +832,112 @@ fn match_arm_decl_group_empty_arms_emits_diagnostic() {
     );
 }
 
+/// Regression test for task 2872: mismatched arm names must not leave orphan entries
+/// in `match_arm_group_arm_member_types` when `match_arm_groups` is empty.
+///
+/// Hand-constructs the equivalent of:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure def HexHead {}
+/// structure def SocketHead {}
+/// structure def Bolt {
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head  : HexHead
+///         Socket => sub spike : SocketHead   -- name mismatch!
+///     }
+/// }
+/// ```
+///
+/// Pre-fix: the pass-1 pre-pass inserts `match_arm_group_arm_member_types["head"]`
+/// and `["spike"]` while `match_arm_groups` remains empty (pass-2 returns early on
+/// the mismatch). The `debug_assert!` in `compile_entity` then fires, causing this
+/// test to panic. RED.
+///
+/// Post-fix: the per-arm maps are written only inside `compile_match_arm_decl_group`
+/// after `register_match_arm_group` succeeds, so the key sets stay in sync. GREEN.
+///
+/// Asserts:
+/// (a) The logical-name-mismatch diagnostic is still emitted.
+/// (b) `bolt_template.match_arm_groups.is_empty()` — no cluster is registered on mismatch.
+/// (c) Implicitly: the `debug_assert!` in `compile_entity` passes (no panic), verifying
+///     that no orphan per-arm entry persists.
+#[test]
+fn match_arm_decl_group_mismatched_arm_names_does_not_orphan_per_arm_member_types() {
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("spike", "SocketHead")), // name mismatch!
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![param_member("head_type", "HeadType"), match_group],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_mismatched_names_no_orphan"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) The logical-name-mismatch diagnostic must be present.
+    let has_mismatch_diag = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("expected 'head'") && d.message.contains("found 'spike'"));
+    assert!(
+        has_mismatch_diag,
+        "expected mismatch diagnostic ('expected head, found spike'), got: {:#?}",
+        compiled.diagnostics
+    );
+
+    // (b) No cluster registered — the mismatch path skips register_match_arm_group.
+    let bolt_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bolt")
+        .expect("Bolt template should be compiled");
+    assert!(
+        bolt_template.match_arm_groups.is_empty(),
+        "expected match_arm_groups to be empty on arm-name mismatch, got: {:#?}",
+        bolt_template.match_arm_groups
+    );
+
+    // (c) The assert! in compile_entity verifies key-set parity unconditionally across all
+    // build profiles — if it fires, this test panics before reaching here. No explicit
+    // assertion needed; reaching this line proves the invariant holds.
+}
+
 /// suggestion 4: arms with mismatched logical names emit a diagnostic.
 ///
 /// Arm 0 declares `sub head : HexHead` but arm 1 declares `sub foot : SocketHead`.

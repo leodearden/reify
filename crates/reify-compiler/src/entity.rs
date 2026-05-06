@@ -641,52 +641,27 @@ pub(crate) fn compile_entity(
                             scope
                                 .sub_component_types
                                 .insert(sub.name.clone(), sub.structure_name.clone());
-                            // Per-arm member-type tracking (task 2373): unlike
-                            // sub_member_types (last-write-wins on the merged sub.name
-                            // key), this map preserves each arm's structure name and
-                            // member set in arm-order so that nested `self.<group>.<m>`
-                            // can detect per-arm differences (e.g. arm-specific fields).
+                            // Populate sub_structure_traits and sub_member_types so that
+                            // `self.<arm-sub>.<member>` qualified access resolves correctly —
+                            // mirrors the regular Sub pre-pass at entity.rs:594-602.
+                            // (Suggestion 3 from review: match regular Sub pre-pass.)
                             //
-                            // Mirror the outer-scope `sub_match_arm_groups` pre-pass at
-                            // entity.rs:655-682: always push a per-arm entry (with an
-                            // empty BTreeMap when `find_template` fails) so the per-arm
-                            // Vec length always equals the cluster's arm count. Without
-                            // this, an unresolved arm structure would silently shrink
-                            // the per-arm Vec, and `self.<cluster>.<inner>` would then
-                            // iterate fewer arms than the cluster actually has —
-                            // potentially reporting a field as universally-present when
-                            // it is in fact arm-specific. (Amendment for review
-                            // suggestion 1.)
-                            let (member_types, has_template) = if let Some(child_tmpl) =
+                            // Note: per-arm member-type tracking for match_arm_group_arm_member_types
+                            // (task 2373) is now handled inside compile_match_arm_decl_group,
+                            // atomically with register_match_arm_group — moved from here in task 2872
+                            // to close the orphan-entry bug on any early-return rejection path.
+                            if let Some(child_tmpl) =
                                 find_template(compiled_templates, &sub.structure_name)
                             {
                                 scope.sub_structure_traits.insert(
                                     sub.structure_name.clone(),
                                     child_tmpl.trait_bounds.clone(),
                                 );
-                                // Populate sub_member_types so that `self.<arm-sub>.<member>`
-                                // qualified access resolves correctly — mirrors the regular Sub
-                                // pre-pass at entity.rs:594-602.
-                                // (Suggestion 3 from review: match regular Sub pre-pass.)
-                                let mts: BTreeMap<String, Type> = child_tmpl
-                                    .value_cells
-                                    .iter()
-                                    .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
-                                    .collect();
-                                (mts, true)
-                            } else {
-                                (BTreeMap::new(), false)
-                            };
-                            if has_template {
-                                scope
-                                    .sub_member_types
-                                    .insert(sub.name.clone(), member_types.clone());
+                                scope.sub_member_types.insert(
+                                    sub.name.clone(),
+                                    member_type_map_from_template(child_tmpl),
+                                );
                             }
-                            scope
-                                .match_arm_group_arm_member_types
-                                .entry(sub.name.clone())
-                                .or_default()
-                                .push((sub.structure_name.clone(), member_types));
                         }
                         other => {
                             // suggestion 6: only 'sub' arms are supported in task 2372.
@@ -1637,6 +1612,7 @@ pub(crate) fn compile_entity(
                     pending_bound_checks,
                     &type_param_names,
                     &clusters_with_outside_collision,
+                    compiled_templates,
                 );
             }
         }
@@ -2114,6 +2090,30 @@ pub(crate) fn compile_entity(
     validate_annotations(&annotations, context, diagnostics);
     validate_pragmas(structure.pragmas, context, diagnostics);
 
+    // Invariant: the key sets of match_arm_groups and match_arm_group_arm_member_types
+    // must always be identical — every cluster registration must be paired with exactly
+    // one per-arm-maps insertion, and vice versa. Any early-return in
+    // compile_match_arm_decl_group (logical-name mismatch, unsupported discriminant,
+    // non-exhaustive, outside-collision, etc.) that skips register_match_arm_group must
+    // also skip inserting into match_arm_group_arm_member_types. (task 2872)
+    assert!(
+        {
+            let groups: HashSet<&str> =
+                scope.match_arm_groups.keys().map(|s| s.as_str()).collect();
+            let per_arm: HashSet<&str> = scope
+                .match_arm_group_arm_member_types
+                .keys()
+                .map(|s| s.as_str())
+                .collect();
+            groups == per_arm
+        },
+        "match_arm_groups vs match_arm_group_arm_member_types key-set mismatch in entity '{}': \
+         groups={:?} per_arm={:?} (orphan per-arm entries indicate a producer-side bug — task 2872)",
+        entity_name,
+        scope.match_arm_groups.keys().collect::<Vec<_>>(),
+        scope.match_arm_group_arm_member_types.keys().collect::<Vec<_>>(),
+    );
+
     TopologyTemplate {
         name: entity_name.to_string(),
         entity_kind,
@@ -2148,6 +2148,21 @@ pub(crate) fn compile_entity(
     }
 }
 
+/// Build the `member_name → Type` map for a child `TopologyTemplate`.
+///
+/// Called from both the pre-pass (to populate `scope.sub_member_types` for
+/// `self.<arm-sub>.<member>` qualified access) and from `compile_match_arm_decl_group`
+/// (to build `per_arm_member_maps` keyed under the cluster's logical name).
+/// Extracting the logic here avoids duplicating the `value_cells` iteration at both
+/// sites and ensures future changes to the mapping (e.g. filtering hidden members)
+/// only need to be applied once. (task 2872)
+fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Type> {
+    tmpl.value_cells
+        .iter()
+        .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
+        .collect()
+}
+
 /// Compile a `MatchArmDeclGroupDecl` into a `GuardedDeclGroup` cluster (task 2372).
 ///
 /// For each arm:
@@ -2179,6 +2194,7 @@ fn compile_match_arm_decl_group(
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     type_param_names: &HashSet<String>,
     clusters_with_outside_collision: &HashSet<String>,
+    compiled_templates: &[TopologyTemplate],
 ) {
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
@@ -2365,6 +2381,10 @@ fn compile_match_arm_decl_group(
     }
 
     let mut group_arms: Vec<GuardedDeclArm> = Vec::with_capacity(m.arms.len());
+    // Per-arm member-type maps, collected in arm-order for Sub arms only.
+    // Mirroring the group_arms cadence: both are populated for Sub arms exclusively.
+    // Inserted into scope atomically with register_match_arm_group below (task 2872).
+    let mut per_arm_member_maps: Vec<ArmMemberMap> = Vec::with_capacity(m.arms.len());
 
     for arm in &m.arms {
         // The pre-pass already emitted a diagnostic for any non-Sub arm.
@@ -2486,6 +2506,17 @@ fn compile_match_arm_decl_group(
                 span: sub.span,
                 content_hash: sub.content_hash,
             });
+
+            // Collect per-arm member types for match_arm_group_arm_member_types.
+            // Always push an entry (empty BTreeMap when find_template fails) so the
+            // per-arm Vec length always equals the cluster's Sub-arm count — preserving
+            // the invariant that review suggestion 1 established in the pre-pass.
+            // (task 2872: moved here from the pre-pass so insertion is atomic with
+            // register_match_arm_group; see the if !group_arms.is_empty() block below.)
+            let arm_member_types = find_template(compiled_templates, &sub.structure_name)
+                .map(member_type_map_from_template)
+                .unwrap_or_default();
+            per_arm_member_maps.push((sub.structure_name.clone(), arm_member_types));
         }
 
         // Add an empty CompiledGuardedGroup so the guard cell participates in
@@ -2519,6 +2550,15 @@ fn compile_match_arm_decl_group(
                 arms: group_arms,
             },
         );
+        // Atomically insert the per-arm member maps under the cluster's logical name
+        // (not per-arm sub.name) so the writer key matches the consumer's read key
+        // in expr.rs. This insertion is the ONLY write site for this cluster's entry;
+        // every early-return above (discriminant error, mismatch, non-exhaustive,
+        // outside-collision, etc.) skips both register_match_arm_group and this
+        // insert, keeping the key sets in sync. (task 2872)
+        scope
+            .match_arm_group_arm_member_types
+            .insert(logical_name.clone(), per_arm_member_maps);
     }
 }
 
