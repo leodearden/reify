@@ -1781,6 +1781,9 @@ fn build_constraints_template(
 ///
 /// Inherits arch §2.5's monotonic-feasible rule: `Indeterminate` counts as
 /// feasible; only `Violated` falsifies.
+///
+/// Passes `constraints_template` through as `Cow::Borrowed`, so no per-leaf
+/// clone occurs (see task 2900).
 fn check_constraints_leaf(
     constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
     checker: &dyn ConstraintChecker,
@@ -1789,7 +1792,7 @@ fn check_constraints_leaf(
 ) -> LeafVerdict {
     use reify_types::ConstraintInput;
     let input = ConstraintInput {
-        constraints: Cow::Owned(constraints_template.to_vec()),
+        constraints: Cow::Borrowed(constraints_template),
         values,
         functions,
         determinacy: None,
