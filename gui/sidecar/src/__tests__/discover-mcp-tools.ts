@@ -98,7 +98,7 @@ const REGISTER_IDENT_RE = /registry\.register\s*\(\s*(?:\w+::)*([A-Za-z_]\w*)\s*
 export function discoverRegisteredTools(toolsDir: string): Set<string> {
   let entries: Dirent[];
   try {
-    entries = readdirSync(toolsDir, { recursive: true, withFileTypes: true }) as Dirent[];
+    entries = readdirSync(toolsDir, { recursive: true, withFileTypes: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
