@@ -174,3 +174,77 @@ describe('wait_for_idle: returns ok after engine becomes idle', () => {
     expect(result.idle_after_ms).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe('wait_for_idle: timeout enforcement', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    // rAF stub — fires synchronously (only reached on success path)
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('returns {error: "timeout"} when phase stays non-idle past timeout_ms', async () => {
+    const stores = makeStores('evaluating');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    vi.mocked(invoke).mockClear();
+    // Dispatch with explicit 100ms timeout — phase stays 'evaluating'
+    const dispatchPromise = capturedHandler!({
+      payload: { id: 3, command: 'wait_for_idle', params: { timeout_ms: 100 } },
+    });
+
+    // Advance past the timeout without changing phase
+    await vi.advanceTimersByTimeAsync(200);
+    await dispatchPromise;
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result).toEqual({ error: 'timeout' });
+  });
+
+  it('uses default 30000ms timeout when timeout_ms is omitted', async () => {
+    const stores = makeStores('evaluating');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    vi.mocked(invoke).mockClear();
+    const dispatchPromise = capturedHandler!({
+      payload: { id: 4, command: 'wait_for_idle', params: {} },
+    });
+
+    // Advance to just before the default 30000ms timeout — no response yet
+    await vi.advanceTimersByTimeAsync(29999);
+    expect(vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response')).toBeUndefined();
+
+    // Advance past the default timeout
+    await vi.advanceTimersByTimeAsync(2000);
+    await dispatchPromise;
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result).toEqual({ error: 'timeout' });
+  });
+});
