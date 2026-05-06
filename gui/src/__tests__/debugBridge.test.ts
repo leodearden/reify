@@ -210,6 +210,40 @@ describe('debug bridge set_camera', () => {
     return JSON.parse(payload.result);
   }
 
+  it('defaults applied.up from camera.up and applied.zoom from camera.zoom when caller omits them', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    // camera.up = {x:0, y:1, z:0}, camera.zoom = 1 (defaults from makeViewportStub)
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera as any,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: stub.controls as any,
+    };
+
+    const result = await dispatch(capturedHandler!, 350, {
+      position: [5, 5, 5],
+      target: [0, 0, 0],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.applied.position).toEqual([5, 5, 5]);
+    expect(result.applied.target).toEqual([0, 0, 0]);
+    // up must be the camera.up snapshot, not undefined
+    expect(result.applied.up).toEqual([0, 1, 0]);
+    // zoom must be camera.zoom, not undefined
+    expect(result.applied.zoom).toBe(1);
+    // camera.up.set must NOT be called (caller didn't provide up)
+    expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    // camera.zoom must remain unchanged
+    expect(stub.camera.zoom).toBe(1);
+  });
+
   it('happy path: applies full pose and returns {ok: true, applied: {...}}', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
