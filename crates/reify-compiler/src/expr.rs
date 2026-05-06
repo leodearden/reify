@@ -1241,6 +1241,70 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
 
+            // Pattern: <col_sub>[i].<cluster>.<inner> — task 2871.
+            //
+            // Cluster-aware lookup for collection subs accessed via literal index.
+            // Detects the deep three-level pattern:
+            //   OUTER: MemberAccess { object: M2, member: inner }
+            //     M2: MemberAccess { object: IndexAccess(Ident(col_sub), idx), member: cluster }
+            //
+            // This branch MUST fire before the OUTER MemberAccess falls into
+            // `compile_obj` at line ~1349. Once M2 is compiled through the regular
+            // indexed-access branch the merged-map type is already baked in; per-arm
+            // distinction is unrecoverable from there. Placing the branch here (before
+            // the regular indexed-access branch) keeps it at the OUTER MemberAccess
+            // level where the shape is still recognizable.
+            //
+            // For literal integer index `i`, builds
+            //   scoped_entity = "<entity>.<col_sub>[<i>]"
+            // and dispatches to `resolve_cluster_inner_member` (same helper used by
+            // the self-cluster path and the external-sub-cluster path) to handle:
+            //   - all arms have `inner` with same type → ValueRef of that type
+            //   - all arms have `inner` with divergent types → poison + diagnostic
+            //   - some arms missing `inner` → poison + diagnostic
+            //
+            // For non-literal index: falls through to the regular indexed-access
+            // branch below (produces today's behavior; a follow-up task can extend).
+            // Cross-reference: scope.sub_match_arm_groups is populated for collection
+            // subs in entity.rs:778–810 (the insert fires before the is_collection
+            // check at entity.rs:813, so no change needed there).
+            if let reify_syntax::ExprKind::MemberAccess {
+                object: inner_obj,
+                member: group_name,
+            } = &object.kind
+                && let reify_syntax::ExprKind::IndexAccess {
+                    object: idx_obj,
+                    index,
+                } = &inner_obj.kind
+                && let reify_syntax::ExprKind::Ident(col_sub_name) = &idx_obj.kind
+                && scope.collection_sub_names.contains(col_sub_name.as_str())
+                && let Some(clusters) = scope.sub_match_arm_groups.get(col_sub_name.as_str())
+                && let Some((_group, per_arm)) =
+                    clusters.iter().find(|(g, _)| &g.name == group_name)
+            {
+                if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
+                    if n.fract() != 0.0 || *n < 0.0 {
+                        // Fractional or negative index — delegate to the existing
+                        // indexed-access branch for a consistent error message.
+                    } else {
+                        let i = *n as i64;
+                        let scoped_entity =
+                            format!("{}.{}[{}]", scope.entity_name, col_sub_name, i);
+                        return resolve_cluster_inner_member(
+                            per_arm,
+                            member,
+                            &scoped_entity,
+                            group_name,
+                            Some(col_sub_name),
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
+                }
+                // Non-literal index (or invalid literal): fall through to the
+                // existing indexed-access branch. No return here.
+            }
+
             // Check if this is an indexed collection member access: collection[i].member
             if let reify_syntax::ExprKind::IndexAccess {
                 object: idx_obj,
