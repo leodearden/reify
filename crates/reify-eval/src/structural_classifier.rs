@@ -21,7 +21,9 @@
 //! This module is pure Rust and does **not** call any geometry kernel.
 //! It operates solely on [`EvaluationGraph`] and [`reify_types::ValueMap`].
 
-use reify_types::{ContentHash, Type, ValueCellId};
+use std::collections::HashSet;
+
+use reify_types::{ContentHash, Type, ValueCellId, ValueMap};
 
 use crate::graph::EvaluationGraph;
 
@@ -119,6 +121,65 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
         Type::Scalar { .. } | Type::Real | Type::Int => ParameterClass::Dimensional,
         _ => ParameterClass::Structural,
     }
+}
+
+/// Stage A top-level eligibility predicate.
+///
+/// Returns `true` iff the parameter edit from `(old_graph, old_values)` to
+/// `(new_graph, new_values)` is eligible for mesh morphing:
+///
+/// 1. **Shape gate** — `realization_graph_shape_hash(old_graph) ==
+///    realization_graph_shape_hash(new_graph)`. This covers PRD criteria (a)
+///    and (c): graph structure unchanged, no features added/removed/reordered.
+///    Short-circuits before any per-cell work if shapes differ.
+///
+/// 2. **Value diff** — walk the union of cell IDs in `old_values` and
+///    `new_values`. For each cell where the old and new values differ (or the
+///    cell is present on only one side), classify it via [`classify_cell`]
+///    using `new_graph` (which equals `old_graph` structurally after the shape
+///    gate passes). A [`ParameterClass::Dimensional`] diff is allowed; any
+///    [`ParameterClass::Structural`] diff makes the edit ineligible → `false`.
+///
+/// # Why four arguments?
+///
+/// The PRD (line 33) writes `stage_a_eligible(old_graph, new_graph)` as
+/// shorthand, but runtime values live in [`ValueMap`] (maintained by
+/// `Engine::edit_param`), not in the graph. Without both ValueMaps there is no
+/// way to detect which cells changed. See design decision in plan.json.
+pub fn stage_a_eligible(
+    old_graph: &EvaluationGraph,
+    new_graph: &EvaluationGraph,
+    old_values: &ValueMap,
+    new_values: &ValueMap,
+) -> bool {
+    // 1. Shape gate (PRD criterion a + c). Cheap; short-circuits feature
+    //    add/remove/reorder before any per-cell classification work.
+    if realization_graph_shape_hash(old_graph) != realization_graph_shape_hash(new_graph) {
+        return false;
+    }
+
+    // 2. Value diff over the union of cell IDs from both maps.
+    //
+    // Collect the union without allocation duplication: drain old IDs first,
+    // then add new IDs that didn't appear in old.
+    let mut union_ids: HashSet<&ValueCellId> = HashSet::new();
+    union_ids.extend(old_values.iter().map(|(id, _)| id));
+    union_ids.extend(new_values.iter().map(|(id, _)| id));
+
+    for id in union_ids {
+        if old_values.get(id) == new_values.get(id) {
+            continue;
+        }
+        // Values differ (or the cell is present on only one side: Some vs None).
+        // Use new_graph for classification — by the shape gate it is
+        // structurally identical to old_graph.
+        match classify_cell(new_graph, id) {
+            ParameterClass::Dimensional => continue,
+            ParameterClass::Structural => return false,
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]
