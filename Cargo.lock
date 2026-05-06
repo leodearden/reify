@@ -3333,6 +3333,7 @@ dependencies = [
  "reify-syntax",
  "reify-test-support",
  "reify-types",
+ "tempfile",
  "tracing",
 ]
 
