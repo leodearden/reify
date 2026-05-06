@@ -64,7 +64,7 @@ import {
 import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
-import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
+import { loadPanelLayout, savePanelLayout, clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
 import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
@@ -421,6 +421,7 @@ const App: Component = () => {
   // Refs for splitter max-width clamping
   let mainRef: HTMLDivElement | undefined;
   let sidePanelRef: HTMLDivElement | undefined;
+  let sidePanelObserver: ResizeObserver | undefined;
 
   // Reactively update window title based on active file and eval status
   createEffect(() => {
@@ -772,6 +773,20 @@ const App: Component = () => {
     initApp();
   });
 
+  // Side-panel container clamp: once initPhase reaches 'ready' the side panel
+  // is rendered and `sidePanelRef` is bound, so we run an initial clamp and
+  // attach a ResizeObserver to re-clamp on window/container resize. The ref
+  // is undefined while initPhase is 'loading' (Show gate above).
+  createEffect(() => {
+    if (initPhase() !== 'ready') return;
+    if (!sidePanelRef || sidePanelObserver) return;
+    clampToContainer();
+    if (typeof ResizeObserver !== 'undefined') {
+      sidePanelObserver = new ResizeObserver(() => clampToContainer());
+      sidePanelObserver.observe(sidePanelRef);
+    }
+  });
+
   onCleanup(() => {
     alive = false;
     unsub?.();
@@ -783,6 +798,7 @@ const App: Component = () => {
     claudeEventUnsub?.();
     debugBridgeUnsub?.();
     kernelStatusUnsub?.();
+    sidePanelObserver?.disconnect();
     delete window.__REIFY_DEBUG__;
   });
 
@@ -918,6 +934,42 @@ const App: Component = () => {
     setSideWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w - delta)));
   }
 
+  // Re-flow side-panel sub-panel heights so they fit `sidePanelRef.clientHeight`.
+  // Called on mount, on container resize (ResizeObserver), and when chat is
+  // toggled open. The drag handlers below have their own per-drag clamp via
+  // `reservedForOthers`; this covers the cases where the user can't drag —
+  // first paint with oversized persisted heights, and window/container shrink.
+  function clampToContainer(): void {
+    if (!sidePanelRef) return;
+    const ch = sidePanelRef.clientHeight;
+    if (ch <= 0) return;
+    const clamped = clampPanelHeightsToFit(
+      {
+        designTree: designTreeHeight(),
+        property: propertyHeight(),
+        constraint: constraintHeight(),
+      },
+      ch,
+      {
+        chatOpen: chatOpen(),
+        chatMinHeight: CHAT_MIN_HEIGHT,
+        minPanelHeight: MIN_PANEL_HEIGHT,
+        splitterThickness: SPLITTER_THICKNESS,
+      },
+    );
+    if (
+      clamped.designTree !== designTreeHeight() ||
+      clamped.property !== propertyHeight() ||
+      clamped.constraint !== constraintHeight()
+    ) {
+      batch(() => {
+        setDesignTreeHeight(clamped.designTree);
+        setPropertyHeight(clamped.property);
+        setConstraintHeight(clamped.constraint);
+      });
+    }
+  }
+
   // Total pixels reserved by sibling panels + splitters when resizing one sub-panel.
   // Three splitters when chat is open, two when closed. The chat-open case reserves
   // CHAT_MIN_HEIGHT so chat can never be silently hidden.
@@ -1001,6 +1053,11 @@ const App: Component = () => {
 
   function handleToggleChat() {
     setChatOpen((v) => !v);
+    // Opening chat reserves an additional splitter (4 px) + chat floor
+    // (160 px); without re-clamping, persisted panel heights can push the
+    // chat panel below the viewport on small windows. Closing is a no-op
+    // for the clamp (`sum <= available` short-circuits).
+    clampToContainer();
   }
 
   return (
@@ -1085,10 +1142,14 @@ const App: Component = () => {
               class={styles.sidePanel}
               style={{ 'grid-template-rows': chatOpen()
                 ? (mechanismStore.state.descriptors.length > 0
-                  ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px 4px auto 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`
+                  // 8 tracks for 8 children: dt, splitter-dt, prop, splitter-side, cons, mech,
+                  // splitter-constraint, chat. There is no splitter between cons and mech in
+                  // the DOM, so no track between them either — adding one shifts every later
+                  // child up a track, which collapses the chat-panel into a 4px splitter slot.
+                  ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px auto 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`
                   : `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`)
                 : (mechanismStore.state.descriptors.length > 0
-                  ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px 4px auto`
+                  ? `${designTreeHeight()}px 4px ${propertyHeight()}px 4px ${constraintHeight()}px auto`
                   : `${designTreeHeight()}px 4px ${propertyHeight()}px 4px 1fr`) }}
             >
               <DesignTree
