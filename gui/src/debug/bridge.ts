@@ -338,7 +338,12 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
 
     wait_for_idle: async (_params) => {
       const start = performance.now();
-      // Await one requestAnimationFrame tick (ensures a fresh frame has rendered).
+      // Poll evalStatus.phase at ~60 Hz until the engine settles to idle.
+      while (ctx.stores.engine.state.evalStatus.phase !== 'idle') {
+        await new Promise((r) => setTimeout(r, 16));
+      }
+      // Await one requestAnimationFrame tick so Solid has flushed its render pass
+      // and the renderer has drawn the updated frame to the canvas.
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       return { ok: true, idle_after_ms: Math.round(performance.now() - start) };
     },
