@@ -56,6 +56,7 @@ pub(crate) fn lower_annotations(
 /// - `@test`: valid on structure, occurrence, function, constraint_def
 /// - `@optimized`: valid on structure, occurrence, constraint_def
 /// - `@solver_hint`: valid on structure, occurrence
+/// - `@shell`: valid on structure, occurrence (zero or one numeric thickness arg)
 /// - `@solid`: valid on structure, occurrence (bare marker — no args)
 /// - `@deprecated`: valid on any context
 pub(crate) fn validate_annotations(
@@ -122,6 +123,45 @@ pub(crate) fn validate_annotations(
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@solver_hint")),
                     );
+                }
+            }
+            reify_types::SHELL_ANNOTATION => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @shell is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@shell")),
+                    );
+                } else {
+                    // Argument shape check. The annotation accepts zero or one
+                    // positional thickness arg; when omitted, T18's
+                    // auto-classification dispatcher is expected to derive
+                    // thickness from medial-axis analysis (not yet implemented).
+                    match ann.args.as_slice() {
+                        [] => {} // bare @shell — defer thickness to medial analysis.
+                        [reify_types::AnnotationArg::Int(_) | reify_types::AnnotationArg::Real(_)] => {}
+                        [_] => {
+                            diagnostics.push(
+                                Diagnostic::warning(
+                                    "@shell thickness argument must be a numeric literal, \
+                                     e.g. @shell(0.5)"
+                                        .to_string(),
+                                )
+                                .with_label(DiagnosticLabel::new(ann.span, "non-numeric thickness")),
+                            );
+                        }
+                        _ => {
+                            diagnostics.push(
+                                Diagnostic::warning(
+                                    "@shell accepts at most one argument (thickness); \
+                                     extra arguments will be ignored"
+                                        .to_string(),
+                                )
+                                .with_label(DiagnosticLabel::new(ann.span, "too many arguments")),
+                            );
+                        }
+                    }
                 }
             }
             reify_types::SOLID_ANNOTATION => {
@@ -608,6 +648,85 @@ mod tests {
             diagnostics.is_empty(),
             "name in functions should produce no diagnostics, got: {:?}",
             diagnostics
+        );
+    }
+
+    // ── @shell annotation tests ──────────────────────────────────────────────
+
+    /// Bare `@shell` and `@shell(numeric)` on entity contexts (structure,
+    /// occurrence) validate without diagnostics. Bare form defers thickness
+    /// to T18's medial-axis fallback; numeric form supplies it explicitly.
+    #[test]
+    fn shell_valid_arg_shapes_on_entity_contexts() {
+        let cases = [
+            (vec![], "structure"),
+            (
+                vec![reify_types::AnnotationArg::Real(0.5)],
+                "structure",
+            ),
+            (vec![reify_types::AnnotationArg::Int(2)], "occurrence"),
+        ];
+        for (args, context) in cases {
+            let anns = vec![ann(reify_types::SHELL_ANNOTATION, args)];
+            let mut diagnostics = Vec::new();
+            validate_annotations(&anns, context, &mut diagnostics);
+            assert!(
+                diagnostics.is_empty(),
+                "context={context} produced unexpected diagnostics: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// `@shell` on a non-entity context (e.g. function) emits a context warning.
+    #[test]
+    fn shell_on_function_context_warns() {
+        let anns = vec![ann(reify_types::SHELL_ANNOTATION, vec![])];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "function", &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0].message.contains("@shell is not valid on function"),
+            "unexpected message: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// `@shell("foo")` — non-numeric thickness — emits a single warning
+    /// pointing at the numeric-literal requirement.
+    #[test]
+    fn shell_non_numeric_thickness_warns() {
+        let anns = vec![ann(
+            reify_types::SHELL_ANNOTATION,
+            vec![reify_types::AnnotationArg::String("thick".to_string())],
+        )];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "structure", &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0].message.contains("numeric literal"),
+            "unexpected message: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// `@shell(0.5, 0.6)` — extra args — emits a single "too many" warning.
+    #[test]
+    fn shell_extra_args_warn() {
+        let anns = vec![ann(
+            reify_types::SHELL_ANNOTATION,
+            vec![
+                reify_types::AnnotationArg::Real(0.5),
+                reify_types::AnnotationArg::Real(0.6),
+            ],
+        )];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "structure", &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0].message.contains("at most one argument"),
+            "unexpected message: {}",
+            diagnostics[0].message
         );
     }
 

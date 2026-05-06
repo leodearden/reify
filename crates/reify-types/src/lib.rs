@@ -24,7 +24,7 @@ pub mod value;
 pub mod warm;
 
 pub use annotation::{
-    Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION,
+    Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SHELL_ANNOTATION,
     SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION, has_test_annotation,
 };
 pub use constraint::{
