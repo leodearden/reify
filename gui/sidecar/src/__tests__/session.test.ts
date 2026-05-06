@@ -754,6 +754,12 @@ describe('SidecarSession', () => {
     expect(inputFormatIdx).toBeGreaterThanOrEqual(0);
     expect(callArgs[inputFormatIdx + 1]).toBe('stream-json');
 
+    // (a2) --print + --output-format stream-json requires --verbose (claude CLI rejects
+    // the combo otherwise with "When using --print, --output-format=stream-json requires
+    // --verbose"). Regression guard.
+    expect(callArgs).toContain('--print');
+    expect(callArgs).toContain('--verbose');
+
     // (b) spawn args do NOT contain prompt text as argv tail
     expect(callArgs[callArgs.length - 1]).not.toBe('Hello');
 
