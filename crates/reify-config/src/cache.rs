@@ -840,4 +840,36 @@ mod tests {
             rendered
         );
     }
+
+    /// End-to-end shape: parse_cache_config + resolve_cache compose
+    /// cleanly, user beats project, and the source-of-truth tags are
+    /// available for the `reify cache stats` diagnostics use case.
+    #[test]
+    fn resolve_cache_round_trips_parse_cache_config_outputs() {
+        let user = parse_cache_config("[cache]\ndir = \"/u\"\nmax_bytes = 100\n")
+            .expect("user config parses");
+        let project = parse_cache_config("[cache]\ndir = \"/p\"\nmax_bytes = 50\n")
+            .expect("project config parses");
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: Some(&user),
+            project_config: Some(&project),
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("round-trip resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/u"));
+        assert_eq!(resolved.max_bytes, 100);
+        assert_eq!(resolved.dir_source, CacheDirSource::UserConfig);
+        assert_eq!(resolved.max_bytes_source, CacheMaxBytesSource::UserConfig);
+        // The source enums are exposed for diagnostics: pin that they
+        // are derivable (Debug + Copy) so callers can render them
+        // without re-walking the precedence chain.
+        let _: CacheDirSource = resolved.dir_source;
+        let _: CacheMaxBytesSource = resolved.max_bytes_source;
+        let _ = format!("{:?}", resolved.dir_source);
+        let _ = format!("{:?}", resolved.max_bytes_source);
+    }
 }
