@@ -146,6 +146,39 @@ describe('debug bridge store_state includes selectedEntities', () => {
   });
 });
 
+describe('debug bridge set_camera', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('returns {error: "viewport not ready"} when viewport is undefined', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    // No viewport installed — window.__REIFY_DEBUG__.viewport is undefined
+    await capturedHandler!({ payload: { id: 100, command: 'set_camera', params: { position: [1, 2, 3], target: [0, 0, 0] } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result).toEqual({ error: 'viewport not ready' });
+  });
+});
+
 describe('debug bridge set_test_mode', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 
