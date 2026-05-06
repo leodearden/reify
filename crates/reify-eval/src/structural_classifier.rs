@@ -67,10 +67,10 @@ pub enum ParameterClass {
 ///
 /// # Implementation
 ///
-/// Delegates to [`EvaluationGraph::topology_fingerprint`]
-/// (`crates/reify-eval/src/graph.rs:507–693`). Using the existing fingerprint
-/// ensures Stage A and the realization cache key over the same hash, so a
-/// future fingerprint bucket addition automatically applies to Stage A too.
+/// Delegates to [`EvaluationGraph::topology_fingerprint`]. Using the existing
+/// fingerprint ensures Stage A and the realization cache key over the same
+/// hash, so a future fingerprint bucket addition automatically applies to
+/// Stage A too.
 pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
     graph.topology_fingerprint()
 }
@@ -85,11 +85,12 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///    (conservative: unknown cells are assumed topology-controlling).
 /// 2. **`structure_controlling`** — cell is in `graph.structure_controlling`
 ///    → `Structural`. This catches feature-suppression toggles (guard cells
-///    added by `EvaluationGraph::from_templates` at graph.rs:442).
+///    registered by `EvaluationGraph::from_templates`'s guard-group
+///    construction path).
 /// 3. **Collection count** — cell appears as `count_cell` of any entry in
 ///    `graph.collection_subs` → `Structural`. Pattern/array counts have
-///    `Type::Int` but drive topology via collection elaboration
-///    (graph.rs:300–320).
+///    `Type::Int` but drive topology via the collection-elaboration path in
+///    `EvaluationGraph::from_templates`.
 /// 4. **Type dispatch** — `Type::Scalar { .. } | Type::Real | Type::Int`
 ///    → `Dimensional`; everything else → `Structural`.
 pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> ParameterClass {
@@ -107,12 +108,47 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
 
     // Rule 3: collection-count override. Pattern/array counts have Type::Int
     // (which would otherwise be Dimensional) but structurally drive collection
-    // elaboration (graph.rs:300–320).
+    // elaboration (see `EvaluationGraph::collection_subs` and the
+    // collection-count wiring in `EvaluationGraph::from_templates`).
     if graph
         .collection_subs
         .iter()
         .any(|sub| &sub.count_cell == cell_id)
     {
+        return ParameterClass::Structural;
+    }
+
+    // Rule 4: type-based dispatch.
+    match &node.cell_type {
+        Type::Scalar { .. } | Type::Real | Type::Int => ParameterClass::Dimensional,
+        _ => ParameterClass::Structural,
+    }
+}
+
+/// Private classifier that accepts a pre-computed set of count-cell IDs.
+///
+/// Called by [`stage_a_eligible`], which builds `count_cells` once before the
+/// per-cell loop to avoid O(N·C) cost (N differing cells × C collection subs).
+/// The public [`classify_cell`] applies the same rules via a linear scan — the
+/// per-call HashSet construction is negligible when classifying a single cell,
+/// but adds up inside the union-walk loop.
+fn classify_cell_with_count_cache(
+    graph: &EvaluationGraph,
+    cell_id: &ValueCellId,
+    count_cells: &HashSet<&ValueCellId>,
+) -> ParameterClass {
+    // Rule 1: missing cell → Structural (conservative).
+    let Some(node) = graph.value_cells.get(cell_id) else {
+        return ParameterClass::Structural;
+    };
+
+    // Rule 2: structure-controlling override.
+    if graph.structure_controlling.contains(cell_id) {
+        return ParameterClass::Structural;
+    }
+
+    // Rule 3: collection-count override (O(1) lookup into pre-computed set).
+    if count_cells.contains(cell_id) {
         return ParameterClass::Structural;
     }
 
@@ -160,20 +196,32 @@ pub fn stage_a_eligible(
 
     // 2. Value diff over the union of cell IDs from both maps.
     //
-    // Collect the union without allocation duplication: drain old IDs first,
-    // then add new IDs that didn't appear in old.
+    // Precompute the count-cell set once so the per-cell loop runs in O(N)
+    // rather than O(N·C) (N differing cells × C collection subs).
+    // new_graph == old_graph structurally after the shape gate above.
+    let count_cells: HashSet<&ValueCellId> = new_graph
+        .collection_subs
+        .iter()
+        .map(|s| &s.count_cell)
+        .collect();
+
     let mut union_ids: HashSet<&ValueCellId> = HashSet::new();
     union_ids.extend(old_values.iter().map(|(id, _)| id));
     union_ids.extend(new_values.iter().map(|(id, _)| id));
 
     for id in union_ids {
-        if old_values.get(id) == new_values.get(id) {
+        // Use get_or_undef so that Some(Value::Undef) and None compare equal —
+        // the engine treats an absent entry as Undef (see ValueMap::get_or_undef
+        // and EvalResult::values doc). Without this alignment, a cell that flips
+        // between Some(Undef) and None would look like a change and could cause
+        // a spurious structural rejection.
+        if old_values.get_or_undef(id) == new_values.get_or_undef(id) {
             continue;
         }
-        // Values differ (or the cell is present on only one side: Some vs None).
-        // Use new_graph for classification — by the shape gate it is
-        // structurally identical to old_graph.
-        match classify_cell(new_graph, id) {
+        // Values differ (including Some vs None for non-Undef values).
+        // Use new_graph for classification — structurally identical to
+        // old_graph after the shape gate.
+        match classify_cell_with_count_cache(new_graph, id, &count_cells) {
             ParameterClass::Dimensional => continue,
             ParameterClass::Structural => return false,
         }
@@ -657,6 +705,41 @@ mod tests {
             classify_cell(&g, &id),
             ParameterClass::Dimensional,
             "Int cell NOT in collection_subs.count_cell must remain Dimensional"
+        );
+    }
+
+    // ── Suggestion-1: Undef ≡ absent convention ───────────────────────────
+    //
+    // `ValueMap::get_or_undef` returns Value::Undef for absent entries,
+    // matching the engine's convention (see EvalResult::values doc comment:
+    // "callers iterating values for Param cells MUST guard lookups via
+    // get_or_undef").  A cell that flips between Some(Undef) and None is a
+    // no-op edit and must not trigger a structural rejection.
+
+    #[test]
+    fn stage_a_eligible_some_undef_and_absent_are_equivalent_no_spurious_rejection() {
+        use reify_types::{Value, ValueMap};
+
+        // Use an Enum cell (structural type) so that a *real* value diff on
+        // this cell would produce false.  The Undef↔absent asymmetry must NOT
+        // cause a false rejection — both sides resolve to Value::Undef.
+        let id = ValueCellId::new("Part", "mode");
+        let g = graph_with_cell(&id, Type::Enum("Mode".to_string()));
+        let g2 = g.clone();
+
+        // Case A: old = Some(Undef), new = None (absent).
+        let mut v_undef = ValueMap::new();
+        v_undef.insert(id.clone(), Value::Undef);
+        let v_absent = ValueMap::new();
+        assert!(
+            stage_a_eligible(&g, &g2, &v_undef, &v_absent),
+            "Some(Undef) vs absent must not cause a spurious structural rejection"
+        );
+
+        // Case B: old = None (absent), new = Some(Undef).
+        assert!(
+            stage_a_eligible(&g, &g2, &v_absent, &v_undef),
+            "absent vs Some(Undef) must not cause a spurious structural rejection"
         );
     }
 
