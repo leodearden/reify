@@ -177,6 +177,25 @@ pub(crate) fn validate_selector_target(v: &Value) -> Option<()> {
 }
 
 /// Validate that `v` is a `Value::Vector` (or Tensor/Point) of exactly 3
+/// numeric components with a consistent dimension matching `expected_dim`,
+/// all finite.
+///
+/// Returns `Some(())` on success, `None` on any failure.
+pub(crate) fn validate_dimensioned_vec3(v: &Value, expected_dim: DimensionVector) -> Option<()> {
+    let (vals, dim) = tensor_components_f64(v)?;
+    if vals.len() != 3 {
+        return None;
+    }
+    if dim != expected_dim {
+        return None;
+    }
+    if vals.iter().any(|x| !x.is_finite()) {
+        return None;
+    }
+    Some(())
+}
+
+/// Validate that `v` is a `Value::Vector` (or Tensor/Point) of exactly 3
 /// dimensionless components, all finite, with a non-zero, finite squared
 /// magnitude — and return the raw (un-normalized) `[x, y, z]` components.
 ///
