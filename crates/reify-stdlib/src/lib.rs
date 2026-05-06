@@ -26,7 +26,6 @@ mod joints;
 mod linalg;
 mod list;
 mod loads;
-mod supports;
 pub mod loop_closure;
 pub mod loop_closure_solver;
 mod matrix;
@@ -34,6 +33,7 @@ mod mechanism;
 mod numeric;
 mod orientation;
 mod snapshot;
+mod supports;
 mod sweep;
 mod trig;
 
