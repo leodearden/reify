@@ -275,6 +275,63 @@ mod tests {
         assert_eq!(classify_cell(&g, &unknown_id), ParameterClass::Structural);
     }
 
+    // ── Step-13: stage_a_eligible shape-gate dominance ────────────────────
+
+    #[test]
+    fn stage_a_eligible_shape_hash_differs_returns_false() {
+        use reify_types::{RealizationNodeId, ValueMap};
+        use crate::graph::RealizationNodeData;
+
+        let id = ValueCellId::new("Part", "width");
+        let g1 = graph_with_cell(&id, Type::length());
+        let mut g2 = g1.clone();
+        // Insert an extra realization into g2 — diverges the shape hash.
+        let rid = RealizationNodeId::new("Part", 42);
+        g2.realizations.insert(
+            rid.clone(),
+            RealizationNodeData {
+                id: rid,
+                operations: vec![],
+                content_hash: ContentHash::of_str("extra-shape"),
+            },
+        );
+        // Identical (empty) ValueMaps.
+        let v = ValueMap::new();
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v, &v),
+            "differing graph shapes must not be stage-A eligible (shape gate short-circuits)"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_shape_hash_differs_with_dimensional_value_diff_still_returns_false() {
+        use reify_types::{RealizationNodeId, Value, ValueMap};
+        use crate::graph::RealizationNodeData;
+
+        let width_id = ValueCellId::new("Part", "width");
+        let g1 = graph_with_cell(&width_id, Type::length());
+        let mut g2 = g1.clone();
+        // Diverge shape.
+        let rid = RealizationNodeId::new("Part", 99);
+        g2.realizations.insert(
+            rid.clone(),
+            RealizationNodeData {
+                id: rid,
+                operations: vec![],
+                content_hash: ContentHash::of_str("extra-shape-2"),
+            },
+        );
+        // A dimensional value diff alongside the shape mismatch.
+        let mut v1 = ValueMap::new();
+        v1.insert(width_id.clone(), Value::length(0.05));
+        let mut v2 = ValueMap::new();
+        v2.insert(width_id.clone(), Value::length(0.10));
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "shape gate dominates: permissible dimensional diff cannot rescue a shape mismatch"
+        );
+    }
+
     // ── Step-11: stage_a_eligible classifier-driven decisions ─────────────
 
     #[test]
