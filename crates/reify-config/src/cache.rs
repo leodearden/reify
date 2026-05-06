@@ -451,6 +451,21 @@ mod tests {
         }
     }
 
+    /// `[cache].dir = ""` must surface as a parse error. An empty-string
+    /// `dir` is meaningless (it resolves to CWD on most filesystems) and
+    /// almost certainly a typo or misconfigured variable. This mirrors the
+    /// env-var path that filters `is_empty()` and falls through, keeping
+    /// TOML and env-var semantics in sync.
+    #[test]
+    fn parse_cache_config_rejects_empty_dir() {
+        let err = parse_cache_config("[cache]\ndir = \"\"\n")
+            .expect_err("[cache].dir = \"\" should be rejected");
+        match err {
+            CacheError::EmptyDir => {}
+            other => panic!("expected CacheError::EmptyDir, got {:?}", other),
+        }
+    }
+
     #[test]
     fn resolve_cache_all_defaults() {
         // When every layer is absent, the resolver falls through to the
