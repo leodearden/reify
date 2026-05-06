@@ -2,8 +2,8 @@
 //! wiring (task 2875).
 //!
 //! Uses a synthetic `CompiledModule` (two Box primitives + one Union boolean op)
-//! and a `HookRecordingKernel` (a wrapper around `MockGeometryKernel` that
-//! advertises a `KernelAttributeHook` recording every `propagate_attributes`
+//! and a `HookKernel<RecordingHookStub>` (a wrapper around `MockGeometryKernel`
+//! that advertises a `KernelAttributeHook` recording every `propagate_attributes`
 //! call) to assert:
 //!
 //! - The engine dispatches through the hook exactly **once** per
@@ -90,80 +90,34 @@ impl KernelAttributeHook for FailingHookStub {
     }
 }
 
-// ─── HookRecordingKernel ─────────────────────────────────────────────────────
+// ─── HookKernel<H> — generic hook wrapper ────────────────────────────────────
 
-/// Wraps `MockGeometryKernel`, overrides `attribute_hook()` to return a
-/// `RecordingHookStub`, and overrides `execute_with_history` to return
-/// `(handle, AttributeHistory::None)` so the engine reaches the
-/// post-`populate_attribute_history` dispatcher slot.
-struct HookRecordingKernel {
+/// Generic wrapper around [`MockGeometryKernel`] that:
+/// - Overrides `attribute_hook()` to return `Some(&self.hook)`.
+/// - Overrides `execute_with_history` to return `(handle, AttributeHistory::None)`
+///   so the engine reaches the post-`populate_attribute_history` dispatcher slot.
+/// - Forwards all other `GeometryKernel` methods to the inner `MockGeometryKernel`.
+///
+/// Parametrized over the hook type `H: KernelAttributeHook`, so a single
+/// struct covers both the recording (ok) and failing (error) test scenarios
+/// — eliminating the near-identical `HookRecordingKernel` and `FailingHookKernel`
+/// boilerplate.  `OrderingKernel` is kept separate because it requires
+/// distinct `extract_faces`/`extract_edges` overrides.
+struct HookKernel<H: KernelAttributeHook> {
     inner: MockGeometryKernel,
-    hook: RecordingHookStub,
+    hook: H,
 }
 
-impl HookRecordingKernel {
-    fn new(calls: Arc<Mutex<Vec<RecordedCall>>>) -> Self {
+impl<H: KernelAttributeHook> HookKernel<H> {
+    fn new(hook: H) -> Self {
         Self {
             inner: MockGeometryKernel::new(),
-            hook: RecordingHookStub { calls },
+            hook,
         }
     }
 }
 
-impl GeometryKernel for HookRecordingKernel {
-    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        self.inner.execute(op)
-    }
-
-    fn execute_with_history(
-        &mut self,
-        op: &GeometryOp,
-    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
-        let handle = self.inner.execute(op)?;
-        Ok((handle, AttributeHistory::None))
-    }
-
-    fn query(&self, q: &GeometryQuery) -> Result<Value, QueryError> {
-        self.inner.query(q)
-    }
-
-    fn export(
-        &self,
-        handle: GeometryHandleId,
-        format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), reify_types::ExportError> {
-        self.inner.export(handle, format, writer)
-    }
-
-    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
-        self.inner.tessellate(handle, tolerance)
-    }
-
-    fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
-        Some(&self.hook)
-    }
-}
-
-// ─── FailingHookKernel ────────────────────────────────────────────────────────
-
-/// Like `HookRecordingKernel` but uses `FailingHookStub` — every
-/// `propagate_attributes` call returns `Err(QueryError::QueryFailed(...))`.
-struct FailingHookKernel {
-    inner: MockGeometryKernel,
-    hook: FailingHookStub,
-}
-
-impl FailingHookKernel {
-    fn new() -> Self {
-        Self {
-            inner: MockGeometryKernel::new(),
-            hook: FailingHookStub,
-        }
-    }
-}
-
-impl GeometryKernel for FailingHookKernel {
+impl<H: KernelAttributeHook> GeometryKernel for HookKernel<H> {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         self.inner.execute(op)
     }
@@ -261,7 +215,7 @@ fn wiring_test_module() -> reify_compiler::CompiledModule {
 fn engine_build_invokes_kernel_attribute_hook_for_parent_having_ops_and_skips_primitives() {
     let module = wiring_test_module();
     let calls: Arc<Mutex<Vec<RecordedCall>>> = Arc::new(Mutex::new(Vec::new()));
-    let kernel = HookRecordingKernel::new(Arc::clone(&calls));
+    let kernel = HookKernel::new(RecordingHookStub { calls: Arc::clone(&calls) });
     let mut engine = reify_eval::Engine::new(
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
@@ -335,7 +289,7 @@ fn engine_build_invokes_kernel_attribute_hook_for_parent_having_ops_and_skips_pr
 fn engine_build_kernel_attribute_hook_query_error_surfaces_diagnostic_warning_without_failing_realization(
 ) {
     let module = wiring_test_module();
-    let kernel = FailingHookKernel::new();
+    let kernel = HookKernel::new(FailingHookStub);
     let mut engine = reify_eval::Engine::new(
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
