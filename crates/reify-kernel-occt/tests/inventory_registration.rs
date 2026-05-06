@@ -96,10 +96,6 @@ fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
 /// - `factory` — function-pointer identity to `occt_factory` (catches a
 ///   copy-paste regression that wires Manifold's factory into the OCCT submit;
 ///   neither the `name` nor `descriptor` pins would catch that divergence).
-///
-/// # Design template
-///
-/// `crates/reify-kernel-manifold/tests/inventory_registration.rs:79-136`.
 #[test]
 fn occt_kernel_registration_appears_in_inventory_iter() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
