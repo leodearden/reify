@@ -55,6 +55,23 @@ fn custom_max_depth_round_trips() {
     );
 }
 
+/// A `[auto_type_params]` table with `max_cross_product_size = N` overrides
+/// the default of 100,000. Pins the serde wiring (`AutoTypeParamsRaw` is read
+/// into `AutoTypeParamsConfig`) and that the parsed value flows through to
+/// the public accessor — mirrors `custom_max_depth_round_trips` for the
+/// task 2662 cross-product hard cap.
+#[test]
+fn custom_max_cross_product_size_round_trips() {
+    let manifest =
+        Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 200000\n")
+            .expect("manifest with auto_type_params section must parse");
+    assert_eq!(
+        manifest.auto_type_params().max_cross_product_size,
+        200_000,
+        "parsed max_cross_product_size must override the default of 100,000"
+    );
+}
+
 /// `max_depth = 0` is semantically meaningless: every search must visit at
 /// least one parameter. Pin the typed `ManifestError::InvalidMaxDepth(0)`
 /// rejection at parse time so misconfiguration cannot ship as a silent
