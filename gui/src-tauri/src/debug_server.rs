@@ -213,6 +213,19 @@ fn tool_defs() -> Vec<ToolDef> {
                 "required": ["enabled"]
             }),
         },
+        ToolDef {
+            name: "wait_for_idle",
+            description: "Block until the engine is idle (no in-flight evaluation) and one frame has rendered. Returns {ok: true, idle_after_ms: N} or {error: 'timeout'}. Used by the visual-regression harness to replace engine_state polling.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "Maximum wait in milliseconds; default 30000."
+                    }
+                }
+            }),
+        },
     ]
 }
 
