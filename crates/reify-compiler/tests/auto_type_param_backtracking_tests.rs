@@ -1562,6 +1562,57 @@ structure def S4B : T4 { param x : Real = 4.5 }
     );
 }
 
+// ─── DFS empty-params with small cap returns vacuous success (task 2662) ──
+
+/// Empty `params` slice + paranoid small `max_cross_product_size = 1`.
+/// Pins that the empty-params early-return at the top of
+/// `resolve_auto_type_params_with_backtracking` precedes the cap check —
+/// a vacuous outcome is produced before either guard fires. Mirrors
+/// `dfs_empty_params_returns_vacuous_success` for the task 2662 cap.
+///
+/// Pins:
+/// - `outcome.per_param.is_empty()` and `outcome.substitution.is_empty()`
+/// - `diagnostics.is_empty()` — in particular, NO
+///   `AutoTypeParamCrossProductSizeExceeded` warning
+#[test]
+fn dfs_empty_params_with_small_cap_returns_vacuous_success() {
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        &template,
+        &checker,
+        functions,
+        6,
+        1, // smallest legal cap value (paranoid)
+        &mut diagnostics,
+    );
+
+    assert!(
+        outcome.per_param.is_empty(),
+        "DFS with empty params must return empty per_param even with a small \
+         cap (the empty-params early-return precedes the cap check), got: {:?}",
+        outcome.per_param
+    );
+    assert!(
+        outcome.substitution.is_empty(),
+        "DFS with empty params must return empty substitution even with a small \
+         cap, got: {:?}",
+        outcome.substitution
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "DFS with empty params must emit zero diagnostics — in particular, NO \
+         AutoTypeParamCrossProductSizeExceeded warning — even with a small cap, got: {:?}",
+        diagnostics
+    );
+}
+
 // ─── amend (post-verification): coverage gaps surfaced in code review ──────
 
 /// Multi-param scenario where Phase A succeeds for every param but every
