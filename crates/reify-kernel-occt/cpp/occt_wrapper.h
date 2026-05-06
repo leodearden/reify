@@ -988,6 +988,22 @@ std::unique_ptr<OcctShape> make_vertex_for_test();
 /// The returned shape has TopAbs_ShapeType() == TopAbs_COMPSOLID.
 std::unique_ptr<OcctShape> make_compsolid_for_test();
 
+/// Apply a rotation+translation placement using `BRepBuilderAPI_Transform`
+/// with `Copy=Standard_False` — encoding the transform into `TopLoc_Location`
+/// rather than baking it into geometry (unlike `translate_shape`/`rotate_shape`
+/// which use `Copy=Standard_True`). The result has a non-identity location,
+/// exercising the `TopoLoc_Location`-aware path through `BRepAdaptor_Surface`.
+///
+/// Rotation is around axis `(ax, ay, az)` through the origin by `angle_rad`,
+/// followed by translation `(dx, dy, dz)`. Used only by placed-face integration
+/// tests verifying that `curvature_at` and `surface_normal_at` agree on faces
+/// with non-identity location.
+std::unique_ptr<OcctShape> apply_test_placement_for_test(
+    const OcctShape& shape,
+    double ax, double ay, double az, double angle_rad,
+    double dx, double dy, double dz
+);
+
 // --- Export ---
 
 /// Export shape to STEP format, returns the STEP file content as a string.

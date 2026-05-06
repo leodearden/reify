@@ -3284,6 +3284,41 @@ std::unique_ptr<OcctShape> make_triangle_face(
     });
 }
 
+/// Apply a rotation+translation placement to `shape` using
+/// `BRepBuilderAPI_Transform(..., Standard_False)` — Copy=False encodes the
+/// transformation into `TopLoc_Location` rather than baking it into the
+/// underlying geometry. This is the critical difference from `translate_shape`
+/// and `rotate_shape` (which use Copy=True and bake the transform in).
+///
+/// Used only by placed-face integration tests to exercise the
+/// non-identity-location code path through `BRepAdaptor_Surface`.
+std::unique_ptr<OcctShape> apply_test_placement_for_test(
+    const OcctShape& shape,
+    double ax, double ay, double az, double angle_rad,
+    double dx, double dy, double dz
+) {
+    return wrap_occt_call("apply_test_placement_for_test", [&]() {
+        // Rotation around axis (ax,ay,az) through the origin.
+        gp_Ax1 rot_axis(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(ax, ay, az));
+        gp_Trsf rot;
+        rot.SetRotation(rot_axis, angle_rad);
+        // Translation by (dx,dy,dz).
+        gp_Trsf trans;
+        trans.SetTranslation(gp_Vec(dx, dy, dz));
+        // Compose: translation after rotation (world-frame: first rotate, then translate).
+        gp_Trsf composed = trans * rot;
+        // Copy=Standard_False: encode into TopLoc_Location, do NOT bake into geometry.
+        BRepBuilderAPI_Transform transform(shape.shape, composed, Standard_False);
+        transform.Build();
+        if (!transform.IsDone()) {
+            throw std::runtime_error("apply_test_placement_for_test: transform failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = transform.Shape();
+        return result;
+    });
+}
+
 // --- OcctShape lazy accessor implementations ---
 
 // STRONG-EXCEPTION-GUARANTEE: Build into a local `unique_ptr` (`tmp`) and only

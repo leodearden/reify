@@ -760,6 +760,16 @@ pub mod ffi {
         /// CompSolid wrapping one 10×10×10 mm box → TopAbs_COMPSOLID; type-guard passes.
         fn make_compsolid_for_test() -> Result<UniquePtr<OcctShape>>;
 
+        /// Apply rotation+translation using `BRepBuilderAPI_Transform(..., Copy=false)`,
+        /// encoding the transform into `TopLoc_Location` rather than baking it into
+        /// geometry. Used by placed-face integration tests to exercise the non-identity
+        /// location path through `BRepAdaptor_Surface`. See C++ header for full contract.
+        fn apply_test_placement_for_test(
+            shape: &OcctShape,
+            ax: f64, ay: f64, az: f64, angle_rad: f64,
+            dx: f64, dy: f64, dz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;
 

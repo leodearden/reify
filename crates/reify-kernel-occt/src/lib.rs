@@ -2614,6 +2614,39 @@ impl OcctKernel {
         let h = self.store(shape);
         h.id
     }
+
+    /// Apply a rotation+translation placement to `src_handle`'s shape using
+    /// `BRepBuilderAPI_Transform(..., Copy=false)`, encoding the transform into
+    /// `TopLoc_Location` rather than baking it into geometry.
+    ///
+    /// This produces a shape with a non-identity `TopLoc_Location`, which
+    /// exercises the location-aware evaluation path in `BRepAdaptor_Surface`.
+    /// Unlike the production `translate_shape`/`rotate_shape` FFI calls (which
+    /// use `Copy=true` and bake the transform), this fixture preserves the
+    /// non-identity location so it reaches the BRepAdaptor composition path.
+    ///
+    /// Used by placed-face integration tests to verify that `curvature_at` and
+    /// `surface_normal_at` agree after the BRepAdaptor unification.
+    #[allow(clippy::too_many_arguments)]
+    pub fn store_placed_for_test(
+        &mut self,
+        src_handle: GeometryHandleId,
+        ax: f64,
+        ay: f64,
+        az: f64,
+        angle_rad: f64,
+        dx: f64,
+        dy: f64,
+        dz: f64,
+    ) -> GeometryHandleId {
+        let src = self
+            .get_shape(src_handle)
+            .expect("store_placed_for_test: src_handle must be valid");
+        let placed = ffi::ffi::apply_test_placement_for_test(src, ax, ay, az, angle_rad, dx, dy, dz)
+            .expect("apply_test_placement_for_test should succeed");
+        let h = self.store(placed);
+        h.id
+    }
 }
 
 #[cfg(all(test, has_occt))]
