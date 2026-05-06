@@ -86,10 +86,8 @@ pub fn parse_cache_config(s: &str) -> Result<CacheConfig, CacheError> {
     // type. This mirrors the `deny_unknown_fields` philosophy: loud
     // misconfiguration over silent fall-through.
     if let Some(ref c) = raw.cache {
-        if let Some(ref d) = c.dir {
-            if d.is_empty() {
-                return Err(CacheError::EmptyDir);
-            }
+        if c.dir.as_deref() == Some("") {
+            return Err(CacheError::EmptyDir);
         }
         if c.max_bytes == Some(0) {
             return Err(CacheError::ZeroMaxBytes);
