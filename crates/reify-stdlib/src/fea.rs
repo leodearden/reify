@@ -159,4 +159,61 @@ mod tests {
         let result = eval_fea("envelope_min", &[map]).unwrap();
         assert_eq!(result, field);
     }
+
+    // ── two-case per-grid-point reductions ──────────────────────────────────
+
+    /// Helper: extract the inner SampledField from a Sampled Value::Field.
+    fn extract_sampled(v: &Value) -> &SampledField {
+        match v {
+            Value::Field { source, lambda, .. } if matches!(source, FieldSourceKind::Sampled) => {
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf,
+                    _ => panic!("expected SampledField in Sampled lambda slot"),
+                }
+            }
+            _ => panic!("expected Sampled Value::Field, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn envelope_max_two_sampled_real_codomain_returns_per_grid_max() {
+        let axis = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 5.0, 3.0, 4.0, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, 2.0, 4.0, 1.0, 5.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_max", &[map]).unwrap();
+        let sf = extract_sampled(&result);
+
+        assert_eq!(sf.kind, SampledGridKind::Regular1D);
+        assert_eq!(sf.axis_grids, vec![axis.clone()]);
+        assert_eq!(sf.bounds_min, vec![0.0]);
+        assert_eq!(sf.bounds_max, vec![4.0]);
+        assert_eq!(sf.spacing, vec![1.0]);
+        assert_eq!(sf.interpolation, InterpolationKind::Linear);
+        assert_eq!(sf.data, vec![3.0, 5.0, 4.0, 4.0, 5.0]);
+
+        // Outer Value::Field domain/codomain types are propagated unchanged.
+        match &result {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(*domain_type, Type::Real);
+                assert_eq!(*codomain_type, Type::Real);
+                assert!(matches!(source, FieldSourceKind::Sampled));
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
 }
