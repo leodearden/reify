@@ -1281,28 +1281,27 @@ pub(crate) fn compile_expr_guarded(
                 && let Some(clusters) = scope.sub_match_arm_groups.get(col_sub_name.as_str())
                 && let Some((_group, per_arm)) =
                     clusters.iter().find(|(g, _)| &g.name == group_name)
+                && let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind
             {
-                if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
-                    if n.fract() != 0.0 || *n < 0.0 {
-                        // Fractional or negative index — delegate to the existing
-                        // indexed-access branch for a consistent error message.
-                    } else {
-                        let i = *n as i64;
-                        let scoped_entity =
-                            format!("{}.{}[{}]", scope.entity_name, col_sub_name, i);
-                        return resolve_cluster_inner_member(
-                            per_arm,
-                            member,
-                            &scoped_entity,
-                            group_name,
-                            Some(col_sub_name),
-                            expr.span,
-                            diagnostics,
-                        );
-                    }
+                if n.fract() != 0.0 || *n < 0.0 {
+                    // Fractional or negative index — delegate to the existing
+                    // indexed-access branch for a consistent error message.
+                } else {
+                    let i = *n as i64;
+                    let scoped_entity =
+                        format!("{}.{}[{}]", scope.entity_name, col_sub_name, i);
+                    return resolve_cluster_inner_member(
+                        per_arm,
+                        member,
+                        &scoped_entity,
+                        group_name,
+                        Some(col_sub_name),
+                        expr.span,
+                        diagnostics,
+                    );
                 }
-                // Non-literal index (or invalid literal): fall through to the
-                // existing indexed-access branch. No return here.
+                // Non-literal index: the `&& let NumberLiteral(n)` guard above
+                // short-circuits so control falls through to the indexed-access branch.
             }
 
             // Check if this is an indexed collection member access: collection[i].member
