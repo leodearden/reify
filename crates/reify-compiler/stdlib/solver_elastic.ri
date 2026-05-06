@@ -99,6 +99,19 @@ structure def ElasticOptions {
 // has no defaults — every field is populated by the solver at run time;
 // constructing one outside that flow is meaningless.
 //
+// TODO(field-in-param): once `resolve_parameterized_builtin_type`
+// (`crates/reify-compiler/src/type_resolution.rs:1340-1398`) accepts
+// `Field<X, Y>` in `param` positions, tighten `displacement` to
+// `Field<Point3<Length>, Vector3<Length>>` and `stress` to
+// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` per the PRD spec
+// (`docs/prds/v0_3/structural-analysis-fea.md` task #4). Until then the
+// `Real` placeholder lets a buggy runtime implementation accidentally
+// write a scalar into these slots and type-check successfully — the
+// runtime FEA solver in PRD task #16 is the only writer, so the hazard
+// is contained, but a follow-up task should revisit these types when the
+// type resolver gains Field-in-param support so the placeholder doesn't
+// quietly become permanent.
+//
 // Field semantics:
 //   displacement  — per-mesh-node displacement vector, returned as a
 //                   `Field<Point3<Length>, Vector3<Length>>` at runtime.
@@ -106,11 +119,14 @@ structure def ElasticOptions {
 //                   resolver does not (yet) accept `Field<X, Y>` in `param`
 //                   positions; PRD task #16 (the runtime solver) populates
 //                   the actual Field-typed value through the same Map-based
-//                   path that `loads.rs` and `supports.rs` use.
+//                   path that `loads.rs` and `supports.rs` use. See the
+//                   TODO(field-in-param) note above for the planned
+//                   tightening.
 //   stress        — per-mesh-node Cauchy stress tensor, returned as a
 //                   `Field<Point3<Length>, Tensor<2, 3, Pressure>>` at
 //                   runtime. Same Real-placeholder rationale as
-//                   `displacement` above.
+//                   `displacement` above; covered by the same
+//                   TODO(field-in-param).
 //   max_von_mises — peak von-Mises equivalent stress over the mesh.
 //                   Convenience scalar for safety-factor / yield-margin
 //                   comparisons; equivalent to
