@@ -1697,6 +1697,48 @@ structure S {
     // module that eliminates the prior duplication across compiler and LSP
     // test files.
 
+    #[test]
+    fn find_unique_unconsumed_match_excludes_consumed_indices_and_panics_when_pool_is_exhausted() {
+        use std::panic::AssertUnwindSafe;
+
+        // D0: message embeds three quoted tokens ('param', 'foo', 'baz') so that
+        // a naive substring scan without a consumed-set would match D0 for both
+        // ("param", "foo") and ("param", "baz") queries — simulating the
+        // bijection-violation scenario.
+        let d0 = lsp_types::Diagnostic {
+            message: "'param' decl 'foo' seen alongside 'baz' in scope".to_string(),
+            ..Default::default()
+        };
+        // D1: message embeds 'sub' and 'bar'.
+        let d1 = lsp_types::Diagnostic {
+            message: "'sub' decl 'bar' is not permitted".to_string(),
+            ..Default::default()
+        };
+        let forbidden = vec![d0, d1];
+
+        // (a) Happy path — empty consumed set: each query returns the unique index.
+        let consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let idx0 = find_unique_unconsumed_match(&forbidden, &consumed, "param", "foo");
+        assert_eq!(idx0, 0);
+
+        let mut consumed_after = std::collections::HashSet::<usize>::new();
+        consumed_after.insert(0);
+        let idx1 = find_unique_unconsumed_match(&forbidden, &consumed_after, "sub", "bar");
+        assert_eq!(idx1, 1);
+
+        // (b) Bijection-violation path — with index 0 consumed, a second query for
+        // ("param", "foo") must panic: no unconsumed diagnostic contains both tokens.
+        let forbidden_ref = &forbidden;
+        let consumed_ref = consumed_after.clone();
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            find_unique_unconsumed_match(forbidden_ref, &consumed_ref, "param", "foo")
+        }));
+        assert!(
+            result.is_err(),
+            "expected panic when the only matching diagnostic is already consumed"
+        );
+    }
+
     /// Drive the specialization-scope pipeline for `body` (the contents of a
     /// `sub scope : Foo { body }` node inside structure S) and assert that the
     /// resulting LSP diagnostics with code `"SpecializationForbiddenDecl"` match
