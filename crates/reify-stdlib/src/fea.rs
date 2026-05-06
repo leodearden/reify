@@ -290,6 +290,43 @@ mod tests {
         }
     }
 
+    /// Construct a 3-D `SampledField` from per-axis grid coords and data
+    /// (axis-0 outermost, row-major: `data[i0*s1*s2 + i1*s2 + i2]`).
+    fn make_sampled_3d(
+        name: &str,
+        axis0: Vec<f64>,
+        axis1: Vec<f64>,
+        axis2: Vec<f64>,
+        data: Vec<f64>,
+    ) -> SampledField {
+        let bounds_min = vec![
+            *axis0.first().expect("axis0 must be non-empty"),
+            *axis1.first().expect("axis1 must be non-empty"),
+            *axis2.first().expect("axis2 must be non-empty"),
+        ];
+        let bounds_max = vec![
+            *axis0.last().expect("axis0 must be non-empty"),
+            *axis1.last().expect("axis1 must be non-empty"),
+            *axis2.last().expect("axis2 must be non-empty"),
+        ];
+        let spacing = vec![
+            if axis0.len() >= 2 { axis0[1] - axis0[0] } else { 1.0 },
+            if axis1.len() >= 2 { axis1[1] - axis1[0] } else { 1.0 },
+            if axis2.len() >= 2 { axis2[1] - axis2[0] } else { 1.0 },
+        ];
+        SampledField {
+            name: name.to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min,
+            bounds_max,
+            spacing,
+            axis_grids: vec![axis0, axis1, axis2],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
     /// Construct a 1-D `SampledField` from per-axis grid coords and data.
     fn make_sampled_1d(name: &str, axis: Vec<f64>, data: Vec<f64>) -> SampledField {
         let bounds_min = vec![*axis.first().expect("axis must be non-empty")];
@@ -688,6 +725,77 @@ mod tests {
         };
         let map_degen = make_envelope_map(&[("a", case_a.clone()), ("b", degenerate_sampled)]);
         assert!(eval_fea("envelope_max", &[map_degen]).unwrap().is_undef());
+    }
+
+    // ── FEA-realistic 3-D Point3 / Pressure shape ──────────────────────────
+
+    #[test]
+    fn envelope_max_3d_point3_domain_returns_per_grid_max() {
+        // 2×2×2 = 8-point Regular3D grid. Chosen so that:
+        //   case_a beats case_b at indices 0, 2, 5 (per-grid maxima from a)
+        //   case_b beats case_a at indices 1, 3, 4, 6, 7 (per-grid maxima from b)
+        let axis = vec![0.0, 1.0];
+        let domain = Type::Point {
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+        };
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+
+        let case_a = wrap_sampled_field(
+            make_sampled_3d(
+                "a",
+                axis.clone(),
+                axis.clone(),
+                axis.clone(),
+                vec![10.0, 2.0, 20.0, 4.0, 3.0, 30.0, 6.0, 7.0],
+            ),
+            domain.clone(),
+            pressure.clone(),
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_3d(
+                "b",
+                axis.clone(),
+                axis.clone(),
+                axis.clone(),
+                vec![5.0, 8.0, 15.0, 12.0, 9.0, 25.0, 14.0, 18.0],
+            ),
+            domain.clone(),
+            pressure.clone(),
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_max", &[map]).unwrap();
+        let sf = extract_sampled(&result);
+
+        // Grid kind, axis_grids, bounds, spacing all preserved from refs.
+        assert_eq!(sf.kind, SampledGridKind::Regular3D);
+        assert_eq!(sf.axis_grids, vec![axis.clone(), axis.clone(), axis.clone()]);
+        assert_eq!(sf.bounds_min, vec![0.0, 0.0, 0.0]);
+        assert_eq!(sf.bounds_max, vec![1.0, 1.0, 1.0]);
+        assert_eq!(sf.spacing, vec![1.0, 1.0, 1.0]);
+
+        // Per-index max across cases.
+        assert_eq!(sf.data, vec![10.0, 8.0, 20.0, 12.0, 9.0, 30.0, 14.0, 18.0]);
+
+        // Outer Value::Field domain/codomain types are propagated unchanged.
+        match &result {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(*domain_type, domain);
+                assert_eq!(*codomain_type, pressure);
+                assert!(matches!(source, FieldSourceKind::Sampled));
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
     }
 
     #[test]
