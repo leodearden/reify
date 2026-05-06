@@ -117,7 +117,7 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
             },
             _ => return Value::Undef,
         };
-        if dom != ref_domain || cod != ref_codomain || !grids_equal(ref_sf, sf) {
+        if !metadata_matches(ref_sf, sf, ref_domain, ref_codomain, dom, cod) {
             return Value::Undef;
         }
         cases_data.push(&sf.data);
@@ -183,6 +183,29 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(result_sf)),
     }
+}
+
+/// Composite metadata-equality predicate used by `envelope_reduce`'s
+/// per-case validation loop. Returns `false` on any of:
+///   - grid mismatch (`grids_equal` — kind, axis_grids, bounds, spacing,
+///     interpolation, data length)
+///   - domain-type mismatch
+///   - codomain-type mismatch
+///
+/// Captures the full reference-equality contract pinned by step-15's
+/// four-mismatch tests. Mirrors the to_bits() float discipline of
+/// `SampledField::PartialEq`.
+fn metadata_matches(
+    reference: &SampledField,
+    candidate: &SampledField,
+    ref_domain: &Type,
+    ref_codomain: &Type,
+    candidate_domain: &Type,
+    candidate_codomain: &Type,
+) -> bool {
+    candidate_domain == ref_domain
+        && candidate_codomain == ref_codomain
+        && grids_equal(reference, candidate)
 }
 
 /// Strict grid-equality predicate for two `SampledField`s. Floats compared
