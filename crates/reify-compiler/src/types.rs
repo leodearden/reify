@@ -1265,3 +1265,51 @@ mod guarded_decl_group_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod auto_type_substitution_tests {
+    //! Unit tests for `AutoTypeSubstitution` newtype (task 2898, step-1 RED).
+    //! These tests will fail to compile until the newtype is defined in step-2.
+    use super::AutoTypeSubstitution;
+
+    /// `new` with unique param names constructs successfully; `as_slice` returns
+    /// the pairs in the original insertion order (no reordering or deduplication).
+    #[test]
+    fn new_with_unique_pairs_succeeds_and_preserves_order() {
+        let pairs = vec![
+            ("T".to_string(), "ORingSeal".to_string()),
+            ("U".to_string(), "BoltGrade".to_string()),
+        ];
+        let sub = AutoTypeSubstitution::new(pairs.clone());
+        assert_eq!(sub.as_slice(), pairs.as_slice());
+    }
+
+    /// Duplicate param names must cause a panic — in BOTH debug and release builds.
+    /// The test must NOT be gated with `#[cfg(debug_assertions)]` to pin that the
+    /// constructor panics unconditionally.
+    #[test]
+    #[should_panic(expected = "param names must be unique")]
+    fn new_with_duplicate_param_names_panics() {
+        AutoTypeSubstitution::new(vec![
+            ("T".to_string(), "A".to_string()),
+            ("T".to_string(), "B".to_string()),
+        ]);
+    }
+
+    /// `Default` produces an empty substitution (no pairs).
+    #[test]
+    fn default_is_empty() {
+        let sub = AutoTypeSubstitution::default();
+        assert!(sub.is_empty());
+    }
+
+    /// `into_inner` consumes the newtype and returns the underlying
+    /// `Vec<(String, String)>` verbatim.
+    #[test]
+    fn into_inner_returns_underlying_vec() {
+        let pairs = vec![("T".to_string(), "ORingSeal".to_string())];
+        let sub = AutoTypeSubstitution::new(pairs.clone());
+        let inner = sub.into_inner();
+        assert_eq!(inner, pairs);
+    }
+}
