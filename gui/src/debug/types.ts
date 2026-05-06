@@ -55,6 +55,8 @@ export interface DebugViewport {
   getGhostMeshes: () => Map<string, unknown>;
   fitToView: () => void;
   flyToEntity: (entityPath: string) => void;
+  /** OrbitControls instance — optional so test stubs need not construct one. */
+  controls?: OrbitControls;
 }
 
 /** The window.__REIFY_DEBUG__ global shape. */
