@@ -115,6 +115,30 @@ describe('applyColormap — happy path', () => {
     expect(b).toBeCloseTo(rainbowLut[255 * 3 + 2], 5);
   });
 
+  it('magma value 0.5 returns interpolated magmaLut result (not viridis)', () => {
+    // Confirms resolveLut dispatches to the correct LUT for magma.
+    const [r, g, b] = applyColormap(0.5, fixedRange, 'magma');
+    const lo = 127, hi = 128, frac = 0.5;
+    const expR = magmaLut[lo * 3]     + frac * (magmaLut[hi * 3]     - magmaLut[lo * 3]);
+    const expG = magmaLut[lo * 3 + 1] + frac * (magmaLut[hi * 3 + 1] - magmaLut[lo * 3 + 1]);
+    const expB = magmaLut[lo * 3 + 2] + frac * (magmaLut[hi * 3 + 2] - magmaLut[lo * 3 + 2]);
+    expect(r).toBeCloseTo(expR, 5);
+    expect(g).toBeCloseTo(expG, 5);
+    expect(b).toBeCloseTo(expB, 5);
+  });
+
+  it('rainbow value 0.5 returns interpolated rainbowLut result (not viridis)', () => {
+    // Confirms resolveLut dispatches to the correct LUT for rainbow.
+    const [r, g, b] = applyColormap(0.5, fixedRange, 'rainbow');
+    const lo = 127, hi = 128, frac = 0.5;
+    const expR = rainbowLut[lo * 3]     + frac * (rainbowLut[hi * 3]     - rainbowLut[lo * 3]);
+    const expG = rainbowLut[lo * 3 + 1] + frac * (rainbowLut[hi * 3 + 1] - rainbowLut[lo * 3 + 1]);
+    const expB = rainbowLut[lo * 3 + 2] + frac * (rainbowLut[hi * 3 + 2] - rainbowLut[lo * 3 + 2]);
+    expect(r).toBeCloseTo(expR, 5);
+    expect(g).toBeCloseTo(expG, 5);
+    expect(b).toBeCloseTo(expB, 5);
+  });
+
   it('all three Range modes produce identical output for the same min/max', () => {
     const value = 0.3;
     const min = -10, max = 10;
@@ -176,6 +200,43 @@ describe('applyColormap — out-of-range and NaN handling', () => {
     expect(r).toBeCloseTo(viridisLut[0], 5);
     expect(g).toBeCloseTo(viridisLut[1], 5);
     expect(b).toBeCloseTo(viridisLut[2], 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Degenerate and non-finite range bounds
+// ---------------------------------------------------------------------------
+describe('applyColormap — degenerate and non-finite range bounds', () => {
+  it('degenerate range (min === max) maps in-range value to lut[0] (t=0)', () => {
+    // span === 0 → t clamped to 0 → lerp returns lut entry 0.
+    const degRange: Range = { mode: 'fixed', min: 5, max: 5 };
+    const [r, g, b] = applyColormap(5, degRange, 'viridis');
+    expect(r).toBeCloseTo(viridisLut[0], 5);
+    expect(g).toBeCloseTo(viridisLut[1], 5);
+    expect(b).toBeCloseTo(viridisLut[2], 5);
+  });
+
+  it('non-finite range.max (Infinity) returns nanColor default', () => {
+    const badRange: Range = { mode: 'fixed', min: 0, max: Infinity };
+    expect(applyColormap(0.5, badRange, 'viridis')).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  it('non-finite range.min (NaN) returns nanColor default', () => {
+    const badRange: Range = { mode: 'fixed', min: NaN, max: 1 };
+    expect(applyColormap(0.5, badRange, 'viridis')).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  it('non-finite range.max with custom nanColor returns the custom colour', () => {
+    const badRange: Range = { mode: 'fixed', min: 0, max: Infinity };
+    expect(applyColormap(0.5, badRange, 'viridis', { nanColor: [1, 0, 1] })).toEqual([1, 0, 1]);
+  });
+
+  it('bakeColours with non-finite range fills entire output with nanColor', () => {
+    const badRange: Range = { mode: 'fixed', min: 0, max: Infinity };
+    const out = bakeColours(new Float32Array([0, 0.5, 1]), badRange, 'viridis', { nanColor: [1, 0, 0] });
+    expect(out[0]).toBeCloseTo(1, 5); expect(out[1]).toBeCloseTo(0, 5); expect(out[2]).toBeCloseTo(0, 5);
+    expect(out[3]).toBeCloseTo(1, 5); expect(out[4]).toBeCloseTo(0, 5); expect(out[5]).toBeCloseTo(0, 5);
+    expect(out[6]).toBeCloseTo(1, 5); expect(out[7]).toBeCloseTo(0, 5); expect(out[8]).toBeCloseTo(0, 5);
   });
 });
 
@@ -248,11 +309,18 @@ describe('bakeColours', () => {
     expect(out[8]).toBeCloseTo(1, 5);
   });
 
-  it('single-allocation contract: output.length === scalars.length * 3', () => {
+  it('single-allocation contract: byteOffset is 0 and buffer is not over-allocated', () => {
     const out = bakeColours(scalars, range, 'viridis');
-    // If bakeColours allocates exactly once, the result must be exactly
-    // scalars.length * 3 — not larger (no slack buffer) and not a slice.
-    expect(out.length).toBe(5 * 3);
+    // byteOffset === 0 confirms out is not a sliced view into a larger buffer.
+    expect(out.byteOffset).toBe(0);
+    // buffer.byteLength === out.byteLength confirms no slack allocation.
+    expect(out.buffer.byteLength).toBe(out.byteLength);
+  });
+
+  it('empty scalars array returns empty Float32Array without throwing', () => {
+    const out = bakeColours(new Float32Array(0), range, 'viridis');
+    expect(out).toBeInstanceOf(Float32Array);
+    expect(out.length).toBe(0);
   });
 });
 
@@ -270,30 +338,30 @@ describe('barrel export wiring (viewport/index)', () => {
     expect(typeof barrel.bakeColours).toBe('function');
   });
 
-  it('Palette, Range, ColormapOptions type shapes are available (runtime smoke)', async () => {
-    // Construct a value of each variant to confirm type compatibility at
-    // runtime (TypeScript structural check is covered by tsc).
+  it('applyColormap returns a proper 3-element Array for all palettes and range modes', async () => {
     const barrel = await import('../../viewport/index');
+    const r: import('../../viewport/colormap').Range = { mode: 'fixed', min: 0, max: 1 };
 
-    // Palette literal usage
-    const p1 = 'viridis' satisfies import('../../viewport/colormap').Palette;
-    const p2 = 'magma'   satisfies import('../../viewport/colormap').Palette;
-    const p3 = 'rainbow' satisfies import('../../viewport/colormap').Palette;
-    ([p1, p2, p3] as const).forEach(p => expect(typeof barrel.applyColormap(0, { mode: 'fixed', min: 0, max: 1 }, p)).toBe('object'));
+    // All three palettes dispatch through the barrel correctly.
+    for (const p of ['viridis', 'magma', 'rainbow'] as const) {
+      const result = barrel.applyColormap(0.5, r, p);
+      expect(Array.isArray(result)).toBe(true);
+      expect(result.length).toBe(3);
+    }
 
-    // Range mode variants
-    const autoR:   import('../../viewport/colormap').Range = { mode: 'auto',   min: 0, max: 1 };
-    const fixedR:  import('../../viewport/colormap').Range = { mode: 'fixed',  min: 0, max: 1 };
-    const lockedR: import('../../viewport/colormap').Range = { mode: 'locked', min: 0, max: 1, source: 'test' };
-    [autoR, fixedR, lockedR].forEach(r => expect(barrel.applyColormap(0.5, r, 'viridis').length).toBe(3));
+    // All three Range mode variants are accepted.
+    const autoR   = { mode: 'auto'   as const, min: 0, max: 1 };
+    const lockedR = { mode: 'locked' as const, min: 0, max: 1, source: 'test' };
+    for (const range of [autoR, r, lockedR]) {
+      const result = barrel.applyColormap(0.5, range, 'viridis');
+      expect(Array.isArray(result)).toBe(true);
+      expect(result.length).toBe(3);
+    }
 
-    // ColormapOptions
-    const opts: import('../../viewport/colormap').ColormapOptions = {
-      aboveColor: [1, 0, 0],
-      belowColor: [0, 1, 0],
-      nanColor:   [0, 0, 1],
-    };
-    const out = barrel.applyColormap(NaN, fixedR, 'viridis', opts);
-    expect(out).toEqual([0, 0, 1]); // nanColor
+    // nanColor propagates through the barrel — the unique assertion not covered
+    // by the preceding 'function is re-exported' tests.
+    const opts: import('../../viewport/colormap').ColormapOptions = { nanColor: [0, 0, 1] };
+    const nanResult = barrel.applyColormap(NaN, r, 'viridis', opts);
+    expect(nanResult).toEqual([0, 0, 1]);
   });
 });
