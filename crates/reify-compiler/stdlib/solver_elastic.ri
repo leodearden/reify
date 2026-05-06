@@ -45,3 +45,39 @@
 // integer-tag encodings, so the variant list is asserted in the
 // solver_elastic_tests fixture.
 enum ElementOrder { P1, P2 }
+
+// ── ElasticOptions ───────────────────────────────────────────────────────────
+
+// `ElasticOptions` is the configuration object passed to the FEA solver.
+// All five params have sensible defaults so a bare `ElasticOptions()`
+// instantiation compiles and yields the standard solver setup; callers
+// override individual fields at construction (e.g.,
+// `ElasticOptions(element_order: ElementOrder.P2, max_iter: 5000)`).
+//
+// Param semantics:
+//   element_order — P1 (linear) vs P2 (quadratic) tetrahedral elements.
+//                   See `ElementOrder` enum doc for the trade-off.
+//   mesh_size     — target characteristic mesh edge length. `none` (default)
+//                   asks the solver to derive an appropriate size from the
+//                   per-purpose tolerancing chain; an explicit `some(<L>)`
+//                   value pins the mesh density (use for refinement studies
+//                   or when reproducing a specific run).
+//   max_iter      — upper bound on conjugate-gradient iterations. The
+//                   default 1000 covers typical small-to-medium problems
+//                   in a few hundred iterations; the cap exists so a
+//                   pathologically conditioned problem fails loudly rather
+//                   than running forever.
+//   cg_tolerance  — relative residual norm at which CG declares convergence.
+//                   Default `0.000001` (= 1e-6) is a standard FEA accuracy
+//                   target; tighten for high-precision work, loosen for
+//                   first-pass exploration.
+//   threads       — number of solver worker threads. `none` (default) lets
+//                   the solver pick (typically num-cpus or a tiny-problem
+//                   single-thread fallback); `some(n)` pins the count.
+structure def ElasticOptions {
+    param element_order : ElementOrder
+    param mesh_size : Option<Length>
+    param max_iter : Int
+    param cg_tolerance : Real
+    param threads : Option<Int>
+}
