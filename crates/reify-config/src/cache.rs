@@ -187,18 +187,25 @@ pub struct CacheResolution {
 /// is pure and side-effect-free: it never reads the process environment
 /// or the filesystem itself.
 pub fn resolve_cache(inputs: &CacheResolverInputs<'_>) -> Result<CacheResolution, CacheError> {
-    // Default branch only for now — later steps (12 / 14 / 16 / 18) wire
-    // in the CLI / env / config layers in precedence order.
-    let _ = inputs.cli_dir;
+    // dir-resolution ladder, highest-precedence first. Later steps
+    // (14 / 16) extend the ladder with env / user / project layers
+    // before the Default fall-through.
+    let (dir, dir_source) = if let Some(cli) = inputs.cli_dir {
+        (cli.to_path_buf(), CacheDirSource::CliFlag)
+    } else {
+        (
+            default_cache_dir(inputs.home, inputs.xdg_cache_home),
+            CacheDirSource::Default,
+        )
+    };
     let _ = inputs.env_dir;
     let _ = inputs.env_max_bytes;
     let _ = inputs.user_config;
     let _ = inputs.project_config;
-    let dir = default_cache_dir(inputs.home, inputs.xdg_cache_home);
     Ok(CacheResolution {
         dir,
         max_bytes: DEFAULT_CACHE_MAX_BYTES,
-        dir_source: CacheDirSource::Default,
+        dir_source,
         max_bytes_source: CacheMaxBytesSource::Default,
     })
 }
