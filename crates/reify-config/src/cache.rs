@@ -89,6 +89,120 @@ pub fn parse_cache_config(s: &str) -> Result<CacheConfig, CacheError> {
     })
 }
 
+/// Layered inputs to [`resolve_cache`].
+///
+/// All fields are borrowed so the resolver is a pure function with no
+/// hidden environment access — callers in the binary entry points pass
+/// `std::env::var(...).ok().as_deref()` for the env-var fields and the
+/// already-parsed user/project [`CacheConfig`]s, keeping this library
+/// deterministic and trivially unit-testable.
+///
+/// Precedence is fixed (highest first):
+///   1. [`Self::cli_dir`]
+///   2. [`Self::env_dir`]
+///   3. [`Self::user_config`]'s `dir`
+///   4. [`Self::project_config`]'s `dir`
+///   5. Default (`$XDG_CACHE_HOME/reify/fea` or `$HOME/.cache/reify/fea`)
+///
+/// `max_bytes` follows the same precedence minus the CLI layer (per the
+/// PRD, there is no `--cache-max-bytes` flag).
+pub struct CacheResolverInputs<'a> {
+    /// `--cache-dir <path>` from the CLI parser, when the eventual
+    /// consumer command provides one. Highest-precedence dir layer.
+    pub cli_dir: Option<&'a Path>,
+    /// `REIFY_CACHE_DIR` from the process environment, already lifted
+    /// to `Option<&str>` (typically via `std::env::var(...).ok().as_deref()`).
+    /// Empty-string is treated as unset (XDG / POSIX convention).
+    pub env_dir: Option<&'a str>,
+    /// `REIFY_CACHE_MAX_BYTES` from the process environment, already
+    /// lifted to `Option<&str>`. Empty-string is treated as unset.
+    pub env_max_bytes: Option<&'a str>,
+    /// Parsed `~/.config/reify/config.toml`, if present.
+    pub user_config: Option<&'a CacheConfig>,
+    /// Parsed `<project>/.reify/config.toml`, if present.
+    pub project_config: Option<&'a CacheConfig>,
+    /// `$HOME` — used to construct the default cache root when neither
+    /// CLI / env / config layers provide a directory and `xdg_cache_home`
+    /// is also unset.
+    pub home: &'a Path,
+    /// `$XDG_CACHE_HOME` from the process environment, already lifted
+    /// to `Option<&str>`. Empty-string is treated as unset (per the
+    /// XDG Base Directory spec).
+    pub xdg_cache_home: Option<&'a str>,
+}
+
+/// Which input layer supplied the resolved cache directory.
+///
+/// Returned alongside the resolved path so callers can render
+/// diagnostics (e.g. `using cache at /foo (REIFY_CACHE_DIR)` /
+/// `... (default)`) without re-walking the precedence chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheDirSource {
+    /// `--cache-dir` CLI flag.
+    CliFlag,
+    /// `REIFY_CACHE_DIR` env var.
+    EnvVar,
+    /// User-level config (`~/.config/reify/config.toml`).
+    UserConfig,
+    /// Project-level config (`<project>/.reify/config.toml`).
+    ProjectConfig,
+    /// Hard-coded default (`$XDG_CACHE_HOME/reify/fea` or
+    /// `$HOME/.cache/reify/fea`).
+    Default,
+}
+
+/// Which input layer supplied the resolved cache max-bytes cap.
+///
+/// No `CliFlag` variant because the PRD does not define a CLI flag for
+/// max-bytes (only the env var and config-file overrides exist).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheMaxBytesSource {
+    /// `REIFY_CACHE_MAX_BYTES` env var.
+    EnvVar,
+    /// User-level config (`~/.config/reify/config.toml`).
+    UserConfig,
+    /// Project-level config (`<project>/.reify/config.toml`).
+    ProjectConfig,
+    /// Hard-coded default ([`DEFAULT_CACHE_MAX_BYTES`]).
+    Default,
+}
+
+/// Output of [`resolve_cache`]: the resolved cache directory and
+/// max-bytes cap, with each value's source-of-truth tagged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheResolution {
+    /// Absolute (or caller-supplied) cache directory.
+    pub dir: PathBuf,
+    /// On-disk size cap (bytes).
+    pub max_bytes: u64,
+    /// Which input layer supplied [`Self::dir`].
+    pub dir_source: CacheDirSource,
+    /// Which input layer supplied [`Self::max_bytes`].
+    pub max_bytes_source: CacheMaxBytesSource,
+}
+
+/// Resolve the cache directory and max-bytes cap from layered inputs.
+///
+/// See [`CacheResolverInputs`] for the precedence policy. The function
+/// is pure and side-effect-free: it never reads the process environment
+/// or the filesystem itself.
+pub fn resolve_cache(inputs: &CacheResolverInputs<'_>) -> Result<CacheResolution, CacheError> {
+    // Default branch only for now — later steps (12 / 14 / 16 / 18) wire
+    // in the CLI / env / config layers in precedence order.
+    let _ = inputs.cli_dir;
+    let _ = inputs.env_dir;
+    let _ = inputs.env_max_bytes;
+    let _ = inputs.user_config;
+    let _ = inputs.project_config;
+    let dir = default_cache_dir(inputs.home, inputs.xdg_cache_home);
+    Ok(CacheResolution {
+        dir,
+        max_bytes: DEFAULT_CACHE_MAX_BYTES,
+        dir_source: CacheDirSource::Default,
+        max_bytes_source: CacheMaxBytesSource::Default,
+    })
+}
+
 /// Read and parse a cache config document (`~/.config/reify/config.toml`
 /// or `<project>/.reify/config.toml`) from `path`.
 ///
