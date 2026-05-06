@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
-use crate::helpers::{tensor_components_f64, trig_input};
+use crate::helpers::trig_input;
 use crate::orientation::normalize_quaternion;
 
 /// Evaluate a joints stdlib function by name.
@@ -1074,23 +1074,14 @@ fn unit_axis_from_map(map: &BTreeMap<Value, Value>) -> Option<[f64; 3]> {
 ///
 /// Returns `Some([x, y, z])` (the raw components, not normalized) on success,
 /// `None` on any failure.
+///
+/// Delegates to [`crate::helpers::validate_dimensionless_unit_axis_vec3`], the
+/// shared helper that unifies axis-validation across the joints, supports, and
+/// loads modules. The wrapper is preserved (rather than replacing every call
+/// site) so the existing rustdoc cross-references in this file (e.g. on
+/// `unit_axes_xy_from_planar_map` and `unit_axis_from_map`) remain valid.
 fn validate_axis(value: &Value) -> Option<[f64; 3]> {
-    let (comps, dim) = tensor_components_f64(value)?;
-    if comps.len() != 3 {
-        return None;
-    }
-    if dim != DimensionVector::DIMENSIONLESS {
-        return None;
-    }
-    let [x, y, z] = [comps[0], comps[1], comps[2]];
-    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-        return None;
-    }
-    let mag_sq = x * x + y * y + z * z;
-    if mag_sq == 0.0 || !mag_sq.is_finite() {
-        return None;
-    }
-    Some([x, y, z])
+    crate::helpers::validate_dimensionless_unit_axis_vec3(value)
 }
 
 /// Validate a range value: must be `Value::Range` with both lower and upper
