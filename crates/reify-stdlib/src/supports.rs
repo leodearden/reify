@@ -188,6 +188,107 @@ mod tests {
         );
     }
 
+    // ── PinnedSupport constructor: happy path ─────────────────────────────────
+
+    #[test]
+    fn pinned_support_returns_map_with_correct_fields() {
+        let selector = point_selector_stub();
+
+        let result = eval_builtin("PinnedSupport", &[selector.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("pinned_support".to_string())),
+            "kind field should be 'pinned_support'"
+        );
+        assert_eq!(
+            map.get(&Value::String("target".to_string())),
+            Some(&selector),
+            "target field should round-trip the selector input"
+        );
+    }
+
+    // ── PinnedSupport constructor: failure modes ──────────────────────────────
+
+    #[test]
+    fn pinned_support_zero_args_returns_undef() {
+        // Sanity: a valid call must succeed before we probe the failure mode.
+        assert!(
+            matches!(eval_builtin("PinnedSupport", &[point_selector_stub()]), Value::Map(_)),
+            "PinnedSupport(selector) must return Map for the failure-mode test to be non-vacuous"
+        );
+        assert!(
+            eval_builtin("PinnedSupport", &[]).is_undef(),
+            "zero args should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_two_args_returns_undef() {
+        assert!(
+            matches!(eval_builtin("PinnedSupport", &[point_selector_stub()]), Value::Map(_)),
+            "PinnedSupport(selector) must return Map for the failure-mode test to be non-vacuous"
+        );
+        assert!(
+            eval_builtin("PinnedSupport", &[point_selector_stub(), point_selector_stub()])
+                .is_undef(),
+            "two args should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_real_target_returns_undef() {
+        assert!(
+            matches!(eval_builtin("PinnedSupport", &[point_selector_stub()]), Value::Map(_)),
+            "PinnedSupport(selector) must return Map for the failure-mode test to be non-vacuous"
+        );
+        assert!(
+            eval_builtin("PinnedSupport", &[Value::Real(1.0)]).is_undef(),
+            "Real target should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_int_target_returns_undef() {
+        assert!(
+            matches!(eval_builtin("PinnedSupport", &[point_selector_stub()]), Value::Map(_)),
+            "PinnedSupport(selector) must return Map for the failure-mode test to be non-vacuous"
+        );
+        assert!(
+            eval_builtin("PinnedSupport", &[Value::Int(7)]).is_undef(),
+            "Int target should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_bool_target_returns_undef() {
+        assert!(
+            matches!(eval_builtin("PinnedSupport", &[point_selector_stub()]), Value::Map(_)),
+            "PinnedSupport(selector) must return Map for the failure-mode test to be non-vacuous"
+        );
+        assert!(
+            eval_builtin("PinnedSupport", &[Value::Bool(true)]).is_undef(),
+            "Bool target should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_undef_target_returns_undef() {
+        assert!(
+            matches!(eval_builtin("PinnedSupport", &[point_selector_stub()]), Value::Map(_)),
+            "PinnedSupport(selector) must return Map for the failure-mode test to be non-vacuous"
+        );
+        assert!(
+            eval_builtin("PinnedSupport", &[Value::Undef]).is_undef(),
+            "Undef target should return Undef"
+        );
+    }
+
     // ── DisplacementSupport constructor: happy path ───────────────────────────
 
     #[test]
