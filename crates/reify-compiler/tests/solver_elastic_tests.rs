@@ -41,7 +41,6 @@ fn find_structure(name: &str) -> &'static TopologyTemplate {
 
 /// Collect the param-kind value cells (ignoring `let` and auto cells) from a
 /// template, returning them in the file order they were declared.
-#[allow(dead_code)]
 fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
     template
         .value_cells
@@ -125,4 +124,64 @@ fn element_order_enum_has_p1_and_p2_variants_in_canonical_order() {
         "ElementOrder variants should be [P1, P2] in canonical order, got: {:?}",
         enum_def.variants
     );
+}
+
+// ─── step-5: ElasticOptions param shape ──────────────────────────────────────
+
+/// `ElasticOptions` is the FEA solver-input knob structure. It must declare
+/// exactly five params with the canonical names and types:
+///
+///   - `element_order : ElementOrder`             (selects P1 / P2 elements)
+///   - `mesh_size     : Option<Length>`           (none = solver derives from tolerance)
+///   - `max_iter      : Int`                      (CG iteration cap)
+///   - `cg_tolerance  : Real`                     (CG convergence threshold)
+///   - `threads       : Option<Int>`              (none = solver picks)
+///
+/// `mesh_size` and `threads` are encoded as `Option<T> = none` rather than
+/// PRD-style sentinels (e.g., `auto`, `num_cpus::get()`) because the language
+/// has no `auto` keyword and no `num_cpus::get()` builtin; the right
+/// options-side shape is "user did not specify, solver decides" — matching
+/// the design decision recorded in plan.json.
+#[test]
+fn elastic_options_struct_has_correct_param_shape() {
+    let template = find_structure("ElasticOptions");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        5,
+        "ElasticOptions should have exactly 5 param cells, got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("element_order", Type::Enum("ElementOrder".to_string())),
+        (
+            "mesh_size",
+            Type::Option(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        ),
+        ("max_iter", Type::Int),
+        ("cg_tolerance", Type::Real),
+        ("threads", Type::Option(Box::new(Type::Int))),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "ElasticOptions missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ElasticOptions.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
 }
