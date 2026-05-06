@@ -1280,6 +1280,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_mixed_dimensions_returns_none() {
+        // Locks the contract at the helper boundary: mixed dimensions
+        // (here `[Real, Scalar<LENGTH>, Real]`) are rejected. The underlying
+        // `tensor_components_f64` enforces dimension consistency, but we
+        // assert it here too so the contract cannot drift if the upstream
+        // helper changes its rejection policy.
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "Mixed-dimension Vector should return None"
+        );
+    }
+
     // ── validate_selector_target ──────────────────────────────────────────────
     //
     // Hoisted from supports.rs and loads.rs (byte-for-byte identical bodies).
