@@ -1,0 +1,148 @@
+// Stdlib: FEA Solver Options & Results
+//
+// Provides the configuration and result types consumed/produced by the v0.3
+// linear-isotropic FEA solver:
+//   - `ElementOrder`    — enum selecting first- vs second-order tetrahedral elements
+//   - `ElasticOptions`  — solver-input knobs (mesh size, iteration cap, tolerance, threads)
+//   - `ElasticResult`   — solver-output container (displacement, stress, max von Mises,
+//                         convergence flag, iteration count)
+//
+// PRD reference: docs/prds/v0_3/structural-analysis-fea.md task #4.
+//
+// Module placement: lives in `std.solver.elastic` (parallel to `std.materials.fea`)
+// so future siblings (`std.solver.modal`, `std.solver.thermal`) have a clearly
+// named home without churn on `materials_fea.ri`. Constitutive material data
+// stays in `std.materials.fea`; solver wiring lives here.
+//
+// Encoding deviations from the PRD:
+//   1. PRD uses `Field<Point3<Length>, Vector3<Length>>` and
+//      `Field<Point3<Length>, Tensor<2, 3, Pressure>>` for the
+//      `ElasticResult.displacement` and `ElasticResult.stress` outputs. The
+//      Reify type resolver currently registers `Field` only as a top-level
+//      `field def` declaration, not as a parametric `param`-position type
+//      (see `crates/reify-compiler/src/type_resolution.rs:1340-1398`). So
+//      `displacement` and `stress` use `Real` placeholder types here, with
+//      the runtime FEA solver (PRD task #16) populating them as Field-typed
+//      Maps regardless of the static `param` annotation. Same precedent as
+//      `materials_mechanical.ri` ("All dimensioned quantities use Real
+//      pending dedicated type system extensions").
+//   2. PRD writes `mesh_size : Length = auto` and `threads : Integer = num_cpus::get()`.
+//      Reify has no `auto` literal and no `num_cpus::get()` — both encode as
+//      `Option<T> = none`, with the solver applying its own fallback when the
+//      caller didn't override.
+//   3. Number-literal grammar is `\d+(\.\d+)?` (no scientific notation),
+//      so the PRD's `1e-6` defaults to `0.000001` here.
+//   4. PRD's `Number` and `Integer` map to Reify's `Real` and `Int` builtins.
+
+// ── ElementOrder enum ────────────────────────────────────────────────────────
+
+// `ElementOrder` selects between first-order (P1, linear) and second-order
+// (P2, quadratic) tetrahedral elements for the FEA mesh. P1 is the default
+// (fast, linear shape functions, single mesh-pass cost) and P2 is the
+// override (quadratic shape functions, captures stress concentrations and
+// curved boundaries more accurately, ~2× DOF count). Variant order is
+// canonical: a future re-ordering would silently change downstream
+// integer-tag encodings, so the variant list is asserted in the
+// solver_elastic_tests fixture.
+enum ElementOrder { P1, P2 }
+
+// ── ElasticOptions ───────────────────────────────────────────────────────────
+
+// `ElasticOptions` is the configuration object passed to the FEA solver.
+// All five params have sensible defaults so a bare `ElasticOptions()`
+// instantiation compiles and yields the standard solver setup; callers
+// override individual fields at construction (e.g.,
+// `ElasticOptions(element_order: ElementOrder.P2, max_iter: 5000)`).
+//
+// Param semantics:
+//   element_order — P1 (linear) vs P2 (quadratic) tetrahedral elements.
+//                   See `ElementOrder` enum doc for the trade-off.
+//   mesh_size     — target characteristic mesh edge length. `none` (default)
+//                   asks the solver to derive an appropriate size from the
+//                   per-purpose tolerancing chain; an explicit `some(<L>)`
+//                   value pins the mesh density (use for refinement studies
+//                   or when reproducing a specific run).
+//   max_iter      — upper bound on conjugate-gradient iterations. The
+//                   default 1000 covers typical small-to-medium problems
+//                   in a few hundred iterations; the cap exists so a
+//                   pathologically conditioned problem fails loudly rather
+//                   than running forever.
+//   cg_tolerance  — relative residual norm at which CG declares convergence.
+//                   Default `0.000001` (= 1e-6) is a standard FEA accuracy
+//                   target; tighten for high-precision work, loosen for
+//                   first-pass exploration.
+//   threads       — number of solver worker threads. `none` (default) lets
+//                   the solver pick (typically num-cpus or a tiny-problem
+//                   single-thread fallback); `some(n)` pins the count.
+structure def ElasticOptions {
+    param element_order : ElementOrder = ElementOrder.P1
+    param mesh_size : Option<Length> = none
+    param max_iter : Int = 1000
+    param cg_tolerance : Real = 0.000001
+    param threads : Option<Int> = none
+
+    // A non-positive `max_iter` would let the solver exit before doing any
+    // work; declaring the lower bound at the structure-def level makes the
+    // contract explicit in production code rather than relying solely on
+    // test coverage (task 2544 convention).
+    constraint max_iter > 0
+    // `cg_tolerance` is a relative residual norm — must be strictly positive
+    // for the convergence test `||r||/||b|| < cg_tolerance` to terminate.
+    // Zero or negative would mean "never converge" and silently exhaust
+    // `max_iter` on every solve.
+    constraint cg_tolerance > 0
+}
+
+// ── ElasticResult ────────────────────────────────────────────────────────────
+
+// `ElasticResult` is the output container produced by the FEA solver. It
+// has no defaults — every field is populated by the solver at run time;
+// constructing one outside that flow is meaningless.
+//
+// TODO(field-in-param): once `resolve_parameterized_builtin_type`
+// (`crates/reify-compiler/src/type_resolution.rs:1340-1398`) accepts
+// `Field<X, Y>` in `param` positions, tighten `displacement` to
+// `Field<Point3<Length>, Vector3<Length>>` and `stress` to
+// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` per the PRD spec
+// (`docs/prds/v0_3/structural-analysis-fea.md` task #4). Until then the
+// `Real` placeholder lets a buggy runtime implementation accidentally
+// write a scalar into these slots and type-check successfully — the
+// runtime FEA solver in PRD task #16 is the only writer, so the hazard
+// is contained, but a follow-up task should revisit these types when the
+// type resolver gains Field-in-param support so the placeholder doesn't
+// quietly become permanent.
+//
+// Field semantics:
+//   displacement  — per-mesh-node displacement vector, returned as a
+//                   `Field<Point3<Length>, Vector3<Length>>` at runtime.
+//                   Statically declared as `Real` because Reify's type
+//                   resolver does not (yet) accept `Field<X, Y>` in `param`
+//                   positions; PRD task #16 (the runtime solver) populates
+//                   the actual Field-typed value through the same Map-based
+//                   path that `loads.rs` and `supports.rs` use. See the
+//                   TODO(field-in-param) note above for the planned
+//                   tightening.
+//   stress        — per-mesh-node Cauchy stress tensor, returned as a
+//                   `Field<Point3<Length>, Tensor<2, 3, Pressure>>` at
+//                   runtime. Same Real-placeholder rationale as
+//                   `displacement` above; covered by the same
+//                   TODO(field-in-param).
+//   max_von_mises — peak von-Mises equivalent stress over the mesh.
+//                   Convenience scalar for safety-factor / yield-margin
+//                   comparisons; equivalent to
+//                   `field_max(von_mises(stress))`. Pressure-typed (Pa).
+//   converged     — true iff the CG solver hit the residual tolerance
+//                   before exhausting `max_iter`. Downstream consumers
+//                   should refuse to trust `displacement`/`stress` when
+//                   `converged == false`.
+//   iterations    — actual CG iteration count. Useful for diagnostics
+//                   ("solver hit the cap" vs "solver converged in 12
+//                   iters") and for tightening / relaxing `cg_tolerance`
+//                   on subsequent runs.
+structure def ElasticResult {
+    param displacement : Real
+    param stress : Real
+    param max_von_mises : Pressure
+    param converged : Bool
+    param iterations : Int
+}
