@@ -408,4 +408,55 @@ mod tests {
         let sf = extract_sampled(&result);
         assert_eq!(sf.data, vec![150e6, 250e6, 220e6]);
     }
+
+    // ── NaN / non-finite per-index handling ─────────────────────────────────
+
+    #[test]
+    fn envelope_max_skips_nan_per_index() {
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, f64::NAN, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![f64::NAN, 5.0, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_max", &[map]).unwrap();
+        let sf = extract_sampled(&result);
+
+        // NaN-skip per index → only finite entries participate.
+        assert_eq!(sf.data, vec![1.0, 5.0, 3.0]);
+    }
+
+    #[test]
+    fn envelope_max_all_nan_at_index_yields_nan() {
+        let axis = vec![0.0, 1.0, 2.0];
+        // At index 1, case_a=NaN and case_b=Inf — both non-finite. The
+        // result must materialise the all-non-finite sentinel `NaN`,
+        // not the first non-finite seen and not 0.0.
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, f64::NAN, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, f64::INFINITY, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_max", &[map]).unwrap();
+        let sf = extract_sampled(&result);
+
+        assert_eq!(sf.data[0], 3.0);
+        // NaN != NaN under PartialEq — must use is_nan.
+        assert!(sf.data[1].is_nan(), "expected NaN at index 1, got {}", sf.data[1]);
+        assert_eq!(sf.data[2], 3.0);
+    }
 }
