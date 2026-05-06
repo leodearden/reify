@@ -95,3 +95,34 @@ fn std_solver_elastic_module_loads_with_no_errors() {
         errors
     );
 }
+
+// ─── step-3: ElementOrder enum ───────────────────────────────────────────────
+
+/// `ElementOrder` is the enum selecting between first-order (P1) and
+/// second-order (P2) tetrahedral elements for the FEA mesh. The variant order
+/// `[P1, P2]` is canonical: P1 is the default (fast, single-precision-stable
+/// for most loads) and P2 is the override (accurate near stress
+/// concentrations). Pinning the order makes any future re-ordering a
+/// deliberate decision rather than a silent ABI change.
+#[test]
+fn element_order_enum_has_p1_and_p2_variants_in_canonical_order() {
+    let module = load_stdlib_module();
+
+    let enum_def = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "ElementOrder")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `enum ElementOrder` in std/solver/elastic, got enum_defs: {:?}",
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        enum_def.variants,
+        vec!["P1".to_string(), "P2".to_string()],
+        "ElementOrder variants should be [P1, P2] in canonical order, got: {:?}",
+        enum_def.variants
+    );
+}
