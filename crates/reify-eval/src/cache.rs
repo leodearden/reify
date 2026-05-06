@@ -3579,4 +3579,48 @@ mod tests {
             assert_agree!(store, &trace, true, g, "all-Final-still-refining");
         }
     }
+
+    // ── Imported-file content-hash side-table tests (PRD task 4 / task 2668) ─────
+
+    /// Verifies the record/get API for the imported-file content-hash side-table.
+    ///
+    /// Asserts:
+    /// (a) Fresh store → `get_imported_file_hash` returns `None`.
+    /// (b) After recording, `get_imported_file_hash` returns `Some(hash)`.
+    /// (c) Overwriting with a different hash updates the stored value.
+    /// (d) An unrelated path is untouched.
+    #[test]
+    fn cache_store_records_and_retrieves_imported_file_hashes() {
+        let mut store = CacheStore::new();
+
+        // (a) Fresh store has no records.
+        assert_eq!(
+            store.get_imported_file_hash("/any/path"),
+            None,
+            "fresh store must return None for any path"
+        );
+
+        // (b) Record hash A for "foo.vdb" → retrieve it.
+        store.record_imported_file_hash("foo.vdb", ContentHash::of_str("A"));
+        assert_eq!(
+            store.get_imported_file_hash("foo.vdb"),
+            Some(ContentHash::of_str("A")),
+            "get must return the recorded hash"
+        );
+
+        // (c) Overwrite with hash B → new value visible.
+        store.record_imported_file_hash("foo.vdb", ContentHash::of_str("B"));
+        assert_eq!(
+            store.get_imported_file_hash("foo.vdb"),
+            Some(ContentHash::of_str("B")),
+            "second record must overwrite the first"
+        );
+
+        // (d) Unrelated path is untouched.
+        assert_eq!(
+            store.get_imported_file_hash("bar.vdb"),
+            None,
+            "unrelated path must remain None"
+        );
+    }
 }
