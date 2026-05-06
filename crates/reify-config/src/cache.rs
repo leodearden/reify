@@ -6,7 +6,10 @@
 //! config, `$HOME`, `$XDG_CACHE_HOME`), pick the cache directory and
 //! the max-bytes cap and report which layer each came from.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
 
 /// Default cap on the on-disk size of the FEA cache.
 ///
@@ -41,6 +44,86 @@ pub fn default_cache_dir(home: &Path, xdg_cache_home: Option<&str>) -> PathBuf {
         _ => home.join(".cache"),
     };
     root.join(DEFAULT_CACHE_SUBPATH)
+}
+
+/// Parsed `[cache]` section from a `~/.config/reify/config.toml` or
+/// `<project>/.reify/config.toml` document.
+///
+/// Both fields are optional so the resolver can layer user, project, and
+/// default values without confusing "not set" with "set to None". A
+/// document with no `[cache]` section, an empty `[cache]` section, or
+/// `[cache]` with only one of the two fields populated all parse — the
+/// resolver decides what to do with the absent field.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CacheConfig {
+    /// Cache directory override declared in the config file. `None` means
+    /// the field was absent (or `[cache]` itself was absent). Stored as
+    /// `PathBuf` for consistency with the resolver's output type.
+    pub dir: Option<PathBuf>,
+    /// Cache max-bytes override declared in the config file. `None` means
+    /// the field was absent.
+    pub max_bytes: Option<u64>,
+}
+
+/// Parse a config-file document (`~/.config/reify/config.toml` or
+/// `<project>/.reify/config.toml`) into a [`CacheConfig`].
+///
+/// The schema is just the `[cache]` table with optional `dir` and
+/// `max_bytes` keys. Both files share this schema; the resolver picks
+/// which file is the user-level vs project-level override.
+///
+/// An empty input (or one with no `[cache]` table) parses to
+/// [`CacheConfig::default()`].
+pub fn parse_cache_config(s: &str) -> Result<CacheConfig, CacheError> {
+    // Render `toml::de::Error` to a string instead of wrapping the type
+    // directly — its `Display` impl already includes line/column context,
+    // and storing the rendered form keeps the toml-crate type out of
+    // `CacheError`'s public surface (matching the `ManifestError::Parse`
+    // convention).
+    let raw: ConfigFileRaw =
+        toml::from_str(s).map_err(|e| CacheError::Parse(e.to_string()))?;
+    let cache = raw.cache.unwrap_or_default();
+    Ok(CacheConfig {
+        dir: cache.dir.map(PathBuf::from),
+        max_bytes: cache.max_bytes,
+    })
+}
+
+/// Errors returned by cache-config parsing.
+#[derive(Debug)]
+pub enum CacheError {
+    /// The TOML document failed to parse, or an unknown section / key was
+    /// rejected by the strict schema. The wrapped string is the renderer-
+    /// formatted diagnostic from the underlying `toml` crate (line/column
+    /// information is preserved).
+    Parse(String),
+}
+
+impl fmt::Display for CacheError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CacheError::Parse(msg) => write!(f, "failed to parse cache config: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for CacheError {}
+
+/// On-disk shape for the cache config file (`~/.config/reify/config.toml`
+/// or `<project>/.reify/config.toml`).
+#[derive(Debug, Default, Deserialize)]
+struct ConfigFileRaw {
+    #[serde(default)]
+    cache: Option<CacheConfigRaw>,
+}
+
+/// On-disk shape for the `[cache]` section.
+#[derive(Debug, Default, Deserialize)]
+struct CacheConfigRaw {
+    #[serde(default)]
+    dir: Option<String>,
+    #[serde(default)]
+    max_bytes: Option<u64>,
 }
 
 #[cfg(test)]
