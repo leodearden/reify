@@ -2098,14 +2098,13 @@ pub(crate) fn compile_entity(
     // also skip inserting into match_arm_group_arm_member_types. (task 2872)
     assert!(
         {
-            let groups: HashSet<&str> =
-                scope.match_arm_groups.keys().map(|s| s.as_str()).collect();
-            let per_arm: HashSet<&str> = scope
-                .match_arm_group_arm_member_types
-                .keys()
-                .map(|s| s.as_str())
-                .collect();
-            groups == per_arm
+            let groups = &scope.match_arm_groups;
+            let per_arm = &scope.match_arm_group_arm_member_types;
+            // Lengths-equal + every key in `groups` present in `per_arm` ⇒ same key set
+            // (pigeonhole; HashMap forbids duplicate keys). Avoids the dual HashSet<&str>
+            // allocation the symmetric-difference check would have performed every call.
+            groups.len() == per_arm.len()
+                && groups.keys().all(|k| per_arm.contains_key(k))
         },
         "match_arm_groups vs match_arm_group_arm_member_types key-set mismatch in entity '{}': \
          groups={:?} per_arm={:?} (orphan per-arm entries indicate a producer-side bug — task 2872)",
