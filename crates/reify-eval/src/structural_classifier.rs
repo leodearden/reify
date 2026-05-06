@@ -190,6 +190,53 @@ mod tests {
         assert_eq!(classify_cell(&g, &unknown_id), ParameterClass::Structural);
     }
 
+    // ── Step-5: collection_subs count_cell overrides Int → Dimensional ────
+
+    #[test]
+    fn classify_cell_collection_count_returns_structural() {
+        // An Int-typed cell registered as a collection count (count_cell) must
+        // return Structural, overriding the default Int → Dimensional path.
+        let id = ValueCellId::new("Part", "__count_bolts");
+        let mut g = graph_with_cell(&id, Type::Int);
+        // Register this cell as the count_cell of a CollectionSubInfo entry.
+        g.collection_subs.push(CollectionSubInfo {
+            parent_entity: "Part".to_string(),
+            sub_name: "bolts".to_string(),
+            structure_name: "Bolt".to_string(),
+            count_cell: id.clone(),
+            child_value_cells: vec![],
+        });
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "collection count_cell must be Structural even though its Type is Int"
+        );
+    }
+
+    #[test]
+    fn classify_cell_int_not_in_collection_subs_remains_dimensional() {
+        // Regression guard: an Int cell that is NOT registered as any
+        // collection's count_cell must still return Dimensional.  This proves
+        // the collection-count check is targeted (count_cell match), not
+        // over-broad (all Int cells → Structural).
+        let id = ValueCellId::new("Part", "sides");
+        let other_id = ValueCellId::new("Part", "__count_bolts");
+        let mut g = graph_with_cell(&id, Type::Int);
+        // Add a collection_subs entry whose count_cell is a DIFFERENT cell.
+        g.collection_subs.push(CollectionSubInfo {
+            parent_entity: "Part".to_string(),
+            sub_name: "bolts".to_string(),
+            structure_name: "Bolt".to_string(),
+            count_cell: other_id,
+            child_value_cells: vec![],
+        });
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Dimensional,
+            "Int cell NOT in collection_subs.count_cell must remain Dimensional"
+        );
+    }
+
     // ── Step-3: structure_controlling overrides dimensional type ───────────
 
     #[test]
