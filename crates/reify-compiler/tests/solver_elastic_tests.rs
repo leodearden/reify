@@ -296,3 +296,74 @@ fn elastic_options_param_defaults_match_spec() {
         threads_default.result_type
     );
 }
+
+// ─── step-9: ElasticOptions positivity constraints ───────────────────────────
+
+/// Recursively collect ValueRef member names from a compiled expression tree.
+/// Mirrors `collect_value_ref_members` in `stdlib_loader_tests.rs:14-23`.
+fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let mut refs = collect_value_ref_members(left);
+            refs.extend(collect_value_ref_members(right));
+            refs
+        }
+        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
+        _ => vec![],
+    }
+}
+
+/// `ElasticOptions` enforces the runtime invariant that `max_iter` and
+/// `cg_tolerance` are strictly positive via two structure-level constraint
+/// declarations:
+///
+///   constraint max_iter > 0
+///   constraint cg_tolerance > 0
+///
+/// A negative `max_iter` or non-positive `cg_tolerance` is nonsensical and
+/// would silently corrupt the solver. Encoding the invariants as first-class
+/// `constraint` declarations (rather than relying on documentation + tests)
+/// matches the project convention in task 2544: "the contract in production
+/// code is made explicit rather than relying on test coverage."
+///
+/// The assertion shape mirrors the constraint-injection check in
+/// `materials_fea_tests.rs::elastic_material_trait_constrains_poisson_ratio_to_half_open_unit`:
+/// the test inspects each `template.constraints` entry, walks the BinOp
+/// expression with `collect_value_ref_members`, and asserts that the entry's
+/// op is `>` and references the expected member name.
+#[test]
+fn elastic_options_constrains_max_iter_and_cg_tolerance_positive() {
+    let template = find_structure("ElasticOptions");
+
+    assert!(
+        template.constraints.len() >= 2,
+        "ElasticOptions should declare at least 2 constraints (max_iter > 0 \
+         and cg_tolerance > 0), got {} constraints",
+        template.constraints.len()
+    );
+
+    for required in &["max_iter", "cg_tolerance"] {
+        let matched = template.constraints.iter().any(|c| {
+            // Check the constraint expression is a `>` BinOp with a ValueRef
+            // to the required member on the left side.
+            match &c.expr.kind {
+                CompiledExprKind::BinOp { op, left, .. } => {
+                    *op == BinOp::Gt
+                        && collect_value_ref_members(left).contains(required)
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            matched,
+            "ElasticOptions should declare `constraint {} > ...`; got constraints: {:?}",
+            required,
+            template
+                .constraints
+                .iter()
+                .map(|c| &c.expr.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+}
