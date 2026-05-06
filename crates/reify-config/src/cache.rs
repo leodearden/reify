@@ -187,9 +187,8 @@ pub struct CacheResolution {
 /// is pure and side-effect-free: it never reads the process environment
 /// or the filesystem itself.
 pub fn resolve_cache(inputs: &CacheResolverInputs<'_>) -> Result<CacheResolution, CacheError> {
-    // dir-resolution ladder, highest-precedence first. Later step
-    // (16) extends the ladder with the user / project config layers
-    // before the Default fall-through.
+    // dir-resolution ladder, highest-precedence first. The PRD pins
+    // CLI > env > user-config > project-config > default.
     let (dir, dir_source) = if let Some(cli) = inputs.cli_dir {
         (cli.to_path_buf(), CacheDirSource::CliFlag)
     } else if let Some(env) = inputs.env_dir.filter(|s| !s.is_empty()) {
@@ -197,6 +196,16 @@ pub fn resolve_cache(inputs: &CacheResolverInputs<'_>) -> Result<CacheResolution
         // convention) — fall through to the next layer rather than
         // forcing the cache to "" (CWD).
         (PathBuf::from(env), CacheDirSource::EnvVar)
+    } else if let Some(user_dir) = inputs
+        .user_config
+        .and_then(|c| c.dir.as_ref())
+    {
+        (user_dir.clone(), CacheDirSource::UserConfig)
+    } else if let Some(project_dir) = inputs
+        .project_config
+        .and_then(|c| c.dir.as_ref())
+    {
+        (project_dir.clone(), CacheDirSource::ProjectConfig)
     } else {
         (
             default_cache_dir(inputs.home, inputs.xdg_cache_home),
@@ -204,8 +213,6 @@ pub fn resolve_cache(inputs: &CacheResolverInputs<'_>) -> Result<CacheResolution
         )
     };
     let _ = inputs.env_max_bytes;
-    let _ = inputs.user_config;
-    let _ = inputs.project_config;
     Ok(CacheResolution {
         dir,
         max_bytes: DEFAULT_CACHE_MAX_BYTES,
