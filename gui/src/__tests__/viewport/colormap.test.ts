@@ -279,7 +279,7 @@ describe('barrel export wiring (viewport/index)', () => {
     const p1 = 'viridis' satisfies import('../../viewport/colormap').Palette;
     const p2 = 'magma'   satisfies import('../../viewport/colormap').Palette;
     const p3 = 'rainbow' satisfies import('../../viewport/colormap').Palette;
-    [p1, p2, p3].forEach(p => expect(typeof barrel.applyColormap(0, { mode: 'fixed', min: 0, max: 1 }, p)).toBe('object'));
+    ([p1, p2, p3] as const).forEach(p => expect(typeof barrel.applyColormap(0, { mode: 'fixed', min: 0, max: 1 }, p)).toBe('object'));
 
     // Range mode variants
     const autoR:   import('../../viewport/colormap').Range = { mode: 'auto',   min: 0, max: 1 };
