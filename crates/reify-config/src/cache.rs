@@ -236,6 +236,9 @@ pub fn resolve_cache(inputs: &CacheResolverInputs<'_>) -> Result<CacheResolution
         let n: u64 = env
             .parse()
             .map_err(|_| CacheError::InvalidMaxBytes(env.to_string()))?;
+        if n == 0 {
+            return Err(CacheError::ZeroEnvMaxBytes);
+        }
         (n, CacheMaxBytesSource::EnvVar)
     } else if let Some(user_n) = inputs.user_config.and_then(|c| c.max_bytes) {
         (user_n, CacheMaxBytesSource::UserConfig)
@@ -285,9 +288,11 @@ pub enum CacheError {
     /// `[cache].dir` is set to the empty string `""` in the config file.
     /// An empty-string path is meaningless (it resolves to CWD on most
     /// filesystems) and almost certainly a typo or misconfigured variable.
-    /// Mirrors the env-var path that filters `is_empty()` and falls
-    /// through (parity: both paths now refuse to treat `""` as a valid
-    /// cache root). Remove the key to fall through to the next layer.
+    /// Unlike `REIFY_CACHE_DIR=""` which is treated as unset (POSIX/XDG
+    /// convention — empty env vars are often spuriously set in shell
+    /// pipelines), an empty-string `dir` in a TOML config file is a hard
+    /// error, because a TOML file entry is always intentional.
+    /// Remove the key to fall through to the next layer.
     EmptyDir,
     /// `[cache].max_bytes` is set to `0` in the config file.
     /// A zero-byte cache cap is meaningless — a cache of zero bytes cannot
@@ -295,6 +300,11 @@ pub enum CacheError {
     /// is almost certainly a misconfiguration. Remove the key to fall
     /// through to the next layer or set it to a positive integer.
     ZeroMaxBytes,
+    /// `REIFY_CACHE_MAX_BYTES` is set to `0` in the process environment.
+    /// A zero-byte cache cap is meaningless — a cache of zero bytes cannot
+    /// store anything and will immediately evict every entry. Unset the
+    /// variable to fall through to the next layer or use a positive integer.
+    ZeroEnvMaxBytes,
 }
 
 impl fmt::Display for CacheError {
@@ -316,6 +326,12 @@ impl fmt::Display for CacheError {
                 f,
                 "[cache].max_bytes is set to 0; \
                  remove the key to fall through to the next layer \
+                 or use a positive integer"
+            ),
+            CacheError::ZeroEnvMaxBytes => write!(
+                f,
+                "REIFY_CACHE_MAX_BYTES is set to 0; \
+                 unset the variable to fall through to the next layer \
                  or use a positive integer"
             ),
         }
@@ -885,6 +901,27 @@ mod tests {
         }
     }
 
+    /// `REIFY_CACHE_MAX_BYTES=0` must be rejected with `ZeroEnvMaxBytes` —
+    /// a zero-byte cap is meaningless regardless of which layer sets it,
+    /// mirroring the parse-time rejection of `[cache].max_bytes = 0`.
+    #[test]
+    fn resolve_cache_env_max_bytes_zero_is_rejected() {
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: Some("0"),
+            user_config: None,
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let err = resolve_cache(&inputs).expect_err("REIFY_CACHE_MAX_BYTES=0 should fail");
+        match err {
+            CacheError::ZeroEnvMaxBytes => {}
+            other => panic!("expected CacheError::ZeroEnvMaxBytes, got {:?}", other),
+        }
+    }
+
     /// Display rendering must include both the offending input (so the
     /// user can spot the typo) and the env-var name (so the user knows
     /// where to look). Mirrors the `ManifestError::InvalidMaxDepth`
@@ -905,33 +942,33 @@ mod tests {
         );
     }
 
-    /// Pin the user-facing rendering of `EmptyDir` and `ZeroMaxBytes`.
-    ///
-    /// Each rendered message must identify the offending `[cache]` key by
-    /// name (`"dir"` / `"max_bytes"`) so users can locate the
-    /// misconfiguration without reading the source code. Mirrors
-    /// `invalid_max_bytes_display_mentions_input_and_variable`
-    /// (cache.rs:828-842) — a runtime-behavior check on diagnostic quality.
+    /// Pin the rendering of `EmptyDir`: the formatted message must contain
+    /// the exact substring `"[cache].dir"` so users can locate the
+    /// misconfiguration. Using `"[cache].dir"` rather than bare `"dir"`
+    /// avoids incidental passes on words like `"directory"` or `"redirect"`.
+    /// Runtime-behavior check on diagnostic quality, mirroring
+    /// `invalid_max_bytes_display_mentions_input_and_variable`.
     #[test]
-    fn empty_dir_and_zero_max_bytes_display_mention_offending_keys() {
-        let empty_dir = CacheError::EmptyDir;
-        let rendered = format!("{}", empty_dir);
+    fn empty_dir_display_mentions_offending_key() {
+        let err = CacheError::EmptyDir;
+        let rendered = format!("{}", err);
         assert!(
-            rendered.contains("dir"),
-            "EmptyDir Display must mention the key name 'dir': {}",
+            rendered.contains("[cache].dir"),
+            "EmptyDir Display must contain '[cache].dir': {}",
             rendered
         );
-        assert!(
-            rendered.contains("[cache]"),
-            "EmptyDir Display must identify it as a [cache] key: {}",
-            rendered
-        );
+    }
 
-        let zero_bytes = CacheError::ZeroMaxBytes;
-        let rendered = format!("{}", zero_bytes);
+    /// Pin the rendering of `ZeroMaxBytes`: the formatted message must
+    /// identify the offending `[cache].max_bytes` key so users can locate
+    /// the misconfiguration. Runtime-behavior check on diagnostic quality.
+    #[test]
+    fn zero_max_bytes_display_mentions_offending_key() {
+        let err = CacheError::ZeroMaxBytes;
+        let rendered = format!("{}", err);
         assert!(
             rendered.contains("max_bytes"),
-            "ZeroMaxBytes Display must mention the key name 'max_bytes': {}",
+            "ZeroMaxBytes Display must mention 'max_bytes': {}",
             rendered
         );
         assert!(
