@@ -353,7 +353,7 @@ impl CacheStore {
     pub fn imported_file_hash_changed(&self, path: &str, new_hash: ContentHash) -> bool {
         self.imported_file_hashes
             .get(path)
-            .map_or(true, |h| *h != new_hash)
+            .is_none_or(|h| *h != new_hash)
     }
 
     /// Record an evaluation result and determine if it changed (early cutoff).
