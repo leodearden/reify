@@ -933,9 +933,9 @@ fn match_arm_decl_group_mismatched_arm_names_does_not_orphan_per_arm_member_type
         bolt_template.match_arm_groups
     );
 
-    // (c) The debug_assert! in compile_entity verifies key-set parity — if it fires, this
-    // test panics before reaching here. No explicit assertion needed; reaching this line
-    // proves the invariant holds.
+    // (c) The assert! in compile_entity verifies key-set parity unconditionally across all
+    // build profiles — if it fires, this test panics before reaching here. No explicit
+    // assertion needed; reaching this line proves the invariant holds.
 }
 
 /// suggestion 4: arms with mismatched logical names emit a diagnostic.

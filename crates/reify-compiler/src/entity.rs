@@ -657,12 +657,10 @@ pub(crate) fn compile_entity(
                                     sub.structure_name.clone(),
                                     child_tmpl.trait_bounds.clone(),
                                 );
-                                let mts: BTreeMap<String, Type> = child_tmpl
-                                    .value_cells
-                                    .iter()
-                                    .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
-                                    .collect();
-                                scope.sub_member_types.insert(sub.name.clone(), mts);
+                                scope.sub_member_types.insert(
+                                    sub.name.clone(),
+                                    member_type_map_from_template(child_tmpl),
+                                );
                             }
                         }
                         other => {
@@ -2098,7 +2096,7 @@ pub(crate) fn compile_entity(
     // compile_match_arm_decl_group (logical-name mismatch, unsupported discriminant,
     // non-exhaustive, outside-collision, etc.) that skips register_match_arm_group must
     // also skip inserting into match_arm_group_arm_member_types. (task 2872)
-    debug_assert!(
+    assert!(
         {
             let groups: HashSet<&str> =
                 scope.match_arm_groups.keys().map(|s| s.as_str()).collect();
@@ -2148,6 +2146,21 @@ pub(crate) fn compile_entity(
         // Empty when no such forall exists.
         forall_templates: forall_templates_out,
     }
+}
+
+/// Build the `member_name → Type` map for a child `TopologyTemplate`.
+///
+/// Called from both the pre-pass (to populate `scope.sub_member_types` for
+/// `self.<arm-sub>.<member>` qualified access) and from `compile_match_arm_decl_group`
+/// (to build `per_arm_member_maps` keyed under the cluster's logical name).
+/// Extracting the logic here avoids duplicating the `value_cells` iteration at both
+/// sites and ensures future changes to the mapping (e.g. filtering hidden members)
+/// only need to be applied once. (task 2872)
+fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Type> {
+    tmpl.value_cells
+        .iter()
+        .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
+        .collect()
 }
 
 /// Compile a `MatchArmDeclGroupDecl` into a `GuardedDeclGroup` cluster (task 2372).
@@ -2500,16 +2513,9 @@ fn compile_match_arm_decl_group(
             // the invariant that review suggestion 1 established in the pre-pass.
             // (task 2872: moved here from the pre-pass so insertion is atomic with
             // register_match_arm_group; see the if !group_arms.is_empty() block below.)
-            let arm_member_types: BTreeMap<String, Type> =
-                if let Some(child_tmpl) = find_template(compiled_templates, &sub.structure_name) {
-                    child_tmpl
-                        .value_cells
-                        .iter()
-                        .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
-                        .collect()
-                } else {
-                    BTreeMap::new()
-                };
+            let arm_member_types = find_template(compiled_templates, &sub.structure_name)
+                .map(member_type_map_from_template)
+                .unwrap_or_default();
             per_arm_member_maps.push((sub.structure_name.clone(), arm_member_types));
         }
 
