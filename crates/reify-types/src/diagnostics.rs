@@ -565,6 +565,37 @@ pub enum DiagnosticCode {
     /// `docs/prds/v0_2/auto-resolution-backtracking.md` §"Resolved design
     /// decisions").
     AutoTypeParamDepthBoundExceeded,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs::resolve_auto_type_params_with_backtracking`.
+    ///
+    /// Canonical message form:
+    /// `"auto type-parameter cross-product search exceeded size cap: <N> auto-type-params declared (<P1>, <P2>, ...) with per-param candidate counts [<k1>, <k2>, ...] yielding cross-product size <S>, max_cross_product_size = <C>; falling back to per-parameter BFS (v0.1 algorithm)"`
+    /// where `<N>` is `params.len()`, `<P*>` are the param names, `<k*>` are
+    /// the per-param Phase A candidate counts, `<S>` is the computed
+    /// cross-product size (`per_param_candidates.iter().map(|v| v.len()).fold(1, checked_mul)`),
+    /// and `<C>` is the configured `max_cross_product_size`.
+    ///
+    /// Emitted as `Severity::Warning` when the v0.2 DFS-over-cross-product
+    /// algorithm's per-param Phase A candidate enumeration completes
+    /// successfully and the resulting cross-product size strictly exceeds
+    /// the configured cap (`cross_product_size > max_cross_product_size`).
+    /// The DFS falls back to the v0.1 per-parameter BFS
+    /// (`resolve_auto_type_params`) immediately after emission, so the user
+    /// always has a working compile — the warning is for auditability that
+    /// the cross-product search did not run.
+    ///
+    /// Severity is `Warning` (not `Error`) because the fallback is
+    /// functionally correct (BFS is sound, just less complete than DFS over
+    /// the cross-product). The default `max_cross_product_size` is `100_000`
+    /// per [`reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE`];
+    /// a single label is attached at the first param's `auto:` use-site span
+    /// (declared-order halt anchors on the first param — same convention as
+    /// `AutoTypeParamDepthBoundExceeded`).
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `W_AUTO_TYPE_PARAM_CROSS_PRODUCT_SIZE_EXCEEDED` (see
+    /// `docs/prds/v0_2/auto-resolution-backtracking.md` §"Resolved design
+    /// decisions").
+    AutoTypeParamCrossProductSizeExceeded,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:

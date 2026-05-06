@@ -123,6 +123,7 @@ fn dfs_empty_params_returns_vacuous_success() {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -186,6 +187,7 @@ structure def ORingSeal : Seal {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -274,6 +276,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -400,6 +403,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -522,6 +526,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -676,6 +681,7 @@ fn dfs_phase_a_overflow_on_first_param_halts_before_recursion() {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -777,6 +783,7 @@ structure def AirCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -898,6 +905,7 @@ structure def S7 : T7 { param x : Real = 7.0 }
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut dfs_diagnostics,
     );
 
@@ -998,6 +1006,7 @@ structure def S6 : T6 { param x : Real = 6.0 }
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1154,6 +1163,7 @@ structure def ORingSeal : Seal {
         &checker,
         functions,
         2, // 2 > 2 is false → DFS path
+        usize::MAX,
         &mut dfs_diagnostics,
     );
 
@@ -1200,6 +1210,7 @@ structure def ORingSeal : Seal {
         &checker,
         functions,
         1, // 2 > 1 is true → BFS-fallback path
+        usize::MAX,
         &mut bfs_diagnostics,
     );
 
@@ -1531,6 +1542,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1671,6 +1683,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1764,6 +1777,7 @@ structure def ORingSeal : Seal {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1895,6 +1909,7 @@ structure def AirCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2019,6 +2034,7 @@ structure def RubberSeal : Seal {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2154,6 +2170,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2260,6 +2277,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2410,6 +2428,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2589,6 +2608,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2737,6 +2757,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -3058,6 +3079,7 @@ structure def Hot2 : Hot {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -3201,6 +3223,7 @@ structure def Hot2 : Hot {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -3339,6 +3362,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -3460,6 +3484,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
