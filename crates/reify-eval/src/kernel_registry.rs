@@ -688,15 +688,6 @@ mod tests {
     /// the test runner before we can read `warn_count`.
     #[test]
     fn warn_if_duplicate_op_repr_pairs_always_emits_warn_on_duplicate() {
-        use reify_test_support::CountingSubscriberBuilder;
-        use std::sync::atomic::Ordering;
-
-        let (subscriber, counters) = CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .target_prefix("reify_eval::kernel_registry")
-            .build();
-        let warn_count = counters[&tracing::Level::WARN].clone();
-
         let mut registered: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
         registered.insert(
             "kernel_a".to_string(),
@@ -711,23 +702,7 @@ mod tests {
             },
         );
 
-        // In debug builds the helper panics after emitting WARN.  Catch the
-        // panic inside the subscriber scope so warn_count is incremented before
-        // we assert on it.
-        tracing::subscriber::with_default(subscriber, || {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                warn_if_duplicate_op_repr_pairs(&registered);
-            }));
-        });
-
-        assert_eq!(
-            warn_count.load(Ordering::Acquire),
-            1,
-            "warn_if_duplicate_op_repr_pairs must emit exactly one WARN event \
-             at reify_eval::kernel_registry when a duplicate (op, repr) pair is \
-             detected — operator visibility contract: warn! fires in all builds, \
-             not just debug",
-        );
+        assert_emits_one_warn(&registered, "an inter-kernel duplicate (op, repr) pair");
     }
 
     /// Contract pin: `warn_if_duplicate_op_repr_pairs` must emit exactly one
