@@ -4,22 +4,16 @@
 //! constructors.  Each returns a `Value::Map` with a `kind` discriminator
 //! field, matching the loads/joints constructor pattern.
 //!
-//! ## Selector-target validation
-//!
-//! The topology-selector stdlib bindings (PRD `topology-selectors.md` task 5)
-//! have not yet landed — there is no `Value::Face` / `Value::Edge` / `Value::Body`
-//! variant today.  The `validate_selector_target` helper therefore only rejects
-//! obvious primitive non-selector values (`Value::Real`, `Value::Int`,
-//! `Value::Bool`, `Value::Undef`); any other shape (Map, List, String, …) is
-//! accepted as an opaque pass-through.  Full topology-kind validation belongs
-//! in the FEA evaluation pipeline (PRD task 16) when the engine resolves
-//! selectors against the kernel and can produce diagnostics with source spans.
-
-use std::collections::BTreeMap;
+//! Selector-target validation is delegated to
+//! [`crate::helpers::validate_selector_target`] (see that helper's doc-comment
+//! for the rationale on why opaque pass-through is currently the right policy).
 
 use reify_types::{DimensionVector, Value};
 
-use crate::helpers::tensor_components_f64;
+use crate::helpers::{
+    make_kind_map, validate_dimensioned_vec3, validate_dimensionless_unit_axis_vec3,
+    validate_selector_target,
+};
 
 /// Canonical set of support kinds recognized by this module.
 ///
@@ -63,7 +57,7 @@ pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
             if validate_selector_target(&args[0]).is_none() {
                 return Some(Value::Undef);
             }
-            make_support_map("fixed_support", vec![("target", args[0].clone())])
+            make_kind_map("fixed_support", vec![("target", args[0].clone())])
         }
         "DisplacementSupport" => {
             if args.len() != 2 {
@@ -75,7 +69,7 @@ pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], DimensionVector::LENGTH).is_none() {
                 return Some(Value::Undef);
             }
-            make_support_map("displacement_support", vec![
+            make_kind_map("displacement_support", vec![
                 ("displacement", args[1].clone()),
                 ("target", args[0].clone()),
             ])
@@ -87,94 +81,16 @@ pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
             if validate_selector_target(&args[0]).is_none() {
                 return Some(Value::Undef);
             }
-            if validate_unit_axis_vec3(&args[1]).is_none() {
+            if validate_dimensionless_unit_axis_vec3(&args[1]).is_none() {
                 return Some(Value::Undef);
             }
-            make_support_map("roller_support", vec![
+            make_kind_map("roller_support", vec![
                 ("normal", args[1].clone()),
                 ("target", args[0].clone()),
             ])
         }
         _ => return None,
     })
-}
-
-// ── Builder ───────────────────────────────────────────────────────────────────
-
-fn make_support_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
-    let mut m = BTreeMap::new();
-    m.insert(
-        Value::String("kind".to_string()),
-        Value::String(kind.to_string()),
-    );
-    for (k, v) in fields {
-        m.insert(Value::String(k.to_string()), v);
-    }
-    Value::Map(m)
-}
-
-// ── Validators ────────────────────────────────────────────────────────────────
-
-/// Validate that `v` is a usable topology-selector target — i.e., not an
-/// obvious primitive.
-///
-/// Rejects `Value::Real`, `Value::Int`, `Value::Bool`, and `Value::Undef`.
-/// All other shapes (Map, List, String, Vector, Tensor, …) are accepted as
-/// opaque pass-through values (see module-level doc for rationale).
-///
-/// Returns `Some(())` when the value is an acceptable selector, `None` when
-/// it is a primitive that cannot be a selector.
-fn validate_selector_target(v: &Value) -> Option<()> {
-    match v {
-        Value::Real(_) | Value::Int(_) | Value::Bool(_) | Value::Undef => None,
-        _ => Some(()),
-    }
-}
-
-/// Validate that `v` is a `Value::Vector` (or Tensor/Point) of exactly 3
-/// numeric components with a consistent dimension matching `expected_dim`,
-/// all finite.
-///
-/// Returns `Some(())` on success, `None` on any failure.
-fn validate_dimensioned_vec3(v: &Value, expected_dim: DimensionVector) -> Option<()> {
-    let (vals, dim) = tensor_components_f64(v)?;
-    if vals.len() != 3 {
-        return None;
-    }
-    if dim != expected_dim {
-        return None;
-    }
-    if vals.iter().any(|x| !x.is_finite()) {
-        return None;
-    }
-    Some(())
-}
-
-/// Validate that `v` is a `Value::Vector` (or Tensor/Point) of exactly 3
-/// dimensionless components, all finite, with a non-zero squared magnitude.
-///
-/// Mirrors `joints::validate_axis` semantics but returns `Option<()>` (unit)
-/// instead of `Option<[f64; 3]>` since the RollerSupport arm round-trips the
-/// original `Value` rather than reconstructing from extracted components.
-///
-/// The normal is stored un-normalized — magnitude is preserved at consume time
-/// (joints precedent; see design decisions).
-fn validate_unit_axis_vec3(v: &Value) -> Option<()> {
-    let (comps, dim) = tensor_components_f64(v)?;
-    if comps.len() != 3 {
-        return None;
-    }
-    if dim != DimensionVector::DIMENSIONLESS {
-        return None;
-    }
-    if comps.iter().any(|x| !x.is_finite()) {
-        return None;
-    }
-    let mag_sq = comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2];
-    if mag_sq == 0.0 || !mag_sq.is_finite() {
-        return None;
-    }
-    Some(())
 }
 
 #[cfg(test)]

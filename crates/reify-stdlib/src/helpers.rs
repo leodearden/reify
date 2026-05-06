@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 /// Apply a function to a single argument (by reference, for pattern matching).
@@ -153,6 +155,108 @@ pub fn complex_phase(re: f64, im: f64) -> Value {
         si_value: angle,
         dimension: DimensionVector::ANGLE,
     }
+}
+
+/// Build a `Value::Map` with a `kind` discriminator field plus the given
+/// extra fields.
+///
+/// Fields are inserted into a `BTreeMap`, which sorts them alphabetically.
+/// The `kind` key is always included. Callers pass extra `(name, value)`
+/// pairs in any order — alphabetical order is guaranteed by `BTreeMap`.
+///
+/// Takes `Vec<(&str, Value)>` so values are moved into the map (not cloned).
+///
+/// Hoisted from `loads::make_load_map` and `supports::make_support_map`,
+/// which were byte-for-byte identical.
+pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String(kind.to_string()),
+    );
+    for (k, v) in fields {
+        m.insert(Value::String(k.to_string()), v);
+    }
+    Value::Map(m)
+}
+
+/// Validate that `v` is a usable topology-selector target — i.e., not an
+/// obvious primitive.
+///
+/// The topology-selector stdlib bindings (PRD `topology-selectors.md` task 5)
+/// have not yet landed — there is no `Value::Face` / `Value::Edge` / `Value::Body`
+/// variant today. This helper therefore only rejects obvious primitive
+/// non-selector values (`Value::Real`, `Value::Int`, `Value::Bool`, `Value::Undef`);
+/// any other shape (Map, List, String, Vector, Tensor, …) is accepted as an
+/// opaque pass-through. Full topology-kind validation belongs in the FEA
+/// evaluation pipeline (PRD task 16) when the engine resolves selectors against
+/// the kernel and can produce diagnostics with source spans.
+///
+/// Returns `Some(())` when the value is an acceptable selector, `None` when
+/// it is a primitive that cannot be a selector.
+pub(crate) fn validate_selector_target(v: &Value) -> Option<()> {
+    match v {
+        Value::Real(_) | Value::Int(_) | Value::Bool(_) | Value::Undef => None,
+        _ => Some(()),
+    }
+}
+
+/// Validate that `v` is a `Value::Vector` (or Tensor/Point) of exactly 3
+/// numeric components with a consistent dimension matching `expected_dim`,
+/// all finite.
+///
+/// Returns `Some(())` on success, `None` on any failure.
+pub(crate) fn validate_dimensioned_vec3(v: &Value, expected_dim: DimensionVector) -> Option<()> {
+    let (vals, dim) = tensor_components_f64(v)?;
+    if vals.len() != 3 {
+        return None;
+    }
+    if dim != expected_dim {
+        return None;
+    }
+    if vals.iter().any(|x| !x.is_finite()) {
+        return None;
+    }
+    Some(())
+}
+
+/// Validate that `v` is a `Value::Vector` (or Tensor/Point) of exactly 3
+/// dimensionless components, all finite, with a non-zero, finite squared
+/// magnitude — and return the raw (un-normalized) `[x, y, z]` components.
+///
+/// Returns `None` for any of:
+/// - Non-Tensor/Vector/Point input (Real, Int, Bool, Undef, String, …) or empty container.
+/// - Wrong arity (length ≠ 3).
+/// - Non-DIMENSIONLESS dimension (e.g. LENGTH-dimensioned vector).
+/// - Any non-finite component (NaN, ±Inf).
+/// - Zero-magnitude vector `[0, 0, 0]`.
+/// - Squared magnitude overflows to `+inf` (e.g. `[f64::MAX, 0, 0]`).
+///
+/// The `mag_sq.is_finite()` guard is required to catch overflow inputs like
+/// `[f64::MAX, 0, 0]` whose squared magnitude is `+inf`. Without this guard
+/// such inputs would be silently accepted as valid axes — the very
+/// consistency hole this unified helper closes.
+///
+/// Used by `supports::eval_supports` (RollerSupport), `loads::validate_pressure_direction`
+/// (non-sentinel branch), and `joints::validate_axis` (one-line wrapper preserved
+/// for rustdoc cross-references and the 8 existing call sites).
+pub(crate) fn validate_dimensionless_unit_axis_vec3(v: &Value) -> Option<[f64; 3]> {
+    let (comps, dim) = tensor_components_f64(v)?;
+    if comps.len() != 3 {
+        return None;
+    }
+    if dim != DimensionVector::DIMENSIONLESS {
+        return None;
+    }
+    let [x, y, z] = [comps[0], comps[1], comps[2]];
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return None;
+    }
+    let mag_sq = x * x + y * y + z * z;
+    if mag_sq == 0.0 || !mag_sq.is_finite() {
+        return None;
+    }
+    Some([x, y, z])
 }
 
 /// Extract numeric components and consistent dimension from a Tensor value.
@@ -964,5 +1068,534 @@ mod tests {
                 v
             );
         }
+    }
+
+    // ── validate_dimensionless_unit_axis_vec3 ─────────────────────────────────
+    //
+    // Unified helper hoisted from supports::validate_unit_axis_vec3,
+    // joints::validate_axis, and the non-sentinel branch of
+    // loads::validate_pressure_direction. Returns the raw (un-normalized)
+    // [x, y, z] components on success; rejects wrong arity, wrong dimension,
+    // non-finite components, zero magnitude, and squared-magnitude overflow
+    // (e.g. `[f64::MAX, 0, 0]` whose `mag_sq` is `+inf`).
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_real_vector_returns_components() {
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let result = validate_dimensionless_unit_axis_vec3(&v);
+        assert_eq!(
+            result,
+            Some([1.0, 2.0, 3.0]),
+            "Vector of dimensionless Reals should return raw (un-normalized) components"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_dimensionless_tensor_returns_components() {
+        let v = Value::Tensor(vec![
+            Value::Real(0.5),
+            Value::Real(-0.25),
+            Value::Real(1.5),
+        ]);
+        assert_eq!(
+            validate_dimensionless_unit_axis_vec3(&v),
+            Some([0.5, -0.25, 1.5]),
+            "Tensor of dimensionless Reals should return raw components"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_dimensionless_point_returns_components() {
+        let v = Value::Point(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        assert_eq!(
+            validate_dimensionless_unit_axis_vec3(&v),
+            Some([0.0, 0.0, 1.0]),
+            "Point of dimensionless Reals should return raw components"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_vec2_returns_none() {
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "Vec2 (wrong arity) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_vec4_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+            Value::Real(4.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "Vec4 (wrong arity) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_nan_component_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "NaN component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_pos_inf_component_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "+Inf component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_neg_inf_component_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(f64::NEG_INFINITY),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "-Inf component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_zero_vector_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "Zero-magnitude vector should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_overflow_magnitude_returns_none() {
+        // Regression: `[f64::MAX, 0.0, 0.0]` has `mag_sq` = f64::MAX^2 → +inf.
+        // This is the consistency-hole assertion: the loads.rs
+        // validate_pressure_direction copy on main does not guard against
+        // `mag_sq.is_finite()` and silently accepts this input.
+        let v = Value::Vector(vec![
+            Value::Real(f64::MAX),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "[f64::MAX, 0, 0] (mag_sq overflow to +inf) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_length_dimensioned_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "LENGTH-dimensioned vector should return None (not DIMENSIONLESS)"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_real_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Real(1.0)).is_none(),
+            "Bare Real should return None (not a Tensor/Vector/Point)"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_int_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Int(1)).is_none(),
+            "Int should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_bool_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Bool(true)).is_none(),
+            "Bool should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_undef_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Undef).is_none(),
+            "Undef should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_string_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::String("normal".to_string())).is_none(),
+            "String should return None (no sentinel handling at this layer)"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_empty_vector_returns_none() {
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&Value::Vector(vec![])).is_none(),
+            "Empty Vector should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensionless_unit_axis_vec3_mixed_dimensions_returns_none() {
+        // Locks the contract at the helper boundary: mixed dimensions
+        // (here `[Real, Scalar<LENGTH>, Real]`) are rejected. The underlying
+        // `tensor_components_f64` enforces dimension consistency, but we
+        // assert it here too so the contract cannot drift if the upstream
+        // helper changes its rejection policy.
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensionless_unit_axis_vec3(&v).is_none(),
+            "Mixed-dimension Vector should return None"
+        );
+    }
+
+    // ── validate_selector_target ──────────────────────────────────────────────
+    //
+    // Hoisted from supports.rs and loads.rs (byte-for-byte identical bodies).
+    // Rejects obvious primitive non-selector values; accepts any other shape
+    // (Map, List, String, Vector, Tensor, …) as an opaque pass-through.
+
+    #[test]
+    fn validate_selector_target_real_returns_none() {
+        assert!(
+            validate_selector_target(&Value::Real(0.0)).is_none(),
+            "Value::Real should be rejected as a selector target"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_int_returns_none() {
+        assert!(
+            validate_selector_target(&Value::Int(0)).is_none(),
+            "Value::Int should be rejected as a selector target"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_bool_returns_none() {
+        assert!(
+            validate_selector_target(&Value::Bool(true)).is_none(),
+            "Value::Bool should be rejected as a selector target"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_undef_returns_none() {
+        assert!(
+            validate_selector_target(&Value::Undef).is_none(),
+            "Value::Undef should be rejected as a selector target"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_empty_map_accepted() {
+        use std::collections::BTreeMap;
+        assert_eq!(
+            validate_selector_target(&Value::Map(BTreeMap::new())),
+            Some(()),
+            "Empty Value::Map should be accepted as opaque selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_empty_list_accepted() {
+        assert_eq!(
+            validate_selector_target(&Value::List(vec![])),
+            Some(()),
+            "Empty Value::List should be accepted as opaque selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_string_accepted() {
+        assert_eq!(
+            validate_selector_target(&Value::String("x".to_string())),
+            Some(()),
+            "Value::String should be accepted as opaque selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_empty_vector_accepted() {
+        assert_eq!(
+            validate_selector_target(&Value::Vector(vec![])),
+            Some(()),
+            "Empty Value::Vector should be accepted as opaque selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_empty_tensor_accepted() {
+        assert_eq!(
+            validate_selector_target(&Value::Tensor(vec![])),
+            Some(()),
+            "Empty Value::Tensor should be accepted as opaque selector"
+        );
+    }
+
+    // ── validate_dimensioned_vec3 ─────────────────────────────────────────────
+    //
+    // Hoisted from supports.rs and loads.rs (byte-for-byte identical bodies).
+    // Validates a 3-component vector with a specified expected dimension.
+
+    fn make_scalar_vec3_local(vals: [f64; 3], dim: DimensionVector) -> Value {
+        Value::Vector(
+            vals.iter()
+                .map(|&v| Value::Scalar {
+                    si_value: v,
+                    dimension: dim,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_length_happy_path_returns_some() {
+        let v = make_scalar_vec3_local([1.0, 2.0, 3.0], DimensionVector::LENGTH);
+        assert_eq!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH),
+            Some(()),
+            "3-component LENGTH vector with expected_dim=LENGTH should accept"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_force_happy_path_returns_some() {
+        let v = make_scalar_vec3_local([10.0, 20.0, 30.0], DimensionVector::FORCE);
+        assert_eq!(
+            validate_dimensioned_vec3(&v, DimensionVector::FORCE),
+            Some(()),
+            "3-component FORCE vector with expected_dim=FORCE should accept"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_wrong_dimension_returns_none() {
+        let v = make_scalar_vec3_local([1.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "FORCE vector with expected_dim=LENGTH should reject"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_vec2_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "Vec2 (wrong arity) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_vec4_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+        ]);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "Vec4 (wrong arity) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_nan_component_returns_none() {
+        let v = make_scalar_vec3_local([f64::NAN, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "NaN component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_inf_component_returns_none() {
+        let v = make_scalar_vec3_local([f64::INFINITY, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "+Inf component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_dimensionless_vs_length_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "DIMENSIONLESS vector with expected_dim=LENGTH should reject"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_real_returns_none() {
+        assert!(
+            validate_dimensioned_vec3(&Value::Real(1.0), DimensionVector::LENGTH).is_none(),
+            "Bare Real should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_undef_returns_none() {
+        assert!(
+            validate_dimensioned_vec3(&Value::Undef, DimensionVector::LENGTH).is_none(),
+            "Undef should return None"
+        );
+    }
+
+    // ── make_kind_map ─────────────────────────────────────────────────────────
+    //
+    // Hoisted from supports.rs (make_support_map) and loads.rs (make_load_map),
+    // which were byte-for-byte identical. Builds a Value::Map with a `kind`
+    // discriminator key plus extra fields, all sorted alphabetically by BTreeMap.
+
+    #[test]
+    fn make_kind_map_kind_field_matches_input_string() {
+        let result = make_kind_map("my_kind", vec![]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("my_kind".to_string())),
+            "kind field should equal the input string"
+        );
+    }
+
+    #[test]
+    fn make_kind_map_extra_fields_appear_under_expected_keys() {
+        let result = make_kind_map("test", vec![
+            ("alpha", Value::Real(1.0)),
+            ("beta", Value::Int(42)),
+        ]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("alpha".to_string())),
+            Some(&Value::Real(1.0)),
+            "alpha field should round-trip"
+        );
+        assert_eq!(
+            map.get(&Value::String("beta".to_string())),
+            Some(&Value::Int(42)),
+            "beta field should round-trip"
+        );
+    }
+
+    #[test]
+    fn make_kind_map_btreemap_orders_keys_alphabetically() {
+        // Insert in non-alpha order: zulu, alpha, mike. BTreeMap sorts.
+        let result = make_kind_map("test", vec![
+            ("zulu", Value::Int(3)),
+            ("alpha", Value::Int(1)),
+            ("mike", Value::Int(2)),
+        ]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        // Iteration order on BTreeMap<Value, Value> follows Value's Ord impl.
+        // For Value::String("alpha") < Value::String("kind") < Value::String("mike")
+        // < Value::String("test") < Value::String("zulu"), the iteration order
+        // is alpha, kind, mike, zulu.
+        let keys: Vec<&Value> = map.keys().collect();
+        let expected = vec![
+            Value::String("alpha".to_string()),
+            Value::String("kind".to_string()),
+            Value::String("mike".to_string()),
+            Value::String("zulu".to_string()),
+        ];
+        let expected_refs: Vec<&Value> = expected.iter().collect();
+        assert_eq!(
+            keys, expected_refs,
+            "BTreeMap should iterate keys in alphabetical order"
+        );
+    }
+
+    #[test]
+    fn make_kind_map_empty_fields_produces_only_kind_key() {
+        let result = make_kind_map("only_kind", vec![]);
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.len(),
+            1,
+            "Empty fields should produce a Map with only the kind key"
+        );
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("only_kind".to_string())),
+        );
     }
 }

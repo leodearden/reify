@@ -4,22 +4,16 @@
 //! `gravity` constructors.  Each returns a `Value::Map` with a `kind`
 //! discriminator field, matching the joints/coupling constructor pattern.
 //!
-//! ## Selector-target validation
-//!
-//! The topology-selector stdlib bindings (PRD `topology-selectors.md` task 5)
-//! have not yet landed — there is no `Value::Face` / `Value::Edge` / `Value::Body`
-//! variant today.  The `validate_selector_target` helper therefore only rejects
-//! obvious primitive non-selector values (`Value::Real`, `Value::Int`,
-//! `Value::Bool`, `Value::Undef`); any other shape (Map, List, String, …) is
-//! accepted as an opaque pass-through.  Full topology-kind validation belongs
-//! in the FEA evaluation pipeline (PRD task 16) when the engine resolves
-//! selectors against the kernel and can produce diagnostics with source spans.
-
-use std::collections::BTreeMap;
+//! Selector-target validation is delegated to
+//! [`crate::helpers::validate_selector_target`] (see that helper's doc-comment
+//! for the rationale on why opaque pass-through is currently the right policy).
 
 use reify_types::{DimensionVector, Value};
 
-use crate::helpers::tensor_components_f64;
+use crate::helpers::{
+    make_kind_map, validate_dimensioned_vec3, validate_dimensionless_unit_axis_vec3,
+    validate_selector_target,
+};
 
 /// Earth standard gravity in m/s² (CGPM 1901 definition).
 pub(crate) const EARTH_GRAVITY: f64 = 9.80665;
@@ -90,7 +84,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], DimensionVector::FORCE).is_none() {
                 return Some(Value::Undef);
             }
-            make_load_map("point_load", vec![
+            make_kind_map("point_load", vec![
                 ("force", args[1].clone()),
                 ("point", args[0].clone()),
             ])
@@ -114,7 +108,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                     None => return Some(Value::Undef),
                 }
             };
-            make_load_map("pressure_load", vec![
+            make_kind_map("pressure_load", vec![
                 ("direction", direction),
                 ("face", args[0].clone()),
                 ("magnitude", args[1].clone()),
@@ -130,7 +124,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], DimensionVector::PRESSURE).is_none() {
                 return Some(Value::Undef);
             }
-            make_load_map("traction_load", vec![
+            make_kind_map("traction_load", vec![
                 ("face", args[0].clone()),
                 ("traction", args[1].clone()),
             ])
@@ -145,7 +139,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], force_density_dim()).is_none() {
                 return Some(Value::Undef);
             }
-            make_load_map("body_force", vec![
+            make_kind_map("body_force", vec![
                 ("body", args[0].clone()),
                 ("force_density", args[1].clone()),
             ])
@@ -160,7 +154,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                         Value::Scalar { si_value: 0.0, dimension: accel_dim },
                         Value::Scalar { si_value: -EARTH_GRAVITY, dimension: accel_dim },
                     ]);
-                    make_load_map("gravity", vec![("acceleration", acceleration)])
+                    make_kind_map("gravity", vec![("acceleration", acceleration)])
                 }
                 1 => {
                     // Try scalar interpretation first: Scalar<Acceleration> → magnitude
@@ -174,9 +168,9 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                             Value::Scalar { si_value: 0.0, dimension: accel_dim },
                             Value::Scalar { si_value: -magnitude, dimension: accel_dim },
                         ]);
-                        make_load_map("gravity", vec![("acceleration", acceleration)])
+                        make_kind_map("gravity", vec![("acceleration", acceleration)])
                     } else if validate_dimensioned_vec3(&args[0], accel_dim).is_some() {
-                        make_load_map("gravity", vec![("acceleration", args[0].clone())])
+                        make_kind_map("gravity", vec![("acceleration", args[0].clone())])
                     } else {
                         return Some(Value::Undef);
                     }
@@ -188,47 +182,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
     })
 }
 
-// ── Helper: Map builder ──────────────────────────────────────────────────────
-
-/// Build a load `Value::Map` with a `kind` field plus the given extra fields.
-///
-/// Fields are inserted into a `BTreeMap`, which sorts them alphabetically.
-/// The `kind` key is always included.  Callers pass extra `(name, value)` pairs
-/// in any order — alphabetical order is guaranteed by `BTreeMap`.
-///
-/// Takes `Vec<(&str, Value)>` so values are moved into the map (not cloned).
-fn make_load_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
-    let mut m = BTreeMap::new();
-    m.insert(
-        Value::String("kind".to_string()),
-        Value::String(kind.to_string()),
-    );
-    for (k, v) in fields {
-        m.insert(Value::String(k.to_string()), v);
-    }
-    Value::Map(m)
-}
-
 // ── Validators ───────────────────────────────────────────────────────────────
-
-/// Validate that `v` is a `Value::Vector` (or Tensor/Point) of exactly 3
-/// numeric components with a consistent dimension matching `expected_dim`,
-/// all finite.
-///
-/// Returns `Some(())` on success, `None` on any failure.
-fn validate_dimensioned_vec3(v: &Value, expected_dim: DimensionVector) -> Option<()> {
-    let (vals, dim) = tensor_components_f64(v)?;
-    if vals.len() != 3 {
-        return None;
-    }
-    if dim != expected_dim {
-        return None;
-    }
-    if vals.iter().any(|x| !x.is_finite()) {
-        return None;
-    }
-    Some(())
-}
 
 /// Validate that `v` is a `Value::Scalar` with dimension matching `expected_dim`
 /// and a finite SI value.
@@ -249,53 +203,26 @@ fn validate_dimensioned_scalar(v: &Value, expected_dim: DimensionVector) -> Opti
     }
 }
 
-/// Validate that `v` is a usable topology-selector target — i.e., not an
-/// obvious primitive.
-///
-/// Rejects `Value::Real`, `Value::Int`, `Value::Bool`, and `Value::Undef`.
-/// All other shapes (Map, List, String, Vector, Tensor, …) are accepted as
-/// opaque pass-through values (see module-level doc for rationale).
-///
-/// Returns `Some(())` when the value is an acceptable selector, `None` when
-/// it is a primitive that cannot be a selector.
-fn validate_selector_target(v: &Value) -> Option<()> {
-    match v {
-        Value::Real(_) | Value::Int(_) | Value::Bool(_) | Value::Undef => None,
-        _ => Some(()),
-    }
-}
-
 /// Validate a pressure-load direction argument.
 ///
 /// Accepts:
 /// - `Value::String("normal")` — the outward-face-normal sentinel.
 /// - `Value::Vector` (or Tensor/Point) of exactly 3 `DIMENSIONLESS` components,
-///   all finite, with a non-zero magnitude.
+///   all finite, with a non-zero, finite squared magnitude.
 ///
-/// Returns `Some(value)` (the original input) on success, `None` on failure.
-/// Any other String content, dimensioned Vector, non-3-component Vector, or
-/// primitive input returns `None`.
+/// Returns `Some(value)` (the original input, un-normalized) on success,
+/// `None` on failure. Any other String content, dimensioned Vector,
+/// non-3-component Vector, or primitive input returns `None`.
+///
+/// The non-sentinel branch delegates to
+/// [`helpers::validate_dimensionless_unit_axis_vec3`] so the
+/// `mag_sq.is_finite()` overflow guard (e.g. for `[f64::MAX, 0, 0]`) is
+/// applied uniformly with `supports::validate_unit_axis_vec3` and
+/// `joints::validate_axis`.
 fn validate_pressure_direction(v: &Value) -> Option<Value> {
     match v {
         Value::String(s) if s == "normal" => Some(v.clone()),
-        _ => {
-            let (vals, dim) = tensor_components_f64(v)?;
-            if vals.len() != 3 {
-                return None;
-            }
-            if dim != DimensionVector::DIMENSIONLESS {
-                return None;
-            }
-            if vals.iter().any(|x| !x.is_finite()) {
-                return None;
-            }
-            // Reject zero vector (direction has no meaning for zero magnitude).
-            let mag_sq = vals[0] * vals[0] + vals[1] * vals[1] + vals[2] * vals[2];
-            if mag_sq == 0.0 {
-                return None;
-            }
-            Some(v.clone())
-        }
+        _ => validate_dimensionless_unit_axis_vec3(v).map(|_| v.clone()),
     }
 }
 
@@ -671,6 +598,33 @@ mod tests {
             )
             .is_undef(),
             "zero direction vector should return Undef"
+        );
+    }
+
+    #[test]
+    fn pressure_load_direction_overflow_vector_returns_undef() {
+        // Regression: `[f64::MAX, 0.0, 0.0]` has squared magnitude
+        // f64::MAX² → +inf. The pre-hoist `validate_pressure_direction`
+        // only checked `mag_sq == 0.0` and silently accepted this input.
+        // Routing through `helpers::validate_dimensionless_unit_axis_vec3`
+        // applies the `mag_sq.is_finite()` guard uniformly with
+        // `validate_axis` (joints) and `validate_unit_axis_vec3` (supports).
+        let pressure_mag = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let overflow_dir = Value::Vector(vec![
+            Value::Real(f64::MAX),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin(
+                "pressure_load",
+                &[face_selector_stub(), pressure_mag, overflow_dir]
+            )
+            .is_undef(),
+            "direction with squared-magnitude overflow (+inf) should return Undef"
         );
     }
 
