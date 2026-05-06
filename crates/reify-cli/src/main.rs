@@ -15,24 +15,38 @@ extern crate reify_kernel_occt as _;
 mod mcp_context;
 use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
 
+fn print_usage(out: &mut dyn std::io::Write) {
+    let _ = writeln!(out, "Usage: reify <command> [options]");
+    let _ = writeln!(out, "Commands:");
+    let _ = writeln!(out, "  check <file>              Check constraints");
+    let _ = writeln!(out, "  test <file>               Run @test-annotated structures");
+    let _ = writeln!(out, "  build <file> -o <output>   Build geometry and export");
+    let _ = writeln!(out, "  lsp                        Start language server (stdin/stdout)");
+    let _ = writeln!(out, "  gui [--debug] <file>       Open file in GUI (--debug enables MCP debug listener)");
+    let _ = writeln!(out, "  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)");
+    let _ = writeln!(out, "  mcp-server [file] [--project-dir <dir>]  Start MCP server (stdin/stdout)");
+    let _ = writeln!(out, "  doc <file> [-o <path>] [--format html|markdown|json] [--split] [--compact]  Generate documentation");
+    let _ = writeln!(out, "  --version                  Print version");
+    let _ = writeln!(out, "  --help                     Show this list");
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: reify <command> [options]");
-        eprintln!("Commands:");
-        eprintln!("  check <file>              Check constraints");
-        eprintln!("  test <file>               Run @test-annotated structures");
-        eprintln!("  build <file> -o <output>   Build geometry and export");
-        eprintln!("  lsp                        Start language server (stdin/stdout)");
-        eprintln!("  gui [--debug] <file>       Open file in GUI (--debug enables MCP debug listener)");
-        eprintln!("  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)");
-        eprintln!("  mcp-server [file] [--project-dir <dir>]  Start MCP server (stdin/stdout)");
-        eprintln!("  doc <file> [-o <path>] [--format html|markdown|json] [--split] [--compact]  Generate documentation");
+        print_usage(&mut std::io::stderr());
         return ExitCode::FAILURE;
     }
 
     match args[1].as_str() {
+        "--help" | "-h" | "help" => {
+            print_usage(&mut std::io::stdout());
+            ExitCode::SUCCESS
+        }
+        "--version" | "-V" => {
+            println!("reify {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         "check" => cmd_check(&args[2..]),
         "test" => cmd_test(&args[2..]),
         "build" => cmd_build(&args[2..]),
@@ -51,6 +65,7 @@ fn main() -> ExitCode {
         "mcp-server" => cmd_mcp_server(&args[2..]),
         other => {
             eprintln!("Unknown command: {}", other);
+            print_usage(&mut std::io::stderr());
             ExitCode::FAILURE
         }
     }
