@@ -239,6 +239,12 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true };
     },
 
+    set_camera: (_params) => {
+      const vp = ctx.viewport;
+      if (!vp) return { error: 'viewport not ready' };
+      return { ok: true };
+    },
+
     set_test_mode: (params) => {
       const enabled = !!params.enabled;
       setTestMode(enabled);
