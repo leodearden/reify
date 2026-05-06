@@ -942,8 +942,7 @@ mod tests {
         assert_non_map_arg_returns_undef("envelope_min");
     }
 
-    #[test]
-    fn envelope_max_map_with_non_field_value_returns_undef() {
+    fn assert_map_with_non_field_value_returns_undef(name: &str) {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis, vec![1.0, 2.0, 3.0]),
@@ -953,11 +952,17 @@ mod tests {
         let mut bad_map = BTreeMap::new();
         bad_map.insert(Value::String("a".to_string()), case_a);
         bad_map.insert(Value::String("b".to_string()), Value::Real(7.0));
-        assert!(
-            eval_fea("envelope_max", &[Value::Map(bad_map)])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_fea(name, &[Value::Map(bad_map)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_max_map_with_non_field_value_returns_undef() {
+        assert_map_with_non_field_value_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_map_with_non_field_value_returns_undef() {
+        assert_map_with_non_field_value_returns_undef("envelope_min");
     }
 
     #[test]
