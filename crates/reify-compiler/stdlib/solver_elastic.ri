@@ -1,0 +1,35 @@
+// Stdlib: FEA Solver Options & Results
+//
+// Provides the configuration and result types consumed/produced by the v0.3
+// linear-isotropic FEA solver:
+//   - `ElementOrder`    — enum selecting first- vs second-order tetrahedral elements
+//   - `ElasticOptions`  — solver-input knobs (mesh size, iteration cap, tolerance, threads)
+//   - `ElasticResult`   — solver-output container (displacement, stress, max von Mises,
+//                         convergence flag, iteration count)
+//
+// PRD reference: docs/prds/v0_3/structural-analysis-fea.md task #4.
+//
+// Module placement: lives in `std.solver.elastic` (parallel to `std.materials.fea`)
+// so future siblings (`std.solver.modal`, `std.solver.thermal`) have a clearly
+// named home without churn on `materials_fea.ri`. Constitutive material data
+// stays in `std.materials.fea`; solver wiring lives here.
+//
+// Encoding deviations from the PRD:
+//   1. PRD uses `Field<Point3<Length>, Vector3<Length>>` and
+//      `Field<Point3<Length>, Tensor<2, 3, Pressure>>` for the
+//      `ElasticResult.displacement` and `ElasticResult.stress` outputs. The
+//      Reify type resolver currently registers `Field` only as a top-level
+//      `field def` declaration, not as a parametric `param`-position type
+//      (see `crates/reify-compiler/src/type_resolution.rs:1340-1398`). So
+//      `displacement` and `stress` use `Real` placeholder types here, with
+//      the runtime FEA solver (PRD task #16) populating them as Field-typed
+//      Maps regardless of the static `param` annotation. Same precedent as
+//      `materials_mechanical.ri` ("All dimensioned quantities use Real
+//      pending dedicated type system extensions").
+//   2. PRD writes `mesh_size : Length = auto` and `threads : Integer = num_cpus::get()`.
+//      Reify has no `auto` literal and no `num_cpus::get()` — both encode as
+//      `Option<T> = none`, with the solver applying its own fallback when the
+//      caller didn't override.
+//   3. Number-literal grammar is `\d+(\.\d+)?` (no scientific notation),
+//      so the PRD's `1e-6` defaults to `0.000001` here.
+//   4. PRD's `Number` and `Integer` map to Reify's `Real` and `Int` builtins.

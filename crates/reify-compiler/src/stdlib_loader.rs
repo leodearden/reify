@@ -82,6 +82,10 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.materials.fea",
                 include_str!("../stdlib/materials_fea.ri"),
             ),
+            (
+                "std.solver.elastic",
+                include_str!("../stdlib/solver_elastic.ri"),
+            ),
             ("std.analysis", include_str!("../stdlib/analysis.ri")),
             ("std.tolerancing", include_str!("../stdlib/tolerancing.ri")),
             (
