@@ -703,3 +703,127 @@ fn external_sub_dot_cluster_dot_arm_specific_field_emits_diagnostic() {
         errors
     );
 }
+
+// ─── Collection-sub indexed-access helpers (task 2871) ───────────────────────
+
+/// Mirror of `sub_member` with `is_collection: true` — represents
+/// `sub <name> : List<<structure_name>>` in the AST.
+fn collection_sub_member(name: &str, structure_name: &str) -> MemberDecl {
+    MemberDecl::Sub(SubDecl {
+        name: name.to_string(),
+        structure_name: structure_name.to_string(),
+        type_args: vec![],
+        args: vec![],
+        is_collection: true,
+        where_clause: None,
+        body: None,
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    })
+}
+
+/// Constructs `object[idx_val]` — an `ExprKind::IndexAccess` with a
+/// `NumberLiteral` index. Used in tests for `bolts[0].head.X` patterns.
+fn index_access(object: Expr, idx_val: f64) -> Expr {
+    Expr {
+        kind: ExprKind::IndexAccess {
+            object: Box::new(object),
+            index: Box::new(Expr {
+                kind: ExprKind::NumberLiteral(idx_val),
+                span: zero_span(),
+            }),
+        },
+        span: zero_span(),
+    }
+}
+
+// ─── Task 2871 regression tests ──────────────────────────────────────────────
+
+/// Task 2871 step-1 (RED before step-2): `bolts[0].head.across_flats`
+/// typechecks to `Type::Real` when both arm structures declare
+/// `across_flats : Real`.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure def HexHead    { param across_flats : Real }
+/// structure def SocketHead { param across_flats : Real }
+/// structure def Bolt {
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+/// }
+/// structure def Driver {
+///     sub bolts : List<Bolt>   // collection sub
+///     let probe = bolts[0].head.across_flats
+/// }
+/// ```
+/// Asserts (a) no Error diagnostics and (b) `probe.cell_type == Type::Real`.
+/// Pins PRD acceptance criterion 1 for the indexed-access / collection-sub
+/// entry point (task 2871 option (a)).
+#[test]
+fn external_collection_sub_indexed_dot_cluster_dot_common_field_typechecks() {
+    let bolt_match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = structure_with_members(
+        "Bolt",
+        vec![param_member("head_type", "HeadType"), bolt_match_group],
+    );
+
+    // Driver { sub bolts : List<Bolt>; let probe = bolts[0].head.across_flats }
+    let probe_expr = member_access(
+        member_access(index_access(make_ident_expr("bolts"), 0.0), "head"),
+        "across_flats",
+    );
+    let probe = let_member("probe", probe_expr);
+    let driver = structure_with_members(
+        "Driver",
+        vec![collection_sub_member("bolts", "Bolt"), probe],
+    );
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_collection_sub_indexed_cluster_common_field"),
+        declarations: vec![
+            head_type_enum(),
+            structure_with_members("HexHead", vec![param_member("across_flats", "Real")]),
+            structure_with_members("SocketHead", vec![param_member("across_flats", "Real")]),
+            bolt,
+            driver,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) No Error diagnostics.
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:#?}",
+        errors
+    );
+
+    // (b) `probe` cell has the common field type — Real.
+    let probe_type = find_cell_type(&compiled, "Driver", "probe")
+        .expect("expected `probe` value cell on Driver template");
+
+    assert_eq!(
+        probe_type,
+        Type::Real,
+        "expected probe.cell_type == Real (common field across all arms of \
+         collection sub Bolt's cluster), got {}",
+        probe_type
+    );
+}
