@@ -595,11 +595,21 @@ mod tests {
     // ── Discoverability surface ───────────────────────────────────────────────
 
     #[test]
-    fn support_kinds_lists_all_three_in_canonical_order() {
+    fn support_kinds_lists_all_four_in_canonical_order() {
         use super::SUPPORT_KINDS;
         assert_eq!(
             SUPPORT_KINDS,
-            &["fixed_support", "displacement_support", "roller_support"]
+            &["fixed_support", "pinned_support", "displacement_support", "roller_support"]
+        );
+    }
+
+    #[test]
+    fn is_support_value_recognises_pinned_support() {
+        use super::is_support_value;
+        let v = eval_builtin("PinnedSupport", &[point_selector_stub()]);
+        assert!(
+            is_support_value(&v),
+            "is_support_value should recognize PinnedSupport result"
         );
     }
 
@@ -714,6 +724,7 @@ mod tests {
             // still guards both the SUPPORT_KINDS list and the dispatch arms.
             let result = match *kind {
                 "fixed_support" => eval_supports("FixedSupport", &[stub_selector.clone()]),
+                "pinned_support" => eval_supports("PinnedSupport", &[stub_selector.clone()]),
                 "displacement_support" => {
                     eval_supports("DisplacementSupport", &[stub_selector.clone(), length_vec.clone()])
                 }
