@@ -641,6 +641,39 @@ pub(crate) fn elaborate_field(
     }
 }
 
+/// Hash the raw bytes of an imported field source file.
+///
+/// ## Contract
+///
+/// Hashes file **bytes only** — the path string is intentionally NOT mixed
+/// into the hash domain, so two distinct paths whose contents are byte-identical
+/// produce the same [`reify_types::ContentHash`].  This directly implements the
+/// PRD acceptance property "file-path change with same content → cache hit"
+/// (PRD task 4 / task 2668, `docs/prds/v0_2/imported-field-source.md`).
+///
+/// The three-contract pin for this function lives in
+/// `imported_file_hash_tests::hash_imported_file_content_byte_round_trip_path_independent_and_propagates_io_error`.
+///
+/// ## IO error propagation
+///
+/// Any [`std::io::Error`] from [`std::fs::read`] is propagated as-is, preserving
+/// the original [`std::io::ErrorKind`] (e.g. `NotFound`, `PermissionDenied`).
+/// PRD task 5's wire site in `elaborate_field` is responsible for converting
+/// these into user-visible [`reify_types::Diagnostic`] errors with the appropriate
+/// `DiagnosticCode` — this helper stays as a minimal kernel.
+///
+/// ## PRD acceptance properties
+///
+/// - File-content change → different hash → `CacheStore::imported_file_hash_changed` returns
+///   `true` → cache invalidation signal (wired by PRD task 5).
+/// - File-path change with same content → same hash → `imported_file_hash_changed` returns
+///   `false` → cache hit.
+pub(crate) fn hash_imported_file_content(
+    path: &str,
+) -> std::io::Result<reify_types::ContentHash> {
+    Ok(reify_types::ContentHash::of(&std::fs::read(path)?))
+}
+
 /// Look up a config entry by key.  `compile_field` validated that all five
 /// required keys are present, so a missing key here would indicate a bug
 /// upstream — the helper returns `None` rather than panicking so callers
