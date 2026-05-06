@@ -251,36 +251,40 @@ fn populate_loft_op(
 
 /// Non-allocating parent-handle accessor returned by [`parent_handles_for_op`].
 ///
-/// All variants are zero-allocation:
-/// - `Zero` — empty slice for primitives, curve constructors, and `Pipe`.
-/// - `One([H; 1])` — single-element array for single-target / single-profile
-///   ops (stack-allocated).
-/// - `Two([H; 2])` — two-element array for boolean ops (stack-allocated).
-/// - `Many(&'a [H])` — borrows the profiles vec from `GeometryOp::Loft` /
-///   `GeometryOp::LoftGuided` without cloning.
+/// Two variants cover all cases without heap allocation:
 ///
-/// Supersedes the previous `Cow<'_, [GeometryHandleId]>` return type which
-/// still heap-allocated for the common 1-2 element arms.
+/// - `Inline([H; 2], len)` — small fixed-capacity buffer with an active
+///   length count (`len` ≤ 2).  Covers: zero parents (primitives,
+///   curve constructors, `Pipe`), one parent (single-target/-profile ops),
+///   and two parents (boolean ops).  Only the first `len` slots contain
+///   meaningful handles; the rest are zero-initialized and never read.
+/// - `Borrowed(&'a [H])` — borrows the profiles vec from `GeometryOp::Loft`
+///   / `GeometryOp::LoftGuided` without cloning.
+///
+/// Supersedes the earlier four-variant `Zero`/`One`/`Two`/`Many` shape,
+/// which was correct but more ceremonious than warranted for a type that
+/// is only ever used to call `as_slice()` / `is_empty()` at one call site.
 #[derive(Debug)]
 enum ParentHandles<'a> {
-    Zero,
-    One([GeometryHandleId; 1]),
-    Two([GeometryHandleId; 2]),
-    Many(&'a [GeometryHandleId]),
+    /// Inline buffer; only the first `len` elements are meaningful.
+    Inline([GeometryHandleId; 2], usize),
+    /// Borrowed slice for multi-profile loft ops.
+    Borrowed(&'a [GeometryHandleId]),
 }
 
 impl<'a> ParentHandles<'a> {
     fn as_slice(&self) -> &[GeometryHandleId] {
         match self {
-            Self::Zero => &[],
-            Self::One(buf) => buf.as_slice(),
-            Self::Two(buf) => buf.as_slice(),
-            Self::Many(s) => s,
+            Self::Inline(buf, len) => &buf[..*len],
+            Self::Borrowed(s) => s,
         }
     }
 
     fn is_empty(&self) -> bool {
-        matches!(self, Self::Zero)
+        match self {
+            Self::Inline(_, len) => *len == 0,
+            Self::Borrowed(s) => s.is_empty(),
+        }
     }
 }
 
@@ -295,19 +299,21 @@ impl<'a> ParentHandles<'a> {
 /// `GeometryOp::Pipe` docstring) with no user-facing handle.
 ///
 /// Returns a [`ParentHandles`] enum that is zero-allocation for all cases:
-/// stack arrays for 1-2 element cases (booleans, single-target/-profile
-/// ops), a borrowed slice for the multi-profile Loft/LoftGuided cases, and
-/// an empty sentinel for zero-parent ops.  Returning an empty
-/// `ParentHandles::Zero` for primitives, curve constructors, and Pipe is
-/// intentional — the caller in `execute_realization_ops` short-circuits on
-/// `is_empty()` so the kernel hook is never invoked for these ops.
+/// an inline `[H; 2]` buffer for 0/1/2 element cases, and a borrowed slice
+/// for multi-profile Loft/LoftGuided.  Returning `Inline(_, 0)` for
+/// primitives, curve constructors, and Pipe is intentional — the caller in
+/// `execute_realization_ops` short-circuits on `is_empty()` so the kernel
+/// hook is never invoked for these ops.
 fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
+    // Placeholder fill for unused Inline buffer slots; only the first `len`
+    // slots are ever read via `as_slice()`.
+    let z = GeometryHandleId(0);
     match op {
         // Primitives — no parent handles.
         GeometryOp::Box { .. }
         | GeometryOp::Cylinder { .. }
         | GeometryOp::Sphere { .. }
-        | GeometryOp::Tube { .. } => ParentHandles::Zero,
+        | GeometryOp::Tube { .. } => ParentHandles::Inline([z, z], 0),
 
         // Curve constructors — no parent handles.
         GeometryOp::LineSegment { .. }
@@ -315,15 +321,15 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::Helix { .. }
         | GeometryOp::InterpCurve { .. }
         | GeometryOp::BezierCurve { .. }
-        | GeometryOp::NurbsCurve { .. } => ParentHandles::Zero,
+        | GeometryOp::NurbsCurve { .. } => ParentHandles::Inline([z, z], 0),
 
         // Pipe — kernel-internal circle profile; no user-facing parent.
-        GeometryOp::Pipe { .. } => ParentHandles::Zero,
+        GeometryOp::Pipe { .. } => ParentHandles::Inline([z, z], 0),
 
         // Boolean ops — both operands are parents.
         GeometryOp::Union { left, right }
         | GeometryOp::Difference { left, right }
-        | GeometryOp::Intersection { left, right } => ParentHandles::Two([*left, *right]),
+        | GeometryOp::Intersection { left, right } => ParentHandles::Inline([*left, *right], 2),
 
         // Single-target shape-modifying ops — the target is the sole parent.
         GeometryOp::Fillet { target, .. }
@@ -341,7 +347,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // whose sub-shapes propagate — analogous to SweepGuided's guide.
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
-        | GeometryOp::Shell { target, .. } => ParentHandles::One([*target]),
+        | GeometryOp::Shell { target, .. } => ParentHandles::Inline([*target, z], 1),
 
         // Single-profile sweep ops — profile only; path/spine excluded.
         // Per `populate_attribute_history` (engine_build.rs:103-114):
@@ -350,12 +356,12 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::ExtrudeSymmetric { profile, .. }
         | GeometryOp::Revolve { profile, .. }
         | GeometryOp::Sweep { profile, .. }
-        | GeometryOp::SweepGuided { profile, .. } => ParentHandles::One([*profile]),
+        | GeometryOp::SweepGuided { profile, .. } => ParentHandles::Inline([*profile, z], 1),
 
         // Multi-profile loft ops — all profiles are parents; guides excluded.
         // Borrow the profiles vec directly to avoid a clone on every loft op.
-        GeometryOp::Loft { profiles } => ParentHandles::Many(profiles.as_slice()),
-        GeometryOp::LoftGuided { profiles, .. } => ParentHandles::Many(profiles.as_slice()),
+        GeometryOp::Loft { profiles } => ParentHandles::Borrowed(profiles.as_slice()),
+        GeometryOp::LoftGuided { profiles, .. } => ParentHandles::Borrowed(profiles.as_slice()),
     }
 }
 
@@ -916,6 +922,17 @@ impl Engine {
                         // kernels that advertise a hook).  Skipped entirely when
                         // `parent_handles_for_op` returns an empty slice (primitives,
                         // curve constructors, Pipe) so vacuous hook calls are never made.
+                        //
+                        // Mutual-exclusion contract: a kernel MUST NOT both return a
+                        // non-`None` `AttributeHistory` from `execute_with_history` AND
+                        // advertise an `attribute_hook()` for the same op.  The engine
+                        // invokes both paths unconditionally for every parent-having op;
+                        // if both populate the same `(feature_id, handle)` slots, the
+                        // second write wins silently.  This contract is currently only
+                        // enforced by convention: OCCT's `attribute_hook()` returns
+                        // `None`, and Manifold's `execute_with_history` always returns
+                        // `AttributeHistory::None` — the two paths are cleanly disjoint
+                        // for all kernels that exist today.
                         let parent_handles = parent_handles_for_op(&geom_op);
                         if !parent_handles.is_empty() {
                             // All three Ok variants (Propagated / Discarded /
@@ -2398,212 +2415,35 @@ mod tests {
     // ── parent_handles_for_op unit tests ─────────────────────────────────────
 
     /// Pins the per-variant-family parent extraction semantics of
-    /// `parent_handles_for_op`. Twelve cases covering all seven variant
-    /// families, including the critical guide/path exclusion contracts:
+    /// `parent_handles_for_op`. All variant families are covered in a single
+    /// table; the `label` field doubles as the assertion failure message and
+    /// as documentation for each exclusion rationale (path/spine, guide,
+    /// plane — the three reference-geometry exclusion contracts).
     ///
-    /// 1.  Primitive `Box` → empty (primitives have no parents).
-    /// 2.  `Union { left: 1, right: 2 }` → `[1, 2]` (left-then-right order).
-    /// 3.  `Difference { left: 3, right: 4 }` → `[3, 4]`.
-    /// 4.  `Intersection { left: 5, right: 6 }` → `[5, 6]`.
-    /// 5.  `Fillet { target: 7, .. }` → `[7]` (single-target shape-mod).
-    /// 6.  `Loft { profiles: [10, 11, 12] }` → `[10, 11, 12]` (multi-profile,
-    ///     ordering preserved).
-    /// 7a. `Sweep { profile: 20, path: 21 }` → `[20]` (path excluded — mirrors
-    ///     `populate_attribute_history` parent semantics from
-    ///     engine_build.rs:103-114).
-    /// 7b. `Pipe { path: 30, .. }` → `[]` (kernel-internal circle profile,
-    ///     no user-facing parent).
-    /// 8.  `LoftGuided { profiles: [20, 21, 22], guides: [30, 31] }` →
-    ///     `[20, 21, 22]` (guides excluded — most error-prone exclusion).
-    /// 9.  `SweepGuided { profile: 40, path: 41, guide: 42 }` → `[40]`
-    ///     (both path and guide excluded).
-    /// 10. `ExtrudeSymmetric { profile: 50, .. }` → `[50]`.
-    /// 11. `Revolve { profile: 60, .. }` → `[60]`.
-    /// 12. `Draft { target: 70, angle: .., plane: 71 }` → `[70]`
-    ///     (plane excluded — reference constraint, not a shape parent).
-    ///
-    /// Fails with compile error until `parent_handles_for_op` is added (step-2).
+    /// Rust's exhaustive `match` in `parent_handles_for_op` catches any new
+    /// `GeometryOp` variant at compile time, so one representative per arm
+    /// family is enough to guard against misclassification.
     #[test]
     fn parent_handles_for_op_returns_expected_handles_per_variant_family() {
         use reify_types::Value;
 
-        // 1. Primitive → empty
-        let box_op = GeometryOp::Box {
-            width: Value::Real(0.01),
-            height: Value::Real(0.02),
-            depth: Value::Real(0.005),
-        };
-        assert!(
-            parent_handles_for_op(&box_op).is_empty(),
-            "Box primitive must produce 0 parents, got: {:?}",
-            parent_handles_for_op(&box_op),
-        );
-
-        // 2. Union → [left, right] in left-then-right order
-        let union_op = GeometryOp::Union {
-            left: GeometryHandleId(1),
-            right: GeometryHandleId(2),
-        };
-        assert_eq!(
-            parent_handles_for_op(&union_op).as_slice(),
-            &[GeometryHandleId(1), GeometryHandleId(2)],
-            "Union must return [left, right] in left-then-right order",
-        );
-
-        // 3. Difference → [left, right]
-        let diff_op = GeometryOp::Difference {
-            left: GeometryHandleId(3),
-            right: GeometryHandleId(4),
-        };
-        assert_eq!(
-            parent_handles_for_op(&diff_op).as_slice(),
-            &[GeometryHandleId(3), GeometryHandleId(4)],
-            "Difference must return [left, right]",
-        );
-
-        // 4. Intersection → [left, right]
-        let inter_op = GeometryOp::Intersection {
-            left: GeometryHandleId(5),
-            right: GeometryHandleId(6),
-        };
-        assert_eq!(
-            parent_handles_for_op(&inter_op).as_slice(),
-            &[GeometryHandleId(5), GeometryHandleId(6)],
-            "Intersection must return [left, right]",
-        );
-
-        // 5. Fillet (single-target shape-mod) → [target]
-        let fillet_op = GeometryOp::Fillet {
-            target: GeometryHandleId(7),
-            radius: Value::Real(0.001),
-        };
-        assert_eq!(
-            parent_handles_for_op(&fillet_op).as_slice(),
-            &[GeometryHandleId(7)],
-            "Fillet must return [target]",
-        );
-
-        // 6. Loft → all profiles in order
-        let loft_op = GeometryOp::Loft {
-            profiles: vec![
-                GeometryHandleId(10),
-                GeometryHandleId(11),
-                GeometryHandleId(12),
-            ],
-        };
-        assert_eq!(
-            parent_handles_for_op(&loft_op).as_slice(),
-            &[GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
-            "Loft must return all profiles in input order",
-        );
-
-        // 7a. Sweep → [profile] only (path excluded per populate_attribute_history
-        //     convention at engine_build.rs:103-114: the path/spine is not itself
-        //     a parent whose sub-shapes propagate into the result)
-        let sweep_op = GeometryOp::Sweep {
-            profile: GeometryHandleId(20),
-            path: GeometryHandleId(21),
-        };
-        assert_eq!(
-            parent_handles_for_op(&sweep_op).as_slice(),
-            &[GeometryHandleId(20)],
-            "Sweep must return [profile] only — path is a route/spine, not a parent",
-        );
-
-        // 7b. Pipe → empty (kernel-internal circle profile, no user-facing parent
-        //     per GeometryOp::Pipe docstring)
-        let pipe_op = GeometryOp::Pipe {
-            path: GeometryHandleId(30),
-            radius: Value::Real(0.005),
-        };
-        assert!(
-            parent_handles_for_op(&pipe_op).is_empty(),
-            "Pipe must produce 0 parents (kernel-internal circle profile), got: {:?}",
-            parent_handles_for_op(&pipe_op),
-        );
-
-        // 8. LoftGuided → profiles only; guides excluded.
-        //    This is the most error-prone exclusion: a regression that appended
-        //    guides to the parent list would be silently missed without this case.
-        let loft_guided_op = GeometryOp::LoftGuided {
-            profiles: vec![
-                GeometryHandleId(20),
-                GeometryHandleId(21),
-                GeometryHandleId(22),
-            ],
-            guides: vec![GeometryHandleId(30), GeometryHandleId(31)],
-        };
-        assert_eq!(
-            parent_handles_for_op(&loft_guided_op).as_slice(),
-            &[GeometryHandleId(20), GeometryHandleId(21), GeometryHandleId(22)],
-            "LoftGuided must return only profiles — guides are constraints, not parents",
-        );
-
-        // 9. SweepGuided → [profile] only; path AND guide excluded.
-        //    Both path (spine) and guide (auxiliary constraint wire) are excluded,
-        //    matching the Sweep convention for path and the LoftGuided convention
-        //    for guides.
-        let sweep_guided_op = GeometryOp::SweepGuided {
-            profile: GeometryHandleId(40),
-            path: GeometryHandleId(41),
-            guide: GeometryHandleId(42),
-        };
-        assert_eq!(
-            parent_handles_for_op(&sweep_guided_op).as_slice(),
-            &[GeometryHandleId(40)],
-            "SweepGuided must return only [profile] — both path and guide are not parents",
-        );
-
-        // 10. ExtrudeSymmetric → [profile]
-        let extrude_sym_op = GeometryOp::ExtrudeSymmetric {
-            profile: GeometryHandleId(50),
-            distance: Value::Real(0.01),
-        };
-        assert_eq!(
-            parent_handles_for_op(&extrude_sym_op).as_slice(),
-            &[GeometryHandleId(50)],
-            "ExtrudeSymmetric must return [profile]",
-        );
-
-        // 11. Revolve → [profile] (axis fields are scalars, not parent handles)
-        let revolve_op = GeometryOp::Revolve {
-            profile: GeometryHandleId(60),
-            axis_origin: [0.0, 0.0, 0.0],
-            axis_dir: [0.0, 0.0, 1.0],
-            angle_rad: std::f64::consts::PI,
-        };
-        assert_eq!(
-            parent_handles_for_op(&revolve_op).as_slice(),
-            &[GeometryHandleId(60)],
-            "Revolve must return [profile]",
-        );
-
-        // 12. Draft → [target] only; plane excluded.
-        //    Draft's `plane` is a reference geometry / constraint handle, not a
-        //    shape whose sub-faces appear in the result — analogous to
-        //    SweepGuided's guide.
-        let draft_op = GeometryOp::Draft {
-            target: GeometryHandleId(70),
-            angle: Value::Real(0.1),
-            plane: GeometryHandleId(71),
-        };
-        assert_eq!(
-            parent_handles_for_op(&draft_op).as_slice(),
-            &[GeometryHandleId(70)],
-            "Draft must return only [target] — plane is a reference constraint, not a parent",
-        );
-
-        // Table-driven coverage for arms not directly tested above.  One
-        // representative per arm family guards against misclassification — a
-        // future PR accidentally moving `Translate` into the boolean arm, for
-        // example, would fail here before any downstream selector regression.
         struct Case {
             op: GeometryOp,
             expected: Vec<GeometryHandleId>,
             label: &'static str,
         }
-        let cases = vec![
-            // Primitives (family already covered by Box; adds Cylinder/Sphere)
+
+        let cases: Vec<Case> = vec![
+            // ── Primitives ────────────────────────────────────────────────────
+            Case {
+                op: GeometryOp::Box {
+                    width: Value::Real(0.01),
+                    height: Value::Real(0.02),
+                    depth: Value::Real(0.005),
+                },
+                expected: vec![],
+                label: "Box → empty (primitive, no parents)",
+            },
             Case {
                 op: GeometryOp::Cylinder {
                     radius: Value::Real(0.005),
@@ -2612,7 +2452,7 @@ mod tests {
                 expected: vec![],
                 label: "Cylinder → empty (primitive, no parents)",
             },
-            // Curve constructors (LineSegment is the canonical representative)
+            // ── Curve constructors ────────────────────────────────────────────
             Case {
                 op: GeometryOp::LineSegment {
                     x1: 0.0, y1: 0.0, z1: 0.0,
@@ -2621,7 +2461,57 @@ mod tests {
                 expected: vec![],
                 label: "LineSegment → empty (curve constructor, no parents)",
             },
-            // Single-target transforms
+            // ── Pipe ──────────────────────────────────────────────────────────
+            Case {
+                op: GeometryOp::Pipe {
+                    path: GeometryHandleId(30),
+                    radius: Value::Real(0.005),
+                },
+                expected: vec![],
+                label: "Pipe → empty (kernel-internal circle profile, no user-facing parent)",
+            },
+            // ── Boolean ops ───────────────────────────────────────────────────
+            Case {
+                op: GeometryOp::Union {
+                    left: GeometryHandleId(1),
+                    right: GeometryHandleId(2),
+                },
+                expected: vec![GeometryHandleId(1), GeometryHandleId(2)],
+                label: "Union → [left, right] in left-then-right order",
+            },
+            Case {
+                op: GeometryOp::Difference {
+                    left: GeometryHandleId(3),
+                    right: GeometryHandleId(4),
+                },
+                expected: vec![GeometryHandleId(3), GeometryHandleId(4)],
+                label: "Difference → [left, right]",
+            },
+            Case {
+                op: GeometryOp::Intersection {
+                    left: GeometryHandleId(5),
+                    right: GeometryHandleId(6),
+                },
+                expected: vec![GeometryHandleId(5), GeometryHandleId(6)],
+                label: "Intersection → [left, right]",
+            },
+            // ── Single-target shape-mods ──────────────────────────────────────
+            Case {
+                op: GeometryOp::Fillet {
+                    target: GeometryHandleId(7),
+                    radius: Value::Real(0.001),
+                },
+                expected: vec![GeometryHandleId(7)],
+                label: "Fillet → [target]",
+            },
+            Case {
+                op: GeometryOp::Chamfer {
+                    target: GeometryHandleId(82),
+                    distance: Value::Real(0.001),
+                },
+                expected: vec![GeometryHandleId(82)],
+                label: "Chamfer → [target]",
+            },
             Case {
                 op: GeometryOp::Translate {
                     target: GeometryHandleId(80),
@@ -2632,7 +2522,6 @@ mod tests {
                 expected: vec![GeometryHandleId(80)],
                 label: "Translate → [target] (single-target transform)",
             },
-            // Single-target patterns
             Case {
                 op: GeometryOp::LinearPattern {
                     target: GeometryHandleId(81),
@@ -2642,15 +2531,6 @@ mod tests {
                 },
                 expected: vec![GeometryHandleId(81)],
                 label: "LinearPattern → [target] (single-target pattern)",
-            },
-            // Single-target shape-mods not covered above
-            Case {
-                op: GeometryOp::Chamfer {
-                    target: GeometryHandleId(82),
-                    distance: Value::Real(0.001),
-                },
-                expected: vec![GeometryHandleId(82)],
-                label: "Chamfer → [target]",
             },
             Case {
                 op: GeometryOp::Thicken {
@@ -2669,8 +2549,19 @@ mod tests {
                 expected: vec![GeometryHandleId(84)],
                 label: "Shell → [target]",
             },
-            // Extrude (single-profile sweep, already covered by ExtrudeSymmetric/Revolve above;
-            // add direct coverage to guard its own arm entry)
+            Case {
+                op: GeometryOp::Draft {
+                    target: GeometryHandleId(70),
+                    angle: Value::Real(0.1),
+                    plane: GeometryHandleId(71),
+                },
+                expected: vec![GeometryHandleId(70)],
+                // Draft's `plane` is a reference geometry / constraint, not a
+                // parent whose sub-shapes propagate — analogous to SweepGuided's
+                // guide.
+                label: "Draft → [target] only; plane excluded (reference constraint, not a parent)",
+            },
+            // ── Single-profile sweep ops (path / spine excluded) ──────────────
             Case {
                 op: GeometryOp::Extrude {
                     profile: GeometryHandleId(85),
@@ -2679,12 +2570,77 @@ mod tests {
                 expected: vec![GeometryHandleId(85)],
                 label: "Extrude → [profile] (single-profile sweep)",
             },
+            Case {
+                op: GeometryOp::ExtrudeSymmetric {
+                    profile: GeometryHandleId(50),
+                    distance: Value::Real(0.01),
+                },
+                expected: vec![GeometryHandleId(50)],
+                label: "ExtrudeSymmetric → [profile]",
+            },
+            Case {
+                op: GeometryOp::Revolve {
+                    profile: GeometryHandleId(60),
+                    axis_origin: [0.0, 0.0, 0.0],
+                    axis_dir: [0.0, 0.0, 1.0],
+                    angle_rad: std::f64::consts::PI,
+                },
+                expected: vec![GeometryHandleId(60)],
+                label: "Revolve → [profile] (axis fields are scalars, not parent handles)",
+            },
+            Case {
+                op: GeometryOp::Sweep {
+                    profile: GeometryHandleId(20),
+                    path: GeometryHandleId(21),
+                },
+                expected: vec![GeometryHandleId(20)],
+                // Path/spine is a route, not a parent whose sub-shapes propagate
+                // into the result — mirrors populate_attribute_history semantics
+                // (engine_build.rs:103-114).
+                label: "Sweep → [profile] only; path excluded (spine is not a parent)",
+            },
+            Case {
+                op: GeometryOp::SweepGuided {
+                    profile: GeometryHandleId(40),
+                    path: GeometryHandleId(41),
+                    guide: GeometryHandleId(42),
+                },
+                expected: vec![GeometryHandleId(40)],
+                label: "SweepGuided → [profile] only; both path and guide excluded (guide is an auxiliary constraint wire, not a parent)",
+            },
+            // ── Multi-profile loft ops (guides excluded) ───────────────────────
+            Case {
+                op: GeometryOp::Loft {
+                    profiles: vec![
+                        GeometryHandleId(10),
+                        GeometryHandleId(11),
+                        GeometryHandleId(12),
+                    ],
+                },
+                expected: vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+                label: "Loft → all profiles in input order (multi-profile, ordering preserved)",
+            },
+            Case {
+                op: GeometryOp::LoftGuided {
+                    profiles: vec![
+                        GeometryHandleId(20),
+                        GeometryHandleId(21),
+                        GeometryHandleId(22),
+                    ],
+                    guides: vec![GeometryHandleId(30), GeometryHandleId(31)],
+                },
+                expected: vec![GeometryHandleId(20), GeometryHandleId(21), GeometryHandleId(22)],
+                // Most error-prone exclusion: a regression that appended guides to
+                // the parent list would be silently missed without this case.
+                label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",
+            },
         ];
+
         for case in &cases {
             assert_eq!(
                 parent_handles_for_op(&case.op).as_slice(),
                 case.expected.as_slice(),
-                "parent_handles_for_op mismatch for case: {}",
+                "parent_handles_for_op mismatch: {}",
                 case.label,
             );
         }
