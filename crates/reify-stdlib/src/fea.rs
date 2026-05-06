@@ -17,7 +17,10 @@
 //! `Value::Undef` — the deferred path would require numerical reduction
 //! across a Map of lambda-domains, out of scope for this task.
 
-use reify_types::Value;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+use reify_types::{FieldSourceKind, SampledField, Type, Value};
 
 /// Evaluate a multi-load-case FEA stdlib function by name.
 ///
@@ -34,7 +37,13 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// Per-grid-point reduction across a `Map<String, Field<Point3, T>>` of
 /// per-case Sampled fields. `find_min == false` selects the maximum;
 /// `find_min == true` selects the minimum.
-fn envelope_reduce(args: &[Value], _find_min: bool) -> Value {
+///
+/// Mirrors the NaN-skip + `total_cmp` + first-occurrence-wins discipline
+/// documented on `crates/reify-expr/src/field_reductions.rs::argmax_argmin_index`
+/// (around line 198): non-finite values are skipped via `is_finite()`,
+/// extrema are selected via IEEE 754 `total_cmp`, and the first finite
+/// case at each index wins on ties.
+fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
@@ -54,8 +63,118 @@ fn envelope_reduce(args: &[Value], _find_min: bool) -> Value {
         };
     }
 
-    // Multi-case branch lands in step-6.
-    Value::Undef
+    // Capture the first case as the canonical reference for grid metadata
+    // and per-case Sampled extraction.
+    let mut iter = map.values();
+    let first = iter.next();
+    let (ref_domain, ref_codomain, ref_sf): (&Type, &Type, &SampledField) = match first {
+        Some(Value::Field {
+            source: FieldSourceKind::Sampled,
+            lambda,
+            domain_type,
+            codomain_type,
+        }) => match lambda.as_ref() {
+            Value::SampledField(sf) => (domain_type, codomain_type, sf),
+            // Defensive: a Sampled source must carry a SampledField in
+            // its lambda slot (mirrors field_reductions.rs:96-99).
+            _ => return Value::Undef,
+        },
+        // Empty Map or non-Sampled / non-Field first value → Undef.
+        Some(_) | None => return Value::Undef,
+    };
+
+    // Collect per-case data slices, validating metadata equality with
+    // the reference along the way. Mismatched grids/types → Undef.
+    let mut cases_data: Vec<&[f64]> = Vec::with_capacity(map.len());
+    cases_data.push(&ref_sf.data);
+    for v in iter {
+        let (dom, cod, sf) = match v {
+            Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda,
+                domain_type,
+                codomain_type,
+            } => match lambda.as_ref() {
+                Value::SampledField(sf) => (domain_type, codomain_type, sf),
+                _ => return Value::Undef,
+            },
+            _ => return Value::Undef,
+        };
+        if dom != ref_domain || cod != ref_codomain || !grids_equal(ref_sf, sf) {
+            return Value::Undef;
+        }
+        cases_data.push(&sf.data);
+    }
+
+    // Per-grid-point reduction: NaN-skip + total_cmp + first-occurrence-wins.
+    // If all per-case data[i] are non-finite, the all-non-finite sentinel
+    // `f64::NAN` is written so downstream reductions will skip the index.
+    let n = ref_sf.data.len();
+    let mut out_data = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut best: Option<f64> = None;
+        for &slice in &cases_data {
+            let v = slice[i];
+            if !v.is_finite() {
+                continue;
+            }
+            match best {
+                None => best = Some(v),
+                Some(b) => {
+                    let cmp = v.total_cmp(&b);
+                    let take = if find_min { cmp.is_lt() } else { cmp.is_gt() };
+                    if take {
+                        best = Some(v);
+                    }
+                }
+            }
+        }
+        out_data.push(best.unwrap_or(f64::NAN));
+    }
+
+    let result_sf = SampledField {
+        name: "envelope".to_string(),
+        kind: ref_sf.kind,
+        bounds_min: ref_sf.bounds_min.clone(),
+        bounds_max: ref_sf.bounds_max.clone(),
+        spacing: ref_sf.spacing.clone(),
+        axis_grids: ref_sf.axis_grids.clone(),
+        interpolation: ref_sf.interpolation,
+        data: out_data,
+        oob_emitted: AtomicBool::new(false),
+    };
+
+    Value::Field {
+        domain_type: ref_domain.clone(),
+        codomain_type: ref_codomain.clone(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(result_sf)),
+    }
+}
+
+/// Strict grid-equality predicate for two `SampledField`s. Floats compared
+/// via `to_bits()` to mirror `SampledField`'s own `PartialEq` semantics
+/// (see `crates/reify-types/src/value.rs:149-189`). Excludes the data
+/// buffer (caller compares element-wise on a per-index basis); excludes
+/// `name` and `oob_emitted` (runtime-only, not semantic content).
+fn grids_equal(a: &SampledField, b: &SampledField) -> bool {
+    a.kind == b.kind
+        && a.interpolation == b.interpolation
+        && a.data.len() == b.data.len()
+        && a.axis_grids.len() == b.axis_grids.len()
+        && floats_bit_equal(&a.bounds_min, &b.bounds_min)
+        && floats_bit_equal(&a.bounds_max, &b.bounds_max)
+        && floats_bit_equal(&a.spacing, &b.spacing)
+        && a.axis_grids
+            .iter()
+            .zip(b.axis_grids.iter())
+            .all(|(x, y)| floats_bit_equal(x, y))
+}
+
+/// Bit-equal float-slice comparison. Used by `grids_equal` to mirror
+/// `SampledField::PartialEq`'s `to_bits()` discipline.
+fn floats_bit_equal(a: &[f64], b: &[f64]) -> bool {
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 #[cfg(test)]
