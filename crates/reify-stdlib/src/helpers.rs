@@ -1319,4 +1319,128 @@ mod tests {
             "Empty Value::Tensor should be accepted as opaque selector"
         );
     }
+
+    // ── validate_dimensioned_vec3 ─────────────────────────────────────────────
+    //
+    // Hoisted from supports.rs and loads.rs (byte-for-byte identical bodies).
+    // Validates a 3-component vector with a specified expected dimension.
+
+    fn make_scalar_vec3_local(vals: [f64; 3], dim: DimensionVector) -> Value {
+        Value::Vector(
+            vals.iter()
+                .map(|&v| Value::Scalar {
+                    si_value: v,
+                    dimension: dim,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_length_happy_path_returns_some() {
+        let v = make_scalar_vec3_local([1.0, 2.0, 3.0], DimensionVector::LENGTH);
+        assert_eq!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH),
+            Some(()),
+            "3-component LENGTH vector with expected_dim=LENGTH should accept"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_force_happy_path_returns_some() {
+        let v = make_scalar_vec3_local([10.0, 20.0, 30.0], DimensionVector::FORCE);
+        assert_eq!(
+            validate_dimensioned_vec3(&v, DimensionVector::FORCE),
+            Some(()),
+            "3-component FORCE vector with expected_dim=FORCE should accept"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_wrong_dimension_returns_none() {
+        let v = make_scalar_vec3_local([1.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "FORCE vector with expected_dim=LENGTH should reject"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_vec2_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "Vec2 (wrong arity) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_vec4_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+        ]);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "Vec4 (wrong arity) should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_nan_component_returns_none() {
+        let v = make_scalar_vec3_local([f64::NAN, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "NaN component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_inf_component_returns_none() {
+        let v = make_scalar_vec3_local([f64::INFINITY, 0.0, 0.0], DimensionVector::LENGTH);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "+Inf component should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_dimensionless_vs_length_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
+            "DIMENSIONLESS vector with expected_dim=LENGTH should reject"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_real_returns_none() {
+        assert!(
+            validate_dimensioned_vec3(&Value::Real(1.0), DimensionVector::LENGTH).is_none(),
+            "Bare Real should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_vec3_undef_returns_none() {
+        assert!(
+            validate_dimensioned_vec3(&Value::Undef, DimensionVector::LENGTH).is_none(),
+            "Undef should return None"
+        );
+    }
 }
