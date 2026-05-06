@@ -61,6 +61,14 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
         _ => return Value::Undef,
     };
 
+    // Empty Map → Undef. Diagnostic emission deferred to PRD task #10
+    // (Diagnostic mapping for multi-case-specific failure modes); this
+    // short-circuit matches the silent-Undef convention shared with
+    // analysis.rs / sanitize_value.
+    if map.is_empty() {
+        return Value::Undef;
+    }
+
     // Single-case sanity: return the inner Field unchanged. Avoids paying
     // the SampledField rebuild cost when only one case is provided and
     // prevents drift in the result's `name` / `oob_emitted` slot.
