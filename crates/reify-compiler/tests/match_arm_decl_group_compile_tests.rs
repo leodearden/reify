@@ -851,7 +851,7 @@ fn match_arm_decl_group_empty_arms_emits_diagnostic() {
 ///
 /// Pre-fix: the pass-1 pre-pass inserts `match_arm_group_arm_member_types["head"]`
 /// and `["spike"]` while `match_arm_groups` remains empty (pass-2 returns early on
-/// the mismatch). The `debug_assert!` in `compile_entity` then fires, causing this
+/// the mismatch). The `assert!` in `compile_entity` then fires, causing this
 /// test to panic. RED.
 ///
 /// Post-fix: the per-arm maps are written only inside `compile_match_arm_decl_group`
@@ -860,7 +860,7 @@ fn match_arm_decl_group_empty_arms_emits_diagnostic() {
 /// Asserts:
 /// (a) The logical-name-mismatch diagnostic is still emitted.
 /// (b) `bolt_template.match_arm_groups.is_empty()` — no cluster is registered on mismatch.
-/// (c) Implicitly: the `debug_assert!` in `compile_entity` passes (no panic), verifying
+/// (c) Implicitly: the `assert!` in `compile_entity` passes (no panic), verifying
 ///     that no orphan per-arm entry persists.
 #[test]
 fn match_arm_decl_group_mismatched_arm_names_does_not_orphan_per_arm_member_types() {
