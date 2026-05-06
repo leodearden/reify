@@ -1697,6 +1697,85 @@ structure S {
     // module that eliminates the prior duplication across compiler and LSP
     // test files.
 
+    #[test]
+    fn find_unique_unconsumed_match_excludes_consumed_indices_and_panics_when_pool_is_exhausted() {
+        use std::panic::AssertUnwindSafe;
+
+        // D0: message embeds three quoted tokens ('param', 'foo', 'baz') so that
+        // a naive substring scan without a consumed-set would match D0 for both
+        // ("param", "foo") and ("param", "baz") queries — simulating the
+        // bijection-violation scenario.
+        let d0 = lsp_types::Diagnostic {
+            message: "'param' decl 'foo' seen alongside 'baz' in scope".to_string(),
+            ..Default::default()
+        };
+        // D1: message embeds 'sub' and 'bar'.
+        let d1 = lsp_types::Diagnostic {
+            message: "'sub' decl 'bar' is not permitted".to_string(),
+            ..Default::default()
+        };
+        let forbidden = vec![d0, d1];
+
+        // (a) Happy path — empty consumed set: each query returns the unique index.
+        let consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let idx0 = find_unique_unconsumed_match(&forbidden, &consumed, "param", "foo");
+        assert_eq!(idx0, 0);
+
+        let mut consumed_after = std::collections::HashSet::<usize>::new();
+        consumed_after.insert(0);
+        let idx1 = find_unique_unconsumed_match(&forbidden, &consumed_after, "sub", "bar");
+        assert_eq!(idx1, 1);
+
+        // (b) Bijection-violation path — with index 0 consumed, a second query for
+        // ("param", "foo") must panic: no unconsumed diagnostic contains both tokens.
+        let forbidden_ref = &forbidden;
+        let consumed_ref = consumed_after.clone();
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            find_unique_unconsumed_match(forbidden_ref, &consumed_ref, "param", "foo")
+        }));
+        assert!(
+            result.is_err(),
+            "expected panic when the only matching diagnostic is already consumed"
+        );
+    }
+
+    /// Find the unique index in `forbidden` of an unconsumed diagnostic whose message
+    /// contains both `'{kind}'` and `'{name}'`. Panics if zero or more than one such
+    /// diagnostic exists in the unconsumed pool.
+    ///
+    /// Used by `assert_specialization_forbidden` to enforce a bijection between
+    /// expected `(kind, name, position)` entries and `SpecializationForbiddenDecl`
+    /// diagnostics — each expected entry consumes a distinct diagnostic.
+    fn find_unique_unconsumed_match(
+        forbidden: &[lsp_types::Diagnostic],
+        consumed: &std::collections::HashSet<usize>,
+        kind: &str,
+        name: &str,
+    ) -> usize {
+        let matches: Vec<usize> = forbidden
+            .iter()
+            .enumerate()
+            .filter(|(idx, d)| {
+                !consumed.contains(idx)
+                    && d.message.contains(&format!("'{kind}'"))
+                    && d.message.contains(&format!("'{name}'"))
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one unconsumed SpecializationForbiddenDecl diagnostic \
+             containing kind='{kind}' and name='{name}'; found {}; \
+             matched indices: {matches:#?}; consumed: {consumed:?}; \
+             all diagnostics: {forbidden:#?}",
+            matches.len()
+        );
+
+        matches[0]
+    }
+
     /// Drive the specialization-scope pipeline for `body` (the contents of a
     /// `sub scope : Foo { body }` node inside structure S) and assert that the
     /// resulting LSP diagnostics with code `"SpecializationForbiddenDecl"` match
@@ -1717,6 +1796,14 @@ structure S {
     /// a clear message — making any compiler message-format reshuffle that
     /// still embeds both tokens self-evident rather than hiding behind a
     /// sort-key drift.
+    ///
+    /// Furthermore, each expected entry consumes a distinct diagnostic: once a
+    /// diagnostic has been paired to an expected entry, it is excluded from
+    /// subsequent iterations' match pool.  Combined with the early
+    /// `forbidden.len() == expected.len()` check above, this guarantees a
+    /// bijection between `expected` and `forbidden` — no two expected entries
+    /// can silently pair to the same diagnostic, and no diagnostic in `forbidden`
+    /// can go unmatched.
     ///
     /// Additionally asserts for every matched diagnostic:
     /// - severity `ERROR`, source `"reify"`
@@ -1764,27 +1851,15 @@ structure S {
         );
 
         // Pair by content: for each expected (kind, name, pos) find the unique
-        // diagnostic whose message contains both quoted tokens.  This is robust
-        // to any compiler message-format reshuffle that still embeds both tokens
-        // — a sort-key drift can never silently mispair violations.
+        // unconsumed diagnostic whose message contains both quoted tokens.
+        // `consumed` tracks which indices have already been paired, enforcing
+        // the bijection — a sort-key drift can never silently mispair violations.
+        let mut consumed = std::collections::HashSet::<usize>::new();
         for (kind, name, expected_pos) in expected {
-            let matches: Vec<&lsp_types::Diagnostic> = forbidden
-                .iter()
-                .filter(|d| {
-                    d.message.contains(&format!("'{kind}'"))
-                        && d.message.contains(&format!("'{name}'"))
-                })
-                .collect();
+            let idx = find_unique_unconsumed_match(&forbidden, &consumed, kind, name);
+            consumed.insert(idx);
 
-            assert_eq!(
-                matches.len(),
-                1,
-                "expected exactly one SpecializationForbiddenDecl diagnostic \
-                 containing kind='{kind}' and name='{name}'; found {}: {matches:#?}",
-                matches.len()
-            );
-
-            let d = matches[0];
+            let d = &forbidden[idx];
 
             assert_eq!(
                 d.severity,
