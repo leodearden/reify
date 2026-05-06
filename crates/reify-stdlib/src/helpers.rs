@@ -1214,4 +1214,88 @@ mod tests {
             "Empty Vector should return None"
         );
     }
+
+    // ── validate_selector_target ──────────────────────────────────────────────
+    //
+    // Hoisted from supports.rs and loads.rs (byte-for-byte identical bodies).
+    // Rejects obvious primitive non-selector values; accepts any other shape
+    // (Map, List, String, Vector, Tensor, …) as an opaque pass-through.
+
+    #[test]
+    fn validate_selector_target_real_returns_none() {
+        assert!(
+            validate_selector_target(&Value::Real(0.0)).is_none(),
+            "Value::Real should be rejected as a selector target"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_int_returns_none() {
+        assert!(
+            validate_selector_target(&Value::Int(0)).is_none(),
+            "Value::Int should be rejected as a selector target"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_bool_returns_none() {
+        assert!(
+            validate_selector_target(&Value::Bool(true)).is_none(),
+            "Value::Bool should be rejected as a selector target"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_undef_returns_none() {
+        assert!(
+            validate_selector_target(&Value::Undef).is_none(),
+            "Value::Undef should be rejected as a selector target"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_empty_map_accepted() {
+        use std::collections::BTreeMap;
+        assert_eq!(
+            validate_selector_target(&Value::Map(BTreeMap::new())),
+            Some(()),
+            "Empty Value::Map should be accepted as opaque selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_empty_list_accepted() {
+        assert_eq!(
+            validate_selector_target(&Value::List(vec![])),
+            Some(()),
+            "Empty Value::List should be accepted as opaque selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_string_accepted() {
+        assert_eq!(
+            validate_selector_target(&Value::String("x".to_string())),
+            Some(()),
+            "Value::String should be accepted as opaque selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_empty_vector_accepted() {
+        assert_eq!(
+            validate_selector_target(&Value::Vector(vec![])),
+            Some(()),
+            "Empty Value::Vector should be accepted as opaque selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_empty_tensor_accepted() {
+        assert_eq!(
+            validate_selector_target(&Value::Tensor(vec![])),
+            Some(()),
+            "Empty Value::Tensor should be accepted as opaque selector"
+        );
+    }
 }
