@@ -182,12 +182,14 @@ describe('debug bridge set_camera', () => {
   function makeViewportStub() {
     const cameraPositionSet = vi.fn();
     const cameraUpSet = vi.fn();
+    const cameraLookAt = vi.fn();
     const controlsTargetSet = vi.fn();
     const rendererRender = vi.fn();
     const camera = {
       position: { set: cameraPositionSet, x: 0, y: 0, z: 0 },
       up: { set: cameraUpSet, x: 0, y: 1, z: 0 },
       zoom: 1,
+      lookAt: cameraLookAt,
       updateProjectionMatrix: vi.fn(),
       updateMatrixWorld: vi.fn(),
     };
@@ -197,7 +199,7 @@ describe('debug bridge set_camera', () => {
     };
     const renderer = { render: rendererRender, domElement: { toDataURL: vi.fn() } };
     const scene = {} as any;
-    return { camera, controls, renderer, scene, cameraPositionSet, cameraUpSet, controlsTargetSet, rendererRender };
+    return { camera, controls, renderer, scene, cameraPositionSet, cameraUpSet, cameraLookAt, controlsTargetSet, rendererRender };
   }
 
   async function dispatch(handler: DebugRequestHandler, id: number, params: Record<string, unknown>) {
@@ -302,6 +304,8 @@ describe('debug bridge set_camera', () => {
 
     expect(result.ok).toBe(true);
     expect(stub.cameraPositionSet).toHaveBeenCalledWith(1, 2, 3);
+    // target honored via lookAt fallback — contract holds without OrbitControls
+    expect(stub.cameraLookAt).toHaveBeenCalledWith(0, 0, 0);
     expect(stub.camera.updateMatrixWorld).toHaveBeenCalled();
     expect(stub.rendererRender).toHaveBeenCalledWith(stub.scene, stub.camera);
   });
@@ -399,6 +403,12 @@ describe('debug bridge set_camera', () => {
 
     it('rejects up containing NaN when provided', async () => {
       const result = await dispatch(capturedHandler!, 212, { position: [1, 2, 3], target: [0, 0, 0], up: [0, NaN, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects up containing Infinity when provided', async () => {
+      const result = await dispatch(capturedHandler!, 217, { position: [1, 2, 3], target: [0, 0, 0], up: [Infinity, 0, 0] });
       expect(result).toHaveProperty('error');
       expect(stub.cameraUpSet).not.toHaveBeenCalled();
     });

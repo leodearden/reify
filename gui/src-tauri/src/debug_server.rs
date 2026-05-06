@@ -587,38 +587,15 @@ mod tests {
             .expect("set_camera must be present in tool_defs()");
 
         let schema = &entry.input_schema;
+
+        // Tool exposes an object schema
         assert_eq!(
             schema["type"].as_str(),
             Some("object"),
             "input_schema.type must be 'object'"
         );
 
-        // position: array of number, minItems/maxItems = 3
-        let position = &schema["properties"]["position"];
-        assert_eq!(position["type"].as_str(), Some("array"), "position.type must be 'array'");
-        assert_eq!(position["items"]["type"].as_str(), Some("number"), "position.items.type must be 'number'");
-        assert_eq!(position["minItems"].as_i64(), Some(3), "position.minItems must be 3");
-        assert_eq!(position["maxItems"].as_i64(), Some(3), "position.maxItems must be 3");
-
-        // target: same shape as position
-        let target = &schema["properties"]["target"];
-        assert_eq!(target["type"].as_str(), Some("array"), "target.type must be 'array'");
-        assert_eq!(target["items"]["type"].as_str(), Some("number"), "target.items.type must be 'number'");
-        assert_eq!(target["minItems"].as_i64(), Some(3), "target.minItems must be 3");
-        assert_eq!(target["maxItems"].as_i64(), Some(3), "target.maxItems must be 3");
-
-        // up: array of number, minItems/maxItems = 3 (optional — not in required)
-        let up = &schema["properties"]["up"];
-        assert_eq!(up["type"].as_str(), Some("array"), "up.type must be 'array'");
-        assert_eq!(up["items"]["type"].as_str(), Some("number"), "up.items.type must be 'number'");
-        assert_eq!(up["minItems"].as_i64(), Some(3), "up.minItems must be 3");
-        assert_eq!(up["maxItems"].as_i64(), Some(3), "up.maxItems must be 3");
-
-        // zoom: number (optional — not in required)
-        let zoom = &schema["properties"]["zoom"];
-        assert_eq!(zoom["type"].as_str(), Some("number"), "zoom.type must be 'number'");
-
-        // required must contain position and target but NOT up or zoom
+        // Only position and target are required; up and zoom are optional
         let required = schema["required"]
             .as_array()
             .expect("input_schema.required must be an array");

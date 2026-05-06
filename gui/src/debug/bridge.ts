@@ -274,16 +274,23 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
 
       const { camera, scene, renderer, controls } = vp;
 
-      // Apply pose
+      // Apply pose — set up before lookAt/controls.update so orientation is correct
       camera.position.set(...position);
-      if (controls) controls.target.set(...target);
       if (up !== undefined) camera.up.set(...up);
+      if (controls) {
+        controls.target.set(...target);
+      } else {
+        // No OrbitControls — orient camera directly toward target so the contract
+        // "same input → same camera frame" holds even without controls attached.
+        camera.lookAt(target[0], target[1], target[2]);
+      }
       if (zoom !== undefined) camera.zoom = zoom;
 
-      // Update matrices and render
-      camera.updateMatrixWorld();
+      // Update matrices and render — updateMatrixWorld after controls.update() so it
+      // reflects the post-controls transform (controls.update() repositions the camera).
       camera.updateProjectionMatrix();
       if (controls) controls.update();
+      camera.updateMatrixWorld();
       renderer.render(scene, camera);
 
       // Build the full applied pose — snapshot camera state for omitted params
