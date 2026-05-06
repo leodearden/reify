@@ -20,6 +20,7 @@ test-instrumentation = []
 # Self-dev-dep enables `test-instrumentation`-gated accessors (e.g. Engine::last_guard_phase_group_evals) in integration tests; see src/engine_admin.rs
 reify-eval = { path = ".", features = ["test-instrumentation"] }
 reify-test-support = { workspace = true, features = ["eval-helpers"] }
+tempfile.workspace = true
 # v0.2 persistent-naming-v2 (task 2590): integration tests in `tests/`
 # (e.g. topology_attribute_e2e.rs) drive `OcctKernelHandle::boolean_fuse_with_history`
 # and feed the resulting `BooleanOpHistoryRecords` (a `reify-types` type) into
