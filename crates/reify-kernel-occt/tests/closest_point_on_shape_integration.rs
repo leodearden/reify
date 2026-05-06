@@ -243,8 +243,8 @@ fn closest_point_for_offcenter_interior_point() {
 ///
 /// For a `TopoDS_Solid`, `BRepExtrema_DistShapeShape` considers the query
 /// vertex to overlap the solid and returns `dist.Value() = 0`.  The C++
-/// wrapper's `dist < 1e-10` shell-fallback (`cpp/occt_wrapper.cpp:2789–2799`,
-/// introduced by task 2780) then fires: it re-runs `BRepExtrema_DistShapeShape`
+/// wrapper's `dist < 1e-10` shell-fallback in `closest_point_on_shape`
+/// (introduced by task 2780) then fires: it re-runs `BRepExtrema_DistShapeShape`
 /// against the first shell (`TopExp_Explorer(shape, TopAbs_SHELL)`) and
 /// returns a boundary witness from the shell.
 ///
@@ -291,7 +291,7 @@ fn closest_point_for_interior_origin_returns_face_witness_after_shell_recompute(
 // ---------------------------------------------------------------------------
 
 /// Regression sentinel for `BRepBuilderAPI_MakeVertex(gp_Pnt(NAN, 0, 0))`
-/// behaviour. See `crates/reify-kernel-occt/cpp/occt_wrapper.cpp:2626-2643`.
+/// behaviour in `closest_point_on_shape`'s NaN-vertex handling.
 ///
 /// OCCT does not validate vertex constructor inputs: a NaN coordinate may
 /// succeed at vertex construction but produce `BRepExtrema_DistShapeShape`

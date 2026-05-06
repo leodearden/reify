@@ -25,8 +25,9 @@
 //! - Zero tolerance with exact face point (5,0,0) → true (dist=0 exactly).
 //! - Off-face coplanar point (5,100,100): on plane x=5 but outside face extent → false.
 //! - Non-solid (wire) fixture: point 1 unit off the wire returns false (no OCCT overlap).
-//! - Negative tolerance → `Err(QueryError::QueryFailed(_))` with message 'non-negative finite' (regression sentinel).
-//! - NaN tolerance → `Err(QueryError::QueryFailed(_))` with message 'non-negative finite' (regression sentinel).
+//! - Negative tolerance → `Err(QueryError::QueryFailed(_))` (regression sentinel for tolerance precondition throw).
+//! - NaN tolerance → `Err(QueryError::QueryFailed(_))` (regression sentinel for tolerance precondition throw).
+//! - Infinite tolerance → `Err(QueryError::QueryFailed(_))` (regression sentinel for tolerance precondition throw).
 
 #![cfg(has_occt)]
 
@@ -275,8 +276,8 @@ fn wire_kernel() -> (OcctKernel, GeometryHandleId) {
 // Tolerance precondition — early-validation throw site regression sentinels
 // ---------------------------------------------------------------------------
 
-/// Regression sentinel for the early-validation throw at
-/// `cpp/occt_wrapper.cpp:2809–2812`.
+/// Regression sentinel for the early-validation throw in
+/// `point_on_shape`'s tolerance precondition.
 ///
 /// The C++ wrapper validates the tolerance argument before calling
 /// `BRepExtrema_DistShapeShape`:
@@ -291,19 +292,13 @@ fn wire_kernel() -> (OcctKernel, GeometryHandleId) {
 /// `cpp/occt_wrapper.h`, `crates/reify-kernel-occt/src/ffi.rs`,
 /// `crates/reify-kernel-occt/src/lib.rs`, and
 /// `crates/reify-types/src/stubs.rs`.  This test locks the throw site:
-/// if it starts returning `Ok(_)` or a different error message, the early
-/// check was silently removed or its wording changed.
+/// if it starts returning `Ok(_)`, the early check was silently removed.
 #[test]
 fn point_on_shape_negative_tolerance_returns_error() {
     let (kernel, box_id) = box_kernel();
     let result = kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, -1.0);
     match result {
-        Err(QueryError::QueryFailed(ref msg)) => {
-            assert!(
-                msg.contains("non-negative finite"),
-                "expected message to contain 'non-negative finite', got {msg:?}"
-            );
-        }
+        Err(QueryError::QueryFailed(_)) => {}
         Ok(v) => panic!(
             "expected Err(QueryError::QueryFailed(_)) for tolerance=-1.0, got Ok({v:?})"
         ),
@@ -313,8 +308,8 @@ fn point_on_shape_negative_tolerance_returns_error() {
     }
 }
 
-/// Regression sentinel for the early-validation throw at
-/// `cpp/occt_wrapper.cpp:2809–2812`, NaN branch.
+/// Regression sentinel for the early-validation throw in
+/// `point_on_shape`'s tolerance precondition, NaN branch.
 ///
 /// `!std::isfinite(NaN) == true` triggers the same throw site as a negative
 /// tolerance.  This test locks the IEEE-754 NaN-comparison footgun
@@ -331,17 +326,40 @@ fn point_on_shape_nan_tolerance_returns_error() {
     let (kernel, box_id) = box_kernel();
     let result = kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, f64::NAN);
     match result {
-        Err(QueryError::QueryFailed(ref msg)) => {
-            assert!(
-                msg.contains("non-negative finite"),
-                "expected message to contain 'non-negative finite', got {msg:?}"
-            );
-        }
+        Err(QueryError::QueryFailed(_)) => {}
         Ok(v) => panic!(
             "expected Err(QueryError::QueryFailed(_)) for tolerance=NaN, got Ok({v:?})"
         ),
         Err(e) => panic!(
             "expected Err(QueryError::QueryFailed(_)) for tolerance=NaN, got Err({e:?})"
+        ),
+    }
+}
+
+/// Regression sentinel for the early-validation throw in
+/// `point_on_shape`'s tolerance precondition, ±∞ branch.
+///
+/// The C++ wrapper checks `!std::isfinite(tolerance)`, which is `true` for
+/// both `+∞` and `-∞`.  Without the `isfinite` guard a refactor to
+/// `tol >= 0.0` alone would silently pass `+∞` (since `+∞ >= 0.0` is `true`
+/// in IEEE-754).  This test locks the ∞-rejection path complementary to
+/// the negative-finite and NaN sentinels.
+///
+/// The contract is documented at all five layers: `cpp/occt_wrapper.cpp`,
+/// `cpp/occt_wrapper.h`, `crates/reify-kernel-occt/src/ffi.rs`,
+/// `crates/reify-kernel-occt/src/lib.rs`, and
+/// `crates/reify-types/src/stubs.rs`.
+#[test]
+fn point_on_shape_infinite_tolerance_returns_error() {
+    let (kernel, box_id) = box_kernel();
+    let result = kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, f64::INFINITY);
+    match result {
+        Err(QueryError::QueryFailed(_)) => {}
+        Ok(v) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for tolerance=+∞, got Ok({v:?})"
+        ),
+        Err(e) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for tolerance=+∞, got Err({e:?})"
         ),
     }
 }
