@@ -114,3 +114,63 @@ describe('wait_for_idle: bridge dispatch awaits async handler results', () => {
     expect(typeof (result as any).idle_after_ms).toBe('number');
   });
 });
+
+describe('wait_for_idle: returns ok after engine becomes idle', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('wait_for_idle returns ok with idle_after_ms after engine becomes idle', async () => {
+    // Start with evaluating phase
+    const stores = makeStores('evaluating');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    // Stub rAF to fire synchronously once called
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+
+    // Kick off the dispatch (won't resolve until phase becomes idle)
+    vi.mocked(invoke).mockClear();
+    const dispatchPromise = capturedHandler!({ payload: { id: 2, command: 'wait_for_idle', params: {} } });
+
+    // Advance timers a bit — still evaluating, handler should still be polling
+    await vi.advanceTimersByTimeAsync(32);
+    // Should not have responded yet
+    expect(vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response')).toBeUndefined();
+
+    // Transition to idle
+    stores.engine.state.evalStatus.phase = 'idle';
+
+    // Advance timers enough for one more polling tick (~16ms) so the while loop observes idle
+    await vi.advanceTimersByTimeAsync(32);
+
+    // Now await the dispatch to complete
+    await dispatchPromise;
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result).toMatchObject({ ok: true });
+    expect(typeof result.idle_after_ms).toBe('number');
+    expect(result.idle_after_ms).toBeGreaterThanOrEqual(0);
+  });
+});
