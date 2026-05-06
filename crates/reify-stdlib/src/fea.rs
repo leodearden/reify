@@ -616,6 +616,71 @@ mod tests {
         assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
     }
 
+    // ── argument-shape negative paths ───────────────────────────────────────
+
+    #[test]
+    fn envelope_max_argument_shape_negative_paths_return_undef() {
+        // (a) wrong arity — 0 args and 2 args both return Undef.
+        assert!(eval_fea("envelope_max", &[]).unwrap().is_undef());
+        let map = make_envelope_map(&[]);
+        let extra = Value::Real(1.0);
+        assert!(
+            eval_fea("envelope_max", &[map.clone(), extra])
+                .unwrap()
+                .is_undef()
+        );
+
+        // (b) non-Map first arg → Undef.
+        assert!(
+            eval_fea("envelope_max", &[Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
+
+        // (c) Map containing a non-Field value → Undef.
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let mut bad_map = BTreeMap::new();
+        bad_map.insert(Value::String("a".to_string()), case_a.clone());
+        bad_map.insert(Value::String("b".to_string()), Value::Real(7.0));
+        assert!(
+            eval_fea("envelope_max", &[Value::Map(bad_map)])
+                .unwrap()
+                .is_undef()
+        );
+
+        // (d) Map containing a Field with FieldSourceKind::Analytical
+        // (source != Sampled) → Undef. We don't need a real lambda body —
+        // the source check rejects before any lambda extraction.
+        let analytical = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(Value::Undef),
+        };
+        let map_analytical = make_envelope_map(&[("a", case_a.clone()), ("b", analytical)]);
+        assert!(
+            eval_fea("envelope_max", &[map_analytical])
+                .unwrap()
+                .is_undef()
+        );
+
+        // (e) Map containing a Sampled-source Field whose lambda is NOT a
+        // SampledField (defensive check, mirrors field_reductions.rs:96-99).
+        let degenerate_sampled = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::Undef),
+        };
+        let map_degen = make_envelope_map(&[("a", case_a.clone()), ("b", degenerate_sampled)]);
+        assert!(eval_fea("envelope_max", &[map_degen]).unwrap().is_undef());
+    }
+
     #[test]
     fn envelope_max_all_nan_at_index_yields_nan() {
         let axis = vec![0.0, 1.0, 2.0];
