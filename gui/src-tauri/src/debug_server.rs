@@ -9,6 +9,7 @@
 // for manual `curl` testing.
 
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -298,6 +299,7 @@ async fn dispatch_tool(
         "engine_state" => handle_engine_state(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
         "open_file" => handle_open_file(state, params).await,
+        "wait_for_idle" => handle_wait_for_idle(state, params).await,
         _ => {
             // Frontend-mediated: delegate to DebugBridge
             state.debug_bridge.query_frontend(name, params).await
@@ -556,6 +558,17 @@ async fn handle_rest(
         )
             .into_response(),
     }
+}
+
+async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(30_000);
+    // Add a 5-second buffer so the Rust-side oneshot fires *after* the frontend
+    // has had a chance to return its own {error: "timeout"} response.
+    let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
+    state
+        .debug_bridge
+        .query_frontend_with_timeout("wait_for_idle", params, rust_timeout)
+        .await
 }
 
 // --- Server spawn ---

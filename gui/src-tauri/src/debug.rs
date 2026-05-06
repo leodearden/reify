@@ -27,15 +27,17 @@ impl DebugBridge {
         }
     }
 
-    /// Send a command to the JS debug bridge and wait for the response.
+    /// Send a command to the JS debug bridge and wait for the response,
+    /// with a caller-specified timeout.
     ///
     /// Emits a `debug-request` event with `{ id, command, params }`, then waits
-    /// on a oneshot channel for up to 5 seconds for the JS bridge to respond via
+    /// on a oneshot channel for up to `timeout` for the JS bridge to respond via
     /// the `debug_response` Tauri command.
-    pub async fn query_frontend(
+    pub async fn query_frontend_with_timeout(
         &self,
         command: &str,
         params: Value,
+        timeout: Duration,
     ) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -56,12 +58,15 @@ impl DebugBridge {
             )
             .map_err(|e| format!("failed to emit debug-request: {e}"))?;
 
-        let result = tokio::time::timeout(Duration::from_secs(5), rx)
+        let result = tokio::time::timeout(timeout, rx)
             .await
             .map_err(|_| {
                 // Clean up the pending entry on timeout
                 self.pending.lock().ok().map(|mut m| m.remove(&id));
-                format!("debug-request '{command}' timed out after 5s")
+                format!(
+                    "debug-request '{command}' timed out after {}ms",
+                    timeout.as_millis()
+                )
             })?
             .map_err(|_| {
                 format!("debug-request '{command}' channel dropped")
@@ -69,6 +74,20 @@ impl DebugBridge {
 
         serde_json::from_str(&result)
             .map_err(|e| format!("invalid JSON from JS bridge: {e}"))
+    }
+
+    /// Send a command to the JS debug bridge and wait for the response.
+    ///
+    /// Emits a `debug-request` event with `{ id, command, params }`, then waits
+    /// on a oneshot channel for up to 5 seconds for the JS bridge to respond via
+    /// the `debug_response` Tauri command.
+    pub async fn query_frontend(
+        &self,
+        command: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        self.query_frontend_with_timeout(command, params, Duration::from_secs(5))
+            .await
     }
 
     /// Route a response from the JS debug bridge to the waiting oneshot channel.
