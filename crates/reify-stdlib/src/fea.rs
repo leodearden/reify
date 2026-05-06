@@ -995,8 +995,7 @@ mod tests {
         assert_analytical_source_returns_undef("envelope_min");
     }
 
-    #[test]
-    fn envelope_max_sampled_source_with_non_sampledfield_lambda_returns_undef() {
+    fn assert_sampled_with_non_sampledfield_lambda_returns_undef(name: &str) {
         // Defensive check — a Sampled-source Field whose lambda is NOT a
         // SampledField rejects to Undef. Mirrors the defensive arms in
         // field_reductions.rs:96-99 ("a Sampled source must carry a
@@ -1014,7 +1013,17 @@ mod tests {
             lambda: Arc::new(Value::Undef),
         };
         let map = make_envelope_map(&[("a", case_a), ("b", degenerate_sampled)]);
-        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
+        assert!(eval_fea(name, &[map]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_max_sampled_source_with_non_sampledfield_lambda_returns_undef() {
+        assert_sampled_with_non_sampledfield_lambda_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_sampled_source_with_non_sampledfield_lambda_returns_undef() {
+        assert_sampled_with_non_sampledfield_lambda_returns_undef("envelope_min");
     }
 
     // ── FEA-realistic 3-D Point3 / Pressure shape ──────────────────────────
