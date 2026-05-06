@@ -286,9 +286,13 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       if (controls) controls.update();
       renderer.render(scene, camera);
 
+      // Build the full applied pose — snapshot camera state for omitted params
+      const appliedUp = up ?? ([camera.up.x, camera.up.y, camera.up.z] as [number, number, number]);
+      const appliedZoom = zoom ?? (camera.zoom ?? 1);
+
       return {
         ok: true,
-        applied: { position, target, up, zoom },
+        applied: { position, target, up: appliedUp, zoom: appliedZoom },
       };
     },
 
