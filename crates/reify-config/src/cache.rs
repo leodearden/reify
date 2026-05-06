@@ -111,14 +111,27 @@ impl std::error::Error for CacheError {}
 
 /// On-disk shape for the cache config file (`~/.config/reify/config.toml`
 /// or `<project>/.reify/config.toml`).
+///
+/// `deny_unknown_fields` is intentional: a typo at the top level (e.g.
+/// `[caceh]` for `[cache]`) would otherwise parse silently to an empty
+/// config and the cache override would be a no-op. Silent
+/// misconfiguration is the wrong default for an override mechanism —
+/// surface a parse error instead.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConfigFileRaw {
     #[serde(default)]
     cache: Option<CacheConfigRaw>,
 }
 
 /// On-disk shape for the `[cache]` section.
+///
+/// `deny_unknown_fields` is intentional: a typo on a key (e.g. `dirr`
+/// for `dir`) would otherwise be silently dropped and the override
+/// would not apply. Mirroring the `ManifestRaw` strict-schema
+/// convention.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CacheConfigRaw {
     #[serde(default)]
     dir: Option<String>,
