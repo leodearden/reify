@@ -5251,3 +5251,28 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
         jd.axis
     );
 }
+
+#[test]
+fn is_idle_returns_false_on_fresh_session() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    assert!(
+        !session.is_idle(),
+        "fresh session should not be idle (compiled and last_check are None)"
+    );
+}
+
+#[test]
+fn is_idle_returns_true_after_load_from_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    assert!(
+        session.is_idle(),
+        "session should be idle after a successful load_from_source"
+    );
+}
