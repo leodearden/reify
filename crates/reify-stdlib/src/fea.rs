@@ -335,4 +335,27 @@ mod tests {
             other => panic!("expected Value::Field, got {:?}", other),
         }
     }
+
+    #[test]
+    fn envelope_min_two_sampled_real_codomain_returns_per_grid_min() {
+        let axis = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, 5.0, 3.0, 4.0, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, 2.0, 4.0, 1.0, 5.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_min", &[map]).unwrap();
+        let sf = extract_sampled(&result);
+
+        assert_eq!(sf.data, vec![1.0, 2.0, 3.0, 1.0, 2.0]);
+        assert_eq!(sf.axis_grids, vec![axis]);
+        assert_eq!(sf.kind, SampledGridKind::Regular1D);
+    }
 }
