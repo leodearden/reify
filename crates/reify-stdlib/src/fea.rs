@@ -912,15 +912,20 @@ mod tests {
         assert_zero_args_returns_undef("envelope_min");
     }
 
-    #[test]
-    fn envelope_max_two_args_returns_undef() {
+    fn assert_two_args_returns_undef(name: &str) {
         let map = make_envelope_map(&[]);
         let extra = Value::Real(1.0);
-        assert!(
-            eval_fea("envelope_max", &[map, extra])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_fea(name, &[map, extra]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_max_two_args_returns_undef() {
+        assert_two_args_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_two_args_returns_undef() {
+        assert_two_args_returns_undef("envelope_min");
     }
 
     #[test]
