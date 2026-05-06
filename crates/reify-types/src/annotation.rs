@@ -24,6 +24,13 @@ pub const OPTIMIZED_ANNOTATION: &str = "optimized";
 /// annotation name as a single source of truth across crates.
 pub const SOLVER_HINT_ANNOTATION: &str = "solver_hint";
 
+/// Canonical lowercase spelling of the `@solid` annotation name.
+///
+/// Marks an entity declaration as a solid body to bypass medial-axis extraction
+/// and force tet meshing in the T18 auto-classification dispatcher. The annotation
+/// is a bare marker — no arguments are accepted.
+pub const SOLID_ANNOTATION: &str = "solid";
+
 /// A compiled annotation — resolved from a parsed `@name(args...)` syntax annotation.
 ///
 /// Annotations carry compile-time metadata through to downstream consumers

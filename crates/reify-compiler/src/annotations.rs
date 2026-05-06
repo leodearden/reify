@@ -56,6 +56,7 @@ pub(crate) fn lower_annotations(
 /// - `@test`: valid on structure, occurrence, function, constraint_def
 /// - `@optimized`: valid on structure, occurrence, constraint_def
 /// - `@solver_hint`: valid on structure, occurrence
+/// - `@solid`: valid on structure, occurrence (bare marker — no args)
 /// - `@deprecated`: valid on any context
 pub(crate) fn validate_annotations(
     annotations: &[reify_types::Annotation],
@@ -120,6 +121,16 @@ pub(crate) fn validate_annotations(
                             "annotation @solver_hint is not valid on {context} declarations"
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@solver_hint")),
+                    );
+                }
+            }
+            reify_types::SOLID_ANNOTATION => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @solid is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@solid")),
                     );
                 }
             }

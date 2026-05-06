@@ -25,7 +25,7 @@ pub mod warm;
 
 pub use annotation::{
     Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION,
-    SOLVER_HINT_ANNOTATION, TEST_ANNOTATION, has_test_annotation,
+    SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION, has_test_annotation,
 };
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
