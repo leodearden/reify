@@ -32,7 +32,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unknown_function_returns_none() {
+    fn eval_fea_unknown_returns_none() {
         assert!(eval_fea("foo", &[]).is_none());
+    }
+
+    #[test]
+    fn eval_fea_envelope_max_returns_some() {
+        assert!(eval_fea("envelope_max", &[]).is_some());
+    }
+
+    #[test]
+    fn eval_fea_envelope_min_returns_some() {
+        assert!(eval_fea("envelope_min", &[]).is_some());
     }
 }
