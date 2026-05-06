@@ -294,9 +294,13 @@ impl CacheStore {
     }
 
     /// Remove all cached entries, dirty state, and imported-file content hashes.
+    ///
+    /// Clears `caches`, `dirty_reasons`, and the `imported_file_hashes` side-table
+    /// (added in PRD task 4 / task 2668) so the cache-reset surface stays unified.
     pub fn clear(&mut self) {
         self.caches.clear();
         self.dirty_reasons.clear();
+        self.imported_file_hashes.clear();
     }
 
     /// Record the most-recently-observed content hash for an imported file path.
