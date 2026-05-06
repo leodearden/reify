@@ -74,6 +74,23 @@ pub mod cache;
 /// elsewhere.
 pub const DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH: usize = 6;
 
+/// Default cap on the size of the `auto:` type-parameter cross-product search
+/// space (number of leaf assignments DFS may explore).
+///
+/// Per `docs/prds/v0_2/auto-resolution-backtracking.md` "Resolved design
+/// decisions": when the cross-product of per-param Phase A candidate sets
+/// would exceed `max_cross_product_size` total assignments, the v0.2 DFS
+/// orchestrator emits a `W_AUTO_TYPE_PARAM_CROSS_PRODUCT_SIZE_EXCEEDED`
+/// warning and falls back to v0.1 per-parameter BFS. The default of
+/// 100,000 is the load-bearing PRD constant — projects can override it via
+/// `[auto_type_params]\nmax_cross_product_size = N` in `reify.toml`.
+///
+/// This constant is the single-source-of-truth: callers (the eventual
+/// compile-pipeline integration) MUST consume it via
+/// [`Manifest::auto_type_params`] rather than embedding the literal
+/// `100_000` elsewhere.
+pub const DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE: usize = 100_000;
+
 /// Configuration for the `auto:` type-parameter resolution algorithm
 /// (project-level, declared under `[auto_type_params]` in `reify.toml`).
 ///
@@ -81,8 +98,13 @@ pub const DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH: usize = 6;
 /// - `max_depth`: cap on how many `auto:` type-parameters the v0.2 DFS
 ///   over the cross-product will resolve before falling back to the v0.1
 ///   per-parameter BFS. Defaults to [`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`].
+/// - `max_cross_product_size`: cap on the total number of cross-product leaf
+///   assignments DFS will explore before falling back to v0.1 BFS. Defaults
+///   to [`DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE`].
 ///
-/// `Default::default()` returns `max_depth = DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`
+/// `Default::default()` returns
+/// `max_depth = DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH` and
+/// `max_cross_product_size = DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE`
 /// so a manifest without an `[auto_type_params]` table still produces a
 /// fully-populated config.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,12 +113,17 @@ pub struct AutoTypeParamsConfig {
     /// Validated `> 0` at parse time; `0` is rejected with
     /// [`ManifestError::InvalidMaxDepth`].
     pub max_depth: usize,
+    /// Cap on the total number of cross-product leaf assignments DFS will
+    /// explore before falling back to BFS. Validated `> 0` at parse time;
+    /// `0` is rejected with [`ManifestError::InvalidMaxCrossProductSize`].
+    pub max_cross_product_size: usize,
 }
 
 impl Default for AutoTypeParamsConfig {
     fn default() -> Self {
         Self {
             max_depth: DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH,
+            max_cross_product_size: DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE,
         }
     }
 }
@@ -140,7 +167,9 @@ impl Manifest {
         // Lift the optional `[auto_type_params]` section into the public
         // `AutoTypeParamsConfig` shape. Absent section ⇒ `Default::default()`
         // so callers always get a fully-populated config. `max_depth = 0` is
-        // rejected here (every search must visit at least one parameter).
+        // rejected here (every search must visit at least one parameter), as
+        // is `max_cross_product_size = 0` (every search must visit at least
+        // one leaf assignment).
         let auto_type_params = match raw.auto_type_params {
             Some(raw_atp) => {
                 if raw_atp.max_depth == 0 {
@@ -148,6 +177,7 @@ impl Manifest {
                 }
                 AutoTypeParamsConfig {
                     max_depth: raw_atp.max_depth,
+                    max_cross_product_size: raw_atp.max_cross_product_size,
                 }
             }
             None => AutoTypeParamsConfig::default(),
@@ -177,9 +207,10 @@ impl Manifest {
     ///
     /// Returns the parsed config when the manifest declared an
     /// `[auto_type_params]` table, otherwise the [`Default`] value
-    /// (`max_depth = `[`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`]). The eventual
-    /// compile-pipeline integration MUST consume `max_depth` via this
-    /// accessor rather than embedding the literal default elsewhere.
+    /// (`max_depth = `[`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`]`,
+    /// max_cross_product_size = `[`DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE`]).
+    /// The eventual compile-pipeline integration MUST consume both fields
+    /// via this accessor rather than embedding the literal defaults elsewhere.
     pub fn auto_type_params(&self) -> &AutoTypeParamsConfig {
         &self.auto_type_params
     }
@@ -297,20 +328,28 @@ struct ManifestRaw {
 
 /// On-disk shape for the `[auto_type_params]` section.
 ///
-/// `max_depth` defaults to [`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`] so a
-/// declared-but-empty `[auto_type_params]` table still produces the
-/// PRD-decided default. `deny_unknown_fields` mirrors the strict-schema
-/// convention on `[kernels.<id>]`: typos like `min_depth` surface as
+/// `max_depth` defaults to [`DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH`] and
+/// `max_cross_product_size` defaults to
+/// [`DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE`] so a declared-but-empty
+/// `[auto_type_params]` table still produces the PRD-decided defaults.
+/// `deny_unknown_fields` mirrors the strict-schema convention on
+/// `[kernels.<id>]`: typos like `min_depth` surface as
 /// `ManifestError::Parse(_)` rather than silently parsing to the default.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AutoTypeParamsRaw {
     #[serde(default = "default_max_depth_value")]
     max_depth: usize,
+    #[serde(default = "default_max_cross_product_size_value")]
+    max_cross_product_size: usize,
 }
 
 fn default_max_depth_value() -> usize {
     DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH
+}
+
+fn default_max_cross_product_size_value() -> usize {
+    DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE
 }
 
 /// Internal serde shape for a single kernel pin.
