@@ -75,9 +75,9 @@ enum ElementOrder { P1, P2 }
 //                   the solver pick (typically num-cpus or a tiny-problem
 //                   single-thread fallback); `some(n)` pins the count.
 structure def ElasticOptions {
-    param element_order : ElementOrder
-    param mesh_size : Option<Length>
-    param max_iter : Int
-    param cg_tolerance : Real
-    param threads : Option<Int>
+    param element_order : ElementOrder = ElementOrder.P1
+    param mesh_size : Option<Length> = none
+    param max_iter : Int = 1000
+    param cg_tolerance : Real = 0.000001
+    param threads : Option<Int> = none
 }
