@@ -997,7 +997,7 @@ pub fn resolve_auto_type_params(
             }
         };
 
-        // Asymmetry contract (step-14): `per_param` accumulates EVERY
+        // Asymmetry contract: `per_param` accumulates EVERY
         // processed param (success or first failure); `substitution` carries
         // ONLY `Selected` entries. A caller that needs all outcomes inspects
         // `per_param`; a caller that needs only resolved names inspects
@@ -1008,7 +1008,7 @@ pub fn resolve_auto_type_params(
         // feeding it a NoCandidate or Ambiguous entry would corrupt substitution.
         match selection {
             SelectionResult::Selected(ref name) => {
-                // Selected path (step-4 contract): record in BOTH substitution
+                // Selected path: record in BOTH substitution
                 // (for later type-substitution consumers) AND per_param (for
                 // callers inspecting per-param outcomes), then continue the
                 // loop — do NOT break or return.
@@ -1121,7 +1121,7 @@ pub fn resolve_auto_type_params_with_backtracking(
     // the cross-product), so the user has a working compile — the warning
     // is for auditability so they know the v0.2 search was bypassed.
     //
-    // Canonical message form pinned in step-10's diagnostic-code doc-comment:
+    // Canonical message form pinned in the DiagnosticCode doc-comment:
     // see `DiagnosticCode::AutoTypeParamDepthBoundExceeded` in
     // `crates/reify-types/src/diagnostics.rs`.
     //
@@ -1238,7 +1238,7 @@ pub fn resolve_auto_type_params_with_backtracking(
                 // because no later params have been enumerated yet (Phase A
                 // enumeration is up-front), so the outcome's
                 // per_param/substitution shape is identical to BFS's by
-                // construction. Step-27's test pins the contract.
+                // construction.
                 emit_no_candidate_zero_rejections(
                     &param.bounds,
                     param.use_site_span,
@@ -1280,7 +1280,7 @@ pub fn resolve_auto_type_params_with_backtracking(
     // collapses to a flat enumeration of that param's candidates and the
     // recursion is degenerate. Route through the existing Phase B / Phase C
     // helpers verbatim — the result is identical to BFS's single-param
-    // pipeline. Multi-param recursion is wired in step-20 of task 2659.
+    // pipeline.
     if params.len() == 1 {
         let param = &params[0];
         let candidates = &per_param_candidates[0];
@@ -1318,7 +1318,7 @@ pub fn resolve_auto_type_params_with_backtracking(
     // leaves in declared-order × lexicographic-within-param order (T outer,
     // U inner, …).
     //
-    // Strict-vs-free dispatch (step-24 / task 2661): if any param is strict
+    // Strict-vs-free dispatch (task 2661): if any param is strict
     // (`free=false`), the search stops as soon as 2 feasibles are collected
     // (early-exit; max_feasible_to_collect=2). Free-mode (`every param free=true`)
     // collects ALL feasible leaves (max_feasible_to_collect=usize::MAX) so the
@@ -1417,7 +1417,7 @@ pub fn resolve_auto_type_params_with_backtracking(
             //   feasible leaf by DFS visit order (declared-order ×
             //   lex-within-param) — and emits a Warning for auditability.
             if any_strict {
-                // Strict-mode Ambiguous path (task 2659, step-24). max_feasible_to_collect=2
+                // Strict-mode Ambiguous path (task 2659). max_feasible_to_collect=2
                 // guarantees exactly 2 entries are present in the strict arm.
                 debug_assert!(
                     feasible_assignments.len() >= 2,
