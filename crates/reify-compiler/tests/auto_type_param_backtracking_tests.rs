@@ -43,8 +43,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use reify_compiler::auto_type_param::{
-    AutoTypeParam, MAX_AUTO_TYPE_PARAM_CANDIDATES, MultiParamResolutionOutcome, SelectionResult,
-    build_constraint_blame_map, resolve_auto_type_params,
+    AutoTypeParam, MAX_AUTO_TYPE_PARAM_CANDIDATES, MultiParamResolutionOutcome,
+    NON_UNIQUE_DISPLAY_CAP, SelectionResult, build_constraint_blame_map, resolve_auto_type_params,
     resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
@@ -2165,11 +2165,8 @@ structure def WaterCooled : Cooled {
 /// each (25 cross-product leaves). Default `MockConstraintChecker` (every leaf
 /// trivially feasible) → 25 feasibles.
 ///
-/// With `DISPLAY_CAP = 16`, expected elision count = 25 - 16 = 9.
-///
-/// **Current behavior (step-2 impl, pre-step-5):** the NonUnique branch was
-/// added but includes ALL 25 witnesses without the elision logic.  This test
-/// FAILS because `message.contains("9 more elided")` is not satisfied.
+/// With `NON_UNIQUE_DISPLAY_CAP` = 16, expected elision count =
+/// 25 - `NON_UNIQUE_DISPLAY_CAP` = 9.
 ///
 /// Pins:
 /// (a) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity Warning
@@ -2275,18 +2272,22 @@ structure def WaterCooled : Cooled {
         Severity::Warning,
         "AutoTypeParamNonUnique must be Warning severity"
     );
-    // (b) Exact elision count: 25 - 16 = 9.
+    // (b) Exact elision count: 25 - NON_UNIQUE_DISPLAY_CAP.
+    let expected_elided = 25 - NON_UNIQUE_DISPLAY_CAP;
     assert!(
-        diagnostics[0].message.contains("9 more elided"),
-        "message must contain '9 more elided' (25 - DISPLAY_CAP(16) = 9); got: {:?}",
+        diagnostics[0].message.contains(&format!("{} more elided", expected_elided)),
+        "message must contain '{} more elided' (25 - NON_UNIQUE_DISPLAY_CAP({}) = {}); got: {:?}",
+        expected_elided,
+        NON_UNIQUE_DISPLAY_CAP,
+        expected_elided,
         diagnostics[0].message
     );
-    // (b2) Exactly DISPLAY_CAP=16 witnesses are rendered — not more, not fewer.
+    // (b2) Exactly NON_UNIQUE_DISPLAY_CAP witnesses are rendered — not more, not fewer.
     // Count `; T=` separators: witnesses are joined by `"; "` so inter-witness
-    // separators = (witness count - 1).  With 16 displayed witnesses the
-    // separator count is 15.  (The `selected lexicographically-first '...'`
-    // suffix also contains `T=` but is preceded by `; selected`, not `; T=`,
-    // so it is not counted here.)
+    // separators = (witness count - 1).  With NON_UNIQUE_DISPLAY_CAP displayed witnesses
+    // the separator count is NON_UNIQUE_DISPLAY_CAP - 1.  (The
+    // `selected lexicographically-first '...'` suffix also contains `T=` but is preceded
+    // by `; selected`, not `; T=`, so it is not counted here.)
     {
         let sep_count = diagnostics[0]
             .message
@@ -2294,10 +2295,12 @@ structure def WaterCooled : Cooled {
             .count();
         assert_eq!(
             sep_count,
-            15,
-            "message must contain exactly 15 '; T=' separators (== DISPLAY_CAP-1 = 15 \
-             inter-witness separators for 16 displayed witnesses), \
+            NON_UNIQUE_DISPLAY_CAP - 1,
+            "message must contain exactly {} '; T=' separators (== NON_UNIQUE_DISPLAY_CAP-1 \
+             inter-witness separators for {} displayed witnesses), \
              got {} — a regression here means the display window was not applied; message: {:?}",
+            NON_UNIQUE_DISPLAY_CAP - 1,
+            NON_UNIQUE_DISPLAY_CAP,
             sep_count,
             diagnostics[0].message
         );
@@ -2347,12 +2350,13 @@ structure def WaterCooled : Cooled {
 /// each (16 cross-product leaves). Default `MockConstraintChecker` (all
 /// feasible) → exactly 16 feasibles.
 ///
-/// With `DISPLAY_CAP = 16` and `total = 16`: `elided = 16.saturating_sub(16) = 0`
+/// With `NON_UNIQUE_DISPLAY_CAP` = 16 and `total = 16`:
+/// `elided = total.saturating_sub(NON_UNIQUE_DISPLAY_CAP) = 0`
 /// → the elision marker must NOT appear in the message.
 ///
-/// This is the off-by-one boundary test: `total > DISPLAY_CAP` (equivalently
-/// `elided > 0`) must use strict `>`, not `>=`, so that exactly 16 feasibles
-/// produces no elision.
+/// This is the off-by-one boundary test: `total > NON_UNIQUE_DISPLAY_CAP` (equivalently
+/// `elided > 0`) must use strict `>`, not `>=`, so that exactly `NON_UNIQUE_DISPLAY_CAP`
+/// feasibles produces no elision.
 ///
 /// Pins:
 /// (a) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity Warning
@@ -2447,17 +2451,19 @@ structure def WaterCooled : Cooled {
         Severity::Warning,
         "AutoTypeParamNonUnique must be Warning severity"
     );
-    // (b) Boundary: exactly 16 feasibles (= DISPLAY_CAP) must NOT produce the elision marker.
+    // (b) Boundary: exactly NON_UNIQUE_DISPLAY_CAP feasibles must NOT produce the elision marker.
     assert!(
         !diagnostics[0].message.contains("elided"),
-        "boundary case (16 = DISPLAY_CAP): message must NOT contain 'elided' \
-         (elision only fires when total > DISPLAY_CAP); got: {:?}",
+        "boundary case ({} = NON_UNIQUE_DISPLAY_CAP): message must NOT contain 'elided' \
+         (elision only fires when total > NON_UNIQUE_DISPLAY_CAP); got: {:?}",
+        NON_UNIQUE_DISPLAY_CAP,
         diagnostics[0].message
     );
     // (c) Belt-and-suspenders: no "more elided" substring either.
     assert!(
         !diagnostics[0].message.contains("more elided"),
-        "boundary case (16 = DISPLAY_CAP): message must NOT contain 'more elided'; got: {:?}",
+        "boundary case ({} = NON_UNIQUE_DISPLAY_CAP): message must NOT contain 'more elided'; got: {:?}",
+        NON_UNIQUE_DISPLAY_CAP,
         diagnostics[0].message
     );
     // (d) Lex-first T candidate present in message.
