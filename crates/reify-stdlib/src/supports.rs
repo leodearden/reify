@@ -26,7 +26,7 @@ use crate::helpers::{
 /// will wire this up when it lands.
 #[allow(dead_code)]
 pub(crate) const SUPPORT_KINDS: &[&str] =
-    &["fixed_support", "displacement_support", "roller_support"];
+    &["fixed_support", "pinned_support", "displacement_support", "roller_support"];
 
 /// Returns `true` if `v` is a support `Value::Map` produced by this module —
 /// i.e., a Map with a `kind` field whose value is one of `SUPPORT_KINDS`.
