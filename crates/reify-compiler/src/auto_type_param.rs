@@ -2190,4 +2190,46 @@ mod helper_tests {
             "entry 1 expr pointer must equal &template.constraints[1].expr (no clone)"
         );
     }
+
+    /// Pins the no-per-leaf-clone invariant: `check_constraints_leaf` must pass
+    /// `Cow::Borrowed` to the checker, not `Cow::Owned` (task 2900, step 5/6).
+    ///
+    /// Uses `BorrowAssertingChecker` — a tiny in-test impl that records whether
+    /// `input.constraints` was `Cow::Borrowed` at call time. The test fires
+    /// `false` as long as step-4's temporary `Cow::Owned(constraints_template.to_vec())`
+    /// is still in place; step-6's switch to `Cow::Borrowed` makes it `true`.
+    #[test]
+    fn check_constraints_leaf_passes_constraints_as_cow_borrowed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use reify_types::{ConstraintChecker, ConstraintInput, ConstraintResult};
+
+        struct BorrowAssertingChecker {
+            saw_borrowed: AtomicBool,
+        }
+
+        impl ConstraintChecker for BorrowAssertingChecker {
+            fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+                let is_borrowed = matches!(input.constraints, std::borrow::Cow::Borrowed(_));
+                self.saw_borrowed.store(is_borrowed, Ordering::SeqCst);
+                Vec::new()
+            }
+        }
+
+        let expr0 = literal_expr();
+        let expr1 = reify_types::CompiledExpr::literal(Value::Bool(false), Type::Bool);
+        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(ConstraintNodeId::new("C0", 0), &expr0),
+                 (ConstraintNodeId::new("C1", 1), &expr1)];
+
+        let checker = BorrowAssertingChecker { saw_borrowed: AtomicBool::new(false) };
+        let functions: &[CompiledFunction] = &[];
+        let values = reify_types::ValueMap::new();
+
+        check_constraints_leaf(&constraints, &checker, functions, &values);
+
+        assert!(
+            checker.saw_borrowed.load(Ordering::SeqCst),
+            "check_constraints_leaf must pass Cow::Borrowed to the checker (no per-leaf clone)"
+        );
+    }
 }
