@@ -3686,6 +3686,47 @@ mod tests {
         );
     }
 
+    /// Verifies that `CacheStore::clear` drops the `imported_file_hashes` side-table.
+    ///
+    /// Asserts:
+    /// (a) Record a hash for "foo.vdb".
+    /// (b) Sanity-check: `get_imported_file_hash` returns `Some(...)` before clear.
+    /// (c) Call `store.clear()`.
+    /// (d) Post-clear: `get_imported_file_hash("foo.vdb") == None`.
+    /// (e) Post-clear: `imported_file_hash_changed("foo.vdb", hash_A) == true`
+    ///     (prior recording is gone; predicate signals cold-start invalidation).
+    #[test]
+    fn cache_store_clear_drops_imported_file_hashes() {
+        let mut store = CacheStore::new();
+        let hash_a = ContentHash::of_str("A");
+
+        // (a) Record a hash.
+        store.record_imported_file_hash("foo.vdb", hash_a);
+
+        // (b) Sanity-check before clear.
+        assert_eq!(
+            store.get_imported_file_hash("foo.vdb"),
+            Some(hash_a),
+            "sanity: hash must be visible before clear"
+        );
+
+        // (c) Clear.
+        store.clear();
+
+        // (d) Post-clear: no recording.
+        assert_eq!(
+            store.get_imported_file_hash("foo.vdb"),
+            None,
+            "clear must drop the imported_file_hashes side-table"
+        );
+
+        // (e) Post-clear: predicate signals invalidation (cold start).
+        assert!(
+            store.imported_file_hash_changed("foo.vdb", hash_a),
+            "post-clear, imported_file_hash_changed must return true (no prior recording)"
+        );
+    }
+
     /// Verifies the three branches of the `imported_file_hash_changed` invalidation predicate.
     ///
     /// (a) No prior recording → returns `true` (cold start → must invalidate).
