@@ -12,6 +12,15 @@ import { testMode, setTestMode } from './testMode';
 
 type CommandHandler = (params: Record<string, unknown>) => unknown;
 
+/** Returns true iff v is a 3-element array of finite numbers. */
+function validVec3(v: unknown): v is [number, number, number] {
+  return (
+    Array.isArray(v) &&
+    v.length === 3 &&
+    v.every((n) => typeof n === 'number' && Number.isFinite(n))
+  );
+}
+
 function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
   return {
     // --- Read commands (frontend-mediated) ---
@@ -239,9 +248,30 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true };
     },
 
-    set_camera: (_params) => {
+    set_camera: (params) => {
       const vp = ctx.viewport;
       if (!vp) return { error: 'viewport not ready' };
+
+      const { position, target, up, zoom } = params as {
+        position: unknown;
+        target: unknown;
+        up: unknown;
+        zoom: unknown;
+      };
+
+      if (!validVec3(position)) {
+        return { error: 'position must be a 3-element array of finite numbers' };
+      }
+      if (!validVec3(target)) {
+        return { error: 'target must be a 3-element array of finite numbers' };
+      }
+      if (up !== undefined && !validVec3(up)) {
+        return { error: 'up must be a 3-element array of finite numbers' };
+      }
+      if (zoom !== undefined && !(typeof zoom === 'number' && Number.isFinite(zoom) && zoom > 0)) {
+        return { error: 'zoom must be a positive finite number' };
+      }
+
       return { ok: true };
     },
 
