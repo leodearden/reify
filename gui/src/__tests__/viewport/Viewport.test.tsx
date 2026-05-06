@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import type { MeshData, VisibilityState } from '../../types';
@@ -582,6 +582,21 @@ describe('Viewport viewportId and camera restore', () => {
     expect(mockControlsTargetSet).toHaveBeenCalledWith(1, 2, 3);
     // camera.zoom should be set to the saved zoom value
     expect(mockCamera.zoom).toBe(4);
+  });
+});
+
+describe('Viewport debug bridge controls exposure', () => {
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('exposes controls on window.__REIFY_DEBUG__.viewport after mount', () => {
+    window.__REIFY_DEBUG__ = { stores: {} as any };
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
+
+    const controls = window.__REIFY_DEBUG__?.viewport?.controls;
+    expect(controls).toBeDefined();
+    expect(typeof controls!.addEventListener).toBe('function');
   });
 });
 
