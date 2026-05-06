@@ -1797,6 +1797,14 @@ structure S {
     /// still embeds both tokens self-evident rather than hiding behind a
     /// sort-key drift.
     ///
+    /// Furthermore, each expected entry consumes a distinct diagnostic: once a
+    /// diagnostic has been paired to an expected entry, it is excluded from
+    /// subsequent iterations' match pool.  Combined with the early
+    /// `forbidden.len() == expected.len()` check above, this guarantees a
+    /// bijection between `expected` and `forbidden` — no two expected entries
+    /// can silently pair to the same diagnostic, and no diagnostic in `forbidden`
+    /// can go unmatched.
+    ///
     /// Additionally asserts for every matched diagnostic:
     /// - severity `ERROR`, source `"reify"`
     /// - `range.start` equals the expected `Position` for that violation
@@ -1843,27 +1851,15 @@ structure S {
         );
 
         // Pair by content: for each expected (kind, name, pos) find the unique
-        // diagnostic whose message contains both quoted tokens.  This is robust
-        // to any compiler message-format reshuffle that still embeds both tokens
-        // — a sort-key drift can never silently mispair violations.
+        // unconsumed diagnostic whose message contains both quoted tokens.
+        // `consumed` tracks which indices have already been paired, enforcing
+        // the bijection — a sort-key drift can never silently mispair violations.
+        let mut consumed = std::collections::HashSet::<usize>::new();
         for (kind, name, expected_pos) in expected {
-            let matches: Vec<&lsp_types::Diagnostic> = forbidden
-                .iter()
-                .filter(|d| {
-                    d.message.contains(&format!("'{kind}'"))
-                        && d.message.contains(&format!("'{name}'"))
-                })
-                .collect();
+            let idx = find_unique_unconsumed_match(&forbidden, &consumed, kind, name);
+            consumed.insert(idx);
 
-            assert_eq!(
-                matches.len(),
-                1,
-                "expected exactly one SpecializationForbiddenDecl diagnostic \
-                 containing kind='{kind}' and name='{name}'; found {}: {matches:#?}",
-                matches.len()
-            );
-
-            let d = matches[0];
+            let d = &forbidden[idx];
 
             assert_eq!(
                 d.severity,
