@@ -646,4 +646,39 @@ mod tests {
             "'enabled' must be listed in required"
         );
     }
+
+    #[test]
+    fn tool_defs_includes_wait_for_idle() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "wait_for_idle")
+            .expect("wait_for_idle must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+
+        // Must be an object schema
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+
+        // timeout_ms must be an integer (or number) property
+        let timeout_prop = &schema["properties"]["timeout_ms"];
+        let timeout_type = timeout_prop["type"].as_str();
+        assert!(
+            timeout_type == Some("integer") || timeout_type == Some("number"),
+            "properties.timeout_ms.type must be 'integer' or 'number', got {:?}",
+            timeout_type
+        );
+
+        // timeout_ms must NOT be required (it is optional)
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("timeout_ms")),
+                "'timeout_ms' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
 }
