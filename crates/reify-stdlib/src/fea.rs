@@ -965,8 +965,7 @@ mod tests {
         assert_map_with_non_field_value_returns_undef("envelope_min");
     }
 
-    #[test]
-    fn envelope_max_analytical_source_returns_undef() {
+    fn assert_analytical_source_returns_undef(name: &str) {
         // Field with FieldSourceKind::Analytical (source != Sampled) → Undef.
         // The source check rejects before any lambda extraction, so we
         // don't need a real lambda body.
@@ -983,7 +982,17 @@ mod tests {
             lambda: Arc::new(Value::Undef),
         };
         let map = make_envelope_map(&[("a", case_a), ("b", analytical)]);
-        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
+        assert!(eval_fea(name, &[map]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_max_analytical_source_returns_undef() {
+        assert_analytical_source_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_analytical_source_returns_undef() {
+        assert_analytical_source_returns_undef("envelope_min");
     }
 
     #[test]
