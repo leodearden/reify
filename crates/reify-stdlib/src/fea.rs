@@ -47,11 +47,56 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// per-case Sampled fields. `find_min == false` selects the maximum;
 /// `find_min == true` selects the minimum.
 ///
-/// Mirrors the NaN-skip + `total_cmp` + first-occurrence-wins discipline
-/// documented on `crates/reify-expr/src/field_reductions.rs::argmax_argmin_index`
-/// (around line 198): non-finite values are skipped via `is_finite()`,
-/// extrema are selected via IEEE 754 `total_cmp`, and the first finite
-/// case at each index wins on ties.
+/// # Contract
+///
+/// **Input:** `args == [Value::Map(BTreeMap<Value::String, Value::Field>)]`
+/// where each inner `Value::Field` is `source: Sampled` and carries a
+/// `Value::SampledField` in its lambda slot. Domain `Point3`-shaped (any
+/// arity 1–3 in practice — Regular1D / Regular2D / Regular3D) and any
+/// `Ordered` codomain `T`.
+///
+/// **Output:** `Value::Field { source: Sampled, lambda: Arc(SampledField), .. }`
+/// whose `data[i]` is the per-grid-point extremum across cases. Domain
+/// and codomain types propagate unchanged from the validated reference.
+///
+/// # Semantics
+///
+/// 1. **Sampled-only staging.** Mirrors the staging policy of
+///    `reify-expr::field_reductions` (#2913): FEA results land as
+///    `FieldSourceKind::Sampled` via `engine_eval::elaborate_field`, so
+///    the eager per-grid-point reduction is sufficient. Non-Sampled
+///    sources (Analytical, Composed, Imported, derived wrappers) return
+///    `Value::Undef` — the deferred path would require numerical
+///    reduction across a Map of lambda-domains, out of scope.
+///
+/// 2. **Empty / single-case sanity.** An empty Map returns `Value::Undef`.
+///    A single-case Map returns that case's Field unchanged (clone) —
+///    avoids paying the SampledField rebuild cost and prevents drift in
+///    the result's `name` / `oob_emitted` slot.
+///
+/// 3. **NaN-skip + `total_cmp` per index.** At each output index `i`:
+///    non-finite values (`!is_finite()`, rejecting both NaN and ±∞) are
+///    skipped; finite values fold into `best` via IEEE 754 `total_cmp`
+///    with strict `is_lt`/`is_gt` so the first finite case wins on ties.
+///    If no case at index `i` is finite, `data[i] = f64::NAN` so
+///    downstream reductions can skip the index uniformly via the same
+///    `is_finite()` discipline.
+///
+/// 4. **Strict grid-equality requirement.** All per-case Sampled fields
+///    must share identical grid metadata (kind, axis_grids float-bits,
+///    bounds_min/max float-bits, spacing float-bits, interpolation,
+///    domain_type, codomain_type) — see `metadata_matches`. Mismatched
+///    cases return `Value::Undef`. **User-facing implication:** if your
+///    cases use different mesh sizes / element orders, the envelope
+///    returns `Undef` — solve all cases on a common mesh first.
+///    Cross-mesh resampling is out of scope for this primitive (PRD).
+///
+/// 5. **Silent-Undef diagnostics.** All failure modes (empty Map, type
+///    mismatch, non-Sampled source, defective lambda slot, wrong arity,
+///    non-Map argument) collapse to `Value::Undef`. Diagnostic emission
+///    is deferred to PRD task #10 (Diagnostic mapping for multi-case-
+///    specific failure modes); this matches the silent-Undef convention
+///    shared with `analysis.rs` / `helpers::sanitize_value`.
 fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
     // Argument-shape validation contract (pinned by
     // `envelope_max_argument_shape_negative_paths_return_undef`):
