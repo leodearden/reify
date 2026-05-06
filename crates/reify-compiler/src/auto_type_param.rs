@@ -1039,6 +1039,52 @@ pub fn resolve_auto_type_params(
 // below. The module-level rustdoc (top of file, "Phase E (v0.2) —
 // Backtracking" section) carries a one-line pointer to that function.
 
+/// Push a `Severity::Warning` diagnostic with the given `code` + `message`
+/// (anchored on `params[0].use_site_span` with a label rendered by
+/// `render_auto_type_param_label`) and tail-call into v0.1 BFS
+/// (`resolve_auto_type_params`). Used by the depth-bound and cross-product-cap
+/// guard branches in `resolve_auto_type_params_with_backtracking` to emit a
+/// "search-space-too-large" warning and delegate back to BFS.
+///
+/// Centralizes the shared invariants of the two fallback branches (label
+/// anchor, severity, BFS tail-call arg list) so that adding a new guard or
+/// changing the fallback shape is a one-line edit. The per-branch message
+/// content (depth-bound vs cap) and `DiagnosticCode` choice remain caller
+/// concerns — the helper takes them as arguments rather than baking either
+/// branch's wording into shared code.
+#[allow(clippy::too_many_arguments)]
+fn emit_fallback_warning_and_delegate_to_bfs(
+    code: DiagnosticCode,
+    message: String,
+    params: &[AutoTypeParam],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    parameterized_template: &TopologyTemplate,
+    constraint_checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> MultiParamResolutionOutcome {
+    let (_joined_bounds, label_message) =
+        render_auto_type_param_label(&params[0].bounds);
+    diagnostics.push(
+        Diagnostic::warning(message)
+            .with_code(code)
+            .with_label(DiagnosticLabel::new(
+                params[0].use_site_span,
+                label_message,
+            )),
+    );
+    resolve_auto_type_params(
+        params,
+        template_registry,
+        trait_registry,
+        parameterized_template,
+        constraint_checker,
+        functions,
+        diagnostics,
+    )
+}
+
 /// DFS over the cross-product of `auto:` candidate sets with a depth bound.
 ///
 /// Driving PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`.
@@ -1147,22 +1193,14 @@ pub fn resolve_auto_type_params_with_backtracking(
 
     // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
     if params.len() > max_depth {
-        let (_joined_bounds, label_message) =
-            render_auto_type_param_label(&params[0].bounds);
         let message = format!(
             "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm)",
             n = params.len(),
             m = max_depth,
         );
-        diagnostics.push(
-            Diagnostic::warning(message)
-                .with_code(DiagnosticCode::AutoTypeParamDepthBoundExceeded)
-                .with_label(DiagnosticLabel::new(
-                    params[0].use_site_span,
-                    label_message,
-                )),
-        );
-        return resolve_auto_type_params(
+        return emit_fallback_warning_and_delegate_to_bfs(
+            DiagnosticCode::AutoTypeParamDepthBoundExceeded,
+            message,
             params,
             template_registry,
             trait_registry,
@@ -1293,8 +1331,6 @@ pub fn resolve_auto_type_params_with_backtracking(
         .map(|v| v.len())
         .fold(1usize, |acc, n| acc.saturating_mul(n));
     if cross_product_size > max_cross_product_size {
-        let (_joined_bounds, label_message) =
-            render_auto_type_param_label(&params[0].bounds);
         let param_names: Vec<&str> =
             params.iter().map(|p| p.name.as_str()).collect();
         let candidate_counts: Vec<usize> =
@@ -1310,15 +1346,9 @@ pub fn resolve_auto_type_params_with_backtracking(
             size = cross_product_size,
             cap = max_cross_product_size,
         );
-        diagnostics.push(
-            Diagnostic::warning(message)
-                .with_code(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded)
-                .with_label(DiagnosticLabel::new(
-                    params[0].use_site_span,
-                    label_message,
-                )),
-        );
-        return resolve_auto_type_params(
+        return emit_fallback_warning_and_delegate_to_bfs(
+            DiagnosticCode::AutoTypeParamCrossProductSizeExceeded,
+            message,
             params,
             template_registry,
             trait_registry,
