@@ -23,8 +23,21 @@ use reify_types::Value;
 ///
 /// Returns `Some(value)` if the name is a recognised FEA function,
 /// `None` otherwise (so the dispatch chain in `lib.rs` can fall through).
-pub(crate) fn eval_fea(_name: &str, _args: &[Value]) -> Option<Value> {
-    None
+pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match name {
+        "envelope_max" => envelope_reduce(args, false),
+        "envelope_min" => envelope_reduce(args, true),
+        _ => return None,
+    })
+}
+
+/// Per-grid-point reduction across a `Map<String, Field<Point3, T>>` of
+/// per-case Sampled fields. `find_min == false` selects the maximum;
+/// `find_min == true` selects the minimum.
+///
+/// Stub for step-2 — full implementation lands in subsequent steps.
+fn envelope_reduce(_args: &[Value], _find_min: bool) -> Value {
+    Value::Undef
 }
 
 #[cfg(test)]
