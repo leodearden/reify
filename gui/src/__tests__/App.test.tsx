@@ -1996,6 +1996,54 @@ describe('App splitter max bounds', () => {
     expect(propertyHeight).toBeLessThanOrEqual(600 - designTreeHeight - constraintHeight - 160 - 3 * 4);
     expect(propertyHeight).toBeGreaterThan(0);
   });
+
+  it('clamps oversized persisted heights when ResizeObserver fires after mount', async () => {
+    // Repro of the live bug: persisted heights from `localStorage` sum to
+    // more than the side-panel container's actual height, so the chat panel
+    // is pushed off-screen at first paint. The ResizeObserver attached to
+    // `sidePanelRef` should re-clamp once the container's size is known.
+    const oversize = {
+      editorWidth: 900,
+      sideWidth: 680,
+      designTreeHeight: 584,
+      propertyHeight: 508,
+      constraintHeight: 150,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(oversize));
+
+    // Capture the ResizeObserver constructed during App mount so the test
+    // can fire the callback at a known time after `clientHeight` is mocked.
+    let roCallback: ResizeObserverCallback | undefined;
+    const OrigRO = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      constructor(cb: ResizeObserverCallback) { roCallback = cb; }
+    } as any;
+
+    try {
+      await renderAndWaitForReady();
+      const sidePanel = screen.getByTestId('side-panel');
+      // Mock the container height seen on the bug-repro window.
+      Object.defineProperty(sidePanel, 'clientHeight', { value: 817, configurable: true });
+
+      // Trigger the observer callback with a synthesised entry — the helper
+      // re-reads `clientHeight` from the ref so the entry payload is unused.
+      expect(roCallback).toBeDefined();
+      roCallback!([{ contentRect: { width: 680, height: 817 } }] as any, {} as any);
+
+      const rows = sidePanel.style.gridTemplateRows;
+      expect(rows).toMatch(/^\d+px 4px \d+px 4px \d+px 4px minmax\(160px, 1fr\)$/);
+      const standalonePx = rows.match(/\b(\d+)px(?=\s)/g)!.map((s) => parseInt(s, 10));
+      const [designTreeH, , propertyH, , constraintH] = standalonePx;
+
+      // Three sub-panels + chat floor (160) + 3 splitters (12) ≤ container.
+      expect(designTreeH + propertyH + constraintH + 160 + 12).toBeLessThanOrEqual(817);
+    } finally {
+      globalThis.ResizeObserver = OrigRO;
+    }
+  });
 });
 
 describe('App fit-to-view wiring', () => {
@@ -3836,4 +3884,82 @@ describe('App MechanismPanel integration', () => {
       expect(callsAfter).toBeGreaterThan(callsBefore);
     });
   });
+
+  // Regression: when mechanism descriptors render alongside the chat panel, the
+  // side-panel grid template had an extra 4px track before the mechanism row that
+  // didn't correspond to any DOM splitter. Children after ConstraintPanel (mech,
+  // splitter-constraint, chat) all shifted up one track, collapsing the chat
+  // container into a 4px slot and clipping its content under overflow:hidden.
+  // Assert track count == direct-child count for the affected configurations.
+  it('side-panel grid track count matches child count with mechanism + chat', async () => {
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([
+      {
+        cell_id: 'Kinematic.m', entity_path: 'Kinematic', name: 'm', bodies_count: 2,
+        joints: [{
+          joint_index: 0, kind: 'prismatic', dimension: 'length',
+          range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
+          driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
+        }],
+      },
+    ]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('mechanism-panel')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('chat-panel')).toBeTruthy());
+
+    const sidePanel = screen.getByTestId('side-panel') as HTMLElement;
+    const tracks = countGridTracks(sidePanel.style.gridTemplateRows);
+    const children = sidePanel.children.length;
+    expect(tracks).toBe(children);
+  });
+
+  it('side-panel grid track count matches child count with mechanism + no chat', async () => {
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([
+      {
+        cell_id: 'Kinematic.m', entity_path: 'Kinematic', name: 'm', bodies_count: 2,
+        joints: [{
+          joint_index: 0, kind: 'prismatic', dimension: 'length',
+          range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
+          driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
+        }],
+      },
+    ]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('mechanism-panel')).toBeTruthy());
+
+    // Toggle chat off via the StatusBar control (the only user path).
+    const sidePanel = screen.getByTestId('side-panel') as HTMLElement;
+    // Use the chat-toggle control surfaced by StatusBar; falls back to keyboard
+    // shortcut if exposed differently — current StatusBar uses claude-status as
+    // the toggle target via onToggleChat. Click the claude-status span.
+    const claudeStatus = screen.getByTestId('claude-status') as HTMLElement;
+    claudeStatus.click();
+
+    await waitFor(() => expect(screen.queryByTestId('chat-panel')).toBeNull());
+
+    const tracks = countGridTracks(sidePanel.style.gridTemplateRows);
+    const children = sidePanel.children.length;
+    expect(tracks).toBe(children);
+  });
 });
+
+// Counts CSS grid tracks in a `grid-template-rows` value.
+// Whitespace separates tracks at depth 0; parens (e.g. minmax(160px, 1fr))
+// keep their internal whitespace from being mistaken for a track boundary.
+function countGridTracks(template: string): number {
+  let depth = 0;
+  let inTrack = false;
+  let count = 0;
+  for (const ch of template) {
+    if (ch === '(') { depth++; inTrack = true; }
+    else if (ch === ')') { depth--; inTrack = true; }
+    else if (depth === 0 && /\s/.test(ch)) {
+      if (inTrack) { count++; inTrack = false; }
+    } else {
+      inTrack = true;
+    }
+  }
+  if (inTrack) count++;
+  return count;
+}
