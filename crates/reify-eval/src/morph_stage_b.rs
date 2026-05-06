@@ -103,6 +103,11 @@ pub enum BijectionFailure {
     },
     /// The attribute table contains no or partial attribution for the supplied
     /// handles, signalling imported geometry or a malformed engine state.
+    ///
+    /// Note: `kind` records *which match call surfaced the diagnostic* (the
+    /// first kind checked in [`stage_b_eligible`] — faces, then edges). It is
+    /// NOT a claim that attribution is missing only for that kind; imported
+    /// B-reps typically lack attributes for all kinds simultaneously.
     NamingLayerError {
         kind: SubShapeKind,
         reason: NamingLayerErrorReason,
@@ -251,6 +256,10 @@ fn match_one_kind(
     let mut consumed: HashSet<GeometryHandleId> = HashSet::new();
 
     for &old_handle in old {
+        // The pre-pass guarantees all old handles are attributed. If the slice
+        // contains duplicate handles, lookup is idempotent — both the attributed
+        // count and old.len() inflate identically, so the invariant survives
+        // duplicates and .expect cannot fire.
         let old_attr = old_table
             .lookup(old_handle)
             .expect("all old handles attributed — guaranteed by pre-pass above");
@@ -258,6 +267,10 @@ fn match_one_kind(
         // Linear scan over new handles — O(n) per old handle, O(n²) overall.
         // See design decision: TopologyAttribute is intentionally !Hash, so we
         // cannot use a hash map keyed by attribute; microseconds for n≤200.
+        //
+        // Match equality is exact (PartialEq on TopologyAttribute, which compares
+        // all fields including mod_history), so greedy first-fit is sound: any
+        // 1-to-1 pairing of identical attributes is interchangeable.
         let matched_new = new
             .iter()
             .copied()
@@ -278,16 +291,14 @@ fn match_one_kind(
         }
     }
 
-    // 6. Unconsumed-new scan (defensive, should be unreachable when counts match).
-    for &new_handle in new {
-        if !consumed.contains(&new_handle) {
-            return Err(BijectionFailure::UnmappedElement {
-                kind,
-                side: SubShapeSide::New,
-                handle: new_handle,
-            });
-        }
-    }
+    // 6. Unconsumed-new invariant: given old.len() == new.len() (step 4 guard)
+    // and every old handle consuming exactly one distinct new handle (step 5
+    // loop), the consumed set must cover all of new. No Err can surface here.
+    debug_assert_eq!(
+        consumed.len(),
+        new.len(),
+        "consumed set must equal new slice after successful matching loop"
+    );
 
     Ok(())
 }
@@ -650,6 +661,130 @@ mod tests {
                 reason: NamingLayerErrorReason::Partial,
             }),
             "partial attribution (h(11) missing) → NamingLayerError::Partial"
+        );
+    }
+
+    // amend-1: multiple faces with distinct matching attributes — exercises the
+    // consumed-set bookkeeping across more than one pair.
+    #[test]
+    fn stage_b_eligible_multiple_faces_with_distinct_attributes_pairs_all_handles() {
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(h(11), attr(Role::Cap(CapKind::Bottom), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 0, None));
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10), h(11)],
+            &[h(20), h(21)],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        let map = result.expect("two distinct matching faces must succeed");
+        assert_eq!(map.face_to_face.len(), 2, "both pairs must be in face_to_face");
+        assert_eq!(map.face_to_face.get(&h(10)), Some(&h(20)), "h(10) → h(20)");
+        assert_eq!(map.face_to_face.get(&h(11)), Some(&h(21)), "h(11) → h(21)");
+        assert!(map.edge_to_edge.is_empty(), "edge_to_edge must be empty");
+        assert!(map.vertex_to_vertex.is_empty(), "vertex_to_vertex must be empty");
+    }
+
+    // amend-1b: duplicate-attribute pairs (two old + two new sharing identical
+    // TopologyAttribute) — greedy first-fit must still produce a complete map
+    // without double-claiming.
+    #[test]
+    fn stage_b_eligible_duplicate_attributes_both_pairs_land_in_map() {
+        // Both old faces share the same attribute; both new faces share the same
+        // attribute. The match is interchangeable — any 1-to-1 assignment is valid.
+        let dup_attr = attr(Role::Cap(CapKind::Top), 0, None);
+
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), dup_attr.clone());
+        old_table.record(h(11), dup_attr.clone());
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), dup_attr.clone());
+        new_table.record(h(21), dup_attr.clone());
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10), h(11)],
+            &[h(20), h(21)],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        let map = result.expect("duplicate attributes: greedy first-fit must succeed");
+        assert_eq!(map.face_to_face.len(), 2, "both duplicate-attr pairs must be matched");
+        // Greedy first-fit assigns h(10)→h(20) and h(11)→h(21) (slice order).
+        assert_eq!(map.face_to_face.get(&h(10)), Some(&h(20)), "h(10) → h(20) (first-fit)");
+        assert_eq!(map.face_to_face.get(&h(11)), Some(&h(21)), "h(11) → h(21) (first-fit)");
+    }
+
+    // amend-2: faces AND edges populated together in one call — guards against
+    // swapped slice arguments or accidental kind-only wiring.
+    #[test]
+    fn stage_b_eligible_faces_and_edges_both_populated_in_single_call() {
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(h(30), attr(Role::NewEdge, 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(h(40), attr(Role::NewEdge, 0, None));
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10)],
+            &[h(20)],
+            &[h(30)],
+            &[h(40)],
+            &[],
+            &[],
+        );
+        let map = result.expect("matching face + edge in same call must succeed");
+        assert_eq!(map.face_to_face.len(), 1, "one face pair");
+        assert_eq!(map.face_to_face.get(&h(10)), Some(&h(20)), "face: h(10) → h(20)");
+        assert_eq!(map.edge_to_edge.len(), 1, "one edge pair");
+        assert_eq!(map.edge_to_edge.get(&h(30)), Some(&h(40)), "edge: h(30) → h(40)");
+        assert!(map.vertex_to_vertex.is_empty(), "vertex_to_vertex must be empty");
+    }
+
+    // amend-3: partial attribution on the NEW side — symmetric coverage for the
+    // new_attributed != new.len() branch of the Partial guard.
+    #[test]
+    fn stage_b_eligible_new_side_partial_attribution_returns_naming_layer_error_partial() {
+        // old is fully attributed (two handles).
+        // new has h(20) attributed but h(21) is absent from new_table — partial new attribution.
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(h(11), attr(Role::Cap(CapKind::Bottom), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        // h(21) is deliberately absent from new_table
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10), h(11)],
+            &[h(20), h(21)],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            result,
+            Err(BijectionFailure::NamingLayerError {
+                kind: SubShapeKind::Face,
+                reason: NamingLayerErrorReason::Partial,
+            }),
+            "new-side partial attribution (h(21) missing from new_table) → NamingLayerError::Partial"
         );
     }
 
