@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 /// Apply a function to a single argument (by reference, for pattern matching).
@@ -153,6 +155,29 @@ pub fn complex_phase(re: f64, im: f64) -> Value {
         si_value: angle,
         dimension: DimensionVector::ANGLE,
     }
+}
+
+/// Build a `Value::Map` with a `kind` discriminator field plus the given
+/// extra fields.
+///
+/// Fields are inserted into a `BTreeMap`, which sorts them alphabetically.
+/// The `kind` key is always included. Callers pass extra `(name, value)`
+/// pairs in any order — alphabetical order is guaranteed by `BTreeMap`.
+///
+/// Takes `Vec<(&str, Value)>` so values are moved into the map (not cloned).
+///
+/// Hoisted from `loads::make_load_map` and `supports::make_support_map`,
+/// which were byte-for-byte identical.
+pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String(kind.to_string()),
+    );
+    for (k, v) in fields {
+        m.insert(Value::String(k.to_string()), v);
+    }
+    Value::Map(m)
 }
 
 /// Validate that `v` is a usable topology-selector target — i.e., not an
