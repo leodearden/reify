@@ -34,9 +34,27 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// Per-grid-point reduction across a `Map<String, Field<Point3, T>>` of
 /// per-case Sampled fields. `find_min == false` selects the maximum;
 /// `find_min == true` selects the minimum.
-///
-/// Stub for step-2 — full implementation lands in subsequent steps.
-fn envelope_reduce(_args: &[Value], _find_min: bool) -> Value {
+fn envelope_reduce(args: &[Value], _find_min: bool) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let map = match &args[0] {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+
+    // Single-case sanity: return the inner Field unchanged. Avoids paying
+    // the SampledField rebuild cost when only one case is provided and
+    // prevents drift in the result's `name` / `oob_emitted` slot.
+    if map.len() == 1 {
+        let only = map.values().next().expect("len == 1");
+        return match only {
+            Value::Field { .. } => only.clone(),
+            _ => Value::Undef,
+        };
+    }
+
+    // Multi-case branch lands in step-6.
     Value::Undef
 }
 
