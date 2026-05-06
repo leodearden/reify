@@ -69,10 +69,14 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///    `Value::Undef` — the deferred path would require numerical
 ///    reduction across a Map of lambda-domains, out of scope.
 ///
-/// 2. **Empty / single-case sanity.** An empty Map returns `Value::Undef`.
-///    A single-case Map returns that case's Field unchanged (clone) —
-///    avoids paying the SampledField rebuild cost and prevents drift in
-///    the result's `name` / `oob_emitted` slot.
+/// 2. **Empty Map sanity.** An empty Map returns `Value::Undef` — there
+///    is no reference case to validate against, and no per-case data to
+///    reduce. Single-case Maps fall through to the same reduction loop
+///    as N≥2 (the loop iterates once per case, so finite values flow
+///    through unchanged) — this preserves Sampled-only enforcement and
+///    yields a result with the canonical `name: "envelope"` regardless
+///    of case count, avoiding the behaviour cliff a fast-path would
+///    introduce in downstream tooling that keys off `SampledField.name`.
 ///
 /// 3. **NaN-skip + `total_cmp` per index.** At each output index `i`:
 ///    non-finite values (`!is_finite()`, rejecting both NaN and ±∞) are
@@ -123,17 +127,16 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
         return Value::Undef;
     }
 
-    // Single-case sanity: return the inner Field unchanged. Avoids paying
-    // the SampledField rebuild cost when only one case is provided and
-    // prevents drift in the result's `name` / `oob_emitted` slot.
-    if map.len() == 1 {
-        let only = map.values().next().expect("len == 1");
-        return match only {
-            Value::Field { .. } => only.clone(),
-            _ => Value::Undef,
-        };
-    }
-
+    // No single-case fast path — single-case Maps fall through to the
+    // multi-case reduction loop. This (a) enforces the Sampled-only
+    // contract uniformly across N=1 and N>1 (a single-case Analytical /
+    // Composed / Imported / derived Field rejects to Undef instead of
+    // leaking through), and (b) gives the result a uniform
+    // `name: "envelope"` regardless of case count — downstream tooling
+    // that keys off `SampledField.name` (snapshot tests, viewer labels)
+    // sees consistent output. The cost (one Vec<f64> clone) is
+    // negligible compared to FEA solve cost.
+    //
     // Capture the first case as the canonical reference for grid metadata
     // and per-case Sampled extraction.
     let mut iter = map.values();
@@ -430,34 +433,58 @@ mod tests {
         assert!(eval_fea("envelope_min", &[]).is_some());
     }
 
-    // ── single-case passthrough ─────────────────────────────────────────────
+    // ── single-case behaviour ───────────────────────────────────────────────
 
     #[test]
-    fn envelope_max_single_case_returns_field_unchanged() {
-        let sf = make_sampled_1d(
-            "f",
-            vec![0.0, 1.0, 2.0, 3.0, 4.0],
-            vec![1.0, 5.0, 3.0, 4.0, 2.0],
-        );
+    fn envelope_max_single_case_yields_envelope_named_copy() {
+        // Single-case Map flows through the same reduction loop as N>=2.
+        // Finite values pass through unchanged; the result gets the
+        // canonical "envelope" name regardless of case count (no
+        // behaviour cliff for downstream tooling that keys off
+        // SampledField.name).
+        let axis = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+        let data = vec![1.0, 5.0, 3.0, 4.0, 2.0];
+        let sf = make_sampled_1d("f", axis.clone(), data.clone());
         let field = wrap_sampled_field(sf, Type::Real, Type::Real);
-        let map = make_envelope_map(&[("only", field.clone())]);
+        let map = make_envelope_map(&[("only", field)]);
 
         let result = eval_fea("envelope_max", &[map]).unwrap();
-        assert_eq!(result, field);
+        let result_sf = extract_sampled(&result);
+
+        assert_eq!(result_sf.name, "envelope");
+        assert_eq!(result_sf.data, data);
+        assert_eq!(result_sf.axis_grids, vec![axis]);
+        assert_eq!(result_sf.kind, SampledGridKind::Regular1D);
     }
 
     #[test]
-    fn envelope_min_single_case_returns_field_unchanged() {
-        let sf = make_sampled_1d(
-            "f",
-            vec![0.0, 1.0, 2.0, 3.0, 4.0],
-            vec![1.0, 5.0, 3.0, 4.0, 2.0],
-        );
+    fn envelope_min_single_case_yields_envelope_named_copy() {
+        let axis = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+        let data = vec![1.0, 5.0, 3.0, 4.0, 2.0];
+        let sf = make_sampled_1d("f", axis.clone(), data.clone());
         let field = wrap_sampled_field(sf, Type::Real, Type::Real);
-        let map = make_envelope_map(&[("only", field.clone())]);
+        let map = make_envelope_map(&[("only", field)]);
 
         let result = eval_fea("envelope_min", &[map]).unwrap();
-        assert_eq!(result, field);
+        let result_sf = extract_sampled(&result);
+
+        assert_eq!(result_sf.name, "envelope");
+        assert_eq!(result_sf.data, data);
+    }
+
+    #[test]
+    fn envelope_max_single_case_analytical_source_returns_undef() {
+        // Sampled-only contract applies uniformly across N=1 and N>1.
+        // A single-case Analytical (or any non-Sampled-source) Field
+        // must reject to Undef rather than leaking through unchanged.
+        let analytical = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(Value::Undef),
+        };
+        let map = make_envelope_map(&[("only", analytical)]);
+        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
     }
 
     // ── two-case per-grid-point reductions ──────────────────────────────────
