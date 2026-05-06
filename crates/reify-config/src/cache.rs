@@ -542,4 +542,94 @@ mod tests {
         assert_eq!(resolved.dir, PathBuf::from("/cli"));
         assert_eq!(resolved.dir_source, CacheDirSource::CliFlag);
     }
+
+    #[test]
+    fn resolve_cache_user_config_dir_used_when_only_layer_set() {
+        let user = CacheConfig {
+            dir: Some(PathBuf::from("/u")),
+            max_bytes: None,
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: Some(&user),
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("user-only resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/u"));
+        assert_eq!(resolved.dir_source, CacheDirSource::UserConfig);
+    }
+
+    #[test]
+    fn resolve_cache_project_config_dir_used_when_only_layer_set() {
+        let project = CacheConfig {
+            dir: Some(PathBuf::from("/p")),
+            max_bytes: None,
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: None,
+            project_config: Some(&project),
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("project-only resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/p"));
+        assert_eq!(resolved.dir_source, CacheDirSource::ProjectConfig);
+    }
+
+    #[test]
+    fn resolve_cache_user_config_beats_project_config() {
+        let user = CacheConfig {
+            dir: Some(PathBuf::from("/u")),
+            max_bytes: None,
+        };
+        let project = CacheConfig {
+            dir: Some(PathBuf::from("/p")),
+            max_bytes: None,
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: Some(&user),
+            project_config: Some(&project),
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("user-beats-project resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/u"));
+        assert_eq!(resolved.dir_source, CacheDirSource::UserConfig);
+    }
+
+    /// User config is `Some` but its `dir` field is `None` — must not be
+    /// treated as "user config supplies a dir". Falls through to project.
+    #[test]
+    fn resolve_cache_user_config_with_no_dir_falls_through_to_project() {
+        let user = CacheConfig {
+            dir: None,
+            max_bytes: Some(123),
+        };
+        let project = CacheConfig {
+            dir: Some(PathBuf::from("/p")),
+            max_bytes: None,
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: Some(&user),
+            project_config: Some(&project),
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("user-no-dir resolve");
+        assert_eq!(resolved.dir, PathBuf::from("/p"));
+        assert_eq!(resolved.dir_source, CacheDirSource::ProjectConfig);
+    }
 }
