@@ -1,5 +1,50 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { viridisLut, magmaLut, rainbowLut, applyColormap, bakeColours, type Range } from '../../viewport/colormap';
+
+// ---------------------------------------------------------------------------
+// Minimal Three.js mocks — prevents the ~5 s jsdom initialization overhead
+// when the barrel (viewport/index) is dynamically imported in the barrel-wiring
+// tests below. meshManager.ts and selection.ts both run module-level prototype
+// patches that require real class objects (not undefined), so we provide stubs.
+// ---------------------------------------------------------------------------
+vi.mock('three', () => {
+  class MockClass {}
+  return {
+    BufferGeometry: class MockBufferGeometry {},
+    Mesh:           class MockMesh {},
+    Scene:              MockClass,
+    PerspectiveCamera:  MockClass,
+    WebGLRenderer:      MockClass,
+    AmbientLight:       MockClass,
+    DirectionalLight:   MockClass,
+    GridHelper:         MockClass,
+    AxesHelper:         MockClass,
+    Color:              MockClass,
+    Vector3:            MockClass,
+    Vector2:            MockClass,
+    Box3:               MockClass,
+    Raycaster:          MockClass,
+    EdgesGeometry:      MockClass,
+    LineSegments:       MockClass,
+    LineBasicMaterial:  MockClass,
+    BufferAttribute:    MockClass,
+    MeshStandardMaterial: MockClass,
+    MeshBasicMaterial:  MockClass,
+    Group:              MockClass,
+    DoubleSide: 2,
+    FrontSide:  0,
+  };
+});
+
+vi.mock('three-mesh-bvh', () => ({
+  computeBoundsTree:  () => {},
+  disposeBoundsTree:  () => {},
+  acceleratedRaycast: () => {},
+}));
+
+vi.mock('three/addons/controls/OrbitControls.js', () => ({
+  OrbitControls: class MockOrbitControls {},
+}));
 
 // ---------------------------------------------------------------------------
 // Step 1 — LUT shape & published spot-check values
