@@ -121,6 +121,29 @@ fn zero_max_depth_rejected_with_typed_error() {
     }
 }
 
+/// `max_cross_product_size = 0` is semantically meaningless: every search
+/// must visit at least one leaf assignment. Pin the typed
+/// `ManifestError::InvalidMaxCrossProductSize(0)` rejection at parse time so
+/// misconfiguration cannot ship as a silent no-op (DFS would always fall
+/// back to BFS unconditionally for any non-empty params slice). Mirrors
+/// `zero_max_depth_rejected_with_typed_error` for the task 2662
+/// cross-product hard cap.
+#[test]
+fn zero_max_cross_product_size_rejected_with_typed_error() {
+    let err = Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 0\n")
+        .expect_err("max_cross_product_size = 0 must be rejected");
+    match err {
+        ManifestError::InvalidMaxCrossProductSize(n) => assert_eq!(
+            n, 0,
+            "InvalidMaxCrossProductSize payload must carry the offending value"
+        ),
+        other => panic!(
+            "expected ManifestError::InvalidMaxCrossProductSize(0), got {:?}",
+            other
+        ),
+    }
+}
+
 /// Unknown keys inside `[auto_type_params]` are surfaced as
 /// `ManifestError::Parse(_)` rather than silently dropped. Pins the
 /// strict-schema convention shared with `[kernels.<id>]` (the v0.2
