@@ -148,6 +148,64 @@ pub struct CompiledPurpose {
     pub pragmas: Vec<reify_syntax::Pragma>,
 }
 
+/// Resolved `auto:` type-parameter substitutions for a compiled module, in
+/// `(param_name, concrete_template_name)` order (e.g. `("T", "ORingSeal")`).
+///
+/// **Invariant:** param names must be unique. `new` panics on duplicates in both
+/// debug and release builds — duplicates are a producer bug that would make
+/// `topology_fingerprint` order-sensitive.
+///
+/// **Panic message contains:** `"param names must be unique"`.
+///
+/// **Producer:** `MultiParamResolutionOutcome.substitution` from
+/// `auto_type_param::resolve_auto_type_params`; the caller wraps the result via
+/// `AutoTypeSubstitution::new(outcome.substitution)`.
+///
+/// **Consumer:** `Snapshot::from_compiled_module` calls `.clone().into_inner()`
+/// to populate `EvaluationGraph::auto_type_substitution` (still a plain `Vec`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AutoTypeSubstitution(Vec<(String, String)>);
+
+impl AutoTypeSubstitution {
+    /// Constructs a new `AutoTypeSubstitution` from `pairs`.
+    ///
+    /// # Panics
+    ///
+    /// Panics — in **both** debug and release builds — if any param name appears
+    /// more than once. Duplicate param names are a producer bug; this constructor
+    /// is the single enforcement point.
+    pub fn new(pairs: Vec<(String, String)>) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        assert!(
+            pairs.iter().all(|(p, _)| seen.insert(p.as_str())),
+            "AutoTypeSubstitution: param names must be unique; duplicates are a producer bug \
+             (see auto_type_param::resolve_auto_type_params)"
+        );
+        Self(pairs)
+    }
+
+    /// Returns the substitution pairs as a slice.
+    pub fn as_slice(&self) -> &[(String, String)] {
+        &self.0
+    }
+
+    /// Consumes the newtype and returns the underlying `Vec<(String, String)>`.
+    ///
+    /// Used by `Snapshot::from_compiled_module` to populate the still-`Vec`
+    /// `EvaluationGraph::auto_type_substitution` field.
+    pub fn into_inner(self) -> Vec<(String, String)> {
+        self.0
+    }
+}
+
+impl std::ops::Deref for AutoTypeSubstitution {
+    type Target = [(String, String)];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
