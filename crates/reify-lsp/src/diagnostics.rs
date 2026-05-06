@@ -1783,8 +1783,13 @@ structure S {
     ///
     /// For each `(kind, name)` pair the helper asserts that the compiler
     /// message contains both `"'{kind}'"` and `"'{name}'"` as substrings
-    /// (mirrors compiler-side substring style in specialization_scope_check.rs
-    /// lines 410-414, 540-548, 580-586, 619-628).  The canonical message
+    /// (mirrors compiler-side substring style established by these tests in
+    /// specialization_scope_check.rs:
+    /// - `validate_module_emits_forbidden_decl_diagnostic_for_param_inside_specialization_scope`
+    /// - `validate_module_emits_forbidden_decl_diagnostic_for_port_inside_specialization_scope`
+    /// - `validate_module_emits_forbidden_decl_diagnostic_for_bare_sub_inside_specialization_scope`
+    /// - `validate_module_emits_diagnostic_for_each_forbidden_decl_in_nested_specialization_scope`).
+    /// The canonical message
     /// format is pinned solely by compiler-side tests; the LSP layer checks
     /// presence-only, eliminating the dual-edit ratchet that arises from
     /// re-asserting spec-section wording at multiple layers.
