@@ -189,4 +189,24 @@ mod tests {
         let unknown_id = ValueCellId::new("Part", "does_not_exist");
         assert_eq!(classify_cell(&g, &unknown_id), ParameterClass::Structural);
     }
+
+    // ── Step-3: structure_controlling overrides dimensional type ───────────
+
+    #[test]
+    fn classify_cell_structure_controlling_overrides_dimensional_type() {
+        // A cell whose Type is Scalar { LENGTH } would normally classify as
+        // Dimensional — but if it's in graph.structure_controlling it must
+        // return Structural. This covers feature-suppression guard cells whose
+        // concrete type might be Bool or even a dimensioned scalar in unusual
+        // designs.
+        let id = ValueCellId::new("Part", "guard");
+        let mut g = graph_with_cell(&id, Type::length());
+        // Insert the cell's id into structure_controlling.
+        g.structure_controlling.insert(id.clone());
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "structure_controlling must override the Dimensional type dispatch"
+        );
+    }
 }
