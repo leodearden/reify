@@ -268,12 +268,19 @@ fn elastic_options_param_defaults_match_spec() {
         ),
     }
 
-    // cg_tolerance = 0.000001 (within 1e-9 to absorb float round-off)
+    // cg_tolerance = 0.000001 — strict equality. The Reify parser converts
+    // the decimal literal to f64 via the same round-to-nearest-even rule as
+    // Rust's `0.000001` literal, so the round-trip is bit-exact. The earlier
+    // 1e-9 absolute tolerance was lax enough to silently accept e.g.
+    // `9.999e-7` (which would still parse cleanly under a future float-format
+    // change); strict equality catches that regression while remaining
+    // bit-stable across platforms because IEEE-754 round-to-nearest is
+    // deterministic on the same decimal input.
     let cg_tolerance_default = require_default(template, "cg_tolerance");
     match &cg_tolerance_default.kind {
-        CompiledExprKind::Literal(Value::Real(v)) => assert!(
-            (*v - 0.000001).abs() < 1e-9,
-            "cg_tolerance default should be 0.000001 (within 1e-9), got: {}",
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 0.000001,
+            "cg_tolerance default should be exactly 0.000001, got: {}",
             v
         ),
         other => panic!(
@@ -346,18 +353,34 @@ fn elastic_options_constrains_max_iter_and_cg_tolerance_positive() {
     for required in &["max_iter", "cg_tolerance"] {
         let matched = template.constraints.iter().any(|c| {
             // Check the constraint expression is a `>` BinOp with a ValueRef
-            // to the required member on the left side.
+            // to the required member on the left side and the literal `0` on
+            // the right side. Pinning the RHS literal closes a regression
+            // window where rewriting `max_iter > 0` to `max_iter > -100` (or
+            // `cg_tolerance > -1.0`) would silently weaken the invariant
+            // while still passing a name-and-op-only check. We accept either
+            // `Int(0)` or `Real(0.0)` for the RHS literal because the Reify
+            // parser stores the `0` token as `Int(0)` regardless of the LHS
+            // type and a future numeric-promotion change could legitimately
+            // emit `Real(0.0)` here.
             match &c.expr.kind {
-                CompiledExprKind::BinOp { op, left, .. } => {
-                    *op == BinOp::Gt
-                        && collect_value_ref_members(left).contains(required)
+                CompiledExprKind::BinOp { op, left, right } => {
+                    if *op != BinOp::Gt
+                        || !collect_value_ref_members(left).contains(required)
+                    {
+                        return false;
+                    }
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Int(0)) => true,
+                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        _ => false,
+                    }
                 }
                 _ => false,
             }
         });
         assert!(
             matched,
-            "ElasticOptions should declare `constraint {} > ...`; got constraints: {:?}",
+            "ElasticOptions should declare `constraint {} > 0`; got constraints: {:?}",
             required,
             template
                 .constraints
