@@ -132,6 +132,13 @@ pub(crate) fn validate_annotations(
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@solid")),
                     );
+                } else if !ann.args.is_empty() {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "@solid takes no arguments; force-tet is unconditional".to_string(),
+                        )
+                        .with_label(DiagnosticLabel::new(ann.span, "@solid takes no arguments")),
+                    );
                 }
             }
             other => {
