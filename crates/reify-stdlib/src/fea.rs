@@ -735,68 +735,96 @@ mod tests {
     }
 
     // ── argument-shape negative paths ───────────────────────────────────────
+    //
+    // Each branch of the argument-shape contract gets its own focused test
+    // so a regression points directly at the failing rejection path rather
+    // than reporting a generic bundled-test failure.
 
     #[test]
-    fn envelope_max_argument_shape_negative_paths_return_undef() {
-        // (a) wrong arity — 0 args and 2 args both return Undef.
+    fn envelope_max_zero_args_returns_undef() {
+        // arity must be exactly 1 (Map<String, Field>).
         assert!(eval_fea("envelope_max", &[]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_max_two_args_returns_undef() {
         let map = make_envelope_map(&[]);
         let extra = Value::Real(1.0);
         assert!(
-            eval_fea("envelope_max", &[map.clone(), extra])
+            eval_fea("envelope_max", &[map, extra])
                 .unwrap()
                 .is_undef()
         );
+    }
 
-        // (b) non-Map first arg → Undef.
+    #[test]
+    fn envelope_max_non_map_arg_returns_undef() {
         assert!(
             eval_fea("envelope_max", &[Value::Real(1.0)])
                 .unwrap()
                 .is_undef()
         );
+    }
 
-        // (c) Map containing a non-Field value → Undef.
+    #[test]
+    fn envelope_max_map_with_non_field_value_returns_undef() {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
-            make_sampled_1d("a", axis.clone(), vec![1.0, 2.0, 3.0]),
+            make_sampled_1d("a", axis, vec![1.0, 2.0, 3.0]),
             Type::Real,
             Type::Real,
         );
         let mut bad_map = BTreeMap::new();
-        bad_map.insert(Value::String("a".to_string()), case_a.clone());
+        bad_map.insert(Value::String("a".to_string()), case_a);
         bad_map.insert(Value::String("b".to_string()), Value::Real(7.0));
         assert!(
             eval_fea("envelope_max", &[Value::Map(bad_map)])
                 .unwrap()
                 .is_undef()
         );
+    }
 
-        // (d) Map containing a Field with FieldSourceKind::Analytical
-        // (source != Sampled) → Undef. We don't need a real lambda body —
-        // the source check rejects before any lambda extraction.
+    #[test]
+    fn envelope_max_analytical_source_returns_undef() {
+        // Field with FieldSourceKind::Analytical (source != Sampled) → Undef.
+        // The source check rejects before any lambda extraction, so we
+        // don't need a real lambda body.
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis, vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
         let analytical = Value::Field {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
-        let map_analytical = make_envelope_map(&[("a", case_a.clone()), ("b", analytical)]);
-        assert!(
-            eval_fea("envelope_max", &[map_analytical])
-                .unwrap()
-                .is_undef()
-        );
+        let map = make_envelope_map(&[("a", case_a), ("b", analytical)]);
+        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
+    }
 
-        // (e) Map containing a Sampled-source Field whose lambda is NOT a
-        // SampledField (defensive check, mirrors field_reductions.rs:96-99).
+    #[test]
+    fn envelope_max_sampled_source_with_non_sampledfield_lambda_returns_undef() {
+        // Defensive check — a Sampled-source Field whose lambda is NOT a
+        // SampledField rejects to Undef. Mirrors the defensive arms in
+        // field_reductions.rs:96-99 ("a Sampled source must carry a
+        // SampledField in its lambda slot").
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis, vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
         let degenerate_sampled = Value::Field {
             domain_type: Type::Real,
             codomain_type: Type::Real,
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(Value::Undef),
         };
-        let map_degen = make_envelope_map(&[("a", case_a.clone()), ("b", degenerate_sampled)]);
-        assert!(eval_fea("envelope_max", &[map_degen]).unwrap().is_undef());
+        let map = make_envelope_map(&[("a", case_a), ("b", degenerate_sampled)]);
+        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
     }
 
     // ── FEA-realistic 3-D Point3 / Pressure shape ──────────────────────────
