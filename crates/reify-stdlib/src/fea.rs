@@ -625,6 +625,93 @@ mod tests {
         assert_eq!(sf.data, vec![1.0, 5.0, 3.0]);
     }
 
+    #[test]
+    fn envelope_min_skips_nan_per_index() {
+        // Mirrors envelope_max_skips_nan_per_index for the find_min path.
+        // Same NaN-skip semantics must apply — this pins that find_min
+        // doesn't accidentally treat NaN as a participating value (e.g.,
+        // by selecting it via partial_cmp behaviour).
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, f64::NAN, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![f64::NAN, 5.0, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_min", &[map]).unwrap();
+        let sf = extract_sampled(&result);
+
+        // Per-index min over finite values only: index 0 = min(1.0) = 1.0;
+        // index 1 = min(5.0) = 5.0; index 2 = min(3.0, 2.0) = 2.0.
+        assert_eq!(sf.data, vec![1.0, 5.0, 2.0]);
+    }
+
+    #[test]
+    fn envelope_min_all_nan_at_index_yields_nan() {
+        // Mirrors envelope_max_all_nan_at_index_yields_nan for find_min.
+        // At index 1, case_a=NaN and case_b=+Inf — both non-finite. The
+        // result must materialise the all-non-finite NaN sentinel
+        // regardless of which extremum (max/min) is requested.
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![1.0, f64::NAN, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![3.0, f64::INFINITY, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_min", &[map]).unwrap();
+        let sf = extract_sampled(&result);
+
+        assert_eq!(sf.data[0], 1.0);
+        assert!(
+            sf.data[1].is_nan(),
+            "expected NaN at index 1, got {}",
+            sf.data[1]
+        );
+        assert_eq!(sf.data[2], 2.0);
+    }
+
+    #[test]
+    fn envelope_max_tied_finites_preserve_input_data() {
+        // Two cases with identical finite data. The reduction must
+        // produce exactly the input data — no NaN sentinel injection,
+        // no spurious mutation. This pins the "tie -> first-occurrence
+        // wins" branch (strict `is_gt`/`is_lt`): if the comparison were
+        // accidentally weakened to `is_ge`/`is_le`, the result would
+        // still be bit-for-bit equal here (since both inputs are equal),
+        // but the test guards against more catastrophic regressions
+        // (initialise-to-NaN bug, off-by-one in the inner loop, etc.).
+        let axis = vec![0.0, 1.0, 2.0];
+        let data = vec![1.0, 5.0, 3.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), data.clone()),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), data.clone()),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_max", &[map]).unwrap();
+        let sf = extract_sampled(&result);
+        assert_eq!(sf.data, data);
+    }
+
     // ── empty-Map edge ──────────────────────────────────────────────────────
 
     #[test]
