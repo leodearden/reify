@@ -635,6 +635,151 @@ fn curvature_at_non_face_shape_returns_query_failed_with_not_a_face() {
 // Placed-face cross-API agreement (architectural-unification contract)
 // ---------------------------------------------------------------------------
 
+/// Cross-API agreement on a placed (non-identity-location) cylinder side face.
+///
+/// The cylinder (radius=5, height=10) is rotated around the X-axis by π/4 and
+/// translated to (2, 3, -1) using `BRepBuilderAPI_Transform(..., Copy=false)`,
+/// so its faces have a non-identity `TopLoc_Location`. The rotation tilts the
+/// cylinder axis from (0,0,1) to (0, −sin(π/4), cos(π/4)) ≈ (0, −0.707, 0.707).
+///
+/// Asserts on the curved side face at (u=π/2, v=5):
+///   (a) K = 0 (developable),
+///   (b) H = −0.1 (= −1/(2r)),
+///   (c) κ_min = −0.2 (circumferential),  κ_max = 0 (axial),
+///   (d) dir_max — paired with κ_max=0 — has |dir_max · rotated_axis| ≈ 1,
+///       i.e. the ROTATED (world-frame) axis, NOT world Z. This is the key
+///       cross-API check: if curvature_at used a different abstraction, it
+///       would return world-Z for dir_max instead of the rotated axis.
+///   (e) dir_min · n ≈ 0 and dir_max · n ≈ 0 (tangent-plane membership),
+///   (f) dir_min and dir_max are unit length and mutually orthogonal.
+///
+/// This exercises the eigenvalue solver in the non-umbilical case.
+#[test]
+fn curvature_at_on_placed_cylinder_side_axial_principal_direction_aligns_with_rotated_axis() {
+    use reify_kernel_occt::Curvature;
+
+    let r = 5.0_f64;
+    let mut kernel = OcctKernel::new();
+    let cyl = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(r),
+            height: Value::Real(10.0),
+        })
+        .expect("cylinder creation should succeed");
+
+    // Rotate around X-axis by π/4, then translate to (2, 3, -1). Copy=false.
+    let placed = kernel.store_placed_for_test(
+        cyl.id,
+        1.0, 0.0, 0.0, // rotation axis: X
+        PI / 4.0,       // rotation angle
+        2.0, 3.0, -1.0, // translation
+    );
+
+    let faces = kernel
+        .extract_faces(placed)
+        .expect("extract_faces should succeed for placed cylinder");
+    assert_eq!(faces.len(), 3, "placed cylinder should have 3 faces");
+
+    // The rotated cylinder axis is the world-frame image of (0,0,1) under the
+    // X-rotation: (0, -sin(π/4), cos(π/4)).
+    let rot_axis = [0.0_f64, -(PI / 4.0).sin(), (PI / 4.0).cos()];
+
+    // Identify the curved side face: its centroid normal is radially outward
+    // from the (tilted) cylinder axis, so |n · rotated_axis| < 0.5.
+    let side_face = faces
+        .iter()
+        .copied()
+        .find(|&f| {
+            let n = parse_face_normal(&kernel, f);
+            let dot = n[0] * rot_axis[0] + n[1] * rot_axis[1] + n[2] * rot_axis[2];
+            dot.abs() < 0.5
+        })
+        .expect(
+            "placed cylinder should have a curved side face whose centroid normal \
+             is perpendicular to the rotated axis",
+        );
+
+    // Query at (u=π/2, v=5): OCCT cylinder P(u,v) = (r·cos u, r·sin u, v).
+    let n = kernel
+        .surface_normal_at(side_face, PI / 2.0, 5.0)
+        .expect("surface_normal_at should succeed on placed cylinder side face");
+    let c: Curvature = kernel
+        .curvature_at(side_face, PI / 2.0, 5.0)
+        .expect("curvature_at should succeed on placed cylinder side face");
+
+    let tol = 1e-6;
+
+    // (a) Developable: K = 0.
+    assert!(
+        c.gaussian.abs() < tol,
+        "placed cylinder side K: expected 0, got {}", c.gaussian
+    );
+    // (b) H = -1/(2r).
+    assert!(
+        (c.mean + 1.0 / (2.0 * r)).abs() < tol,
+        "placed cylinder side H: expected {}, got {}", -1.0 / (2.0 * r), c.mean
+    );
+    // (c) κ_min = -1/r (circumferential), κ_max = 0 (axial).
+    assert!(
+        (c.kappa_min + 1.0 / r).abs() < tol,
+        "placed cylinder side κ_min: expected {}, got {}", -1.0 / r, c.kappa_min
+    );
+    assert!(
+        c.kappa_max.abs() < tol,
+        "placed cylinder side κ_max: expected 0, got {}", c.kappa_max
+    );
+
+    // (d) dir_max (paired with κ_max=0) must align with the ROTATED cylinder
+    //     axis — not world Z. This is the architectural-unification check:
+    //     if curvature_at used the old BRep_Tool::Surface path with baked
+    //     geometry, the axis direction would agree, but using non-baked
+    //     (Copy=false) placement ensures we exercise TopoLoc_Location.
+    let dot_axial = c.dir_max[0] * rot_axis[0]
+        + c.dir_max[1] * rot_axis[1]
+        + c.dir_max[2] * rot_axis[2];
+    assert!(
+        (dot_axial.abs() - 1.0).abs() < tol,
+        "placed cylinder dir_max should align with rotated axis (0, -{:.4}, {:.4}), \
+         got dir_max = {:?}, |dot| = {dot_axial:.9}",
+        (PI / 4.0).sin(), (PI / 4.0).cos(), c.dir_max
+    );
+
+    // (e) Both principal directions lie in the tangent plane.
+    let dot_min_n = c.dir_min[0] * n[0] + c.dir_min[1] * n[1] + c.dir_min[2] * n[2];
+    let dot_max_n = c.dir_max[0] * n[0] + c.dir_max[1] * n[1] + c.dir_max[2] * n[2];
+    assert!(
+        dot_min_n.abs() < tol,
+        "placed cylinder dir_min not in tangent plane: dot(dir_min, n) = {dot_min_n}"
+    );
+    assert!(
+        dot_max_n.abs() < tol,
+        "placed cylinder dir_max not in tangent plane: dot(dir_max, n) = {dot_max_n}"
+    );
+
+    // (f) Unit length and mutually orthogonal.
+    let dmin_mag_sq = c.dir_min[0] * c.dir_min[0]
+        + c.dir_min[1] * c.dir_min[1]
+        + c.dir_min[2] * c.dir_min[2];
+    let dmax_mag_sq = c.dir_max[0] * c.dir_max[0]
+        + c.dir_max[1] * c.dir_max[1]
+        + c.dir_max[2] * c.dir_max[2];
+    assert!(
+        (dmin_mag_sq - 1.0).abs() < 1e-9,
+        "placed cylinder dir_min not unit length: |dir_min|² = {dmin_mag_sq}"
+    );
+    assert!(
+        (dmax_mag_sq - 1.0).abs() < 1e-9,
+        "placed cylinder dir_max not unit length: |dir_max|² = {dmax_mag_sq}"
+    );
+    let dot_dirs = c.dir_min[0] * c.dir_max[0]
+        + c.dir_min[1] * c.dir_max[1]
+        + c.dir_min[2] * c.dir_max[2];
+    assert!(
+        dot_dirs.abs() < 1e-9,
+        "placed cylinder dir_min and dir_max should be orthogonal: dot = {dot_dirs}"
+    );
+}
+
 /// Cross-API agreement on a placed (non-identity-location) sphere.
 ///
 /// The sphere is rotated around the Y-axis by π/3 and translated to (10, 2, -3)
