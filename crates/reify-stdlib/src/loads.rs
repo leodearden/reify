@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use reify_types::{DimensionVector, Value};
 
-use crate::helpers::tensor_components_f64;
+use crate::helpers::{tensor_components_f64, validate_dimensionless_unit_axis_vec3};
 
 /// Earth standard gravity in m/s² (CGPM 1901 definition).
 pub(crate) const EARTH_GRAVITY: f64 = 9.80665;
@@ -270,32 +270,21 @@ fn validate_selector_target(v: &Value) -> Option<()> {
 /// Accepts:
 /// - `Value::String("normal")` — the outward-face-normal sentinel.
 /// - `Value::Vector` (or Tensor/Point) of exactly 3 `DIMENSIONLESS` components,
-///   all finite, with a non-zero magnitude.
+///   all finite, with a non-zero, finite squared magnitude.
 ///
-/// Returns `Some(value)` (the original input) on success, `None` on failure.
-/// Any other String content, dimensioned Vector, non-3-component Vector, or
-/// primitive input returns `None`.
+/// Returns `Some(value)` (the original input, un-normalized) on success,
+/// `None` on failure. Any other String content, dimensioned Vector,
+/// non-3-component Vector, or primitive input returns `None`.
+///
+/// The non-sentinel branch delegates to
+/// [`helpers::validate_dimensionless_unit_axis_vec3`] so the
+/// `mag_sq.is_finite()` overflow guard (e.g. for `[f64::MAX, 0, 0]`) is
+/// applied uniformly with `supports::validate_unit_axis_vec3` and
+/// `joints::validate_axis`.
 fn validate_pressure_direction(v: &Value) -> Option<Value> {
     match v {
         Value::String(s) if s == "normal" => Some(v.clone()),
-        _ => {
-            let (vals, dim) = tensor_components_f64(v)?;
-            if vals.len() != 3 {
-                return None;
-            }
-            if dim != DimensionVector::DIMENSIONLESS {
-                return None;
-            }
-            if vals.iter().any(|x| !x.is_finite()) {
-                return None;
-            }
-            // Reject zero vector (direction has no meaning for zero magnitude).
-            let mag_sq = vals[0] * vals[0] + vals[1] * vals[1] + vals[2] * vals[2];
-            if mag_sq == 0.0 {
-                return None;
-            }
-            Some(v.clone())
-        }
+        _ => validate_dimensionless_unit_axis_vec3(v).map(|_| v.clone()),
     }
 }
 
