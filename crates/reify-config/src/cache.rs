@@ -639,4 +639,117 @@ mod tests {
         assert_eq!(resolved.dir, PathBuf::from("/p"));
         assert_eq!(resolved.dir_source, CacheDirSource::ProjectConfig);
     }
+
+    #[test]
+    fn resolve_cache_max_bytes_env_beats_configs() {
+        let user = CacheConfig {
+            dir: None,
+            max_bytes: Some(999),
+        };
+        let project = CacheConfig {
+            dir: None,
+            max_bytes: Some(555),
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: Some("1024"),
+            user_config: Some(&user),
+            project_config: Some(&project),
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("env-max-bytes resolve");
+        assert_eq!(resolved.max_bytes, 1024);
+        assert_eq!(resolved.max_bytes_source, CacheMaxBytesSource::EnvVar);
+    }
+
+    #[test]
+    fn resolve_cache_max_bytes_user_only() {
+        let user = CacheConfig {
+            dir: None,
+            max_bytes: Some(999),
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: Some(&user),
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("user-max-bytes resolve");
+        assert_eq!(resolved.max_bytes, 999);
+        assert_eq!(resolved.max_bytes_source, CacheMaxBytesSource::UserConfig);
+    }
+
+    #[test]
+    fn resolve_cache_max_bytes_project_only() {
+        let project = CacheConfig {
+            dir: None,
+            max_bytes: Some(555),
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: None,
+            project_config: Some(&project),
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("project-max-bytes resolve");
+        assert_eq!(resolved.max_bytes, 555);
+        assert_eq!(
+            resolved.max_bytes_source,
+            CacheMaxBytesSource::ProjectConfig
+        );
+    }
+
+    #[test]
+    fn resolve_cache_max_bytes_user_beats_project() {
+        let user = CacheConfig {
+            dir: None,
+            max_bytes: Some(999),
+        };
+        let project = CacheConfig {
+            dir: None,
+            max_bytes: Some(555),
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: None,
+            user_config: Some(&user),
+            project_config: Some(&project),
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("user-beats-project max_bytes resolve");
+        assert_eq!(resolved.max_bytes, 999);
+        assert_eq!(resolved.max_bytes_source, CacheMaxBytesSource::UserConfig);
+    }
+
+    /// `REIFY_CACHE_MAX_BYTES=""` is treated as unset and falls through
+    /// (XDG / POSIX convention, mirroring REIFY_CACHE_DIR).
+    #[test]
+    fn resolve_cache_max_bytes_empty_env_falls_through() {
+        let user = CacheConfig {
+            dir: None,
+            max_bytes: Some(999),
+        };
+        let inputs = CacheResolverInputs {
+            cli_dir: None,
+            env_dir: None,
+            env_max_bytes: Some(""),
+            user_config: Some(&user),
+            project_config: None,
+            home: Path::new("/h"),
+            xdg_cache_home: None,
+        };
+        let resolved = resolve_cache(&inputs).expect("empty-env-max-bytes resolve");
+        assert_eq!(resolved.max_bytes, 999);
+        assert_eq!(resolved.max_bytes_source, CacheMaxBytesSource::UserConfig);
+    }
 }
