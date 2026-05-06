@@ -92,3 +92,41 @@ structure def ElasticOptions {
     // `max_iter` on every solve.
     constraint cg_tolerance > 0
 }
+
+// ── ElasticResult ────────────────────────────────────────────────────────────
+
+// `ElasticResult` is the output container produced by the FEA solver. It
+// has no defaults — every field is populated by the solver at run time;
+// constructing one outside that flow is meaningless.
+//
+// Field semantics:
+//   displacement  — per-mesh-node displacement vector, returned as a
+//                   `Field<Point3<Length>, Vector3<Length>>` at runtime.
+//                   Statically declared as `Real` because Reify's type
+//                   resolver does not (yet) accept `Field<X, Y>` in `param`
+//                   positions; PRD task #16 (the runtime solver) populates
+//                   the actual Field-typed value through the same Map-based
+//                   path that `loads.rs` and `supports.rs` use.
+//   stress        — per-mesh-node Cauchy stress tensor, returned as a
+//                   `Field<Point3<Length>, Tensor<2, 3, Pressure>>` at
+//                   runtime. Same Real-placeholder rationale as
+//                   `displacement` above.
+//   max_von_mises — peak von-Mises equivalent stress over the mesh.
+//                   Convenience scalar for safety-factor / yield-margin
+//                   comparisons; equivalent to
+//                   `field_max(von_mises(stress))`. Pressure-typed (Pa).
+//   converged     — true iff the CG solver hit the residual tolerance
+//                   before exhausting `max_iter`. Downstream consumers
+//                   should refuse to trust `displacement`/`stress` when
+//                   `converged == false`.
+//   iterations    — actual CG iteration count. Useful for diagnostics
+//                   ("solver hit the cap" vs "solver converged in 12
+//                   iters") and for tightening / relaxing `cg_tolerance`
+//                   on subsequent runs.
+structure def ElasticResult {
+    param displacement : Real
+    param stress : Real
+    param max_von_mises : Pressure
+    param converged : Bool
+    param iterations : Int
+}
