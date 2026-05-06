@@ -82,6 +82,16 @@ pub fn parse_cache_config(s: &str) -> Result<CacheConfig, CacheError> {
     // convention).
     let raw: ConfigFileRaw =
         toml::from_str(s).map_err(|e| CacheError::Parse(e.to_string()))?;
+    // Reject semantically nonsensical values before lifting to the public
+    // type. This mirrors the `deny_unknown_fields` philosophy: loud
+    // misconfiguration over silent fall-through.
+    if let Some(ref c) = raw.cache {
+        if let Some(ref d) = c.dir {
+            if d.is_empty() {
+                return Err(CacheError::EmptyDir);
+            }
+        }
+    }
     let cache = raw.cache.unwrap_or_default();
     Ok(CacheConfig {
         dir: cache.dir.map(PathBuf::from),
@@ -271,6 +281,13 @@ pub enum CacheError {
     /// offending input verbatim, so the caller can quote it back to the
     /// user.
     InvalidMaxBytes(String),
+    /// `[cache].dir` is set to the empty string `""` in the config file.
+    /// An empty-string path is meaningless (it resolves to CWD on most
+    /// filesystems) and almost certainly a typo or misconfigured variable.
+    /// Mirrors the env-var path that filters `is_empty()` and falls
+    /// through (parity: both paths now refuse to treat `""` as a valid
+    /// cache root). Remove the key to fall through to the next layer.
+    EmptyDir,
 }
 
 impl fmt::Display for CacheError {
@@ -282,6 +299,11 @@ impl fmt::Display for CacheError {
                 f,
                 "REIFY_CACHE_MAX_BYTES is not a valid u64: '{}'",
                 input
+            ),
+            CacheError::EmptyDir => write!(
+                f,
+                "[cache].dir is set to the empty string; \
+                 remove the key to fall through to the next layer"
             ),
         }
     }
