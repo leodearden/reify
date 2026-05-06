@@ -26,6 +26,7 @@
 //! - Off-face coplanar point (5,100,100): on plane x=5 but outside face extent → false.
 //! - Non-solid (wire) fixture: point 1 unit off the wire returns false (no OCCT overlap).
 //! - Negative tolerance → `Err(QueryError::QueryFailed(_))` with message 'non-negative finite' (regression sentinel).
+//! - NaN tolerance → `Err(QueryError::QueryFailed(_))` with message 'non-negative finite' (regression sentinel).
 
 #![cfg(has_occt)]
 
@@ -308,6 +309,39 @@ fn point_on_shape_negative_tolerance_returns_error() {
         ),
         Err(e) => panic!(
             "expected Err(QueryError::QueryFailed(_)) for tolerance=-1.0, got Err({e:?})"
+        ),
+    }
+}
+
+/// Regression sentinel for the early-validation throw at
+/// `cpp/occt_wrapper.cpp:2809–2812`, NaN branch.
+///
+/// `!std::isfinite(NaN) == true` triggers the same throw site as a negative
+/// tolerance.  This test locks the IEEE-754 NaN-comparison footgun
+/// (`dist <= NaN` is always `false` in C++) at the boundary: rather than
+/// silently producing `false` for every call when `tolerance` is NaN, the
+/// wrapper rejects it with a clear error.
+///
+/// The contract is documented at all five layers: `cpp/occt_wrapper.cpp`,
+/// `cpp/occt_wrapper.h`, `crates/reify-kernel-occt/src/ffi.rs`,
+/// `crates/reify-kernel-occt/src/lib.rs`, and
+/// `crates/reify-types/src/stubs.rs`.
+#[test]
+fn point_on_shape_nan_tolerance_returns_error() {
+    let (kernel, box_id) = box_kernel();
+    let result = kernel.point_on_shape(box_id, 5.0, 0.0, 0.0, f64::NAN);
+    match result {
+        Err(QueryError::QueryFailed(ref msg)) => {
+            assert!(
+                msg.contains("non-negative finite"),
+                "expected message to contain 'non-negative finite', got {msg:?}"
+            );
+        }
+        Ok(v) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for tolerance=NaN, got Ok({v:?})"
+        ),
+        Err(e) => panic!(
+            "expected Err(QueryError::QueryFailed(_)) for tolerance=NaN, got Err({e:?})"
         ),
     }
 }
