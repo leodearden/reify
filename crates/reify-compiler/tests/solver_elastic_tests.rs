@@ -160,19 +160,26 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 // ─── step-5: ElasticOptions param shape ──────────────────────────────────────
 
 /// `ElasticOptions` is the FEA solver-input knob structure. It must declare
-/// exactly five params with the canonical names and types:
+/// exactly nine params with the canonical names and types:
 ///
-///   - `element_order : ElementOrder`             (selects P1 / P2 elements)
-///   - `mesh_size     : Option<Length>`           (none = solver derives from tolerance)
-///   - `max_iter      : Int`                      (CG iteration cap)
-///   - `cg_tolerance  : Real`                     (CG convergence threshold)
-///   - `threads       : Option<Int>`              (none = solver picks)
+///   - `element_order          : ElementOrder`   (selects P1 / P2 elements)
+///   - `mesh_size              : Option<Length>`  (none = solver derives from tolerance)
+///   - `max_iter               : Int`             (CG iteration cap)
+///   - `cg_tolerance           : Real`            (CG convergence threshold)
+///   - `threads                : Option<Int>`     (none = solver picks)
+///   - `shell_threshold        : Real`            (thickness/extent ratio for auto-shell
+///                                                 classification; PRD T17 line 63)
+///   - `shell_voxel_size       : Option<Length>`  (voxel resolution for medial extraction;
+///                                                 none = solver derives thickness/3)
+///   - `shell_branch_prune_ratio : Real`          (medial-axis spurious-branch pruning
+///                                                 threshold; empirical placeholder)
+///   - `shell_force            : ShellForce`      (off/auto/on tri-state forcing)
 ///
-/// `mesh_size` and `threads` are encoded as `Option<T> = none` rather than
-/// PRD-style sentinels (e.g., `auto`, `num_cpus::get()`) because the language
-/// has no `auto` keyword and no `num_cpus::get()` builtin; the right
-/// options-side shape is "user did not specify, solver decides" — matching
-/// the design decision recorded in plan.json.
+/// `mesh_size`, `threads`, and `shell_voxel_size` are encoded as `Option<T> = none`
+/// rather than PRD-style sentinels (e.g., `auto`, `num_cpus::get()`) because the
+/// language has no `auto` keyword and no `num_cpus::get()` builtin; the right
+/// semantics are "user did not specify, solver decides" — matching the design
+/// decision recorded in plan.json.
 #[test]
 fn elastic_options_struct_has_correct_param_shape() {
     let template = find_structure("ElasticOptions");
@@ -181,8 +188,8 @@ fn elastic_options_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        5,
-        "ElasticOptions should have exactly 5 param cells, got: {:?}",
+        9,
+        "ElasticOptions should have exactly 9 param cells, got: {:?}",
         names
     );
 
@@ -197,6 +204,15 @@ fn elastic_options_struct_has_correct_param_shape() {
         ("max_iter", Type::Int),
         ("cg_tolerance", Type::Real),
         ("threads", Type::Option(Box::new(Type::Int))),
+        ("shell_threshold", Type::Real),
+        (
+            "shell_voxel_size",
+            Type::Option(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        ),
+        ("shell_branch_prune_ratio", Type::Real),
+        ("shell_force", Type::Enum("ShellForce".to_string())),
     ];
 
     for (member, expected_ty) in expected {
