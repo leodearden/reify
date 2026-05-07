@@ -497,9 +497,23 @@ pub struct Engine {
     /// Cache lifetime is engine-scoped: entries persist across successive `build()`
     /// / `build_snapshot()` / `tessellate_realizations()` calls within a single
     /// `Engine`. Initial wiring (task 2874) does NOT clear the cache on
-    /// `activate_purpose` / `deactivate_purpose` / `edit_param` / `edit_source` —
-    /// stale-handle hazards are mitigated by the partial-order rule, and finer-
-    /// grained invalidation is left for follow-up tasks.
+    /// `activate_purpose` / `deactivate_purpose` / `edit_param` / `edit_source`.
+    ///
+    /// **Scope of the partial-order rule (amendment correction)**: the
+    /// `cached_tol ≤ requested_tol` ordering ONLY mitigates *tolerance-driven*
+    /// staleness — a tighter demand misses a looser cached entry. It does
+    /// NOT cover parameter / source / purpose-binding edits that change the
+    /// underlying geometry while keeping `(entity_id, BRep, demanded_tol)`
+    /// constant. Concretely: after `edit_param` followed by `build_snapshot`
+    /// (which preserves `active_purpose_bindings` because it does not call
+    /// `eval()`) the cache lookup will hit and short-circuit kernel
+    /// re-execution, returning a stale `GeometryHandleId` that points at
+    /// the OLD geometry. Production callers must therefore either
+    /// (a) avoid `build_snapshot` after `edit_param`, or
+    /// (b) clear `realization_cache` themselves between the edit and the
+    /// snapshot rebuild,
+    /// until a follow-up task lands granular invalidation. Finer-grained
+    /// invalidation is left for follow-up tasks.
     ///
     /// **Partial-order miss verification (task 2874 step-14)**: a tighter
     /// demanded tolerance MUST NOT be served by a looser cached entry. The
