@@ -699,20 +699,28 @@ mod tests {
         //      Equal, so a `partial_cmp + is_gt` regression always picks
         //      case_a and a `partial_cmp + is_ge` regression always picks
         //      case_b — both yield mixed-sign outputs that fail this test.
-        //   2. First-finite-init invariant: the accumulator is seeded from the
-        //      first finite case; if seeding were broken (e.g. always re-init
-        //      from the latest), the last-seen case_b sign would bleed through
-        //      at indices where case_a carries +0.0 and case_b carries -0.0.
+        //   2. First-finite-init (weakly): a regression that *replaces* the
+        //      accumulator with each successive case AND skips the comparison
+        //      leg would bleed case_b's signs through at indices where it
+        //      differs — but a "wrong-seed-then-still-compare" regression
+        //      passes, because the comparison leg resolves the correct sign
+        //      regardless. Robust first-occurrence pinning requires
+        //      case-identity output; see the TODO below.
         //   3. Comparison direction (`v.total_cmp(out)` for max): a swapped
         //      direction would apply find_min semantics and yield -0.0 everywhere.
         //
         // What this does NOT pin:
-        //   Strict (`is_gt`) vs non-strict (`is_ge`) tie-break — under
-        //   `total_cmp`, +0.0 and -0.0 are distinct (total_cmp returns Less /
-        //   Greater), so there is no actual tie here. The strict tie-break
-        //   invariant ("first-finite case wins on equal total_cmp") is
-        //   observable only via a future case-identity-returning reduction
-        //   (envelope_argmax) and remains doc-only for now.
+        //   - Strict (`is_gt`) vs non-strict (`is_ge`) tie-break — under
+        //     `total_cmp`, +0.0 and -0.0 are distinct (total_cmp returns Less /
+        //     Greater), so there is no actual tie here.
+        //   - Strong first-occurrence-wins coverage: with these fixtures the
+        //     comparison leg alone resolves the correct sign, so most wrong-seed
+        //     regressions still pass. Both the seed-direction invariant and the
+        //     strict-tie-break invariant are observable only via a future
+        //     case-identity-returning reduction (envelope_argmax).
+        // TODO(envelope_argmax): add tests that assert *which case* the extremum
+        //   came from (not just its value) to pin first-finite-init and strict
+        //   tie-break robustly. This is deferred to the envelope_argmax task.
         let axis = vec![0.0, 1.0, 2.0];
         // case_a[i] and case_b[i] have opposite signs.
         // Under total_cmp:  +0.0 > -0.0, so envelope_max must pick +0.0 at every index.
@@ -748,9 +756,10 @@ mod tests {
         // find_min path.  Under total_cmp:  -0.0 < +0.0, so envelope_min
         // must pick -0.0 at every index.
         //
-        // Pins identically: total_cmp adoption, first-finite-init, and
-        // comparison direction for the min path.  Does NOT pin strict vs
-        // non-strict tie-break (same reasoning as the max variant above).
+        // Pins: total_cmp adoption and comparison direction for the min path.
+        // First-finite-init is only weakly covered (see the max variant above
+        // for the detailed reasoning and the shared TODO(envelope_argmax)).
+        // Does NOT pin strict vs non-strict tie-break (same reasoning).
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![0.0, -0.0, 0.0]),
