@@ -3,9 +3,9 @@
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Temperature params (melting_point, max_service_temperature, glass_transition) are
-// tightenable-now (task-B); composite-dimension params (thermal_conductivity,
+// tightenable-now (task #3112); composite-dimension params (thermal_conductivity,
 // specific_heat, thermal_expansion) are blocked-composite pending named-dim aliases
-// (task-E). Follow-up task IDs: see audit doc §"Filed Follow-up Tasks".
+// (task #3115).
 //
 // Spec reference: docs/reify-stdlib-reference.md §6.3 lines 680-694.
 // Audit reference: docs/notes/stdlib-trait-audit.md §6.3 (all traits marked MISSING).

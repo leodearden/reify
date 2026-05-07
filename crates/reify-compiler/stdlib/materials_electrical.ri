@@ -9,8 +9,8 @@
 // ── Decision #1: Real placeholder for dimensioned params ─────────────────────
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // resistivity (Ω·m) and dielectric_strength (V/m) are blocked-composite pending
-// named-dim aliases (task-E); dielectric_constant and magnetic_permeability are
-// genuine-dimensionless (annotated below). Follow-up task IDs: see audit doc.
+// named-dim aliases (task #3115); dielectric_constant and magnetic_permeability are
+// genuine-dimensionless (annotated below).
 //
 // ── Decision #2: Parent trait name ───────────────────────────────────────────
 // The spec text says `: Material` but `Material` was renamed to `MaterialSpec`

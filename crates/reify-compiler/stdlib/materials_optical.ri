@@ -2,10 +2,9 @@
 // Provides optical characterization trait definitions for engineering materials.
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
-// reference_thickness is tightenable-now (task-C); absorption_coefficient is
-// blocked-composite pending a PerLength alias (task-E); refractive_index and
+// reference_thickness is tightenable-now (task #3113); absorption_coefficient is
+// blocked-composite pending a PerLength alias (task #3115); refractive_index and
 // transmittance are genuine-dimensionless (annotated below).
-// Follow-up task IDs: see audit doc §"Filed Follow-up Tasks".
 //
 // Spec reference: docs/reify-stdlib-reference.md §6.5 lines 713-722.
 // Audit reference: docs/notes/stdlib-trait-audit.md §6.5 (all traits marked MISSING).

@@ -5,8 +5,8 @@
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Dimensioned params (density, youngs_modulus, shear_modulus, yield_strength,
 // uts, compressive_strength, endurance_limit, impact_energy) are tightenable-now
-// (tracked as task-A); fracture_toughness is blocked-composite (task-E).
-// Follow-up task IDs: see audit doc §"Filed Follow-up Tasks".
+// (task #3111); fracture_toughness is blocked-composite pending composite-dim
+// aliases (task #3115).
 //
 // ── BREAKING CHANGE (task 1876) ──────────────────────────────────────────────
 // The identifier `Material` changed meaning in this release:

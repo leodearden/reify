@@ -4,9 +4,9 @@
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Tightenable-now params: volume, centroid_x/y/z, moment_of_inertia, max_deflection,
-// hardening_modulus, max_service_temp, seal_pressure_rating (task-D).
+// hardening_modulus, max_service_temp, seal_pressure_rating (task #3114).
 // Blocked-composite params: stiffness (N/m), thermal_conductivity, electrical_conductivity,
-// resistivity (task-E). Follow-up task IDs: see audit doc §"Filed Follow-up Tasks".
+// resistivity — pending named-dim aliases (task #3115).
 
 // ── Physical body trait ─────────────────────────────────────────────────────
 

@@ -240,7 +240,7 @@ structure def ElasticOptions {
 // has no defaults — every field is populated by the solver at run time;
 // constructing one outside that flow is meaningless.
 //
-// TODO(field-in-param): once `resolve_parameterized_builtin_type`
+// TODO(field-in-param, task #3117): once `resolve_parameterized_builtin_type`
 // (`crates/reify-compiler/src/type_resolution.rs:1340-1398`) accepts
 // `Field<X, Y>` in `param` positions, tighten `displacement` to
 // `Field<Point3<Length>, Vector3<Length>>` and `stress` to
@@ -249,9 +249,10 @@ structure def ElasticOptions {
 // `Real` placeholder lets a buggy runtime implementation accidentally
 // write a scalar into these slots and type-check successfully — the
 // runtime FEA solver in PRD task #16 is the only writer, so the hazard
-// is contained, but a follow-up task should revisit these types when the
-// type resolver gains Field-in-param support so the placeholder doesn't
-// quietly become permanent.
+// is contained. Task #3117 investigates whether the existing Field arm
+// at type_resolution.rs:1397 already handles param-position Field<X,Y>
+// (the TODO may be stale) and either tightens these two sites or extends
+// the resolver. Real-placeholder audit: docs/notes/stdlib-real-placeholder-audit.md
 //
 // Field semantics:
 //   displacement  — per-mesh-node displacement vector, returned as a
