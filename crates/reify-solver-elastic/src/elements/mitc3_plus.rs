@@ -20,6 +20,27 @@
 //! Transverse-shear strains are interpolated from values sampled at the
 //! three canonical edge-midpoint tying points A=(½,0), B=(0,½), C=(½,½).
 
+/// A point in the local 2D mid-surface reference-triangle `(ξ, η)` space.
+///
+/// The unit reference triangle has vertices at `(0,0)`, `(1,0)`, `(0,1)`.
+/// Barycentric coordinates are `(1−ξ−η, ξ, η)`.
+///
+/// This is a 2D type distinct from the 3D `ReferenceCoord` used by the
+/// tetrahedral elements; shell elements are parameterised in the local
+/// mid-surface plane only.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellReferenceCoord {
+    pub xi: f64,
+    pub eta: f64,
+}
+
+impl ShellReferenceCoord {
+    /// Construct a 2D shell reference-coordinate pair.
+    pub const fn new(xi: f64, eta: f64) -> Self {
+        Self { xi, eta }
+    }
+}
+
 /// MITC3+ Reissner-Mindlin triangular shell element.
 ///
 /// Three-node element on the reference triangle with vertices `(0,0)`,
