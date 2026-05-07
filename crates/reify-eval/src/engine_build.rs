@@ -418,23 +418,11 @@ impl Engine {
         let version_id = self.current_eval_version();
         // Task 2874 step-6: precompute per-realization demanded tolerance
         // BEFORE the `if let Some(ref mut kernel) = self.geometry_kernel`
-        // borrow below so the `&self` queries
-        // (`demanded_tolerance_for_output` / `active_tolerance_for`) don't
-        // collide with the kernel / table mutable borrows handed to
-        // `execute_realization_ops`. Missing keys are treated as `None`.
-        let demanded_tols: HashMap<(String, String), Option<f64>> = {
-            let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
-            for t in &module.templates {
-                for r in &t.realizations {
-                    let key = (t.name.clone(), r.id.entity.clone());
-                    let val = self
-                        .demanded_tolerance_for_output(&t.name, &r.id.entity)
-                        .or_else(|| self.active_tolerance_for(&r.id.entity));
-                    map.insert(key, val);
-                }
-            }
-            map
-        };
+        // borrow below so the `&self` queries inside
+        // `compute_demanded_tols` don't collide with the kernel / table
+        // mutable borrows handed to `execute_realization_ops`. Missing keys
+        // are treated as `None`.
+        let demanded_tols = self.compute_demanded_tols(module);
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
@@ -635,19 +623,7 @@ impl Engine {
         // Mirrored in `tessellate_realizations`. `build_snapshot` does NOT
         // call eval, so its placement (after the constraint check) remains
         // semantically correct.
-        let demanded_tols: HashMap<(String, String), Option<f64>> = {
-            let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
-            for t in &module.templates {
-                for r in &t.realizations {
-                    let key = (t.name.clone(), r.id.entity.clone());
-                    let val = self
-                        .demanded_tolerance_for_output(&t.name, &r.id.entity)
-                        .or_else(|| self.active_tolerance_for(&r.id.entity));
-                    map.insert(key, val);
-                }
-            }
-            map
-        };
+        let demanded_tols = self.compute_demanded_tols(module);
 
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
@@ -832,19 +808,7 @@ impl Engine {
         // which clears `active_purpose_bindings` / `active_tolerance_scope`
         // (engine_eval.rs:1149-1150). Mirrored in `build`. Missing keys
         // are treated as `None` by `tessellate_from_values` callers.
-        let demanded_tols: HashMap<(String, String), Option<f64>> = {
-            let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
-            for t in &module.templates {
-                for r in &t.realizations {
-                    let key = (t.name.clone(), r.id.entity.clone());
-                    let val = self
-                        .demanded_tolerance_for_output(&t.name, &r.id.entity)
-                        .or_else(|| self.active_tolerance_for(&r.id.entity));
-                    map.insert(key, val);
-                }
-            }
-            map
-        };
+        let demanded_tols = self.compute_demanded_tols(module);
 
         // Task 2874 step-12: precompute per-realization tessellation budget
         // by routing the per-output demanded tolerance — falling back to the
@@ -855,24 +819,8 @@ impl Engine {
         // BEFORE `self.check(module)` for the same reason as `demanded_tols`:
         // `check()` clears tolerance scope. Mirrored in `tessellate_snapshot`.
         let registry_owned = crate::kernel_registry::collect_registry();
-        let registry: BTreeMap<String, &CapabilityDescriptor> =
-            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
-        let tessellation_budgets: HashMap<(String, String), f64> = {
-            let mut map: HashMap<(String, String), f64> = HashMap::new();
-            for t in &module.templates {
-                for r in &t.realizations {
-                    let key = (t.name.clone(), r.id.entity.clone());
-                    let req_tol = demanded_tols
-                        .get(&key)
-                        .copied()
-                        .flatten()
-                        .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
-                    let budget = self.compute_realization_tolerance_budget(&registry, req_tol);
-                    map.insert(key, budget);
-                }
-            }
-            map
-        };
+        let tessellation_budgets =
+            self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
 
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
@@ -939,28 +887,38 @@ impl Engine {
     /// through the dispatcher's per-stage allocation primitive.
     ///
     /// Synthesises a [`crate::dispatcher::DispatchPlan`] via
-    /// [`dispatch`]`(registry, Operation::BooleanUnion, ReprKind::BRep,
-    /// &available)` where `available = {ReprKind::BRep}`. On `Some(plan)`
-    /// returns [`per_stage_tolerance_for_plan`]`(&plan, demanded_tol)`. On
-    /// `None` (no plan: dispatcher could not find a kernel + conversion
-    /// chain that satisfies the request against the supplied registry)
-    /// returns `demanded_tol` unchanged — this mirrors the empty-conversion
-    /// pass-through contract pinned by
+    /// [`dispatch`]`(registry, op, demanded, &available)` where the triple
+    /// `(op, demanded, available)` is sourced from
+    /// [`Self::BUDGET_QUERY_TRIPLE_V02`] (`(BooleanUnion, BRep, {BRep})`).
+    /// On `Some(plan)` returns [`per_stage_tolerance_for_plan`]`(&plan,
+    /// demanded_tol)`. On `None` (no plan: dispatcher could not find a
+    /// kernel + conversion chain that satisfies the request against the
+    /// supplied registry) returns `demanded_tol` unchanged — this mirrors
+    /// the empty-conversion pass-through contract pinned by
     /// `dispatcher::tests::per_stage_tolerance_for_plan_empty_chain_returns_requested_tol_unchanged`,
     /// just one level up in the call stack: no plan ⇒ no budget allocation.
     ///
-    /// **Hard-coded `(op, demanded, available)` triple**: per the task 2874
-    /// design decision, the v0.2 occt-only inventory and BRep-on-BRep
-    /// realization metadata baseline mean the realization-level budget
-    /// query always issues `(BooleanUnion, BRep, {BRep})`. With this
-    /// triple, the BFS in [`dispatch`] returns at depth 0 whenever any
-    /// kernel in the registry supports `(BooleanUnion, BRep)`, yielding a
-    /// 0-conversion plan and `per_stage_tolerance_for_plan` passes the
-    /// demand through unchanged. Multi-kernel adapters (PRD §"Resolved
-    /// design decisions") will introduce richer per-realization
-    /// `Operation`/`ReprKind` metadata; the helper signature is stable
-    /// across that future, only the triple's source becomes
-    /// `RealizationDecl`-derived rather than hard-coded.
+    /// **Why a named const for the triple**: per the task 2874 design
+    /// decision the v0.2 occt-only inventory and BRep-on-BRep realization
+    /// metadata baseline mean the realization-level budget query always
+    /// issues `(BooleanUnion, BRep, {BRep})`. With that triple the BFS in
+    /// [`dispatch`] returns at depth 0 whenever any kernel in the registry
+    /// supports `(BooleanUnion, BRep)`, yielding a 0-conversion plan and
+    /// `per_stage_tolerance_for_plan` passes the demand through unchanged.
+    /// Multi-kernel adapters (PRD §"Resolved design decisions") will
+    /// introduce richer per-realization `Operation`/`ReprKind` metadata;
+    /// when that lands the call site that derives `(op, demanded, available)`
+    /// from `RealizationDecl::operations.last()` becomes the new source of
+    /// truth, and a single grep for `BUDGET_QUERY_TRIPLE_V02` surfaces every
+    /// place the v0.2 placeholder is consumed.
+    ///
+    /// **Signature** (amendment): takes the owned-value
+    /// `&BTreeMap<String, CapabilityDescriptor>` map directly — the
+    /// borrowed-value variant `BTreeMap<String, &CapabilityDescriptor>`
+    /// that [`dispatch`] requires is constructed inside the helper at the
+    /// single dispatch call site, so callers no longer need to clone every
+    /// kernel-name `String` to assemble a separate borrow-flavored map at
+    /// every `tessellate_*` invocation.
     ///
     /// **Production wiring** (task 2874 step-12): `tessellate_from_values`
     /// calls this via [`crate::kernel_registry::collect_registry`] to
@@ -978,20 +936,104 @@ impl Engine {
     #[allow(clippy::unused_self)]
     pub fn compute_realization_tolerance_budget(
         &self,
-        registry: &BTreeMap<String, &CapabilityDescriptor>,
+        registry: &BTreeMap<String, CapabilityDescriptor>,
         demanded_tol: f64,
     ) -> f64 {
-        let mut available: HashSet<ReprKind> = HashSet::new();
-        available.insert(ReprKind::BRep);
-        match dispatch(
-            registry,
-            Operation::BooleanUnion,
-            ReprKind::BRep,
-            &available,
-        ) {
+        let (op, demanded, available_arr) = Self::BUDGET_QUERY_TRIPLE_V02;
+        let available: HashSet<ReprKind> = available_arr.iter().copied().collect();
+        // Build the borrowed-value view that `dispatch` requires once,
+        // here — callers pass the owned-value map (typically the result of
+        // `kernel_registry::collect_registry()`) so the per-call kernel-
+        // name `String` clone in the prior signature is gone.
+        let borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry.iter().map(|(k, v)| (k.clone(), v)).collect();
+        match dispatch(&borrowed, op, demanded, &available) {
             Some(plan) => per_stage_tolerance_for_plan(&plan, demanded_tol),
             None => demanded_tol,
         }
+    }
+
+    /// Hard-coded `(op, demanded_repr, available_reprs)` triple used by
+    /// [`Self::compute_realization_tolerance_budget`] to query the
+    /// dispatcher for a per-stage budget plan in v0.2.
+    ///
+    /// Centralised here so that when v0.3 multi-kernel adapters land and
+    /// realization metadata begins carrying its own
+    /// `Operation`/`ReprKind`/`available` triple, every call site that
+    /// depends on this placeholder can be located by a single grep and
+    /// re-pointed at the realization-derived triple. See the
+    /// `compute_realization_tolerance_budget` docstring for the
+    /// 0-conversion-plan pass-through behaviour this triple yields with the
+    /// v0.2 single-kernel registry.
+    pub(crate) const BUDGET_QUERY_TRIPLE_V02: (Operation, ReprKind, &'static [ReprKind]) =
+        (Operation::BooleanUnion, ReprKind::BRep, &[ReprKind::BRep]);
+
+    /// Precompute per-realization demanded tolerance for the cache-key
+    /// `(entity_id, ReprKind::BRep, demanded_tol)` triple, plus the
+    /// fallback chain for callers that need the value as a non-`Option`
+    /// (e.g. tessellation-budget computation).
+    ///
+    /// Iterates `module.templates × realizations` and resolves each entry
+    /// via the priority chain
+    /// [`Engine::demanded_tolerance_for_output`] →
+    /// [`Engine::active_tolerance_for`]; missing keys flatten to `None`.
+    /// Callers that need the f64 fallback (typically the tessellation-budget
+    /// computation) chain through to `effective_tessellation_tolerance` at
+    /// the consumption site.
+    ///
+    /// Extracted in the task 2874 amendment from inline blocks duplicated
+    /// across `build` / `build_snapshot` / `tessellate_realizations` /
+    /// `tessellate_snapshot` so future invalidation / fallback-chain edits
+    /// land in one place.
+    pub(crate) fn compute_demanded_tols(
+        &self,
+        module: &CompiledModule,
+    ) -> HashMap<(String, String), Option<f64>> {
+        let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
+        for t in &module.templates {
+            for r in &t.realizations {
+                let key = (t.name.clone(), r.id.entity.clone());
+                let val = self
+                    .demanded_tolerance_for_output(&t.name, &r.id.entity)
+                    .or_else(|| self.active_tolerance_for(&r.id.entity));
+                map.insert(key, val);
+            }
+        }
+        map
+    }
+
+    /// Precompute per-realization tessellation budgets for the
+    /// `kernel.tessellate(handle, budget)` call site.
+    ///
+    /// For each `(template_name, realization_entity)` key in
+    /// `module.templates × realizations`, applies the priority chain
+    /// `demanded_tols.get(&key).flatten()` → `effective_tessellation_tolerance(module)`
+    /// to obtain the requested tolerance, then routes that through
+    /// [`Engine::compute_realization_tolerance_budget`] against the supplied
+    /// owned-value `registry` to obtain the budgeted tolerance.
+    ///
+    /// Extracted in the task 2874 amendment from inline blocks duplicated
+    /// across `tessellate_realizations` / `tessellate_snapshot`.
+    pub(crate) fn compute_tessellation_budgets(
+        &self,
+        module: &CompiledModule,
+        demanded_tols: &HashMap<(String, String), Option<f64>>,
+        registry: &BTreeMap<String, CapabilityDescriptor>,
+    ) -> HashMap<(String, String), f64> {
+        let mut map: HashMap<(String, String), f64> = HashMap::new();
+        for t in &module.templates {
+            for r in &t.realizations {
+                let key = (t.name.clone(), r.id.entity.clone());
+                let req_tol = demanded_tols
+                    .get(&key)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
+                let budget = self.compute_realization_tolerance_budget(registry, req_tol);
+                map.insert(key, budget);
+            }
+        }
+        map
     }
 
     /// Shared helper: execute geometry operations and tessellate each realization.
@@ -1670,40 +1712,12 @@ impl Engine {
         // Task 2874 step-6: precompute per-realization demanded tolerance
         // before the `&mut self.*` borrows. See sibling
         // `tessellate_realizations` for rationale.
-        let demanded_tols: HashMap<(String, String), Option<f64>> = {
-            let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
-            for t in &module.templates {
-                for r in &t.realizations {
-                    let key = (t.name.clone(), r.id.entity.clone());
-                    let val = self
-                        .demanded_tolerance_for_output(&t.name, &r.id.entity)
-                        .or_else(|| self.active_tolerance_for(&r.id.entity));
-                    map.insert(key, val);
-                }
-            }
-            map
-        };
+        let demanded_tols = self.compute_demanded_tols(module);
         // Task 2874 step-12: precompute per-realization tessellation budget.
         // See `tessellate_realizations` for the budget-routing rationale.
         let registry_owned = crate::kernel_registry::collect_registry();
-        let registry: BTreeMap<String, &CapabilityDescriptor> =
-            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
-        let tessellation_budgets: HashMap<(String, String), f64> = {
-            let mut map: HashMap<(String, String), f64> = HashMap::new();
-            for t in &module.templates {
-                for r in &t.realizations {
-                    let key = (t.name.clone(), r.id.entity.clone());
-                    let req_tol = demanded_tols
-                        .get(&key)
-                        .copied()
-                        .flatten()
-                        .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
-                    let budget = self.compute_realization_tolerance_budget(&registry, req_tol);
-                    map.insert(key, budget);
-                }
-            }
-            map
-        };
+        let tessellation_budgets =
+            self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         let meshes = Self::tessellate_from_values(

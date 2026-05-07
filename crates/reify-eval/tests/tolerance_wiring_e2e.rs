@@ -581,8 +581,8 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     let occt = CapabilityDescriptor {
         supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
     };
-    let mut single: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-    single.insert("occt".to_string(), &occt);
+    let mut single: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+    single.insert("occt".to_string(), occt);
 
     let demand = 1e-6_f64;
     assert_eq!(
