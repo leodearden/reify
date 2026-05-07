@@ -660,4 +660,75 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn p2_volume_scaling_doubles_stiffness_when_edge_length_doubles() {
+        // P2 mirror of the P1 volume-scaling test. P2 has a different
+        // shape-gradient pattern and uses a 4-point Stroud quadrature, so
+        // the same K ∝ L scaling is the more meaningful regression check
+        // here: a bug in the inverse-Jacobian × reference-gradient pipeline
+        // could pass the patch tests on a unit tet (which they all use)
+        // while still failing on a uniformly scaled tet.
+        let mat = dimensionless_steel_like();
+        let k_unit = element_stiffness_p2(&scaled_p2_phys_nodes(1.0), &mat);
+        let k_scaled = element_stiffness_p2(&scaled_p2_phys_nodes(2.0), &mat);
+
+        for i in 0..30 {
+            for j in 0..30 {
+                let unit: f64 = k_unit.get(i, j);
+                let got: f64 = k_scaled.get(i, j);
+                let expected: f64 = 2.0 * unit;
+                let scale = expected.abs().max(unit.abs()).max(1.0);
+                assert!(
+                    (got - expected).abs() < 1e-9 * scale,
+                    "K_scaled[{i}][{j}] = {got} (expected 2·K_unit = {expected})",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn p1_strain_energy_patch_test_holds_on_left_handed_fixture() {
+        // Exercises the `det.abs()` branch in element_stiffness_generic.
+        // Swapping two vertices of the unit tet flips its orientation so
+        // det(J) is negative. Strain energy is a scalar invariant of the
+        // node ordering once the displacement field is expressed in the
+        // matching DOF order, so U_K must still equal 0.5·εᵀDε·V — if
+        // `.abs()` were dropped (or det used directly) the integrand
+        // would carry the negative sign and U_K would come back as
+        // −U_analytical, which this assertion rejects.
+        let (a, b, c) = (0.01, -0.005, 0.003);
+        let mat = dimensionless_steel_like();
+        let d = mat.d_matrix();
+
+        // Swap nodes 1 ↔ 2 to obtain a left-handed ordering.
+        let flipped: [[f64; 3]; 4] = [
+            UNIT_TET_P1[0],
+            UNIT_TET_P1[2],
+            UNIT_TET_P1[1],
+            UNIT_TET_P1[3],
+        ];
+        let k = element_stiffness_p1(&flipped, &mat);
+
+        let mut u = vec![0.0; 12];
+        for (node_idx, x) in flipped.iter().enumerate() {
+            u[3 * node_idx] = a * x[0];
+            u[3 * node_idx + 1] = b * x[1];
+            u[3 * node_idx + 2] = c * x[2];
+        }
+        let eps_voigt = [a, b, c, 0.0, 0.0, 0.0];
+        let volume = 1.0 / 6.0;
+
+        let (u_k, u_a) = strain_energies(&k, &u, &eps_voigt, &d, volume);
+        let scale = u_a.abs().max(1e-300);
+        assert!(
+            (u_k - u_a).abs() < 1e-9 * scale,
+            "U_K = {u_k}, U_analytical = {u_a} (rel err {})",
+            (u_k - u_a).abs() / scale,
+        );
+        // Sanity: U_K is positive — guards against the failure mode where
+        // `.abs()` is dropped and the patch-test difference happens to
+        // round to zero by symmetry.
+        assert!(u_k > 0.0, "expected U_K > 0 on physical strain, got {u_k}");
+    }
 }
