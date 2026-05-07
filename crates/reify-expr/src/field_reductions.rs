@@ -189,12 +189,6 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
 /// contains no finite values. Tie-break: lowest linear index wins
 /// (strict `<`/`>` rather than `<=`/`>=` keeps the first-seen
 /// extremum on equal values).
-///
-/// Pinned by `argmax_sampled_with_nan_skips_nan_values` and the
-/// all-NaN/empty-data branches of
-/// `all_reductions_sampled_all_nan_returns_undef` /
-/// `all_reductions_sampled_empty_data_returns_undef` in
-/// `tests/field_reductions_tests.rs` (step-17 of plan 2913).
 fn argmax_argmin_index(data: &[f64], find_min: bool) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, &v) in data.iter().enumerate() {
@@ -283,10 +277,6 @@ fn arg_coord_from_index(sf: &SampledField, linear_index: usize, domain_type: &Ty
 /// reads only the first `axis_lengths.len()` entries; the remainder is
 /// zero-padded. This avoids the per-call heap allocation that a `Vec`
 /// would incur and matches the SampledGridKind invariant (1..=3 axes).
-///
-/// Pinned by `argmax_sampled_field_2d_length_domain_returns_point2_at_max_index`
-/// (3×2 shape, max at linear=4 → per-axis (2, 0)) and the symmetric
-/// `argmin_..._2d` counterpart in `tests/field_reductions_tests.rs`.
 fn decompose_index(linear: usize, axis_lengths: &[usize]) -> [usize; MAX_AXES] {
     debug_assert!(
         matches!(axis_lengths.len(), 1..=MAX_AXES),
@@ -307,17 +297,11 @@ fn decompose_index(linear: usize, axis_lengths: &[usize]) -> [usize; MAX_AXES] {
 /// Supported domains:
 /// - **1-D scalar domain** (`Type::Real`, `Type::Scalar { dim }`):
 ///   returns a single `Value::Real` (dimensionless) or `Value::Scalar`
-///   (dimensioned). Requires `coords_si.len() == 1`. Pinned by
-///   `argmax_sampled_field_1d_length_domain_*` /
-///   `argmax_sampled_field_1d_real_domain_*` and the symmetric
-///   `argmin_..._1d_length_domain_*` test in
-///   `tests/field_reductions_tests.rs`.
+///   (dimensioned). Requires `coords_si.len() == 1`.
 /// - **N-D Point domain** (`Type::Point { n, quantity }` where
 ///   `quantity ∈ { Type::Real, Type::Scalar { .. } }`): returns
 ///   `Value::Point(per-axis-coords)` where each component follows the
 ///   same per-quantity wrap rule. Requires `coords_si.len() == n`.
-///   Pinned by `argmax_sampled_field_2d_length_domain_*` /
-///   `argmin_..._2d_length_domain_*` (and 3-D variants in step-13).
 ///
 /// Unsupported domains (return `Value::Undef`):
 /// - `Type::Int` — `axis_grids` are stored as `f64` and there is no
@@ -402,10 +386,6 @@ fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Value {
 /// - `Type::Real`, `Type::Int`, dimensionless `Type::Scalar`, and any
 ///   other codomain → `Value::Real(v)` (the `_` arm is the dimensionless
 ///   default; the codomain type is otherwise unused for max/min).
-///
-/// Pinned by `max_sampled_field_with_pressure_codomain_returns_dimensioned_scalar`
-/// and the parallel `min_..._returns_dimensioned_scalar` in
-/// `tests/field_reductions_tests.rs`.
 fn wrap_codomain(v: f64, codomain_type: &Type) -> Value {
     match codomain_type {
         Type::Scalar { dimension } if !dimension.is_dimensionless() => Value::Scalar {
