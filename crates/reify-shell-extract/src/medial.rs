@@ -372,6 +372,17 @@ pub fn compute_medial_mask(
 /// undefined) and at flat-interior voxels far from the surface.
 pub(crate) const GRADIENT_EPSILON: f64 = 1e-6;
 
+/// Floor on `|φ|` for treating an SDF sample as bit-exact zero in the
+/// zero-crossing walk. Used both to short-circuit the walk when a
+/// stepped sample lands exactly on the surface (a real possibility
+/// for analytic SDFs — e.g. a slab `|z| − h` produces an exact zero
+/// at `z == h` when the walk steps land there) and as the
+/// denominator-magnitude guard for the linear interpolation between
+/// bracketing samples. Keeping the two zero-related thresholds
+/// numerically consistent avoids a class of "exact-zero comparison"
+/// fragility issues.
+pub(crate) const ZERO_PHI_EPSILON: f64 = 1e-30;
+
 /// Look up `φ` at integer voxel indices `[i, j, k]`. Assumes
 /// row-major axis-0-outermost layout (matches
 /// [`SampledField::data`]).
@@ -505,31 +516,44 @@ pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3]
 /// Gradient at a world coordinate via central finite differences over
 /// `sample_at_world`. Returns `[0, 0, 0]` (caller treats as degenerate)
 /// if either side falls outside the grid.
+///
+/// **Per-axis stencil offsets.** Each component uses
+/// `h_axis = 0.5 · spacing[axis]` for its own central-difference
+/// stencil, rather than a single global `h = 0.5 · min(spacing)`. The
+/// per-axis form is numerically defensible on anisotropic grids: the
+/// stencil offset along each axis matches the local voxel size, so
+/// the gradient estimate reflects underlying sampled values rather
+/// than trilinear-interpolation artifacts at sub-voxel offsets along
+/// the coarse axis. (No anisotropic test fixture currently exercises
+/// this — every fixture in the in-crate test suite uses unit spacing
+/// on all three axes; full anisotropic-grid coverage is deferred to
+/// integration tests against real `.vdb` files once the OpenVDB FFI
+/// lands. The per-axis form here at least removes one numerical
+/// pitfall in advance.)
 pub(crate) fn gradient_at_world(sdf: &SampledField, world: [f64; 3]) -> [f64; 3] {
-    let dx = sdf.spacing[0];
-    let dy = sdf.spacing[1];
-    let dz = sdf.spacing[2];
-    let h = 0.5 * dx.min(dy).min(dz);
+    let hx = 0.5 * sdf.spacing[0];
+    let hy = 0.5 * sdf.spacing[1];
+    let hz = 0.5 * sdf.spacing[2];
 
     let gx = match (
-        sample_at_world(sdf, [world[0] + h, world[1], world[2]]),
-        sample_at_world(sdf, [world[0] - h, world[1], world[2]]),
+        sample_at_world(sdf, [world[0] + hx, world[1], world[2]]),
+        sample_at_world(sdf, [world[0] - hx, world[1], world[2]]),
     ) {
-        (Some(p), Some(m)) => (p - m) / (2.0 * h),
+        (Some(p), Some(m)) => (p - m) / (2.0 * hx),
         _ => 0.0,
     };
     let gy = match (
-        sample_at_world(sdf, [world[0], world[1] + h, world[2]]),
-        sample_at_world(sdf, [world[0], world[1] - h, world[2]]),
+        sample_at_world(sdf, [world[0], world[1] + hy, world[2]]),
+        sample_at_world(sdf, [world[0], world[1] - hy, world[2]]),
     ) {
-        (Some(p), Some(m)) => (p - m) / (2.0 * h),
+        (Some(p), Some(m)) => (p - m) / (2.0 * hy),
         _ => 0.0,
     };
     let gz = match (
-        sample_at_world(sdf, [world[0], world[1], world[2] + h]),
-        sample_at_world(sdf, [world[0], world[1], world[2] - h]),
+        sample_at_world(sdf, [world[0], world[1], world[2] + hz]),
+        sample_at_world(sdf, [world[0], world[1], world[2] - hz]),
     ) {
-        (Some(p), Some(m)) => (p - m) / (2.0 * h),
+        (Some(p), Some(m)) => (p - m) / (2.0 * hz),
         _ => 0.0,
     };
     [gx, gy, gz]
@@ -598,14 +622,21 @@ fn walk_to_zero(
         // Sign change (including landing exactly on zero) marks the
         // bracketing pair. Linear interpolation between (prev_t, phi)
         // and (t, phi) recovers the zero-crossing.
-        if prev_phi == 0.0 {
+        // `prev_phi == 0` (effectively): the previous step landed on
+        // the surface itself — return that t/world directly without
+        // attempting a linear interpolation that would divide by a
+        // near-zero denominator. Use the same `ZERO_PHI_EPSILON`
+        // threshold as the linear-interpolation denominator guard so
+        // both zero-related branches stay numerically consistent.
+        if prev_phi.abs() < ZERO_PHI_EPSILON {
             return Some((prev_t, point_at(start, direction, prev_t)));
         }
         if (prev_phi > 0.0 && phi <= 0.0) || (prev_phi < 0.0 && phi >= 0.0) {
             let denom = phi - prev_phi;
             // `denom == 0` would have been caught by the prev_phi
-            // checks above; defensively guard anyway.
-            if denom.abs() < 1e-30 {
+            // checks above; defensively guard anyway with the same
+            // ZERO_PHI_EPSILON threshold.
+            if denom.abs() < ZERO_PHI_EPSILON {
                 return Some((t, p));
             }
             let alpha = -prev_phi / denom;
@@ -966,20 +997,17 @@ mod tests {
     /// any field is renamed, removed, or added).
     #[test]
     fn medial_options_defaults_pin_empirical_constants() {
-        let opts = MedialOptions::default();
-        assert_eq!(opts.distance_tolerance, 0.05);
-        assert_eq!(opts.narrow_band_half_width_voxels, 3.0);
-        assert_eq!(opts.normal_antiparallel_threshold, -0.5);
-        assert_eq!(opts.max_thickness_voxels, 64.0);
-
-        // Pattern-destructure all public fields; smoke-tests the
-        // struct shape so a future field rename is caught here.
+        // Pattern-destructure all public fields. Two purposes:
+        //  - field-rename guard: the destructuring fails to compile
+        //    if any field is renamed, removed, or added.
+        //  - value-pin: the trailing assert_eq!s pin each numeric
+        //    default to the PRD-derived constant.
         let MedialOptions {
             distance_tolerance,
             narrow_band_half_width_voxels,
             normal_antiparallel_threshold,
             max_thickness_voxels,
-        } = opts;
+        } = MedialOptions::default();
         assert_eq!(distance_tolerance, 0.05);
         assert_eq!(narrow_band_half_width_voxels, 3.0);
         assert_eq!(normal_antiparallel_threshold, -0.5);
