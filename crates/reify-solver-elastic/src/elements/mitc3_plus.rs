@@ -49,6 +49,22 @@ impl ShellReferenceCoord {
 pub struct Mitc3Plus;
 
 impl Mitc3Plus {
+    /// Shape-function gradients in reference coordinates at `coord`.
+    ///
+    /// Returns `[∇N_0, ∇N_1, ∇N_2]` where each gradient is
+    /// `[∂N/∂ξ, ∂N/∂η]`.  The gradients are constant — independent of
+    /// `coord` — because the P1 shape functions are linear:
+    ///
+    /// ```text
+    /// ∇N_0 = (−1, −1),  ∇N_1 = (1, 0),  ∇N_2 = (0, 1)
+    /// ```
+    ///
+    /// The `coord` argument is accepted for API uniformity with
+    /// `bubble_grad_at`, which **is** coordinate-dependent.
+    pub fn shape_grad_at(&self, _coord: ShellReferenceCoord) -> [[f64; 2]; 3] {
+        [[-1.0, -1.0], [1.0, 0.0], [0.0, 1.0]]
+    }
+
     /// Standard 3-node Lagrangian shape functions at `coord`.
     ///
     /// Returns `[1 − ξ − η, ξ, η]` — i.e. the barycentric coordinates of
