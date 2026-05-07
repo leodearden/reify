@@ -1,77 +1,39 @@
-//! End-to-end smoke test + diagnostic coverage for `imported` field sources.
+//! End-to-end smoke test for `imported` field sources in the v0.2 deferral state.
 //!
-//! # PRD task 5 scope
+//! # Why `compile_source_with_stdlib` instead of `parse_and_compile_with_stdlib`
 //!
-//! This file pins the public API surface and pipeline state for v0.2
-//! imported-field support.  The goal is **testing, not wiring**: the
-//! production glue that calls the ingestion / provenance / cache helpers
-//! inside `elaborate_field` is scheduled for a future task.  These tests
-//! document the *current* contract so the future task has a clear before/after
-//! diff.
-//!
-//! # Test structure
-//!
-//! Three strata:
-//!
-//! - **Stratum A (1 test)** — End-to-end smoke: pins the v0.2 deferral
-//!   pipeline (`FieldImportedV02` diagnostic + `Value::Undef` lambda
-//!   placeholder).
-//!
-//! - **Stratum B (3 tests)** — Diagnostic surface: pins cross-crate
-//!   reachability of representative `IngestError` variants from the
-//!   eval-crate vantage.  Detailed per-variant coverage lives in
-//!   `crates/reify-kernel-openvdb/tests/ingest_tests.rs`; we deliberately
-//!   do NOT duplicate it here.
-//!
-//! - **Stratum C (2 tests)** — Provenance + cache integration: exercises the
-//!   cross-cutting helpers (`build_field_import_provenance` and
-//!   `CacheStore::imported_file_hash_changed`) from this crate's vantage.
-//!
-//! # Embedded source fixture
-//!
-//! The `imported` source kind currently emits a `Severity::Error`
-//! `FieldImportedV02` deferral for any `imported` source, which makes it
-//! incompatible with the `all_examples_parse_and_compile_with_stdlib` sweep
-//! in `crates/reify-eval/tests/e2e_meta.rs`.  The source string is therefore
-//! embedded directly in this file rather than stored under
-//! `examples/fields/`.  When the production glue task lifts the deferral,
-//! only the embedded string and the smoke-test assertions need updating —
-//! no `examples/` migration required.
+//! `parse_and_compile_with_stdlib` panics on any `Severity::Error` diagnostic.
+//! The `imported` source kind currently emits `DiagnosticCode::FieldImportedV02`
+//! (a `Severity::Error`) by design — the whole point of this test is to pin that
+//! error.  `compile_source_with_stdlib` only panics on parse errors, so it is the
+//! correct helper here.
 //!
 //! # What to update when the glue task lands
 //!
-//! `imported_field_smoke_pins_v02_deferral_pipeline` will need:
-//!   1. The deferral assertion replaced by a positive ingestion assertion
-//!      (expect no `FieldImportedV02` error).
-//!   2. The `Value::Undef` lambda assertion replaced by an assertion that
-//!      the lambda is a populated `SampledField`.
-//!   3. A provenance assertion checking the `FieldImportProvenance` record
-//!      that `elaborate_field` will write.
-//! The Stratum B and Stratum C tests remain valid through that transition.
+//! When production wiring replaces the v0.2 deferral inside `elaborate_field`,
+//! update `imported_field_smoke_pins_v02_deferral_pipeline`:
+//!   1. Remove the `FieldImportedV02` error assertion.
+//!   2. Replace the `Value::Undef` lambda assertion with an assertion that the
+//!      lambda is a populated `SampledField`.
+//!   3. Add a provenance assertion checking the `FieldImportProvenance` record
+//!      written by `elaborate_field`.
+//!
+//! The embedded source string (rather than an `examples/fields/*.ri` fixture)
+//! keeps the test self-contained and avoids contaminating the
+//! `all_examples_parse_and_compile_with_stdlib` sweep in `e2e_meta.rs`, which
+//! expects no `Severity::Error` diagnostics.
 
-// ── Stratum A imports ─────────────────────────────────────────────────────
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::{
     FIELD_ENTITY_PREFIX, DiagnosticCode, FieldSourceKind, ModulePath, Value, ValueCellId,
 };
 
-// ── Stratum B imports ─────────────────────────────────────────────────────
-use reify_kernel_openvdb::ingest::{
-    IngestError, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation, lower_to_sampled,
-    read_vdb_file,
-};
-use reify_types::Type;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Stratum A — End-to-end smoke
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// Embedded source fixture — an `imported` field in a minimal module.
 ///
 /// Uses `compile_source_with_stdlib` (not `parse_and_compile_with_stdlib`) so
 /// the test survives the expected `FieldImportedV02` error without panicking.
-/// See the design decision in the file-level rustdoc.
+/// See the file-level rustdoc for the rationale.
 const IMPORTED_FIELD_SOURCE: &str = r#"
 field def pressure_map : Point3 -> Scalar {
     source = imported {
@@ -190,182 +152,4 @@ fn imported_field_smoke_pins_v02_deferral_pipeline() {
             other
         ),
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Stratum B — Diagnostic surface
-//
-// Pins cross-crate reachability of representative `IngestError` variants from
-// the eval-crate vantage.  Detailed per-variant coverage lives in
-// `crates/reify-kernel-openvdb/tests/ingest_tests.rs`; we deliberately do NOT
-// duplicate it here — only the three variants that map to the PRD's
-// "file-not-found, grid-not-in-file, unit mismatch, malformed file" taxonomy.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// `read_vdb_file` returns `FfiNotImplemented` for any path in v0.2.
-///
-/// The v0.2 stub funnels both "file-not-found" and "grid-not-in-file" into
-/// `FfiNotImplemented` because the OpenVDB FFI that would distinguish them is
-/// deferred to a follow-up task.  This test pins the stub behaviour and
-/// confirms the path string is carried through so error messages can name it.
-#[test]
-fn read_vdb_file_returns_ffi_not_implemented_for_v02() {
-    let result = read_vdb_file("path/that/does/not/exist.vdb", "voxel", &Type::length());
-    assert!(
-        matches!(
-            &result,
-            Err(IngestError::FfiNotImplemented { path }) if path == "path/that/does/not/exist.vdb"
-        ),
-        "expected FfiNotImplemented with the original path, got: {:?}",
-        result
-    );
-}
-
-/// `lower_to_sampled` returns `UnitMismatch` when the grid declares units
-/// whose dimension does not match the codomain type.
-///
-/// Uses a 1D `Length`/Linear grid (same baseline as `ingest_tests.rs:24-50`)
-/// with `units = "Pa"` (Pressure dimension) against codomain `Type::length()`
-/// (Length dimension) to trigger the mismatch.
-#[test]
-fn lower_to_sampled_unit_mismatch_errors_clearly() {
-    let grid = OpenVdbGridSource {
-        kind: OpenVdbGridKind::Regular1D,
-        bounds_min: vec![0.0],
-        bounds_max: vec![3.0],
-        spacing: vec![1.0],
-        data: vec![0.0, 1.0, 2.0, 3.0],
-        units: Some("Pa".to_string()),
-        interpolation: OpenVdbInterpolation::Linear,
-    };
-
-    let result = lower_to_sampled(&grid, "test_field", &Type::length());
-    assert!(
-        matches!(
-            &result,
-            Err(IngestError::UnitMismatch { found_unit, .. }) if found_unit == "Pa"
-        ),
-        "expected UnitMismatch with found_unit = \"Pa\", got: {:?}",
-        result
-    );
-}
-
-/// `lower_to_sampled` returns `DataShapeMismatch` when the data buffer is
-/// shorter than the axis-product requires.
-///
-/// Uses the same 1D baseline (`bounds=[0,3]`, `spacing=1` → 4 nodes) but
-/// provides only 2 data elements, which must produce
-/// `DataShapeMismatch { expected: 4, actual: 2, .. }`.
-#[test]
-fn lower_to_sampled_data_shape_mismatch_errors_clearly() {
-    let grid = OpenVdbGridSource {
-        kind: OpenVdbGridKind::Regular1D,
-        bounds_min: vec![0.0],
-        bounds_max: vec![3.0],
-        spacing: vec![1.0],
-        data: vec![0.0, 1.0], // only 2 elements, but 4 required
-        units: Some("m".to_string()),
-        interpolation: OpenVdbInterpolation::Linear,
-    };
-
-    let result = lower_to_sampled(&grid, "test_field", &Type::length());
-    assert!(
-        matches!(
-            &result,
-            Err(IngestError::DataShapeMismatch { expected: 4, actual: 2, .. })
-        ),
-        "expected DataShapeMismatch {{ expected: 4, actual: 2 }}, got: {:?}",
-        result
-    );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Stratum C — Provenance + cache integration
-//
-// Exercises the cross-cutting helpers from this crate's vantage, confirming
-// they are publicly reachable and correct at runtime.  The companion file
-// `crates/reify-eval/tests/field_import_provenance.rs` pins compile-time
-// reachability; this stratum extends that to runtime field-population
-// assertions.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ── Stratum C imports ─────────────────────────────────────────────────────
-use reify_eval::cache::CacheStore;
-use reify_eval::field_import_provenance::build_field_import_provenance;
-use reify_types::ContentHash;
-
-/// `build_field_import_provenance` populates all five `FieldImportProvenance`
-/// fields correctly and preserves a valid tolerance through the Gate 4 filter.
-///
-/// Cross-references `crates/reify-eval/tests/field_import_provenance.rs`,
-/// which pins compile-time reachability of the same three exports.  This test
-/// exercises the runtime call to verify struct population.
-///
-/// The Gate 4 filter (NaN / ±Inf / negative → `None`) is exhaustively covered
-/// by the in-crate unit tests in `crates/reify-eval/src/field_import_provenance.rs`;
-/// this test only pins the typical-valid-tolerance path.
-#[test]
-fn provenance_round_trips_all_five_fields_via_eval_builder() {
-    let prov = build_field_import_provenance(
-        "fea_results.vdb",
-        "OpenVDB",
-        ContentHash::of(b"vdb file bytes here"),
-        Some(50e-6),
-        1_700_000_000,
-    );
-
-    assert_eq!(prov.path, "fea_results.vdb");
-    assert_eq!(prov.format, "OpenVDB");
-    assert_eq!(prov.content_hash, ContentHash::of(b"vdb file bytes here"));
-    assert_eq!(prov.ingestion_timestamp_secs, 1_700_000_000);
-    // Gate 4 should preserve a valid finite non-negative tolerance.
-    assert_eq!(
-        prov.declared_tolerance_si,
-        Some(50e-6),
-        "Gate 4 should preserve a valid tolerance of 50e-6 m"
-    );
-}
-
-/// `CacheStore::imported_file_hash_changed` correctly handles the three-branch
-/// invalidation contract:
-///
-/// 1. **Cold start** — no prior recording → returns `true` (must re-read).
-/// 2. **Cache hit** — recorded hash matches new hash → returns `false`.
-/// 3. **Byte-different invalidation** — recorded hash ≠ new hash → returns `true`.
-///
-/// Cross-references `crates/reify-eval/src/cache.rs:348-374`, which documents
-/// the three-branch contract.  This test exercises the cross-crate vantage
-/// (`tests/` can reach the same public APIs as the production task-5 caller
-/// inside `elaborate_field`).
-#[test]
-fn cache_store_imported_file_hash_invalidates_on_byte_change() {
-    let h_a = ContentHash::of(b"vdb bytes A");
-    let h_b = ContentHash::of(b"vdb bytes B");
-    // Self-validate that the two hashes differ so the test is meaningful.
-    assert_ne!(h_a, h_b, "test requires two distinct content hashes");
-
-    let mut store = CacheStore::new();
-
-    // Branch 1: cold start — no prior recording.
-    assert!(
-        store.imported_file_hash_changed("p.vdb", h_a),
-        "cold start: imported_file_hash_changed must return true"
-    );
-    assert!(
-        store.get_imported_file_hash("p.vdb").is_none(),
-        "cold start: get_imported_file_hash must return None"
-    );
-
-    // Branch 2: cache hit after recording h_a.
-    store.record_imported_file_hash("p.vdb", h_a);
-    assert!(
-        !store.imported_file_hash_changed("p.vdb", h_a),
-        "cache hit: imported_file_hash_changed must return false when hash matches"
-    );
-
-    // Branch 3: byte-different invalidation (same path, different content).
-    assert!(
-        store.imported_file_hash_changed("p.vdb", h_b),
-        "byte-different invalidation: imported_file_hash_changed must return true when hash differs"
-    );
 }
