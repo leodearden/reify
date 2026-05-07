@@ -832,6 +832,124 @@ describe('meshManager', () => {
     });
   });
 
+  describe('setColorize in-place mutation (C-03)', () => {
+    const redBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+    const greenBake = (s: Float32Array) =>
+      new Float32Array([0, s[0], 0, 0, s[1], 0, 0, s[2], 0]);
+
+    function setupColorized() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: redBake },
+      });
+      vi.clearAllMocks();
+
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+      manager.sync({ A: meshData });
+      vi.clearAllMocks();
+
+      return { scene, manager };
+    }
+
+    it('(a) setColorize reuses the same color BufferAttribute reference', () => {
+      const { manager } = setupColorized();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const savedRef = geom.attributes.color;
+      expect(savedRef).toBeDefined();
+
+      manager.setColorize({ channel: 'vonMises', bake: greenBake });
+
+      // Same BufferAttribute object (identity check)
+      expect(geom.attributes.color).toBe(savedRef);
+    });
+
+    it('(b) setColorize updates the color array to the new bake output', () => {
+      const { manager } = setupColorized();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+
+      manager.setColorize({ channel: 'vonMises', bake: greenBake });
+
+      const colorAttr = geom.attributes.color;
+      // greenBake([10,20,30]) = [0,10,0, 0,20,0, 0,30,0]
+      expect(Array.from(colorAttr.array as Float32Array)).toEqual([0, 10, 0, 0, 20, 0, 0, 30, 0]);
+    });
+
+    it('(c) setColorize sets needsUpdate = true on the color attribute', () => {
+      const { manager } = setupColorized();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const colorAttr = geom.attributes.color;
+      colorAttr.needsUpdate = false; // explicitly reset
+
+      manager.setColorize({ channel: 'vonMises', bake: greenBake });
+
+      expect(colorAttr.needsUpdate).toBe(true);
+    });
+
+    it('(d) setColorize does NOT create new geometry, meshes, or materials', () => {
+      const { manager } = setupColorized();
+
+      const geomCountBefore = mockGeometries.length;
+      const meshCountBefore = mockMeshes.length;
+      const phongCountBefore = mockPhongMaterials.length;
+
+      manager.setColorize({ channel: 'vonMises', bake: greenBake });
+
+      expect(mockGeometries.length).toBe(geomCountBefore);
+      expect(mockMeshes.length).toBe(meshCountBefore);
+      expect(mockPhongMaterials.length).toBe(phongCountBefore);
+    });
+
+    it('(e) setColorize with a different channel name re-bakes from the new channel scalars', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: redBake },
+      });
+      vi.clearAllMocks();
+
+      // Mesh exposes BOTH channels
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: {
+          vonMises: new Float32Array([10, 20, 30]),
+          displacement_magnitude: new Float32Array([1, 2, 3]),
+        },
+      };
+      manager.sync({ A: meshData });
+      vi.clearAllMocks();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const savedRef = geom.attributes.color;
+
+      // Switch to the other channel; bake function for the new channel:
+      // greenBake([1, 2, 3]) = [0, 1, 0, 0, 2, 0, 0, 3, 0]
+      manager.setColorize({ channel: 'displacement_magnitude', bake: greenBake });
+
+      // Same buffer reference (in-place)
+      expect(geom.attributes.color).toBe(savedRef);
+      // Array rebaked from displacement_magnitude scalars
+      expect(Array.from(geom.attributes.color.array as Float32Array)).toEqual([
+        0, 1, 0, 0, 2, 0, 0, 3, 0,
+      ]);
+    });
+  });
+
   describe('ghost visibility', () => {
     // Helper: create manager, add one mesh, then reset mock call history so tests
     // start with zero recorded call counts.
