@@ -1041,17 +1041,35 @@ mod tests {
         }
     }
 
-    /// Tightening `distance_tolerance` from `0.05` (default) to `0.001`
-    /// (50× stricter) on the same 16×16×16 slab used in step-7 must
-    /// monotonically shrink the mask: every voxel in the strict mask
-    /// must also be in the default mask, and the strict mask cannot be
-    /// larger. This pins the `distance_tolerance` field as actually
-    /// wired to the medial decision in `compute_medial_mask`'s inner
-    /// loop — a future regression that hardcodes the threshold or
-    /// renames the field would surface here.
+    /// Tightening `distance_tolerance` must monotonically shrink the
+    /// slab mask: every voxel in the strict mask must also be in the
+    /// loose mask, the strict cardinality must be **strictly smaller**,
+    /// and both must be non-empty. Pins the `distance_tolerance` field
+    /// as actually wired to the medial decision in `compute_medial_mask`'s
+    /// inner loop — a future regression that hardcoded the threshold,
+    /// removed it from the inner-loop computation, or renamed it would
+    /// surface here.
     ///
-    /// Both masks are required to be non-empty (the slab medial axis is
-    /// well-populated on the centerline plane regardless of tolerance).
+    /// **Test-tolerance choice — discriminative bracket of the slab's
+    /// relative-error spectrum.** The 16×16×16 thickness-3 slab fixture
+    /// has only three relative-error regimes (centerline `abs_diff/dmax
+    /// ≈ 0.286`, one-voxel-off `≈ 0.667`, two-voxel-off `≈ 0.909`); a
+    /// tolerance in `(0.286, 0.667]` admits centerline only, a tolerance
+    /// in `(0.667, 0.909]` admits both centerline and one-voxel-off.
+    /// Tightening the production default `0.05` to `0.001` (the obvious
+    /// 50×-stricter choice) does NOT shrink the mask on this fixture
+    /// because the absolute one-voxel slack `+ min_spacing` in the
+    /// equality threshold (see [`compute_medial_mask`] inline comment
+    /// and the [`MedialOptions::distance_tolerance`] doc-comment caveat)
+    /// dominates for thicknesses ≪ 20 voxels — both `0.05*3.5 + 1.0` and
+    /// `0.001*3.5 + 1.0` round to ≈ `1.0` and admit only the centerline
+    /// `abs_diff = 1.0` voxels. We therefore bracket directly: `loose =
+    /// 0.7` (relative term dominates → admits both regimes →
+    /// abs_diff < 0.7·dmax + 1.0 admits centerline AND one-voxel-off)
+    /// and `strict = 0.05` (= production default → relative term inert →
+    /// admits centerline only). This triggers the strict-cardinality
+    /// assertion below, catching a regression that the prior `0.05 vs
+    /// 0.001` test would have missed (see code-review suggestion #2).
     #[test]
     fn tightening_distance_tolerance_reduces_slab_mask_size() {
         use std::collections::HashSet;
@@ -1059,45 +1077,53 @@ mod tests {
         let n = 16usize;
         let sdf = slab_sdf_3d(3.0, n);
 
-        let default_opts = MedialOptions::default();
-        let strict_opts = MedialOptions {
-            distance_tolerance: 0.001,
+        // Loose (0.7) admits both centerline (ratio ≈ 0.286) and
+        // one-voxel-off (ratio ≈ 0.667). Strict (0.05 = production
+        // default) admits centerline only.
+        let loose_opts = MedialOptions {
+            distance_tolerance: 0.7,
             ..MedialOptions::default()
         };
+        let strict_opts = MedialOptions::default();
 
-        let default_mask = compute_medial_mask(&sdf, &default_opts)
-            .expect("slab compute (default tolerance) succeeds");
+        let loose_mask = compute_medial_mask(&sdf, &loose_opts)
+            .expect("slab compute (loose tolerance) succeeds");
         let strict_mask = compute_medial_mask(&sdf, &strict_opts)
-            .expect("slab compute (strict tolerance) succeeds");
+            .expect("slab compute (strict tolerance = production default) succeeds");
 
         // (a) both non-zero
         assert!(
-            !default_mask.voxels.is_empty(),
-            "default-tolerance slab mask must be non-empty"
+            !loose_mask.voxels.is_empty(),
+            "loose-tolerance slab mask must be non-empty"
         );
         assert!(
             !strict_mask.voxels.is_empty(),
-            "strict-tolerance slab mask must be non-empty (strictness \
-             should not collapse the mask entirely on a slab whose \
-             medial-axis voxels see d⁺ ≈ d⁻ to within machine epsilon \
-             at the centerline)"
+            "strict-tolerance slab mask must be non-empty (the centerline \
+             voxels see d⁺ ≈ d⁻ to within one voxel and clear the \
+             absolute one-voxel slack at any tolerance ≥ 0)"
         );
 
-        // (b) monotonic non-increase
+        // (b) STRICT cardinality reduction: the strict tolerance MUST
+        // shrink the mask. If these counts are equal, the
+        // distance_tolerance field is effectively inert in the inner
+        // loop on this fixture — either hardcoded, unread, or wired to
+        // a different field. Catches the regression that the
+        // weaker-than-strict `<=` assertion would miss.
         assert!(
-            strict_mask.voxels.len() <= default_mask.voxels.len(),
-            "tightening distance_tolerance from 0.05 to 0.001 must not \
-             grow the mask: strict={} default={}",
+            strict_mask.voxels.len() < loose_mask.voxels.len(),
+            "tightening distance_tolerance from 0.7 to 0.05 must shrink \
+             the slab mask (loose admits one-voxel-off voxels at \
+             ratio≈0.667, strict admits centerline only): strict={} loose={}",
             strict_mask.voxels.len(),
-            default_mask.voxels.len()
+            loose_mask.voxels.len()
         );
 
-        // (c) strict ⊂ default (voxel-set inclusion)
-        let default_set: HashSet<[i32; 3]> = default_mask.voxels.iter().copied().collect();
+        // (c) strict ⊂ loose (voxel-set inclusion)
+        let loose_set: HashSet<[i32; 3]> = loose_mask.voxels.iter().copied().collect();
         for v in &strict_mask.voxels {
             assert!(
-                default_set.contains(v),
-                "strict-tolerance voxel {v:?} is missing from the default \
+                loose_set.contains(v),
+                "strict-tolerance voxel {v:?} is missing from the loose \
                  mask — distance_tolerance is not monotonically wired \
                  (a stricter threshold should never accept a voxel that \
                  the looser threshold rejected)"
