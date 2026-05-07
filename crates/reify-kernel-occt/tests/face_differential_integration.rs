@@ -47,29 +47,6 @@ fn cylinder_kernel(radius: f64, height: f64) -> (OcctKernel, GeometryHandleId) {
     (kernel, handle.id)
 }
 
-/// Parse all three components out of a `FaceNormal` JSON-encoded `Value::String`
-/// via `serde_json` — robust to key-ordering / whitespace / float-format
-/// changes. Today's format is `{"x":<f>,"y":<f>,"z":<f>}`.
-fn parse_face_normal(kernel: &OcctKernel, face_id: GeometryHandleId) -> [f64; 3] {
-    match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
-        Ok(Value::String(s)) => {
-            let v: serde_json::Value = serde_json::from_str(&s)
-                .unwrap_or_else(|e| panic!("FaceNormal JSON parse failed: {e}; raw = {s:?}"));
-            let get = |k: &str| -> f64 {
-                v.get(k).and_then(|x| x.as_f64()).unwrap_or_else(|| {
-                    panic!("FaceNormal JSON missing or non-numeric '{k}': {s:?}")
-                })
-            };
-            [get("x"), get("y"), get("z")]
-        }
-        other => panic!("FaceNormal returned unexpected value: {other:?}"),
-    }
-}
-
-/// Z-component of `FaceNormal`. Convenience for the cylinder cap/side filter.
-fn parse_face_normal_z(kernel: &OcctKernel, face_id: GeometryHandleId) -> f64 {
-    parse_face_normal(kernel, face_id)[2]
-}
 
 // ---------------------------------------------------------------------------
 // surface_normal_at — happy-path: sphere
@@ -130,7 +107,13 @@ fn surface_normal_at_on_cylinder_side_face_is_radial_perpendicular_to_z() {
     let side_face = faces
         .iter()
         .copied()
-        .find(|&f| parse_face_normal_z(&kernel, f).abs() < 0.5)
+        .find(|&f| {
+            kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("FaceNormal should succeed for cylinder face")[2]
+                .abs()
+                < 0.5
+        })
         .expect("cylinder should have a curved side face with |n_z| < 0.5");
 
     // At (u=π/2, v=5): OCCT cylinder parametrization P(u,v) = (r·cos u, r·sin u, v).
@@ -298,7 +281,9 @@ fn surface_normal_at_matches_query_face_normal_at_centroid() {
     let face = faces[0];
 
     // FaceNormal returns the outward unit normal at the physical centroid.
-    let qfn = parse_face_normal(&kernel, face);
+    let qfn = kernel
+        .face_outward_unit_normal_for_test(face)
+        .expect("FaceNormal should succeed for sphere face");
 
     // For a sphere, the outward normal direction determines (u, v) uniquely:
     //   normal = (cos(v)·cos(u), cos(v)·sin(u), sin(v))
@@ -449,7 +434,13 @@ fn curvature_at_on_cylinder_side_face_yields_developable_curvature() {
     let side_face = faces
         .iter()
         .copied()
-        .find(|&f| parse_face_normal_z(&kernel, f).abs() < 0.5)
+        .find(|&f| {
+            kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("FaceNormal should succeed for cylinder face")[2]
+                .abs()
+                < 0.5
+        })
         .expect("cylinder should have a curved side face");
 
     let c = kernel
@@ -538,7 +529,13 @@ fn curvature_at_on_cylinder_cap_face_yields_zero_curvature() {
     let cap_face = faces
         .iter()
         .copied()
-        .find(|&f| parse_face_normal_z(&kernel, f).abs() > 0.99)
+        .find(|&f| {
+            kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("FaceNormal should succeed for cylinder face")[2]
+                .abs()
+                > 0.99
+        })
         .expect("cylinder should have a flat cap face");
 
     // The cap is a disk; query at (0, 0) as a stable interior parameter.
@@ -774,7 +771,9 @@ fn curvature_at_on_placed_cylinder_side_axial_principal_direction_aligns_with_ro
         .iter()
         .copied()
         .find(|&f| {
-            let n = parse_face_normal(&kernel, f);
+            let n = kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("FaceNormal should succeed for placed cylinder face");
             let dot = n[0] * rot_axis[0] + n[1] * rot_axis[1] + n[2] * rot_axis[2];
             dot.abs() < 0.5
         })
