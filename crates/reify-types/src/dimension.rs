@@ -1131,4 +1131,27 @@ mod tests {
     fn acceleration_is_distinct_from_length() {
         assert_ne!(DimensionVector::ACCELERATION, DimensionVector::LENGTH);
     }
+
+    #[test]
+    fn force_density_has_kg_per_m_squared_per_s_squared_exponents() {
+        let fd = DimensionVector::FORCE_DENSITY;
+        assert_eq!(fd, DimensionVector::from_exps(&[(0, -2), (1, 1), (2, -2)]));
+        assert_eq!(fd.canonical_name(), Some("ForceDensity"));
+    }
+
+    #[test]
+    fn force_density_equals_force_div_volume() {
+        assert_eq!(
+            DimensionVector::FORCE_DENSITY,
+            DimensionVector::FORCE.div(&DimensionVector::VOLUME)
+        );
+    }
+
+    #[test]
+    fn force_density_is_distinct_from_pressure() {
+        // PRESSURE has slot 0 = -1; FORCE_DENSITY has slot 0 = -2.
+        // They share the same mass and time exponents; pin the length-slot
+        // distinction so future edits cannot silently collapse the two.
+        assert_ne!(DimensionVector::FORCE_DENSITY, DimensionVector::PRESSURE);
+    }
 }
