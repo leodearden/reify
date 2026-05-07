@@ -98,6 +98,40 @@ impl FidgetKernel {
         r_sq.sqrt() - r
     }
 
+    /// Build the standard Inigo-Quilez axis-aligned-box SDF for a box
+    /// centred at the origin with full extents `(w, h, d)`. Half-extents
+    /// `b = (w/2, h/2, d/2)`:
+    ///
+    /// ```text
+    /// q = abs(p) − b
+    /// length(max(q, 0)) + min(max(q.x, q.y, q.z), 0)
+    /// ```
+    ///
+    /// The first term measures distance outside the box; the second term
+    /// measures depth inside the box (negative).
+    fn box_tree(w: f64, h: f64, d: f64) -> Tree {
+        let bx = w * 0.5;
+        let by = h * 0.5;
+        let bz = d * 0.5;
+
+        // q = |p| − b
+        let qx = Tree::x().abs() - bx;
+        let qy = Tree::y().abs() - by;
+        let qz = Tree::z().abs() - bz;
+
+        // outside_part = sqrt(max(qx,0)² + max(qy,0)² + max(qz,0)²)
+        let qx_pos = qx.max(0.0);
+        let qy_pos = qy.max(0.0);
+        let qz_pos = qz.max(0.0);
+        let outside_part =
+            (qx_pos.square() + qy_pos.square() + qz_pos.square()).sqrt();
+
+        // inside_part = min(max(qx, qy, qz), 0)
+        let inside_part = qx.max(qy.clone()).max(qz.clone()).min(0.0);
+
+        outside_part + inside_part
+    }
+
     /// Public SDF evaluation entry point.
     ///
     /// Builds a `JitShape::from(tree.clone())`, requests a
@@ -193,6 +227,17 @@ impl GeometryKernel for FidgetKernel {
             GeometryOp::Sphere { radius } => {
                 let r = extract_f64(radius)?;
                 let tree = Self::sphere_tree(r);
+                Ok(self.insert_tree(tree))
+            }
+            GeometryOp::Box {
+                width,
+                height,
+                depth,
+            } => {
+                let w = extract_f64(width)?;
+                let h = extract_f64(height)?;
+                let d = extract_f64(depth)?;
+                let tree = Self::box_tree(w, h, d);
                 Ok(self.insert_tree(tree))
             }
             other => Err(GeometryError::OperationFailed(format!(
