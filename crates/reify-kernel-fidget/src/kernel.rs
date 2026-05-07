@@ -200,6 +200,29 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
 }
 
+/// Stable static label for a `GeometryQuery` variant — same role as
+/// [`op_kind_name`] but for the query-error catch-all.
+fn query_kind_name(q: &GeometryQuery) -> &'static str {
+    match q {
+        GeometryQuery::Volume(_) => "Volume",
+        GeometryQuery::SurfaceArea(_) => "SurfaceArea",
+        GeometryQuery::Centroid(_) => "Centroid",
+        GeometryQuery::BoundingBox(_) => "BoundingBox",
+        GeometryQuery::Distance { .. } => "Distance",
+        GeometryQuery::MomentOfInertia { .. } => "MomentOfInertia",
+        GeometryQuery::AdjacentFaces { .. } => "AdjacentFaces",
+        GeometryQuery::SharedEdges { .. } => "SharedEdges",
+        GeometryQuery::IsWatertight(_) => "IsWatertight",
+        GeometryQuery::IsManifold(_) => "IsManifold",
+        GeometryQuery::IsOrientable(_) => "IsOrientable",
+        GeometryQuery::CenterOfMass { .. } => "CenterOfMass",
+        GeometryQuery::InertiaTensor { .. } => "InertiaTensor",
+        GeometryQuery::EdgeLength(_) => "EdgeLength",
+        GeometryQuery::EdgeTangent(_) => "EdgeTangent",
+        GeometryQuery::FaceNormal(_) => "FaceNormal",
+    }
+}
+
 /// Stable static label for a `GeometryOp` variant — used in error
 /// messages so the format string interpolates a stable token rather than
 /// the full `Debug` print.
@@ -295,21 +318,24 @@ impl GeometryKernel for FidgetKernel {
         }
     }
 
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Err(QueryError::QueryFailed(
-            "Fidget SDF kernel: queries not yet supported on Sdf representation".into(),
-        ))
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        Err(QueryError::QueryFailed(format!(
+            "Fidget SDF kernel: {} queries on Sdf require meshing — see arch §10.8 \
+             (SDF→Mesh follow-up task)",
+            query_kind_name(query),
+        )))
     }
 
     fn export(
         &self,
         _handle: GeometryHandleId,
-        _format: ExportFormat,
+        format: ExportFormat,
         _writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        Err(ExportError::FormatError(
-            "Fidget SDF kernel: export not yet supported on Sdf representation".into(),
-        ))
+        Err(ExportError::FormatError(format!(
+            "Fidget SDF kernel: {format:?} export from an Sdf representation is not \
+             supported — Sdf→BRep conversion is a v0.3 follow-up",
+        )))
     }
 
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
