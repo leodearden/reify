@@ -403,4 +403,73 @@ mod tests {
             "GeometryOp::Loft (multi-profile) must be rejected for Phase A"
         );
     }
+
+    // ── Step-7: "no subsequent modifications" contract ────────────────────
+    // These tests pin the implicit contract that any post-sweep modify op
+    // (Translate / Fillet / Boolean / …) sits on top of the sweep as the
+    // *last* op, and the top-level `match ops.last()?` returns None for it.
+
+    #[test]
+    fn classify_swept_body_extrude_followed_by_translate_returns_none() {
+        let ops = vec![
+            GeometryOp::Extrude {
+                profile: GeometryHandleId(0),
+                distance: Value::length(0.01),
+            },
+            GeometryOp::Translate {
+                target: GeometryHandleId(1),
+                dx: 0.01,
+                dy: 0.0,
+                dz: 0.0,
+            },
+        ];
+        let handles = vec![GeometryHandleId(1), GeometryHandleId(2)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "Extrude followed by Translate is no longer a recognised swept body (last op is Translate)"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_extrude_followed_by_fillet_returns_none() {
+        let ops = vec![
+            GeometryOp::Extrude {
+                profile: GeometryHandleId(0),
+                distance: Value::length(0.01),
+            },
+            GeometryOp::Fillet {
+                target: GeometryHandleId(1),
+                radius: Value::length(0.001),
+            },
+        ];
+        let handles = vec![GeometryHandleId(1), GeometryHandleId(2)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "Extrude followed by Fillet is no longer a recognised swept body (last op is Fillet)"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_revolve_followed_by_union_returns_none() {
+        let ops = vec![
+            GeometryOp::Revolve {
+                profile: GeometryHandleId(0),
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            },
+            GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(0),
+            },
+        ];
+        let handles = vec![GeometryHandleId(1), GeometryHandleId(2)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "Revolve followed by Union is no longer a recognised swept body (last op is Union)"
+        );
+    }
 }
