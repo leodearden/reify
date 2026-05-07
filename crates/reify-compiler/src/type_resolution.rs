@@ -1878,6 +1878,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_type_name_recognises_acceleration() {
+        assert_eq!(
+            resolve_type_name("Acceleration"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::ACCELERATION
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_type_name_recognises_force_density() {
+        assert_eq!(
+            resolve_type_name("ForceDensity"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::FORCE_DENSITY
+            })
+        );
+    }
+
+    #[test]
     fn resolve_dimension_type_recognises_money() {
         let te = named_type_expr("Money");
         let mut diagnostics = Vec::new();
