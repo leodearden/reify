@@ -7,11 +7,10 @@
 // Audit reference: docs/notes/stdlib-trait-audit.md §6.4 (all traits marked MISSING).
 //
 // ── Decision #1: Real placeholder for dimensioned params ─────────────────────
-// The spec's `Scalar<Voltage*Length/Current>` resistivity type is deferred.
-// Existing stdlib (materials_mechanical.ri, structural_physical.ri) consistently
-// uses `Real` until the dimensional type system lands; these traits follow the
-// same convention to keep the stdlib consistent and avoid blocking on
-// dimensional-type work.
+// Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
+// resistivity (Ω·m) and dielectric_strength (V/m) are blocked-composite pending
+// named-dim aliases (task-E); dielectric_constant and magnetic_permeability are
+// genuine-dimensionless (annotated below). Follow-up task IDs: see audit doc.
 //
 // ── Decision #2: Parent trait name ───────────────────────────────────────────
 // The spec text says `: Material` but `Material` was renamed to `MaterialSpec`
@@ -47,9 +46,9 @@
 //   magnetic_permeability — dimensionless (relative permeability)
 trait ElectricallyCharacterized : MaterialSpec {
     param resistivity : Real
-    param dielectric_constant : Real
+    param dielectric_constant : Real // dimensionless
     param dielectric_strength : Real
-    param magnetic_permeability : Real
+    param magnetic_permeability : Real // dimensionless
 }
 
 // ── Conductive ───────────────────────────────────────────────────────────────
