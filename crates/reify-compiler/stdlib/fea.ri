@@ -104,42 +104,6 @@ structure def LoadCase {
     param options : Option<ElasticOptions> = none
 }
 
-// ── MultiCaseResult structure ─────────────────────────────────────────────────
-
-// `MultiCaseResult` is the multi-load-case FEA solver-output container.
-// Each instance holds a complete set of per-case `ElasticResult` instances
-// produced by `solve_load_cases` (task #2), keyed by the corresponding
-// `LoadCase.name`.
-//
-// Design constraints:
-//   - No `constraint` blocks: the only meaningful invariant ("cases must be
-//     non-empty") is a collection invariant expressible only at the producer
-//     (`solve_load_cases`); per-instance scalar predicates can't enforce it.
-//     Map key-uniqueness is structurally guaranteed by `BTreeMap`.
-//   - No per-field defaults: every `MultiCaseResult` instance must be
-//     populated by the solver — a bare `MultiCaseResult()` call would
-//     produce an empty Map, which is meaningless without a solve.
-//
-// Accessor free-functions (name-dispatched in `crates/reify-stdlib/src/fea.rs`):
-//   - `case_names(mcr : MultiCaseResult) -> List<String>`: returns the Map
-//     keys in BTreeMap lexicographic order.
-//   - `result_for(mcr : MultiCaseResult, name : String) -> ElasticResult`:
-//     returns the `ElasticResult` for `name`, or `Undef` on miss (silent-Undef
-//     per PRD task #10 deferral, matching the `envelope_*` convention).
-//
-// Field rationale:
-//   `cases` — Map from case name to `ElasticResult`. Keys match the
-//             `LoadCase.name` values passed to `solve_load_cases`.
-//             BTreeMap key uniqueness is structurally guaranteed.
-//             Map key type is `String` (matching `LoadCase.name : String`).
-//             Map value type is `ElasticResult` (from `std.solver.elastic`).
-structure def MultiCaseResult {
-    // Per-case solver results keyed by `LoadCase.name`.  Populated
-    // exclusively by `solve_load_cases` (task #2); no caller-supplied
-    // default makes sense.
-    param cases : Map<String, ElasticResult>
-}
-
 // ── v0.4 shell BC framework (runtime-only) ───────────────────────────────────
 //
 // The `PinnedSupport` constructor and the shell-aware `FixedSupport` contract

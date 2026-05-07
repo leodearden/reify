@@ -168,7 +168,8 @@ fn loadcase_struct_has_correct_param_shape() {
 ///   `options`  — `none` (bare `ElasticOptions()` defaults apply when unspecified)
 ///
 /// The `options = none` default uses `CompiledExprKind::OptionNone` with
-/// `result_type == Option<ElasticOptions>`.
+/// `result_type == Option<ElasticOptions>`.  The other three params (`name`,
+/// `loads`, `supports`) have no defaults.
 #[test]
 fn loadcase_param_defaults_match_spec() {
     let template = find_structure("LoadCase");
@@ -206,5 +207,59 @@ fn loadcase_param_defaults_match_spec() {
         Type::Option(Box::new(Type::StructureRef("ElasticOptions".to_string()))),
         "options default's result_type should be Option<ElasticOptions>, got: {:?}",
         options_default.result_type
+    );
+}
+
+// ─── MultiCaseResult param shape ─────────────────────────────────────────────
+
+/// `MultiCaseResult` is the multi-load-case FEA solver-output container.
+/// It must declare exactly one param with the canonical name and type:
+///
+///   - `cases : Map<String, ElasticResult>`  (keyed by `LoadCase.name`)
+///
+/// No defaults: every instance must be fully populated by `solve_load_cases`
+/// (task #2) — a bare `MultiCaseResult()` with an empty Map is meaningless
+/// without a solve. Map key-uniqueness is structurally guaranteed by `BTreeMap`;
+/// the only producer-side invariant (non-empty Map) is enforced by
+/// `solve_load_cases`.
+#[test]
+fn multi_case_result_struct_has_correct_param_shape() {
+    let template = find_structure("MultiCaseResult");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        1,
+        "MultiCaseResult should have exactly 1 param cell, got: {:?}",
+        names
+    );
+
+    let cell = params
+        .iter()
+        .find(|vc| vc.id.member == "cases")
+        .unwrap_or_else(|| {
+            panic!(
+                "MultiCaseResult missing required param 'cases'; got: {:?}",
+                names
+            )
+        });
+
+    assert_eq!(
+        cell.cell_type,
+        Type::Map(
+            Box::new(Type::String),
+            Box::new(Type::StructureRef("ElasticResult".to_string())),
+        ),
+        "MultiCaseResult.cases should be Map<String, ElasticResult>, got {:?}",
+        cell.cell_type
+    );
+
+    // No default — every instance must be produced by solve_load_cases
+    assert!(
+        cell.default_expr.is_none(),
+        "MultiCaseResult.cases should have no default_expr (solver-only-produced), \
+         but got: {:?}",
+        cell.default_expr
     );
 }
