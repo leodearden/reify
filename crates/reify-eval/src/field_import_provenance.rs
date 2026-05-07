@@ -10,29 +10,47 @@ use reify_types::{ContentHash, FieldImportProvenance};
 
 /// Build a [`FieldImportProvenance`] record for a field import event.
 ///
+/// This is the production call site for arch §14.5 / PRD
+/// `docs/prds/v0_2/imported-field-source.md` ("Resolved design decisions"
+/// → "Provenance via Input occurrence"). Task 5 of the decomposition plan
+/// will call this builder from `elaborate_field`'s `CompiledFieldSource::Imported`
+/// arm once the end-to-end wiring lands.
+///
 /// # Parameters
 ///
 /// * `path` — source file path (absolute or relative).
-/// * `format` — format name, e.g. `"OpenVDB"`.
+/// * `format` — format name, e.g. `"OpenVDB"`, `"STEP"`.
 /// * `file_bytes` — raw bytes of the source file at ingestion time; hashed
-///   deterministically via [`ContentHash::of`] (XXH3-128).
+///   deterministically via [`ContentHash::of`] (XXH3-128). Empty slices are
+///   accepted and produce a well-formed `ContentHash`.
 /// * `declared_tolerance_si` — tolerance declared on the `Input` occurrence's
-///   `param tolerance : Length = …`, in SI metres. Values that are NaN, ±Inf,
-///   or negative are mapped to `None` (Gate 4 filter — mirrors
-///   [`crate::tolerance_promise::extract_input_tolerance_promise`] Gate 4 for
-///   cross-extractor symmetry; downstream `is_promise_insufficient`
-///   debug_assert invariants rely on this contract).
+///   `param tolerance : Length = …`, in SI metres. Malformed values (NaN,
+///   ±Inf, negative finite) are silently collapsed to `None` by the Gate 4
+///   filter — see [`crate::tolerance_promise::extract_input_tolerance_promise`]
+///   for the canonical reference. `Some(0.0)` is preserved (lower-boundary
+///   acceptance, consistent with `extract_input_tolerance_promise_accepts_zero_promise`).
 /// * `ingestion_timestamp_secs` — Unix epoch seconds at which ingestion
 ///   occurred; caller-supplied so this function stays a pure function with no
 ///   internal `SystemTime::now()` call.
 ///
 /// # Determinism
 ///
-/// The function is deterministic: identical inputs always produce identical
-/// outputs. `ContentHash::of` is backed by XXH3-128 (see `reify-types`
-/// `hash::deterministic` test). The caller controls the timestamp, so there is
-/// no hidden non-determinism. Empty `file_bytes` are accepted and produce a
-/// well-formed `ContentHash`.
+/// The function is a pure function: identical inputs always produce identical
+/// `FieldImportProvenance` outputs. `ContentHash::of` is backed by XXH3-128
+/// (see `reify-types` `hash::deterministic` test); the caller controls the
+/// timestamp; the Gate 4 filter is a simple arithmetic predicate with no
+/// hidden state.
+///
+/// # Cross-extractor symmetry
+///
+/// The Gate 4 filter (`is_finite() && >= 0.0`) applied to
+/// `declared_tolerance_si` mirrors the same gate in
+/// [`crate::tolerance_promise::extract_input_tolerance_promise`] (lines
+/// 163–168) and in
+/// [`crate::tolerance_combine::extract_output_tolerance_bound`]. This keeps
+/// the entire tolerance-promise vocabulary consistent: no malformed promise
+/// can reach `FieldImportProvenance.declared_tolerance_si` and then propagate
+/// into `is_promise_insufficient`'s debug_assert invariants.
 pub fn build_field_import_provenance(
     path: &str,
     format: &str,
