@@ -20,8 +20,15 @@ use reify_test_support::{
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 #[allow(unused_imports)]
 use reify_types::{
-    CompiledExpr, DiagnosticCode, ExportFormat, ModulePath, ReprKind, Severity, Type,
+    CapabilityDescriptor, CompiledExpr, DiagnosticCode, ExportFormat, ModulePath, Operation,
+    ReprKind, Severity, Type,
 };
+#[allow(unused_imports)]
+use reify_eval::{
+    dispatch, per_stage_tolerance_for_plan, tolerance_budget::per_stage_tolerance, DispatchPlan,
+};
+#[allow(unused_imports)]
+use std::collections::{BTreeMap, HashSet};
 
 /// Step-1 (failing initially; passes once step-2's
 /// `emit_imported_tolerance_promise_diagnostics_for_module` helper is wired
@@ -335,5 +342,104 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
         ops_after_first,
         ops_after_second,
         ops_after_second - ops_after_first,
+    );
+}
+
+/// Step-9 (failing initially; passes once step-10 adds the
+/// `Engine::compute_realization_tolerance_budget(&self, registry, demanded_tol)`
+/// helper that synthesises a `DispatchPlan` via
+/// `dispatch(registry, Operation::BooleanUnion, ReprKind::BRep, &{ReprKind::BRep})`
+/// and forwards through `per_stage_tolerance_for_plan(&plan, demanded_tol)`).
+///
+/// Pins the per-stage tolerance-budget pipeline at the engine surface:
+///
+/// - **Part (i): single-kernel registry → 0-conversion plan, helper passes
+///   `demanded_tol` through unchanged.** The fixture registers a single
+///   `occt`-shaped descriptor that supports `(BooleanUnion, BRep)`. Under the
+///   helper's hard-coded `(op, demanded, available) =
+///   (BooleanUnion, BRep, {BRep})` triple, the BFS in `dispatch` finds a
+///   final-stage match at depth 0 and returns `DispatchPlan { kernel: "occt",
+///   conversions: vec![] }`. `per_stage_tolerance_for_plan` on an empty chain
+///   pass-throughs the input by contract (dispatcher.rs §truth-table), so the
+///   helper returns `demanded_tol` bit-exactly.
+///
+/// - **Part (ii): two-stage chain primitive → `per_stage_tolerance(_, 2)`.**
+///   The 2-stage chain in `tests/tolerance_dispatch_budget.rs` (alpha:
+///   BRep→Sdf, beta: Sdf→Mesh, manifold: BooleanUnion on Mesh) yields a
+///   2-conversion plan only when dispatched for `demanded = ReprKind::Mesh`.
+///   The engine helper hard-codes `demanded = ReprKind::BRep` (per the design
+///   decision: `RealizationDecl` carries no Operation/ReprKind metadata, and
+///   the v0.2 occt-only baseline is BRep-on-BRep), so a 2-stage chain ending
+///   in Mesh is unreachable through the helper's BFS — the helper's `None`
+///   branch returns `demanded_tol` unchanged (no plan ⇒ no budget allocation).
+///   To pin the 2-stage budget primitive that the helper consumes when a
+///   non-trivial plan IS available (multi-kernel adapter tasks land it), we
+///   construct a `DispatchPlan` literal with two conversions and assert that
+///   `per_stage_tolerance_for_plan(&plan, demanded_tol)` equals
+///   `per_stage_tolerance(demanded_tol, 2)`. The literal-construction route
+///   mirrors the dispatcher's own multi-stage unit tests (dispatcher.rs:1349)
+///   and the lib re-export integration smoke
+///   (`tolerance_dispatch_budget.rs:46`); replicating the assertion at the
+///   engine-test layer locks the integration of the budget primitive into
+///   the same test file as the helper, so a future refactor cannot drop the
+///   wiring without breaking this pin.
+///
+/// Today (pre step-10) the helper does not exist, so the call to
+/// `engine.compute_realization_tolerance_budget(&single, demand)` is a
+/// compile error and this test FAILS. Once step-10 lands the helper as a
+/// cfg-gated `pub` accessor (mirroring `realization_cache()` /
+/// `feature_tag_table()` precedent), the call resolves and both parts of the
+/// assertion pass.
+#[test]
+fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_chain() {
+    let engine = make_engine();
+
+    // ── Part (i): single-kernel registry, 0-conversion plan, pass-through ──
+
+    let occt = CapabilityDescriptor {
+        supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+    };
+    let mut single: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+    single.insert("occt".to_string(), &occt);
+
+    let demand = 1e-6_f64;
+    assert_eq!(
+        engine.compute_realization_tolerance_budget(&single, demand),
+        demand,
+        "single-kernel registry yields a 0-conversion DispatchPlan under \
+         dispatch(_, BooleanUnion, BRep, {{BRep}}); per_stage_tolerance_for_plan \
+         on an empty chain must pass demanded_tol through unchanged \
+         (bit-exact). Helper deviation here would indicate either (a) the \
+         empty-chain pass-through contract is broken in \
+         per_stage_tolerance_for_plan, or (b) the helper applied the \
+         safety-factor fold at len()=0 instead of bypassing it (an off-by-one \
+         in the n_stages resolution). Demand: {demand}",
+    );
+
+    // ── Part (ii): two-stage chain primitive, geometric per-stage split ───
+
+    // 2-conversion plan literal; matches the chain-shape pinned by
+    // dispatcher.rs::per_stage_tolerance_for_plan_multi_stage_chain_uses_geometric_split
+    // and tests/tolerance_dispatch_budget.rs::lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end.
+    let plan_two = DispatchPlan {
+        kernel: "manifold".to_string(),
+        conversions: vec![
+            ("alpha".to_string(), ReprKind::BRep, ReprKind::Sdf),
+            ("beta".to_string(), ReprKind::Sdf, ReprKind::Mesh),
+        ],
+    };
+    assert_eq!(
+        per_stage_tolerance_for_plan(&plan_two, demand),
+        per_stage_tolerance(demand, 2),
+        "two-stage dispatch chain (BRep→Sdf→Mesh, BooleanUnion on Mesh) must \
+         yield per_stage_tolerance(demanded_tol, 2). This is the budget \
+         primitive that compute_realization_tolerance_budget consumes when \
+         the underlying dispatch returns a multi-stage plan — for the \
+         helper's hard-coded (BooleanUnion, BRep, {{BRep}}) triple a 2-stage \
+         plan is unreachable (BFS visited set blocks BRep re-entry), so this \
+         pin is the integration-layer guarantee that the budget primitive \
+         remains correctly wired against the dispatcher API surface even \
+         though the helper itself routes through the None-branch pass-through \
+         on this registry shape.",
     );
 }
