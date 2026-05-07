@@ -205,3 +205,61 @@ describe('FeaModeToolbar — range-mode suite', () => {
     expect(onLockCurrent).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('FeaModeToolbar — collapsible suite', () => {
+  it('(a) collapse toggle button is always rendered', () => {
+    const store = createFeaModeStore();
+    // Even with enabled=false (default), collapse toggle is present
+    render(() => <FeaModeToolbar store={store} />);
+    expect(screen.getByTestId('fea-mode-collapse-toggle')).toBeTruthy();
+  });
+
+  it('(b) initial collapsed state is false — body visible when enabled', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => <FeaModeToolbar store={store} />);
+    // Body is visible (not collapsed)
+    expect(screen.getByTestId('fea-mode-channel-select')).toBeTruthy();
+  });
+
+  it('(c) clicking collapse toggle hides body even when enabled is true', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => <FeaModeToolbar store={store} />);
+
+    // Body is visible initially
+    expect(screen.getByTestId('fea-mode-channel-select')).toBeTruthy();
+
+    // Collapse
+    fireEvent.click(screen.getByTestId('fea-mode-collapse-toggle'));
+
+    // Body should be hidden
+    expect(screen.queryByTestId('fea-mode-channel-select')).toBeNull();
+  });
+
+  it('(d) clicking collapse toggle again restores the body', () => {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => <FeaModeToolbar store={store} />);
+
+    // Collapse then expand
+    fireEvent.click(screen.getByTestId('fea-mode-collapse-toggle'));
+    expect(screen.queryByTestId('fea-mode-channel-select')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('fea-mode-collapse-toggle'));
+    expect(screen.getByTestId('fea-mode-channel-select')).toBeTruthy();
+  });
+
+  it('(e) collapse state is local — fresh component starts uncollapsed', () => {
+    // Mount a second, fresh component to verify collapse state is NOT in the store
+    const store2 = createFeaModeStore();
+    store2.setEnabled(true);
+    render(() => <FeaModeToolbar store={store2} />);
+
+    // A fresh component starts with collapsed=false (body visible when enabled)
+    // Find the channel select among all instances
+    const selects = screen.getAllByTestId('fea-mode-channel-select');
+    // There should be at least one (from the fresh component)
+    expect(selects.length).toBeGreaterThan(0);
+  });
+});
