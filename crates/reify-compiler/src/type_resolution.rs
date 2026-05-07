@@ -786,37 +786,7 @@ pub(crate) fn resolve_type_alias_expr(
                     diagnostics.extend(tmp_diags);
                     return Some(ty);
                 }
-                // see AliasInnerDiagPolicy: propagate iff Propagate.
-                //
-                // When tmp_diags is non-empty, the parametric resolver matched a builtin
-                // (e.g. Scalar) but failed to resolve its inner args; surface the errors
-                // and return None so the alias entry stays unresolved.  Falling through
-                // to the simple-name lookup at the bottom of this match arm would
-                // silently bind to the builtin's `resolve_type_name` default (Scalar →
-                // Type::length()) and produce a wrong-type cascade at use sites —
-                // see task #2841.
-                //
-                // When tmp_diags is empty, EITHER no arm matched the name in
-                // resolve_parameterized_builtin_type (the `_ => None` arm) OR a matched
-                // arm delegated inner-arg resolution to a silent inner resolver
-                // (`resolve_type_expr_with_aliases` returns `None` without pushing a
-                // diagnostic for unknown simple names — see its silent-fallback behaviour).
-                // This fall-through is safe only because `resolve_type_name` has no default
-                // for `List` / `Set` / `Map` / `Option` / `Tensor` / `Matrix` / `Vector3` /
-                // `Point3`: a silent-None from any of those arms results in no default binding,
-                // so falling through to the user-parametric check below is harmless.
-                // Adding a `resolve_type_name` default for any of those builtins would
-                // silently re-introduce a #2841-shaped wrong-type cascade when a
-                // non-parametric alias body references the builtin with an unresolvable
-                // inner arg.  `Scalar` is the one builtin parametric that *does* have a
-                // `resolve_type_name` default (`Type::length()`), and is safe only because
-                // its failure path always pushes a diagnostic via
-                // `resolve_type_alias_expr_to_dimension` — keeping tmp_diags non-empty
-                // whenever the Scalar arm matched and failed (see task #2843).
-                // Fall through to the user-defined parametric alias check below, which is
-                // required for non-parametric aliases whose body references a user
-                // parametric alias such as `type StringList = Container<String>`
-                // (regression-pinned by `alias_body_references_user_parameterized_alias`).
+                // see invariant on resolve_parameterized_builtin_type: matched arms must push a diagnostic on failure (tasks #2841 / #2843).
                 propagate_inner_diags_if_needed(inner_diag_policy, tmp_diags, diagnostics)?;
             }
             // Check for user-defined parameterized alias instantiation.
@@ -1274,6 +1244,33 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 /// can be resolved to `Type::StructureRef` / `Type::TraitObject` respectively.
 /// Pass empty sets when resolving during the alias DFS pre-pass (before traits
 /// and structures are compiled).
+///
+/// ## Invariant
+///
+/// Every named arm in this function that returns `None` after matching must
+/// first push at least one diagnostic into `diagnostics`.  This lets callers
+/// distinguish "matched but failed" from "no arm matched" via
+/// `tmp_diags.is_empty()`:
+///
+/// - **`tmp_diags` non-empty** → a named arm matched and failed; surface the
+///   diagnostics and propagate `None` so the alias stays unresolved.  Falling
+///   through to a subsequent `resolve_type_name` lookup would silently bind the
+///   builtin's default type and produce a wrong-type cascade at use sites
+///   (see task #2841: `Scalar` default → `Type::length()`).
+/// - **`tmp_diags` empty** → no named arm matched (the `_ => return None` arm
+///   fired); falling through to the user-parametric alias check is safe because
+///   `List`, `Set`, `Map`, `Option`, `Tensor`, `Matrix`, `Vector3`, and `Point3`
+///   have no `resolve_type_name` default.
+///
+/// `Scalar` is the one builtin parametric with a `resolve_type_name` default
+/// (`Type::length()`).  It satisfies the invariant because its failure path
+/// always routes through `resolve_type_alias_expr_to_dimension`, which pushes a
+/// diagnostic before returning `None` — keeping `tmp_diags` non-empty whenever
+/// the `Scalar` arm matched and failed (task #2843).
+///
+/// The `debug_assert!` at the end of this function is forward-looking scaffolding
+/// that catches any future arm that synthesises `None` directly without pushing a
+/// diagnostic first.
 pub(crate) fn resolve_parameterized_builtin_type(
     name: &str,
     type_args: &[reify_syntax::TypeExpr],
@@ -1397,23 +1394,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
         // unmatched case: the assert only needs to hold when a named arm ran.
         _ => return None,
     };
-    // Safety note on this assert: *every* currently existing named arm reaches
-    // the assert only on success (result == Some(_)), because any failure path
-    // uses `?` on `resolve_type_expr_with_aliases(...)`,
-    // `expect_integer_literal_type_arg(...)`, or
-    // `resolve_type_alias_expr_to_dimension(...)`, which short-circuits the
-    // function with `None` before the assert is evaluated.  The `_ => return
-    // None` arm above also short-circuits the unmatched case before reaching
-    // here.
-    //
-    // Consequently, this assert does NOT fire in practice today — it is
-    // forward-looking scaffolding: if a *future* arm is added that synthesises
-    // `None` directly (without `?`), this assert will catch the invariant
-    // violation at test-time in debug builds.  The invariant it protects is:
-    // the caller's `!tmp_diags.is_empty()` guard (tasks #2841 / #2843) requires
-    // that "matched but failed" is distinguishable from "no arm matched" — any
-    // future arm that short-circuits via an explicit `None` (not `?`) must push
-    // at least one diagnostic first so the caller can infer match-state.
+    // Forward-looking scaffolding — see this function's doc comment (## Invariant).
+    // Today no arm reaches this assert with result == None (failures short-circuit
+    // via `?` or the `_ => return None` arm); this guard catches future arms that
+    // synthesise None directly without first pushing a diagnostic.
     debug_assert!(
         result.is_some() || diagnostics.len() > pre_diag_len,
         "resolve_parameterized_builtin_type: arm for '{}' (arity {}) returned None \
