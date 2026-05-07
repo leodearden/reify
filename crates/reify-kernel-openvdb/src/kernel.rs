@@ -13,6 +13,11 @@
 //! the follow-up task lands, the factory can switch to the real impl behind
 //! `cfg(has_openvdb)` without changing the registration shape.
 
+// This entire module is only compiled when `cfg(not(has_openvdb))`.  The
+// outer gate in `src/lib.rs` (`#[cfg(not(has_openvdb))] pub mod kernel;`)
+// already guarantees this; the explicit `cfg` attributes below make the
+// intent clear inline (mirrors OCCT's `src/stubs.rs` pattern).
+
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
@@ -24,6 +29,10 @@ const STUB_MSG: &str = "OpenVDB voxel kernel not yet implemented; \
 
 /// Stub OpenVDB kernel — all operations return descriptive errors.
 ///
+/// Only compiled when `cfg(not(has_openvdb))` (i.e., `/opt/reify-deps` is
+/// absent). When the OpenVDB environment is present the real FFI-backed kernel
+/// in `src/kernel_real.rs` is used instead.
+///
 /// The `_private: ()` field prevents external struct-literal construction;
 /// callers must go through [`Self::new`] or [`Self::default`].
 /// Matches the OCCT stub pattern in
@@ -31,10 +40,12 @@ const STUB_MSG: &str = "OpenVDB voxel kernel not yet implemented; \
 ///
 /// Trivially `Send + Sync` (no interior mutability, no raw pointers — no
 /// `unsafe impl` needed; the auto-derived impls fire).
+#[cfg(not(has_openvdb))]
 pub struct OpenVdbKernel {
     _private: (),
 }
 
+#[cfg(not(has_openvdb))]
 impl OpenVdbKernel {
     /// Construct a new stub `OpenVdbKernel`.
     pub fn new() -> Self {
@@ -42,12 +53,14 @@ impl OpenVdbKernel {
     }
 }
 
+#[cfg(not(has_openvdb))]
 impl Default for OpenVdbKernel {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(has_openvdb))]
 impl GeometryKernel for OpenVdbKernel {
     fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         Err(GeometryError::OperationFailed(STUB_MSG.into()))

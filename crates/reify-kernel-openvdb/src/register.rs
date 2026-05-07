@@ -32,15 +32,22 @@
 //!   as a follow-up task gated by the imported-field-source PRD.
 //! - BRep→Voxel sampling: deferred to a separate follow-up.
 //!
-//! # Unconditional `inventory::submit!` decision
+//! # `cfg(any(has_openvdb, test))` gate on `inventory::submit!`
 //!
-//! OpenVDB has only a stub in this v0.2 task, so a `cfg(has_openvdb)` gate
-//! would never fire — the registration would be dead code, defeating the
-//! point of "fourth integration in the sequence". Submitting unconditionally
-//! keeps the cross-crate integration test (step-7) clean and gives the
-//! dispatcher BFS a fourth real registered kernel. A follow-up task
-//! introducing real OpenVDB FFI can add `cfg(has_openvdb)` gating to switch
-//! the factory without changing the registration shape.
+//! The registration is gated on `cfg(any(has_openvdb, test))` so that:
+//!
+//! - When `/opt/reify-deps` is present (`cfg(has_openvdb)`), the real FFI-backed
+//!   kernel is registered and the dispatcher can route `(op, Voxel)` pairs.
+//! - When building without `/opt/reify-deps` (stub build), only this crate's own
+//!   integration tests (which run under `cfg(test)`) see the registration. Binaries
+//!   that depend on `reify-kernel-openvdb` without the OpenVDB environment do NOT
+//!   get a stub kernel silently registered — preventing the stub from winning a
+//!   future `(op, Voxel)` lex-min tie-break it cannot actually execute.
+//!
+//! The `cfg(test)` arm keeps `tests/dispatcher_integration.rs` and
+//! `tests/inventory_registration.rs` working in stub-only `cargo test` runs
+//! (those tests are inside this crate and exercise the registration plumbing,
+//! not real FFI).
 //!
 //! # Design template
 //!
@@ -102,22 +109,12 @@ fn openvdb_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::OpenVdbKernel::new())
 }
 
-// Unconditional submit — no `cfg(has_openvdb)` gate (see design decisions in
-// the module doc). OpenVDB has only a stub in this v0.2 task, so a
-// `cfg(has_openvdb)` gate would never fire and the registration would be dead
-// code. Submitting unconditionally keeps the cross-crate integration test
-// (step-7) clean and gives the dispatcher BFS a fourth real registered kernel
-// to exercise on the Voxel repr family.
-//
-// TODO(has_openvdb): When real OpenVDB FFI lands (follow-up task), flip this
-// submit to `#[cfg(any(has_openvdb, test))]` so the stub registers only when
-// OpenVDB is actually available or within this crate's own tests. Without that
-// gate, any binary that adds `reify-kernel-openvdb` as a non-dev dep will
-// unconditionally register the stub kernel — which will, lex-min-wise, win
-// over fidget/manifold/occt for any future `(op, Voxel)` claim added during
-// implementation drift. The cross-crate isolation in the test layout (openvdb
-// dev-deps on reify-eval, not the reverse) blocks that today, but the gate is
-// the structural enforcement that must land alongside the real FFI.
+// Gate on `cfg(any(has_openvdb, test))`:
+// - has_openvdb: real FFI kernel is available; register it.
+// - test: this crate's own integration tests need the registration (dispatcher
+//   and inventory tests exercise the plumbing in stub-mode cargo test runs).
+// See module-level doc for full rationale.
+#[cfg(any(has_openvdb, test))]
 inventory::submit! {
     KernelRegistration {
         name: OPENVDB_KERNEL_NAME,
