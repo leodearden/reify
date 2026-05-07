@@ -14,8 +14,8 @@
 //! behind `cfg(has_fidget)` without changing the registration shape.
 
 use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+    BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
+    GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
 };
 
 const STUB_MSG: &str = "Fidget SDF kernel not yet implemented; \
@@ -77,5 +77,38 @@ impl GeometryKernel for FidgetKernel {
 mod tests {
     use super::*;
 
-    reify_test_support::assert_stub_kernel_errors!(FidgetKernel::new, "Fidget");
+    /// Trait-conformance pin: `FidgetKernel` must be `Send + Sync` and
+    /// upcastable to `Box<dyn GeometryKernel>` (the dyn-safe trait surface
+    /// `KernelRegistration::factory` returns).
+    ///
+    /// Replaces the `assert_stub_kernel_errors!(FidgetKernel::new, "Fidget")`
+    /// macro invocation: that macro asserted every op returns `Err`, which
+    /// is exactly what the wired-in implementation contradicts (Sphere/Box
+    /// and the SDF Booleans now succeed).
+    #[test]
+    fn fidget_kernel_is_send_sync_and_object_safe() {
+        fn assert_send_sync<T: Send + Sync>(_: &T) {}
+        let kernel = FidgetKernel::new();
+        assert_send_sync(&kernel);
+        let _boxed: Box<dyn GeometryKernel> = Box::new(FidgetKernel::new());
+    }
+
+    /// Pins the contract that `execute(GeometryOp::Sphere { radius })`
+    /// returns a fresh handle with `BRepKind::Solid` (the closest
+    /// fine-grained classifier for "implicit-surface-defined solid"; see
+    /// design decision in plan).
+    #[test]
+    fn fidget_kernel_execute_sphere_returns_handle_with_solid_repr() {
+        let mut kernel = FidgetKernel::new();
+        let result = kernel.execute(&GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        });
+        let handle = result.expect("Sphere execution must succeed on FidgetKernel");
+        assert_eq!(handle.repr, BRepKind::Solid);
+        assert_ne!(
+            handle.id,
+            GeometryHandleId::INVALID,
+            "FidgetKernel must allocate a real handle id, not the INVALID sentinel",
+        );
+    }
 }
