@@ -1,0 +1,6 @@
+name: reify-deps
+channels:
+  - conda-forge
+dependencies:
+  - gmsh=4.15.2
+  - openvdb=13.0.0

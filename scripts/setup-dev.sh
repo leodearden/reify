@@ -126,6 +126,12 @@ if ! command -v clang &>/dev/null; then
     APT_PACKAGES+=(clang)
 fi
 
+# cmake (needed by manifold3d crate's build.rs — it cmake-builds the
+# elalish/manifold C++ tree on first cargo build of reify-kernel-manifold)
+if ! command -v cmake &>/dev/null; then
+    APT_PACKAGES+=(cmake)
+fi
+
 # Tauri 2 webview deps — required to build reify-gui on Linux.
 # Without these, `cargo build -p reify-gui` fails with cryptic linker errors.
 TAURI_DEPS=(
@@ -179,6 +185,77 @@ if [ ${#APT_PACKAGES[@]} -gt 0 ]; then
     ok "apt packages installed"
 else
     ok "all apt packages present"
+fi
+
+# ---------- conda-forge env: gmsh + openvdb ----------
+#
+# Reify links libgmsh (FEA tet meshing, reify-kernel-gmsh) and libopenvdb
+# (sparse SDF / voxel grids, reify-kernel-openvdb). Ubuntu's apt has stale
+# versions (gmsh 4.12.1, openvdb 10.0.1); upstream is much fresher
+# (4.15.2 / 13.0.0). conda-forge ships pre-built binaries at upstream-
+# current with multi-platform support, so we use it for these two even
+# on Ubuntu.
+#
+# Strategy:
+#   - Probe for an existing conda-family installer (micromamba, mamba,
+#     conda). If found, use it.
+#   - Otherwise, install micromamba (single static binary, ~13 MB) into
+#     /usr/local/bin.
+#   - Create the env at /opt/reify-deps from environment.yml.
+#   - Add /opt/reify-deps/lib to ld.so.conf.d so libgmsh + libopenvdb +
+#     their transitive deps (TBB, Imath, Blosc) resolve at runtime
+#     without per-developer LD_LIBRARY_PATH gymnastics.
+#   - build.rs scripts in reify-kernel-{gmsh,openvdb} probe
+#     /opt/reify-deps/include for headers.
+
+CONDA_BIN=""
+for cmd in micromamba mamba conda; do
+    if command -v "$cmd" &>/dev/null; then
+        CONDA_BIN="$(command -v $cmd)"
+        ok "$cmd $($cmd --version 2>/dev/null | head -1 | awk '{print $NF}')"
+        break
+    fi
+done
+
+if [ -z "$CONDA_BIN" ]; then
+    info "Installing micromamba to /usr/local/bin..."
+    need_sudo=true
+    micromamba_tar="/tmp/micromamba.tar.bz2"
+    if [ ! -f "$micromamba_tar" ]; then
+        curl -fsSL "https://micro.mamba.pm/api/micromamba/linux-64/latest" -o "$micromamba_tar"
+    fi
+    sudo tar -xjf "$micromamba_tar" -C /usr/local bin/micromamba
+    CONDA_BIN="/usr/local/bin/micromamba"
+    ok "micromamba installed"
+fi
+
+# /opt/reify-deps owned by current user so env install doesn't need sudo.
+if [ ! -d /opt/reify-deps ]; then
+    info "Creating /opt/reify-deps (owned by $USER)..."
+    need_sudo=true
+    sudo mkdir -p /opt/reify-deps
+    sudo chown -R "$USER:$USER" /opt/reify-deps
+fi
+
+# Detect whether the env already has the required versions.
+if [ -f /opt/reify-deps/lib/libgmsh.so.4.15.2 ] \
+    && [ -f /opt/reify-deps/lib/libopenvdb.so.13.0.0 ]; then
+    ok "reify-deps env: gmsh 4.15.2 + openvdb 13.0.0"
+else
+    info "Creating reify-deps conda-forge env (gmsh=4.15.2 + openvdb=13.0.0)..."
+    info "  This downloads ~150 MB on first install (~3-5 min)."
+    "$CONDA_BIN" create -y -p /opt/reify-deps -f environment.yml
+    ok "reify-deps env created"
+fi
+
+# ld.so.conf.d entry — makes libgmsh.so + libopenvdb.so visible system-wide.
+ldso_conf="/etc/ld.so.conf.d/reify-deps.conf"
+if [ ! -f "$ldso_conf" ] || ! grep -q "/opt/reify-deps/lib" "$ldso_conf"; then
+    info "Wiring $ldso_conf..."
+    need_sudo=true
+    echo "/opt/reify-deps/lib" | sudo tee "$ldso_conf" > /dev/null
+    sudo ldconfig
+    ok "ldconfig refreshed"
 fi
 
 # ---------- sccache ----------

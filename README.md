@@ -47,7 +47,7 @@ scripts/setup-dev.sh
 cargo build --release
 ```
 
-`setup-dev.sh` is idempotent — re-run it any time. It installs rustup, clippy, sccache, tree-sitter-cli, OCCT 7.8 (via the FreeCAD PPA), libslvs, the Tauri webview deps, and the GUI's npm packages. At the end it runs a smoke test against `examples/m5_geometry.ri`.
+`setup-dev.sh` is idempotent — re-run it any time. It installs rustup, clippy, sccache, tree-sitter-cli, OCCT 7.8 (via the FreeCAD PPA), libslvs, the Tauri webview deps, the GUI's npm packages, and a conda-forge env at `/opt/reify-deps` carrying gmsh 4.15.2 + openvdb 13.0.0 (via micromamba — installed automatically if no conda-family installer is on PATH). At the end it runs a smoke test against `examples/m5_geometry.ri`.
 
 ## Try it
 
