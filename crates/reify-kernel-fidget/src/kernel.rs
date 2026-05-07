@@ -68,9 +68,17 @@ impl FidgetKernel {
     }
 
     /// Allocate a fresh handle id (post-increment).
+    ///
+    /// Uses `checked_add` so the "BTreeMap would OOM first" invariant is
+    /// load-bearing in code rather than only in prose: if we ever reach
+    /// `u64::MAX` allocations the panic message points back here.
     fn allocate_id(&mut self) -> GeometryHandleId {
         let id = GeometryHandleId(self.next_id);
-        self.next_id += 1;
+        self.next_id = self.next_id.checked_add(1).expect(
+            "FidgetKernel handle id overflow — handle BTreeMap would have \
+             OOM'd long before this; if you see this panic, the invariant \
+             was wrong",
+        );
         id
     }
 
@@ -149,7 +157,8 @@ impl FidgetKernel {
             (qx_pos.square() + qy_pos.square() + qz_pos.square()).sqrt();
 
         // inside_part = min(max(qx, qy, qz), 0)
-        let inside_part = qx.max(qy.clone()).max(qz.clone()).min(0.0);
+        // qy, qz are not used after this expression — move them in directly.
+        let inside_part = qx.max(qy).max(qz).min(0.0);
 
         outside_part + inside_part
     }
@@ -160,6 +169,14 @@ impl FidgetKernel {
     /// `ez_point_tape()`, and runs `eval(&tape, x, y, z)`. Per-call JIT
     /// compilation is acceptable for v0.2 — a `Mutex<HashMap<GeometryHandleId,
     /// JitShape>>` cache layer is a non-breaking optimisation later.
+    ///
+    /// TODO(jit-cache): callers that evaluate the same handle many times
+    /// (e.g. per-pixel raster sampling) currently pay one full JIT
+    /// compilation per call. A per-handle `JitShape` cache (keyed on the
+    /// `GeometryHandleId`, invalidated when the Tree changes — which it
+    /// never does today since handles are immutable post-insert) is
+    /// non-breaking and should be the next optimisation. File a follow-up
+    /// task before any caller starts hot-looping this path.
     ///
     /// `f32` mirrors fidget's native float width; reify's `f64` callers
     /// should cast at the boundary.
@@ -318,6 +335,17 @@ impl GeometryKernel for FidgetKernel {
         }
     }
 
+    /// Note on handle validation: this method does NOT check whether the
+    /// handle on the query refers to a registered Tree before returning the
+    /// "not yet supported" error. That's a small inconsistency with
+    /// `execute(Boolean { ... })` — which surfaces `InvalidReference` for
+    /// unknown handles — but it's deliberate: every Sdf query is uniformly
+    /// unsupported (queries require meshing first), so reporting the
+    /// handle-validity status would be both misleading (the operator's
+    /// problem isn't the handle, it's the unsupported op) and wasteful
+    /// (the lookup adds cost for no diagnostic value). When the
+    /// SDF→Mesh meshing follow-up lands and queries become available,
+    /// the handle-validity check moves to the front of this method.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         Err(QueryError::QueryFailed(format!(
             "Fidget SDF kernel: {} queries on Sdf require meshing — see arch §10.8 \
@@ -620,9 +648,11 @@ mod tests {
     /// `evaluate_sdf_at` on an unknown handle must surface
     /// `QueryError::QueryFailed` (not `QueryError::InvalidHandle` — the
     /// trait's existing query path uses `QueryFailed` for invalid lookups,
-    /// staying within the established error vocabulary).
+    /// staying within the established error vocabulary). The test name
+    /// mirrors the actual error variant so a future reader grepping for
+    /// `QueryFailed` finds this pin directly.
     #[test]
-    fn fidget_kernel_evaluate_sdf_at_unknown_handle_returns_invalid_reference() {
+    fn fidget_kernel_evaluate_sdf_at_unknown_handle_returns_query_failed() {
         let kernel = FidgetKernel::new();
         let err = kernel
             .evaluate_sdf_at(GeometryHandleId(999), 0.0, 0.0, 0.0)
