@@ -153,20 +153,40 @@ pub fn compute_medial_mask(
     sdf: &SampledField,
     _options: &MedialOptions,
 ) -> Result<MedialMask, MedialError> {
-    let spacing = copy_axis3(&sdf.spacing).unwrap_or([0.0, 0.0, 0.0]);
-    let origin = copy_axis3(&sdf.bounds_min).unwrap_or([0.0, 0.0, 0.0]);
-    Ok(MedialMask::empty(spacing, origin))
-}
-
-/// Helper: copy a length-3 axis vector into a fixed-size array. Returns
-/// `None` if the vector has the wrong length (caller decides whether
-/// the wrong-length case is an error or a fall-through to defaults).
-fn copy_axis3(v: &[f64]) -> Option<[f64; 3]> {
-    if v.len() == 3 {
-        Some([v[0], v[1], v[2]])
-    } else {
-        None
+    // (1) Reject non-3D inputs up front. The medial-axis test is
+    // intrinsically 3D (walks the SDF gradient in 3-space).
+    if sdf.kind != SampledGridKind::Regular3D {
+        return Err(MedialError::UnsupportedGridKind { found: sdf.kind });
     }
+
+    // (2) Defend downstream indexing: `Regular3D` requires every axis
+    // vector to have length 3. A caller-side construction mistake
+    // (e.g. building a `Regular3D` SampledField with 1-element
+    // bounds_min) would otherwise panic on `bounds_min[i]` mid-loop.
+    if sdf.bounds_min.len() != 3
+        || sdf.bounds_max.len() != 3
+        || sdf.spacing.len() != 3
+        || sdf.axis_grids.len() != 3
+    {
+        return Err(MedialError::AxisLengthMismatch {
+            bounds_min_len: sdf.bounds_min.len(),
+            bounds_max_len: sdf.bounds_max.len(),
+            spacing_len: sdf.spacing.len(),
+            axis_grids_len: sdf.axis_grids.len(),
+        });
+    }
+
+    // (3) Each axis grid must be non-empty — a zero-extent axis
+    // collapses the iteration domain.
+    for (axis, axis_grid) in sdf.axis_grids.iter().enumerate() {
+        if axis_grid.is_empty() {
+            return Err(MedialError::EmptyAxisGrid { axis });
+        }
+    }
+
+    let spacing = [sdf.spacing[0], sdf.spacing[1], sdf.spacing[2]];
+    let origin = [sdf.bounds_min[0], sdf.bounds_min[1], sdf.bounds_min[2]];
+    Ok(MedialMask::empty(spacing, origin))
 }
 
 #[cfg(test)]
