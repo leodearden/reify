@@ -862,14 +862,12 @@ mod tests {
 
     #[test]
     fn body_force_force_dim_returns_undef() {
-        use super::force_density_dim;
         // FORCE instead of ForceDensity.
         let bad = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::FORCE);
         assert!(
             eval_builtin("body_force", &[body_selector_stub(), bad]).is_undef(),
             "FORCE dim → Undef"
         );
-        let _ = force_density_dim(); // ensure it compiles
     }
 
     #[test]
