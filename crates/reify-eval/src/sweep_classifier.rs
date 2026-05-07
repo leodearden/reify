@@ -95,10 +95,21 @@ pub enum SweptKind {
     /// non-degenerate (≥ [`REVOLVE_DEGENERATE_TOLERANCE`] in some component)
     /// and the angle magnitude exceeds the same tolerance. Full 2π revolutions
     /// qualify; the kernel-side full-revolution edge cases live downstream in
-    /// the meshing path, not here.
+    /// the meshing path, not here. The stored `axis_dir` is unit-length — see
+    /// the per-field doc.
     Revolve {
+        /// Point on the rotation axis in the realization frame, propagated
+        /// verbatim from `GeometryOp::Revolve.axis_origin`.
         axis_origin: [f64; 3],
+        /// Unit-length axis direction in the realization frame. The classifier
+        /// normalises `GeometryOp::Revolve.axis_dir` here (the source op only
+        /// guarantees a non-degenerate norm; producers are not required to pass
+        /// a unit vector) so downstream consumers — mesh morphing and rotation
+        /// math — can rely on this invariant. Mirrors `SweptKind::Extrude.axis`.
         axis_dir: [f64; 3],
+        /// Signed rotation angle in radians, propagated verbatim from
+        /// `GeometryOp::Revolve.angle_rad`. The classifier rejects
+        /// `|angle_rad| < REVOLVE_DEGENERATE_TOLERANCE`.
         angle_rad: f64,
     },
     /// Single-profile sweep along a *non-twisted* path.
@@ -191,10 +202,7 @@ impl SweptKindTable {
 /// caller produces `None` for the [`GeometryOp::Sweep`] arm (the path-source
 /// scan misses) but otherwise behaves correctly for the variants whose
 /// classification is independent of `handles`.
-pub fn classify_swept_body(
-    ops: &[GeometryOp],
-    handles: &[GeometryHandleId],
-) -> Option<SweptKind> {
+pub fn classify_swept_body(ops: &[GeometryOp], handles: &[GeometryHandleId]) -> Option<SweptKind> {
     debug_assert_eq!(
         ops.len(),
         handles.len(),
@@ -225,9 +233,20 @@ pub fn classify_swept_body(
             {
                 None
             } else {
+                // Normalise axis_dir here (inside the post-degeneracy branch)
+                // to give parity with `SweptKind::Extrude.axis`'s unit-length
+                // invariant, so downstream mesh-morphing rotation math can rely
+                // on unit-length across both variants. Computing sqrt only here
+                // (not before the guard) statically guarantees we never
+                // sqrt(0): axis_norm_sq ≥ tol² > 0 at this point.
+                let axis_norm = axis_norm_sq.sqrt();
                 Some(SweptKind::Revolve {
                     axis_origin: *axis_origin,
-                    axis_dir: *axis_dir,
+                    axis_dir: [
+                        axis_dir[0] / axis_norm,
+                        axis_dir[1] / axis_norm,
+                        axis_dir[2] / axis_norm,
+                    ],
                     angle_rad: *angle_rad,
                 })
             }
@@ -451,9 +470,7 @@ mod tests {
                     axis_dir[2]
                 );
             }
-            other => panic!(
-                "expected Some(SweptKind::Revolve {{ ... }}) but got {other:?}"
-            ),
+            other => panic!("expected Some(SweptKind::Revolve {{ ... }}) but got {other:?}"),
         }
     }
 
@@ -687,7 +704,11 @@ mod tests {
     fn swept_kind_table_new_is_empty() {
         let table = SweptKindTable::default();
         assert!(table.is_empty(), "default-constructed table must be empty");
-        assert_eq!(table.len(), 0, "default-constructed table must have len() == 0");
+        assert_eq!(
+            table.len(),
+            0,
+            "default-constructed table must have len() == 0"
+        );
     }
 
     #[test]
@@ -698,8 +719,15 @@ mod tests {
             length: Value::length(0.01),
         };
         table.record(GeometryHandleId(7), kind.clone());
-        assert_eq!(table.len(), 1, "table must have len() == 1 after one record");
-        assert!(!table.is_empty(), "table must not be empty after one record");
+        assert_eq!(
+            table.len(),
+            1,
+            "table must have len() == 1 after one record"
+        );
+        assert!(
+            !table.is_empty(),
+            "table must not be empty after one record"
+        );
         assert_eq!(
             table.lookup(GeometryHandleId(7)),
             Some(&kind),
@@ -747,7 +775,11 @@ mod tests {
         };
         table.record(id, first);
         table.record(id, second.clone());
-        assert_eq!(table.len(), 1, "second record at the same id must not grow len()");
+        assert_eq!(
+            table.len(),
+            1,
+            "second record at the same id must not grow len()"
+        );
         assert_eq!(
             table.lookup(id),
             Some(&second),
