@@ -10,6 +10,51 @@ use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 /// Second-order Lagrangian tetrahedron.
 pub struct TetP2;
 
+/// 4-point Stroud (1971) symmetric Gauss rule for the unit reference
+/// tetrahedron — degree-2 exact.
+///
+/// The two parameters are
+///
+/// - `a = (5 − √5) / 20 ≈ 0.138196601125010515…`
+/// - `b = (5 + 3√5) / 20 ≈ 0.585410196624968454…`
+///
+/// with quadrature points at the symmetric layout
+/// `(a,a,a), (b,a,a), (a,b,a), (a,a,b)` and equal weights `1/24`. The
+/// total weight `4/24 = 1/6` matches the reference-tet volume.
+///
+/// Hard-coded to 17 significant figures rather than computed at runtime:
+/// `f64::sqrt` is not `const fn`, and a `OnceLock` for a 4-entry static
+/// slice would be needless ceremony. The literals match
+/// `(5 ± k √5) / 20` rounded to nearest representable `f64` (within 1 ulp
+/// of `5.0_f64.sqrt()` evaluated at runtime — see the
+/// `quad_points_is_four_point_stroud_rule` test).
+///
+/// Degree-2 is sufficient for stiffness assembly with **straight-edge**
+/// P2 elements: the geometric Jacobian is constant per element, so the
+/// integrand `Bᵀ D B` (with `B = ∇N` linear in reference coords) is a
+/// degree-2 polynomial which the Stroud rule integrates exactly. Curved-
+/// edge P2 (deferred to v0.4+) would need the 11-point degree-4 rule.
+const TET_P2_STROUD_A: f64 = 0.13819660112501052;
+const TET_P2_STROUD_B: f64 = 0.58541019662496845;
+const TET_P2_QUAD: &[QuadraturePoint] = &[
+    QuadraturePoint {
+        coord: ReferenceCoord::new(TET_P2_STROUD_A, TET_P2_STROUD_A, TET_P2_STROUD_A),
+        weight: 1.0 / 24.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(TET_P2_STROUD_B, TET_P2_STROUD_A, TET_P2_STROUD_A),
+        weight: 1.0 / 24.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(TET_P2_STROUD_A, TET_P2_STROUD_B, TET_P2_STROUD_A),
+        weight: 1.0 / 24.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(TET_P2_STROUD_A, TET_P2_STROUD_A, TET_P2_STROUD_B),
+        weight: 1.0 / 24.0,
+    },
+];
+
 /// Canonical edge ordering for the P2 reference tet's 6 edge midpoints,
 /// as `(a, b)` index pairs into the 4 reference vertices.
 ///
@@ -101,7 +146,7 @@ impl ReferenceElement for TetP2 {
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
-        todo!("P2 quadrature rule — task 2914 step-16")
+        TET_P2_QUAD
     }
 }
 
