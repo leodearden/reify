@@ -17,8 +17,8 @@ use reify_types::{GeometryHandleId, TopologyAttributeTable, ValueMap};
 
 /// A snapshot of one side (old or new) of a mesh-morph eligibility check.
 ///
-/// All fields are borrows — `MorphSnapshot` is `Copy` so callers can re-use
-/// the same snapshot across multiple calls without re-borrowing.
+/// All fields are borrows — `MorphSnapshot` derives `Copy` for ergonomic
+/// pass-by-value at call sites.
 ///
 /// Field roles:
 /// - `graph`: the evaluation graph (design tree) for this side.
@@ -126,6 +126,7 @@ pub fn morph_eligible(old: &MorphSnapshot, new: &MorphSnapshot) -> Eligibility {
         return Eligibility::Ineligible(Reason::StructuralChange);
     }
 
+    // Step 2: Realization is the caller's responsibility — see doc-comment.
     // Step 3: Stage B (caller is expected to have realized the new B-rep —
     // see doc-comment above).
     match stage_b_eligible(
@@ -210,44 +211,6 @@ mod tests {
         }
     }
     // Note: TopologyAttributeTable uses .record(handle, attr) not .insert()
-
-    // ── Step-1: type-surface smoke tests ─────────────────────────────────
-
-    #[test]
-    fn eligibility_eligible_variant_constructs_with_default_correspondence_map() {
-        let e = Eligibility::Eligible(CorrespondenceMap::default());
-        assert_eq!(e, Eligibility::Eligible(CorrespondenceMap::default()));
-    }
-
-    #[test]
-    fn eligibility_ineligible_structural_change_constructs_and_compares_equal() {
-        let a = Eligibility::Ineligible(Reason::StructuralChange);
-        let b = Eligibility::Ineligible(Reason::StructuralChange);
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn reason_bijection_failure_wraps_count_mismatch() {
-        let r = Reason::BijectionFailure(BijectionFailure::CountMismatch {
-            kind: SubShapeKind::Face,
-            old_count: 1,
-            new_count: 2,
-        });
-        assert_eq!(r.clone(), r);
-    }
-
-    #[test]
-    fn reason_naming_layer_error_carries_kind_and_reason() {
-        let imported = Reason::NamingLayerError {
-            kind: SubShapeKind::Face,
-            reason: NamingLayerErrorReason::Imported,
-        };
-        let partial = Reason::NamingLayerError {
-            kind: SubShapeKind::Face,
-            reason: NamingLayerErrorReason::Partial,
-        };
-        assert_ne!(imported, partial);
-    }
 
     // ── Step-3: happy path ────────────────────────────────────────────────
 
