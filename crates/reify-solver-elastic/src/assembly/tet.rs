@@ -19,22 +19,32 @@
 //!
 //! `B` is a `6 × 3N` matrix that maps element-nodal displacements
 //! `[u₁ₓ, u₁ᵧ, u₁ᵤ, u₂ₓ, …]ᵀ` to the **engineering-strain Voigt vector**
-//! `[ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]ᵀ` (with `γ = 2ε`). Per node `i`,
-//! the three columns of `B` for that node are
+//! `[ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]ᵀ`. The shear rows hold the
+//! engineering shear strain `γ_ij = 2 ε_ij`; this convention is what lets
+//! the constitutive shear-block diagonal be `μ` directly (rather than
+//! `2μ`) — see [`crate::constitutive::IsotropicElastic`] for the matching
+//! `D`-matrix derivation.
+//!
+//! For each node `i`, the three columns of `B` at DOF indices
+//! `3i+0`, `3i+1`, `3i+2` (axes `x, y, z`) are:
 //!
 //! ```text
-//!         ┌                            ┐
-//!  col 0  │ ∂N_i/∂x  0        0        │  ε_xx
-//!  col 1  │ 0        ∂N_i/∂y  0        │  ε_yy
-//!  col 2  │ 0        0        ∂N_i/∂z  │  ε_zz
-//!  col 0  │ ∂N_i/∂y  ∂N_i/∂x  0        │  γ_xy
-//!  col 1  │ 0        ∂N_i/∂z  ∂N_i/∂y  │  γ_yz
-//!  col 2  │ ∂N_i/∂z  0        ∂N_i/∂x  │  γ_xz
-//!         └                            ┘
+//!                 col 3i+0   col 3i+1   col 3i+2
+//!                 (u_x)      (u_y)      (u_z)
+//!               ┌                                ┐
+//!  row 0 ε_xx   │ ∂N_i/∂x   0          0        │
+//!  row 1 ε_yy   │ 0         ∂N_i/∂y    0        │
+//!  row 2 ε_zz   │ 0         0          ∂N_i/∂z  │
+//!  row 3 γ_xy   │ ∂N_i/∂y   ∂N_i/∂x    0        │
+//!  row 4 γ_yz   │ 0         ∂N_i/∂z    ∂N_i/∂y  │
+//!  row 5 γ_xz   │ ∂N_i/∂z   0          ∂N_i/∂x  │
+//!               └                                ┘
 //! ```
 //!
-//! (read column-by-column: each row above is one Voigt component, and the
-//! three values shown are at DOF columns `3i+0`, `3i+1`, `3i+2` of `B`.)
+//! Read row-by-row: each Voigt component picks up contributions from the
+//! three displacement axes of node `i` according to the symmetric strain
+//! tensor `ε_ij = ½ (∂u_i/∂x_j + ∂u_j/∂x_i)`, doubled in the shear rows
+//! because `γ_ij = 2 ε_ij`.
 //!
 //! Physical-frame gradients are obtained from reference gradients via
 //! `∇_x N_i = J⁻ᵀ ∇_ξ N_i`. The 3×3 inverse-transpose is computed
