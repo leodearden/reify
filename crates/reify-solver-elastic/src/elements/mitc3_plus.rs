@@ -219,6 +219,42 @@ mod tests {
     }
 
     #[test]
+    fn bubble_grad_matches_analytic_form_at_probes() {
+        // Closed form: ∂f_b/∂ξ = η(1 − 2ξ − η), ∂f_b/∂η = ξ(1 − ξ − 2η)
+        let probes = [
+            ShellReferenceCoord::new(0.1, 0.2),
+            ShellReferenceCoord::new(0.4, 0.3),
+        ];
+        for p in probes.iter() {
+            let ShellReferenceCoord { xi, eta } = *p;
+            let expected = [eta * (1.0 - 2.0 * xi - eta), xi * (1.0 - xi - 2.0 * eta)];
+            let g = Mitc3Plus.bubble_grad_at(*p);
+            for k in 0..2 {
+                assert!(
+                    (g[k] - expected[k]).abs() < TOL,
+                    "bubble_grad_at({:?})[{k}] = {}, expected {}",
+                    p,
+                    g[k],
+                    expected[k],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bubble_grad_vanishes_at_centroid() {
+        // Centroid is the unique interior maximum of f_b, so ∇f_b = 0 there.
+        let g = Mitc3Plus.bubble_grad_at(ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0));
+        for k in 0..2 {
+            assert!(
+                g[k].abs() < TOL,
+                "bubble_grad_at(centroid)[{k}] = {}, expected 0",
+                g[k],
+            );
+        }
+    }
+
+    #[test]
     fn bubble_equals_one_twenty_seventh_at_centroid() {
         // Centroid (1/3, 1/3): f_b = (1/3)·(1/3)·(1 − 2/3) = 1/27.
         let b = Mitc3Plus.bubble_at(ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0));
