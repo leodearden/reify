@@ -9,6 +9,17 @@ use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 /// First-order Lagrangian tetrahedron.
 pub struct TetP1;
 
+/// Single-entry centroid Gauss rule for the unit reference tetrahedron.
+///
+/// One point at `(1/4, 1/4, 1/4)` with weight `1/6`. Degree-1 exact —
+/// sufficient for stiffness assembly with constant-strain P1 elements:
+/// the integrand `B^T D B` is constant per element because P1 gradients
+/// are constant, so a 1-point rule exactly captures the integral.
+const TET_P1_QUAD: &[QuadraturePoint] = &[QuadraturePoint {
+    coord: ReferenceCoord::new(0.25, 0.25, 0.25),
+    weight: 1.0 / 6.0,
+}];
+
 impl ReferenceElement for TetP1 {
     const N_NODES: usize = 4;
 
@@ -38,7 +49,7 @@ impl ReferenceElement for TetP1 {
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
-        todo!("P1 quadrature rule — task 2914 step-8")
+        TET_P1_QUAD
     }
 }
 
