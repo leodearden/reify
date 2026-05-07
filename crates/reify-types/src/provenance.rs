@@ -26,6 +26,50 @@ pub enum SnapshotProvenance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hash::ContentHash;
+
+    #[test]
+    fn field_import_provenance_construct_clone_eq() {
+        let prov = FieldImportProvenance {
+            path: "/data/fea_results.vdb".to_string(),
+            format: "OpenVDB".to_string(),
+            content_hash: ContentHash::of(b"some file bytes"),
+            ingestion_timestamp_secs: 1_700_000_000,
+            declared_tolerance_si: Some(50e-6),
+        };
+        let prov2 = prov.clone();
+        assert_eq!(prov, prov2);
+
+        let debug = format!("{:?}", prov);
+        assert!(debug.contains("FieldImportProvenance"));
+        assert!(debug.contains("path"));
+        assert!(debug.contains("format"));
+        assert!(debug.contains("content_hash"));
+        assert!(debug.contains("ingestion_timestamp_secs"));
+        assert!(debug.contains("declared_tolerance_si"));
+    }
+
+    #[test]
+    fn field_import_provenance_distinguishes_by_content_hash() {
+        let hash_a = ContentHash::of(b"bytes_a");
+        let hash_b = ContentHash::of(b"bytes_b");
+
+        let prov_a = FieldImportProvenance {
+            path: "/data/fea_results.vdb".to_string(),
+            format: "OpenVDB".to_string(),
+            content_hash: hash_a,
+            ingestion_timestamp_secs: 1_700_000_000,
+            declared_tolerance_si: Some(50e-6),
+        };
+        let prov_b = FieldImportProvenance {
+            path: "/data/fea_results.vdb".to_string(),
+            format: "OpenVDB".to_string(),
+            content_hash: hash_b,
+            ingestion_timestamp_secs: 1_700_000_000,
+            declared_tolerance_si: Some(50e-6),
+        };
+        assert_ne!(prov_a, prov_b);
+    }
 
     #[test]
     fn initial_provenance() {
