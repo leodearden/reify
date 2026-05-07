@@ -286,10 +286,18 @@ pub const MAX_AUTO_TYPE_PARAM_CANDIDATES: usize = 10;
 /// Maximum number of composite witness strings rendered in an
 /// `AutoTypeParamNonUnique` (all-free NonUnique) diagnostic message.
 ///
-/// When the total number of feasible assignments exceeds this cap, the message
-/// gets a `"(N more elided)"` suffix where `N = total - NON_UNIQUE_DISPLAY_CAP`.
 /// Governs only the all-free NonUnique display path in
-/// `resolve_auto_type_params_with_backtracking`.
+/// `resolve_auto_type_params_with_backtracking`. The free-mode collection cap
+/// (task 2663 Scope 2) stops DFS enumeration at `NON_UNIQUE_DISPLAY_CAP + 1`
+/// feasibles, so the exact total past the cap is unknown by design. The
+/// elision suffix wording reflects that:
+/// - When `total <= NON_UNIQUE_DISPLAY_CAP`: every collected feasible is
+///   rendered and there is **no** elision suffix.
+/// - When `total == NON_UNIQUE_DISPLAY_CAP + 1` (collection cap hit, exact
+///   total unknown): the message gets a coarse
+///   `"(more than NON_UNIQUE_DISPLAY_CAP feasibles exist; rest elided)"`
+///   suffix — we know at least one feasible was elided from the collected
+///   set, plus an unknown number were never collected.
 pub const NON_UNIQUE_DISPLAY_CAP: usize = 16;
 
 /// Render the `bounds` slice for diagnostic display and produce the
@@ -1694,8 +1702,12 @@ pub fn resolve_auto_type_params_with_backtracking(
                 // When the collection cap is hit (i.e. `total > NON_UNIQUE_DISPLAY_CAP`,
                 // which by construction means `total == NON_UNIQUE_DISPLAY_CAP + 1`),
                 // the exact total past the cap is unknown so the elision message
-                // shifts to a coarse "(more than NON_UNIQUE_DISPLAY_CAP elided)" form
-                // rather than the prior exact "(N more elided)" form.
+                // shifts to a coarse
+                // "(more than NON_UNIQUE_DISPLAY_CAP feasibles exist; rest elided)"
+                // form rather than the prior exact "(N more elided)" form. The
+                // wording makes the uncertainty explicit — we know at least one
+                // feasible was elided from the collected set, plus an unknown
+                // number were never collected.
                 // See module-level NON_UNIQUE_DISPLAY_CAP for the rendering invariant.
                 let total = feasible_assignments.len();
                 let display_count = total.min(NON_UNIQUE_DISPLAY_CAP);
@@ -1711,7 +1723,7 @@ pub fn resolve_auto_type_params_with_backtracking(
                 let lex_first_witness = displayed_witnesses[0].clone();
                 let message = if total > NON_UNIQUE_DISPLAY_CAP {
                     format!(
-                        "auto(free) type-parameters have multiple feasible cross-product assignments: {witnesses_join}; (more than {NON_UNIQUE_DISPLAY_CAP} elided); selected lexicographically-first '{lex_first_witness}'",
+                        "auto(free) type-parameters have multiple feasible cross-product assignments: {witnesses_join}; (more than {NON_UNIQUE_DISPLAY_CAP} feasibles exist; rest elided); selected lexicographically-first '{lex_first_witness}'",
                     )
                 } else {
                     format!(

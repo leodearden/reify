@@ -3592,15 +3592,17 @@ structure def WaterCooled : Cooled {
 /// unknown.
 ///
 /// With the cap tightening (task 2663 Scope 2), the message form changes from
-/// the prior "(N more elided)" exact count to "(more than NON_UNIQUE_DISPLAY_CAP
-/// elided)" because we stop collecting after `NON_UNIQUE_DISPLAY_CAP + 1`
-/// feasibles. The diagnostic still renders exactly `NON_UNIQUE_DISPLAY_CAP` (16)
-/// witnesses; only the elision-count wording shifts to a coarse "more than"
-/// form.
+/// the prior "(N more elided)" exact count to
+/// "(more than NON_UNIQUE_DISPLAY_CAP feasibles exist; rest elided)" because we
+/// stop collecting after `NON_UNIQUE_DISPLAY_CAP + 1` feasibles. The diagnostic
+/// still renders exactly `NON_UNIQUE_DISPLAY_CAP` (16) witnesses; only the
+/// elision wording shifts to a coarse "more than … feasibles exist; rest
+/// elided" form that makes the uncertainty explicit.
 ///
 /// Pins:
 /// (a) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity Warning
-/// (b) `message.contains("more than 16 elided")` — coarse elision marker (cap hit)
+/// (b) `message.contains("more than 16 feasibles exist; rest elided")` —
+///     coarse elision marker (cap hit)
 /// (c) `message.contains("ORingSeal")` — lex-first T candidate present
 /// (d) `message.contains("AirCooled")` — lex-first U candidate present
 /// (e) `outcome.per_param.len() == 2`, each entry `Selected`
@@ -3707,8 +3709,11 @@ structure def WaterCooled : Cooled {
     // (= 17), the search collects exactly NON_UNIQUE_DISPLAY_CAP + 1 feasibles
     // when the true total exceeds the cap (here 25 > 17). The exact total is
     // unknown past the cap, so the elision wording shifts from "(N more elided)"
-    // to "(more than NON_UNIQUE_DISPLAY_CAP elided)".
-    let expected_marker = format!("more than {} elided", NON_UNIQUE_DISPLAY_CAP);
+    // to "(more than NON_UNIQUE_DISPLAY_CAP feasibles exist; rest elided)" — the
+    // wording makes the uncertainty explicit (we know at least one was elided
+    // from the collected set, plus an unknown number were never collected).
+    let expected_marker =
+        format!("more than {} feasibles exist; rest elided", NON_UNIQUE_DISPLAY_CAP);
     assert!(
         diagnostics[0].message.contains(&expected_marker),
         "message must contain '{}' (free-mode cap = NON_UNIQUE_DISPLAY_CAP({}) + 1, exact total \
