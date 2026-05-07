@@ -856,7 +856,7 @@ module.exports = grammar({
     )),
 
     // ── Literals ────────────────────────────────────────────
-    number_literal: $ => token(/\d+(\.\d+)?/),
+    number_literal: $ => token(/\d+(\.\d+)?([eE][+-]?\d+)?/),
 
     string_literal: $ => token(seq(
       '"',
