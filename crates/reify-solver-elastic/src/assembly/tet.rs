@@ -62,6 +62,18 @@ use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 use crate::elements::{ReferenceElement, tet_p1::TetP1, tet_p2::TetP2};
 
+/// Conservative lower bound on `|det J|` for [`element_stiffness_generic`]'s
+/// debug-mode degenerate-element check.
+///
+/// Anything at or below this threshold is treated as a malformed element
+/// and trips a `debug_assert!` rather than silently dividing by it (which
+/// would propagate `±∞` / `NaN` through the inverse Jacobian into `K_e`).
+/// `1e-30` is far below any plausible real-world element volume even in
+/// micrometre meshes, so the check should never false-positive on valid
+/// inputs; PRD task #21 (diagnostics) will replace this placeholder with
+/// a proper mesh-scale-aware degeneracy detector.
+const MIN_JACOBIAN_DET: f64 = 1.0e-30;
+
 /// Return `(M⁻¹)ᵀ = M⁻ᵀ` via the standard 3×3 cofactor / adjugate formula.
 ///
 /// `det` is the determinant of `m` and is taken from
@@ -159,6 +171,22 @@ pub(crate) fn element_stiffness_generic<E: ReferenceElement>(
         let det = j_mat[0][0] * (j_mat[1][1] * j_mat[2][2] - j_mat[1][2] * j_mat[2][1])
             - j_mat[0][1] * (j_mat[1][0] * j_mat[2][2] - j_mat[1][2] * j_mat[2][0])
             + j_mat[0][2] * (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]);
+        // Degenerate-element guard. `det.is_normal()` catches ±0, ±∞, NaN,
+        // and subnormals; the absolute-value floor (`MIN_JACOBIAN_DET`)
+        // catches the merely-tiny case where division by `det` in
+        // `inverse_transpose_3x3` would inflate FP error to dominate the
+        // final `K_e`. Both conditions trip a `debug_assert!` rather than
+        // silently propagating `NaN` / `±∞`. PRD task #21 (diagnostics)
+        // will replace this with a mesh-scale-aware degeneracy detector
+        // and proper error reporting.
+        debug_assert!(
+            det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
+            "degenerate element: |det J| = {} at quad point {:?} (must be > {} \
+             and finite — see PRD task #21 for the future diagnostic path)",
+            det.abs(),
+            q.coord,
+            MIN_JACOBIAN_DET,
+        );
         let j_inv_t = inverse_transpose_3x3(&j_mat, det);
 
         // Push reference gradients to physical: ∇_x N_i = J⁻ᵀ · ∇_ξ N_i.
@@ -207,15 +235,33 @@ pub(crate) fn element_stiffness_generic<E: ReferenceElement>(
 
         // K[a][b] += Σ_m B[m][a] · (DB)[m][b] · |det J| · w
         //         = Σ_m b_cols[a][m] · db_cols[b][m] · factor.
+        //
+        // BᵀDB is symmetric whenever D is (which the isotropic-elastic D
+        // is by construction), so we accumulate only the upper triangle
+        // (b ≥ a) here and mirror once after the q-point loop. This both
+        // halves the inner-loop ops and guarantees `K_e` is bit-for-bit
+        // symmetric (no FP drift from differing summation orders).
         let factor = det.abs() * q.weight;
         for a in 0..n_dofs {
-            for b in 0..n_dofs {
+            for b in a..n_dofs {
                 let mut s = 0.0;
                 for m in 0..6 {
                     s += b_cols[a][m] * db_cols[b][m];
                 }
                 k_e.add(a, b, s * factor);
             }
+        }
+    }
+
+    // Mirror upper triangle into lower triangle. Direct `data` access
+    // because `ElementStiffness::data` is `pub` and we need a true store
+    // (not an `add`) — copying after the q-point sum is finished is an
+    // O(n_dofs²) tail with no inner-loop work, dominated by the BᵀDB
+    // accumulation above.
+    for a in 0..n_dofs {
+        for b in (a + 1)..n_dofs {
+            let v = k_e.data[a * n_dofs + b];
+            k_e.data[b * n_dofs + a] = v;
         }
     }
 
