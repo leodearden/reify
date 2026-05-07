@@ -39,8 +39,53 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "envelope_max" => envelope_reduce(args, false),
         "envelope_min" => envelope_reduce(args, true),
+        "case_names" => case_names(args),
         _ => return None,
     })
+}
+
+/// Return the keys of the `cases` Map inside a `MultiCaseResult` struct
+/// instance as a `Value::List<Value::String>`, in BTreeMap lexicographic
+/// (alphabetical) order.
+///
+/// # Input shape
+///
+/// `args == [Value::Map { "cases" -> Value::Map<Value::String, Value> }]`
+///
+/// The outer Map is the `MultiCaseResult` struct instance (field-keyed by
+/// `Value::String`). The inner `"cases"` field holds the Map from case name
+/// to per-case `ElasticResult`.
+///
+/// # Output
+///
+/// `Value::List(Vec<Value::String>)` of the `cases` Map's keys in BTreeMap
+/// natural order (lexicographic on `Value::String`, which is deterministic
+/// and content-addressing-stable per `Value::Map`'s `BTreeMap` invariant).
+///
+/// # Failure modes
+///
+/// All argument-shape failures collapse to `Value::Undef` (silent-Undef
+/// discipline, mirroring `envelope_reduce`):
+///   - arity != 1
+///   - `args[0]` is not `Value::Map`
+///   - outer Map has no `"cases"` key
+///   - `"cases"` value is not `Value::Map`
+///
+/// Diagnostic emission is deferred to PRD task #10 (Diagnostic mapping for
+/// multi-case-specific failure modes).
+fn case_names(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let outer = match &args[0] {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+    let cases = match outer.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(m)) => m,
+        _ => return Value::Undef,
+    };
+    Value::List(cases.keys().cloned().collect())
 }
 
 /// Per-grid-point reduction across a `Map<String, Field<Point3, T>>` of
