@@ -384,6 +384,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn point_load_selector_force_vec_returns_undef() {
+        // Regression: a typo like `point_load(force_vec, force_vec)` (the same
+        // FORCE-dimensioned 3-vector passed as both selector and force) used to
+        // silently succeed, embedding a force-dimensioned Vector under the
+        // `point` field. Locked here so a future un-narrowing of
+        // helpers::validate_selector_target cannot quietly re-introduce the
+        // silent-typo class. See PRD `topology-selectors.md` task 5 / FEA
+        // PRD task 16 for the deadline on full topology-selector validation.
+        let force = make_scalar_vec3([5000.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("point_load", &[force.clone(), force]).is_undef(),
+            "point_load with a Vector selector (force-vec typo) should return Undef"
+        );
+    }
+
     // ── Helper: face selector stub ───────────────────────────────────────────
 
     fn face_selector_stub() -> Value {

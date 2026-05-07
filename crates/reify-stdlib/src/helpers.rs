@@ -1304,8 +1304,9 @@ mod tests {
     // ── validate_selector_target ──────────────────────────────────────────────
     //
     // Hoisted from supports.rs and loads.rs (byte-for-byte identical bodies).
-    // Rejects obvious primitive non-selector values; accepts any other shape
-    // (Map, List, String, Vector, Tensor, …) as an opaque pass-through.
+    // Narrowed to accept only Value::Map and Value::String as placeholder
+    // selector shapes; all other variants (including dimensioned containers
+    // like Vector/Tensor/Scalar/Point/Complex) are rejected.
 
     #[test]
     fn validate_selector_target_real_returns_none() {
@@ -1350,11 +1351,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_selector_target_empty_list_accepted() {
-        assert_eq!(
-            validate_selector_target(&Value::List(vec![])),
-            Some(()),
-            "Empty Value::List should be accepted as opaque selector"
+    fn validate_selector_target_empty_list_rejected() {
+        assert!(
+            validate_selector_target(&Value::List(vec![])).is_none(),
+            "Value::List is no longer accepted — placeholder selectors must be Map or String"
         );
     }
 
@@ -1368,20 +1368,73 @@ mod tests {
     }
 
     #[test]
-    fn validate_selector_target_empty_vector_accepted() {
-        assert_eq!(
-            validate_selector_target(&Value::Vector(vec![])),
-            Some(()),
-            "Empty Value::Vector should be accepted as opaque selector"
+    fn validate_selector_target_empty_vector_rejected() {
+        assert!(
+            validate_selector_target(&Value::Vector(vec![])).is_none(),
+            "Value::Vector is no longer accepted — placeholder selectors must be Map or String"
         );
     }
 
     #[test]
-    fn validate_selector_target_empty_tensor_accepted() {
-        assert_eq!(
-            validate_selector_target(&Value::Tensor(vec![])),
-            Some(()),
-            "Empty Value::Tensor should be accepted as opaque selector"
+    fn validate_selector_target_empty_tensor_rejected() {
+        assert!(
+            validate_selector_target(&Value::Tensor(vec![])).is_none(),
+            "Value::Tensor is no longer accepted — placeholder selectors must be Map or String"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_scalar_rejected() {
+        // Lock the typo class at helper level: a force-dimensioned Scalar fed as
+        // a selector returns None (narrowed contract).
+        assert!(
+            validate_selector_target(&Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::FORCE,
+            })
+            .is_none(),
+            "Value::Scalar (force-dimensioned) should be rejected as selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_point_rejected() {
+        assert!(
+            validate_selector_target(&Value::Point(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]))
+            .is_none(),
+            "Value::Point should be rejected as selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_complex_rejected() {
+        assert!(
+            validate_selector_target(&Value::Complex {
+                re: 0.0,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            })
+            .is_none(),
+            "Value::Complex should be rejected as selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_vector_with_content_rejected() {
+        // Helper-level analog of the user-visible `point_load(force_vec, force_vec)`
+        // typo case: a FORCE-dimensioned 3-vector fed as a selector is rejected.
+        let v = Value::Vector(vec![
+            Value::Scalar { si_value: 5000.0, dimension: DimensionVector::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::FORCE },
+        ]);
+        assert!(
+            validate_selector_target(&v).is_none(),
+            "FORCE-dimensioned Vector should be rejected as selector"
         );
     }
 
