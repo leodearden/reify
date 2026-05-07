@@ -358,7 +358,9 @@ impl ReifyToolContext for CliToolContext {
             .files
             .get(file_path)
             .map(|f| f.content.as_str())
-            .unwrap_or("");
+            .ok_or_else(|| {
+                ToolError::EngineError(format!("active_file {file_path} not in files map"))
+            })?;
         reify_eval::resolve_entity_source_location(compiled, source, file_path, entity_path)
             .ok_or_else(|| {
                 ToolError::EngineError(format!("entity not found: {entity_path}"))
