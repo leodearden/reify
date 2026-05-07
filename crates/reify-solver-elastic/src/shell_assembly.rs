@@ -576,6 +576,12 @@ mod tests {
     #[test]
     fn shell_has_rigid_body_translation_null_space() {
         let k = shell_element_stiffness(&UNIT_TRI, 0.05, &steel_like());
+        // Tolerance relative to the maximum absolute K entry: floating-point
+        // cancellation in the partition-of-unity sum scales with K_max, so an
+        // absolute 1e-9 is too strict when E=200 GPa (K entries ~5e9).  Use
+        // the same relative-scale pattern as the rotation null-space test.
+        let k_max = k.data.iter().copied().fold(0.0_f64, f64::max);
+        let tol = 1e-9 * k_max.max(1.0);
         for axis in 0..3 {
             let mut u = [0.0_f64; 18];
             for node in 0..3 {
@@ -583,8 +589,8 @@ mod tests {
             }
             let ku = matvec(&k, &u);
             assert!(
-                linf(&ku) < 1e-9,
-                "axis {axis}: linf(K·u_translation) = {}",
+                linf(&ku) < tol,
+                "axis {axis}: linf(K·u_translation) = {}, tol = {tol}",
                 linf(&ku),
             );
         }
