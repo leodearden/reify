@@ -345,6 +345,82 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
     );
 }
 
+/// Step-11 (failing initially; passes once step-12 wires
+/// `Engine::compute_realization_tolerance_budget(...)` into the
+/// `kernel.tessellate(...)` call site inside `tessellate_from_values`).
+///
+/// Pins that `Engine::tessellate_realizations(&module)` forwards the
+/// per-output demanded tolerance — routed through
+/// `compute_realization_tolerance_budget` against
+/// `kernel_registry::collect_registry()` — to `GeometryKernel::tessellate`
+/// instead of the module-level `effective_tessellation_tolerance` default
+/// (`0.0001` SI metres = 0.1 mm).
+///
+/// Setup mirrors step-5/step-7: an STEPOutput template carries a 1 µm
+/// `RepresentationWithin` body bound, a `MyDesign` template carries a single
+/// named realization producing one `Box` primitive op, and
+/// `manufacturing_purpose("manufacturing", 1e-6)` is activated against
+/// `"MyDesign"`. The engine is constructed with a `MockGeometryKernel`
+/// extended (step-11) with a `tessellate_tolerances: Arc<Mutex<Vec<f64>>>`
+/// recorder; the test grabs the recorder via `tessellate_tolerances_ref()`
+/// before transferring kernel ownership into the engine.
+///
+/// The test calls `engine.tessellate_realizations(&module)` once, then asserts
+/// the recorder contains exactly one entry equal to `1e-6` — the demanded
+/// tolerance — NOT `0.0001` (the module pragma default that
+/// `effective_tessellation_tolerance` returns when `default_tolerance` is
+/// `None`). With the helper's hard-coded `(BooleanUnion, BRep, {BRep})`
+/// triple and the occt-only single-kernel registry, dispatch returns a
+/// 0-conversion plan and `per_stage_tolerance_for_plan` passes the demand
+/// through unchanged — so `budget == 1e-6` exactly.
+///
+/// Today (pre step-12) the tessellate path forwards
+/// `Self::effective_tessellation_tolerance(module)` to `kernel.tessellate`,
+/// so the recorder captures `0.0001` and the assertion FAILS. Once step-12
+/// replaces that argument with the per-realization budget computed via
+/// `compute_realization_tolerance_budget`, the assertion passes.
+#[test]
+fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_tessellate_uses_demanded_tolerance_via_per_stage_budget".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let tess_tols_handle = kernel.tessellate_tolerances_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let _tess = engine.tessellate_realizations(&module);
+
+    let recorded = tess_tols_handle.lock().unwrap().clone();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "expected exactly one tessellate(handle, tol) call (one realization \
+         with one terminal handle); got {} recorded tolerance(s): {:?}",
+        recorded.len(),
+        recorded,
+    );
+    assert_eq!(
+        recorded[0], 1e-6,
+        "expected the kernel to receive the demanded tolerance (1µm from \
+         STEPOutput body + manufacturing(1e-6)) routed through \
+         compute_realization_tolerance_budget; got {} (the module-pragma \
+         default 0.0001 indicates the per-stage budget pipeline is bypassed \
+         and effective_tessellation_tolerance is forwarded instead). Full \
+         recorded tolerances: {:?}",
+        recorded[0],
+        recorded,
+    );
+}
+
 /// Step-9 (failing initially; passes once step-10 adds the
 /// `Engine::compute_realization_tolerance_budget(&self, registry, demanded_tol)`
 /// helper that synthesises a `DispatchPlan` via
