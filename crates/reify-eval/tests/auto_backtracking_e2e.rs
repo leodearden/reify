@@ -745,3 +745,142 @@ structure def AirCooled : Cooled {
         warn.message
     );
 }
+
+// ─── Scenario 6: cross-product cap fallback (PRD §"Resolved design decisions") ─
+
+/// Scenario: cross-product hard cap fallback fires because the cross-product
+/// size (3×3=9) exceeds `max_cross_product_size=4`.  DFS emits one
+/// `AutoTypeParamCrossProductSizeExceeded` Warning and delegates to v0.1 BFS.
+///
+/// This fallback is independent of the depth-bound branch (task 2662).
+/// The setup uses 2 params with 3 candidates each to produce a 9-leaf
+/// cross-product, then sets `max_cross_product_size=4` so `9 > 4` triggers
+/// the cap.
+///
+/// Assertion strategy: run BFS first to get the diagnostic baseline, then run
+/// DFS with the cap; assert DFS emits exactly one extra diagnostic vs BFS and
+/// that extra diagnostic has code `AutoTypeParamCrossProductSizeExceeded`.
+/// This avoids hard-coding the exact BFS diagnostic count (which varies with
+/// free/strict mode and candidate counts).
+///
+/// Pins PRD §"Resolved design decisions" "Cross-product hard cap: 100k
+/// assignments" and the independent BFS-fallback path (task 2662).
+#[test]
+fn bfs_fallback_above_cross_product_cap_emits_warning_and_runs_bfs() {
+    // Three Seal + three Cooled candidates → cross-product = 9 > max_cap=4.
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def SiliconeSeal : Seal {
+    param hardness : Real = 60.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def OilCooled : Cooled {
+    param viscosity : Real = 0.1
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+
+    let p0_span = SourceSpan::new(10, 20);
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: p0_span,
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    // Baseline: run BFS on the same inputs.
+    let mut bfs_diagnostics = Vec::new();
+    let bfs_outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut bfs_diagnostics,
+    );
+
+    // DFS with max_depth=6 (depth bound does not fire: 2 ≤ 6) and
+    // max_cross_product_size=4 (cap fires: 3×3=9 > 4).
+    let mut dfs_diagnostics = Vec::new();
+    let dfs_outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        4, // max_cross_product_size=4; 9 > 4 → cap fallback fires
+        &mut dfs_diagnostics,
+    );
+
+    // Outcome parity.
+    assert_eq!(
+        dfs_outcome, bfs_outcome,
+        "DFS above cap must delegate to BFS; outcome must match BFS's outcome. \
+         DFS: {:?}, BFS: {:?}",
+        dfs_outcome, bfs_outcome
+    );
+
+    // DFS emits exactly one extra diagnostic vs BFS: the cap warning.
+    assert_eq!(
+        dfs_diagnostics.len(),
+        bfs_diagnostics.len() + 1,
+        "DFS above cap must emit exactly one extra diagnostic (CappedSizeExceeded) \
+         beyond BFS's diagnostics. DFS diag: {:?}, BFS diag: {:?}",
+        dfs_diagnostics, bfs_diagnostics
+    );
+    let cap_warn = dfs_diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded))
+        .expect("DFS must emit AutoTypeParamCrossProductSizeExceeded when cross-product > cap");
+    assert_eq!(
+        cap_warn.severity,
+        Severity::Warning,
+        "AutoTypeParamCrossProductSizeExceeded must be Severity::Warning; got: {:?}",
+        cap_warn.severity
+    );
+    // Message must cite the actual cross-product size (9) and the cap (4).
+    assert!(
+        cap_warn.message.contains("9"),
+        "cap message must mention actual cross-product size '9'; got: {:?}",
+        cap_warn.message
+    );
+    assert!(
+        cap_warn.message.contains("4"),
+        "cap message must mention max_cross_product_size '4'; got: {:?}",
+        cap_warn.message
+    );
+}
