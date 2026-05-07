@@ -86,6 +86,55 @@ fn helper_panics_when_face_generated_parent_index_nonzero() {
     );
 }
 
+/// Verify the helper panics with a message containing "precondition violated"
+/// when `param_m` is non-positive (zero or negative).
+///
+/// A zero or negative radius/distance would produce meaningless geometry
+/// (OCCT may reject it silently or return a trivial result), causing the
+/// volume assertions to fail with confusing messages rather than a clear
+/// precondition error. The lower-bound assertion fires at the very top of
+/// `run_local_feature_reports_face_records`, before the box build and before
+/// the `op` closure is invoked — same trick as
+/// `helper_panics_when_param_m_exceeds_precondition`.
+#[test]
+#[should_panic(expected = "precondition violated")]
+fn helper_panics_when_param_m_nonpositive() {
+    let kernel = OcctKernelHandle::spawn();
+    // -1.0e-3 m is unambiguously non-positive.
+    common::run_local_feature_reports_face_records(
+        &kernel,
+        -1.0e-3,
+        |_, _| panic!("op closure should not be reached when precondition fails"),
+        "test_op",
+    );
+}
+
+/// Verify the helper panics with a message containing "precondition violated"
+/// when `param_m` exceeds `BOX_SIDE_M * 0.1` (1 mm on a 10 mm cube).
+///
+/// The precondition assertion fires at the very top of
+/// `run_local_feature_reports_face_records`, before the box build and before
+/// the `op` closure is invoked. Passing a closure that panics if invoked
+/// proves the assertion fires first: if a future regression moved the
+/// assertion below the closure dispatch, the closure-panic message
+/// ("op closure should not be reached") would surface instead of
+/// "precondition violated", and the `#[should_panic(expected = "precondition violated")]`
+/// attribute would fail the test — same trick as
+/// `helper_panics_when_silent_drop_count_nonzero`.
+#[test]
+#[should_panic(expected = "precondition violated")]
+fn helper_panics_when_param_m_exceeds_precondition() {
+    let kernel = OcctKernelHandle::spawn();
+    // 2.0e-3 m (2 mm) is clearly above the 1 mm threshold (BOX_SIDE_M * 0.1),
+    // with no f64-rounding ambiguity at the boundary.
+    common::run_local_feature_reports_face_records(
+        &kernel,
+        2.0e-3,
+        |_, _| panic!("op closure should not be reached when precondition fails"),
+        "test_op",
+    );
+}
+
 /// Verify the helper panics with a message containing "silently drop" when
 /// `silent_drop_count` is non-zero. Substring match is robust to wording
 /// tweaks while still pinning the specific (g) assertion.
