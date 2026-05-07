@@ -70,10 +70,34 @@ impl IsotropicElastic {
     /// See the type-level documentation for the Voigt component order
     /// (`[ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]`) and the rationale for the
     /// shear-block diagonal being `μ = G` (not `2G`).
+    ///
+    /// # Contract
+    ///
+    /// `youngs_modulus > 0` and `0 ≤ poisson_ratio < 0.5`. The stdlib
+    /// `ElasticMaterial` constructor enforces these upstream
+    /// (`crates/reify-compiler/stdlib/materials_fea.ri:97-103`), but this
+    /// struct is publicly constructible, so we re-check the contract here
+    /// in debug builds. Violations would either divide by zero (`ν = 0.5`)
+    /// or yield a non-physical, indefinite stiffness matrix (`ν > 0.5` or
+    /// `ν < 0`); a release-mode caller bypassing this gate is responsible
+    /// for the resulting non-finite / garbage output. A future hardening
+    /// pass (PRD task #21 diagnostics) may upgrade these to a fallible
+    /// `IsotropicElastic::new(e, nu) -> Result<Self, ConstitutiveError>`
+    /// constructor that enforces the contract at construction time.
     #[allow(clippy::needless_range_loop)]
     pub fn d_matrix(&self) -> [[f64; 6]; 6] {
         let e = self.youngs_modulus;
         let nu = self.poisson_ratio;
+        debug_assert!(
+            e > 0.0,
+            "IsotropicElastic.youngs_modulus must be positive, got {e}",
+        );
+        debug_assert!(
+            (0.0..0.5).contains(&nu),
+            "IsotropicElastic.poisson_ratio must satisfy 0 ≤ ν < 0.5 (incompressible \
+             limit excluded; mirrors the stdlib `ElasticMaterial` constraint at \
+             `crates/reify-compiler/stdlib/materials_fea.ri:97-103`), got {nu}",
+        );
         let factor = e / ((1.0 + nu) * (1.0 - 2.0 * nu));
         let lambda = factor * nu;
         let two_mu = factor * (1.0 - 2.0 * nu);
