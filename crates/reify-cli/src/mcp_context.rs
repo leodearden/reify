@@ -1267,6 +1267,15 @@ mod tests {
             .get_source(None)
             .expect("active_file should be set after update_source")
             .file_path;
+        // Independent oracle: active_file must now name b.ri, not the prior a.ri.
+        // Uses ends_with rather than std::fs::canonicalize to avoid the symlink /
+        // case-folding flake risk noted in the comment above, while still providing
+        // an assertion that is decoupled from the all_b coherence check below.
+        assert!(
+            active_path.ends_with("bracket_compile_error.ri"),
+            "active_file must point to b.ri after update_source(b.ri); got {:?}",
+            active_path
+        );
 
         // Diagnostics must be for b.ri (bracket_compile_error has at least one Error).
         let diags = ctx
@@ -1276,12 +1285,12 @@ mod tests {
             !diags.is_empty(),
             "bracket_compile_error.ri should produce at least one diagnostic"
         );
-        // active_path is the readback of state.active_file; diagnostics come from
-        // state.compiled (= b's module).  If the regression returned — active_file
-        // still pointing at a.ri after update_source(b.ri) — active_path would
-        // carry a.ri's canonical path while d.file_path would carry b.ri's, and
-        // this check would fail.  The assertion therefore doubles as the
-        // active-file-switched regression guard.
+        // Coherence check: both active_path (get_source(None).file_path, see
+        // mcp_context.rs:170-186) and d.file_path (get_diagnostics, see
+        // mcp_context.rs:213-216,238) are derived from the same state.active_file
+        // byte, so this equality verifies that every diagnostic carries a consistent
+        // active-file path — not that active_file switched files (the ends_with
+        // assertion above is the independent regression guard for that).
         let all_b = diags.iter().all(|d| d.file_path == active_path);
         assert!(
             all_b,
