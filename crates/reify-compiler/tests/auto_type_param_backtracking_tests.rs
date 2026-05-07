@@ -4445,6 +4445,21 @@ structure def Hot2 : Hot {
         "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
         diagnostics[0].code
     );
+    // Pins the optimization's actual trace: WITH max-over-union backjumping,
+    // exactly 7 leaves are visited × 2 constraints per leaf = 14 id records.
+    //   Leaf 1 (ORingSeal, AirCooled, Hot1) → Violated → conflict {T(0),U(1)} →
+    //     J = max{0,1} = 1 = U → BackjumpTo(U) → skips (ORingSeal, AirCooled, Hot2) only
+    //   Leaves 2–7 (ORingSeal WaterCooled + 4×RubberSeal) → Satisfied (6 leaves)
+    //   Total: 7 leaves × 2 constraints = 14 id records
+    // Without backjumping: 8 leaves × 2 constraints = 16 id records.
+    // With min-over-union (J=0=T, incorrect): 4 leaves × 2 constraints = 8 id records.
+    assert_eq!(
+        checker.calls().len(),
+        14,
+        "WITH max-over-union backjumping: 7 leaves × 2 constraints = 14 id records \
+         (vs 16 no-backjump, vs 8 min-over-union); got: {:?}",
+        checker.calls().len()
+    );
 }
 
 /// When the parameterized template's only constraint has no `ValueRef` nodes
