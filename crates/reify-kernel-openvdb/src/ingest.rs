@@ -30,6 +30,7 @@ use reify_types::{
     Diagnostic, DiagnosticCode, DimensionVector, InterpolationKind, SampledField, SampledGridKind,
     Type,
 };
+use reify_types::sampled::{LINSPACE_MAX_INTERVALS, linspace_inclusive};
 
 /// Spatial-grid shape of an OpenVDB source grid.
 ///
@@ -189,6 +190,24 @@ pub enum IngestError {
         /// `spacing[axis]` that produced the collapse.
         spacing: f64,
     },
+    /// An axis interval count exceeds [`reify_types::sampled::LINSPACE_MAX_INTERVALS`].
+    ///
+    /// A legitimately-finite but enormous combination such as
+    /// `bounds_min=0.0`, `bounds_max=1e308`, `spacing=1.0` would make
+    /// `(span / spacing).round() as usize` saturate on overflow and attempt
+    /// to allocate an astronomically large `Vec`.  This variant surfaces
+    /// before any allocation when [`linspace_inclusive`] returns `None`.
+    ///
+    /// Distinct from [`IngestError::DegenerateAxis`]: the cap rejects axes
+    /// that are too **long**, `DegenerateAxis` rejects axes that are too
+    /// **short** (collapsed to 1 node).
+    ExcessiveAxisLength {
+        /// Index of the offending axis (0 = outermost).
+        axis: usize,
+        /// Computed interval count that exceeded the cap (may be saturated
+        /// if the span/spacing ratio overflows `usize`).
+        n_intervals: usize,
+    },
 }
 
 /// v0.2 OpenVDB units → [`DimensionVector`] lookup table.
@@ -325,9 +344,20 @@ pub fn lower_to_sampled(
         OpenVdbGridKind::Regular3D => SampledGridKind::Regular3D,
     };
 
-    let axis_grids: Vec<Vec<f64>> = (0..axis_count)
-        .map(|i| linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]))
-        .collect();
+    let mut axis_grids: Vec<Vec<f64>> = Vec::with_capacity(axis_count);
+    for i in 0..axis_count {
+        match linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]) {
+            Some(g) => axis_grids.push(g),
+            None => {
+                // linspace_inclusive only returns None when n_intervals > LINSPACE_MAX_INTERVALS.
+                // The saturating cast here always produces a value > the cap.
+                let n_intervals =
+                    ((grid.bounds_max[i] - grid.bounds_min[i]) / grid.spacing[i]).round()
+                        as usize;
+                return Err(IngestError::ExcessiveAxisLength { axis: i, n_intervals });
+            }
+        }
+    }
 
     // Guard (4): each axis must have ≥ 2 nodes after linspace construction.
     // Catches bounds_min == bounds_max and spacing-larger-than-span — both
@@ -418,30 +448,6 @@ fn map_interpolation(
             (InterpolationKind::Linear, Some(warn))
         }
     }
-}
-
-/// Inclusive linspace from `start` to `stop` with step `spacing`.
-///
-/// Produces `[start, start+spacing, …, stop]` (or as close as
-/// `floor((stop-start)/spacing)` admits). Returns `[start]` for
-/// degenerate-but-valid inputs (non-positive spacing or `stop < start`).
-///
-/// Mirrors `engine_eval::linspace_inclusive` byte-identically so that
-/// OpenVDB-imported and user-supplied sampled fields share one axis-grid
-/// layout — keeping all downstream interp assumptions transferable.
-fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Vec<f64> {
-    if spacing <= 0.0 || !spacing.is_finite() || !start.is_finite() || !stop.is_finite() {
-        return vec![start];
-    }
-    let span = stop - start;
-    if span < 0.0 {
-        return vec![start];
-    }
-    // Round to nearest integer to avoid floating-point cliff effects on
-    // exact-fit cases (e.g. (2.0 - 0.0) / 1.0 → 1.999… instead of 2).
-    let n_intervals = (span / spacing).round() as usize;
-    let count = n_intervals + 1;
-    (0..count).map(|i| start + (i as f64) * spacing).collect()
 }
 
 /// Validate that the OpenVDB grid's declared units are dimensionally
@@ -590,6 +596,11 @@ impl std::fmt::Display for IngestError {
                 "OpenVDB grid axis {axis} produced only {node_count} node(s); need at least 2 \
                  (check bounds and spacing — bounds_min={bounds_min} bounds_max={bounds_max} \
                  spacing={spacing})"
+            ),
+            IngestError::ExcessiveAxisLength { axis, n_intervals } => write!(
+                f,
+                "OpenVDB grid axis {axis} requires {n_intervals} intervals, which exceeds the \
+                 maximum of {LINSPACE_MAX_INTERVALS}; reduce the axis span or increase the spacing"
             ),
         }
     }
