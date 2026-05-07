@@ -45,6 +45,67 @@ describe('feaModeStore', () => {
     });
   });
 
+  describe('tryAutoEnable', () => {
+    it('first call flips state.enabled true and returns true', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        const result = store.tryAutoEnable();
+        expect(result).toBe(true);
+        expect(store.state.enabled).toBe(true);
+        dispose();
+      });
+    });
+
+    it('first call sets autoEnabledOnce to true', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        store.tryAutoEnable();
+        expect(store.state.autoEnabledOnce).toBe(true);
+        dispose();
+      });
+    });
+
+    it('first call with channel arg updates state.channel', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        store.tryAutoEnable('displacement_magnitude');
+        expect(store.state.channel).toBe('displacement_magnitude');
+        dispose();
+      });
+    });
+
+    it('first call without channel arg leaves state.channel unchanged', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        store.tryAutoEnable();
+        expect(store.state.channel).toBe('vonMises');
+        dispose();
+      });
+    });
+
+    it('second call after setEnabled(false) does NOT re-enable (one-shot sticky)', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        store.tryAutoEnable();           // first call – fires
+        store.setEnabled(false);          // user disables
+        const result = store.tryAutoEnable(); // second call – should be no-op
+        expect(result).toBe(false);
+        expect(store.state.enabled).toBe(false);
+        dispose();
+      });
+    });
+
+    it('returns false on second call even without user disabling', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        store.tryAutoEnable();
+        const result = store.tryAutoEnable();
+        expect(result).toBe(false);
+        dispose();
+      });
+    });
+  });
+
   describe('lockCurrent', () => {
     it('sets range to {mode:"locked", min, max, source:"current"} by default', () => {
       createRoot((dispose) => {
