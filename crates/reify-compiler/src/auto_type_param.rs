@@ -417,6 +417,17 @@ fn emit_no_feasible_cross_product_diagnostic(
     let witness_fqn = &per_param_candidates[0][0];
     let ruled_out = cross_product_size / per_param_candidates[0].len();
 
+    // `Diagnostic::candidates` carries the witness's FQN list in declared
+    // parameter order. The level-1 witness produces a length-1 list with the
+    // lex-first FQN. The FQN-only invariant pinned at
+    // `crates/reify-types/src/diagnostics.rs::Diagnostic::candidates`
+    // (lines 884-903) is preserved: the bare FQN goes through the structured
+    // field; the human-readable `T=fqn` rendering with param-name pairing
+    // lives in the message only. Mirrors the
+    // `AutoTypeParamAmbiguous` multi-param coherent-assignment convention
+    // (`diagnostics.rs:510-521`).
+    let witness_fqns = vec![witness_fqn.clone()];
+
     let (_joined_bounds, label_message) = render_auto_type_param_label(&params[0].bounds);
     let message = format!(
         "auto type-parameter cross-product search found no feasible assignment for parameters [{names}]: \
@@ -433,7 +444,7 @@ fn emit_no_feasible_cross_product_diagnostic(
         Diagnostic::error(message)
             .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
             .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message))
-            .with_candidates(Vec::<String>::new()),
+            .with_candidates(witness_fqns),
     );
 }
 
