@@ -51,8 +51,53 @@ impl ReferenceElement for TetP2 {
         n
     }
 
-    fn shape_grad_at(&self, _coord: ReferenceCoord) -> Vec<[f64; 3]> {
-        todo!("P2 shape-function gradients — task 2914 step-14")
+    /// Quadratic Lagrangian P2 shape-function gradients in reference
+    /// coordinates, evaluated at `coord`.
+    ///
+    /// Computed via the chain rule from the barycentric coordinates
+    /// `λ_0 = 1-ξ-η-ζ`, `λ_1 = ξ`, `λ_2 = η`, `λ_3 = ζ`, whose gradients
+    /// in `(ξ, η, ζ)` are
+    ///
+    /// - `∇λ_0 = (-1, -1, -1)`,
+    /// - `∇λ_1 = (1, 0, 0)`,
+    /// - `∇λ_2 = (0, 1, 0)`,
+    /// - `∇λ_3 = (0, 0, 1)`.
+    ///
+    /// Vertex-node gradient: `∇N_i = (4 λ_i − 1) · ∇λ_i` for `i ∈ 0..=3`.
+    /// Edge-node gradient: `∇N = 4 (λ_a ∇λ_b + λ_b ∇λ_a)` for the edge
+    /// `(a, b) = EDGES[edge_index]`.
+    ///
+    /// Gradients are degree-1 polynomials in `(ξ, η, ζ)` — see the
+    /// `shape_grad_at_varies_linearly_in_reference_coords` test.
+    fn shape_grad_at(&self, coord: ReferenceCoord) -> Vec<[f64; 3]> {
+        let ReferenceCoord { xi, eta, zeta } = coord;
+        let lambda = [1.0 - xi - eta - zeta, xi, eta, zeta];
+        const GRAD_LAMBDA: [[f64; 3]; 4] = [
+            [-1.0, -1.0, -1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+
+        let mut g = Vec::with_capacity(10);
+        // Vertex-node gradients: ∇N_i = (4 λ_i − 1) ∇λ_i.
+        for i in 0..4 {
+            let scale = 4.0 * lambda[i] - 1.0;
+            g.push([
+                scale * GRAD_LAMBDA[i][0],
+                scale * GRAD_LAMBDA[i][1],
+                scale * GRAD_LAMBDA[i][2],
+            ]);
+        }
+        // Edge-node gradients: ∇N = 4 (λ_a ∇λ_b + λ_b ∇λ_a).
+        for &(a, b) in &EDGES {
+            g.push([
+                4.0 * (lambda[a] * GRAD_LAMBDA[b][0] + lambda[b] * GRAD_LAMBDA[a][0]),
+                4.0 * (lambda[a] * GRAD_LAMBDA[b][1] + lambda[b] * GRAD_LAMBDA[a][1]),
+                4.0 * (lambda[a] * GRAD_LAMBDA[b][2] + lambda[b] * GRAD_LAMBDA[a][2]),
+            ]);
+        }
+        g
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
