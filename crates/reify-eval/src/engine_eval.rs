@@ -853,8 +853,8 @@ fn build_sampled_field(
     let mut axis_grids: Vec<Vec<f64>> = Vec::with_capacity(bounds_min.len());
     for i in 0..bounds_min.len() {
         match linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i]) {
-            Some(g) => axis_grids.push(g),
-            None => {
+            Ok(g) => axis_grids.push(g),
+            Err(_) => {
                 push_invalid_config(
                     ctx,
                     format!(

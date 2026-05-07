@@ -347,13 +347,8 @@ pub fn lower_to_sampled(
     let mut axis_grids: Vec<Vec<f64>> = Vec::with_capacity(axis_count);
     for i in 0..axis_count {
         match linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]) {
-            Some(g) => axis_grids.push(g),
-            None => {
-                // linspace_inclusive only returns None when n_intervals > LINSPACE_MAX_INTERVALS.
-                // The saturating cast here always produces a value > the cap.
-                let n_intervals =
-                    ((grid.bounds_max[i] - grid.bounds_min[i]) / grid.spacing[i]).round()
-                        as usize;
+            Ok(g) => axis_grids.push(g),
+            Err(n_intervals) => {
                 return Err(IngestError::ExcessiveAxisLength { axis: i, n_intervals });
             }
         }
