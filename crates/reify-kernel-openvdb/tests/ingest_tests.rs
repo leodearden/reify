@@ -490,6 +490,58 @@ fn lower_to_sampled_non_finite_bounds_returns_invalid_bounds() {
 }
 
 // ---------------------------------------------------------------------------
+// Step-3058 RED: degenerate-axis invariant
+// ---------------------------------------------------------------------------
+
+/// Step-3058: `bounds_min == bounds_max` with positive spacing collapses
+/// `linspace_inclusive` to a 1-node axis (`[0.0]`), which the existing
+/// `InvalidBounds` check does NOT reject (it uses `max < min`). The new
+/// `DegenerateAxis` guard fires AFTER `axis_grids` is computed and catches
+/// any axis with fewer than 2 nodes — defending `interp::interpolate_Nd`'s
+/// `assert!(grid.len() >= 2)`.
+///
+/// Canonical degenerate input from the task description:
+///   `bounds_min=[0.0]`, `bounds_max=[0.0]`, `spacing=[1.0]`, `data=[42.0]`
+/// Pre-flight pipeline:
+///   - AxisLengthMismatch: 1 == 1 ✓
+///   - EmptyGrid: 1 element ≠ 0 ✓
+///   - InvalidSpacing: 1.0 > 0 and finite ✓
+///   - InvalidBounds: 0.0 finite, 0.0 finite, 0.0 < 0.0 is false ✓
+///   - axis_grids: linspace_inclusive(0.0, 0.0, 1.0) → [0.0] (1 node)
+///   → NEW DegenerateAxis guard fires here
+#[test]
+fn lower_to_sampled_degenerate_axis_returns_degenerate_axis() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![0.0],
+        spacing: vec![1.0],
+        data: vec![42.0],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "degenerate", &Type::length());
+    match result {
+        Err(IngestError::DegenerateAxis {
+            axis,
+            node_count,
+            bounds_min,
+            bounds_max,
+            spacing,
+        }) => {
+            assert_eq!(axis, 0);
+            assert_eq!(node_count, 1);
+            assert_eq!(bounds_min, 0.0);
+            assert_eq!(bounds_max, 0.0);
+            assert_eq!(spacing, 1.0);
+        }
+        other => panic!(
+            "expected Err(IngestError::DegenerateAxis {{ … }}), got {other:?}"
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Step-11 RED: read_vdb_file v0.2 stub contract
 // ---------------------------------------------------------------------------
 
