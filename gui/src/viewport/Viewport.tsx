@@ -151,12 +151,17 @@ export function Viewport(props: ViewportProps) {
     // at the top of the effect so any change to any of them rebuilds the bake closure.
     if (props.feaModeStore) {
       const feaStore = props.feaModeStore;
+      // Performance note: channel/palette/range are read INSIDE the if(enabled) branch so
+      // they are only tracked as reactive dependencies while FEA mode is active. When
+      // enabled===false, only `enabled` is tracked, so changes to channel/palette/range do
+      // NOT re-run the effect (and therefore do NOT redundantly call setColorize(null) +
+      // rebuildMaterials() on every pre-configuration tweak).
       createEffect(() => {
         const enabled = feaStore.state.enabled;
-        const channel = feaStore.state.channel;
-        const palette = feaStore.state.palette;
-        const range = feaStore.state.range;
         if (enabled) {
+          const channel = feaStore.state.channel;
+          const palette = feaStore.state.palette;
+          const range = feaStore.state.range;
           meshManager.setColorize({
             channel,
             bake: (scalars: Float32Array) => bakeColours(scalars, range, palette),

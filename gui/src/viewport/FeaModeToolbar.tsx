@@ -45,7 +45,11 @@ export const FeaModeToolbar: Component<FeaModeToolbarProps> = (props) => {
   function handleRangeModeChange(mode: 'auto' | 'fixed' | 'locked') {
     const cur = props.store.state.range;
     if (mode === 'auto') {
-      props.store.setRange({ mode: 'auto', min: cur.min, max: cur.max });
+      // Reset to sentinel defaults — the consumer (Viewport) is the source of truth
+      // for auto bounds and must recompute them from the active scalar data.
+      // Preserving the previous fixed/locked bounds here would bake stale values into
+      // auto state that consumers read while range.mode === 'auto'.
+      props.store.setRange({ mode: 'auto', min: 0, max: 1 });
     } else if (mode === 'fixed') {
       props.store.setRange({ mode: 'fixed', min: cur.min, max: cur.max });
     } else {
