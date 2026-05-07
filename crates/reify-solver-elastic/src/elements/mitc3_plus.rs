@@ -2,10 +2,8 @@
 //!
 //! # Reference
 //!
-//! Bathe, K.-J. & Lee, P.-S. (2014). "Towards improving the MITC9 shell
-//! element." *Computers & Structures*, 81, 477–489; and Bathe, K.-J. &
-//! Lee, P.-S. (2011). "An improvement of the MITC shell elements."
-//! *Computers & Structures*, 89, 1413–1422.
+//! Lee, Y., Lee, P.-S. & Bathe, K.-J. (2014). "The MITC3+ shell element
+//! and its performance." *Computers & Structures*, 138, 12–23.
 //!
 //! # Element description
 //!

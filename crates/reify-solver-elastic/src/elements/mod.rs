@@ -2,11 +2,21 @@
 //!
 //! See PRD `docs/prds/v0_3/structural-analysis-fea.md` task #7.
 //!
-//! # Canonical reference element
+//! # Canonical reference geometries
 //!
-//! All elements in this module are defined on the **unit reference
-//! tetrahedron** with vertices at `(0,0,0), (1,0,0), (0,1,0), (0,0,1)` in
-//! `(ξ, η, ζ)` coordinates. The reference-tet volume is `1/6`.
+//! This module contains two families of elements, each with its own
+//! canonical reference geometry and coordinate type:
+//!
+//! - **3D tetrahedral elements** ([`tet_p1::TetP1`], [`tet_p2::TetP2`]) —
+//!   defined on the **unit reference tetrahedron** with vertices at
+//!   `(0,0,0), (1,0,0), (0,1,0), (0,0,1)` in `(ξ, η, ζ)` coordinates
+//!   (reference-tet volume `1/6`).  Use [`ReferenceCoord`] for these
+//!   elements.
+//!
+//! - **2D triangular shell elements** ([`mitc3_plus::Mitc3Plus`]) — defined
+//!   on the **unit reference triangle** with vertices at `(0,0), (1,0),
+//!   (0,1)` in local `(ξ, η)` mid-surface coordinates.  Use
+//!   [`mitc3_plus::ShellReferenceCoord`] for these elements.
 
 pub mod mitc3_plus;
 pub mod tet_p1;
