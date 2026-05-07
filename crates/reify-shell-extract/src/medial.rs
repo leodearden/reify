@@ -543,12 +543,9 @@ fn walk_to_zero(
             start[1] + direction[1] * t,
             start[2] + direction[2] * t,
         ];
-        let phi = match sample_at_world(sdf, p) {
-            Some(v) => v,
-            // Stepped off the grid before crossing zero — caller
-            // treats the voxel as non-medial.
-            None => return None,
-        };
+        // Stepped off the grid before crossing zero — caller treats
+        // the voxel as non-medial (the `?` propagates `None`).
+        let phi = sample_at_world(sdf, p)?;
         // Sign change (including landing exactly on zero) marks the
         // bracketing pair. Linear interpolation between (prev_t, phi)
         // and (t, phi) recovers the zero-crossing.
@@ -784,7 +781,7 @@ mod tests {
         }
 
         // (c) at least half the centerline plane is medial
-        let min_expected = (n * n / 2) as usize;
+        let min_expected = n * n / 2;
         assert!(
             mask.voxels.len() >= min_expected,
             "slab medial mask has {} voxels; expected ≥ {min_expected} \
