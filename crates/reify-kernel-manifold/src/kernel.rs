@@ -43,10 +43,10 @@ use reify_types::{
     KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value,
 };
 
-/// Error message used by the v0.2 stub paths (`query`/`export`/`tessellate`)
-/// that have not yet been wired to real FFI. Boolean ops (`Union`,
-/// `Difference`, `Intersection`) and `tessellate` are wired by this task;
-/// `query`/`export` remain follow-up work for v0.2.
+/// Error message used by the v0.2 stub paths (`query`/`export`) that
+/// have not yet been wired to real FFI. Boolean ops (`Union`,
+/// `Difference`, `Intersection`) and `tessellate` are now wired via
+/// `manifold3d` 0.1; `query`/`export` remain follow-up work for v0.2.
 const STUB_MSG: &str = "Manifold query/export not yet implemented for v0.2; \
     boolean ops and tessellate are wired via manifold3d 0.1, but query/export \
     are follow-up work (see docs/prds/v0_2/multi-kernel.md).";
@@ -246,19 +246,20 @@ impl GeometryKernel for ManifoldKernel {
 
 /// First concrete impl of [`KernelAttributeHook`] — see PRD line 70.
 ///
-/// In the v0.2 stub, the body unconditionally returns
-/// `Ok(KernelAttributeOutcome::Discarded)`. The `tracing::warn!` diagnostic
-/// (required by the `Discarded` contract) is added in step 6 of the plan;
-/// for now the impl is a pure stub so the structural plumbing
-/// (`attribute_hook() → Some` → `propagate_attributes() → Ok(Discarded)`)
-/// can be tested first.
+/// The body unconditionally returns `Ok(KernelAttributeOutcome::Discarded)`
+/// and emits a structured WARN diagnostic (required by the `Discarded`
+/// contract). The Manifold C++ FFI is wired (boolean ops + tessellate go
+/// through `manifold3d` 0.1) and the manifold3d accessors needed for real
+/// propagation (`originalID`, `MeshGL.run_*`, `merge_from_vert`/
+/// `merge_to_vert`, `face_id`) are reachable from this crate; the actual
+/// `MeshGL` walk is implemented in persistent-naming-v2 PRD task 9 (a
+/// separate task that depends on this crate's FFI wiring).
 ///
-/// When real Manifold C++ FFI lands in a follow-up task, the body switches
-/// to walk `MeshGL` merge vectors + per-triangle `faceID` / `originalID`
-/// to copy parent attributes onto result face handles, returning
-/// `Propagated` on success and `Discarded` (with a `reason="heavy_remeshing"`
-/// flavoured WARN) on lossy remeshing — the trait surface is stable across
-/// that swap.
+/// When PRD task 9 lands, the body switches to walk `MeshGL` merge
+/// vectors + per-triangle `faceID` / `originalID` to copy parent
+/// attributes onto result face handles, returning `Propagated` on success
+/// and `Discarded` (with a `reason="heavy_remeshing"` flavoured WARN) on
+/// lossy remeshing — the trait surface is stable across that swap.
 impl KernelAttributeHook for ManifoldKernel {
     fn propagate_attributes(
         &self,
@@ -268,24 +269,26 @@ impl KernelAttributeHook for ManifoldKernel {
         _result_handle: GeometryHandleId,
         _splitting_feature_id: &FeatureId,
     ) -> Result<KernelAttributeOutcome, QueryError> {
-        // v0.2 stub: real Manifold FFI is deferred. Emit a WARN diagnostic
-        // (operator visibility for the intentional attribute-loss path) and
-        // return Discarded. The `KernelAttributeOutcome::Discarded` contract
-        // mandates that hook impls emit their own diagnostic before
-        // returning, so consumers do not need to surface a duplicate.
+        // v0.2 stub: FFI is wired but the MeshGL walk that implements
+        // real attribute propagation is PRD task 9 (persistent-naming-v2).
+        // Emit a WARN diagnostic (operator visibility for the intentional
+        // attribute-loss path) and return Discarded. The
+        // `KernelAttributeOutcome::Discarded` contract mandates that hook
+        // impls emit their own diagnostic before returning, so consumers
+        // do not need to surface a duplicate.
         //
-        // `target: "reify_kernel_manifold::kernel"` matches the module path
-        // of this impl so a `RUST_LOG=reify_kernel_manifold::kernel=warn`
-        // (or the broader `reify_kernel_manifold=warn`) operator filter sees
-        // the event. `reason="deferred_ffi"` is the structured-fields key by
-        // which a future `reason="heavy_remeshing"` (when real FFI lands)
-        // can be distinguished.
+        // `target: "reify_kernel_manifold::kernel"` matches the module
+        // path of this impl so a `RUST_LOG=reify_kernel_manifold::kernel=warn`
+        // (or the broader `reify_kernel_manifold=warn`) operator filter
+        // sees the event. `reason="task_9_pending"` is the structured-
+        // fields key by which a future `reason="heavy_remeshing"` (when
+        // PRD task 9 lands the real walk) can be distinguished.
         tracing::warn!(
             target: "reify_kernel_manifold::kernel",
-            reason = "deferred_ffi",
+            reason = "task_9_pending",
             op = ?op,
             parents = parent_handles.len(),
-            "Manifold attribute propagation discarded — real FFI deferred (v0.2 stub)"
+            "Manifold attribute propagation discarded — MeshGL walk pending (PRD task 9)"
         );
         Ok(KernelAttributeOutcome::Discarded)
     }
@@ -557,7 +560,8 @@ mod tests {
     }
 
     /// PRD line 70: heavy remeshing within tolerance (and, in this v0.2 stub,
-    /// deferred FFI) discards attributes with a `tracing::warn!` diagnostic.
+    /// the pending PRD task 9 MeshGL walk) discards attributes with a
+    /// `tracing::warn!` diagnostic.
     ///
     /// Three properties are pinned by this test:
     /// (a) `propagate_attributes` returns `Ok(KernelAttributeOutcome::Discarded)`
@@ -607,7 +611,7 @@ mod tests {
         match outcome {
             Ok(KernelAttributeOutcome::Discarded) => {}
             other => panic!(
-                "v0.2 Manifold stub must return Ok(Discarded) — real FFI is deferred; got {other:?}"
+                "v0.2 Manifold stub must return Ok(Discarded) — MeshGL walk pending PRD task 9; got {other:?}"
             ),
         }
 
