@@ -41,6 +41,24 @@
  * option: do a project-wide `REGISTER_IDENT_RE` pre-pass first, then filter
  * `CONST_DECL_RE` matches against the global set.
  *
+ * Comment-strip caveat — the two regex passes applied before `REGISTER_IDENT_RE`
+ * (`/\/\/.*$/gm` for line comments and `/\/\*[\s\S]*?\*\//g` for block comments)
+ * have two known limitations:
+ *   1. They do not respect Rust string literals: a value like
+ *      `"https://example.com"` contains `//` which the line-comment regex treats
+ *      as a comment start, silently truncating the rest of that line.  A
+ *      `registry.register(NAME, ...)` call on the same line as such a literal
+ *      could be incorrectly dropped from `registeredIdents`.
+ *   2. They do not handle nested block comments: `/* outer /* inner */ still outer */`
+ *      is closed at the first `*/`, leaving ` still outer */` in the stripped
+ *      source as unexpected plain text.
+ * Neither condition arises in the current source tree, so discovery is unaffected
+ * today.  Future contributors: avoid placing `registry.register(NAME, ...)` calls
+ * on lines that also contain a `//`-bearing string literal, and avoid nested block
+ * comments in tools files.  Optional hardening: replace the two `.replace()` calls
+ * with a small state machine that honours `"..."`, `r"..."`, `r#"..."#`, line
+ * comments, and nested block comments.
+ *
  * Uppercase tool names are intentionally supported by `[A-Za-z0-9_]+` in both
  * patterns (the casing policy is enforced by the Rust layer; the TS discovery
  * layer stays casing-agnostic so it stays valid if the policy is ever relaxed).
