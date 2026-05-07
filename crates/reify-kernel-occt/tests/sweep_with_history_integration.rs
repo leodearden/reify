@@ -182,4 +182,11 @@ fn sweep_with_history_reports_caps_and_swept_face_records() {
             result_edge_count
         );
     }
+
+    // (g) Silent-drop counter must be zero for a well-formed pipe sweep.
+    assert_eq!(
+        history.silent_drop_count, 0,
+        "vanilla pipe sweep should not silently drop any Modified/Generated child — got {}",
+        history.silent_drop_count
+    );
 }
