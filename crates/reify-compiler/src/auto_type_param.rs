@@ -1404,13 +1404,16 @@ pub fn resolve_auto_type_params_with_backtracking(
     // Strict-vs-free dispatch (task 2661): if any param is strict
     // (`free=false`), the search stops as soon as 2 feasibles are collected
     // (early-exit; max_feasible_to_collect=2). Free-mode (`every param free=true`)
-    // collects ALL feasible leaves (max_feasible_to_collect=usize::MAX) so the
-    // exact count is known for elision reporting and the lex-first pick is
+    // collects up to `NON_UNIQUE_DISPLAY_CAP + 1` feasibles (task 2663) — one
+    // more than the display cap so we can detect "more than the cap" without
+    // enumerating the full cross-product. The lex-first pick is
     // `feasible_assignments[0]` (DFS visits in declared-order × lex-within-param
     // order by construction).
     //
-    // Cost note: free-mode visits the full cross-product in the worst case (K^N
-    // leaves). Strict-mode is cheaper in the common case because it terminates
+    // Cost note: free-mode now visits AT MOST `NON_UNIQUE_DISPLAY_CAP + 1`
+    // feasible leaves before early-terminating (task 2663 Scope 2 cap
+    // tightening); previously it visited K^N leaves in the worst case.
+    // Strict-mode is cheaper in the common case because it terminates
     // as soon as 2 feasibles are found; only in the all-infeasible worst case
     // does strict-mode also visit O(K^N) leaves.
     //
@@ -1420,7 +1423,11 @@ pub fn resolve_auto_type_params_with_backtracking(
     // dispatch only when `cross_product_size <= max_cross_product_size`, so
     // the worst-case leaf count here is bounded by the cap (default 100,000).
     let any_strict = params.iter().any(|p| !p.free);
-    let max_feasible_to_collect: usize = if any_strict { 2 } else { usize::MAX };
+    let max_feasible_to_collect: usize = if any_strict {
+        2
+    } else {
+        NON_UNIQUE_DISPLAY_CAP + 1
+    };
 
     // Build the static blame map ONCE before recursion. Each constraint's
     // expression tree is walked to find `ValueRef(cell_id)` nodes whose cell
@@ -1556,21 +1563,24 @@ pub fn resolve_auto_type_params_with_backtracking(
                 }
             } else {
                 // All-free NonUnique path (task 2661). Every param has free=true,
-                // so we collected ALL feasible leaves (max_feasible_to_collect=usize::MAX).
+                // so we collected up to NON_UNIQUE_DISPLAY_CAP + 1 feasible leaves
+                // (task 2663 Scope 2 cap tightening — `max_feasible_to_collect`).
                 // Emit AutoTypeParamNonUnique (Warning) and return the lex-first
                 // feasible as a full length-N success shape — mirroring the `1 =>`
                 // arm (single-feasible success) but with an attached Warning.
                 //
-                // At most NON_UNIQUE_DISPLAY_CAP witness strings are rendered;
-                // if more feasibles exist, append "(N more elided)".
+                // At most NON_UNIQUE_DISPLAY_CAP witness strings are rendered.
+                // When the collection cap is hit (i.e. `total > NON_UNIQUE_DISPLAY_CAP`,
+                // which by construction means `total == NON_UNIQUE_DISPLAY_CAP + 1`),
+                // the exact total past the cap is unknown so the elision message
+                // shifts to a coarse "(more than NON_UNIQUE_DISPLAY_CAP elided)" form
+                // rather than the prior exact "(N more elided)" form.
                 // See module-level NON_UNIQUE_DISPLAY_CAP for the rendering invariant.
                 let total = feasible_assignments.len();
                 let display_count = total.min(NON_UNIQUE_DISPLAY_CAP);
-                let elided = total.saturating_sub(NON_UNIQUE_DISPLAY_CAP);
 
                 // Build composite witness strings for the displayed portion only.
                 // Format: "T=ORingSeal,U=AirCooled" — mirrors strict-Ambiguous.
-                // Richer formatting is task 2663's scope.
                 let displayed_witnesses =
                     render_witnesses(params, &feasible_assignments[..display_count]);
 
@@ -1578,9 +1588,9 @@ pub fn resolve_auto_type_params_with_backtracking(
                     render_auto_type_param_label(&params[0].bounds);
                 let witnesses_join = displayed_witnesses.join("; ");
                 let lex_first_witness = displayed_witnesses[0].clone();
-                let message = if elided > 0 {
+                let message = if total > NON_UNIQUE_DISPLAY_CAP {
                     format!(
-                        "auto(free) type-parameters have multiple feasible cross-product assignments: {witnesses_join}; ({elided} more elided); selected lexicographically-first '{lex_first_witness}'",
+                        "auto(free) type-parameters have multiple feasible cross-product assignments: {witnesses_join}; (more than {NON_UNIQUE_DISPLAY_CAP} elided); selected lexicographically-first '{lex_first_witness}'",
                     )
                 } else {
                     format!(
@@ -2043,8 +2053,9 @@ fn dfs_search(
         if verdict.feasible {
             feasible_assignments.push(current.clone());
             // Early-terminate once the requested feasible count is reached:
-            // free-mode (max=usize::MAX) collects all; strict-mode (max=2)
-            // stops once Ambiguous is provable.
+            // free-mode (max=NON_UNIQUE_DISPLAY_CAP+1, task 2663) stops one
+            // past the display cap so we can detect "more than the cap";
+            // strict-mode (max=2) stops once Ambiguous is provable.
             if feasible_assignments.len() >= max_feasible_to_collect {
                 return DfsControl::EarlyTerminate;
             }
