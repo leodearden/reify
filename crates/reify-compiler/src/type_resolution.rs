@@ -601,6 +601,12 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Density" => Some(Type::Scalar {
             dimension: DimensionVector::MASS_DENSITY,
         }),
+        "Acceleration" => Some(Type::Scalar {
+            dimension: DimensionVector::ACCELERATION,
+        }),
+        "ForceDensity" => Some(Type::Scalar {
+            dimension: DimensionVector::FORCE_DENSITY,
+        }),
         "Dimensionless" => Some(Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         }),
