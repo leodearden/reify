@@ -128,22 +128,60 @@ fn element_order_enum_has_p1_and_p2_variants_in_canonical_order() {
     );
 }
 
+// ─── step-1: ShellForce enum ─────────────────────────────────────────────────
+
+/// `ShellForce` is the enum controlling whether the FEA solver uses shell
+/// formulation. The variant order `[Off, Auto, On]` is canonical: it reflects
+/// the natural "never / default / always" mental model. Pinning the order
+/// makes any future re-ordering a deliberate decision rather than a silent
+/// ABI/tag-encoding change — same discipline as `ElementOrder`'s `[P1, P2]`
+/// pin. PRD reference: docs/prds/v0_4/structural-analysis-shells.md (T17).
+#[test]
+fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
+    let module = load_stdlib_module();
+
+    let enum_def = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "ShellForce")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `enum ShellForce` in std/solver/elastic, got enum_defs: {:?}",
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        enum_def.variants,
+        vec!["Off".to_string(), "Auto".to_string(), "On".to_string()],
+        "ShellForce variants should be [Off, Auto, On] in canonical order, got: {:?}",
+        enum_def.variants
+    );
+}
+
 // ─── step-5: ElasticOptions param shape ──────────────────────────────────────
 
 /// `ElasticOptions` is the FEA solver-input knob structure. It must declare
-/// exactly five params with the canonical names and types:
+/// exactly nine params with the canonical names and types:
 ///
-///   - `element_order : ElementOrder`             (selects P1 / P2 elements)
-///   - `mesh_size     : Option<Length>`           (none = solver derives from tolerance)
-///   - `max_iter      : Int`                      (CG iteration cap)
-///   - `cg_tolerance  : Real`                     (CG convergence threshold)
-///   - `threads       : Option<Int>`              (none = solver picks)
+///   - `element_order          : ElementOrder`   (selects P1 / P2 elements)
+///   - `mesh_size              : Option<Length>`  (none = solver derives from tolerance)
+///   - `max_iter               : Int`             (CG iteration cap)
+///   - `cg_tolerance           : Real`            (CG convergence threshold)
+///   - `threads                : Option<Int>`     (none = solver picks)
+///   - `shell_threshold        : Real`            (thickness/extent ratio for auto-shell
+///                                                 classification; PRD T17 line 63)
+///   - `shell_voxel_size       : Option<Length>`  (voxel resolution for medial extraction;
+///                                                 none = solver derives thickness/3)
+///   - `shell_branch_prune_ratio : Real`          (medial-axis spurious-branch pruning
+///                                                 threshold; empirical placeholder)
+///   - `shell_force            : ShellForce`      (off/auto/on tri-state forcing)
 ///
-/// `mesh_size` and `threads` are encoded as `Option<T> = none` rather than
-/// PRD-style sentinels (e.g., `auto`, `num_cpus::get()`) because the language
-/// has no `auto` keyword and no `num_cpus::get()` builtin; the right
-/// options-side shape is "user did not specify, solver decides" — matching
-/// the design decision recorded in plan.json.
+/// `mesh_size`, `threads`, and `shell_voxel_size` are encoded as `Option<T> = none`
+/// rather than PRD-style sentinels (e.g., `auto`, `num_cpus::get()`) because the
+/// language has no `auto` keyword and no `num_cpus::get()` builtin; the right
+/// semantics are "user did not specify, solver decides" — matching the design
+/// decision recorded in plan.json.
 #[test]
 fn elastic_options_struct_has_correct_param_shape() {
     let template = find_structure("ElasticOptions");
@@ -152,8 +190,8 @@ fn elastic_options_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        5,
-        "ElasticOptions should have exactly 5 param cells, got: {:?}",
+        9,
+        "ElasticOptions should have exactly 9 param cells, got: {:?}",
         names
     );
 
@@ -168,6 +206,15 @@ fn elastic_options_struct_has_correct_param_shape() {
         ("max_iter", Type::Int),
         ("cg_tolerance", Type::Real),
         ("threads", Type::Option(Box::new(Type::Int))),
+        ("shell_threshold", Type::Real),
+        (
+            "shell_voxel_size",
+            Type::Option(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        ),
+        ("shell_branch_prune_ratio", Type::Real),
+        ("shell_force", Type::Enum("ShellForce".to_string())),
     ];
 
     for (member, expected_ty) in expected {
@@ -306,6 +353,109 @@ fn elastic_options_param_defaults_match_spec() {
     );
 }
 
+// ─── step-5 (shell params): ElasticOptions shell defaults ────────────────────
+
+/// Each of the four new shell-related `ElasticOptions` params must carry the
+/// canonical default declared in PRD T17
+/// (`docs/prds/v0_4/structural-analysis-shells.md`):
+///
+///   shell_threshold        = 0.2          (PRD T17, §"Resolved design decisions"
+///                                          → classification rule;
+///                                          thickness/extent ratio)
+///   shell_voxel_size       = none         (solver derives thickness/3 at runtime;
+///                                          PRD T1/T2/T18)
+///   shell_branch_prune_ratio = 1.01       (empirical placeholder; PRD T17,
+///                                          §"Open design questions" →
+///                                          "Medial-extraction edge-pruning
+///                                          threshold"; PRD T3 will revise)
+///   shell_force            = ShellForce.Auto  (PRD T17, §"Resolved design
+///                                              decisions"; "auto-classification
+///                                              by default")
+///
+/// `0.2` and `1.0` are asserted with strict equality — same IEEE-754
+/// round-to-nearest discipline as `cg_tolerance`.
+/// `shell_voxel_size = none` mirrors the `mesh_size = none` precedent;
+/// the result_type is `Option<Length>`.
+/// `shell_force = ShellForce.Auto` mirrors the `element_order = ElementOrder.P1`
+/// pattern.
+#[test]
+fn elastic_options_shell_param_defaults_match_spec() {
+    let template = find_structure("ElasticOptions");
+
+    // shell_threshold = 0.2 (strict equality, PRD T17 line 63)
+    let shell_threshold_default = require_default(template, "shell_threshold");
+    match &shell_threshold_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 0.2,
+            "shell_threshold default should be exactly 0.2, got: {}",
+            v
+        ),
+        other => panic!(
+            "shell_threshold default should be Literal(Value::Real(0.2)), got: {:?}",
+            other
+        ),
+    }
+
+    // shell_voxel_size = none, with result_type Option<Length>
+    let shell_voxel_size_default = require_default(template, "shell_voxel_size");
+    assert!(
+        matches!(&shell_voxel_size_default.kind, CompiledExprKind::OptionNone),
+        "shell_voxel_size default should be OptionNone, got: {:?}",
+        shell_voxel_size_default.kind
+    );
+    assert_eq!(
+        shell_voxel_size_default.result_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        })),
+        "shell_voxel_size default's result_type should be Option<Length>, got: {:?}",
+        shell_voxel_size_default.result_type
+    );
+
+    // shell_branch_prune_ratio = 1.01 (strict Real equality). The default is
+    // 1.01 rather than a whole-number decimal like 1.0 to exercise the Real
+    // parser path deterministically: whole-number decimal literals like `1.0`
+    // are stored as Int(1) due to a parser quirk (the tokenizer lexes `1` as
+    // an integer token, then `.0` as a member-access that resolves to nothing).
+    // Using 1.01 avoids encoding that parser bug as a permitted contract and
+    // ensures the strict-equality discipline matches the shell_threshold and
+    // cg_tolerance tests. The 1% margin above 1.0 is semantically negligible
+    // for this empirical heuristic (PRD T17, §"Open design questions").
+    let shell_branch_prune_ratio_default = require_default(template, "shell_branch_prune_ratio");
+    match &shell_branch_prune_ratio_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 1.01,
+            "shell_branch_prune_ratio default should be exactly 1.01, got: {}",
+            v
+        ),
+        other => panic!(
+            "shell_branch_prune_ratio default should be Literal(Value::Real(1.01)), got: {:?}",
+            other
+        ),
+    }
+
+    // shell_force = ShellForce.Auto
+    let shell_force_default = require_default(template, "shell_force");
+    match &shell_force_default.kind {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+            assert_eq!(
+                type_name, "ShellForce",
+                "shell_force default should be ShellForce.Auto, got type_name {:?}",
+                type_name
+            );
+            assert_eq!(
+                variant, "Auto",
+                "shell_force default should be ShellForce.Auto, got variant {:?}",
+                variant
+            );
+        }
+        other => panic!(
+            "shell_force default should be Literal(Value::Enum {{ ShellForce, Auto }}), got: {:?}",
+            other
+        ),
+    }
+}
+
 // ─── step-9: ElasticOptions positivity constraints ───────────────────────────
 
 /// Recursively collect ValueRef member names from a compiled expression tree.
@@ -323,18 +473,32 @@ fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
     }
 }
 
-/// `ElasticOptions` enforces the runtime invariant that `max_iter` and
-/// `cg_tolerance` are strictly positive via two structure-level constraint
-/// declarations:
+/// `ElasticOptions` enforces strict-positivity invariants on four params via
+/// structure-level constraint declarations:
 ///
 ///   constraint max_iter > 0
 ///   constraint cg_tolerance > 0
+///   constraint shell_threshold > 0
+///   constraint shell_branch_prune_ratio > 0
 ///
-/// A negative `max_iter` or non-positive `cg_tolerance` is nonsensical and
-/// would silently corrupt the solver. Encoding the invariants as first-class
-/// `constraint` declarations (rather than relying on documentation + tests)
-/// matches the project convention in task 2544: "the contract in production
-/// code is made explicit rather than relying on test coverage."
+/// Rationale for each:
+///   max_iter              — a non-positive cap lets the solver exit before
+///                           doing any work.
+///   cg_tolerance          — must be strictly positive for `||r||/||b|| <
+///                           cg_tolerance` to terminate; zero or negative
+///                           would silently exhaust `max_iter` on every solve.
+///   shell_threshold       — a non-positive thickness/extent ratio would
+///                           silently prevent all auto-classification (no body
+///                           would ever be flagged as shell-eligible in Auto
+///                           mode). PRD T17.
+///   shell_branch_prune_ratio — a non-positive ratio would silently disable
+///                           medial-axis pruning (no spurious branches
+///                           removed). PRD T17.
+///
+/// Encoding these as first-class `constraint` declarations (rather than
+/// relying on documentation + tests) matches the project convention in task
+/// 2544: "the contract in production code is made explicit rather than
+/// relying on test coverage."
 ///
 /// The assertion shape mirrors the constraint-injection check in
 /// `materials_fea_tests.rs::elastic_material_trait_constrains_poisson_ratio_to_half_open_unit`:
@@ -342,17 +506,18 @@ fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
 /// expression with `collect_value_ref_members`, and asserts that the entry's
 /// op is `>` and references the expected member name.
 #[test]
-fn elastic_options_constrains_max_iter_and_cg_tolerance_positive() {
+fn elastic_options_constrains_positivity_invariants() {
     let template = find_structure("ElasticOptions");
 
     assert!(
-        template.constraints.len() >= 2,
-        "ElasticOptions should declare at least 2 constraints (max_iter > 0 \
-         and cg_tolerance > 0), got {} constraints",
+        template.constraints.len() >= 4,
+        "ElasticOptions should declare at least 4 constraints (max_iter > 0, \
+         cg_tolerance > 0, shell_threshold > 0, shell_branch_prune_ratio > 0), \
+         got {} constraints",
         template.constraints.len()
     );
 
-    for required in &["max_iter", "cg_tolerance"] {
+    for required in &["max_iter", "cg_tolerance", "shell_threshold", "shell_branch_prune_ratio"] {
         let matched = template.constraints.iter().any(|c| {
             // Check the constraint expression is a `>` BinOp with a ValueRef
             // to the required member on the left side and the literal `0` on
@@ -447,6 +612,52 @@ fn elastic_options_caps_cg_tolerance_below_one() {
     assert!(
         matched,
         "ElasticOptions should declare `constraint cg_tolerance < 1`; got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── amend: shell_threshold upper-bound constraint ───────────────────────────
+
+/// `ElasticOptions` must also declare an upper-bound constraint on
+/// `shell_threshold`: a threshold ≥ 1 would classify every body as
+/// shell-eligible (since `thickness/extent` ∈ [0, 1] for any non-degenerate
+/// body — thickness is always ≤ the body's maximum extent), silently
+/// defeating the purpose of Auto mode. The constraint `shell_threshold < 1`
+/// prevents this silent misuse. PRD T17, §"Resolved design decisions",
+/// structural-analysis-shells.md (classification rule).
+#[test]
+fn elastic_options_constrains_shell_threshold_below_one() {
+    let template = find_structure("ElasticOptions");
+
+    let matched = template.constraints.iter().any(|c| {
+        // Check for a `<` BinOp with a ValueRef to `shell_threshold` on the
+        // left and the literal `1` on the right. Accept Int(1) or Real(1.0)
+        // for the RHS — the parser stores the `1` token as Int(1) and a
+        // future numeric-promotion change could legitimately emit Real(1.0).
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Lt
+                    || !collect_value_ref_members(left).contains(&"shell_threshold")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(1)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        matched,
+        "ElasticOptions should declare `constraint shell_threshold < 1`; \
+         got constraints: {:?}",
         template
             .constraints
             .iter()

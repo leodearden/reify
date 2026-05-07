@@ -46,40 +46,94 @@
 // solver_elastic_tests fixture.
 enum ElementOrder { P1, P2 }
 
+// ── ShellForce enum ──────────────────────────────────────────────────────────
+
+// `ShellForce` is the tri-state control for shell formulation in the FEA
+// solver. Variant semantics:
+//   Off  — never use shell formulation; treat all bodies as 3-D solids
+//           regardless of thickness/extent ratio.
+//   Auto — auto-classify by `shell_threshold` (thickness/extent ratio):
+//           bodies whose thickness/extent < threshold are meshed with shell
+//           elements, others as 3-D solids. This is the default, matching
+//           the PRD's "auto-classification by default"
+//           (§"Resolved design decisions", structural-analysis-shells.md).
+//   On   — always force shell formulation for every body; overrides the
+//           ratio check.
+// Variant order [Off, Auto, On] is canonical ("never / default / always");
+// pinned by a canonical-order test in the elastic-solver test suite to make
+// future re-orderings deliberate rather than silent ABI/tag-encoding changes.
+// Mirrors the ElementOrder [P1, P2] discipline.
+// PRD reference: docs/prds/v0_4/structural-analysis-shells.md (T17,
+// "shell_force off/auto/on tri-state").
+enum ShellForce { Off, Auto, On }
+
 // ── ElasticOptions ───────────────────────────────────────────────────────────
 
 // `ElasticOptions` is the configuration object passed to the FEA solver.
-// All five params have sensible defaults so a bare `ElasticOptions()`
+// All nine params have sensible defaults so a bare `ElasticOptions()`
 // instantiation compiles and yields the standard solver setup; callers
 // override individual fields at construction (e.g.,
 // `ElasticOptions(element_order: ElementOrder.P2, max_iter: 5000)`).
 //
 // Param semantics:
-//   element_order — P1 (linear) vs P2 (quadratic) tetrahedral elements.
-//                   See `ElementOrder` enum doc for the trade-off.
-//   mesh_size     — target characteristic mesh edge length. `none` (default)
-//                   asks the solver to derive an appropriate size from the
-//                   per-purpose tolerancing chain; an explicit `some(<L>)`
-//                   value pins the mesh density (use for refinement studies
-//                   or when reproducing a specific run).
-//   max_iter      — upper bound on conjugate-gradient iterations. The
-//                   default 1000 covers typical small-to-medium problems
-//                   in a few hundred iterations; the cap exists so a
-//                   pathologically conditioned problem fails loudly rather
-//                   than running forever.
-//   cg_tolerance  — relative residual norm at which CG declares convergence.
-//                   Default `0.000001` (= 1e-6) is a standard FEA accuracy
-//                   target; tighten for high-precision work, loosen for
-//                   first-pass exploration.
-//   threads       — number of solver worker threads. `none` (default) lets
-//                   the solver pick (typically num-cpus or a tiny-problem
-//                   single-thread fallback); `some(n)` pins the count.
+//   element_order          — P1 (linear) vs P2 (quadratic) tetrahedral elements.
+//                            See `ElementOrder` enum doc for the trade-off.
+//   mesh_size              — target characteristic mesh edge length. `none`
+//                            (default) asks the solver to derive an appropriate
+//                            size from the per-purpose tolerancing chain; an
+//                            explicit `some(<L>)` value pins the mesh density
+//                            (use for refinement studies or reproducing a
+//                            specific run).
+//   max_iter               — upper bound on conjugate-gradient iterations.
+//                            Default 1000 covers typical small-to-medium
+//                            problems; the cap exists so a pathologically
+//                            conditioned problem fails loudly rather than
+//                            running forever.
+//   cg_tolerance           — relative residual norm at which CG declares
+//                            convergence. Default `0.000001` (= 1e-6) is a
+//                            standard FEA accuracy target; tighten for
+//                            high-precision work, loosen for exploration.
+//   threads                — number of solver worker threads. `none` (default)
+//                            lets the solver pick (typically num-cpus or a
+//                            tiny-problem single-thread fallback); `some(n)`
+//                            pins the count.
+//   shell_threshold        — thickness/extent ratio below which a body is
+//                            classified as shell-eligible (Auto mode).
+//                            Default 0.2 (PRD T17, §"Resolved design
+//                            decisions", structural-analysis-shells.md).
+//                            Must be in (0, 1): non-positive would prevent
+//                            all auto-classification; ≥ 1 would classify
+//                            every body as shell-eligible. Enforced by
+//                            `constraint shell_threshold > 0` and
+//                            `constraint shell_threshold < 1`.
+//   shell_voxel_size       — voxel resolution for medial-axis extraction.
+//                            `none` (default) means the runtime solver derives
+//                            thickness/3 of the thinnest shell-eligible feature
+//                            (PRD T1/T2/T18); `some(<L>)` pins the resolution
+//                            for reproducibility.
+//   shell_branch_prune_ratio — medial-axis spurious-branch pruning threshold
+//                            (branch removed if length < ratio × local
+//                            thickness). Default 1.01 is an empirical
+//                            placeholder (PRD T17, §"Open design questions"
+//                            → "Medial-extraction edge-pruning threshold";
+//                            PRD T3 will revise). Non-positive values would
+//                            silently disable pruning; enforced by
+//                            `constraint shell_branch_prune_ratio > 0`.
+//   shell_force            — off/auto/on tri-state forcing. `Auto` (default)
+//                            classifies by `shell_threshold`; `Off` forces
+//                            3-D solid formulation for all bodies; `On`
+//                            forces shell formulation for all bodies.
+//                            See `ShellForce` enum doc.
 structure def ElasticOptions {
     param element_order : ElementOrder = ElementOrder.P1
     param mesh_size : Option<Length> = none
     param max_iter : Int = 1000
     param cg_tolerance : Real = 0.000001
     param threads : Option<Int> = none
+    param shell_threshold : Real = 0.2
+    param shell_voxel_size : Option<Length> = none
+    param shell_branch_prune_ratio : Real = 1.01
+    param shell_force : ShellForce = ShellForce.Auto
 
     // A non-positive `max_iter` would let the solver exit before doing any
     // work; declaring the lower bound at the structure-def level makes the
@@ -100,6 +154,28 @@ structure def ElasticOptions {
     // (see the cg_tolerance param comment above); only the meaningless
     // "any residual passes" case is excluded. Same task-2544 convention.
     constraint cg_tolerance < 1
+    // `shell_threshold` is the thickness/extent ratio used by Auto-mode
+    // auto-classification (PRD T17). A non-positive threshold would silently
+    // prevent all classification: no body would ever satisfy
+    // `thickness/extent < threshold`, so no body would be treated as
+    // shell-eligible. Mirrors the `cg_tolerance > 0` discipline.
+    constraint shell_threshold > 0
+    // `shell_threshold` also has a natural upper bound of 1: the ratio
+    // `thickness/extent` is in [0, 1] for any non-degenerate body (thickness
+    // is always ≤ the body's maximum extent), so a threshold ≥ 1 would
+    // classify every body as shell-eligible regardless of its actual shape,
+    // silently defeating the purpose of Auto mode. The constraint prevents
+    // this silent misuse. PRD T17, §"Resolved design decisions",
+    // structural-analysis-shells.md (classification rule).
+    constraint shell_threshold < 1
+    // `shell_branch_prune_ratio` is a length ratio for medial-axis spurious-
+    // branch removal: branches whose length is less than
+    // `ratio × local_thickness` are pruned (PRD T17, §"Open design
+    // questions" → "Medial-extraction edge-pruning threshold"). A non-
+    // positive ratio would silently disable all pruning (no branch is shorter
+    // than a non-positive length times thickness). Mirrors the
+    // `cg_tolerance > 0` discipline.
+    constraint shell_branch_prune_ratio > 0
 }
 
 // ── ElasticResult ────────────────────────────────────────────────────────────
