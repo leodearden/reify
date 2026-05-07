@@ -16,6 +16,7 @@ pub mod identity;
 pub mod node_traits;
 pub mod persistent;
 pub mod provenance;
+pub mod sampled;
 pub mod source_location;
 pub mod spanned_ident;
 pub mod traits;
