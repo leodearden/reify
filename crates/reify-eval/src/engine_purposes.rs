@@ -282,15 +282,15 @@ impl Engine {
     /// helper. Keep the recompute entry point so callers don't have to
     /// know the strategy changed.
     ///
-    /// **Note on `Engine::realization_cache` interaction (task 2874 step-14
-    /// + amendment scope-correction)**: this helper does NOT explicitly clear
-    /// or invalidate the realization cache. The cache's partial-order rule
-    /// (`cached_tol ≤ requested_tol`, enforced by `RealizationCache::lookup`
-    /// → `ToleranceBucket::lookup`) produces the correct cache-miss behaviour
-    /// when the recomputed scope tightens the demanded tolerance for a
-    /// previously-cached entity, and the correct cache-hit behaviour when
-    /// the scope loosens or remains unchanged. Pinned by the integration
-    /// test `cache_lookup_misses_when_purpose_changes_demanded_tolerance` in
+    /// **Note on `Engine::realization_cache` interaction (task 2874 step-14 + amendment scope-correction)**:
+    /// this helper does NOT explicitly clear or invalidate the realization
+    /// cache. The cache's partial-order rule (`cached_tol ≤ requested_tol`,
+    /// enforced by `RealizationCache::lookup` → `ToleranceBucket::lookup`)
+    /// produces the correct cache-miss behaviour when the recomputed scope
+    /// tightens the demanded tolerance for a previously-cached entity, and
+    /// the correct cache-hit behaviour when the scope loosens or remains
+    /// unchanged. Pinned by the integration test
+    /// `cache_lookup_misses_when_purpose_changes_demanded_tolerance` in
     /// `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
     ///
     /// IMPORTANT: the partial-order rule covers ONLY tolerance-driven
