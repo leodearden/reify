@@ -1839,8 +1839,9 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
 //
 // These tests are complementary to `crates/reify-eval/tests/auto_backtracking_e2e.rs`
 // (which uses `MockConstraintChecker`).  Here the production checker is used
-// so the wiring is exercised end-to-end, even though per-leaf verdicts are
-// uniform (every leaf evaluates `Bool(true)` to `Satisfied`).
+// as a cross-crate dispatch wiring smoke test: `Bool(true)` evaluates to
+// `Satisfied` uniformly, so per-leaf verdicts are not differentiated — these
+// tests do not exercise production expression evaluation logic.
 
 /// Build the `(template_registry, trait_registry)` pair from a compiled module.
 ///
@@ -1876,9 +1877,12 @@ fn build_atp_registries(
 /// DFS picks the lex-first `(ORingSeal, AirCooled)` and emits a single
 /// `AutoTypeParamNonUnique` Warning.
 ///
-/// Pins PRD §"Determinism": the production checker is interchangeable with
-/// `MockConstraintChecker` for the all-Satisfied path, validating the
-/// cross-crate trait-object wiring.
+/// Cross-crate trait-object dispatch wiring smoke test: proves that
+/// `&SimpleConstraintChecker as &dyn ConstraintChecker` from `reify-constraints`
+/// is dispatchable into `resolve_auto_type_params_with_backtracking` from
+/// `reify-compiler` without panic.  Per-leaf verdicts are uniform
+/// (`Bool(true)` → `Satisfied`); production expression evaluation logic is not
+/// exercised here.
 #[test]
 fn auto_type_param_dfs_with_simple_constraint_checker_resolves_lex_first() {
     let source = r#"
@@ -2002,9 +2006,13 @@ structure def WaterCooled : Cooled {
 /// trait so BFS produces clean `Selected` outcomes with zero BFS diagnostics —
 /// the only diagnostic in the output is the depth-bound warning itself.
 ///
+/// Cross-crate BFS-fallback wiring smoke test: proves the depth-bound fallback
+/// path also dispatches correctly through `&dyn ConstraintChecker` from
+/// `reify-constraints`.  Per-leaf verdicts are uniform (no constraints on the
+/// template); production expression evaluation logic is not exercised here.
+///
 /// Pins PRD §"Resolved design decisions" "Default depth bound: 6 parameters"
-/// and proves BFS-fallback works through the production checker (task 2662
-/// companion).
+/// (task 2662 companion).
 #[test]
 fn auto_type_param_dfs_with_simple_constraint_checker_falls_back_to_bfs_above_depth_bound() {
     // One Seal + one Cooled candidate: BFS yields clean Selected × 2 with zero
@@ -2103,15 +2111,17 @@ structure def AirCooled : Cooled {
         "AutoTypeParamDepthBoundExceeded must be Severity::Warning; got: {:?}",
         diagnostics[0].severity
     );
-    // Message must cite the param count (2) and the max_depth (1).
+    // Message must cite the param count and the max_depth value via the
+    // canonical format produced at auto_type_param.rs:1346:
+    // "... {n} auto-type-params declared, max_depth = {m}; ..."
     assert!(
-        diagnostics[0].message.contains("2"),
-        "depth-bound message must mention param count '2'; got: {:?}",
+        diagnostics[0].message.contains("2 auto-type-params declared"),
+        "depth-bound message must contain '2 auto-type-params declared'; got: {:?}",
         diagnostics[0].message
     );
     assert!(
-        diagnostics[0].message.contains("1"),
-        "depth-bound message must mention max_depth '1'; got: {:?}",
+        diagnostics[0].message.contains("max_depth = 1"),
+        "depth-bound message must contain 'max_depth = 1'; got: {:?}",
         diagnostics[0].message
     );
 }
