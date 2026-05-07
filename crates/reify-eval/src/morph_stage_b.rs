@@ -188,23 +188,38 @@ pub fn stage_b_eligible(
 /// tables. On success the matched pairs are inserted into `out`. On
 /// failure the appropriate [`BijectionFailure`] variant is returned.
 ///
+/// ## Preconditions
+///
+/// Both `old` and `new` MUST contain distinct [`GeometryHandleId`] values
+/// (no duplicates within either slice). This mirrors the upstream kernel's
+/// `extract_faces` / `extract_edges` per-handle-once guarantee.
+///
+/// **Failure mode:** duplicates in `old` would silently overwrite earlier
+/// entries in `out` via [`HashMap::insert`] while the step-7
+/// `consumed.len() == new.len()` check still passes — the count-equality
+/// guard cannot detect the collision because both `old.len()` and
+/// `consumed.len()` inflate identically. The violation is caught in debug
+/// builds by the step-2 `debug_assert_eq!` checks.
+///
 /// ## Algorithm
 ///
 /// 1. **Empty-input early-exit** — both slices empty → `Ok(())`; exactly one
 ///    side empty → `CountMismatch` (asymmetry rules out a bijection regardless
 ///    of attribution; bypasses the imported pre-pass to avoid mis-routing the
 ///    asymmetric case).
-/// 2. **Imported-geometry pre-pass** (mirrors `topology_attribute_resolver.rs:172`)
+/// 2. **Distinct-handle precondition** (debug builds only) — assert `old` and
+///    `new` each contain no duplicate `GeometryHandleId` values.
+/// 3. **Imported-geometry pre-pass** (mirrors `topology_attribute_resolver.rs:172`)
 ///    — reached only when BOTH sides are non-empty. If no handle on either side
 ///    carries an attribute, signal imported geometry as `NamingLayerError::Imported`.
-/// 3. **Partial-attribution guard** — if some handles are attributed and
+/// 4. **Partial-attribution guard** — if some handles are attributed and
 ///    others are not, signal malformed state as `NamingLayerError::Partial`.
-/// 4. **Count guard** — if `old.len() != new.len()`, return `CountMismatch`.
-/// 5. **Matching loop** — walk old handles in slice order. For each old
+/// 5. **Count guard** — if `old.len() != new.len()`, return `CountMismatch`.
+/// 6. **Matching loop** — walk old handles in slice order. For each old
 ///    handle look up its attribute and find the first unconsumed new handle
 ///    whose attribute is equal (linear O(n²) scan; see design decision on
 ///    !Hash). If no match → `UnmappedElement { Old, handle }`.
-/// 6. **Unconsumed-new scan** — any new handle not claimed by an old handle →
+/// 7. **Unconsumed-new scan** — any new handle not claimed by an old handle →
 ///    `UnmappedElement { New, handle }` (defensive; should not fire when
 ///    counts match and all old handles paired).
 fn match_one_kind(
@@ -263,7 +278,7 @@ fn match_one_kind(
         });
     }
 
-    // 3. Partial-attribution guard.
+    // 4. Partial-attribution guard.
     if old_attributed != old.len() || new_attributed != new.len() {
         return Err(BijectionFailure::NamingLayerError {
             kind,
@@ -271,7 +286,7 @@ fn match_one_kind(
         });
     }
 
-    // 4. Count guard.
+    // 5. Count guard.
     if old.len() != new.len() {
         return Err(BijectionFailure::CountMismatch {
             kind,
@@ -280,15 +295,13 @@ fn match_one_kind(
         });
     }
 
-    // 5. Matching loop.
+    // 6. Matching loop.
     // Track which new handles have already been claimed so 1-to-1 is enforced.
     let mut consumed: HashSet<GeometryHandleId> = HashSet::new();
 
     for &old_handle in old {
-        // The pre-pass guarantees all old handles are attributed. If the slice
-        // contains duplicate handles, lookup is idempotent — both the attributed
-        // count and old.len() inflate identically, so the invariant survives
-        // duplicates and .expect cannot fire.
+        // The step-3 pre-pass guarantees all old handles are attributed; the
+        // step-2 precondition check guarantees no duplicates in `old`.
         let old_attr = old_table
             .lookup(old_handle)
             .expect("all old handles attributed — guaranteed by pre-pass above");
@@ -320,8 +333,8 @@ fn match_one_kind(
         }
     }
 
-    // 6. Unconsumed-new invariant: given old.len() == new.len() (step 4 guard)
-    // and every old handle consuming exactly one distinct new handle (step 5
+    // 7. Unconsumed-new invariant: given old.len() == new.len() (step 5 guard)
+    // and every old handle consuming exactly one distinct new handle (step 6
     // loop), the consumed set must cover all of new. No Err can surface here.
     debug_assert_eq!(
         consumed.len(),
