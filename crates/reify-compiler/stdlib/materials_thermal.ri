@@ -1,8 +1,11 @@
 // Stdlib: Thermal Material Traits
 // Provides thermal characterization trait definitions for engineering materials.
-// All dimensioned quantities use Real (dimensionless) pending Temperature /
-// ThermalConductivity / SpecificHeat type system extensions (see PRD
-// docs/prds/stdlib-trait-breadth.md §"out of scope" and audit doc §(g)).
+//
+// Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
+// Temperature params (melting_point, max_service_temperature, glass_transition) are
+// tightenable-now (task #3112); composite-dimension params (thermal_conductivity,
+// specific_heat, thermal_expansion) are blocked-composite pending named-dim aliases
+// (task #3115).
 //
 // Spec reference: docs/reify-stdlib-reference.md §6.3 lines 680-694.
 // Audit reference: docs/notes/stdlib-trait-audit.md §6.3 (all traits marked MISSING).

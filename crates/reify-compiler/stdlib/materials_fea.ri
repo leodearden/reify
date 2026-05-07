@@ -87,7 +87,7 @@ structure def MaterialPropertyProvenance {
 //                    safety-factor passes do.
 trait ElasticMaterial {
     param youngs_modulus : Pressure
-    param poisson_ratio : Real
+    param poisson_ratio : Real // dimensionless
     param density : Density
     param yield_stress : Option<Pressure>
 
@@ -131,7 +131,7 @@ trait ElasticMaterial {
 // or quenched-and-tempered variants will exhibit higher yield_stress.
 structure def Steel_AISI_1045 : ElasticMaterial {
     param youngs_modulus : Pressure = 205GPa
-    param poisson_ratio : Real = 0.29
+    param poisson_ratio : Real = 0.29 // dimensionless
     param density : Density = 7850.0 * 1kg / (1m * 1m * 1m)
     param yield_stress : Option<Pressure> = some(310MPa)
 
@@ -169,7 +169,7 @@ structure def Steel_AISI_1045 : ElasticMaterial {
 // exposure to elevated temperatures degrades the precipitation hardening.
 structure def Aluminium_6061_T6 : ElasticMaterial {
     param youngs_modulus : Pressure = 68.9GPa
-    param poisson_ratio : Real = 0.33
+    param poisson_ratio : Real = 0.33 // dimensionless
     param density : Density = 2700.0 * 1kg / (1m * 1m * 1m)
     param yield_stress : Option<Pressure> = some(276MPa)
 
@@ -207,7 +207,7 @@ structure def Aluminium_6061_T6 : ElasticMaterial {
 // yield_stress at the cost of reduced ductility.
 structure def Titanium_Ti6Al4V : ElasticMaterial {
     param youngs_modulus : Pressure = 113.8GPa
-    param poisson_ratio : Real = 0.342
+    param poisson_ratio : Real = 0.342 // dimensionless
     param density : Density = 4430.0 * 1kg / (1m * 1m * 1m)
     param yield_stress : Option<Pressure> = some(880MPa)
 
@@ -248,7 +248,7 @@ structure def Titanium_Ti6Al4V : ElasticMaterial {
 // resin grade.
 structure def ABS_Plastic : ElasticMaterial {
     param youngs_modulus : Pressure = 2.3GPa
-    param poisson_ratio : Real = 0.35
+    param poisson_ratio : Real = 0.35 // dimensionless
     param density : Density = 1050.0 * 1kg / (1m * 1m * 1m)
     param yield_stress : Option<Pressure> = some(40MPa)
 

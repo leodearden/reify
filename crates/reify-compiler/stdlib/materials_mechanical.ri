@@ -1,8 +1,12 @@
 #no_prelude
 // Stdlib: Mechanical Material Traits
 // Provides core trait definitions for engineering material characterization.
-// All dimensioned quantities use Real (dimensionless) pending Pressure/Density
-// type system extensions in a future task.
+//
+// Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
+// Dimensioned params (density, youngs_modulus, shear_modulus, yield_strength,
+// uts, compressive_strength, endurance_limit, impact_energy) are tightenable-now
+// (task #3111); fracture_toughness is blocked-composite pending composite-dim
+// aliases (task #3115).
 //
 // ── BREAKING CHANGE (task 1876) ──────────────────────────────────────────────
 // The identifier `Material` changed meaning in this release:
@@ -68,7 +72,7 @@ structure def Material {
 // All use Real pending Pressure type introduction.
 trait Elastic {
     param youngs_modulus : Real
-    param poissons_ratio : Real
+    param poissons_ratio : Real // dimensionless
     param shear_modulus : Real
 }
 
@@ -90,7 +94,7 @@ enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore
 
 // hardness_value is the numeric reading; hardness_scale specifies the test method.
 trait Hard {
-    param hardness_value : Real
+    param hardness_value : Real // dimensionless — scale-dependent (Rockwell/Brinell/Vickers/Shore)
     param hardness_scale : HardnessScale
 }
 
@@ -113,8 +117,8 @@ trait FractureTough : MaterialSpec {
 // elongation: % elongation at break; reduction_of_area: % cross-section reduction.
 // Both dimensionless fractions — use Real.
 trait Ductile {
-    param elongation : Real
-    param reduction_of_area : Real
+    param elongation : Real // dimensionless
+    param reduction_of_area : Real // dimensionless
 }
 
 // ── Impact resistance ─────────────────────────────────────────────────────────
@@ -129,6 +133,6 @@ trait ImpactResistant : MaterialSpec {
 // damping_ratio: fraction of critical damping (dimensionless).
 // loss_factor: ratio of dissipated to stored energy per cycle (dimensionless).
 trait Damping : MaterialSpec {
-    param damping_ratio : Real
-    param loss_factor : Real
+    param damping_ratio : Real // dimensionless
+    param loss_factor : Real // dimensionless
 }

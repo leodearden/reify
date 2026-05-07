@@ -3,6 +3,10 @@
 // Provides core definitions for engineering tolerancing and geometric dimensioning.
 // Uses Length and Angle types for dimensioned params. Real is used as a
 // placeholder for Geometry and Datum-reference types pending future type system extensions.
+//
+// Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
+// feature (16 sites) and datum_refs (8 sites) are blocked-geometry-type pending
+// a Geometry / DatumRef resolver capability (task #3116).
 
 // ── Enumerations ─────────────────────────────────────────────────────────────
 

@@ -1,7 +1,10 @@
 // Stdlib: Optical Material Traits
 // Provides optical characterization trait definitions for engineering materials.
-// All dimensioned quantities use Real (dimensionless) pending dimensional type
-// system extensions in a future task.
+//
+// Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
+// reference_thickness is tightenable-now (task #3113); absorption_coefficient is
+// blocked-composite pending a PerLength alias (task #3115); refractive_index and
+// transmittance are genuine-dimensionless (annotated below).
 //
 // Spec reference: docs/reify-stdlib-reference.md §6.5 lines 713-722.
 // Audit reference: docs/notes/stdlib-trait-audit.md §6.5 (all traits marked MISSING).
@@ -22,8 +25,8 @@
 //   transmittance          — dimensionless fraction [0, 1]
 //   reference_thickness    — m (thickness at which transmittance is measured)
 trait OpticallyCharacterized : MaterialSpec {
-    param refractive_index : Real
+    param refractive_index : Real // dimensionless
     param absorption_coefficient : Real
-    param transmittance : Real
+    param transmittance : Real // dimensionless
     param reference_thickness : Real
 }
