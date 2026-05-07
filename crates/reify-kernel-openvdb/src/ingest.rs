@@ -544,11 +544,22 @@ pub fn read_vdb_file(
 ///
 /// # Layout
 ///
-/// The densified buffer from `grid_densify_to_buffer` is z-outermost
-/// (Z × Y × X), matching the axis order exposed by `grid_bbox_{min,max}`:
-/// axis-0 = X (bounds_min/max[0]), axis-1 = Y, axis-2 = Z.
-/// The `OpenVdbGridSource` is constructed accordingly so `lower_to_sampled`'s
-/// axis-count × data-shape checks always match.
+/// The densified buffer from `grid_densify_to_buffer` is X-outermost
+/// (axis-0 = X, axis-1 = Y, axis-2 = Z, row-major); axis-0 corresponds to
+/// `bounds_min/max[0]` (world X). The `OpenVdbGridSource` is constructed
+/// accordingly so `lower_to_sampled`'s axis-count × data-shape checks always
+/// match. This matches the workspace-wide row-major-axis-0-outermost
+/// convention used by `reify_expr::interp::interpolate_3d`,
+/// `engine_eval::build_sampled_field`, and `reify-expr`'s
+/// `field_reductions`/`sampled`/`interp` modules.
+///
+/// # Library initialisation
+///
+/// Calls [`crate::init::ensure_initialized`] before any FFI access so callers
+/// that invoke `read_vdb_file` directly — without first instantiating an
+/// `OpenVdbKernel` — still register the built-in grid types in OpenVDB's
+/// I/O dispatch table. Without this, `gridPtrCast<FloatGrid>` returns null
+/// and the read path emits a misleading "is not a FloatGrid" error.
 #[cfg(has_openvdb)]
 pub fn read_vdb_file(
     path: &str,
@@ -556,6 +567,10 @@ pub fn read_vdb_file(
     codomain_type: &Type,
 ) -> Result<IngestOutcome, IngestError> {
     use crate::ffi::ffi as openvdb_ffi;
+
+    // Ensure OpenVDB's I/O dispatch table is populated before any FFI access.
+    // Idempotent — guarded by a OnceLock in `crate::init`.
+    crate::init::ensure_initialized();
 
     // Open and read the named FloatGrid from the .vdb file.
     let grid_handle = openvdb_ffi::read_vdb_grid_ffi(path, grid_name)
@@ -570,8 +585,8 @@ pub fn read_vdb_file(
     let bbox_max_arr = openvdb_ffi::grid_bbox_max(&grid_handle);
     let units_str = openvdb_ffi::grid_units(&grid_handle);
 
-    // Densify all active voxels into a flat f32 buffer (z-outermost) and
-    // convert to f64 for the in-memory model.
+    // Densify all active voxels into a flat f32 buffer (X-outermost,
+    // row-major) and convert to f64 for the in-memory model.
     let raw_buffer: Vec<f32> = openvdb_ffi::grid_densify_to_buffer(&grid_handle);
     let data: Vec<f64> = raw_buffer.iter().map(|&v| v as f64).collect();
 

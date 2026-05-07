@@ -21,7 +21,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
@@ -29,18 +28,7 @@ use reify_types::{
 };
 
 use crate::ffi::ffi as openvdb_ffi;
-
-// ---------------------------------------------------------------------------
-// One-time library initialisation
-// ---------------------------------------------------------------------------
-
-static OPENVDB_INIT: OnceLock<()> = OnceLock::new();
-
-fn ensure_initialized() {
-    OPENVDB_INIT.get_or_init(|| {
-        openvdb_ffi::openvdb_initialize();
-    });
-}
+use crate::init::ensure_initialized;
 
 // ---------------------------------------------------------------------------
 // OpenVdbKernel (real implementation)

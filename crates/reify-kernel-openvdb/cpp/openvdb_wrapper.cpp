@@ -210,10 +210,18 @@ rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h) {
     rust::Vec<float> buf;
     buf.reserve(static_cast<size_t>(nx * ny * nz));
 
+    // Row-major axis-0 (X) outermost layout: buf[ix * ny * nz + iy * nz + iz]
+    // contains the value at world-space coord (min.x()+ix, min.y()+iy, min.z()+iz).
+    //
+    // This matches the convention used by reify_expr::interp::interpolate_3d
+    // (which expects values[ix * ny * nz + iy * nz + iz]) and the wider
+    // workspace's row-major-axis-0-outermost convention documented in
+    // reify-expr/src/{field_reductions.rs:255-287, sampled.rs:106-114,
+    // interp.rs:7+377} and engine_eval::build_sampled_field.
     auto accessor = h.grid->getConstAccessor();
-    for (int64_t iz = 0; iz < nz; ++iz) {
+    for (int64_t ix = 0; ix < nx; ++ix) {
         for (int64_t iy = 0; iy < ny; ++iy) {
-            for (int64_t ix = 0; ix < nx; ++ix) {
+            for (int64_t iz = 0; iz < nz; ++iz) {
                 openvdb::Coord coord(
                     static_cast<int>(min.x() + ix),
                     static_cast<int>(min.y() + iy),

@@ -37,6 +37,11 @@ pub mod register;
 #[cfg(has_openvdb)]
 pub mod ffi;
 
+// Shared library-initialisation helper used by both `kernel_real` and `ingest`
+// (cfg(has_openvdb) read path) — only compiled when has_openvdb is set.
+#[cfg(has_openvdb)]
+mod init;
+
 // Real kernel (FFI-backed) — only compiled when has_openvdb is set.
 #[cfg(has_openvdb)]
 pub mod kernel_real;
