@@ -4035,4 +4035,74 @@ mod tests {
              without per-kernel opt-out code",
         );
     }
+
+    /// Verify the v0.3 `VolumeMesh` struct and `ElementOrderTag` enum round-trip
+    /// through both P1 (4-node tetrahedron) and P2 (10-node tetrahedron) element
+    /// orders, and that `Clone` + `Debug` derives are intact so the type can be
+    /// stored in `RealizationCache<VolumeMesh>` and logged through tracing.
+    ///
+    /// The struct is the surface→volume meshing pipeline's output payload —
+    /// `reify-solver-elastic` (sibling task #2914) reads it to assemble FEA
+    /// stiffness matrices, so the field shape and element-order discriminator
+    /// are part of the public API contract.
+    #[test]
+    fn volume_mesh_struct_round_trip_with_p1_and_p2_element_order_tags() {
+        // P1 tetrahedron: 4 corner vertices, 4 indices per element.
+        let p1_mesh = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+                0.0, 0.0, 1.0, // v3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        assert_eq!(
+            p1_mesh.vertices.len(),
+            12,
+            "P1 tet has 4 vertices × 3 floats = 12 flat coordinates"
+        );
+        assert_eq!(
+            p1_mesh.tet_indices.len(),
+            4,
+            "P1 tet has 4 corner indices (one tetrahedron)"
+        );
+        assert_eq!(p1_mesh.element_order, ElementOrderTag::P1);
+
+        // P2 tetrahedron: 4 corner + 6 edge-midpoint vertices = 10 nodes per element.
+        let p2_mesh = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, // v0 (corner)
+                1.0, 0.0, 0.0, // v1 (corner)
+                0.0, 1.0, 0.0, // v2 (corner)
+                0.0, 0.0, 1.0, // v3 (corner)
+                0.5, 0.0, 0.0, // v4 (mid 0-1)
+                0.5, 0.5, 0.0, // v5 (mid 1-2)
+                0.0, 0.5, 0.0, // v6 (mid 0-2)
+                0.0, 0.0, 0.5, // v7 (mid 0-3)
+                0.5, 0.0, 0.5, // v8 (mid 1-3)
+                0.0, 0.5, 0.5, // v9 (mid 2-3)
+            ],
+            tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            element_order: ElementOrderTag::P2,
+            normals: None,
+        };
+        assert_eq!(
+            p2_mesh.tet_indices.len(),
+            10,
+            "P2 tet has 10 indices per element (4 corner + 6 edge midpoints, Gmsh canonical order)"
+        );
+        assert_ne!(
+            ElementOrderTag::P1,
+            ElementOrderTag::P2,
+            "P1 and P2 are distinct discriminants"
+        );
+
+        // Clone + Debug derives are part of the public surface so the type can
+        // be stored in caches and logged through tracing.
+        let cloned = p1_mesh.clone();
+        let _ = format!("{:?}", cloned);
+    }
 }
