@@ -290,9 +290,11 @@ mod tests {
         assert!((sum - 1.0).abs() < TOL, "Σ N_i(centroid) = {sum}");
     }
 
-    /// Quadrature tolerance — slightly looser than `TOL` because the
-    /// Stroud constants involve `√5`, which loses a couple of bits of
-    /// precision relative to closed-form rationals.
+    /// Quadrature tolerance for rule-property assertions: per-point weight,
+    /// total-weight sum, Stroud-point multiset match, and monomial-integration
+    /// checks.  The transcription of `TET_P2_STROUD_A`/`B` against the
+    /// canonical runtime formula is verified separately (with a tight 4 × ε
+    /// bound) in `quad_points_is_four_point_stroud_rule`.
     const QUAD_TOL: f64 = 1e-10;
 
     #[test]
@@ -305,10 +307,32 @@ mod tests {
         let sqrt5 = 5.0_f64.sqrt();
         let a = (5.0 - sqrt5) / 20.0;
         let b = (5.0 + 3.0 * sqrt5) / 20.0;
+
+        // Transcription guard: check the hard-coded literals against the
+        // runtime formula with a 4 × ε budget that covers the rounding chain
+        // (sqrt → sub → div).  This is a separate concern from the multiset
+        // check below — it locks the source-comment claim ("within 1 ulp of
+        // √5 at runtime") into CI without coupling to any single bit pattern.
+        assert!(
+            (TET_P2_STROUD_A - a).abs() <= 4.0 * f64::EPSILON,
+            "TET_P2_STROUD_A ({}) is not within 4 ulp of (5-√5)/20 ({})",
+            TET_P2_STROUD_A,
+            a
+        );
+        assert!(
+            (TET_P2_STROUD_B - b).abs() <= 4.0 * f64::EPSILON,
+            "TET_P2_STROUD_B ({}) is not within 4 ulp of (5+3√5)/20 ({})",
+            TET_P2_STROUD_B,
+            b
+        );
+
         let expected_pts = [(a, a, a), (b, a, a), (a, b, a), (a, a, b)];
 
-        // Match each expected point to a quadrature entry (ordering
-        // unspecified — the rule is symmetric, only the multiset matters).
+        // Rule-property check: match each expected point to a quadrature
+        // entry (ordering unspecified — the rule is symmetric, only the
+        // multiset matters).  Uses the loose QUAD_TOL so this check is robust
+        // to re-derivation of the constants via a mathematically equivalent
+        // formula.
         for (xi_e, eta_e, zeta_e) in expected_pts {
             let found = qp.iter().any(|q| {
                 (q.coord.xi - xi_e).abs() < QUAD_TOL
