@@ -1285,17 +1285,17 @@ mod tests {
             !diags.is_empty(),
             "bracket_compile_error.ri should produce at least one diagnostic"
         );
-        // Coherence check: both active_path (get_source(None).file_path, see
-        // mcp_context.rs:170-186) and d.file_path (get_diagnostics, see
-        // mcp_context.rs:213-216,238) are derived from the same state.active_file
-        // byte, so this equality verifies that every diagnostic carries a consistent
-        // active-file path — not that active_file switched files (the ends_with
-        // assertion above is the independent regression guard for that).
-        let all_b = diags.iter().all(|d| d.file_path == active_path);
+        // Independent diagnostic oracle: use ends_with("bracket_compile_error.ri")
+        // rather than comparing against active_path — both active_path and d.file_path
+        // are derived from state.active_file (get_source at mcp_context.rs:170-186;
+        // get_diagnostics at mcp_context.rs:213-216,238), so comparing them would be
+        // tautological and would not catch a regression where get_diagnostics wired
+        // file_path from a different source (per-diagnostic span, compiled-module path,
+        // etc.). Using the filename suffix as a third independent oracle ensures that
+        // every diagnostic genuinely carries b.ri's path, not just a.ri's.
         assert!(
-            all_b,
-            "all diagnostics must carry the active file's path ({:?}), got: {:?}",
-            active_path,
+            diags.iter().all(|d| d.file_path.ends_with("bracket_compile_error.ri")),
+            "all diagnostics must carry b.ri's path (ends_with bracket_compile_error.ri), got: {:?}",
             diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
         );
     }
