@@ -472,3 +472,149 @@ structure def WeldedMount : Mounted {
         diagnostics[0].message
     );
 }
+
+// ─── Scenario 4: 3-param, blame U — DFS backjumps from V to U (not T) ────────
+
+/// Scenario: 3 coupled auto-params `[T: Seal, U: Cooled, V: Mounted]`, 2
+/// candidates each.  The template carries one constraint whose expression
+/// references a cell typed as `TypeParam("U")`.  `build_constraint_blame_map`
+/// records blame set `{1}` (= U) for that constraint.
+///
+/// With queue `[Violated]` and default `Satisfied`, the first leaf
+/// `(ORingSeal, AirCooled, BoltedMount)` is infeasible, blame = U(1).
+/// DFS backjumps from level 2 (V) to level 1 (U) — NOT to level 0 (T).
+/// Within T=ORingSeal, U advances from AirCooled to WaterCooled.  DFS then
+/// finds `(ORingSeal, WaterCooled, BoltedMount)` as the lex-first feasible.
+///
+/// Observable distinction:
+///   - Without backjumping: second leaf is `(ORingSeal, AirCooled, WeldedMount)`
+///     → T=ORingSeal, U=AirCooled, V=WeldedMount.
+///   - With backjump to U: T stays at ORingSeal, U advances to WaterCooled,
+///     V restarts at BoltedMount → T=ORingSeal, U=WaterCooled, V=BoltedMount.
+///
+/// Pins task 2660 `j == K` consume / `j < K` propagate logic
+/// (`auto_type_param.rs:1999-2005 DfsControl arms`).
+#[test]
+fn bfs_fails_3_param_violation_blames_middle_param_dfs_backjumps_to_middle() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+trait Mounted {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+
+structure def BoltedMount : Mounted {
+    param torque : Real = 50.0
+}
+
+structure def WeldedMount : Mounted {
+    param thickness : Real = 3.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template: one cell typed TypeParam("U") + one constraint that ValueRefs
+    // it.  build_constraint_blame_map records blame = {U(1)} for this
+    // constraint.  When the constraint is violated, DFS backjumps to U level
+    // (NOT T).
+    let field_u = ValueCellId::new("Coupling", "field_u");
+    let expr_u = CompiledExpr::value_ref(field_u.clone(), Type::TypeParam("U".into()));
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_u", Type::TypeParam("U".into()), None)
+        .constraint("Coupling", 0, None, expr_u)
+        .build();
+
+    // Queue: leaf 1 (ORingSeal, AirCooled, BoltedMount) → Violated, blame U(1)
+    //        → backjump to U; all subsequent leaves use default Satisfied.
+    let checker =
+        MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "V".to_string(),
+            bounds: vec!["Mounted".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    // WITH backjump to U: T stays at ORingSeal (first T candidate),
+    // U advances to WaterCooled (second U candidate), V restarts at
+    // BoltedMount.  Lex-first feasible = (ORingSeal, WaterCooled, BoltedMount).
+    assert_eq!(
+        outcome.substitution[0],
+        ("T".to_string(), "ORingSeal".to_string()),
+        "WITH backjump to U(1): T must STAY at ORingSeal (backjump did not \
+         reach T level); got: {:?}",
+        outcome.substitution
+    );
+    assert_eq!(
+        outcome.substitution[1],
+        ("U".to_string(), "WaterCooled".to_string()),
+        "U must advance to WaterCooled (second Cooled candidate after backjump \
+         skipped AirCooled sub-tree); got: {:?}",
+        outcome.substitution
+    );
+    assert_eq!(
+        outcome.substitution[2],
+        ("V".to_string(), "BoltedMount".to_string()),
+        "V must restart at BoltedMount (lex-first Mounted after U backjump \
+         reset V iteration); got: {:?}",
+        outcome.substitution
+    );
+    // Free mode with multiple feasibles → NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "multiple feasibles in free mode → exactly one NonUnique Warning; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+}
