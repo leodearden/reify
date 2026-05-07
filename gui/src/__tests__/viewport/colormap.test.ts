@@ -389,17 +389,24 @@ describe('bakeColours', () => {
 // Step 9 — barrel-export wiring through gui/src/viewport/index.ts
 // ---------------------------------------------------------------------------
 describe('barrel export wiring (viewport/index)', () => {
-  it('applyColormap is re-exported from the viewport barrel', async () => {
+  // The dynamic import of viewport/index transitively pulls in Viewport,
+  // DualViewport, scene, controls, meshManager, selection, ghostMaterial,
+  // FeaModeToolbar, and the stores/index re-export chain. Under full parallel
+  // test load (npm test, ~89 files), the cold barrel import can exceed the
+  // default 5 s budget even with the Three.js / Tauri mocks above (it passes
+  // in ~332 ms in isolation). Bump the per-test budget to match the suite's
+  // heaviest-import scenarios; subsequent tests reuse the warm import cache.
+  it('applyColormap is re-exported from the viewport barrel', { timeout: 15000 }, async () => {
     const barrel = await import('../../viewport/index');
     expect(typeof barrel.applyColormap).toBe('function');
   });
 
-  it('bakeColours is re-exported from the viewport barrel', async () => {
+  it('bakeColours is re-exported from the viewport barrel', { timeout: 15000 }, async () => {
     const barrel = await import('../../viewport/index');
     expect(typeof barrel.bakeColours).toBe('function');
   });
 
-  it('applyColormap returns a proper 3-element Array for all palettes and range modes', async () => {
+  it('applyColormap returns a proper 3-element Array for all palettes and range modes', { timeout: 15000 }, async () => {
     const barrel = await import('../../viewport/index');
     const r: import('../../viewport/colormap').Range = { mode: 'fixed', min: 0, max: 1 };
 
