@@ -36,10 +36,10 @@
 /// are broken.
 pub(crate) fn format_tolerance(si_metres: f64) -> String {
     debug_assert!(
-        si_metres.is_finite() && si_metres >= 0.0,
+        crate::tolerance_gate::is_valid_tolerance_si(si_metres),
         "tolerance must be finite and non-negative: si_metres={si_metres}",
     );
-    if !si_metres.is_finite() || si_metres < 0.0 {
+    if !crate::tolerance_gate::is_valid_tolerance_si(si_metres) {
         return format!("{si_metres} m");
     }
     if si_metres == 0.0 {
