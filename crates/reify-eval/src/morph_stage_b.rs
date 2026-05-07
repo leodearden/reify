@@ -190,10 +190,13 @@ pub fn stage_b_eligible(
 ///
 /// ## Algorithm
 ///
-/// 1. **Empty-input early-exit** — both slices empty → `Ok(())`.
+/// 1. **Empty-input early-exit** — both slices empty → `Ok(())`; exactly one
+///    side empty → `CountMismatch` (asymmetry rules out a bijection regardless
+///    of attribution; bypasses the imported pre-pass to avoid mis-routing the
+///    asymmetric case).
 /// 2. **Imported-geometry pre-pass** (mirrors `topology_attribute_resolver.rs:172`)
-///    — if no handle on either side carries an attribute, signal imported
-///    geometry as `NamingLayerError::Imported`.
+///    — reached only when BOTH sides are non-empty. If no handle on either side
+///    carries an attribute, signal imported geometry as `NamingLayerError::Imported`.
 /// 3. **Partial-attribution guard** — if some handles are attributed and
 ///    others are not, signal malformed state as `NamingLayerError::Partial`.
 /// 4. **Count guard** — if `old.len() != new.len()`, return `CountMismatch`.
@@ -212,9 +215,17 @@ fn match_one_kind(
     new: &[GeometryHandleId],
     out: &mut HashMap<GeometryHandleId, GeometryHandleId>,
 ) -> Result<(), BijectionFailure> {
-    // 1. Empty-input early-exit — no checks needed.
+    // 1. Empty-input early-exit — no checks needed for both-empty;
+    //    asymmetric-empty is CountMismatch (bypasses imported pre-pass).
     if old.is_empty() && new.is_empty() {
         return Ok(());
+    }
+    if old.is_empty() || new.is_empty() {
+        return Err(BijectionFailure::CountMismatch {
+            kind,
+            old_count: old.len(),
+            new_count: new.len(),
+        });
     }
 
     // 2. Imported-geometry pre-pass.
