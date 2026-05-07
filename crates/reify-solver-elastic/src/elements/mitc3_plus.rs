@@ -53,4 +53,11 @@ mod tests {
         assert_eq!(Mitc3Plus::N_DOFS, 18);
         assert_eq!(Mitc3Plus::N_TYING_POINTS, 3);
     }
+
+    #[test]
+    fn shell_reference_coord_constructor_pins_xi_eta_fields() {
+        let coord = ShellReferenceCoord::new(0.3, 0.4);
+        assert_eq!(coord.xi, 0.3);
+        assert_eq!(coord.eta, 0.4);
+    }
 }
