@@ -163,42 +163,56 @@ fn fidget_dispatcher_to_kernel_chain_realizes_sdf_without_occt() {
     //    of the dyn-safe trait.)
     let mut kernel = FidgetKernel::new();
 
-    // Build two unit-radius spheres centred at (±0.5, 0, 0). Fidget's Tree
-    // operates on the implicit (x,y,z) — to translate a primitive we need
-    // a translated SDF expression. Since Translate is not in the kernel's
-    // op surface, we pin the simpler "two-coincident-spheres" union which
-    // still exercises the symbolic-graph composition path. The analytical
-    // answer for `min(sphere_a, sphere_a)` matches the single-sphere SDF
-    // exactly.
-    let a = kernel
-        .execute(&GeometryOp::Sphere {
-            radius: Value::Real(1.0),
+    // Build two boxes with different proportions, both centred at the origin.
+    // Choosing different shapes (cube + long thin x-bar) means the union's
+    // sample points fall in different operands — the test actually exercises
+    // `min` across non-trivial geometry rather than degenerating into "the
+    // larger primitive always wins". Translate is not in the kernel's op
+    // surface yet, so we vary the box dimensions instead of the centres.
+    //
+    //   cube:  Box{2, 2, 2}   half-extents (1,    1,    1)
+    //   bar:   Box{4, 0.5, 0.5} half-extents (2,    0.25, 0.25)
+    let cube = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(2.0),
+            height: Value::Real(2.0),
+            depth: Value::Real(2.0),
         })
-        .expect("Sphere a")
+        .expect("Box cube")
         .id;
-    let b = kernel
-        .execute(&GeometryOp::Sphere {
-            radius: Value::Real(2.0),
+    let bar = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(4.0),
+            height: Value::Real(0.5),
+            depth: Value::Real(0.5),
         })
-        .expect("Sphere b")
+        .expect("Box bar")
         .id;
     let union = kernel
-        .execute(&GeometryOp::Union { left: a, right: b })
+        .execute(&GeometryOp::Union {
+            left: cube,
+            right: bar,
+        })
         .expect("Union via Tree composition")
         .id;
 
-    // 5. Evaluate at four sample points. min(sphere_a(r=1), sphere_b(r=2)).
-    //    Sphere SDF at distance d from origin = d − r. min(d−1, d−2) = d−2
-    //    for any point (b is the larger sphere so dominates the union).
-    //    Sample at:
-    //      origin       d=0          → min(−1, −2) = −2
-    //      (1.0, 0, 0)  d=1          → min(0, −1)  = −1
-    //      (2.0, 0, 0)  d=2          → min(1, 0)   = 0
-    //      (3.0, 0, 0)  d=3          → min(2, 1)   = 1
+    // 5. Evaluate at four sample points where the analytical answer for
+    //    each operand is known and where each operand wins at least once
+    //    so the `min` actually selects between them:
+    //
+    //      (0,   0,   0)  cube=−1,    bar=−0.25  → min = −1   (cube wins, deep interior)
+    //      (1.5, 0,   0)  cube=+0.5,  bar=−0.25  → min = −0.25 (bar wins, x-bar extends past cube face)
+    //      (0,   0.8, 0)  cube=−0.2,  bar=+0.55  → min = −0.2  (cube wins, bar is thin in y)
+    //      (3.0, 0,   0)  cube=+2.0,  bar=+1.0   → min = +1.0  (bar wins outside both, but closer)
+    //
+    //    See `kernel.rs::box_tree` for the SDF formula; manual sanity-check
+    //    in the plan-iteration history. This pins the composition contract
+    //    (Tree::min on two distinct trees) end-to-end through the dispatcher
+    //    → factory → JIT-eval pipeline.
     let cases: &[(f32, f32, f32, f32)] = &[
-        (0.0, 0.0, 0.0, -2.0),
-        (1.0, 0.0, 0.0, -1.0),
-        (2.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, -1.0),
+        (1.5, 0.0, 0.0, -0.25),
+        (0.0, 0.8, 0.0, -0.2),
         (3.0, 0.0, 0.0, 1.0),
     ];
     for &(x, y, z, expected) in cases {
