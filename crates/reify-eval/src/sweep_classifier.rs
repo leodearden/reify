@@ -308,4 +308,79 @@ mod tests {
             "revolve with zero angle_rad must be rejected (degenerate angle)"
         );
     }
+
+    // ── Step-5: Sweep / Loft path-source resolution and rejection ─────────
+
+    #[test]
+    fn classify_swept_body_sweep_with_line_segment_path_classifies_as_loft() {
+        // Two-op slice: op[0] is a LineSegment path constructor whose result
+        // handle is GeometryHandleId(1); op[1] is a Sweep that consumes that
+        // path handle. The classifier must trace path → LineSegment via the
+        // parallel handles slice and accept the sweep as a non-twisted Loft.
+        let ops = vec![
+            GeometryOp::LineSegment {
+                x1: 0.0,
+                y1: 0.0,
+                z1: 0.0,
+                x2: 0.0,
+                y2: 0.0,
+                z2: 0.01,
+            },
+            GeometryOp::Sweep {
+                profile: GeometryHandleId(0),
+                path: GeometryHandleId(1),
+            },
+        ];
+        let handles = vec![GeometryHandleId(1), GeometryHandleId(2)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            Some(SweptKind::Loft {
+                profile: GeometryHandleId(0),
+                path: GeometryHandleId(1),
+            }),
+            "Sweep along a LineSegment-source path must classify as SweptKind::Loft"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_sweep_with_arc_path_returns_none() {
+        // Same shape but the path handle resolves to an Arc constructor.
+        // Phase A conservatively rejects any curved path source.
+        let ops = vec![
+            GeometryOp::Arc {
+                center: [0.0, 0.0, 0.0],
+                radius: 0.005,
+                start_angle: 0.0,
+                end_angle: std::f64::consts::PI,
+                axis: [0.0, 0.0, 1.0],
+            },
+            GeometryOp::Sweep {
+                profile: GeometryHandleId(0),
+                path: GeometryHandleId(1),
+            },
+        ];
+        let handles = vec![GeometryHandleId(1), GeometryHandleId(2)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "Sweep along an Arc-source path must be rejected (Phase A: only LineSegment paths qualify)"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_geometry_op_loft_multi_profile_returns_none() {
+        // GeometryOp::Loft is multi-profile by construction; explicitly
+        // rejected for Phase A even though SweptKind::Loft exists (the latter
+        // names single-profile Sweep-along-line-segment, per the design
+        // decision in .task/plan.json).
+        let ops = vec![GeometryOp::Loft {
+            profiles: vec![GeometryHandleId(0), GeometryHandleId(1)],
+        }];
+        let handles = vec![GeometryHandleId(2)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "GeometryOp::Loft (multi-profile) must be rejected for Phase A"
+        );
+    }
 }
