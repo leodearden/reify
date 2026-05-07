@@ -134,4 +134,43 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn shape_grad_at_returns_canonical_constant_gradients() {
+        let probes = [
+            ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
+            ShellReferenceCoord::new(0.0, 0.0),
+            ShellReferenceCoord::new(0.1, 0.2),
+        ];
+        let expected: [[f64; 2]; 3] = [[-1.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
+        for p in probes {
+            let g = Mitc3Plus.shape_grad_at(p);
+            assert_eq!(g.len(), 3, "shape_grad_at must return N_NODES=3 rows");
+            for (i, row) in g.iter().enumerate() {
+                for k in 0..2 {
+                    assert!(
+                        (row[k] - expected[i][k]).abs() < TOL,
+                        "∇N_{i}({:?})[{k}] = {} expected {}",
+                        p,
+                        row[k],
+                        expected[i][k],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shape_grad_at_sum_is_zero_partition_of_unity_consequence() {
+        let g = Mitc3Plus.shape_grad_at(ShellReferenceCoord::new(0.1, 0.2));
+        let mut sum = [0.0_f64; 2];
+        for row in g {
+            for k in 0..2 {
+                sum[k] += row[k];
+            }
+        }
+        for k in 0..2 {
+            assert!((sum[k]).abs() < TOL, "Σ_i ∇N_i[{k}] = {}, expected 0", sum[k]);
+        }
+    }
 }
