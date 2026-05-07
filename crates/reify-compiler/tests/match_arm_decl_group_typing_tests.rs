@@ -908,6 +908,16 @@ fn external_collection_sub_indexed_dot_cluster_dot_arm_specific_field_emits_diag
         matching.len(),
         errors
     );
+    // Anti-cascade pin (task 3046): no spurious cascading diagnostics.
+    // `make_poison_literal` returns Type::Error from the missing-arm branch,
+    // which must suppress further type-mismatch errors in the surrounding expr.
+    assert_eq!(
+        errors.len(),
+        1,
+        "anti-cascade: expected exactly 1 error diagnostic, got {} (all errors: {:#?})",
+        errors.len(),
+        errors
+    );
 }
 
 /// Task 2871 step-4: `bolts[0].head.across_flats` emits exactly one error
