@@ -435,6 +435,158 @@ mod tests {
         );
     }
 
+    /// Build the canonical 10-node phys-node layout for a uniformly scaled
+    /// reference tet: 4 vertices at `(0,0,0), (s,0,0), (0,s,0), (0,0,s)`
+    /// and 6 edge midpoints in `crate::elements::tet_p2::EDGES` order.
+    /// Mirrors `tet_p2::tests::scaled_tet_phys_nodes`.
+    fn scaled_p2_phys_nodes(s: f64) -> [[f64; 3]; 10] {
+        let v: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [s, 0.0, 0.0],
+            [0.0, s, 0.0],
+            [0.0, 0.0, s],
+        ];
+        let mid = |a: usize, b: usize| {
+            [
+                0.5 * (v[a][0] + v[b][0]),
+                0.5 * (v[a][1] + v[b][1]),
+                0.5 * (v[a][2] + v[b][2]),
+            ]
+        };
+        // EDGES = [(0,1), (1,2), (2,0), (0,3), (1,3), (2,3)]
+        [
+            v[0],
+            v[1],
+            v[2],
+            v[3],
+            mid(0, 1),
+            mid(1, 2),
+            mid(2, 0),
+            mid(0, 3),
+            mid(1, 3),
+            mid(2, 3),
+        ]
+    }
+
+    #[test]
+    fn p2_returns_30_by_30_stiffness() {
+        let phys = scaled_p2_phys_nodes(1.0);
+        let k = element_stiffness_p2(&phys, &dimensionless_steel_like());
+        assert_eq!(k.n_dofs, 30);
+        assert_eq!(k.data.len(), 900);
+    }
+
+    #[test]
+    fn p2_is_symmetric() {
+        let phys = scaled_p2_phys_nodes(1.0);
+        let k = element_stiffness_p2(&phys, &dimensionless_steel_like());
+        for i in 0..30 {
+            for j in 0..30 {
+                let lhs = k.get(i, j);
+                let rhs = k.get(j, i);
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-9 * scale,
+                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn p2_has_rigid_body_translation_null_space() {
+        // u[3·k + axis] = 1 for all 10 nodes is a rigid-body translation;
+        // K·u must vanish.
+        let phys = scaled_p2_phys_nodes(1.0);
+        let k = element_stiffness_p2(&phys, &dimensionless_steel_like());
+        for axis in 0..3 {
+            let mut u = vec![0.0; 30];
+            for node in 0..10 {
+                u[3 * node + axis] = 1.0;
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < 1e-8,
+                "axis {axis}: ‖K·u‖_∞ = {} (expected <1e-8)",
+                linf(&ku),
+            );
+        }
+    }
+
+    #[test]
+    fn p2_has_rigid_body_rotation_null_space() {
+        // Build u_i = ω × (x_i − c) about the centroid c = (0.25, 0.25, 0.25)
+        // for each ω ∈ {ê_x, ê_y, ê_z}. Linear-in-x displacements live in
+        // the P2 basis exactly, so rigid rotations sit in K's kernel.
+        let phys = scaled_p2_phys_nodes(1.0);
+        let k = element_stiffness_p2(&phys, &dimensionless_steel_like());
+        let centroid = [0.25_f64, 0.25, 0.25];
+        for axis in 0..3 {
+            let mut omega = [0.0_f64; 3];
+            omega[axis] = 1.0;
+            let mut u = vec![0.0; 30];
+            for (node, x) in phys.iter().enumerate() {
+                let r = [
+                    x[0] - centroid[0],
+                    x[1] - centroid[1],
+                    x[2] - centroid[2],
+                ];
+                u[3 * node] = omega[1] * r[2] - omega[2] * r[1];
+                u[3 * node + 1] = omega[2] * r[0] - omega[0] * r[2];
+                u[3 * node + 2] = omega[0] * r[1] - omega[1] * r[0];
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < 1e-8,
+                "ω-axis {axis}: ‖K·u‖_∞ = {} (expected <1e-8)",
+                linf(&ku),
+            );
+        }
+    }
+
+    #[test]
+    fn p2_strain_energy_patch_test_matches_full_six_component_strain() {
+        // u(x) = A·x with A symmetric ⇒ pure-strain (no rotation), with
+        // ε_ij = ½(A_ij + A_ji) = A_ij. In Voigt:
+        //   ε_voigt = [A_xx, A_yy, A_zz, 2 A_xy, 2 A_yz, 2 A_xz]
+        // Pick all 6 entries distinct so every Voigt component is exercised.
+        // Working in terms of the desired Voigt entries (a, b, c, d, e, f):
+        //   A_xx = a, A_yy = b, A_zz = c,
+        //   A_xy = A_yx = d/2, A_yz = A_zy = e/2, A_xz = A_zx = f/2.
+        let (a, b, c, d, e_v, f) = (0.01, -0.005, 0.003, 0.002, -0.001, 0.0007);
+        let big_a = [
+            [a, d / 2.0, f / 2.0],
+            [d / 2.0, b, e_v / 2.0],
+            [f / 2.0, e_v / 2.0, c],
+        ];
+        let mat = dimensionless_steel_like();
+        let d_mat = mat.d_matrix();
+        let phys = scaled_p2_phys_nodes(1.0);
+        let k = element_stiffness_p2(&phys, &mat);
+
+        let mut u = vec![0.0; 30];
+        for (node_idx, x) in phys.iter().enumerate() {
+            // u_i = (A · x)[i] = Σ_j A[i][j] · x[j]
+            for i in 0..3 {
+                let mut s = 0.0;
+                for j in 0..3 {
+                    s += big_a[i][j] * x[j];
+                }
+                u[3 * node_idx + i] = s;
+            }
+        }
+        let eps_voigt = [a, b, c, d, e_v, f];
+        let volume = 1.0 / 6.0;
+
+        let (u_k, u_a) = strain_energies(&k, &u, &eps_voigt, &d_mat, volume);
+        let scale = u_a.abs().max(1e-300);
+        assert!(
+            (u_k - u_a).abs() < 1e-9 * scale,
+            "U_K = {u_k}, U_analytical = {u_a} (rel err {})",
+            (u_k - u_a).abs() / scale,
+        );
+    }
+
     #[test]
     fn p1_volume_scaling_doubles_stiffness_when_edge_length_doubles() {
         // K ∝ L for isotropic linear-elastic affine maps: B ∝ 1/L
