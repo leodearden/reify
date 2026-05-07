@@ -177,6 +177,44 @@ mod tests {
     }
 
     #[test]
+    fn bubble_vanishes_at_three_reference_vertices() {
+        for v in REF_VERTICES.iter() {
+            let b = Mitc3Plus.bubble_at(*v);
+            assert!(b.abs() < TOL, "bubble_at({:?}) = {b}, expected 0", v);
+        }
+    }
+
+    #[test]
+    fn bubble_vanishes_on_three_reference_edges() {
+        // Edge midpoints A, B, C and some quarter-edge probes — each lies on
+        // one of the three edges of the reference triangle, where one
+        // barycentric coordinate is zero, so the bubble must vanish.
+        let edge_probes = [
+            ShellReferenceCoord::new(0.5, 0.0),  // mid of edge v0-v1 (η=0)
+            ShellReferenceCoord::new(0.0, 0.5),  // mid of edge v0-v2 (ξ=0)
+            ShellReferenceCoord::new(0.5, 0.5),  // mid of edge v1-v2 (ξ+η=1)
+            ShellReferenceCoord::new(0.25, 0.0), // quarter of edge v0-v1
+            ShellReferenceCoord::new(0.0, 0.25), // quarter of edge v0-v2
+            ShellReferenceCoord::new(0.75, 0.25), // on edge v1-v2
+        ];
+        for p in edge_probes.iter() {
+            let b = Mitc3Plus.bubble_at(*p);
+            assert!(b.abs() < TOL, "bubble_at({:?}) = {b}, expected 0 (edge)", p);
+        }
+    }
+
+    #[test]
+    fn bubble_equals_one_twenty_seventh_at_centroid() {
+        // Centroid (1/3, 1/3): f_b = (1/3)·(1/3)·(1 − 2/3) = 1/27.
+        let b = Mitc3Plus.bubble_at(ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0));
+        let expected = 1.0 / 27.0;
+        assert!(
+            (b - expected).abs() < TOL,
+            "bubble_at(centroid) = {b}, expected {expected}",
+        );
+    }
+
+    #[test]
     fn shape_grad_at_sum_is_zero_partition_of_unity_consequence() {
         let g = Mitc3Plus.shape_grad_at(ShellReferenceCoord::new(0.1, 0.2));
         let mut sum = [0.0_f64; 2];
