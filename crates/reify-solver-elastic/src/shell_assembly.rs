@@ -149,6 +149,31 @@ mod tests {
         assert_eq!(k.data.len(), 324);
     }
 
+    // --- plane_stress_d test (step 5) ---
+
+    #[test]
+    fn plane_stress_d_matches_isotropic_formula_for_steel_like() {
+        let mat = steel_like();
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let d = plane_stress_d(&mat);
+        let factor = e / (1.0 - nu * nu);
+        let tol = 1e-9 * factor.abs();
+        // d[0][0] = d[1][1] = E/(1-ν²)
+        assert!((d[0][0] - factor).abs() < tol, "d[0][0] = {}", d[0][0]);
+        assert!((d[1][1] - factor).abs() < tol, "d[1][1] = {}", d[1][1]);
+        // d[0][1] = d[1][0] = ν·E/(1-ν²)
+        assert!((d[0][1] - nu * factor).abs() < tol, "d[0][1] = {}", d[0][1]);
+        assert!((d[1][0] - nu * factor).abs() < tol, "d[1][0] = {}", d[1][0]);
+        // d[2][2] = E/(2(1+ν))
+        let g = e / (2.0 * (1.0 + nu));
+        assert!((d[2][2] - g).abs() < tol, "d[2][2] = {}", d[2][2]);
+        // Off-diagonal block entries are zero
+        for (i, j) in [(0, 2), (1, 2), (2, 0), (2, 1)] {
+            assert!(d[i][j].abs() < tol, "d[{i}][{j}] = {}", d[i][j]);
+        }
+    }
+
     // --- ShellFrame tests (step 3) ---
 
     #[test]
