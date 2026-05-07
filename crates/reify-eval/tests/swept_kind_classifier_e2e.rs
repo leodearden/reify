@@ -151,3 +151,102 @@ fn engine_swept_kind_table_empty_for_realization_with_modify_after_extrude() {
         table.len()
     );
 }
+
+/// (c) Per-build reset: a second `engine.build(...)` call on a different
+/// module clears any entries left by the first build.
+///
+/// Build #1 uses the extrude-only realization shape from test (a) and is
+/// expected to leave exactly one entry in `swept_kind_table`. Build #2 uses
+/// the modify-after-extrude shape from test (b) on the same engine instance
+/// — the per-build reset at every build entry point must clear the table,
+/// and the new build's modify-tail realization is rejected by the
+/// classifier, so `is_empty()` must hold after build #2.
+///
+/// Pins the contract that `Engine::build()` is responsible for both:
+///   1. clearing `swept_kind_table` (so stale entries from a prior build do
+///      not leak into the next one), and
+///   2. populating it from scratch via `classify_swept_body` for the new
+///      realizations.
+///
+/// If a future refactor accidentally drops the
+/// `self.swept_kind_table = SweptKindTable::default();` reset in `build()`,
+/// this test fails: build #1 leaves an entry that build #2 fails to clear,
+/// so `is_empty()` returns false.
+#[test]
+fn engine_swept_kind_table_resets_between_builds() {
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // ── Module #1: extrude-only realization (populates the table) ────────
+    let e1 = "TestSweptExtrude";
+    let sphere_op_1 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+    let extrude_op_1 = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("profile".into(), mm_literal(5.0)),
+            ("distance".into(), mm_literal(10.0)),
+        ],
+    };
+    let template_1 = TopologyTemplateBuilder::new(e1)
+        .realization(e1, 0, vec![sphere_op_1, extrude_op_1])
+        .build();
+    let module_1 =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_reset_build1"))
+            .template(template_1)
+            .build();
+
+    // ── Module #2: modify-after-extrude realization (table must be empty) ─
+    let e2 = "TestSweptResetModified";
+    let sphere_op_2 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+    let extrude_op_2 = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("profile".into(), mm_literal(5.0)),
+            ("distance".into(), mm_literal(10.0)),
+        ],
+    };
+    let fillet_op_2 = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Fillet,
+        target: GeomRef::Step(1),
+        args: vec![("radius".into(), mm_literal(1.0))],
+    };
+    let template_2 = TopologyTemplateBuilder::new(e2)
+        .realization(e2, 0, vec![sphere_op_2, extrude_op_2, fillet_op_2])
+        .build();
+    let module_2 =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_reset_build2"))
+            .template(template_2)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // ── Build #1: classifier records exactly one entry ───────────────────
+    let _result_1 = engine.build(&module_1, ExportFormat::Step);
+    let len_after_build_1 = engine.swept_kind_table().len();
+    assert_eq!(
+        len_after_build_1,
+        1,
+        "after build #1 (single Extrude realization), swept_kind_table must contain exactly one entry, got len() == {}",
+        len_after_build_1
+    );
+
+    // ── Build #2: per-build reset clears the prior entry; new module's
+    //    modify-tail realization is rejected by the classifier so the
+    //    table stays empty.
+    let _result_2 = engine.build(&module_2, ExportFormat::Step);
+    let table_after_build_2 = engine.swept_kind_table();
+    assert!(
+        table_after_build_2.is_empty(),
+        "after build #2 (modify-tail realization on the same Engine), swept_kind_table must be empty (per-build reset cleared the build #1 entry, classifier rejected the modify tail), got len() == {}",
+        table_after_build_2.len()
+    );
+}
