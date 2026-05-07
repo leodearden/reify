@@ -143,6 +143,8 @@ fn preserved_quantity_literal_5mm() {
 /// This test pins the current behavior. If a future change adds Inf-rejection in
 /// `lower_number_literal`, this test will fail and force explicit documentation of
 /// the new policy.
+// TODO(triage): silent f64 overflow → Inf is a latent issue; consider a
+// parse-layer diagnostic. This pin is intentionally a tripwire, not a blessing.
 #[test]
 fn overflow_1e400_lowers_to_infinity() {
     let v = extract_number_literal("structure S {\n  let x: Real = 1e400\n}");
@@ -157,6 +159,8 @@ fn overflow_1e400_lowers_to_infinity() {
 /// Like the overflow case, no parse-layer diagnostic is emitted.
 ///
 /// This test pins the current silent-underflow behavior.
+// TODO(triage): silent f64 underflow → 0.0 is a latent issue; consider a
+// parse-layer diagnostic. Tripwire, not a blessing — see overflow test above.
 #[test]
 fn underflow_1e_minus_400_lowers_to_zero() {
     let v = extract_number_literal("structure S {\n  let x: Real = 1e-400\n}");
