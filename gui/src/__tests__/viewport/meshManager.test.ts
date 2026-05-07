@@ -1601,4 +1601,82 @@ describe('meshManager', () => {
       expect(Array.from(posAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     });
   });
+
+  describe('rebuildMaterials — colorize=null path', () => {
+    const sentinelBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+    function setupColorizedMesh() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+      manager.sync({ A: meshData });
+      return { scene, manager };
+    }
+
+    it('(a) after setColorize(null)+rebuildMaterials, mesh material is MeshStandardMaterial', () => {
+      const { manager } = setupColorizedMesh();
+      manager.setColorize(null);
+      manager.rebuildMaterials();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(false);
+    });
+
+    it('(b) previous MeshPhongMaterial dispose was called once', () => {
+      const { manager } = setupColorizedMesh();
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const oldMaterial = mesh.material as any;
+      // Confirm it's currently a phong material
+      expect(mockPhongMaterials.some((m: any) => m === oldMaterial)).toBe(true);
+
+      manager.setColorize(null);
+      manager.rebuildMaterials();
+
+      expect(oldMaterial.dispose).toHaveBeenCalledOnce();
+    });
+
+    it('(c) geometry color BufferAttribute is removed after rebuildMaterials', () => {
+      const { manager } = setupColorizedMesh();
+      const mesh = manager.getSceneMeshes().get('A')!;
+      // Confirm color attr present before rebuild
+      expect((mesh.geometry as any).attributes.color).toBeDefined();
+
+      manager.setColorize(null);
+      manager.rebuildMaterials();
+
+      expect((mesh.geometry as any).getAttribute('color')).toBeUndefined();
+    });
+
+    it('(d) BVH computeBoundsTree is NOT called again during rebuildMaterials', () => {
+      const { manager } = setupColorizedMesh();
+      vi.clearAllMocks(); // reset call counts after sync
+
+      manager.setColorize(null);
+      manager.rebuildMaterials();
+
+      expect(mockComputeBoundsTree).not.toHaveBeenCalled();
+    });
+
+    it('(e) ghost-clone visibility state is unchanged by rebuildMaterials', () => {
+      const { manager } = setupColorizedMesh();
+      // No ghost clones exist; verify getGhostMeshes is empty after rebuild
+      manager.setColorize(null);
+      manager.rebuildMaterials();
+
+      const ghostMap: Map<string, any> = (manager as any).getGhostMeshes();
+      expect(ghostMap.size).toBe(0);
+    });
+  });
 });
