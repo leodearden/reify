@@ -65,6 +65,87 @@ impl ElementStiffness {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constitutive::IsotropicElastic;
+
+    /// Steel-like dimensionless material reused by the dispatch tests.
+    fn dimensionless_steel_like() -> IsotropicElastic {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        }
+    }
+
+    /// Canonical 4-node P1 phys layout (unit reference tet).
+    const UNIT_TET_P1_NODES: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+
+    /// Canonical 10-node P2 phys layout (unit reference tet + EDGES-ordered
+    /// midpoints).
+    fn unit_tet_p2_nodes() -> [[f64; 3]; 10] {
+        let v: [[f64; 3]; 4] = UNIT_TET_P1_NODES;
+        let mid = |a: usize, b: usize| {
+            [
+                0.5 * (v[a][0] + v[b][0]),
+                0.5 * (v[a][1] + v[b][1]),
+                0.5 * (v[a][2] + v[b][2]),
+            ]
+        };
+        // EDGES = [(0,1), (1,2), (2,0), (0,3), (1,3), (2,3)]
+        [
+            v[0],
+            v[1],
+            v[2],
+            v[3],
+            mid(0, 1),
+            mid(1, 2),
+            mid(2, 0),
+            mid(0, 3),
+            mid(1, 3),
+            mid(2, 3),
+        ]
+    }
+
+    #[test]
+    fn dispatch_p1_matches_direct_p1_call_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let direct = tet::element_stiffness_p1(&UNIT_TET_P1_NODES, &mat);
+        let dispatched = element_stiffness(ElementOrder::P1, &UNIT_TET_P1_NODES[..], &mat);
+        assert_eq!(dispatched.n_dofs, 12);
+        assert_eq!(dispatched.data.len(), 144);
+        // Bit-for-bit match: same inputs through the same generic helper
+        // means the floating-point operations are identical.
+        assert_eq!(dispatched.data, direct.data);
+    }
+
+    #[test]
+    fn dispatch_p2_matches_direct_p2_call_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let phys = unit_tet_p2_nodes();
+        let direct = tet::element_stiffness_p2(&phys, &mat);
+        let dispatched = element_stiffness(ElementOrder::P2, &phys[..], &mat);
+        assert_eq!(dispatched.n_dofs, 30);
+        assert_eq!(dispatched.data.len(), 900);
+        assert_eq!(dispatched.data, direct.data);
+    }
+
+    #[test]
+    #[should_panic(expected = "P1")]
+    fn dispatch_p1_with_10_node_slice_panics() {
+        let mat = dimensionless_steel_like();
+        let phys = unit_tet_p2_nodes();
+        let _ = element_stiffness(ElementOrder::P1, &phys[..], &mat);
+    }
+
+    #[test]
+    #[should_panic(expected = "P2")]
+    fn dispatch_p2_with_4_node_slice_panics() {
+        let mat = dimensionless_steel_like();
+        let _ = element_stiffness(ElementOrder::P2, &UNIT_TET_P1_NODES[..], &mat);
+    }
 
     #[test]
     fn zeros_constructs_n_by_n_dense_with_n_squared_storage() {
