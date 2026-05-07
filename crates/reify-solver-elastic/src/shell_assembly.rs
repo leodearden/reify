@@ -84,6 +84,39 @@ pub fn build_shell_frame(nodes: &[[f64; 3]; 3]) -> ShellFrame {
     }
 }
 
+/// Shear-correction factor κ = 5/6 (Reissner standard for rectangular cross-section).
+///
+/// Baked in as a private constant — it is a property of the through-thickness
+/// shape function, not of the material. See design decision in `plan.json`.
+const KAPPA: f64 = 5.0 / 6.0;
+
+/// Plane-stress 3×3 constitutive matrix for membrane and bending.
+///
+/// Voigt order: `[ε_xx, ε_yy, γ_xy]` (engineering shear strain).
+///
+/// ```text
+/// D_pl = E/(1−ν²) · ⎡ 1    ν    0        ⎤
+///                    ⎢ ν    1    0        ⎥
+///                    ⎣ 0    0    (1−ν)/2  ⎦
+/// ```
+///
+/// The shear term `(1−ν)/2 · E/(1−ν²) = E/(2(1+ν)) = G` uses the engineering
+/// shear strain convention, consistent with `IsotropicElastic::d_matrix`.
+pub fn plane_stress_d(material: &IsotropicElastic) -> [[f64; 3]; 3] {
+    let e = material.youngs_modulus;
+    let nu = material.poisson_ratio;
+    debug_assert!(
+        (0.0..0.5).contains(&nu),
+        "poisson_ratio must satisfy 0 ≤ ν < 0.5, got {nu}",
+    );
+    let factor = e / (1.0 - nu * nu);
+    [
+        [factor,        nu * factor,  0.0],
+        [nu * factor,  factor,        0.0],
+        [0.0,           0.0,           factor * (1.0 - nu) / 2.0],
+    ]
+}
+
 /// Compute the 18×18 element stiffness matrix for a MITC3+ shell element.
 ///
 /// `nodes` are the three physical vertex positions in global coordinates.
