@@ -137,8 +137,8 @@ fn closest_point_for_oblique_external_point_resolves_to_corner_witness() {
 /// distance ≈ 0, which triggers the C++ wrapper's `dist < 1e-10`
 /// shell-fallback: the wrapper re-runs extrema against the first shell via
 /// `TopExp_Explorer` (`TopAbs_SHELL`) and returns the shell result.  This
-/// test therefore exercises the shell-fallback branch; the shell re-run
-/// returns the same (5.0, 0.0, 0.0) witness that lies on the +X face.
+/// query happens to enter the shell-fallback branch; the test verifies the
+/// externally-visible contract regardless of which branch ran.
 #[test]
 fn closest_point_when_point_lies_on_face() {
     let (kernel, box_id) = box_kernel();
