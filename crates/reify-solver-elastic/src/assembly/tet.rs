@@ -87,6 +87,7 @@ use crate::elements::{ReferenceElement, tet_p1::TetP1, tet_p2::TetP2};
 /// `det != 0`. For a degenerate / inverted element with `det == 0` the
 /// result is non-finite (division by zero); diagnosing that condition
 /// is PRD task #21's job.
+#[allow(clippy::needless_range_loop)]
 fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
     let mut inv_t = [[0.0_f64; 3]; 3];
     for i in 0..3 {
@@ -118,6 +119,7 @@ fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
 /// Uses `det.abs()` for the volume measure so mirror-flipped (left-handed)
 /// node orderings still produce a non-negative strain-energy integrand.
 /// Right-handed elements have `det J > 0` and `det.abs() == det`.
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn element_stiffness_generic<E: ReferenceElement>(
     element: &E,
     phys_nodes: &[[f64; 3]],
@@ -263,6 +265,7 @@ pub fn element_stiffness_p2(
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
     use crate::constitutive::IsotropicElastic;

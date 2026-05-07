@@ -131,6 +131,7 @@ impl ElementStiffness {
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
     use crate::constitutive::IsotropicElastic;

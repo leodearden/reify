@@ -70,6 +70,7 @@ impl IsotropicElastic {
     /// See the type-level documentation for the Voigt component order
     /// (`[ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]`) and the rationale for the
     /// shear-block diagonal being `μ = G` (not `2G`).
+    #[allow(clippy::needless_range_loop)]
     pub fn d_matrix(&self) -> [[f64; 6]; 6] {
         let e = self.youngs_modulus;
         let nu = self.poisson_ratio;
@@ -96,6 +97,7 @@ impl IsotropicElastic {
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
 
