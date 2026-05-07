@@ -35,7 +35,7 @@ pub struct TetP2;
 /// degree-2 polynomial which the Stroud rule integrates exactly. Curved-
 /// edge P2 (deferred to v0.4+) would need the 11-point degree-4 rule.
 const TET_P2_STROUD_A: f64 = 0.13819660112501052;
-const TET_P2_STROUD_B: f64 = 0.58541019662496845;
+const TET_P2_STROUD_B: f64 = 0.585_410_196_624_968_4;
 const TET_P2_QUAD: &[QuadraturePoint] = &[
     QuadraturePoint {
         coord: ReferenceCoord::new(TET_P2_STROUD_A, TET_P2_STROUD_A, TET_P2_STROUD_A),
