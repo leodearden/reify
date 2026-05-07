@@ -40,6 +40,8 @@
 //!   falls through the catch-all.
 //! - Empty op slice.
 
+use std::collections::HashMap;
+
 use reify_types::{GeometryHandleId, GeometryOp, Value};
 
 /// Tolerance for treating a [`GeometryOp::Revolve`]'s axis or angle as
@@ -108,6 +110,51 @@ pub enum SweptKind {
         profile: GeometryHandleId,
         path: GeometryHandleId,
     },
+}
+
+/// Runtime table mapping geometry handle ids to their Phase A swept-body
+/// classification.
+///
+/// Populated by `Engine::execute_realization_ops` after a successful
+/// realization completes (keyed by the realization's final handle — i.e. the
+/// last entry in `step_handles[handle_start..]`). Cleared and repopulated on
+/// every `build()` / `build_snapshot()` / `tessellate_realizations()` /
+/// `tessellate_snapshot()` call (per-build, not per-realization). Mirrors the
+/// `FeatureTagTable` / `TopologyAttributeTable` shape — same four-method API
+/// (`record` / `lookup` / `len` / `is_empty`) and the same last-write-wins
+/// semantics on duplicate-id `record` calls.
+#[derive(Debug, Default)]
+pub struct SweptKindTable {
+    entries: HashMap<GeometryHandleId, SweptKind>,
+}
+
+impl SweptKindTable {
+    /// Record that geometry handle `id` is the realization-final handle of a
+    /// recognised swept body of `kind`.
+    ///
+    /// Overwrites any prior entry for the same id (last-write-wins, matching
+    /// `FeatureTagTable::record` and `TopologyAttributeTable::record`). Phase A
+    /// callers (the engine post-realization wiring) should never produce
+    /// duplicate keys because each successful realization writes its own
+    /// distinct final handle, but the contract is recorded here for symmetry.
+    pub fn record(&mut self, id: GeometryHandleId, kind: SweptKind) {
+        self.entries.insert(id, kind);
+    }
+
+    /// Look up the swept-body kind for a given handle, if any.
+    pub fn lookup(&self, id: GeometryHandleId) -> Option<&SweptKind> {
+        self.entries.get(&id)
+    }
+
+    /// Number of recorded entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// `true` when no entries have been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
