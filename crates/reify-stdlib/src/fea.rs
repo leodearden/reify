@@ -1152,4 +1152,131 @@ mod tests {
         );
         assert_eq!(sf.data[2], 3.0);
     }
+
+    // ── case_names helpers and tests ────────────────────────────────────────
+
+    /// Build a `MultiCaseResult`-shaped `Value::Map` for unit tests.
+    ///
+    /// Runtime struct instances are `Value::Map<Value::String, Value>` keyed
+    /// by field names (no `Value::Structure` variant exists). A
+    /// `MultiCaseResult` has one field `cases` whose value is a
+    /// `Value::Map<Value::String, Value>` of per-case entries. This helper
+    /// constructs the outer struct-instance Map from a `(case_name, Value)`
+    /// slice, letting callers pass arbitrary Values as case entries (fixture
+    /// ElasticResult Maps, Value::Int sentinels, etc.).
+    fn make_multi_case_result_value(cases: &[(&str, Value)]) -> Value {
+        let mut inner = BTreeMap::new();
+        for (name, val) in cases {
+            inner.insert(Value::String((*name).to_string()), val.clone());
+        }
+        let mut outer = BTreeMap::new();
+        outer.insert(
+            Value::String("cases".to_string()),
+            Value::Map(inner),
+        );
+        Value::Map(outer)
+    }
+
+    /// Build a minimal fixture `ElasticResult`-shaped Map for case values.
+    ///
+    /// Field values are placeholders (Int(0) / Bool / Real) sufficient to
+    /// distinguish cases by value in assertions; the exact field semantics
+    /// don't matter for `case_names` / `result_for` tests.
+    fn make_fixture_elastic_result(iterations: i64) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("displacement".to_string()), Value::Real(0.0));
+        m.insert(Value::String("stress".to_string()), Value::Real(0.0));
+        m.insert(Value::String("max_von_mises".to_string()), Value::Real(0.0));
+        m.insert(Value::String("converged".to_string()), Value::Bool(true));
+        m.insert(Value::String("iterations".to_string()), Value::Int(iterations));
+        Value::Map(m)
+    }
+
+    // ── case_names dispatcher signal ────────────────────────────────────────
+
+    #[test]
+    fn case_names_dispatcher_returns_some() {
+        // `case_names` must be a recognised FEA function name — `eval_fea`
+        // must return `Some(_)`, not `None`. The actual value may be Undef
+        // (wrong arity), but `None` would mean the arm is missing.
+        assert!(eval_fea("case_names", &[]).is_some());
+    }
+
+    // ── case_names happy path ────────────────────────────────────────────────
+
+    #[test]
+    fn case_names_returns_sorted_keys_as_list_of_strings() {
+        // Three cases with names that sort lexicographically:
+        //   "operating" < "overload" < "transport"
+        // BTreeMap natural order is lexicographic on Value::String, so the
+        // returned list must be in this order regardless of insertion order.
+        let er_op = make_fixture_elastic_result(10);
+        let er_ov = make_fixture_elastic_result(20);
+        let er_tr = make_fixture_elastic_result(30);
+        let mcr = make_multi_case_result_value(&[
+            ("transport", er_tr),
+            ("operating", er_op),
+            ("overload", er_ov),
+        ]);
+
+        let result = eval_fea("case_names", &[mcr]).unwrap();
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::String("operating".to_string()),
+                Value::String("overload".to_string()),
+                Value::String("transport".to_string()),
+            ]),
+            "case_names should return keys in BTreeMap lexicographic order"
+        );
+    }
+
+    // ── case_names argument-shape negative paths ─────────────────────────────
+
+    #[test]
+    fn case_names_zero_args_returns_undef() {
+        assert!(eval_fea("case_names", &[]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn case_names_two_args_returns_undef() {
+        let mcr = make_multi_case_result_value(&[]);
+        assert!(
+            eval_fea("case_names", &[mcr, Value::String("extra".to_string())])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn case_names_non_map_arg_returns_undef() {
+        assert!(eval_fea("case_names", &[Value::Int(42)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn case_names_map_without_cases_field_returns_undef() {
+        // A Map without a "cases" key is not a valid MultiCaseResult struct.
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("other_field".to_string()), Value::Int(1));
+        assert!(
+            eval_fea("case_names", &[Value::Map(m)])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn case_names_cases_field_non_map_returns_undef() {
+        // A Map with "cases" key but non-Map value is malformed.
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("cases".to_string()),
+            Value::Int(99), // not a Map
+        );
+        assert!(
+            eval_fea("case_names", &[Value::Map(m)])
+                .unwrap()
+                .is_undef()
+        );
+    }
 }
