@@ -834,6 +834,41 @@ mod tests {
         );
     }
 
+    /// Symmetric counterpart of `stage_b_eligible_empty_old_with_unattributed_new_returns_count_mismatch`.
+    /// Guards against a future "fix" that special-cases only `old.is_empty()` and
+    /// re-introduces the bug for the inverse direction (`old` non-empty, `new` empty).
+    ///
+    /// `old_faces=[h(10)]` with h(10) deliberately absent from `old_table` (unattributed),
+    /// `new_faces=[]`. Asymmetric counts make bijection impossible regardless of
+    /// attribution status → must return `CountMismatch { old_count: 1, new_count: 0 }`.
+    ///
+    /// See task 3057: symmetric regression guard for the asymmetric-empty fix.
+    #[test]
+    fn stage_b_eligible_unattributed_old_with_empty_new_returns_count_mismatch() {
+        let old_table = TopologyAttributeTable::default(); // empty — h(10) deliberately absent
+        let new_table = TopologyAttributeTable::default(); // empty — no attributes
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10)], // old_faces: one handle, unattributed
+            &[],      // new_faces: empty
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            result,
+            Err(BijectionFailure::CountMismatch {
+                kind: SubShapeKind::Face,
+                old_count: 1,
+                new_count: 0,
+            }),
+            "one unattributed old face vs empty new_faces must be CountMismatch, \
+             not NamingLayerError::Imported"
+        );
+    }
+
     // step-15: vertex_to_vertex is always empty in v0.2
     /// Behaviour guard: even when old_vertices and new_vertices are non-empty and
     /// both carry attributes in their respective tables, `vertex_to_vertex` must
