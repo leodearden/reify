@@ -126,6 +126,37 @@ fn element_order_enum_has_p1_and_p2_variants_in_canonical_order() {
     );
 }
 
+// ─── step-1: ShellForce enum ─────────────────────────────────────────────────
+
+/// `ShellForce` is the enum controlling whether the FEA solver uses shell
+/// formulation. The variant order `[Off, Auto, On]` is canonical: it reflects
+/// the natural "never / default / always" mental model. Pinning the order
+/// makes any future re-ordering a deliberate decision rather than a silent
+/// ABI/tag-encoding change — same discipline as `ElementOrder`'s `[P1, P2]`
+/// pin. PRD reference: docs/prds/v0_4/structural-analysis-shells.md (T17).
+#[test]
+fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
+    let module = load_stdlib_module();
+
+    let enum_def = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "ShellForce")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `enum ShellForce` in std/solver/elastic, got enum_defs: {:?}",
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        enum_def.variants,
+        vec!["Off".to_string(), "Auto".to_string(), "On".to_string()],
+        "ShellForce variants should be [Off, Auto, On] in canonical order, got: {:?}",
+        enum_def.variants
+    );
+}
+
 // ─── step-5: ElasticOptions param shape ──────────────────────────────────────
 
 /// `ElasticOptions` is the FEA solver-input knob structure. It must declare
