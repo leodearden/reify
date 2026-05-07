@@ -227,6 +227,32 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "phys_nodes.len() must equal Self::N_NODES")]
+    fn jacobian_panics_on_too_short_phys_nodes() {
+        // 3 nodes instead of 4 — one row short
+        let phys: &[[f64; 3]] = &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        TetP1.jacobian(phys, ReferenceCoord::new(0.25, 0.25, 0.25));
+    }
+
+    #[test]
+    #[should_panic(expected = "phys_nodes.len() must equal Self::N_NODES")]
+    fn jacobian_panics_on_too_long_phys_nodes() {
+        // 5 nodes instead of 4 — one row extra (duplicate of first)
+        let phys: &[[f64; 3]] = &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+        ];
+        TetP1.jacobian(phys, ReferenceCoord::new(0.25, 0.25, 0.25));
+    }
+
+    #[test]
     fn shape_at_partition_of_unity_at_centroid_and_interior() {
         let probes = [
             ReferenceCoord::new(0.25, 0.25, 0.25),
