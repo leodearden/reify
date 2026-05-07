@@ -179,6 +179,26 @@ pub fn classify_swept_body(
                 })
             }
         }
+        GeometryOp::Sweep { profile, path } => {
+            // Resolve `path` back to its source op via the parallel handles
+            // slice. We use an explicit linear scan (no HashMap) because the
+            // classifier runs once per realization and N is small (the op
+            // count is bounded by the realization size); allocation-free is
+            // worth the O(N) factor.
+            let path_source = handles
+                .iter()
+                .position(|h| h == path)
+                .and_then(|i| ops.get(i));
+            match path_source {
+                Some(GeometryOp::LineSegment { .. }) => Some(SweptKind::Loft {
+                    profile: *profile,
+                    path: *path,
+                }),
+                // Curved paths (Arc / Helix / NurbsCurve / InterpCurve /
+                // BezierCurve) and unresolvable handles fall through to None.
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
