@@ -471,6 +471,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pressure_load_direction_non_unit_vector_accepted() {
+        let face = selector_stub("face_stub");
+        let magnitude = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        // Non-unit dimensionless direction — magnitude 5.0, not 1.0.
+        let direction = Value::Vector(vec![Value::Real(5.0), Value::Real(0.0), Value::Real(0.0)]);
+
+        let result = eval_builtin(
+            "pressure_load",
+            &[face.clone(), magnitude.clone(), direction.clone()],
+        );
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("pressure_load".to_string())),
+            "kind should be 'pressure_load'"
+        );
+        assert_eq!(
+            map.get(&Value::String("direction".to_string())),
+            Some(&direction),
+            "direction should round-trip the un-normalized (5,0,0) input — \
+             normalization happens downstream"
+        );
+    }
+
     // ── pressure_load: "normal" sentinel ────────────────────────────────────
 
     #[test]
