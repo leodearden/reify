@@ -153,6 +153,66 @@ mod tests {
     }
 
     #[test]
+    fn jacobian_is_identity_for_reference_vertices() {
+        // Physical nodes coincide with reference vertices ⇒ J = I, det = 1.
+        let phys = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let j = TetP1.jacobian(&phys, ReferenceCoord::new(0.25, 0.25, 0.25));
+        for i in 0..3 {
+            for k in 0..3 {
+                let expected = if i == k { 1.0 } else { 0.0 };
+                assert!(
+                    (j.matrix[i][k] - expected).abs() < TOL,
+                    "J[{i}][{k}] = {} expected {}",
+                    j.matrix[i][k],
+                    expected,
+                );
+            }
+        }
+        assert!((j.det - 1.0).abs() < TOL);
+    }
+
+    #[test]
+    fn jacobian_uniform_scale_doubles_diagonal_and_cubes_det() {
+        // Physical nodes at 2 × reference ⇒ J = 2 I, det = 8.
+        let phys = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 2.0],
+        ];
+        let j = TetP1.jacobian(&phys, ReferenceCoord::new(0.25, 0.25, 0.25));
+        for i in 0..3 {
+            for k in 0..3 {
+                let expected = if i == k { 2.0 } else { 0.0 };
+                assert!((j.matrix[i][k] - expected).abs() < TOL);
+            }
+        }
+        assert!((j.det - 8.0).abs() < TOL);
+    }
+
+    #[test]
+    fn jacobian_negative_det_for_left_handed_node_ordering() {
+        // Swap v_2 and v_3 — flips orientation, det should be negative.
+        let phys = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let j = TetP1.jacobian(&phys, ReferenceCoord::new(0.25, 0.25, 0.25));
+        assert!(
+            j.det < 0.0,
+            "swapped node ordering must yield a negative det (got {})",
+            j.det
+        );
+    }
+
+    #[test]
     fn shape_grad_at_sum_is_zero_partition_of_unity_consequence() {
         let g = TetP1.shape_grad_at(ReferenceCoord::new(0.1, 0.2, 0.3));
         let mut sum = [0.0_f64; 3];
