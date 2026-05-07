@@ -10,8 +10,9 @@
 //!   `reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH` (the load-bearing
 //!   single-source-of-truth for the v0.2 backtracking depth bound).
 //! - A custom `max_depth` value round-trips through serde.
-//! - `max_depth = 0` is rejected with a typed `ManifestError::InvalidMaxDepth`
-//!   error (every search must visit at least one parameter).
+//! - `max_depth = 0` is rejected with a typed
+//!   `ManifestError::InvalidAutoTypeParamConfig` error (every search must
+//!   visit at least one parameter).
 //! - Unknown keys inside `[auto_type_params]` are surfaced as
 //!   `ManifestError::Parse(_)` (strict schema; mirrors the convention on
 //!   `[kernels]` / `[kernels.<id>]`).
@@ -102,7 +103,8 @@ fn default_max_cross_product_size_is_100k_when_section_omitted() {
 }
 
 /// `max_depth = 0` is semantically meaningless: every search must visit at
-/// least one parameter. Pin the typed `ManifestError::InvalidMaxDepth(0)`
+/// least one parameter. Pin the typed
+/// `ManifestError::InvalidAutoTypeParamConfig { field: "max_depth", value: 0 }`
 /// rejection at parse time so misconfiguration cannot ship as a silent
 /// no-op (DFS would never run, BFS would always run for any param count).
 #[test]
@@ -110,12 +112,15 @@ fn zero_max_depth_rejected_with_typed_error() {
     let err = Manifest::from_toml_str("[auto_type_params]\nmax_depth = 0\n")
         .expect_err("max_depth = 0 must be rejected");
     match err {
-        ManifestError::InvalidMaxDepth(n) => assert_eq!(
-            n, 0,
-            "InvalidMaxDepth payload must carry the offending value"
-        ),
+        ManifestError::InvalidAutoTypeParamConfig { field, value } => {
+            assert_eq!(
+                field, "max_depth",
+                "field must identify the offending manifest key"
+            );
+            assert_eq!(value, 0, "value must carry the offending value");
+        }
         other => panic!(
-            "expected ManifestError::InvalidMaxDepth(0), got {:?}",
+            "expected ManifestError::InvalidAutoTypeParamConfig {{ field: \"max_depth\", value: 0 }}, got {:?}",
             other
         ),
     }
@@ -123,25 +128,57 @@ fn zero_max_depth_rejected_with_typed_error() {
 
 /// `max_cross_product_size = 0` is semantically meaningless: every search
 /// must visit at least one leaf assignment. Pin the typed
-/// `ManifestError::InvalidMaxCrossProductSize(0)` rejection at parse time so
-/// misconfiguration cannot ship as a silent no-op (DFS would always fall
-/// back to BFS unconditionally for any non-empty params slice). Mirrors
-/// `zero_max_depth_rejected_with_typed_error` for the task 2662
-/// cross-product hard cap.
+/// `ManifestError::InvalidAutoTypeParamConfig { field: "max_cross_product_size", value: 0 }`
+/// rejection at parse time so misconfiguration cannot ship as a silent
+/// no-op (DFS would always fall back to BFS unconditionally for any
+/// non-empty params slice). Mirrors `zero_max_depth_rejected_with_typed_error`
+/// for the task 2662 cross-product hard cap.
 #[test]
 fn zero_max_cross_product_size_rejected_with_typed_error() {
     let err = Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 0\n")
         .expect_err("max_cross_product_size = 0 must be rejected");
     match err {
-        ManifestError::InvalidMaxCrossProductSize(n) => assert_eq!(
-            n, 0,
-            "InvalidMaxCrossProductSize payload must carry the offending value"
-        ),
+        ManifestError::InvalidAutoTypeParamConfig { field, value } => {
+            assert_eq!(
+                field, "max_cross_product_size",
+                "field must identify the offending manifest key"
+            );
+            assert_eq!(value, 0, "value must carry the offending value");
+        }
         other => panic!(
-            "expected ManifestError::InvalidMaxCrossProductSize(0), got {:?}",
+            "expected ManifestError::InvalidAutoTypeParamConfig {{ field: \"max_cross_product_size\", value: 0 }}, got {:?}",
             other
         ),
     }
+}
+
+/// Pin the `Display` rendering for `ManifestError::InvalidAutoTypeParamConfig`.
+///
+/// The rendered string must be `"auto_type_params.<field> must be > 0; got <value>"`
+/// — this is the unchanged user-facing diagnostic wording, now produced by a
+/// single format arm for all `[auto_type_params]` knobs rather than per-variant
+/// arms. Two field labels are checked to cover both current knobs.
+#[test]
+fn invalid_auto_type_param_config_display_renders_field_and_value() {
+    let err_depth = ManifestError::InvalidAutoTypeParamConfig {
+        field: "max_depth",
+        value: 0,
+    };
+    assert_eq!(
+        format!("{}", err_depth),
+        "auto_type_params.max_depth must be > 0; got 0",
+        "Display for max_depth knob must render expected string"
+    );
+
+    let err_cap = ManifestError::InvalidAutoTypeParamConfig {
+        field: "max_cross_product_size",
+        value: 0,
+    };
+    assert_eq!(
+        format!("{}", err_cap),
+        "auto_type_params.max_cross_product_size must be > 0; got 0",
+        "Display for max_cross_product_size knob must render expected string"
+    );
 }
 
 /// Unknown keys inside `[auto_type_params]` are surfaced as
