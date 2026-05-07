@@ -168,6 +168,26 @@ pub enum IngestError {
         /// The offending `bounds_max[axis]` value.
         max: f64,
     },
+    /// An axis grid produced by `linspace_inclusive` has fewer than 2 nodes.
+    /// Defends `interp::interpolate_Nd`'s `assert!(grid.len() >= 2)` which
+    /// requires at least two nodes per axis to perform any interpolation.
+    ///
+    /// This fires AFTER `axis_grids` is built so the check uses the same
+    /// rounding arithmetic as `linspace_inclusive` itself — catching both
+    /// `bounds_min == bounds_max` and spacing-larger-than-span cases that
+    /// the earlier `InvalidBounds` guard (`max < min`) does not reject.
+    DegenerateAxis {
+        /// Index of the offending axis (0 = outermost).
+        axis: usize,
+        /// Actual number of nodes produced (0 or 1).
+        node_count: usize,
+        /// `bounds_min[axis]` that produced the collapse.
+        bounds_min: f64,
+        /// `bounds_max[axis]` that produced the collapse.
+        bounds_max: f64,
+        /// `spacing[axis]` that produced the collapse.
+        spacing: f64,
+    },
 }
 
 /// v0.2 OpenVDB units → [`DimensionVector`] lookup table.
@@ -261,7 +281,12 @@ pub fn lower_to_sampled(
     //       grid.
     //   (3) reject inverted / non-finite bounds per axis — same reasoning,
     //       linspace silently collapses to `[start]` for negative span.
-    //   (4) reject `data.len() != product(axis_lengths)` last, after the
+    //   (4) build `axis_grids`, then reject any axis with < 2 nodes —
+    //       `bounds_min == bounds_max` and spacing-larger-than-span both
+    //       pass checks (0)–(3) but collapse to a 1-node axis after
+    //       linspace rounding; checking post-build keeps the guard
+    //       lockstep with `linspace_inclusive`'s own arithmetic.
+    //   (5) reject `data.len() != product(axis_lengths)` last, after the
     //       axis grids are well-formed enough to compute `expected`.
     if grid.bounds_min.len() != axis_count
         || grid.bounds_max.len() != axis_count
@@ -302,6 +327,23 @@ pub fn lower_to_sampled(
     let axis_grids: Vec<Vec<f64>> = (0..axis_count)
         .map(|i| linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]))
         .collect();
+
+    // Guard (4): each axis must have ≥ 2 nodes after linspace construction.
+    // Catches bounds_min == bounds_max and spacing-larger-than-span — both
+    // pass the earlier InvalidBounds/InvalidSpacing checks but collapse to
+    // a 1-node axis due to linspace rounding. Mirrors the engine_eval guard
+    // in `build_sampled_field` (engine_eval.rs:858–877).
+    for (i, axis) in axis_grids.iter().enumerate() {
+        if axis.len() < 2 {
+            return Err(IngestError::DegenerateAxis {
+                axis: i,
+                node_count: axis.len(),
+                bounds_min: grid.bounds_min[i],
+                bounds_max: grid.bounds_max[i],
+                spacing: grid.spacing[i],
+            });
+        }
+    }
 
     let expected: usize = axis_grids.iter().map(|g| g.len()).product();
     if grid.data.len() != expected {
@@ -535,6 +577,18 @@ impl std::fmt::Display for IngestError {
                 f,
                 "OpenVDB grid axis {axis} bounds are invalid: bounds_min={min}, bounds_max={max} \
                  (max must be finite and >= min)"
+            ),
+            IngestError::DegenerateAxis {
+                axis,
+                node_count,
+                bounds_min,
+                bounds_max,
+                spacing,
+            } => write!(
+                f,
+                "OpenVDB grid axis {axis} produced only {node_count} node(s); need at least 2 \
+                 (check bounds and spacing — bounds_min={bounds_min} bounds_max={bounds_max} \
+                 spacing={spacing})"
             ),
         }
     }
