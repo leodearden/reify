@@ -49,6 +49,26 @@ impl ShellReferenceCoord {
 pub struct Mitc3Plus;
 
 impl Mitc3Plus {
+    /// Gradient of the cubic bubble enrichment at `coord`.
+    ///
+    /// Returns `[∂f_b/∂ξ, ∂f_b/∂η]` derived from `f_b = ξ·η·(1−ξ−η)` by
+    /// the product rule:
+    ///
+    /// ```text
+    /// ∂f_b/∂ξ = η·(1 − 2ξ − η)
+    /// ∂f_b/∂η = ξ·(1 − ξ − 2η)
+    /// ```
+    ///
+    /// Both components vanish at the centroid `(1/3, 1/3)` — the unique
+    /// interior maximum of the bubble function.
+    pub fn bubble_grad_at(&self, coord: ShellReferenceCoord) -> [f64; 2] {
+        let ShellReferenceCoord { xi, eta } = coord;
+        [
+            eta * (1.0 - 2.0 * xi - eta),
+            xi * (1.0 - xi - 2.0 * eta),
+        ]
+    }
+
     /// Cubic bubble enrichment at `coord`.
     ///
     /// Returns `f_b(ξ, η) = ξ · η · (1 − ξ − η)`.
