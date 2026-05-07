@@ -41,6 +41,22 @@ impl ShellReferenceCoord {
     }
 }
 
+/// Covariant transverse-shear strain components `(γ_ξζ, γ_ηζ)` at a point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShearStrain {
+    pub gamma_xi_zeta: f64,
+    pub gamma_eta_zeta: f64,
+}
+
+/// Sampled covariant transverse-shear strains at the three MITC3+ tying
+/// points A, B, and C (see [`TyingPoint`] for the exact coordinates).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TyingShears {
+    pub at_a: ShearStrain,
+    pub at_b: ShearStrain,
+    pub at_c: ShearStrain,
+}
+
 /// An edge-midpoint tying point used for the assumed transverse-shear strain
 /// interpolation in MITC3+ (Bathe & Lee 2014).
 ///
@@ -133,6 +149,39 @@ impl Mitc3Plus {
     pub fn shape_at(&self, coord: ShellReferenceCoord) -> [f64; 3] {
         let ShellReferenceCoord { xi, eta } = coord;
         [1.0 - xi - eta, xi, eta]
+    }
+
+    /// Assumed transverse-shear strain at `coord` via the MITC3+ mixed
+    /// interpolation (Bathe & Lee 2014).
+    ///
+    /// Given the covariant strains sampled at the three tying points A, B, C,
+    /// this function returns the interpolated `(γ_ξζ, γ_ηζ)` at an arbitrary
+    /// reference coordinate by the affine blending formula:
+    ///
+    /// ```text
+    /// γ_ξζ(ξ, η) = at_a.γ_ξζ  +  η · c
+    /// γ_ηζ(ξ, η) = at_b.γ_ηζ  −  ξ · c
+    ///
+    /// where c = (at_c.γ_ξζ − at_c.γ_ηζ) − (at_a.γ_ξζ − at_b.γ_ηζ)
+    /// ```
+    ///
+    /// Properties:
+    /// - At A=(½,0): output `γ_ξζ = at_a.γ_ξζ`  (tying identity for A).
+    /// - At B=(0,½): output `γ_ηζ = at_b.γ_ηζ`  (tying identity for B).
+    /// - Constant when `at_a == at_b == at_c`: `c = 0`, output is uniform.
+    /// - Linear in `(ξ, η)`: the formula is affine by construction.
+    pub fn interpolate_assumed_shear(
+        &self,
+        sampled: TyingShears,
+        coord: ShellReferenceCoord,
+    ) -> ShearStrain {
+        let ShellReferenceCoord { xi, eta } = coord;
+        let c = (sampled.at_c.gamma_xi_zeta - sampled.at_c.gamma_eta_zeta)
+            - (sampled.at_a.gamma_xi_zeta - sampled.at_b.gamma_eta_zeta);
+        ShearStrain {
+            gamma_xi_zeta: sampled.at_a.gamma_xi_zeta + eta * c,
+            gamma_eta_zeta: sampled.at_b.gamma_eta_zeta - xi * c,
+        }
     }
 
     /// Returns the three MITC3+ tying points in canonical A, B, C order.
