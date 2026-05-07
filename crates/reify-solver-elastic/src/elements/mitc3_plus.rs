@@ -48,6 +48,22 @@ pub struct ShearStrain {
 
 /// Sampled covariant transverse-shear strains at the three MITC3+ tying
 /// points A, B, and C (see [`TyingPoint`] for the exact coordinates).
+///
+/// # Which components are consumed by [`Mitc3Plus::interpolate_assumed_shear`]
+///
+/// The MITC3+ mixed-interpolation formula samples different components at
+/// each tying point.  Only the following fields are used; the others are
+/// **silently ignored**:
+///
+/// | Field | Component used | Component ignored |
+/// |-------|---------------|-------------------|
+/// | `at_a` | `gamma_xi_zeta` | `gamma_eta_zeta` |
+/// | `at_b` | `gamma_eta_zeta` | `gamma_xi_zeta` |
+/// | `at_c` | both | — |
+///
+/// Callers must ensure the *consumed* components are correctly populated.
+/// Populating only `at_a.gamma_eta_zeta` or `at_b.gamma_xi_zeta` will
+/// produce plausible-looking output with no warning.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TyingShears {
     pub at_a: ShearStrain,
