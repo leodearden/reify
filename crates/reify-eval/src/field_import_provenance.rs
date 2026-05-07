@@ -45,7 +45,14 @@ pub fn build_field_import_provenance(
         format: format.to_string(),
         content_hash: ContentHash::of(file_bytes),
         ingestion_timestamp_secs,
-        declared_tolerance_si,
+        // Gate 4 filter: mirrors `extract_input_tolerance_promise`'s Gate 4
+        // (`tolerance_promise.rs:163-168`) for cross-extractor symmetry. A
+        // malformed `Some(NaN)` / `Some(±Inf)` / `Some(-1.0)` cannot reach
+        // `FieldImportProvenance.declared_tolerance_si` and propagate into
+        // `is_promise_insufficient`'s debug_assert invariants.
+        // `Some(0.0)` is preserved (lower-boundary acceptance — matches
+        // `extract_input_tolerance_promise_accepts_zero_promise`).
+        declared_tolerance_si: declared_tolerance_si.filter(|v| v.is_finite() && *v >= 0.0),
     }
 }
 
