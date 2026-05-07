@@ -53,6 +53,7 @@ pub mod structural_classifier;
 pub use structural_classifier::{
     classify_cell, realization_graph_shape_hash, stage_a_eligible, ParameterClass,
 };
+pub mod sweep_classifier;
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
