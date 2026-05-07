@@ -21,7 +21,14 @@ import {
   findFuzzyCandidate,
   suffixMatch,
   structuralMatch,
+  // feaModeStore exports (task 2961, step-9)
+  createFeaModeStore,
 } from '../stores';
+import type { FeaModeStore } from '../stores';
+
+// Type-level assertion: FeaModeStore type re-exports and is assignable.
+const _feaModeStoreTypeCheck: FeaModeStore | null = null;
+void _feaModeStoreTypeCheck;
 
 describe('stores barrel — new public exports resolve (step-39)', () => {
   it('loadViewPersistence is a function', () => {
@@ -58,5 +65,22 @@ describe('stores barrel — new public exports resolve (step-39)', () => {
 
   it('structuralMatch is a function', () => {
     expect(typeof structuralMatch).toBe('function');
+  });
+});
+
+describe('stores barrel — feaModeStore exports (task 2961, step-9)', () => {
+  it('createFeaModeStore is callable', () => {
+    expect(typeof createFeaModeStore).toBe('function');
+  });
+
+  it('createFeaModeStore() returns an object with state and mutations', () => {
+    const store = createFeaModeStore();
+    expect(store).toHaveProperty('state');
+    expect(typeof store.setEnabled).toBe('function');
+    expect(typeof store.setChannel).toBe('function');
+    expect(typeof store.setPalette).toBe('function');
+    expect(typeof store.setRange).toBe('function');
+    expect(typeof store.lockCurrent).toBe('function');
+    expect(typeof store.tryAutoEnable).toBe('function');
   });
 });
