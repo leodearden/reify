@@ -424,6 +424,46 @@ mod tests {
         assert_ne!(inter.id, right);
     }
 
+    /// Catch-all messages must name (a) the rejected op, (b) the repr
+    /// family Fidget answers on, and (c) the kernel's identity — so a
+    /// regression that drops the op-token interpolation is caught here.
+    #[test]
+    fn fidget_kernel_execute_unsupported_op_names_op_in_message() {
+        let mut kernel = FidgetKernel::new();
+
+        let err = kernel
+            .execute(&GeometryOp::Fillet {
+                target: GeometryHandleId(1),
+                radius: Value::Real(0.1),
+            })
+            .expect_err("Fillet must be rejected on Sdf");
+        match err {
+            GeometryError::OperationFailed(msg) => {
+                assert!(msg.contains("Fillet"), "{msg:?}");
+                assert!(msg.contains("Sdf"), "{msg:?}");
+                assert!(msg.contains("Fidget"), "{msg:?}");
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+
+        let err = kernel
+            .execute(&GeometryOp::Translate {
+                target: GeometryHandleId(1),
+                dx: 0.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .expect_err("Translate must be rejected on Sdf");
+        match err {
+            GeometryError::OperationFailed(msg) => {
+                assert!(msg.contains("Translate"), "{msg:?}");
+                assert!(msg.contains("Sdf"), "{msg:?}");
+                assert!(msg.contains("Fidget"), "{msg:?}");
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
     /// Pins the stable contract that the FIRST missing handle is the one
     /// named in `InvalidReference` — `left` is checked before `right`.
     #[test]
