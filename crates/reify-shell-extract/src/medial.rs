@@ -877,6 +877,108 @@ mod tests {
         );
     }
 
+    /// Build an analytic-slab Regular3D `SampledField` perpendicular to
+    /// the x-axis: `φ(x, y, z) = |x| − half_thickness`. Identical
+    /// construction to [`slab_sdf_3d`] except the active axis is x
+    /// rather than z. Used to give the algorithm a second positive
+    /// load-bearing assertion on a *different* axis — catches
+    /// regressions specific to gradient indexing or walk direction
+    /// along x that the z-slab test would miss.
+    fn slab_sdf_3d_along_x(half_thickness_voxels: f64, voxel_count: usize) -> SampledField {
+        assert!(voxel_count >= 2, "x-slab grid needs ≥ 2 voxels per axis");
+        let n = voxel_count;
+        let spacing: f64 = 1.0;
+        let half_extent = (n as f64 - 1.0) / 2.0;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+
+        let axis_grid: Vec<f64> = (0..n)
+            .map(|i| bounds_min + (i as f64) * spacing)
+            .collect();
+        // Row-major flat layout: data[i*n*n + j*n + k] at index (i,j,k).
+        // Note `x` is now the OUTER loop variable so the φ value
+        // depends on the leading index i — the algorithm must walk in
+        // the i-direction (NOT k) to find the medial axis.
+        let mut data = Vec::with_capacity(n * n * n);
+        for &x in &axis_grid {
+            for &_y in &axis_grid {
+                for &_z in &axis_grid {
+                    data.push(x.abs() - half_thickness_voxels);
+                }
+            }
+        }
+        SampledField {
+            name: format!(
+                "slab-x-3d-h{half_thickness_voxels}-n{voxel_count}"
+            ),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![spacing, spacing, spacing],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Slab `φ = |x| − 3` on a 16×16×16 grid — second positive
+    /// load-bearing assertion complementing
+    /// [`compute_medial_mask_flags_slab_centerline_voxels`].
+    ///
+    /// **Why this test, not an odd-N sphere/thick-block?** The natural
+    /// "add a positive assertion to the radial fixtures" idea fails
+    /// because point-medial geometry on this algorithm is fundamentally
+    /// un-flaggable: on even-N grids no voxel sits at the exact medial,
+    /// and on odd-N grids the exact-medial voxel has degenerate
+    /// (zero-by-symmetry) central-difference gradient and is skipped by
+    /// `GRADIENT_EPSILON`; the off-by-one voxels then fail the
+    /// equality test by construction (their `abs_diff/dmax` exceeds the
+    /// default tolerance + absolute slack). A second slab
+    /// orientation gives a clean positive assertion that exercises a
+    /// genuinely different code path: gradient indexing along the
+    /// outer-loop axis (`i`) rather than the inner-loop axis (`k`). A
+    /// regression that swapped i↔k somewhere in the inner loop, or that
+    /// only exercised gradient_at_index's z-axis branch, would fail
+    /// this test while leaving the z-slab test green.
+    ///
+    /// Asserts the same three load-bearing properties as the z-slab
+    /// test, but on the i-index instead of k.
+    #[test]
+    fn compute_medial_mask_flags_slab_centerline_voxels_along_x_axis() {
+        let n = 16usize;
+        let sdf = slab_sdf_3d_along_x(3.0, n);
+        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect("x-slab compute succeeds");
+
+        // (a) non-empty
+        assert!(
+            !mask.voxels.is_empty(),
+            "x-slab medial mask must be non-empty"
+        );
+
+        // (b) every voxel near the centerline x-plane (i-index)
+        let center_i = (n as i32 - 1) / 2;
+        for &[i, j, k] in &mask.voxels {
+            let di = (i - center_i).abs();
+            assert!(
+                di <= 1,
+                "x-slab voxel ({i},{j},{k}) is too far from centerline plane \
+                 (i={i}, center_i={center_i}, |di|={di}) — likely a regression \
+                 in i-axis gradient indexing or walk direction"
+            );
+        }
+
+        // (c) at least half the centerline plane is medial
+        let min_expected = n * n / 2;
+        assert!(
+            mask.voxels.len() >= min_expected,
+            "x-slab medial mask has {} voxels; expected ≥ {min_expected} \
+             on a 16×16 centerline plane",
+            mask.voxels.len()
+        );
+    }
+
     /// Build an analytic-sphere Regular3D `SampledField` representing
     /// `φ(p) = |p| - radius` over a `voxel_count³` grid centered on
     /// the origin with unit voxel spacing. The analytic medial axis
