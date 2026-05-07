@@ -19,6 +19,7 @@ import { PNG } from "pngjs";
 import { parseRpcResponse } from "./rpc.js";
 import { decideOutcome } from "./diff.js";
 import type { ImageData } from "./diff.js";
+import { resolveRepoRoot, assertRepoRootStructure } from "./paths.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -29,7 +30,8 @@ const DEBUG_URL = "http://127.0.0.1:3939/mcp";
 const POLL_INTERVAL_MS = 1_000;
 const SERVER_TIMEOUT_MS = 600_000;
 
-const REPO_ROOT = path.resolve(new URL("../../../..", import.meta.url).pathname);
+const REPO_ROOT = resolveRepoRoot(import.meta.url);
+assertRepoRootStructure(REPO_ROOT);
 const SCREENSHOTS_DIR = path.join(REPO_ROOT, "gui", "test", "screenshots");
 
 // ─── Scenario definitions ─────────────────────────────────────────────────────
