@@ -1813,8 +1813,6 @@ fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<Str
         .collect()
 }
 
-// ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
-
 // ─── Static blame extraction (task 2660) ─────────────────────────────────────
 
 /// Recursively collect every `Type::TypeParam(name)` string buried in a type.
