@@ -180,6 +180,7 @@ pub fn shell_element_stiffness(
     material: &IsotropicElastic,
 ) -> ElementStiffness {
     use crate::elements::mitc3_plus::{Mitc3Plus, ShearStrain, TyingShears};
+    assert!(thickness > 0.0, "shell_element_stiffness: thickness must be positive, got {thickness}");
 
     let frame = build_shell_frame(nodes);
     let r = frame.r;   // rotation matrix: row i = local basis eᵢ in global coords
@@ -325,15 +326,6 @@ pub fn shell_element_stiffness(
         [-jac2[0][1] / det2,  jac2[0][0] / det2],
     ];
 
-    // Shape function values at a reference point (for tying-point sampling)
-    let shape_at = |xi: f64, eta: f64| -> [f64; 3] {
-        [1.0 - xi - eta, xi, eta]
-    };
-
-    // Reference shape gradients (constant): ∂N/∂ξ and ∂N/∂η
-    // ∇ξ N_i: dN[i]/dξ = [-1, 1, 0], dN[i]/dη = [-1, 0, 1]
-    let dn_ref = [[-1.0_f64, -1.0], [1.0, 0.0], [0.0, 1.0]];
-
     // Covariant shear at a tying point (ξ_t, η_t):
     // γ_ξζ = Σ_i (∂N_i/∂ξ · u_z_i + N_i · θ_y_i)
     // γ_ηζ = Σ_i (∂N_i/∂η · u_z_i - N_i · θ_x_i)
@@ -378,18 +370,21 @@ pub fn shell_element_stiffness(
     // B_cov[tp][component][dof]: covariant shear B-matrix at each tying point
     let mut b_cov = [[[0.0_f64; 18]; 2]; 3]; // [tp][cov_component][dof]
     for (tp_idx, tp) in tying_pts.iter().enumerate() {
-        let xi_t = tp.coord.xi;
-        let eta_t = tp.coord.eta;
-        let n_at_tp = shape_at(xi_t, eta_t); // [N_0, N_1, N_2]
+        // Use Mitc3Plus's canonical shape functions — single source of truth
+        // for the reference-triangle layout (ξ, η) → [N_0, N_1, N_2].
+        let n_at_tp = Mitc3Plus.shape_at(tp.coord);
+        // shape_grad_at returns the constant ∂N/∂ξ and ∂N/∂η for each node:
+        // ∇N_0=(−1,−1), ∇N_1=(1,0), ∇N_2=(0,1)
+        let dn_ref_tp = Mitc3Plus.shape_grad_at(tp.coord);
         for node in 0..3 {
             let dof_uz = 6 * node + 2;
             let dof_tx = 6 * node + 3;
             let dof_ty = 6 * node + 4;
             // γ_ξζ contribution from this node: dn_ref[node][0]*u_z + N*θ_y
-            b_cov[tp_idx][0][dof_uz] += dn_ref[node][0];
+            b_cov[tp_idx][0][dof_uz] += dn_ref_tp[node][0];
             b_cov[tp_idx][0][dof_ty] += n_at_tp[node];
             // γ_ηζ contribution from this node: dn_ref[node][1]*u_z - N*θ_x
-            b_cov[tp_idx][1][dof_uz] += dn_ref[node][1];
+            b_cov[tp_idx][1][dof_uz] += dn_ref_tp[node][1];
             b_cov[tp_idx][1][dof_tx] -= n_at_tp[node];
         }
     }
@@ -445,11 +440,16 @@ pub fn shell_element_stiffness(
         }
     }
 
-    // ---- Symmetrize K_local (mirror upper → lower) ----
+    // ---- Symmetrize K_local (average upper and lower triangle) ----
+    // Each contribution (B_mᵀ D B_m, B_bᵀ D B_b, B_sᵀ D_s B_s) is
+    // intrinsically symmetric in form, so the upper and lower entries
+    // agree to within floating-point rounding. Averaging both triangles
+    // (rather than discarding the lower) minimises the residual asymmetry.
     for a in 0..18 {
         for b in (a + 1)..18 {
-            let v = k_loc[a][b];
-            k_loc[b][a] = v;
+            let m = 0.5 * (k_loc[a][b] + k_loc[b][a]);
+            k_loc[a][b] = m;
+            k_loc[b][a] = m;
         }
     }
 
