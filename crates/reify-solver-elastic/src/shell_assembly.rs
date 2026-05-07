@@ -182,6 +182,50 @@ mod tests {
         assert_eq!(k.data.len(), 324);
     }
 
+    // --- Membrane patch test (step 7) ---
+
+    #[test]
+    fn shell_membrane_patch_test_uniform_in_plane_strain_matches_analytical_energy() {
+        // Triangle in xy-plane. Linear u_x = a·x, u_y = b·y, all other DOFs zero.
+        // Membrane strain: ε_xx=a, ε_yy=b, γ_xy=0. Area A=0.5.
+        // U_analytical = 0.5 · [a, b, 0] · D_pl · [a, b, 0]ᵀ · t · A
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let a = 0.01_f64;
+        let b = -0.005_f64;
+        let nodes = UNIT_TRI; // p0=(0,0,0), p1=(1,0,0), p2=(0,1,0)
+        let k = shell_element_stiffness(&nodes, t, &mat);
+
+        // Build 18-DOF displacement vector: DOF layout 6·node + i
+        // u_x at node i => DOF 6·i+0; u_y at node i => DOF 6·i+1
+        let mut u = [0.0_f64; 18];
+        // node 0: x=0,y=0 → u_x=0, u_y=0
+        // node 1: x=1,y=0 → u_x=a, u_y=0
+        u[6 * 1 + 0] = a * 1.0;
+        // node 2: x=0,y=1 → u_x=0, u_y=b
+        u[6 * 2 + 1] = b * 1.0;
+
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let d = plane_stress_d(&mat);
+        let eps = [a, b, 0.0_f64];
+        let d_eps: [f64; 3] = [
+            d[0][0]*eps[0] + d[0][1]*eps[1],
+            d[1][0]*eps[0] + d[1][1]*eps[1],
+            0.0,
+        ];
+        let area = 0.5_f64;
+        let u_analytical = 0.5 * (eps[0]*d_eps[0] + eps[1]*d_eps[1]) * t * area;
+
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "U_K={u_k}, U_analytical={u_analytical}, rel_err={}",
+            (u_k - u_analytical).abs() / scale,
+        );
+    }
+
     // --- plane_stress_d test (step 5) ---
 
     #[test]
