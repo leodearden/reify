@@ -34,33 +34,87 @@
 //! crate's FFI wiring). The trait surface is stable across that swap; only
 //! the body changes.
 
+use std::collections::HashMap;
+
+use manifold3d::Manifold;
 use reify_types::{
-    ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
-    GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh,
-    QueryError, TessError, TopologyAttributeTable, Value,
+    BRepKind, ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle,
+    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook,
+    KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value,
 };
 
-const STUB_MSG: &str = "Manifold mesh booleans not yet implemented; \
-    reify-kernel-manifold is a registration-only scaffold for the v0.2 multi-kernel system \
-    (see docs/prds/v0_2/multi-kernel.md). Real Manifold C++ FFI is a follow-up.";
+/// Error message used by the v0.2 stub paths (`query`/`export`/`tessellate`)
+/// that have not yet been wired to real FFI. Boolean ops (`Union`,
+/// `Difference`, `Intersection`) and `tessellate` are wired by this task;
+/// `query`/`export` remain follow-up work for v0.2.
+const STUB_MSG: &str = "Manifold query/export not yet implemented for v0.2; \
+    boolean ops and tessellate are wired via manifold3d 0.1, but query/export \
+    are follow-up work (see docs/prds/v0_2/multi-kernel.md).";
 
-/// Stub Manifold kernel — all operations return descriptive errors.
+/// Manifold mesh-Boolean kernel adapter, backed by `manifold3d` 0.1.
 ///
-/// The `_private: ()` field prevents external struct-literal construction;
-/// callers must go through [`Self::new`] or [`Self::default`].
-/// Matches the OCCT stub pattern in
-/// `crates/reify-kernel-occt/src/stubs.rs:25-27`.
-///
-/// Trivially `Send + Sync` (no interior mutability, no raw pointers — no
-/// `unsafe impl` needed; the auto-derived impls fire).
+/// Mirrors `OcctKernel`'s storage shape (`crates/reify-kernel-occt/src/lib.rs:456-466`):
+/// per-handle native shapes in a `HashMap<u64, _>` with a monotonic
+/// `next_id` counter. Manifold's [`Manifold`] is `Send + Sync` (per the
+/// `unsafe impl` blocks in `manifold-csg`'s `manifold.rs`), so
+/// `ManifoldKernel` auto-derives `Send + Sync` without needing an
+/// actor-thread analogue of `OcctKernelHandle`.
 pub struct ManifoldKernel {
-    _private: (),
+    /// Per-handle stored Manifolds. Inserted by [`Self::store`] (called from
+    /// `execute` boolean arms and from the `test-fixtures` ingestion path);
+    /// looked up by `tessellate` and the boolean arms.
+    shapes: HashMap<u64, Manifold>,
+    /// Monotonic id counter; first allocated handle is `1` (matches OCCT).
+    /// `0` and `u64::MAX` are reserved (the latter is `GeometryHandleId::INVALID`).
+    next_id: u64,
 }
 
 impl ManifoldKernel {
-    /// Construct a new stub `ManifoldKernel`.
+    /// Construct a new `ManifoldKernel` with empty storage.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self {
+            shapes: HashMap::new(),
+            next_id: 1,
+        }
+    }
+
+    /// Store a `Manifold` and return its newly-allocated handle.
+    ///
+    /// `repr` is fixed to [`BRepKind::Solid`] because manifold3d's
+    /// `Manifold` represents a coherent solid mesh (the type is named after
+    /// the manifold property — closed orientable surfaces). There is no
+    /// `BRepKind::Mesh` variant; `Solid` is the closest semantic match for
+    /// what manifold owns.
+    fn store(&mut self, manifold: Manifold) -> GeometryHandle {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.shapes.insert(id, manifold);
+        GeometryHandle {
+            id: GeometryHandleId(id),
+            repr: BRepKind::Solid,
+        }
+    }
+
+    /// Test-only ingestion path for `reify_types::Mesh` inputs.
+    ///
+    /// Widens the input mesh's f32 vertices to f64 (per Decision 4 in the
+    /// task plan: "Reify's tolerance regime is f64; manifold internals stay
+    /// f64 throughout") and the u32 indices to u64 (per the
+    /// `from_mesh_f64` API signature), then constructs a `Manifold` via
+    /// `Manifold::from_mesh_f64`. Panics on invalid mesh input — acceptable
+    /// for a test fixture.
+    ///
+    /// Gated on `cfg(any(test, feature = "test-fixtures"))` so the API is
+    /// reachable from in-crate `mod tests` (cfg(test)) AND from cross-crate
+    /// integration tests in `tests/` (which set the `test-fixtures` feature
+    /// via the self-dev-dep in `Cargo.toml`).
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn store_mesh_for_test(&mut self, mesh: &Mesh) -> GeometryHandleId {
+        let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
+        let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
+        let manifold = Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64)
+            .expect("store_mesh_for_test: input Mesh must be a valid manifold");
+        self.store(manifold).id
     }
 }
 
@@ -71,8 +125,32 @@ impl Default for ManifoldKernel {
 }
 
 impl GeometryKernel for ManifoldKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        Err(GeometryError::OperationFailed(STUB_MSG.into()))
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        match op {
+            GeometryOp::Union { left, right } => {
+                // NOTE(step-9/step-10): the `.ok_or(OperationFailed(...))` here
+                // is the placeholder error path that step-9's RED test pins;
+                // step-10 introduces a centralized `get_manifold` helper that
+                // returns `GeometryError::InvalidReference` instead. Until
+                // step-10 lands, do NOT change this to InvalidReference — that
+                // would defeat the RED→GREEN sequence the plan prescribes.
+                let l = self.shapes.get(&left.0).ok_or_else(|| {
+                    GeometryError::OperationFailed(format!(
+                        "Manifold Union: left handle {left:?} not found"
+                    ))
+                })?;
+                let r = self.shapes.get(&right.0).ok_or_else(|| {
+                    GeometryError::OperationFailed(format!(
+                        "Manifold Union: right handle {right:?} not found"
+                    ))
+                })?;
+                let result = l.union(r);
+                Ok(self.store(result))
+            }
+            // Other ops continue to return the stub error until later steps
+            // wire them in (step-4: Difference, step-6: Intersection).
+            _ => Err(GeometryError::OperationFailed(STUB_MSG.into())),
+        }
     }
 
     fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
