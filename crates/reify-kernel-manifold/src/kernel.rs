@@ -171,6 +171,90 @@ mod tests {
         let _boxed: Box<dyn reify_types::GeometryKernel> = Box::new(ManifoldKernel::new());
     }
 
+    /// Construct a closed unit cube as a `reify_types::Mesh` literal: 8
+    /// vertices, 12 outward-facing triangles. Used by the boolean-op tests
+    /// below to populate input handles via `store_mesh_for_test`.
+    ///
+    /// Vertices are in the unit `[0, 1]³` corner-block; the optional
+    /// `offset` parameter shifts the cube by `(dx, dy, dz)` so two cubes
+    /// can be made to overlap.
+    ///
+    /// Triangle winding follows right-hand-rule outward normals (so the
+    /// resulting Manifold is well-oriented and Boolean operations succeed).
+    /// This helper lives in `mod tests` rather than at module scope because
+    /// it is only used by `test-fixtures`-gated tests.
+    #[cfg(feature = "test-fixtures")]
+    fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
+        let [dx, dy, dz] = offset;
+        Mesh {
+            vertices: vec![
+                // 0..7 → (x, y, z) for the 8 cube corners
+                0.0 + dx, 0.0 + dy, 0.0 + dz, // 0
+                1.0 + dx, 0.0 + dy, 0.0 + dz, // 1
+                1.0 + dx, 1.0 + dy, 0.0 + dz, // 2
+                0.0 + dx, 1.0 + dy, 0.0 + dz, // 3
+                0.0 + dx, 0.0 + dy, 1.0 + dz, // 4
+                1.0 + dx, 0.0 + dy, 1.0 + dz, // 5
+                1.0 + dx, 1.0 + dy, 1.0 + dz, // 6
+                0.0 + dx, 1.0 + dy, 1.0 + dz, // 7
+            ],
+            #[rustfmt::skip]
+            indices: vec![
+                // -Z bottom (outward = -Z, so CW from +Z view)
+                0, 2, 1,  0, 3, 2,
+                // +Z top
+                4, 5, 6,  4, 6, 7,
+                // -Y front
+                0, 1, 5,  0, 5, 4,
+                // +Y back
+                3, 7, 6,  3, 6, 2,
+                // -X left
+                0, 4, 7,  0, 7, 3,
+                // +X right
+                1, 2, 6,  1, 6, 5,
+            ],
+            normals: None,
+        }
+    }
+
+    /// RED for step-1 of task 3093: pins that `execute(GeometryOp::Union)`
+    /// over two stored unit cubes returns `Ok(GeometryHandle { .. })`.
+    ///
+    /// Currently fails because (a) `store_mesh_for_test` does not yet exist
+    /// on `ManifoldKernel`, and (b) the `execute` impl returns the stub
+    /// error. Step-2 makes both true.
+    ///
+    /// Match-on-Ok-with-id rather than `assert_eq!` because `GeometryError`
+    /// does not derive `PartialEq`. We don't pin the `repr` field literal
+    /// (the field type is `BRepKind`, which has no `Mesh` variant — manifold
+    /// meshes are stored under whichever `BRepKind` the impl assigns; the
+    /// structural shape `Ok(GeometryHandle { .. })` is what this test pins).
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn union_of_two_stored_cubes_returns_ok_handle() {
+        let mut kernel = ManifoldKernel::new();
+        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
+        let r = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
+
+        let result = kernel.execute(&GeometryOp::Union {
+            left: l,
+            right: r,
+        });
+
+        match result {
+            Ok(GeometryHandle { id, .. }) => {
+                assert_ne!(
+                    id,
+                    GeometryHandleId::INVALID,
+                    "Union must return a real (non-INVALID) handle id",
+                );
+            }
+            other => panic!(
+                "Union of two valid stored cubes must return Ok(GeometryHandle); got {other:?}"
+            ),
+        }
+    }
+
     /// PRD docs/prds/v0_2/persistent-naming-v2.md line 70: ManifoldKernel is
     /// the first concrete impl of `KernelAttributeHook`. This test pins the
     /// "ManifoldKernel opts into the hook AND is reachable through the
