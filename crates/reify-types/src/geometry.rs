@@ -77,12 +77,17 @@ pub enum BRepKind {
 /// (Solid / Shell / Wire / Compound / Edge / Face) used by the OCCT kernel.
 ///
 /// `Ord` / `PartialOrd` are derived (in declaration order: BRep < Mesh < Sdf
-/// < Voxel) so the dispatcher can seed its BFS frontier in a deterministic
-/// order via `BTreeSet<ReprKind>` even when the caller passes
+/// < Voxel < VolumeMesh) so the dispatcher can seed its BFS frontier in a
+/// deterministic order via `BTreeSet<ReprKind>` even when the caller passes
 /// `&HashSet<ReprKind>` of `available` reprs. Without this, the seeding loop
 /// would inherit HashMap salt order and selection across multi-seed cases
 /// would depend on hashing rather than the registered kernel set, breaking
 /// the PRD's "Selection deterministic" contract.
+///
+/// `VolumeMesh` is appended last in the v0.3 extension so the existing
+/// `BRep < Mesh < Sdf < Voxel` ordering stays unchanged for callers that
+/// pass legacy four-variant `available` sets — kernel selection on the
+/// surface-mesh path remains bit-identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReprKind {
     /// Boundary-representation solid (OCCT / OpenCASCADE B-rep kernel).
@@ -93,6 +98,11 @@ pub enum ReprKind {
     Sdf,
     /// Volumetric voxel grid (e.g. OpenVDB).
     Voxel,
+    /// Volumetric tetrahedral mesh (e.g. Gmsh HXT). Distinct from [`ReprKind::Mesh`]
+    /// (boundary-only triangulation) — `VolumeMesh` carries interior tet
+    /// elements for FEA assembly. Produced by the v0.3 surface→volume
+    /// meshing pipeline (`reify-kernel-gmsh`).
+    VolumeMesh,
 }
 
 /// Multi-kernel operation classifier.
