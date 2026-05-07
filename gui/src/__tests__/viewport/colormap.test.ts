@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { viridisLut, magmaLut, rainbowLut, applyColormap, bakeColours, type Range } from '../../viewport/colormap';
 
 // ---------------------------------------------------------------------------
@@ -389,19 +389,26 @@ describe('bakeColours', () => {
 // Step 9 — barrel-export wiring through gui/src/viewport/index.ts
 // ---------------------------------------------------------------------------
 describe('barrel export wiring (viewport/index)', () => {
-  it('applyColormap is re-exported from the viewport barrel', async () => {
-    const barrel = await import('../../viewport/index');
+  // The first cold import of the barrel triggers Solid JSX transformation of
+  // Viewport.tsx → FeaModeToolbar.tsx (added in task 2961). On a cold worker
+  // this can exceed the default 5 000 ms test timeout. Pre-warm the module
+  // cache in beforeAll with a generous timeout so each assertion stays fast.
+  type BarrelModule = typeof import('../../viewport/index');
+  let barrel: BarrelModule;
+  beforeAll(async () => {
+    barrel = await import('../../viewport/index');
+  }, 30_000);
+
+  it('applyColormap is re-exported from the viewport barrel', () => {
     expect(typeof barrel.applyColormap).toBe('function');
   });
 
-  it('bakeColours is re-exported from the viewport barrel', async () => {
-    const barrel = await import('../../viewport/index');
+  it('bakeColours is re-exported from the viewport barrel', () => {
     expect(typeof barrel.bakeColours).toBe('function');
   });
 
-  it('applyColormap returns a proper 3-element Array for all palettes and range modes', async () => {
-    const barrel = await import('../../viewport/index');
-    const r: import('../../viewport/colormap').Range = { mode: 'fixed', min: 0, max: 1 };
+  it('applyColormap returns a proper 3-element Array for all palettes and range modes', () => {
+    const r: Range = { mode: 'fixed', min: 0, max: 1 };
 
     // All three palettes dispatch through the barrel correctly.
     for (const p of ['viridis', 'magma', 'rainbow'] as const) {
