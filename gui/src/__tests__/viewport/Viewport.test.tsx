@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import type { MeshData, VisibilityState } from '../../types';
+import { createFeaModeStore } from '../../stores';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
 globalThis.ResizeObserver = class ResizeObserver {
@@ -29,6 +30,16 @@ vi.mock('three', () => ({
     getCenter: vi.fn(),
     getSize: vi.fn(),
   })),
+}));
+
+// Hoisted mock for bakeColours (must be hoisted so vi.mock factory can reference it)
+const mockBakeColours = vi.hoisted(() =>
+  vi.fn((_scalars: Float32Array, _range: unknown, _palette: string) => new Float32Array(6))
+);
+
+// Mock the colormap module so Viewport's bake closure is testable
+vi.mock('../../viewport/colormap', () => ({
+  bakeColours: mockBakeColours,
 }));
 
 // Mock the viewport modules
@@ -152,6 +163,7 @@ beforeEach(() => {
   // Reset FEA mock state
   mockMeshSetColorize.mockClear();
   mockMeshRebuildMaterials.mockClear();
+  mockBakeColours.mockClear();
 });
 
 describe('Viewport', () => {
@@ -657,5 +669,74 @@ describe('Viewport camera persistence', () => {
         cb();
       }
     }).not.toThrow();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FEA-mode wiring (step-23 — RED)
+// Verifies that:
+//   (a) feaModeStore prop causes the FeaModeToolbar to appear in the DOM
+//   (b) absent feaModeStore → toolbar NOT rendered
+//   (c) enabling the store calls meshManager.setColorize with the right MeshColorize
+//   (d) disabling the store calls setColorize(null) then rebuildMaterials()
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport FEA wiring', () => {
+  it('(a) renders fea-mode-toolbar when feaModeStore prop is provided', () => {
+    const store = createFeaModeStore();
+    render(() => <Viewport meshes={{}} viewportId="test-vp" feaModeStore={store as any} />);
+    expect(screen.getByTestId('fea-mode-toolbar')).toBeTruthy();
+  });
+
+  it('(b) does NOT render fea-mode-toolbar when feaModeStore prop is absent', () => {
+    render(() => <Viewport meshes={{}} viewportId="test-vp" />);
+    expect(screen.queryByTestId('fea-mode-toolbar')).toBeNull();
+  });
+
+  it('(c) setColorize called with correct MeshColorize when feaModeStore.enabled toggles true', () => {
+    const store = createFeaModeStore(); // enabled=false initially
+    render(() => <Viewport meshes={{}} viewportId="test-vp" feaModeStore={store as any} />);
+
+    // Clear any calls triggered during initial-mount effect (enabled=false → setColorize(null))
+    mockMeshSetColorize.mockClear();
+    mockBakeColours.mockClear();
+
+    // Toggle enabled → true
+    store.setEnabled(true);
+
+    expect(mockMeshSetColorize).toHaveBeenCalledTimes(1);
+    const colorize = mockMeshSetColorize.mock.calls[0][0];
+    expect(colorize).not.toBeNull();
+    expect(colorize.channel).toBe(store.state.channel); // 'vonMises'
+
+    // Bake closure delegates to bakeColours with current range and palette
+    const testScalars = new Float32Array([0.1, 0.5, 0.9]);
+    colorize.bake(testScalars);
+    expect(mockBakeColours).toHaveBeenCalledTimes(1);
+    expect(mockBakeColours.mock.calls[0][0]).toBe(testScalars);
+    expect(mockBakeColours.mock.calls[0][1]).toEqual({ mode: 'auto', min: 0, max: 1 });
+    expect(mockBakeColours.mock.calls[0][2]).toBe(store.state.palette); // 'viridis'
+  });
+
+  it('(d) setColorize(null) then rebuildMaterials when feaModeStore.enabled toggles false', () => {
+    const store = createFeaModeStore();
+    render(() => <Viewport meshes={{}} viewportId="test-vp" feaModeStore={store as any} />);
+
+    // Enable first so we have a baseline
+    store.setEnabled(true);
+
+    // Clear mocks before the critical toggle
+    mockMeshSetColorize.mockClear();
+    mockMeshRebuildMaterials.mockClear();
+
+    // Toggle enabled → false
+    store.setEnabled(false);
+
+    expect(mockMeshSetColorize).toHaveBeenCalledWith(null);
+    expect(mockMeshRebuildMaterials).toHaveBeenCalledTimes(1);
+
+    // Verify order: setColorize(null) must be called before rebuildMaterials
+    const setColorizeOrder = mockMeshSetColorize.mock.invocationCallOrder[0];
+    const rebuildOrder = mockMeshRebuildMaterials.mock.invocationCallOrder[0];
+    expect(setColorizeOrder).toBeLessThan(rebuildOrder);
   });
 });
