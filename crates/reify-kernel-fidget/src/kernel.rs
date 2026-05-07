@@ -539,6 +539,58 @@ mod tests {
         }
     }
 
+    /// `query`/`export`/`tessellate` must each emit op-specific error
+    /// messages that name the kernel (`Fidget`), the repr family (`Sdf`),
+    /// and reference the architecture pointer for SDF→Mesh deferral
+    /// (`§10.8`) so the diagnostic explains the deferral rather than
+    /// looking like a generic catch-all.
+    #[test]
+    fn fidget_kernel_query_export_tessellate_each_emit_op_specific_message() {
+        use reify_types::GeometryQuery;
+
+        let kernel = FidgetKernel::new();
+
+        // (a) query
+        let err = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .expect_err("query must error on Sdf");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(msg.contains("Volume"), "{msg:?}");
+                assert!(msg.contains("Fidget"), "{msg:?}");
+                assert!(msg.contains("Sdf"), "{msg:?}");
+                assert!(msg.contains("§10.8"), "{msg:?}");
+            }
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+
+        // (b) export
+        let mut sink: Vec<u8> = Vec::new();
+        let err = kernel
+            .export(GeometryHandleId(1), ExportFormat::Step, &mut sink)
+            .expect_err("export must error on Sdf");
+        match err {
+            ExportError::FormatError(msg) => {
+                assert!(msg.contains("Step"), "{msg:?}");
+                assert!(msg.contains("Fidget"), "{msg:?}");
+                assert!(msg.contains("Sdf"), "{msg:?}");
+            }
+            other => panic!("expected FormatError, got {other:?}"),
+        }
+
+        // (c) tessellate
+        let err = kernel
+            .tessellate(GeometryHandleId(1), 0.1)
+            .expect_err("tessellate must error on Sdf");
+        match err {
+            TessError::TessellationFailed(msg) => {
+                assert!(msg.contains("Fidget"), "{msg:?}");
+                assert!(msg.contains("§10.8"), "{msg:?}");
+            }
+            other => panic!("expected TessellationFailed, got {other:?}"),
+        }
+    }
+
     /// `evaluate_sdf_at` on an unknown handle must surface
     /// `QueryError::QueryFailed` (not `QueryError::InvalidHandle` — the
     /// trait's existing query path uses `QueryFailed` for invalid lookups,
