@@ -277,6 +277,17 @@ pub enum ManifestError {
     /// wrapped `usize` is the offending value, surfaced verbatim in the
     /// rendered message. Mirrors `InvalidMaxDepth` for the task 2662
     /// cross-product hard cap.
+    ///
+    /// Forward-looking note (review suggestion #3, task 2662 amendment
+    /// pass): `InvalidMaxDepth` and `InvalidMaxCrossProductSize` carry the
+    /// same `(usize)` shape and the same "must be > 0" validation logic.
+    /// As more `[auto_type_params]` knobs land (cf. sibling tasks 2663 /
+    /// 2664), consider consolidating the family into a single variant
+    /// `InvalidAutoTypeParamConfig { field: &'static str, value: usize }`
+    /// to avoid combinatorial growth of error variants. Not done here
+    /// because the consolidation is a breaking change for any caller
+    /// pattern-matching on these variants and is best landed atomically
+    /// alongside the third knob, not unilaterally with the second.
     InvalidMaxCrossProductSize(usize),
 }
 
