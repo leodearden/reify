@@ -9,6 +9,17 @@ description = "Fidget SDF-Boolean kernel adapter"
 reify-types.workspace = true
 inventory.workspace = true
 
+# `default-features = false` excludes `shapes` and `rhai`. Both transitively
+# pull `fidget-shapes`, which fails to compile under fidget 0.4.3 because the
+# `facet` crate's published v0.44.5 disagrees with sibling `facet-path` v0.44.5
+# on `facet-core` (0.44.4 vs 0.45.0) — `fidget-shapes` passes a `Tree` derived
+# via the 0.44.4 `Facet` trait into `facet-reflect` whose bound resolves to
+# 0.45.0. Reify doesn't need fidget's pre-built shape DSL (the adapter lowers
+# reify's `GeometryOp` into `Tree` directly, mirroring the OCCT/Manifold
+# adapters) nor rhai scripting, so dropping these features is loss-free.
+# `gui` is also omitted (reify has its own Tauri/SolidJS GUI).
+fidget = { version = "0.4", default-features = false, features = ["bytecode", "jit", "mesh", "raster", "solver"] }
+
 # `reify-eval` is a dev-dependency (not a normal dep) for the same reason the
 # OCCT and Manifold adapters exclude it from production deps: adapter crates
 # depend on `reify-types` for the dependency-inverted `GeometryKernel` trait
