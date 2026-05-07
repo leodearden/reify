@@ -278,3 +278,50 @@ fn lower_to_sampled_data_shape_mismatch_errors_clearly() {
         result
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stratum C — Provenance + cache integration
+//
+// Exercises the cross-cutting helpers from this crate's vantage, confirming
+// they are publicly reachable and correct at runtime.  The companion file
+// `crates/reify-eval/tests/field_import_provenance.rs` pins compile-time
+// reachability; this stratum extends that to runtime field-population
+// assertions.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Stratum C imports ─────────────────────────────────────────────────────
+use reify_eval::cache::CacheStore;
+use reify_eval::field_import_provenance::build_field_import_provenance;
+use reify_types::ContentHash;
+
+/// `build_field_import_provenance` populates all five `FieldImportProvenance`
+/// fields correctly and preserves a valid tolerance through the Gate 4 filter.
+///
+/// Cross-references `crates/reify-eval/tests/field_import_provenance.rs`,
+/// which pins compile-time reachability of the same three exports.  This test
+/// exercises the runtime call to verify struct population.
+///
+/// The Gate 4 filter (NaN / ±Inf / negative → `None`) is exhaustively covered
+/// by the in-crate unit tests in `crates/reify-eval/src/field_import_provenance.rs`;
+/// this test only pins the typical-valid-tolerance path.
+#[test]
+fn provenance_round_trips_all_five_fields_via_eval_builder() {
+    let prov = build_field_import_provenance(
+        "fea_results.vdb",
+        "OpenVDB",
+        ContentHash::of(b"vdb file bytes here"),
+        Some(50e-6),
+        1_700_000_000,
+    );
+
+    assert_eq!(prov.path, "fea_results.vdb");
+    assert_eq!(prov.format, "OpenVDB");
+    assert_eq!(prov.content_hash, ContentHash::of(b"vdb file bytes here"));
+    assert_eq!(prov.ingestion_timestamp_secs, 1_700_000_000);
+    // Gate 4 should preserve a valid finite non-negative tolerance.
+    assert_eq!(
+        prov.declared_tolerance_si,
+        Some(50e-6),
+        "Gate 4 should preserve a valid tolerance of 50e-6 m"
+    );
+}
