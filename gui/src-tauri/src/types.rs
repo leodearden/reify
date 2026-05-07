@@ -209,14 +209,14 @@ impl serde::Serialize for MeshData {
         }
 
         // Contract: displaced_positions must have the same length as vertices.
-        if let Some(displaced) = &self.displaced_positions {
-            if displaced.len() != self.vertices.len() {
-                return Err(S::Error::custom(format!(
-                    "displaced_positions has length {} but expected {} (vertices.len())",
-                    displaced.len(),
-                    self.vertices.len()
-                )));
-            }
+        if let Some(displaced) = &self.displaced_positions
+            && displaced.len() != self.vertices.len()
+        {
+            return Err(S::Error::custom(format!(
+                "displaced_positions has length {} but expected {} (vertices.len())",
+                displaced.len(),
+                self.vertices.len()
+            )));
         }
 
         // entity_path, vertices, indices, normals are always serialized.
