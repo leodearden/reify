@@ -391,6 +391,68 @@ fn elastic_options_constrains_max_iter_and_cg_tolerance_positive() {
     }
 }
 
+// ─── task-3044 step-3: ElasticOptions cg_tolerance upper bound ───────────────
+
+/// `ElasticOptions` must cap `cg_tolerance` strictly below 1:
+///
+///   constraint cg_tolerance < 1
+///
+/// `cg_tolerance` is a relative residual norm — the CG solver declares
+/// convergence when `||r||/||b|| < cg_tolerance`. If `cg_tolerance >= 1`
+/// the test accepts the very first residual (the initial un-preconditioned
+/// residual trivially satisfies `||r||/||b|| < 1` for any non-trivial rhs),
+/// meaning CG would declare convergence without doing any work. This is the
+/// symmetric, meaningless mirror of the `> 0` lower-bound case: just as
+/// `cg_tolerance <= 0` makes convergence impossible, `cg_tolerance >= 1`
+/// makes convergence trivial.
+///
+/// The cap is `< 1` (not `< 0.5`) so callers can still pick loose first-pass
+/// tolerances like `0.1` or `0.5` (as noted in the field comment at lines
+/// 70-73 of solver_elastic.ri). Only the meaningless "any residual passes"
+/// case is excluded. Encoding this as a structure-level constraint follows the
+/// task-2544 convention: "the contract in production code is made explicit
+/// rather than relying solely on test coverage."
+///
+/// The assertion shape mirrors `elastic_options_constrains_max_iter_and_cg_tolerance_positive`,
+/// substituting `BinOp::Lt` (`<`) for `BinOp::Gt` (`>`) and `1` for `0`.
+/// RHS literals `Int(1)` and `Real(1.0)` are both accepted for stability
+/// across future numeric-promotion changes.
+#[test]
+fn elastic_options_caps_cg_tolerance_below_one() {
+    let template = find_structure("ElasticOptions");
+
+    let matched = template.constraints.iter().any(|c| {
+        // The constraint must be a `<` BinOp with a ValueRef to `cg_tolerance`
+        // on the left and the literal `1` on the right. Pinning the RHS
+        // prevents a silent weakening where the bound is changed to e.g. `< 2`
+        // but the name + op check still passes.
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Lt
+                    || !collect_value_ref_members(left).contains(&"cg_tolerance")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(1)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        matched,
+        "ElasticOptions should declare `constraint cg_tolerance < 1`; got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ─── task-3044 step-1: ElasticResult non-negativity constraints ──────────────
 
 /// `ElasticResult` must declare non-negativity constraints on `iterations` and
