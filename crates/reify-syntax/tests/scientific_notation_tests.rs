@@ -134,6 +134,59 @@ fn preserved_quantity_literal_5mm() {
     }
 }
 
+// ── Overflow / underflow boundary behaviour ──────────────────────────────────
+
+/// `1e400` overflows f64: `f64::from_str("1e400")` returns `Ok(f64::INFINITY)`.
+/// The current `lower_number_literal` (`.parse().ok()`) propagates `Inf` silently
+/// into the type system — no parse-layer diagnostic is emitted.
+///
+/// This test pins the current behavior. If a future change adds Inf-rejection in
+/// `lower_number_literal`, this test will fail and force explicit documentation of
+/// the new policy.
+#[test]
+fn overflow_1e400_lowers_to_infinity() {
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e400\n}");
+    assert!(
+        v.is_infinite() && v > 0.0,
+        "1e400 should lower to f64::INFINITY (current silent-overflow behavior); got {v}"
+    );
+}
+
+/// `1e-400` underflows f64: `f64::from_str("1e-400")` returns `Ok(0.0)` because
+/// the value is below f64's minimum subnormal (~5e-324) and flushes to zero.
+/// Like the overflow case, no parse-layer diagnostic is emitted.
+///
+/// This test pins the current silent-underflow behavior.
+#[test]
+fn underflow_1e_minus_400_lowers_to_zero() {
+    let v = extract_number_literal("structure S {\n  let x: Real = 1e-400\n}");
+    assert_eq!(
+        v, 0.0_f64,
+        "1e-400 should underflow to 0.0 (current silent-underflow behavior)"
+    );
+}
+
+// ── Sign-present, no exponent digits ─────────────────────────────────────────
+
+/// `1e+` (exponent sign present but no digits) is not a valid scientific-notation
+/// literal. The regex `\d+(\.\d+)?([eE][+-]?\d+)?` requires `\d+` after the
+/// optional sign; `1e+` fails the exponent group, so the lexer matches only `1`.
+/// The `e` is then consumed by `token.immediate` as a unit suffix, giving
+/// `quantity_literal(1, "e")`, and `+` becomes an orphaned operator — producing
+/// an ERROR node in the CST.
+///
+/// This test pins the error-producing behavior so a future grammar change that
+/// accidentally makes `1e+` tokenize as a valid (or silently-dropped) number
+/// is caught immediately.
+#[test]
+fn sign_no_digits_1e_plus_produces_parse_error() {
+    let (_members, errors) = parse_members("structure S {\n  let x = 1e+\n}");
+    assert!(
+        !errors.is_empty(),
+        "1e+ (sign with no exponent digits) should produce parse errors; got empty error list"
+    );
+}
+
 // ── Unit-suffix fallback disambiguation ─────────────────────────────────────
 
 /// `5e` (no digits after 'e') falls back to quantity_literal(5, "e") at the
