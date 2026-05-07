@@ -32,7 +32,7 @@
 //! 2660's behavior.
 //!
 //! Task 2662 (cross-product hard cap at 100k assignments) and task 2663 (rich
-//! search-failure diagnostic format with smallest infeasibility witness +
+//! search-failure diagnostic format with first-param prefix illustration +
 //! free-mode collection cap tightening) now land in this module. The
 //! `dfs_zero_feasible_diagnostic_*` and `dfs_free_mode_more_than_cap_*` tests
 //! below pin task 2663's behavior.
@@ -1789,7 +1789,7 @@ fn dfs_phase_a_overflow_on_first_param_halts_before_cap_check() {
 /// - exactly one `AutoTypeParamNoCandidate` Error diagnostic
 ///
 /// Message-content pins for the v0.2 rich format (parameter list, candidate
-/// counts, cross-product size, depth context, smallest infeasibility witness,
+/// counts, cross-product size, depth context, first-param prefix illustration,
 /// `Diagnostic::candidates` shape, label anchor) live in the dedicated
 /// `dfs_zero_feasible_diagnostic_*` tests below.
 #[test]
@@ -1885,7 +1885,7 @@ structure def WaterCooled : Cooled {
         "AutoTypeParamNoCandidate must be Error severity"
     );
     // Message-content pins (parameter list, candidate counts, cross-product
-    // size, depth context, smallest infeasibility witness, candidates field,
+    // size, depth context, first-param prefix illustration, candidates field,
     // label anchor) live in the dedicated `dfs_zero_feasible_diagnostic_*`
     // tests below. This test is narrowed to the core shape contract.
 }
@@ -2012,19 +2012,25 @@ structure def WaterCooled : Cooled {
 }
 
 /// Same 2x2 all-leaves-infeasible setup as the parameter-list/counts test.
-/// Pins the **smallest infeasibility witness** field of the rich format
+/// Pins the **first-param prefix illustration** field of the rich format
 /// (task 2663). With backjumping (task 2660) landed, soundness guarantees
 /// the entire cross-product is infeasible whenever DFS exits with zero
-/// feasibles, so the witness collapses to the lex-first level-1 prefix:
-/// `(params[0].name, per_param_candidates[0][0])` with ruled-out count
+/// feasibles — every level-1 prefix has an all-infeasible descendant
+/// sub-tree and no specific prefix is "the cause". The rendered illustration
+/// is therefore a fixed-shape labeling anchor (NOT a localized conflict
+/// diagnosis): the lex-first level-1 prefix
+/// `(params[0].name, per_param_candidates[0][0])` with sub-tree size
 /// `cross_product_size / per_param_candidates[0].len()` (= 4 / 2 = 2).
 ///
 /// Pins:
-/// (a) message contains `"smallest infeasibility witness"` substring
+/// (a) message contains `"first-param prefix illustration"` substring
 /// (b) message contains `"T=ORingSeal"` — lex-first T candidate (alphabetical)
-/// (c) message contains `"rules out all 2"` — ruled-out descendant count
+/// (c) message contains `"sub-tree size 2"` — level-1 sub-tree leaf count
+/// (d) message contains `"no specific conflict localized"` — pins the
+///     anti-misreading prose so users do not mistake the illustration for a
+///     help-channel signal.
 #[test]
-fn dfs_zero_feasible_diagnostic_includes_smallest_infeasibility_witness() {
+fn dfs_zero_feasible_diagnostic_includes_first_param_prefix_illustration() {
     let source = r#"
 trait Seal {}
 trait Cooled {}
@@ -2091,39 +2097,51 @@ structure def WaterCooled : Cooled {
         diagnostics
     );
 
-    // (a) Witness section header.
+    // (a) Prefix illustration section header.
     assert!(
-        diagnostics[0].message.contains("smallest infeasibility witness"),
-        "rich format must contain 'smallest infeasibility witness' header; got: {:?}",
+        diagnostics[0].message.contains("first-param prefix illustration"),
+        "rich format must contain 'first-param prefix illustration' header; got: {:?}",
         diagnostics[0].message
     );
     // (b) Lex-first level-1 prefix: T=ORingSeal (ORingSeal < RubberSeal alphabetically).
     assert!(
         diagnostics[0].message.contains("T=ORingSeal"),
-        "witness must name 'T=ORingSeal' (lex-first level-1 prefix); got: {:?}",
+        "illustration must name 'T=ORingSeal' (lex-first level-1 prefix); got: {:?}",
         diagnostics[0].message
     );
-    // (c) Ruled-out descendant count: cross_product_size / per_param_candidates[0].len() = 4/2 = 2.
+    // (c) Level-1 sub-tree size: cross_product_size / per_param_candidates[0].len() = 4/2 = 2.
     assert!(
-        diagnostics[0].message.contains("rules out all 2"),
-        "witness must report 'rules out all 2' downstream assignments \
+        diagnostics[0].message.contains("sub-tree size 2"),
+        "illustration must report 'sub-tree size 2' \
          (cross_product_size / |params[0].candidates| = 4/2 = 2); got: {:?}",
+        diagnostics[0].message
+    );
+    // (d) Anti-misreading prose: pins that the message explicitly tells the
+    //     user the compiler did NOT localize a specific conflict, so the
+    //     illustration is not mistaken for help-channel output.
+    assert!(
+        diagnostics[0].message.contains("no specific conflict localized"),
+        "rich format must include the 'no specific conflict localized' \
+         disclaimer so users understand the illustration is a labeling \
+         anchor, not a conflict diagnosis; got: {:?}",
         diagnostics[0].message
     );
 }
 
 /// Three-param 2x2x2 cross-product with all leaves infeasible. Pins that the
-/// witness anchors at the SHORTEST level (level 1, params[0]), not deeper —
-/// even when more params are available, the witness is always the lex-first
-/// level-1 prefix because every level-1 prefix has an all-infeasible sub-tree
-/// when the cross-product is fully infeasible.
+/// prefix illustration anchors at the SHORTEST level (level 1, params[0]),
+/// not deeper — even when more params are available, the illustration is
+/// always the lex-first level-1 prefix because every level-1 prefix has an
+/// all-infeasible sub-tree when the cross-product is fully infeasible (no
+/// specific prefix is "the cause"; this is a fixed-shape labeling anchor,
+/// not conflict localization).
 ///
 /// Pins (in addition to the level-1 anchor):
-/// - witness names `T=<lex-first-Seal>` (i.e. `T=ORingSeal`)
-/// - ruled-out count = `8 / 2 = 4` (8 leaves total, 2 T candidates, sub-tree per T = 4)
-/// - witness does NOT include `U=` or `V=` — only level 1 is reported
+/// - illustration names `T=<lex-first-Seal>` (i.e. `T=ORingSeal`)
+/// - sub-tree size = `8 / 2 = 4` (8 leaves total, 2 T candidates, sub-tree per T = 4)
+/// - illustration does NOT include `U=` or `V=` — only level 1 is reported
 #[test]
-fn dfs_zero_feasible_witness_uses_lex_first_first_param_candidate_with_three_params() {
+fn dfs_zero_feasible_first_param_prefix_uses_lex_first_first_param_candidate_with_three_params() {
     let source = r#"
 trait Seal {}
 trait Cooled {}
@@ -2205,34 +2223,34 @@ structure def WeldedMount : Mounted {
         diagnostics
     );
 
-    // Witness names the lex-first T candidate.
+    // Illustration names the lex-first T candidate.
     assert!(
         diagnostics[0].message.contains("T=ORingSeal"),
-        "witness must name 'T=ORingSeal' (lex-first level-1 prefix); got: {:?}",
+        "illustration must name 'T=ORingSeal' (lex-first level-1 prefix); got: {:?}",
         diagnostics[0].message
     );
-    // Ruled-out count = cross_product_size / |params[0].candidates| = 8/2 = 4.
+    // Sub-tree size = cross_product_size / |params[0].candidates| = 8/2 = 4.
     assert!(
-        diagnostics[0].message.contains("rules out all 4"),
-        "witness must report 'rules out all 4' downstream assignments (8/2); got: {:?}",
+        diagnostics[0].message.contains("sub-tree size 4"),
+        "illustration must report 'sub-tree size 4' (8/2); got: {:?}",
         diagnostics[0].message
     );
-    // Witness anchors at level 1 only — does NOT name U or V.
-    // Locate the witness section and assert U/V are not part of the prefix.
-    let witness_idx = diagnostics[0]
+    // Illustration anchors at level 1 only — does NOT name U or V.
+    // Locate the illustration section and assert U/V are not part of the prefix.
+    let illustration_idx = diagnostics[0]
         .message
-        .find("smallest infeasibility witness")
-        .expect("witness section must be present");
-    let witness_section = &diagnostics[0].message[witness_idx..];
+        .find("first-param prefix illustration")
+        .expect("first-param prefix illustration section must be present");
+    let illustration_section = &diagnostics[0].message[illustration_idx..];
     assert!(
-        !witness_section.contains("U="),
-        "level-1 witness must NOT include 'U=' in the witness section; got: {:?}",
-        witness_section
+        !illustration_section.contains("U="),
+        "level-1 illustration must NOT include 'U=' in the illustration section; got: {:?}",
+        illustration_section
     );
     assert!(
-        !witness_section.contains("V="),
-        "level-1 witness must NOT include 'V=' in the witness section; got: {:?}",
-        witness_section
+        !illustration_section.contains("V="),
+        "level-1 illustration must NOT include 'V=' in the illustration section; got: {:?}",
+        illustration_section
     );
 }
 
@@ -2420,24 +2438,26 @@ structure def WaterCooled : Cooled {
 /// Pins the **`Diagnostic::candidates` field shape** (task 2663) for the
 /// `0 =>` arm rich diagnostic.
 ///
-/// The structured field carries the smallest infeasibility witness's FQN list
-/// in declared parameter order (length 1 for the level-1 witness — every
-/// auto-type-param multi-param diagnostic that emits via the cross-product
-/// `0 =>` arm collapses to a level-1 witness post-backjumping). Mirrors the
-/// `AutoTypeParamAmbiguous` multi-param coherent-assignment convention pinned
-/// in `crates/reify-types/src/diagnostics.rs:510-521`.
+/// The structured field carries the first-param prefix illustration's FQN
+/// list in declared parameter order (length 1 for the level-1 prefix —
+/// every auto-type-param multi-param diagnostic that emits via the
+/// cross-product `0 =>` arm collapses to a level-1 prefix post-backjumping;
+/// see source doc-comment for why this is a fixed-shape labeling anchor and
+/// not conflict localization). Mirrors the `AutoTypeParamAmbiguous`
+/// multi-param coherent-assignment convention pinned in
+/// `crates/reify-types/src/diagnostics.rs:510-521`.
 ///
 /// Pins:
 /// (a) `diagnostics[0].candidates == vec!["ORingSeal"]` — exactly the
-///     witness's FQN list in declared parameter order.
+///     prefix illustration's FQN list in declared parameter order.
 /// (b) `!candidates[0].contains('=')` — guards against a regression that
-///     routes the human-readable composite witness `"T=ORingSeal"` through
+///     routes the human-readable composite `"T=ORingSeal"` through
 ///     `with_candidates`, which would violate the FQN-only invariant pinned
 ///     at `diagnostics.rs:884-903`.
 /// (c) `!candidates[0].contains(',')` — same regression guard against
 ///     comma-joined param=fqn pairs being routed through the structured field.
 #[test]
-fn dfs_zero_feasible_diagnostic_carries_witness_fqns_in_candidates_field() {
+fn dfs_zero_feasible_diagnostic_carries_prefix_fqns_in_candidates_field() {
     let source = r#"
 trait Seal {}
 trait Cooled {}
@@ -2504,13 +2524,13 @@ structure def WaterCooled : Cooled {
         diagnostics
     );
 
-    // (a) Candidates field carries the witness's FQN list in declared order.
-    //     Level-1 witness ⇒ length-1 list with the lex-first FQN.
+    // (a) Candidates field carries the prefix illustration's FQN list in declared order.
+    //     Level-1 prefix ⇒ length-1 list with the lex-first FQN.
     assert_eq!(
         diagnostics[0].candidates,
         vec!["ORingSeal".to_string()],
-        "Diagnostic::candidates must carry the witness's FQN list in declared \
-         parameter order (length 1 for level-1 witness, lex-first FQN); got: {:?}",
+        "Diagnostic::candidates must carry the prefix illustration's FQN list in declared \
+         parameter order (length 1 for level-1 prefix, lex-first FQN); got: {:?}",
         diagnostics[0].candidates
     );
 
@@ -2883,7 +2903,7 @@ structure def ORingSeal : Seal {
 /// - message matches the v0.1 form `"auto type parameter has no feasible candidates for bound '<X>'"`
 ///   (Phase A first-param: `'Seal'`; Phase A second-param: `'Cooled'`)
 /// - message does NOT contain `"cross-product size"` (v0.2-only field)
-/// - message does NOT contain `"smallest infeasibility witness"` (v0.2-only field)
+/// - message does NOT contain `"first-param prefix illustration"` (v0.2-only field)
 /// - message does NOT contain `"depth:"` (v0.2-only field)
 ///
 /// Should pass on first run — regression guard against a future change that
@@ -2966,8 +2986,8 @@ structure def AirCooled : Cooled {
             msg
         );
         assert!(
-            !msg.contains("smallest infeasibility witness"),
-            "Phase A v0.1 form must NOT contain 'smallest infeasibility witness' (v0.2 rich-only); got: {:?}",
+            !msg.contains("first-param prefix illustration"),
+            "Phase A v0.1 form must NOT contain 'first-param prefix illustration' (v0.2 rich-only); got: {:?}",
             msg
         );
         assert!(
@@ -3054,8 +3074,8 @@ structure def ORingSeal : Seal {
             msg
         );
         assert!(
-            !msg.contains("smallest infeasibility witness"),
-            "Phase A v0.1 form must NOT contain 'smallest infeasibility witness' (v0.2 rich-only); got: {:?}",
+            !msg.contains("first-param prefix illustration"),
+            "Phase A v0.1 form must NOT contain 'first-param prefix illustration' (v0.2 rich-only); got: {:?}",
             msg
         );
         assert!(

@@ -124,7 +124,7 @@
 //! scope and deferrals to sibling task 2664 (BFS-failure test suite). Tasks
 //! 2660 (backjumping via the "rejected because" channel), 2661 (`auto(free)`
 //! cross-product NonUnique enumeration), 2662 (100k cap), and 2663 (rich
-//! diagnostic format with smallest infeasibility witness + free-mode
+//! diagnostic format with first-param prefix illustration + free-mode
 //! collection cap tightening) now land in this module.
 //!
 //! **Backjumping (task 2660):** `build_constraint_blame_map` builds a static
@@ -360,36 +360,49 @@ fn emit_no_candidate_zero_rejections(
 /// - per-parameter candidate counts (`T=N, U=M, …`)
 /// - cross-product size (`N × M × …`)
 /// - depth context (`depth: n (max_depth = m)`)
-/// - smallest infeasibility witness — see "Witness algorithm" below.
+/// - first-param prefix illustration — see "Prefix illustration" below.
 ///
-/// # Witness algorithm
+/// # Prefix illustration (NOT conflict localization)
 ///
 /// Backjumping (task 2660) guarantees that when DFS exits with
 /// `feasible_assignments.is_empty()`, the entire cross-product is infeasible
 /// (every skipped sub-tree shares the violated constraints with the leaf that
 /// triggered the backjump). Therefore EVERY level-1 prefix has an
-/// all-infeasible descendant sub-tree, and the smallest infeasibility witness
-/// — shortest declared-order × lex-within-param prefix whose sub-tree is
-/// entirely infeasible, tie-broken by largest sub-tree size then lex-first
-/// FQN — collapses to the lex-first level-1 prefix:
+/// all-infeasible descendant sub-tree, and **no specific level-1 prefix is
+/// "the cause"**. The orchestrator does not inspect rejected leaves for the
+/// violated constraint(s) responsible for a particular prefix — that
+/// localization work is intentionally deferred (see `AutoTypeParamNoCandidate`
+/// doc-comment).
+///
+/// What this helper *does* render is a **fixed-shape illustration**: the
+/// lex-first level-1 prefix used as a concrete labeling anchor so the user
+/// can see one (param, FQN) pairing alongside the sub-tree size. It is NOT a
+/// conflict diagnosis. The rendered prefix is identical for every fully-
+/// infeasible cross-product whose first parameter has the same lex-first
+/// candidate, regardless of which constraint actually failed.
+///
+/// Concretely, the illustration is:
 ///
 /// ```text
 /// (params[0].name, per_param_candidates[0][0])
 /// ```
 ///
-/// with ruled-out count `cross_product_size / per_param_candidates[0].len()`.
+/// with sub-tree size `cross_product_size / per_param_candidates[0].len()`.
 /// This is purely derivable from the orchestrator's existing inputs; no
-/// extension to `dfs_search` is needed.
+/// extension to `dfs_search` is needed. The message wording explicitly notes
+/// that the entire cross-product is infeasible and no specific conflict was
+/// localized so users understand the illustration is not a help signal.
 ///
 /// # Label and candidates conventions
 ///
 /// - Label anchors on `params[0].use_site_span` (same convention as v0.1 BFS
 ///   strict-Ambiguous and the post-2659 cross-product Ambiguous — every
 ///   auto-type-param multi-param diagnostic anchors on the first param).
-/// - `Diagnostic::candidates` carries the witness's FQN list in declared
-///   parameter order (length 1 for level-1 witness — the FQN-only invariant
-///   pinned in `crates/reify-types/src/diagnostics.rs::Diagnostic::candidates`
-///   is preserved; the `T=fqn` rendering with param-name pairing lives in the
+/// - `Diagnostic::candidates` carries the prefix illustration's FQN list in
+///   declared parameter order (length 1 for level-1 prefix — the FQN-only
+///   invariant pinned in
+///   `crates/reify-types/src/diagnostics.rs::Diagnostic::candidates` is
+///   preserved; the `T=fqn` rendering with param-name pairing lives in the
 ///   human-readable message only).
 ///
 /// [`AutoTypeParamNoCandidate`]: reify_types::DiagnosticCode::AutoTypeParamNoCandidate
@@ -408,34 +421,43 @@ fn emit_no_feasible_cross_product_diagnostic(
         .collect();
     let depth = params.len();
 
-    // Smallest infeasibility witness: the lex-first level-1 prefix.
+    // First-param prefix illustration: the lex-first level-1 prefix.
     //
-    // Backjumping (task 2660) guarantees that when DFS exits with zero
-    // feasibles, the entire cross-product is infeasible. Therefore EVERY
-    // level-1 prefix has an all-infeasible descendant sub-tree, and the
-    // witness is the lex-first level-1 prefix:
-    // `(params[0].name, per_param_candidates[0][0])` with ruled-out count
-    // `cross_product_size / per_param_candidates[0].len()`.
+    // This is NOT conflict localization. Backjumping (task 2660) guarantees
+    // that when DFS exits with zero feasibles, the entire cross-product is
+    // infeasible — EVERY level-1 prefix has an all-infeasible descendant
+    // sub-tree, and no specific prefix is "the cause". The compiler does not
+    // inspect rejected leaves for the violated constraint(s); the rendered
+    // prefix is identical for every fully-infeasible cross-product whose
+    // first parameter has the same lex-first candidate, regardless of which
+    // constraint actually failed.
+    //
+    // What this code computes is a fixed-shape labeling anchor: the lex-first
+    // level-1 prefix `(params[0].name, per_param_candidates[0][0])` with
+    // sub-tree size `cross_product_size / per_param_candidates[0].len()`.
+    // The message wording explicitly notes that the entire cross-product is
+    // infeasible and no specific conflict was localized so users do not
+    // mistake this illustration for help-channel output.
     //
     // (This branch is only entered when params.len() >= 2 — the single-param
     // case short-circuits via the `params.len() == 1` branch in
     // `resolve_auto_type_params_with_backtracking` and never reaches the
     // `0 =>` arm. Both per_param_candidates and per_param_candidates[0] are
     // therefore non-empty.)
-    let witness_param_name = &params[0].name;
-    let witness_fqn = &per_param_candidates[0][0];
-    let ruled_out = cross_product_size / per_param_candidates[0].len();
+    let prefix_param_name = &params[0].name;
+    let prefix_fqn = &per_param_candidates[0][0];
+    let prefix_subtree_size = cross_product_size / per_param_candidates[0].len();
 
-    // `Diagnostic::candidates` carries the witness's FQN list in declared
-    // parameter order. The level-1 witness produces a length-1 list with the
-    // lex-first FQN. The FQN-only invariant pinned at
+    // `Diagnostic::candidates` carries the prefix illustration's FQN list in
+    // declared parameter order. The level-1 prefix produces a length-1 list
+    // with the lex-first FQN. The FQN-only invariant pinned at
     // `crates/reify-types/src/diagnostics.rs::Diagnostic::candidates`
     // (lines 884-903) is preserved: the bare FQN goes through the structured
     // field; the human-readable `T=fqn` rendering with param-name pairing
     // lives in the message only. Mirrors the
     // `AutoTypeParamAmbiguous` multi-param coherent-assignment convention
     // (`diagnostics.rs:510-521`).
-    let witness_fqns = vec![witness_fqn.clone()];
+    let prefix_fqns = vec![prefix_fqn.clone()];
 
     let (_joined_bounds, label_message) = render_auto_type_param_label(&params[0].bounds);
     let message = format!(
@@ -443,7 +465,9 @@ fn emit_no_feasible_cross_product_diagnostic(
          candidates per parameter: {counts}; \
          cross-product size: {size}; \
          depth: {depth} (max_depth = {max_depth}); \
-         smallest infeasibility witness: {witness_param_name}={witness_fqn} rules out all {ruled_out} downstream assignments",
+         first-param prefix illustration: {prefix_param_name}={prefix_fqn} \
+         (lex-first level-1 prefix; sub-tree size {prefix_subtree_size}; \
+         entire cross-product is infeasible — no specific conflict localized)",
         names = param_names.join(", "),
         counts = per_param_counts.join(", "),
         size = cross_product_size,
@@ -461,7 +485,7 @@ fn emit_no_feasible_cross_product_diagnostic(
         Diagnostic::error(message)
             .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
             .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message))
-            .with_candidates(witness_fqns),
+            .with_candidates(prefix_fqns),
     );
 }
 
@@ -1253,7 +1277,7 @@ fn emit_fallback_warning_and_delegate_to_bfs(
 /// Task 2660 (backjumping via the "rejected because" channel), task 2661
 /// (`auto(free)` cross-product NonUnique enumeration), task 2662
 /// (cross-product hard cap with BFS fallback), and task 2663 (rich
-/// search-failure diagnostic format with smallest infeasibility witness +
+/// search-failure diagnostic format with first-param prefix illustration +
 /// free-mode collection cap tightening) now land in this module.
 /// - Type-substitution mechanics
 ///   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately

@@ -500,19 +500,30 @@ pub enum DiagnosticCode {
     /// auto type-parameter cross-product search found no feasible assignment
     /// for parameters [<names>]: candidates per parameter: <T=N, U=M, …>;
     /// cross-product size: <total>; depth: <n> (max_depth = <m>);
-    /// smallest infeasibility witness: <T=fqn> rules out all <count>
-    /// downstream assignments
+    /// first-param prefix illustration: <T=fqn> (lex-first level-1 prefix;
+    /// sub-tree size <count>; entire cross-product is infeasible — no
+    /// specific conflict localized)
     /// ```
     ///
-    /// The structured [`Diagnostic::candidates`] field carries the **smallest
-    /// infeasibility witness's FQN list** in declared parameter order
-    /// (length 1 for the level-1 witness — every multi-param cross-product
-    /// no-feasible diagnostic collapses to a level-1 witness post-backjumping;
-    /// see PRD `docs/prds/v0_2/auto-resolution-backtracking.md` §"Resolved
-    /// design decisions"). The bare FQN goes through the structured field;
-    /// the human-readable `T=fqn` rendering with param-name pairing lives
-    /// in the message only — preserving the FQN-only invariant on
-    /// `candidates` (see field doc-comment). A single label is attached on
+    /// The "first-param prefix illustration" is **NOT conflict
+    /// localization** — backjumping (task 2660) guarantees the entire
+    /// cross-product is infeasible whenever this arm fires, so every level-1
+    /// prefix is identically "infeasible". The illustration is a fixed-shape
+    /// labeling anchor (lex-first level-1 prefix), and the message wording
+    /// explicitly tells the user no specific conflict was localized so the
+    /// illustration is not mistaken for a help-channel signal. True
+    /// conflict-localization work (inspecting rejected leaves' violated
+    /// constraints) is intentionally deferred.
+    ///
+    /// The structured [`Diagnostic::candidates`] field carries the **prefix
+    /// illustration's FQN list** in declared parameter order (length 1 for
+    /// the level-1 prefix — every multi-param cross-product no-feasible
+    /// diagnostic collapses to a level-1 prefix post-backjumping; see PRD
+    /// `docs/prds/v0_2/auto-resolution-backtracking.md` §"Resolved design
+    /// decisions"). The bare FQN goes through the structured field; the
+    /// human-readable `T=fqn` rendering with param-name pairing lives in
+    /// the message only — preserving the FQN-only invariant on `candidates`
+    /// (see field doc-comment). A single label is attached on
     /// `params[0].use_site_span` (first-param anchoring convention shared
     /// with v0.1 BFS strict-Ambiguous and post-2659 cross-product
     /// Ambiguous). Mirrors the multi-param shape under `AutoTypeParamAmbiguous`
@@ -930,10 +941,10 @@ pub struct Diagnostic {
     /// as a "pick one" list will produce incoherent quick-fixes. Task 2663
     /// (search-failure diagnostic format) extended this contract to
     /// `AutoTypeParamNoCandidate`'s v0.2 cross-product `0 =>` arm — see that
-    /// code's doc-comment for the multi-param witness shape. The FQN-only
-    /// invariant above is preserved across both multi-param sites; any
-    /// future richer structured representation should layer on rather than
-    /// violate it.
+    /// code's doc-comment for the multi-param prefix-illustration shape. The
+    /// FQN-only invariant above is preserved across both multi-param sites;
+    /// any future richer structured representation should layer on rather
+    /// than violate it.
     pub candidates: Vec<String>,
 }
 
