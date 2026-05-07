@@ -354,3 +354,113 @@ fn engine_swept_kind_table_records_revolve_realization() {
         "the realization's final handle must map to SweptKind::Revolve with axis=+Z and angle=π/2"
     );
 }
+
+/// (e) Sweep-along-LineSegment realization populates the table with a single
+/// `SweptKind::Loft` keyed by the realization's final handle.
+///
+/// # What this test covers
+///
+/// `CompiledGeometryOp::Sweep { kind: SweepKind::Sweep, profiles: [Step(0), Step(1)], args: vec![] }`
+/// is compiled by `compile_geometry_op`'s Sweep arm into
+/// `GeometryOp::Sweep { profile, path }`. The eval layer reads only
+/// `profiles[0]` (profile handle) and `profiles[1]` (path handle); `args` is
+/// intentionally empty (per task-383 S4b/S6).
+///
+/// # Why the path op MUST be a LineSegment
+///
+/// The classifier's Sweep arm (`sweep_classifier.rs:235-254`) resolves the
+/// `path` handle by scanning the parallel `handles` slice and matches against
+/// `GeometryOp::LineSegment { .. }` source ops. A Sphere-as-path would resolve
+/// to `GeometryOp::Sphere` and the classifier would return `None` instead of
+/// `SweptKind::Loft`. This test pins the LineSegment-source resolution wiring:
+/// the path op (Op 1) is `CompiledGeometryOp::Curve { kind: CurveKind::LineSegment }`
+/// so it compiles to `GeometryOp::LineSegment`, satisfying the classifier's guard.
+///
+/// # Regression guarded
+///
+/// A future change to `compile_geometry_op`'s Sweep arm that drops or swaps the
+/// `profile`/`path` handles, or reorders `profiles[0]`/`profiles[1]` resolution,
+/// would cause the classifier to record the wrong handle ids (or fail to match
+/// `GeometryOp::LineSegment`). The assertion pins both the variant tag AND the
+/// kernel-allocated handle ids, catching any swap/drop in the eval layer.
+/// The unit tests in `sweep_classifier.rs` bypass `compile_geometry_op` and
+/// `Engine::execute_realization_ops`; this e2e test pins the full wiring path.
+#[test]
+fn engine_swept_kind_table_records_sweep_along_line_segment_realization() {
+    let e = "TestSweptSweepLine";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere — stand-in profile to produce a handle at step index 0.
+    // The classifier only inspects the *last* op, so any handle-producing op works here.
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    // Op 1: LineSegment (0,0,0) → (0,0,10mm) — +Z line segment, compiles to
+    // GeometryOp::LineSegment so the classifier's Sweep arm recognises it as a
+    // non-twisted path. A Sphere-as-path would fail the classifier's guard.
+    let line_op = CompiledGeometryOp::Curve {
+        kind: CurveKind::LineSegment,
+        args: vec![
+            ("x1".into(), mm_literal(0.0)),
+            ("y1".into(), mm_literal(0.0)),
+            ("z1".into(), mm_literal(0.0)),
+            ("x2".into(), mm_literal(0.0)),
+            ("y2".into(), mm_literal(0.0)),
+            ("z2".into(), mm_literal(10.0)),
+        ],
+    };
+
+    // Op 2: Sweep(profile=Step(0), path=Step(1)). args is intentionally empty —
+    // the eval layer reads only profiles[0] and profiles[1].
+    let sweep_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Sweep,
+        profiles: vec![GeomRef::Step(0), GeomRef::Step(1)],
+        args: vec![],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, line_op, sweep_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_sweep_line"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        3,
+        "expected 3 geometry operations (Sphere + LineSegment + Sweep), got {}",
+        ops.len()
+    );
+
+    let profile_handle = ops[0].result_handle;
+    let path_handle = ops[1].result_handle;
+    let final_handle = ops.last().unwrap().result_handle;
+
+    let table = engine.swept_kind_table();
+    assert_eq!(
+        table.len(),
+        1,
+        "expected exactly one swept-kind table entry after a single Sweep-along-LineSegment realization, got len() == {}",
+        table.len()
+    );
+    assert_eq!(
+        table.lookup(final_handle),
+        Some(&SweptKind::Loft {
+            profile: profile_handle,
+            path: path_handle,
+        }),
+        "the realization's final handle must map to SweptKind::Loft with profile=ops[0].result_handle and path=ops[1].result_handle"
+    );
+}
