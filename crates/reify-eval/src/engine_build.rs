@@ -404,6 +404,25 @@ impl Engine {
         // so Failed events must carry that snapshot's version, not the un-used
         // next round that `next_version_id` points at after prior eval/edit calls.
         let version_id = self.current_eval_version();
+        // Task 2874 step-6: precompute per-realization demanded tolerance
+        // BEFORE the `if let Some(ref mut kernel) = self.geometry_kernel`
+        // borrow below so the `&self` queries
+        // (`demanded_tolerance_for_output` / `active_tolerance_for`) don't
+        // collide with the kernel / table mutable borrows handed to
+        // `execute_realization_ops`. Missing keys are treated as `None`.
+        let demanded_tols: HashMap<(String, String), Option<f64>> = {
+            let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
+            for t in &module.templates {
+                for r in &t.realizations {
+                    let key = (t.name.clone(), r.id.entity.clone());
+                    let val = self
+                        .demanded_tolerance_for_output(&t.name, &r.id.entity)
+                        .or_else(|| self.active_tolerance_for(&r.id.entity));
+                    map.insert(key, val);
+                }
+            }
+            map
+        };
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
@@ -421,6 +440,19 @@ impl Engine {
                 // are intentionally not supported.
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
                 for realization in &template.realizations {
+                    // Task 2874, step-6 wiring: per-realization demanded
+                    // tolerance for the cache-key triple `(entity_id,
+                    // ReprKind::BRep, demanded_tol)`. Priority chain is
+                    // `demanded_tolerance_for_output(template_name, entity)
+                    // → active_tolerance_for(entity)`; when both return
+                    // `None` no cache entry is written (the helper
+                    // preserves historical "no tolerance contract → no
+                    // caching" semantics for that branch). The map is
+                    // precomputed above the kernel borrow.
+                    let demanded_tol = demanded_tols
+                        .get(&(template.name.clone(), realization.id.entity.clone()))
+                        .copied()
+                        .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
@@ -438,6 +470,8 @@ impl Engine {
                         realization.name.as_deref(),
                         realization.span,
                         &mut kernel_error,
+                        &mut self.realization_cache,
+                        demanded_tol,
                     );
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
@@ -536,6 +570,31 @@ impl Engine {
             &mut tolerance_diagnostics,
         );
 
+        // Task 2874 step-6: precompute per-realization demanded tolerance
+        // ALSO BEFORE `self.check(module)` for the same reason as the
+        // diagnostic emission helper above — `check()` calls `eval()`
+        // which clears `active_purpose_bindings` / `active_tolerance_scope`
+        // (engine_eval.rs:1149-1150). Computing `demanded_tols` after
+        // `check()` would always observe an empty tolerance scope, so the
+        // priority chain `demanded_tolerance_for_output → active_tolerance_for`
+        // would always return `None`, and the cache would never populate.
+        // Mirrored in `tessellate_realizations`. `build_snapshot` does NOT
+        // call eval, so its placement (after the constraint check) remains
+        // semantically correct.
+        let demanded_tols: HashMap<(String, String), Option<f64>> = {
+            let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
+            for t in &module.templates {
+                for r in &t.realizations {
+                    let key = (t.name.clone(), r.id.entity.clone());
+                    let val = self
+                        .demanded_tolerance_for_output(&t.name, &r.id.entity)
+                        .or_else(|| self.active_tolerance_for(&r.id.entity));
+                    map.insert(key, val);
+                }
+            }
+            map
+        };
+
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
         diagnostics.extend(tolerance_diagnostics);
@@ -569,6 +628,14 @@ impl Engine {
                 // are intentionally not supported.
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
                 for realization in &template.realizations {
+                    // Task 2874, step-6 wiring: per-realization demanded
+                    // tolerance for the cache-key triple `(entity_id,
+                    // ReprKind::BRep, demanded_tol)`. The priority-chain
+                    // is precomputed above the kernel borrow.
+                    let demanded_tol = demanded_tols
+                        .get(&(template.name.clone(), realization.id.entity.clone()))
+                        .copied()
+                        .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
@@ -586,6 +653,8 @@ impl Engine {
                         realization.name.as_deref(),
                         realization.span,
                         &mut kernel_error,
+                        &mut self.realization_cache,
+                        demanded_tol,
                     );
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
@@ -686,6 +755,25 @@ impl Engine {
             &mut tolerance_diagnostics,
         );
 
+        // Task 2874 step-6: precompute per-realization demanded tolerance
+        // ALSO BEFORE `self.check(module)` because `check()` calls `eval()`
+        // which clears `active_purpose_bindings` / `active_tolerance_scope`
+        // (engine_eval.rs:1149-1150). Mirrored in `build`. Missing keys
+        // are treated as `None` by `tessellate_from_values` callers.
+        let demanded_tols: HashMap<(String, String), Option<f64>> = {
+            let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
+            for t in &module.templates {
+                for r in &t.realizations {
+                    let key = (t.name.clone(), r.id.entity.clone());
+                    let val = self
+                        .demanded_tolerance_for_output(&t.name, &r.id.entity)
+                        .or_else(|| self.active_tolerance_for(&r.id.entity));
+                    map.insert(key, val);
+                }
+            }
+            map
+        };
+
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
         diagnostics.extend(tolerance_diagnostics);
@@ -708,6 +796,8 @@ impl Engine {
             &self.meta_map,
             &mut self.feature_tag_table,
             &mut self.topology_attribute_table,
+            &mut self.realization_cache,
+            &demanded_tols,
         );
 
         TessellateResult {
@@ -745,6 +835,17 @@ impl Engine {
     /// inside `execute_realization_ops` happen *before* the post-process
     /// runs, so the patch is observable only on the final `TessellateResult`
     /// surface — matching the build-pipeline semantics.
+    ///
+    /// `demanded_tols` maps `(template_name, realization_entity)` →
+    /// `Option<f64>` and is precomputed by the caller via
+    /// [`Engine::demanded_tolerance_for_output`] (with fallback to
+    /// [`Engine::active_tolerance_for`]) — task 2874 step-6 wiring. The
+    /// precompute decouples the `&self`-needing query from the `&mut self.*`
+    /// borrows already split across this static helper's parameter list.
+    /// Missing keys are treated as `None` (no demand contributor).
+    /// `realization_cache` is the engine's per-build cache that
+    /// `execute_realization_ops` populates on success and (post step-8) will
+    /// consult on entry.
     #[allow(clippy::too_many_arguments)]
     fn tessellate_from_values(
         geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
@@ -755,6 +856,8 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         feature_tag_table: &mut FeatureTagTable,
         topology_attribute_table: &mut TopologyAttributeTable,
+        realization_cache: &mut RealizationCache<GeometryHandleId>,
+        demanded_tols: &HashMap<(String, String), Option<f64>>,
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
@@ -779,6 +882,10 @@ impl Engine {
                 // Pass `&mut None` so `execute_realization_ops` collects the
                 // diagnostic but no caller acts on the kernel error here.
                 let mut kernel_error: Option<ErrorRef> = None;
+                let demanded_tol = demanded_tols
+                    .get(&(template.name.clone(), realization.id.entity.clone()))
+                    .copied()
+                    .unwrap_or(None);
                 Engine::execute_realization_ops(
                     kernel.as_mut(),
                     &realization.operations,
@@ -795,6 +902,8 @@ impl Engine {
                     realization.name.as_deref(),
                     realization.span,
                     &mut kernel_error,
+                    realization_cache,
+                    demanded_tol,
                 );
 
                 // Tessellate this realization's final handle (if any new handles were produced)
@@ -1293,6 +1402,22 @@ impl Engine {
         // conformance-query results (`is_watertight` / `is_manifold` /
         // `is_orientable`) before they're surfaced via `TessellateResult`
         // (task 2320 amendment).
+        // Task 2874 step-6: precompute per-realization demanded tolerance
+        // before the `&mut self.*` borrows. See sibling
+        // `tessellate_realizations` for rationale.
+        let demanded_tols: HashMap<(String, String), Option<f64>> = {
+            let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
+            for t in &module.templates {
+                for r in &t.realizations {
+                    let key = (t.name.clone(), r.id.entity.clone());
+                    let val = self
+                        .demanded_tolerance_for_output(&t.name, &r.id.entity)
+                        .or_else(|| self.active_tolerance_for(&r.id.entity));
+                    map.insert(key, val);
+                }
+            }
+            map
+        };
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         let meshes = Self::tessellate_from_values(
@@ -1304,6 +1429,8 @@ impl Engine {
             &self.meta_map,
             &mut self.feature_tag_table,
             &mut self.topology_attribute_table,
+            &mut self.realization_cache,
+            &demanded_tols,
         );
 
         Some(TessellateResult {
@@ -1368,6 +1495,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
@@ -1458,6 +1587,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         assert_eq!(
@@ -1528,6 +1659,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         assert!(
@@ -1609,6 +1742,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // The real handle produced by op 0 must have been discarded.
@@ -1682,6 +1817,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
@@ -1756,6 +1893,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // Filter to error-severity only: see comment in the happy-path test.
@@ -1848,6 +1987,8 @@ mod tests {
             Some("bad"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         assert!(
@@ -1924,6 +2065,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
@@ -1949,6 +2092,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
         let h2 = named_steps["body"];
 
@@ -2078,6 +2223,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
         let h1 = named_steps["body"];
         // Filter to error-severity only: see comment in the happy-path test.
@@ -2125,6 +2272,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
@@ -2213,6 +2362,8 @@ mod tests {
             None,
             realization_span,
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // Find the compile-failure Error diagnostic.
@@ -2296,6 +2447,8 @@ mod tests {
             None,
             realization_span,
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // Find the kernel-error Error diagnostic.
