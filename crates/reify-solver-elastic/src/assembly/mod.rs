@@ -8,6 +8,9 @@
 
 pub mod tet;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use crate::constitutive::IsotropicElastic;
 
 /// Tetrahedral element interpolation order — P1 (linear, 4 nodes) or
@@ -134,6 +137,7 @@ impl ElementStiffness {
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
+    use crate::assembly::test_support::scaled_p2_phys_nodes;
     use crate::constitutive::IsotropicElastic;
 
     /// Steel-like dimensionless material reused by the dispatch tests.
@@ -152,32 +156,6 @@ mod tests {
         [0.0, 0.0, 1.0],
     ];
 
-    /// Canonical 10-node P2 phys layout (unit reference tet + EDGES-ordered
-    /// midpoints).
-    fn unit_tet_p2_nodes() -> [[f64; 3]; 10] {
-        let v: [[f64; 3]; 4] = UNIT_TET_P1_NODES;
-        let mid = |a: usize, b: usize| {
-            [
-                0.5 * (v[a][0] + v[b][0]),
-                0.5 * (v[a][1] + v[b][1]),
-                0.5 * (v[a][2] + v[b][2]),
-            ]
-        };
-        // EDGES = [(0,1), (1,2), (2,0), (0,3), (1,3), (2,3)]
-        [
-            v[0],
-            v[1],
-            v[2],
-            v[3],
-            mid(0, 1),
-            mid(1, 2),
-            mid(2, 0),
-            mid(0, 3),
-            mid(1, 3),
-            mid(2, 3),
-        ]
-    }
-
     #[test]
     fn dispatch_p1_matches_direct_p1_call_bit_for_bit() {
         let mat = dimensionless_steel_like();
@@ -193,7 +171,7 @@ mod tests {
     #[test]
     fn dispatch_p2_matches_direct_p2_call_bit_for_bit() {
         let mat = dimensionless_steel_like();
-        let phys = unit_tet_p2_nodes();
+        let phys = scaled_p2_phys_nodes(1.0);
         let direct = tet::element_stiffness_p2(&phys, &mat);
         let dispatched = element_stiffness(ElementOrder::P2, &phys[..], &mat);
         assert_eq!(dispatched.n_dofs, 30);
@@ -205,7 +183,7 @@ mod tests {
     #[should_panic(expected = "P1")]
     fn dispatch_p1_with_10_node_slice_panics() {
         let mat = dimensionless_steel_like();
-        let phys = unit_tet_p2_nodes();
+        let phys = scaled_p2_phys_nodes(1.0);
         let _ = element_stiffness(ElementOrder::P1, &phys[..], &mat);
     }
 

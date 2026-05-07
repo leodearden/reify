@@ -314,6 +314,7 @@ pub fn element_stiffness_p2(
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
+    use crate::assembly::test_support::scaled_p2_phys_nodes;
     use crate::constitutive::IsotropicElastic;
 
     /// Canonical unit reference tet: vertices `(0,0,0), (1,0,0), (0,1,0),
@@ -508,39 +509,6 @@ mod tests {
             "U_K = {u_k}, U_analytical = {u_a} (rel err {})",
             (u_k - u_a).abs() / scale,
         );
-    }
-
-    /// Build the canonical 10-node phys-node layout for a uniformly scaled
-    /// reference tet: 4 vertices at `(0,0,0), (s,0,0), (0,s,0), (0,0,s)`
-    /// and 6 edge midpoints in `crate::elements::tet_p2::EDGES` order.
-    /// Mirrors `tet_p2::tests::scaled_tet_phys_nodes`.
-    fn scaled_p2_phys_nodes(s: f64) -> [[f64; 3]; 10] {
-        let v: [[f64; 3]; 4] = [
-            [0.0, 0.0, 0.0],
-            [s, 0.0, 0.0],
-            [0.0, s, 0.0],
-            [0.0, 0.0, s],
-        ];
-        let mid = |a: usize, b: usize| {
-            [
-                0.5 * (v[a][0] + v[b][0]),
-                0.5 * (v[a][1] + v[b][1]),
-                0.5 * (v[a][2] + v[b][2]),
-            ]
-        };
-        // EDGES = [(0,1), (1,2), (2,0), (0,3), (1,3), (2,3)]
-        [
-            v[0],
-            v[1],
-            v[2],
-            v[3],
-            mid(0, 1),
-            mid(1, 2),
-            mid(2, 0),
-            mid(0, 3),
-            mid(1, 3),
-            mid(2, 3),
-        ]
     }
 
     #[test]
