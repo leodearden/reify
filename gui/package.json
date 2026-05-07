@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build:grammar",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:visual": "tsx test/visual-regression.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.0",
@@ -37,8 +38,12 @@
     "@lezer/generator": "^1.7.0",
     "@solidjs/testing-library": "^0.8.0",
     "@types/node": "^25.6.0",
+    "@types/pngjs": "^6.0.5",
     "@types/three": "^0.183.1",
     "jsdom": "^25.0.0",
+    "pixelmatch": "^7.1.0",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "vite": "^6.0.0",
     "vite-plugin-solid": "^2.11.0",
