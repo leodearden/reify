@@ -10,14 +10,18 @@
 //! Per-step tests are added by the subsequent TDD steps.
 
 #[allow(unused_imports)]
-use reify_test_support::builders::CompiledModuleBuilder;
+use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
 #[allow(unused_imports)]
 use reify_test_support::{
-    make_engine, manufacturing_purpose, my_design_template, step_input_template,
-    step_output_template,
+    make_engine, manufacturing_purpose, mm, my_design_template, step_input_template,
+    step_output_template, MockConstraintChecker, MockGeometryKernel,
 };
 #[allow(unused_imports)]
-use reify_types::{DiagnosticCode, ExportFormat, ModulePath, Severity};
+use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+#[allow(unused_imports)]
+use reify_types::{
+    CompiledExpr, DiagnosticCode, ExportFormat, ModulePath, ReprKind, Severity, Type,
+};
 
 /// Step-1 (failing initially; passes once step-2's
 /// `emit_imported_tolerance_promise_diagnostics_for_module` helper is wired
@@ -160,5 +164,85 @@ fn build_emits_input_tolerance_promise_is_zero_warning_when_promise_zero_and_dem
          {} matching diagnostics. Full diagnostic set: {:?}",
         insufficient_matched.len(),
         build.diagnostics,
+    );
+}
+
+/// Build a `MyDesign`-shaped [`reify_compiler::TopologyTemplate`] that carries
+/// a single named realization producing one `Box` primitive op. The realization
+/// id is `(entity = "MyDesign", index = 0)` and the realization's `name` is
+/// `"body"` so the post-realization `named_steps` map is populated.
+///
+/// Mirrors the realization shape pinned by `tessellate_single_box_realization`
+/// in `tests/tessellation.rs`. The thickness param fixed by
+/// `my_design_template` is omitted here because the test focuses on the
+/// realization → cache wiring; the param is irrelevant to the cache key
+/// `(entity_id, repr_kind, demanded_tol)`.
+fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate {
+    let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_lit(10.0)),
+            ("height".into(), mm_lit(20.0)),
+            ("depth".into(), mm_lit(5.0)),
+        ],
+    };
+    TopologyTemplateBuilder::new("MyDesign")
+        .param("MyDesign", "thickness", Type::Real, None)
+        .realization_named("MyDesign", 0, "body", vec![box_op])
+        .build()
+}
+
+/// Step-5 (failing initially; passes once step-6 plumbs `demanded_tol` through
+/// `Engine::execute_realization_ops` and writes the resulting handle into
+/// `Engine::realization_cache` keyed on `(entity_id, ReprKind::BRep, demanded_tol)`).
+///
+/// Build a module that pairs an `STEPOutput` template (1µm
+/// `RepresentationWithin` body bound) with a `MyDesign` template carrying a
+/// single named realization (one `Box` primitive op). Activate
+/// `manufacturing_purpose("manufacturing", 1e-6)` against `"MyDesign"` so the
+/// engine's `active_purpose_bindings` and `active_tolerance_scope` populate
+/// the demand-side contributors at 1µm. Run `build(&module, ExportFormat::Step)`.
+///
+/// After `build()` returns, the `RealizationCache` must contain an entry at
+/// `("MyDesign", ReprKind::BRep, 1e-6)`. The lookup uses the partial-order
+/// "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`); a cache
+/// populated at exactly the requested tolerance must therefore return
+/// `Some(&handle)` for an exact-tolerance lookup.
+///
+/// Today (pre step-6) `execute_realization_ops` does not consult the cache and
+/// does not insert into it after a successful realization, so the lookup
+/// returns `None` and this test FAILS. Once step-6 wires the demanded
+/// tolerance through the helper and inserts the terminal handle on
+/// post-realization success, the assertion passes.
+#[test]
+fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_build_populates_realization_cache".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let _build = engine.build(&module, ExportFormat::Step);
+
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .is_some(),
+        "expected RealizationCache to contain an entry at \
+         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() completes against a \
+         manufacturing purpose at 1µm; got cache len={} (entries dump: {:?})",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
     );
 }

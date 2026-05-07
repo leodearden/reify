@@ -205,6 +205,30 @@ impl Engine {
         &self.topology_attribute_table
     }
 
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Immutable access to the per-engine [`RealizationCache`] populated by
+    /// `execute_realization_ops` after fully-successful realizations whose
+    /// demanded tolerance is known. Tests use this accessor to assert that
+    /// `(entity_id, ReprKind::BRep, demanded_tol)` lookups return the
+    /// expected cached `GeometryHandleId` after `build()` /
+    /// `build_snapshot()` / `tessellate_realizations()` runs.
+    ///
+    /// Mirrors the cfg-gating pattern used by [`cache_store`](Self::cache_store):
+    /// the cache stores kernel-internal `GeometryHandleId` values, so exposing
+    /// the accessor in production builds would leak kernel implementation
+    /// detail into the public surface. Task 2874 (initial cache wiring)
+    /// adds the read-only test seam; broader cache invalidation control
+    /// surfaces are deferred to a follow-up.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn realization_cache(
+        &self,
+    ) -> &crate::realization_cache::RealizationCache<reify_types::GeometryHandleId> {
+        &self.realization_cache
+    }
+
     /// Construct an Engine with the embedded stdlib as its prelude.
     ///
     /// This is the standard constructor for production use. For tests that
