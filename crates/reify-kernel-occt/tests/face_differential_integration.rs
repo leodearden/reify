@@ -917,7 +917,7 @@ const NON_FINITE_UV: &[(f64, f64)] = &[
 ];
 
 /// `surface_normal_at` rejects non-finite (u, v) inputs with
-/// `QueryError::QueryFailed` containing "must be finite".
+/// `QueryError::NonFiniteParameter { u, v }` echoing the bad input.
 ///
 /// The guard must fire before the FFI call so that NaN/Inf parametric
 /// coordinates never reach the C++ wrapper. The bad-input cases cover:
@@ -932,23 +932,26 @@ fn surface_normal_at_rejects_non_finite_uv() {
 
     for &(u, v) in NON_FINITE_UV {
         match kernel.surface_normal_at(face, u, v) {
-            Err(QueryError::QueryFailed(msg)) => {
+            Err(QueryError::NonFiniteParameter { u: eu, v: ev }) => {
+                // Pin that the variant carries the same (u, v) the test passed in.
+                // bit-equality on NaN is false, so use is_nan-aware comparison:
+                let bit_eq = |a: f64, b: f64| (a.is_nan() && b.is_nan()) || a == b;
                 assert!(
-                    msg.contains("must be finite"),
-                    "surface_normal_at(u={u}, v={v}): expected error containing \
-                     'must be finite', got: {msg}"
+                    bit_eq(eu, u) && bit_eq(ev, v),
+                    "surface_normal_at(u={u}, v={v}): NonFiniteParameter {{ u: {eu}, v: {ev} }} \
+                     did not echo input"
                 );
             }
             other => panic!(
                 "surface_normal_at(u={u}, v={v}): expected \
-                 Err(QueryFailed(\"...must be finite...\")), got {other:?}"
+                 Err(NonFiniteParameter {{ ... }}), got {other:?}"
             ),
         }
     }
 }
 
 /// `curvature_at` rejects non-finite (u, v) inputs with
-/// `QueryError::QueryFailed` containing "must be finite".
+/// `QueryError::NonFiniteParameter { u, v }` echoing the bad input.
 ///
 /// Mirrors `surface_normal_at_rejects_non_finite_uv` for the `curvature_at`
 /// entrypoint — both share the same `validate_uv_finite` helper.
@@ -962,16 +965,19 @@ fn curvature_at_rejects_non_finite_uv() {
 
     for &(u, v) in NON_FINITE_UV {
         match kernel.curvature_at(face, u, v) {
-            Err(QueryError::QueryFailed(msg)) => {
+            Err(QueryError::NonFiniteParameter { u: eu, v: ev }) => {
+                // Pin that the variant carries the same (u, v) the test passed in.
+                // bit-equality on NaN is false, so use is_nan-aware comparison:
+                let bit_eq = |a: f64, b: f64| (a.is_nan() && b.is_nan()) || a == b;
                 assert!(
-                    msg.contains("must be finite"),
-                    "curvature_at(u={u}, v={v}): expected error containing \
-                     'must be finite', got: {msg}"
+                    bit_eq(eu, u) && bit_eq(ev, v),
+                    "curvature_at(u={u}, v={v}): NonFiniteParameter {{ u: {eu}, v: {ev} }} \
+                     did not echo input"
                 );
             }
             other => panic!(
                 "curvature_at(u={u}, v={v}): expected \
-                 Err(QueryFailed(\"...must be finite...\")), got {other:?}"
+                 Err(NonFiniteParameter {{ ... }}), got {other:?}"
             ),
         }
     }
