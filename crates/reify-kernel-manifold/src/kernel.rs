@@ -117,7 +117,10 @@ impl ManifoldKernel {
     /// f64 throughout") and the u32 indices to u64 (per the
     /// `from_mesh_f64` API signature), then constructs a `Manifold` via
     /// `Manifold::from_mesh_f64`. Panics on invalid mesh input — acceptable
-    /// for a test fixture.
+    /// for a test fixture; the underlying manifold3d error is surfaced in
+    /// the panic message so a winding-order regression in a fixture is
+    /// debuggable rather than presenting as a generic "must be a valid
+    /// manifold" message.
     ///
     /// Gated on `cfg(any(test, feature = "test-fixtures"))` so the API is
     /// reachable from in-crate `mod tests` (cfg(test)) AND from cross-crate
@@ -128,7 +131,12 @@ impl ManifoldKernel {
         let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
         let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
         let manifold = Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64)
-            .expect("store_mesh_for_test: input Mesh must be a valid manifold");
+            .unwrap_or_else(|e| {
+                panic!(
+                    "store_mesh_for_test: input Mesh must be a valid manifold; \
+                     manifold3d::from_mesh_f64 reported: {e:?}"
+                )
+            });
         self.store(manifold).id
     }
 }
@@ -202,14 +210,35 @@ impl GeometryKernel for ManifoldKernel {
 
         let (vert_props_f64, n_props, tri_indices_u64) = manifold.to_mesh_f64();
 
+        // Empty/degenerate-manifold short-circuit. A boolean op that
+        // produces no overlap (e.g. `Intersection` of disjoint cubes) can
+        // surface as `n_props == 0` or empty `vert_props_f64`; without
+        // this guard, `vert_props_f64.len() / n_props` panics with
+        // divide-by-zero in release builds. Returning an empty `Mesh` is
+        // the structurally honest answer — callers can detect it via
+        // `mesh.vertices.is_empty()`.
+        if n_props == 0 || vert_props_f64.is_empty() {
+            return Ok(Mesh {
+                vertices: Vec::new(),
+                indices: Vec::new(),
+                normals: None,
+            });
+        }
+
+        // For valid (non-empty) manifolds, manifold3d guarantees at least
+        // xyz; surface a runtime `TessError` rather than panicking on a
+        // corrupted result so callers can recover.
+        if n_props < 3 {
+            return Err(TessError::TessellationFailed(format!(
+                "manifold3d::to_mesh_f64 returned n_props={n_props}; \
+                 need at least 3 (xyz) for a Reify Mesh",
+            )));
+        }
+
         // Extract xyz triplets from each n_props-sized vertex block.
         // For our position-only meshes n_props == 3, but manifold may
         // internally maintain additional property layers; we deliberately
         // copy only the first three.
-        debug_assert!(
-            n_props >= 3,
-            "manifold.to_mesh_f64 must return at least 3 properties (xyz)",
-        );
         let n_verts = vert_props_f64.len() / n_props;
         let mut vertices: Vec<f32> = Vec::with_capacity(n_verts * 3);
         for v in 0..n_verts {
@@ -221,8 +250,22 @@ impl GeometryKernel for ManifoldKernel {
 
         // u64→u32 narrowing: manifold's u64 indices are nominal; in
         // practice meshes that fit Reify's Vec<u32> contract have
-        // <= 4-billion vertices.
-        let indices: Vec<u32> = tri_indices_u64.iter().map(|&i| i as u32).collect();
+        // <= 4-billion vertices. We use `u32::try_from` rather than
+        // `as u32` so a corrupted Manifold (or future contract change)
+        // surfaces as an observable `TessError::TessellationFailed`
+        // rather than silently truncating to a structurally invalid
+        // Mesh whose downstream consumers would index out-of-bounds.
+        let indices: Vec<u32> = tri_indices_u64
+            .iter()
+            .map(|&i| {
+                u32::try_from(i).map_err(|_| {
+                    TessError::TessellationFailed(format!(
+                        "manifold3d returned triangle index {i} > u32::MAX; \
+                         Reify Mesh.indices is Vec<u32>",
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Mesh {
             vertices,
