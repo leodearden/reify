@@ -32,9 +32,11 @@
 //! dev-dep transitivity.
 //!
 //! Keeping the dep on manifold's side isolates its link closure to manifold's
-//! own test binaries and prevents both breakage paths. The `stub_register`
-//! feature gate at `crates/reify-kernel-manifold/src/register.rs` is the
-//! structural enforcement; dep-direction inversion is the defensive isolation.
+//! own test binaries and prevents both breakage paths. Dep-direction
+//! inversion is the structural defensive isolation now that the
+//! `inventory::submit!` is unconditional (no longer feature-gated, since
+//! `manifold3d` is a regular cargo dep that's always present when the crate
+//! is built).
 //!
 //! # What this test covers
 //!
@@ -44,19 +46,14 @@
 //!   sole available repr selects `"manifold"` with zero conversion stages
 //!   (zero-conversion path: input repr already matches the demanded repr).
 
-// Shared compile-time guard: requires `stub_register` feature.
-// Source of truth lives in `tests/common/mod.rs`; add new test binaries
-// by including the same `mod common;` line below.
-mod common;
-
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
 use reify_types::{CapabilityDescriptor, Operation, ReprKind};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"manifold"`
-/// when the manifold adapter is linked in (i.e. the `inventory::submit!` in
-/// `register.rs` fires unconditionally in this task's stub-only build).
+/// when the manifold adapter is linked in (the `inventory::submit!` in
+/// `register.rs` fires unconditionally now that real FFI is wired).
 ///
 /// Then asserts that calling `dispatcher::dispatch(...)` for
 /// `(BooleanUnion, Mesh)` with `{Mesh}` as the available-repr set produces a

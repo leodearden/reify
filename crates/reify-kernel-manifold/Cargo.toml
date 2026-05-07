@@ -6,30 +6,39 @@ license.workspace = true
 description = "Manifold mesh-Boolean kernel adapter"
 
 [features]
-# Pure compile-gate: no implicit deps.  Activating this feature causes
-# `inventory::submit!` and `manifold_factory()` in `src/register.rs` to
-# compile in, registering the Manifold stub kernel in the inventory-driven
-# multi-kernel registry.
+# Test-only API surface gate.
 #
-# In production builds this feature is OFF — the stub kernel is NOT
-# registered, preventing "manifold" < "occt" lex-min selection from silently
-# routing geometry ops through an unimplemented stub.
+# Activating this feature exposes the `store_mesh_for_test` ingestion path
+# on `ManifoldKernel` and the `manifold_factory_for_test` accessor in
+# `register.rs`. Without these, integration test binaries in `tests/` cannot
+# populate input handles for boolean tests because the v0.2
+# `CapabilityDescriptor` only declares the three mesh-Boolean ops — there is
+# no production path for a mesh to enter the kernel until v0.3's BRep→Mesh
+# conversion stage lands.
 #
-# For integration test binaries in `tests/` (separate compilation units that
-# do NOT inherit `cfg(test)` from the parent crate) this feature is activated
-# via the self-dev-dep below — mirroring the pattern at:
-#   crates/reify-eval/Cargo.toml (`test-instrumentation`)
-#   crates/reify-kernel-occt/Cargo.toml (`test-fixtures`)
+# The feature is activated for ALL test builds (both `cargo test --lib`
+# in-crate and cross-crate integration test binaries) via the self-dev-dep
+# below — mirroring the OCCT pattern at
+# `crates/reify-kernel-occt/Cargo.toml:16,27`.
 #
-# When real Manifold C++ FFI ships, rename this feature to `has_manifold`
-# (matching OCCT's `has_occt` build.rs gate) and drop the self-dev-dep in
-# favour of the build.rs detection mechanism.
-stub_register = []
+# The OCCT pattern is reused because the v0.2 dispatcher routes ops to
+# manifold based on the `(op, repr)` descriptor; expanding that descriptor
+# with mesh-native primitives would silently shift dispatcher routing and
+# create a competing primitive owner with OCCT (lex-min tie-break would
+# misroute primitives through manifold). The test-fixtures gate is the
+# minimally-invasive alternative.
+test-fixtures = []
 
 [dependencies]
 reify-types.workspace = true
 inventory.workspace = true
 tracing.workspace = true
+# Real Manifold C++ FFI. Default features pull in `parallel` (TBB) and the
+# `manifold-csg-sys` build script invokes cmake on the bundled
+# `elalish/manifold` C++ tree on first build (~3-5 min cold). The
+# `manifold-csg-sys` build cache is keyed by version+patch stamp so
+# subsequent builds reuse it. See README.md for the build-cache caveat.
+manifold3d = "0.1"
 
 # `reify-eval` is a dev-dependency (not a normal dep) for the same reason the
 # OCCT adapter excludes it from its production deps: adapter crates depend on
@@ -42,10 +51,11 @@ tracing.workspace = true
 [dev-dependencies]
 reify-eval.workspace = true
 reify-test-support.workspace = true
-# Self-dev-dep: activates `stub_register` for all integration test binaries
+# Self-dev-dep: activates `test-fixtures` for all integration test binaries
 # in `tests/` (which are separate compilation units — they do NOT inherit
 # `cfg(test)` from the parent crate, so `cfg(test)` alone cannot reach the
-# gated `inventory::submit!`).  This is the same pattern used by:
+# gated `store_mesh_for_test` and `manifold_factory_for_test` API surface).
+# Same pattern used by:
 #   crates/reify-eval/Cargo.toml:21  (reify-eval activating test-instrumentation)
 #   crates/reify-kernel-occt/Cargo.toml:27 (reify-kernel-occt activating test-fixtures)
-reify-kernel-manifold = { path = ".", features = ["stub_register"] }
+reify-kernel-manifold = { path = ".", features = ["test-fixtures"] }

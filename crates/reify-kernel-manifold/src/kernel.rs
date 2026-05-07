@@ -1,17 +1,15 @@
-//! Stub `ManifoldKernel` — all operations return descriptive errors.
+//! `ManifoldKernel` — Manifold mesh-Boolean kernel adapter.
+//!
+//! Manifold C++ FFI is wired via `manifold3d` 0.1 (the
+//! `zmerlynn/manifold-csg` fork). The kernel maintains a per-handle
+//! `HashMap<u64, manifold3d::Manifold>` store mirroring `OcctKernel`'s
+//! storage pattern (`crates/reify-kernel-occt/src/lib.rs:456-466`).
 //!
 //! # Design templates
 //!
-//! `crates/reify-kernel-occt/src/stubs.rs` — `OcctKernel` stub pattern
-//! (`_private: ()` field, `new()` constructor, all-error trait impl).
+//! `crates/reify-kernel-occt/src/lib.rs` — storage pattern (HashMap of
+//! per-handle native shapes, `next_id` counter, `store/get_*` helpers).
 //! `crates/reify-test-support/src/mocks.rs:889` — `FailingMockGeometryKernel`.
-//!
-//! # v0.2 scope
-//!
-//! Real Manifold C++ FFI is deferred to a follow-up task. This stub exists
-//! so the `inventory::submit!` in `register.rs` has a factory that compiles.
-//! When the follow-up task lands, the factory can switch to the real impl
-//! behind `cfg(has_manifold)` without changing the registration shape.
 //!
 //! # KernelAttributeHook impl (PRD line 70)
 //!
@@ -24,19 +22,17 @@
 //! (`reify_eval::propagate_via_kernel_attribute_hook`) routes Manifold ops
 //! through the hook.
 //!
-//! ## Deferred-FFI stub semantics
+//! ## Task-9-pending stub semantics
 //!
-//! In this v0.2 stub, [`KernelAttributeHook::propagate_attributes`]
-//! unconditionally returns `Ok(KernelAttributeOutcome::Discarded)` and
-//! emits a `tracing::warn!(reason="deferred_ffi", …)` event before
-//! returning. Real Manifold FFI is deferred to a follow-up task, so
-//! attribute propagation is intentionally a no-op until the FFI lands.
-//!
-//! When real Manifold FFI lands, the body switches to walk `MeshGL` merge
-//! vectors + per-triangle `faceID` / `originalID` to copy parent attributes
-//! onto result face handles, returning `Propagated` on success and
-//! `Discarded` (with a `reason="heavy_remeshing"`-flavoured WARN) on lossy
-//! remeshing — the trait surface is stable across that swap.
+//! [`KernelAttributeHook::propagate_attributes`] currently returns
+//! `Ok(KernelAttributeOutcome::Discarded)` and emits a
+//! `tracing::warn!(reason="task_9_pending", …)` event before returning.
+//! The Manifold C++ FFI is wired and the manifold3d accessors
+//! (`originalID`, `MeshGL.run_*`, merge vectors, etc.) are reachable from
+//! this crate, but the actual MeshGL walk is implemented in
+//! persistent-naming-v2 PRD task 9 (a separate task that depends on this
+//! crate's FFI wiring). The trait surface is stable across that swap; only
+//! the body changes.
 
 use reify_types::{
     ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
@@ -160,7 +156,20 @@ impl KernelAttributeHook for ManifoldKernel {
 mod tests {
     use super::*;
 
-    reify_test_support::assert_stub_kernel_errors!(ManifoldKernel::new, "Manifold");
+    /// Pins the keepable structural property that the macro
+    /// `reify_test_support::assert_stub_kernel_errors!` was previously
+    /// generating: `ManifoldKernel` is `Send + Sync` and round-trips through a
+    /// `Box<dyn GeometryKernel>` upcast. The macro's other generated tests
+    /// (which pinned "every method returns Err with substring 'Manifold'") are
+    /// intentionally NOT preserved here — they directly contradict the
+    /// post-FFI contract where Union/Difference/Intersection succeed on valid
+    /// handles.
+    #[test]
+    fn manifold_kernel_implements_geometry_kernel_trait() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ManifoldKernel>();
+        let _boxed: Box<dyn reify_types::GeometryKernel> = Box::new(ManifoldKernel::new());
+    }
 
     /// PRD docs/prds/v0_2/persistent-naming-v2.md line 70: ManifoldKernel is
     /// the first concrete impl of `KernelAttributeHook`. This test pins the

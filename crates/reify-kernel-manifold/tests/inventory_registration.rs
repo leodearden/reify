@@ -4,18 +4,14 @@
 //! `inventory::submit!` plumbing (step-3/step-4).
 //!
 //! Unlike the OCCT counterpart (`crates/reify-kernel-occt/tests/inventory_registration.rs`),
-//! these tests are NOT gated on an `OCCT_AVAILABLE`-style flag — the manifold
-//! adapter gates its `inventory::submit!` on `feature = "stub_register"` and
-//! activates that feature for test binaries via a self-dev-dep in `Cargo.toml`.
+//! these tests are NOT gated on an `OCCT_AVAILABLE`-style flag — manifold's
+//! `inventory::submit!` is unconditional now that real Manifold C++ FFI is
+//! wired via the `manifold3d` cargo dep (no system-library detection
+//! analogous to OCCT's `has_occt`).
 //!
 //! # Design template
 //!
 //! `crates/reify-kernel-occt/tests/inventory_registration.rs:1-152`.
-
-// Shared compile-time guard: requires `stub_register` feature.
-// Source of truth lives in `tests/common/mod.rs`; add new test binaries
-// by including the same `mod common;` line below.
-mod common;
 
 use reify_kernel_manifold::register::MANIFOLD_KERNEL_NAME;
 use reify_types::{GeometryKernel, KernelRegistration, Operation, ReprKind};
