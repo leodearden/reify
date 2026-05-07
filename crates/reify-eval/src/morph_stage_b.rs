@@ -962,6 +962,37 @@ mod tests {
         );
     }
 
+    // task 3102: release-mode contract — duplicate handles do NOT panic in release builds
+    /// In release builds, the distinct-handle precondition is structurally absent;
+    /// duplicate handles flow through to the matching loop where they may produce silent
+    /// overwrite or `UnmappedElement`. Callers must not rely on debug-mode panics for
+    /// input validation.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn match_one_kind_does_not_panic_on_duplicate_handles_in_release() {
+        // Mirror the fixture from match_one_kind_panics_in_debug_on_duplicate_old_handles:
+        // old_table has one attribute under h(10); new_table has two under h(20)/h(30).
+        // Both sides are attributed so the imported pre-pass is bypassed and execution
+        // reaches the precondition site — which must be structurally absent in release.
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(h(30), attr(Role::Cap(CapKind::Bottom), 0, None));
+        // h(10) appears twice — would panic in debug; must not panic in release.
+        let _result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10), h(10)],
+            &[h(20), h(30)],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        // Reaching here without panic is the contract being verified.
+    }
+
     // step-15: vertex_to_vertex is always empty in v0.2
     /// Behaviour guard: even when old_vertices and new_vertices are non-empty and
     /// both carry attributes in their respective tables, `vertex_to_vertex` must
