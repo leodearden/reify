@@ -330,4 +330,80 @@ mod tests {
         assert_eq!(handle.repr, BRepKind::Solid);
         assert_ne!(handle.id, GeometryHandleId::INVALID);
     }
+
+    /// Helper: build two unit-radius spheres and return their handles.
+    fn two_spheres(kernel: &mut FidgetKernel) -> (GeometryHandleId, GeometryHandleId) {
+        let a = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .expect("first Sphere");
+        let b = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .expect("second Sphere");
+        (a.id, b.id)
+    }
+
+    #[test]
+    fn fidget_kernel_execute_union_composes_two_spheres() {
+        let mut kernel = FidgetKernel::new();
+        let (left, right) = two_spheres(&mut kernel);
+        let union = kernel
+            .execute(&GeometryOp::Union { left, right })
+            .expect("Union must succeed on FidgetKernel");
+        assert_eq!(union.repr, BRepKind::Solid);
+        assert_ne!(union.id, GeometryHandleId::INVALID);
+        assert_ne!(union.id, left);
+        assert_ne!(union.id, right);
+    }
+
+    #[test]
+    fn fidget_kernel_execute_difference_composes_two_spheres() {
+        let mut kernel = FidgetKernel::new();
+        let (left, right) = two_spheres(&mut kernel);
+        let diff = kernel
+            .execute(&GeometryOp::Difference { left, right })
+            .expect("Difference must succeed on FidgetKernel");
+        assert_eq!(diff.repr, BRepKind::Solid);
+        assert_ne!(diff.id, GeometryHandleId::INVALID);
+        assert_ne!(diff.id, left);
+        assert_ne!(diff.id, right);
+    }
+
+    #[test]
+    fn fidget_kernel_execute_intersection_composes_two_spheres() {
+        let mut kernel = FidgetKernel::new();
+        let (left, right) = two_spheres(&mut kernel);
+        let inter = kernel
+            .execute(&GeometryOp::Intersection { left, right })
+            .expect("Intersection must succeed on FidgetKernel");
+        assert_eq!(inter.repr, BRepKind::Solid);
+        assert_ne!(inter.id, GeometryHandleId::INVALID);
+        assert_ne!(inter.id, left);
+        assert_ne!(inter.id, right);
+    }
+
+    /// Pins the stable contract that the FIRST missing handle is the one
+    /// named in `InvalidReference` — `left` is checked before `right`.
+    #[test]
+    fn fidget_kernel_execute_boolean_with_unknown_handle_returns_invalid_reference() {
+        let mut kernel = FidgetKernel::new();
+        let bogus_left = GeometryHandleId(999);
+        let bogus_right = GeometryHandleId(1000);
+        let result = kernel.execute(&GeometryOp::Union {
+            left: bogus_left,
+            right: bogus_right,
+        });
+        match result {
+            Err(GeometryError::InvalidReference(id)) => {
+                assert_eq!(id, bogus_left, "first missing handle must be named");
+            }
+            other => panic!(
+                "expected Err(InvalidReference({:?})), got {:?}",
+                bogus_left, other
+            ),
+        }
+    }
 }
