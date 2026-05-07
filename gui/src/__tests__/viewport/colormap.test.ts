@@ -46,6 +46,22 @@ vi.mock('three/addons/controls/OrbitControls.js', () => ({
   OrbitControls: class MockOrbitControls {},
 }));
 
+// The barrel's transitive import chain reaches bridge.ts → @tauri-apps/api.
+// In jsdom (no Tauri IPC), these modules hang on initialisation, exceeding
+// the 5 000 ms test timeout. Mock them the same way every other test file does.
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(),
+}));
+
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  save: vi.fn(),
+  open: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Step 1 — LUT shape & published spot-check values
 // ---------------------------------------------------------------------------
