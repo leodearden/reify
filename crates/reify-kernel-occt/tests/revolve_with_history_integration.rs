@@ -219,6 +219,13 @@ fn partial_revolve_with_history_reports_caps_and_revolved_face_records() {
             result_edge_count
         );
     }
+
+    // (h) Silent-drop counter must be zero for a well-formed partial revolve.
+    assert_eq!(
+        history.silent_drop_count, 0,
+        "partial revolve should not silently drop any Modified/Generated child — got {}",
+        history.silent_drop_count
+    );
 }
 
 /// `BRepPrimAPI_MakeRevol` (FULL — 360°): under full revolution

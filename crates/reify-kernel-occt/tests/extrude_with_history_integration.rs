@@ -179,4 +179,11 @@ fn extrude_with_history_reports_caps_and_side_face_records() {
             result_edge_count
         );
     }
+
+    // (g) Silent-drop counter must be zero for a well-formed extrude.
+    assert_eq!(
+        history.silent_drop_count, 0,
+        "vanilla extrude should not silently drop any Modified/Generated child — got {}",
+        history.silent_drop_count
+    );
 }
