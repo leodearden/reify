@@ -391,6 +391,71 @@ fn elastic_options_constrains_max_iter_and_cg_tolerance_positive() {
     }
 }
 
+// ─── task-3044 step-1: ElasticResult non-negativity constraints ──────────────
+
+/// `ElasticResult` must declare non-negativity constraints on `iterations` and
+/// `max_von_mises`:
+///
+///   constraint iterations >= 0
+///   constraint max_von_mises >= 0
+///
+/// `iterations` is a CG iteration count — a negative count is impossible.
+/// `max_von_mises` is a stress magnitude (von-Mises equivalent stress is the
+/// Frobenius norm of the deviatoric stress tensor) — negative is meaningless.
+/// Encoding these as structure-level constraints follows the task-2544
+/// convention: "the contract in production code is made explicit rather than
+/// relying solely on test coverage."
+///
+/// The assertion shape mirrors `elastic_options_constrains_max_iter_and_cg_tolerance_positive`
+/// (above), substituting `BinOp::Ge` (`>=`) for `BinOp::Gt` (`>`).
+/// RHS literals `Int(0)` and `Real(0.0)` are both accepted for stability
+/// across future numeric-promotion changes.
+#[test]
+fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
+    let template = find_structure("ElasticResult");
+
+    assert!(
+        template.constraints.len() >= 2,
+        "ElasticResult should declare at least 2 constraints \
+         (iterations >= 0 and max_von_mises >= 0), got {} constraints",
+        template.constraints.len()
+    );
+
+    for required in &["iterations", "max_von_mises"] {
+        let matched = template.constraints.iter().any(|c| {
+            // The constraint must be a `>=` BinOp with a ValueRef to the
+            // required member on the left and the literal `0` on the right.
+            // Pinning the RHS prevents a silent weakening where the bound is
+            // changed to a negative value but the name + op check still passes.
+            match &c.expr.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    if *op != BinOp::Ge
+                        || !collect_value_ref_members(left).contains(required)
+                    {
+                        return false;
+                    }
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Int(0)) => true,
+                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            matched,
+            "ElasticResult should declare `constraint {} >= 0`; got constraints: {:?}",
+            required,
+            template
+                .constraints
+                .iter()
+                .map(|c| &c.expr.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 // ─── step-11: ElasticResult param shape ──────────────────────────────────────
 
 /// `ElasticResult` is the FEA solver-output container. It must declare
