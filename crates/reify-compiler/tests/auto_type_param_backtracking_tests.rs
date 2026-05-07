@@ -4291,6 +4291,9 @@ structure def Hot2 : Hot {
     //   → skips the entire ORingSeal sub-tree (leaves 2–4 under ORingSeal never visited)
     //   Leaves 2–5 under RubberSeal → Satisfied (4 leaves)
     // Without backjumping: all 8 leaves × 1 constraint = 8 id records.
+    // Assumes resolver evaluates ALL constraints per leaf (no within-leaf
+    // short-circuit). If that changes, update the expected count, not the
+    // backjumping logic.
     assert_eq!(
         checker.calls().len(),
         5,
@@ -4453,6 +4456,9 @@ structure def Hot2 : Hot {
     //   Total: 7 leaves × 2 constraints = 14 id records
     // Without backjumping: 8 leaves × 2 constraints = 16 id records.
     // With min-over-union (J=0=T, incorrect): 4 leaves × 2 constraints = 8 id records.
+    // Assumes resolver evaluates ALL constraints per leaf (no within-leaf
+    // short-circuit). If that changes, update the expected count, not the
+    // backjumping logic.
     assert_eq!(
         checker.calls().len(),
         14,

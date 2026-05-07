@@ -112,7 +112,10 @@ impl MockConstraintChecker {
     /// with, in call order. A cloned `Vec` so callers can inspect it without
     /// holding the internal lock.
     pub fn calls(&self) -> Vec<ConstraintNodeId> {
-        self.calls.lock().unwrap().clone()
+        self.calls
+            .lock()
+            .expect("MockConstraintChecker::calls: mutex poisoned")
+            .clone()
     }
 
     /// A clone of the shared call-tracking handle.
@@ -152,7 +155,10 @@ impl ConstraintChecker for MockConstraintChecker {
             .expect("MockConstraintChecker::check: mutex poisoned")
             .pop_front();
         if let Some(satisfaction) = queued {
-            let mut calls = self.calls.lock().unwrap();
+            let mut calls = self
+                .calls
+                .lock()
+                .expect("MockConstraintChecker::check: mutex poisoned");
             return input
                 .constraints
                 .iter()
@@ -169,7 +175,10 @@ impl ConstraintChecker for MockConstraintChecker {
 
         // Priority 2 + 3: existing per-id map → default fallback. Unchanged
         // for callers that never populate the queue.
-        let mut calls = self.calls.lock().unwrap();
+        let mut calls = self
+            .calls
+            .lock()
+            .expect("MockConstraintChecker::check: mutex poisoned");
         input
             .constraints
             .iter()
@@ -1402,9 +1411,6 @@ mod tests {
     ///     per-id/default fallback branch push ids — because the two backjumping
     ///     tests use a one-element queue and leaves 2..N flow through the
     ///     fallback.
-    ///
-    /// This test fails to compile until step 2 lands (`calls()` and
-    /// `calls_handle()` do not exist on `MockConstraintChecker` yet).
     #[test]
     fn mock_constraint_checker_records_calls_handle_per_constraint_id() {
         let id_a = ConstraintNodeId::new("S", 0);
