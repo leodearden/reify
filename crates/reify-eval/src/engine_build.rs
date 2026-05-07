@@ -390,6 +390,14 @@ impl Engine {
         let (constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
+        // Task 2874: emit imported-tolerance-promise diagnostics
+        // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
+        // for every (Input × Output × active-purpose-binding) triple recognised
+        // in the post-eval snapshot. See `Engine::emit_imported_tolerance_promise_diagnostics_for_module`
+        // for the recognition shapes and code-agnostic forwarding contract.
+        // Mirrored in `build` and `tessellate_realizations`.
+        self.emit_imported_tolerance_promise_diagnostics_for_module(module, &mut diagnostics);
+
         // Execute geometry operations. Use the snapshot's eval-round id rather
         // than `self.next_version_id`: build_snapshot is keyed off `state.snapshot.values`,
         // so Failed events must carry that snapshot's version, not the un-used
@@ -505,8 +513,31 @@ impl Engine {
 
     /// Full build: evaluate, check constraints, produce geometry.
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
+        // Task 2874: emit imported-tolerance-promise diagnostics
+        // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
+        // for every (Input × Output × active-purpose-binding) triple recognised
+        // in the pre-`check()` snapshot. See
+        // `Engine::emit_imported_tolerance_promise_diagnostics_for_module` for
+        // the recognition shapes and code-agnostic forwarding contract.
+        //
+        // PLACEMENT: BEFORE `self.check(module)` rather than after, because
+        // `check()` calls `eval()` which clears `active_purpose_bindings` and
+        // `active_tolerance_scope` (engine_eval.rs:1149-1150). Running the
+        // helper after check would always observe empty bindings — no
+        // diagnostic could ever fire from production. The pre-check snapshot
+        // is the user's intent at the moment build() is invoked, which is the
+        // semantically correct view for diagnostic emission. Mirrored in
+        // `tessellate_realizations`. `build_snapshot` does NOT call eval, so
+        // its placement (after `check_constraints_against_templates`) is fine.
+        let mut tolerance_diagnostics: Vec<Diagnostic> = Vec::new();
+        self.emit_imported_tolerance_promise_diagnostics_for_module(
+            module,
+            &mut tolerance_diagnostics,
+        );
+
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
+        diagnostics.extend(tolerance_diagnostics);
         // Task 2320: `values` is moved out of `check_result` here so the
         // per-template post-process can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
@@ -642,8 +673,21 @@ impl Engine {
     /// When no geometry kernel is configured, returns empty meshes with no
     /// error diagnostics (matching the pattern in [`build()`]).
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
+        // Task 2874: emit imported-tolerance-promise diagnostics BEFORE
+        // `self.check(module)` for the same reason as `build` — see that
+        // function for the placement rationale (eval() inside check() clears
+        // `active_purpose_bindings`). Mirrored across `build` /
+        // `tessellate_realizations`; `build_snapshot` does not call eval so
+        // it can emit the diagnostic after `check_constraints_against_templates`.
+        let mut tolerance_diagnostics: Vec<Diagnostic> = Vec::new();
+        self.emit_imported_tolerance_promise_diagnostics_for_module(
+            module,
+            &mut tolerance_diagnostics,
+        );
+
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
+        diagnostics.extend(tolerance_diagnostics);
         // Task 2320 amendment: `values` is moved into a local mutable binding
         // here so `tessellate_from_values` can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
