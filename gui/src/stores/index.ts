@@ -35,3 +35,6 @@ export type { DebouncedSaver } from './viewPersistence';
 
 export { findFuzzyCandidate, suffixMatch, structuralMatch } from './fuzzyPathMatcher';
 export type { StalePathMetadata } from './fuzzyPathMatcher';
+
+export { createFeaModeStore } from './feaModeStore';
+export type { FeaModeState, FeaModeStoreState, FeaModeStore } from './feaModeStore';
