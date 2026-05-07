@@ -1102,11 +1102,7 @@ mod tests {
 
     #[test]
     fn validate_dimensionless_unit_axis_vec3_dimensionless_tensor_returns_components() {
-        let v = Value::Tensor(vec![
-            Value::Real(0.5),
-            Value::Real(-0.25),
-            Value::Real(1.5),
-        ]);
+        let v = Value::Tensor(vec![Value::Real(0.5), Value::Real(-0.25), Value::Real(1.5)]);
         assert_eq!(
             validate_dimensionless_unit_axis_vec3(&v),
             Some([0.5, -0.25, 1.5]),
@@ -1116,11 +1112,7 @@ mod tests {
 
     #[test]
     fn validate_dimensionless_unit_axis_vec3_dimensionless_point_returns_components() {
-        let v = Value::Point(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(1.0),
-        ]);
+        let v = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
         assert_eq!(
             validate_dimensionless_unit_axis_vec3(&v),
             Some([0.0, 0.0, 1.0]),
@@ -1192,11 +1184,7 @@ mod tests {
 
     #[test]
     fn validate_dimensionless_unit_axis_vec3_zero_vector_returns_none() {
-        let v = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         assert!(
             validate_dimensionless_unit_axis_vec3(&v).is_none(),
             "Zero-magnitude vector should return None"
@@ -1378,6 +1366,27 @@ mod tests {
     }
 
     #[test]
+    fn validate_selector_target_arbitrary_string_accepted() {
+        // Pins the documented intent that *any* String is accepted — not just
+        // a known whitelist — as a placeholder shape until the topology-selector
+        // PRD task 5 introduces named-selector sentinels (e.g. "face1").
+        // The breadth is intentional: unlike dimensioned containers (Scalar,
+        // Vector, …), a String cannot be confused with a numeric typo, so
+        // accepting an arbitrary sentinel string imposes no safety risk.
+        // If a whitelist is introduced later, these tests must be tightened.
+        assert_eq!(
+            validate_selector_target(&Value::String("face1".to_string())),
+            Some(()),
+            "Arbitrary face-selector String should be accepted as placeholder"
+        );
+        assert_eq!(
+            validate_selector_target(&Value::String("body_all".to_string())),
+            Some(()),
+            "Arbitrary body-selector String should be accepted as placeholder"
+        );
+    }
+
+    #[test]
     fn validate_selector_target_empty_vector_rejected() {
         assert!(
             validate_selector_target(&Value::Vector(vec![])).is_none(),
@@ -1438,9 +1447,18 @@ mod tests {
         // Helper-level analog of the user-visible `point_load(force_vec, force_vec)`
         // typo case: a FORCE-dimensioned 3-vector fed as a selector is rejected.
         let v = Value::Vector(vec![
-            Value::Scalar { si_value: 5000.0, dimension: DimensionVector::FORCE },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::FORCE },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::FORCE },
+            Value::Scalar {
+                si_value: 5000.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::FORCE,
+            },
         ]);
         assert!(
             validate_selector_target(&v).is_none(),
@@ -1514,10 +1532,22 @@ mod tests {
     #[test]
     fn validate_dimensioned_vec3_vec4_returns_none() {
         let v = Value::Vector(vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
         assert!(
             validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
@@ -1545,11 +1575,7 @@ mod tests {
 
     #[test]
     fn validate_dimensioned_vec3_dimensionless_vs_length_returns_none() {
-        let v = Value::Vector(vec![
-            Value::Real(1.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         assert!(
             validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
             "DIMENSIONLESS vector with expected_dim=LENGTH should reject"
@@ -1594,10 +1620,10 @@ mod tests {
 
     #[test]
     fn make_kind_map_extra_fields_appear_under_expected_keys() {
-        let result = make_kind_map("test", vec![
-            ("alpha", Value::Real(1.0)),
-            ("beta", Value::Int(42)),
-        ]);
+        let result = make_kind_map(
+            "test",
+            vec![("alpha", Value::Real(1.0)), ("beta", Value::Int(42))],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),
@@ -1617,11 +1643,14 @@ mod tests {
     #[test]
     fn make_kind_map_btreemap_orders_keys_alphabetically() {
         // Insert in non-alpha order: zulu, alpha, mike. BTreeMap sorts.
-        let result = make_kind_map("test", vec![
-            ("zulu", Value::Int(3)),
-            ("alpha", Value::Int(1)),
-            ("mike", Value::Int(2)),
-        ]);
+        let result = make_kind_map(
+            "test",
+            vec![
+                ("zulu", Value::Int(3)),
+                ("alpha", Value::Int(1)),
+                ("mike", Value::Int(2)),
+            ],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),

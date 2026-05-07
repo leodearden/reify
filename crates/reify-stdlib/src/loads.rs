@@ -5,8 +5,10 @@
 //! discriminator field, matching the joints/coupling constructor pattern.
 //!
 //! Selector-target validation is delegated to
-//! [`crate::helpers::validate_selector_target`] (see that helper's doc-comment
-//! for the rationale on why opaque pass-through is currently the right policy).
+//! [`crate::helpers::validate_selector_target`].  Selector targets are
+//! validated as a narrow placeholder set (`Value::Map` or `Value::String`)
+//! until the topology-selector variants land — see that helper's doc-comment
+//! for the full narrowed contract and PRD task 16 deadline reference.
 
 use reify_types::{DimensionVector, Value};
 
@@ -45,7 +47,13 @@ pub(crate) fn is_load_value(v: &Value) -> bool {
     match v {
         Value::Map(m) => m
             .get(&Value::String("kind".to_string()))
-            .and_then(|k| if let Value::String(s) = k { Some(s.as_str()) } else { None })
+            .and_then(|k| {
+                if let Value::String(s) = k {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
             .is_some_and(|s| LOAD_KINDS.contains(&s)),
         _ => false,
     }
@@ -84,10 +92,10 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], DimensionVector::FORCE).is_none() {
                 return Some(Value::Undef);
             }
-            make_kind_map("point_load", vec![
-                ("force", args[1].clone()),
-                ("point", args[0].clone()),
-            ])
+            make_kind_map(
+                "point_load",
+                vec![("force", args[1].clone()), ("point", args[0].clone())],
+            )
         }
         "pressure_load" => {
             // Accept arity 2 (direction defaults to "normal") or 3 (explicit direction).
@@ -108,11 +116,14 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                     None => return Some(Value::Undef),
                 }
             };
-            make_kind_map("pressure_load", vec![
-                ("direction", direction),
-                ("face", args[0].clone()),
-                ("magnitude", args[1].clone()),
-            ])
+            make_kind_map(
+                "pressure_load",
+                vec![
+                    ("direction", direction),
+                    ("face", args[0].clone()),
+                    ("magnitude", args[1].clone()),
+                ],
+            )
         }
         "traction_load" => {
             if args.len() != 2 {
@@ -124,10 +135,10 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], DimensionVector::PRESSURE).is_none() {
                 return Some(Value::Undef);
             }
-            make_kind_map("traction_load", vec![
-                ("face", args[0].clone()),
-                ("traction", args[1].clone()),
-            ])
+            make_kind_map(
+                "traction_load",
+                vec![("face", args[0].clone()), ("traction", args[1].clone())],
+            )
         }
         "body_force" => {
             if args.len() != 2 {
@@ -139,10 +150,13 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], force_density_dim()).is_none() {
                 return Some(Value::Undef);
             }
-            make_kind_map("body_force", vec![
-                ("body", args[0].clone()),
-                ("force_density", args[1].clone()),
-            ])
+            make_kind_map(
+                "body_force",
+                vec![
+                    ("body", args[0].clone()),
+                    ("force_density", args[1].clone()),
+                ],
+            )
         }
         "gravity" => {
             let accel_dim = acceleration_dim();
@@ -150,9 +164,18 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                 0 => {
                     // 0-arg form: Earth standard gravity in -Z direction.
                     let acceleration = Value::Vector(vec![
-                        Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                        Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                        Value::Scalar { si_value: -EARTH_GRAVITY, dimension: accel_dim },
+                        Value::Scalar {
+                            si_value: 0.0,
+                            dimension: accel_dim,
+                        },
+                        Value::Scalar {
+                            si_value: 0.0,
+                            dimension: accel_dim,
+                        },
+                        Value::Scalar {
+                            si_value: -EARTH_GRAVITY,
+                            dimension: accel_dim,
+                        },
                     ]);
                     make_kind_map("gravity", vec![("acceleration", acceleration)])
                 }
@@ -164,9 +187,18 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
                     // unchanged (no sign flip, no Z-axis remap).
                     if let Some(magnitude) = validate_dimensioned_scalar(&args[0], accel_dim) {
                         let acceleration = Value::Vector(vec![
-                            Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                            Value::Scalar { si_value: 0.0, dimension: accel_dim },
-                            Value::Scalar { si_value: -magnitude, dimension: accel_dim },
+                            Value::Scalar {
+                                si_value: 0.0,
+                                dimension: accel_dim,
+                            },
+                            Value::Scalar {
+                                si_value: 0.0,
+                                dimension: accel_dim,
+                            },
+                            Value::Scalar {
+                                si_value: -magnitude,
+                                dimension: accel_dim,
+                            },
                         ]);
                         make_kind_map("gravity", vec![("acceleration", acceleration)])
                     } else if validate_dimensioned_vec3(&args[0], accel_dim).is_some() {
@@ -190,7 +222,10 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
 /// Returns `Some(si_value)` on success, `None` on any failure.
 fn validate_dimensioned_scalar(v: &Value, expected_dim: DimensionVector) -> Option<f64> {
     match v {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             if *dimension != expected_dim {
                 return None;
             }
@@ -434,11 +469,7 @@ mod tests {
             dimension: DimensionVector::PRESSURE,
         };
         // Explicit direction: -Z unit vector (dimensionless).
-        let direction = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(-1.0),
-        ]);
+        let direction = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(-1.0)]);
 
         let result = eval_builtin(
             "pressure_load",
@@ -483,10 +514,7 @@ mod tests {
         };
         let normal_sentinel = Value::String("normal".to_string());
 
-        let result = eval_builtin(
-            "pressure_load",
-            &[face, magnitude, normal_sentinel.clone()],
-        );
+        let result = eval_builtin("pressure_load", &[face, magnitude, normal_sentinel.clone()]);
 
         let map = match result {
             Value::Map(m) => m,
@@ -602,11 +630,7 @@ mod tests {
             dimension: DimensionVector::PRESSURE,
         };
         // Dimensionless zero vector — invalid direction.
-        let zero_dir = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let zero_dir = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         assert!(
             eval_builtin(
                 "pressure_load",
@@ -675,7 +699,10 @@ mod tests {
 
     #[test]
     fn pressure_load_zero_args_returns_undef() {
-        assert!(eval_builtin("pressure_load", &[]).is_undef(), "0 args → Undef");
+        assert!(
+            eval_builtin("pressure_load", &[]).is_undef(),
+            "0 args → Undef"
+        );
     }
 
     #[test]
@@ -749,11 +776,7 @@ mod tests {
 
     #[test]
     fn traction_load_traction_dimensionless_returns_undef() {
-        let bad = Value::Vector(vec![
-            Value::Real(1.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let bad = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         assert!(
             eval_builtin("traction_load", &[face_selector_stub(), bad]).is_undef(),
             "dimensionless traction → Undef"
@@ -806,7 +829,10 @@ mod tests {
 
     #[test]
     fn traction_load_zero_args_returns_undef() {
-        assert!(eval_builtin("traction_load", &[]).is_undef(), "0 args → Undef");
+        assert!(
+            eval_builtin("traction_load", &[]).is_undef(),
+            "0 args → Undef"
+        );
     }
 
     #[test]
@@ -834,7 +860,7 @@ mod tests {
 
     #[test]
     fn body_force_returns_map_with_correct_fields() {
-        use super::{force_density_dim};
+        use super::force_density_dim;
 
         let body = body_selector_stub();
         // Weight-density of steel ≈ 7850 kg/m³ × 9.81 m/s² ≈ 77 kN/m³.
@@ -910,10 +936,22 @@ mod tests {
         use super::force_density_dim;
         let dim = force_density_dim();
         let vec4 = Value::Vector(vec![
-            Value::Scalar { si_value: 0.0, dimension: dim },
-            Value::Scalar { si_value: 0.0, dimension: dim },
-            Value::Scalar { si_value: -77000.0, dimension: dim },
-            Value::Scalar { si_value: 0.0, dimension: dim },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: dim,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: dim,
+            },
+            Value::Scalar {
+                si_value: -77000.0,
+                dimension: dim,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: dim,
+            },
         ]);
         assert!(
             eval_builtin("body_force", &[body_selector_stub(), vec4]).is_undef(),
@@ -949,11 +987,7 @@ mod tests {
         use super::force_density_dim;
         let fd = make_scalar_vec3([0.0, 0.0, -77000.0], force_density_dim());
         assert!(
-            eval_builtin(
-                "body_force",
-                &[body_selector_stub(), fd.clone(), fd]
-            )
-            .is_undef(),
+            eval_builtin("body_force", &[body_selector_stub(), fd.clone(), fd]).is_undef(),
             "3 args → Undef"
         );
     }
@@ -962,7 +996,7 @@ mod tests {
 
     #[test]
     fn gravity_zero_args_returns_earth_default_acceleration() {
-        use super::{acceleration_dim, EARTH_GRAVITY};
+        use super::{EARTH_GRAVITY, acceleration_dim};
 
         let result = eval_builtin("gravity", &[]);
 
@@ -1063,8 +1097,14 @@ mod tests {
         use super::acceleration_dim;
         let dim = acceleration_dim();
         let vec2 = Value::Vector(vec![
-            Value::Scalar { si_value: 0.0, dimension: dim },
-            Value::Scalar { si_value: -9.81, dimension: dim },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: dim,
+            },
+            Value::Scalar {
+                si_value: -9.81,
+                dimension: dim,
+            },
         ]);
         assert!(
             eval_builtin("gravity", &[vec2]).is_undef(),
@@ -1177,7 +1217,7 @@ mod tests {
     /// updated in `LOAD_KINDS` (or vice versa), this test will catch it.
     #[test]
     fn load_kinds_all_dispatched_by_eval_loads() {
-        use super::{acceleration_dim, eval_loads, force_density_dim, is_load_value, LOAD_KINDS};
+        use super::{LOAD_KINDS, acceleration_dim, eval_loads, force_density_dim, is_load_value};
 
         let stub_selector = Value::Map({
             let mut m = BTreeMap::new();
@@ -1198,18 +1238,10 @@ mod tests {
 
         for kind in LOAD_KINDS {
             let result = match *kind {
-                "point_load" => {
-                    eval_loads(kind, &[stub_selector.clone(), force_vec.clone()])
-                }
-                "pressure_load" => {
-                    eval_loads(kind, &[stub_selector.clone(), pressure_mag.clone()])
-                }
-                "traction_load" => {
-                    eval_loads(kind, &[stub_selector.clone(), pressure_vec.clone()])
-                }
-                "body_force" => {
-                    eval_loads(kind, &[stub_selector.clone(), fd_vec.clone()])
-                }
+                "point_load" => eval_loads(kind, &[stub_selector.clone(), force_vec.clone()]),
+                "pressure_load" => eval_loads(kind, &[stub_selector.clone(), pressure_mag.clone()]),
+                "traction_load" => eval_loads(kind, &[stub_selector.clone(), pressure_vec.clone()]),
+                "body_force" => eval_loads(kind, &[stub_selector.clone(), fd_vec.clone()]),
                 "gravity" => eval_loads(kind, std::slice::from_ref(&accel_vec)),
                 other => panic!(
                     "LOAD_KINDS contains '{}' but no fixture is defined for it — \
