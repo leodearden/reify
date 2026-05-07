@@ -880,77 +880,63 @@ mod tests {
         );
     }
 
-    /// `collect_registry()` must invoke `warn_if_duplicate_op_repr_pairs` AT
-    /// MOST once across repeated calls, mirroring how `build_registry`'s
-    /// duplicate-NAME walk is amortised by the surrounding `OnceLock`.
+    /// Public-API regression guard: `registry()` must emit no `WARN`-level
+    /// events at the `reify_eval::kernel_registry` target when called
+    /// repeatedly on the production registry (which contains no duplicate
+    /// `(Operation, ReprKind)` pairs).
     ///
-    /// Pinned by snapshotting `super::UNIQUENESS_CHECK_INVOCATIONS` (an
-    /// `AtomicUsize` incremented INSIDE `collect_registry()`'s gated branch,
-    /// adjacent to the helper call) before and after a sequence of three
-    /// `collect_registry()` calls and asserting the delta is `<= 1`.
+    /// # Structural contract pinned
     ///
-    /// # Why this asserts the right direction
+    /// This test pins the surviving structural contract via the public
+    /// `registry()` API only. It references no internal seam
+    /// (`UNIQUENESS_CHECKED`, `UNIQUENESS_CHECK_INVOCATIONS`, or any
+    /// `AtomicBool`/`AtomicUsize` counter). Any future re-org of the
+    /// internal once-per-process plumbing leaves this test unaffected as
+    /// long as `registry()` remains a public API.
     ///
-    /// The previous version of this test asserted only
-    /// `super::UNIQUENESS_CHECKED.load(Acquire) == true`, which proves the
-    /// flag was set AT LEAST once — the OPPOSITE of the at-most-once
-    /// contract. A delta-based check on a counter that the gate itself
-    /// upper-bounds (the gate's `compare_exchange(false, true)` flips at
-    /// most once per process, so the adjacent `fetch_add(1)` runs at most
-    /// once) directly pins the AT MOST direction.
+    /// The once-per-process `(Operation, ReprKind)` uniqueness check is
+    /// structurally guaranteed by the `REGISTRY: OnceLock` — calling
+    /// `registry()` three times exercises the memoized path and confirms
+    /// no spurious WARN is emitted on repeated access.
     ///
-    /// # Regression scenarios this catches
+    /// # Diagnostic contract for duplicate scenarios
     ///
-    /// * Gate replaced with `if true { … fetch_add … helper(…) }`
-    ///   (always-on): three calls each enter the block → delta = 3 → FAIL.
-    /// * Gate removed but counter increment kept outside an `if` (so it runs
-    ///   unconditionally): same as above, delta = 3 → FAIL.
-    /// * `UNIQUENESS_CHECK_INVOCATIONS` deleted from the module entirely:
-    ///   this test fails to COMPILE with `cannot find value
-    ///   'UNIQUENESS_CHECK_INVOCATIONS' in module 'super'`, surfacing the
-    ///   regression at build time.
+    /// The diagnostic contract for duplicate `(Operation, ReprKind)` pair
+    /// scenarios is pinned by the unchanged helper-direct tests:
+    /// - `warn_if_duplicate_op_repr_pairs_panics_on_duplicate_pair` —
+    ///   debug-build panic on inter-kernel duplicate.
+    /// - `warn_if_duplicate_op_repr_pairs_always_emits_warn_on_duplicate` —
+    ///   operator-visibility WARN on inter-kernel duplicate, in all builds.
+    /// - `warn_if_duplicate_op_repr_pairs_always_emits_warn_on_intra_kernel_duplicate`
+    ///   — operator-visibility WARN on intra-kernel duplicate.
     ///
-    /// # Why parallelism does not invalidate the assertion
-    ///
-    /// Helper-direct tests (`*_panics_on_duplicate_pair`,
-    /// `*_always_emits_warn_on_duplicate`,
-    /// `*_always_emits_warn_on_intra_kernel_duplicate`) call the helper
-    /// bypassing the gate, so they do NOT touch
-    /// `UNIQUENESS_CHECK_INVOCATIONS` (the increment lives INSIDE the gated
-    /// branch in `collect_registry()`, not at the top of the helper itself).
-    /// Other parallel `collect_registry()` callers (e.g.
-    /// `collect_registry_returns_typed_btreemap_smoke`) share the same gate
-    /// and so collectively contribute at most 1 to the global counter. Our
-    /// delta is therefore guaranteed `<= 1` regardless of test ordering or
-    /// thread interleaving.
-    ///
-    /// # Test pollution
-    ///
-    /// This test consumes the gate (if not already consumed by a prior
-    /// `collect_registry()`-calling test) for the rest of the binary, but
-    /// other tests are unaffected — production registry has no duplicates,
-    /// so the gated helper would have been a no-op regardless.
+    /// This test is GREEN both before and after the OnceLock refactor:
+    /// production has no duplicates, so WARN count is zero whether or not
+    /// the uniqueness check runs.
     #[test]
-    fn collect_registry_runs_uniqueness_check_at_most_once_across_calls() {
+    fn registry_oncelock_init_emits_no_warn_on_clean_production_registry() {
+        use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
-        let before = super::UNIQUENESS_CHECK_INVOCATIONS.load(Ordering::Relaxed);
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_eval::kernel_registry")
+            .build();
+        let warn_count = counters[&tracing::Level::WARN].clone();
 
-        let _ = collect_registry();
-        let _ = collect_registry();
-        let _ = collect_registry();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = registry();
+            let _ = registry();
+            let _ = registry();
+        });
 
-        let after = super::UNIQUENESS_CHECK_INVOCATIONS.load(Ordering::Relaxed);
-        let delta = after - before;
-
-        assert!(
-            delta <= 1,
-            "collect_registry() must invoke warn_if_duplicate_op_repr_pairs \
-             AT MOST ONCE across repeated calls (the once-shot AtomicBool \
-             gate mirrors build_registry's OnceLock-amortised duplicate-NAME \
-             walk). Observed delta = {delta} across 3 collect_registry() \
-             calls in this test, which means the gate failed to short-circuit \
-             subsequent helper invocations.",
+        assert_eq!(
+            warn_count.load(Ordering::Acquire),
+            0,
+            "registry() must emit no WARN events at reify_eval::kernel_registry: \
+             the production registry must have no duplicate (Operation, ReprKind) \
+             pairs, and the OnceLock-driven uniqueness check must produce no \
+             spurious WARN on a clean registry",
         );
     }
 }
