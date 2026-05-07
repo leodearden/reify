@@ -33,6 +33,8 @@ export interface FeaModeStore {
   setPalette(p: Palette): void;
   /** Returns false (no-op) if min or max is not finite. */
   setRange(r: Range): boolean;
+  /** Lock range to explicit bounds with a provenance label. Returns false if either bound is non-finite. */
+  lockCurrent(min: number, max: number, source?: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -76,5 +78,13 @@ export function createFeaModeStore(): FeaModeStore {
     return true;
   }
 
-  return { state, setEnabled, setChannel, setPalette, setRange };
+  function lockCurrent(min: number, max: number, source = 'current'): boolean {
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      return false;
+    }
+    setState('range', { mode: 'locked', min, max, source });
+    return true;
+  }
+
+  return { state, setEnabled, setChannel, setPalette, setRange, lockCurrent };
 }
