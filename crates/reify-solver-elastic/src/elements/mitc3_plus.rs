@@ -320,6 +320,86 @@ mod tests {
     }
 
     #[test]
+    fn interpolate_assumed_shear_reproduces_gamma_xi_zeta_at_a_and_gamma_eta_zeta_at_b() {
+        let sampled = TyingShears {
+            at_a: ShearStrain { gamma_xi_zeta: 0.5, gamma_eta_zeta: 0.1 },
+            at_b: ShearStrain { gamma_xi_zeta: 0.2, gamma_eta_zeta: 0.8 },
+            at_c: ShearStrain { gamma_xi_zeta: 0.3, gamma_eta_zeta: 0.4 },
+        };
+        // At tying point A = (½, 0): γ_ξζ output must equal at_a.gamma_xi_zeta.
+        let a = ShellReferenceCoord::new(0.5, 0.0);
+        let out_a = Mitc3Plus.interpolate_assumed_shear(sampled, a);
+        assert!(
+            (out_a.gamma_xi_zeta - sampled.at_a.gamma_xi_zeta).abs() < TOL,
+            "at A: gamma_xi_zeta = {}, expected {}",
+            out_a.gamma_xi_zeta,
+            sampled.at_a.gamma_xi_zeta,
+        );
+        // At tying point B = (0, ½): γ_ηζ output must equal at_b.gamma_eta_zeta.
+        let b = ShellReferenceCoord::new(0.0, 0.5);
+        let out_b = Mitc3Plus.interpolate_assumed_shear(sampled, b);
+        assert!(
+            (out_b.gamma_eta_zeta - sampled.at_b.gamma_eta_zeta).abs() < TOL,
+            "at B: gamma_eta_zeta = {}, expected {}",
+            out_b.gamma_eta_zeta,
+            sampled.at_b.gamma_eta_zeta,
+        );
+    }
+
+    #[test]
+    fn interpolate_assumed_shear_is_constant_when_all_tying_inputs_match() {
+        let k = ShearStrain { gamma_xi_zeta: 0.7, gamma_eta_zeta: -0.4 };
+        let sampled = TyingShears { at_a: k, at_b: k, at_c: k };
+        let probes = [
+            ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
+            ShellReferenceCoord::new(0.5, 0.0),
+            ShellReferenceCoord::new(0.0, 0.5),
+            ShellReferenceCoord::new(0.5, 0.5),
+            ShellReferenceCoord::new(0.2, 0.3),
+        ];
+        for p in probes.iter() {
+            let out = Mitc3Plus.interpolate_assumed_shear(sampled, *p);
+            assert!(
+                (out.gamma_xi_zeta - k.gamma_xi_zeta).abs() < TOL,
+                "at {:?}: gamma_xi_zeta = {}, expected {}",
+                p, out.gamma_xi_zeta, k.gamma_xi_zeta,
+            );
+            assert!(
+                (out.gamma_eta_zeta - k.gamma_eta_zeta).abs() < TOL,
+                "at {:?}: gamma_eta_zeta = {}, expected {}",
+                p, out.gamma_eta_zeta, k.gamma_eta_zeta,
+            );
+        }
+    }
+
+    #[test]
+    fn interpolate_assumed_shear_is_linear_in_reference_coords() {
+        let sampled = TyingShears {
+            at_a: ShearStrain { gamma_xi_zeta: 1.0, gamma_eta_zeta: 0.0 },
+            at_b: ShearStrain { gamma_xi_zeta: 0.0, gamma_eta_zeta: 1.0 },
+            at_c: ShearStrain { gamma_xi_zeta: 0.5, gamma_eta_zeta: 0.5 },
+        };
+        let p1 = ShellReferenceCoord::new(0.1, 0.2);
+        let p2 = ShellReferenceCoord::new(0.4, 0.3);
+        let pm = ShellReferenceCoord::new(0.25, 0.25); // midpoint of p1 and p2
+        let r1 = Mitc3Plus.interpolate_assumed_shear(sampled, p1);
+        let r2 = Mitc3Plus.interpolate_assumed_shear(sampled, p2);
+        let rm = Mitc3Plus.interpolate_assumed_shear(sampled, pm);
+        let mid_xi = 0.5 * (r1.gamma_xi_zeta + r2.gamma_xi_zeta);
+        let mid_eta = 0.5 * (r1.gamma_eta_zeta + r2.gamma_eta_zeta);
+        assert!(
+            (rm.gamma_xi_zeta - mid_xi).abs() < TOL,
+            "linearity: gamma_xi_zeta at midpoint = {}, expected {}",
+            rm.gamma_xi_zeta, mid_xi,
+        );
+        assert!(
+            (rm.gamma_eta_zeta - mid_eta).abs() < TOL,
+            "linearity: gamma_eta_zeta at midpoint = {}, expected {}",
+            rm.gamma_eta_zeta, mid_eta,
+        );
+    }
+
+    #[test]
     fn bubble_grad_vanishes_at_centroid() {
         // Centroid is the unique interior maximum of f_b, so ∇f_b = 0 there.
         let g = Mitc3Plus.bubble_grad_at(ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0));
