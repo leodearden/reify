@@ -1144,11 +1144,13 @@ mod tests {
     /// `open_file`) must enable `get_source_location` to return `Ok` with a
     /// meaningful span.
     ///
-    /// Before the fix in step-2, `update_source` set `state.compiled = Some(...)` and
-    /// inserted into `state.files` but never set `state.active_file`, leaving
-    /// `get_source_location` to return `Err("no active file")`.  After the fix,
-    /// `update_source` calls `state.active_file.get_or_insert_with(...)`, so the
-    /// caller does not need a prior `load_file` / `open_file` call.
+    /// `update_source` achieves this via an unconditional
+    /// `state.active_file = Some(canonical.clone())`.  `get_or_insert_with` was
+    /// rejected because it would leave `active_file` pointing at a stale prior
+    /// file when `update_source` switches files — see the production-code comment
+    /// above the unconditional-set site for the full rationale, and
+    /// `update_source_after_load_file_switches_active_file` for the regression
+    /// guard.
     #[test]
     fn update_source_enables_get_source_location_without_load_file() {
         let ctx = fresh_ctx();
@@ -1257,18 +1259,22 @@ mod tests {
             .expect("update_source should succeed for bracket_compile_error.ri");
         assert!(update.success, "update_source must succeed so compiled=Some is set");
 
-        // active_file must have switched to b.ri.
+        // Use get_source(None) to read back the exact path update_source stored,
+        // rather than re-deriving it via std::fs::canonicalize — which may produce a
+        // different normalisation (symlink trees, macOS case-folding, etc.) and make
+        // the test flaky.
         let active_path = ctx
             .get_source(None)
-            .expect("active_file should be set")
+            .expect("active_file should be set after update_source")
             .file_path;
-        let b_canonical = std::fs::canonicalize(BRACKET_COMPILE_ERROR_PATH)
-            .expect("fixture must be canonicalizable")
-            .to_string_lossy()
-            .to_string();
-        assert_eq!(
-            active_path, b_canonical,
-            "active_file must point to the last-updated file (b.ri), not the previously loaded a.ri"
+        // Independent oracle: active_file must now name b.ri, not the prior a.ri.
+        // Uses ends_with rather than std::fs::canonicalize to avoid the symlink /
+        // case-folding flake risk noted in the comment above, while still providing
+        // an assertion that is decoupled from the all_b coherence check below.
+        assert!(
+            active_path.ends_with("bracket_compile_error.ri"),
+            "active_file must point to b.ri after update_source(b.ri); got {:?}",
+            active_path
         );
 
         // Diagnostics must be for b.ri (bracket_compile_error has at least one Error).
@@ -1279,10 +1285,17 @@ mod tests {
             !diags.is_empty(),
             "bracket_compile_error.ri should produce at least one diagnostic"
         );
-        let all_b = diags.iter().all(|d| d.file_path == b_canonical);
+        // Independent diagnostic oracle: use ends_with("bracket_compile_error.ri")
+        // rather than comparing against active_path — both active_path and d.file_path
+        // are derived from state.active_file (get_source at mcp_context.rs:170-186;
+        // get_diagnostics at mcp_context.rs:213-216,238), so comparing them would be
+        // tautological and would not catch a regression where get_diagnostics wired
+        // file_path from a different source (per-diagnostic span, compiled-module path,
+        // etc.). Using the filename suffix as a third independent oracle ensures that
+        // every diagnostic genuinely carries b.ri's path, not just a.ri's.
         assert!(
-            all_b,
-            "all diagnostics must carry b.ri's file_path, got: {:?}",
+            diags.iter().all(|d| d.file_path.ends_with("bracket_compile_error.ri")),
+            "all diagnostics must carry b.ri's path (ends_with bracket_compile_error.ri), got: {:?}",
             diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
         );
     }
