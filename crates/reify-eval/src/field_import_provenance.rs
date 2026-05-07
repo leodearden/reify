@@ -8,6 +8,47 @@
 
 use reify_types::{ContentHash, FieldImportProvenance};
 
+/// Build a [`FieldImportProvenance`] record for a field import event.
+///
+/// # Parameters
+///
+/// * `path` — source file path (absolute or relative).
+/// * `format` — format name, e.g. `"OpenVDB"`.
+/// * `file_bytes` — raw bytes of the source file at ingestion time; hashed
+///   deterministically via [`ContentHash::of`] (XXH3-128).
+/// * `declared_tolerance_si` — tolerance declared on the `Input` occurrence's
+///   `param tolerance : Length = …`, in SI metres. Values that are NaN, ±Inf,
+///   or negative are mapped to `None` (Gate 4 filter — mirrors
+///   [`crate::tolerance_promise::extract_input_tolerance_promise`] Gate 4 for
+///   cross-extractor symmetry; downstream `is_promise_insufficient`
+///   debug_assert invariants rely on this contract).
+/// * `ingestion_timestamp_secs` — Unix epoch seconds at which ingestion
+///   occurred; caller-supplied so this function stays a pure function with no
+///   internal `SystemTime::now()` call.
+///
+/// # Determinism
+///
+/// The function is deterministic: identical inputs always produce identical
+/// outputs. `ContentHash::of` is backed by XXH3-128 (see `reify-types`
+/// `hash::deterministic` test). The caller controls the timestamp, so there is
+/// no hidden non-determinism. Empty `file_bytes` are accepted and produce a
+/// well-formed `ContentHash`.
+pub fn build_field_import_provenance(
+    path: &str,
+    format: &str,
+    file_bytes: &[u8],
+    declared_tolerance_si: Option<f64>,
+    ingestion_timestamp_secs: u64,
+) -> FieldImportProvenance {
+    FieldImportProvenance {
+        path: path.to_string(),
+        format: format.to_string(),
+        content_hash: ContentHash::of(file_bytes),
+        ingestion_timestamp_secs,
+        declared_tolerance_si,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
