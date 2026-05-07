@@ -8,12 +8,13 @@
 //! boolean arm and `tessellate` in isolation. This integration binary
 //! pins three additional concerns:
 //!
-//! 1. The factory entry point in `register.rs` (specifically
-//!    [`manifold_factory_for_test`]) is reachable from outside the crate
-//!    when the `test-fixtures` feature is active. A regression that drops
-//!    the self-dev-dep activation in `Cargo.toml:61` would break this
-//!    test at compile time with an actionable message (see the
-//!    `compile_error!` guard below).
+//! 1. The `test-fixtures`-gated API surface — concretely
+//!    [`ManifoldKernel::store_mesh_for_test`] and the shared
+//!    [`reify_kernel_manifold::test_fixtures::unit_cube_mesh`] helper —
+//!    is reachable from outside the crate when the feature is active.
+//!    A regression that drops the self-dev-dep activation in
+//!    `Cargo.toml:61` would break this test at compile time with an
+//!    actionable message (see the `compile_error!` guard below).
 //! 2. The kernel correctly chains operations: each output handle from
 //!    one boolean arm is a valid input handle for the next.
 //! 3. Tessellating a derived (not just ingested) `Manifold` returns a
@@ -28,7 +29,7 @@
 //! the `features = ["test-fixtures"]` activation on the self-dev-dep,
 //! this guard fires at compile time with an explanatory message rather
 //! than producing a confusing "unknown function" error from the missing
-//! `manifold_factory_for_test` symbol.
+//! `store_mesh_for_test` / `test_fixtures` API surface.
 
 #[cfg(not(feature = "test-fixtures"))]
 compile_error!(
@@ -40,46 +41,11 @@ compile_error!(
      in [dev-dependencies]."
 );
 
-use reify_kernel_manifold::{kernel::ManifoldKernel, register::manifold_factory_for_test};
-use reify_types::{GeometryHandleId, GeometryKernel, GeometryOp, Mesh};
+use reify_kernel_manifold::{kernel::ManifoldKernel, test_fixtures::unit_cube_mesh};
+use reify_types::{GeometryHandleId, GeometryKernel, GeometryOp};
 
-/// Closed unit cube as a `reify_types::Mesh` with right-hand-rule outward
-/// normals (so the Manifold is well-oriented). Mirrors the helper in
-/// `src/kernel.rs:mod tests`.
-fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
-    let [dx, dy, dz] = offset;
-    Mesh {
-        vertices: vec![
-            0.0 + dx, 0.0 + dy, 0.0 + dz, // 0
-            1.0 + dx, 0.0 + dy, 0.0 + dz, // 1
-            1.0 + dx, 1.0 + dy, 0.0 + dz, // 2
-            0.0 + dx, 1.0 + dy, 0.0 + dz, // 3
-            0.0 + dx, 0.0 + dy, 1.0 + dz, // 4
-            1.0 + dx, 0.0 + dy, 1.0 + dz, // 5
-            1.0 + dx, 1.0 + dy, 1.0 + dz, // 6
-            0.0 + dx, 1.0 + dy, 1.0 + dz, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
-
-/// Round-trip integration: factory → ingest two cubes → chain three
-/// boolean ops → tessellate the final result.
+/// Round-trip integration: construct kernel → ingest two cubes → chain
+/// three boolean ops → tessellate the final result.
 ///
 /// Geometric setup: two unit cubes overlapping by 0.5 on the x axis.
 ///   - `a = [0,1]³`
@@ -97,7 +63,13 @@ fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
 /// double-pin.
 #[test]
 fn boolean_ops_round_trip_via_factory_and_geometry_kernel_trait_object() {
-    let mut kernel: ManifoldKernel = manifold_factory_for_test();
+    // `ManifoldKernel::new()` is the production factory shape (its
+    // boxed sibling `manifold_factory()` calls `::new()` then `Box::new`).
+    // We use the concrete type directly rather than going through the
+    // boxed factory because we need to reach the `test-fixtures`-gated
+    // `store_mesh_for_test` ingestion path, which only exists on the
+    // concrete `ManifoldKernel` type.
+    let mut kernel = ManifoldKernel::new();
 
     let a: GeometryHandleId = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
     let b: GeometryHandleId = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));

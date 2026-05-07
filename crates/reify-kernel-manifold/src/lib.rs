@@ -42,4 +42,14 @@
 pub mod kernel;
 pub mod register;
 
+/// Shared test-only mesh fixtures (e.g. [`test_fixtures::unit_cube_mesh`]).
+///
+/// Gated on `cfg(any(test, feature = "test-fixtures"))` so the module is
+/// reachable from in-crate `mod tests` and from cross-crate integration
+/// test binaries that pick up the `test-fixtures` feature via the
+/// self-dev-dep in `Cargo.toml` — never compiled into production link
+/// closures.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures;
+
 pub use kernel::ManifoldKernel;

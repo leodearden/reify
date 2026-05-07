@@ -356,51 +356,11 @@ mod tests {
         let _boxed: Box<dyn reify_types::GeometryKernel> = Box::new(ManifoldKernel::new());
     }
 
-    /// Construct a closed unit cube as a `reify_types::Mesh` literal: 8
-    /// vertices, 12 outward-facing triangles. Used by the boolean-op tests
-    /// below to populate input handles via `store_mesh_for_test`.
-    ///
-    /// Vertices are in the unit `[0, 1]³` corner-block; the optional
-    /// `offset` parameter shifts the cube by `(dx, dy, dz)` so two cubes
-    /// can be made to overlap.
-    ///
-    /// Triangle winding follows right-hand-rule outward normals (so the
-    /// resulting Manifold is well-oriented and Boolean operations succeed).
-    /// This helper lives in `mod tests` rather than at module scope because
-    /// it is only used by `test-fixtures`-gated tests.
+    // The `unit_cube_mesh` helper used by the boolean-op tests below
+    // lives in [`crate::test_fixtures`] so the same fixture is shared by
+    // the cross-crate integration tests under `tests/` (avoids drift).
     #[cfg(feature = "test-fixtures")]
-    fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
-        let [dx, dy, dz] = offset;
-        Mesh {
-            vertices: vec![
-                // 0..7 → (x, y, z) for the 8 cube corners
-                0.0 + dx, 0.0 + dy, 0.0 + dz, // 0
-                1.0 + dx, 0.0 + dy, 0.0 + dz, // 1
-                1.0 + dx, 1.0 + dy, 0.0 + dz, // 2
-                0.0 + dx, 1.0 + dy, 0.0 + dz, // 3
-                0.0 + dx, 0.0 + dy, 1.0 + dz, // 4
-                1.0 + dx, 0.0 + dy, 1.0 + dz, // 5
-                1.0 + dx, 1.0 + dy, 1.0 + dz, // 6
-                0.0 + dx, 1.0 + dy, 1.0 + dz, // 7
-            ],
-            #[rustfmt::skip]
-            indices: vec![
-                // -Z bottom (outward = -Z, so CW from +Z view)
-                0, 2, 1,  0, 3, 2,
-                // +Z top
-                4, 5, 6,  4, 6, 7,
-                // -Y front
-                0, 1, 5,  0, 5, 4,
-                // +Y back
-                3, 7, 6,  3, 6, 2,
-                // -X left
-                0, 4, 7,  0, 7, 3,
-                // +X right
-                1, 2, 6,  1, 6, 5,
-            ],
-            normals: None,
-        }
-    }
+    use crate::test_fixtures::unit_cube_mesh;
 
     /// Pin macro-helper: structural `Ok(GeometryHandle)` shape for the three
     /// boolean op tests below. Match-on-Ok rather than `assert_eq!` because

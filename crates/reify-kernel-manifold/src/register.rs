@@ -48,20 +48,15 @@ use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Oper
 /// Factory invoked by the engine once at startup, returning a boxed
 /// [`ManifoldKernel`](crate::kernel::ManifoldKernel) backed by the
 /// `manifold3d` C++ FFI.
+///
+/// Test code that needs to reach the `test-fixtures`-gated
+/// [`crate::kernel::ManifoldKernel::store_mesh_for_test`] ingestion
+/// path constructs a concrete kernel directly via
+/// [`crate::kernel::ManifoldKernel::new`] rather than going through this
+/// boxed factory — boxing erases the concrete type and would hide the
+/// test-only API.
 pub fn manifold_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::kernel::ManifoldKernel::new())
-}
-
-/// Test-only factory returning a concrete [`ManifoldKernel`] (not boxed)
-/// so callers can reach the `test-fixtures`-gated
-/// [`crate::kernel::ManifoldKernel::store_mesh_for_test`] ingestion path.
-///
-/// Mirrors OCCT's `revolve_synthesis_post_sort_for_test` test-only API
-/// surface. The cross-crate `tests/boolean_ops_integration.rs` invokes this
-/// to populate input handles before exercising the boolean ops.
-#[cfg(any(test, feature = "test-fixtures"))]
-pub fn manifold_factory_for_test() -> crate::kernel::ManifoldKernel {
-    crate::kernel::ManifoldKernel::new()
 }
 
 inventory::submit! {
