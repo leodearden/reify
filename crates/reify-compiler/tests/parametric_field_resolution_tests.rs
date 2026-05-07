@@ -186,13 +186,18 @@ fn field_arity_one_emits_unresolved_type_diagnostic() {
     let matching: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("Field"))
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("unresolved type")
+                && d.message.contains("Field")
+        })
         .collect();
 
     assert!(
         !matching.is_empty(),
         "Field<Real> (arity 1) must produce at least one Error-severity diagnostic \
-         whose message contains \"Field\"; got diagnostics: {:?}",
+         whose message contains both \"unresolved type\" and \"Field\"; \
+         got diagnostics: {:?}",
         module.diagnostics
     );
 }
@@ -208,13 +213,18 @@ fn field_arity_three_emits_unresolved_type_diagnostic() {
     let matching: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("Field"))
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("unresolved type")
+                && d.message.contains("Field")
+        })
         .collect();
 
     assert!(
         !matching.is_empty(),
         "Field<Real, Real, Real> (arity 3) must produce at least one Error-severity \
-         diagnostic whose message contains \"Field\"; got diagnostics: {:?}",
+         diagnostic whose message contains both \"unresolved type\" and \"Field\"; \
+         got diagnostics: {:?}",
         module.diagnostics
     );
 }
