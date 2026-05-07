@@ -12,8 +12,14 @@ pub struct TetP1;
 impl ReferenceElement for TetP1 {
     const N_NODES: usize = 4;
 
-    fn shape_at(&self, _coord: ReferenceCoord) -> Vec<f64> {
-        todo!("P1 shape functions — task 2914 step-4")
+    /// Barycentric P1 shape functions evaluated at `coord`.
+    ///
+    /// Returns `[1 - ξ - η - ζ, ξ, η, ζ]` — i.e. shape function `N_i` is
+    /// the barycentric coordinate of reference vertex `v_i` in the
+    /// canonical ordering `(0,0,0), (1,0,0), (0,1,0), (0,0,1)`.
+    fn shape_at(&self, coord: ReferenceCoord) -> Vec<f64> {
+        let ReferenceCoord { xi, eta, zeta } = coord;
+        vec![1.0 - xi - eta - zeta, xi, eta, zeta]
     }
 
     fn shape_grad_at(&self, _coord: ReferenceCoord) -> Vec<[f64; 3]> {
