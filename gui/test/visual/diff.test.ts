@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compareImages } from "./diff";
+import { compareImages, decideOutcome } from "./diff";
 import type { ImageData } from "./diff";
 
 // Helper: create a solid-colour 8×8 RGBA buffer
@@ -86,5 +86,74 @@ describe("compareImages", () => {
     });
     expect(result.status).toBe("match");
     expect(result.mismatchPct).toBeLessThanOrEqual(0.01);
+  });
+});
+
+describe("decideOutcome", () => {
+  const OPTS = { pixelThreshold: 0.1, mismatchPctLimit: 0.01, updateBaselines: false };
+
+  it("(a) baseline=null, updateBaselines=false → baseline-created:missing", () => {
+    const captured = makeImage(8, 8, solidBuffer(8, 8, 255, 0, 0));
+    const outcome = decideOutcome(null, captured, OPTS);
+    expect(outcome.kind).toBe("baseline-created");
+    if (outcome.kind === "baseline-created") {
+      expect(outcome.reason).toBe("missing");
+    }
+  });
+
+  it("(b) baseline=non-null, updateBaselines=true → baseline-created:update-flag", () => {
+    const buf = solidBuffer(8, 8, 200, 200, 200);
+    const baseline = makeImage(8, 8, buf);
+    const captured = makeImage(8, 8, Buffer.from(buf));
+    const outcome = decideOutcome(baseline, captured, { ...OPTS, updateBaselines: true });
+    expect(outcome.kind).toBe("baseline-created");
+    if (outcome.kind === "baseline-created") {
+      expect(outcome.reason).toBe("update-flag");
+    }
+  });
+
+  it("(c) identical buffers → passed with mismatchedPixels:0, mismatchPct:0", () => {
+    const buf = solidBuffer(8, 8, 50, 100, 150);
+    const baseline = makeImage(8, 8, buf);
+    const captured = makeImage(8, 8, Buffer.from(buf));
+    const outcome = decideOutcome(baseline, captured, OPTS);
+    expect(outcome.kind).toBe("passed");
+    if (outcome.kind === "passed") {
+      expect(outcome.mismatchedPixels).toBe(0);
+      expect(outcome.mismatchPct).toBe(0);
+    }
+  });
+
+  it("(d) ~30% differing pixels → failed:tolerance-exceeded with diffRgba Buffer", () => {
+    const width = 8;
+    const height = 8;
+    const baseBuf = solidBuffer(width, height, 255, 0, 0);
+    const capBuf = solidBuffer(width, height, 255, 0, 0);
+    for (let i = 0; i < width * height; i += 3) {
+      capBuf[i * 4 + 0] = 0;
+      capBuf[i * 4 + 1] = 0;
+      capBuf[i * 4 + 2] = 255;
+    }
+    const baseline = makeImage(width, height, baseBuf);
+    const captured = makeImage(width, height, capBuf);
+    const outcome = decideOutcome(baseline, captured, OPTS);
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed" && outcome.reason === "tolerance-exceeded") {
+      expect(outcome.mismatchPct).toBeGreaterThan(0.01);
+      expect(outcome.diffRgba).toBeInstanceOf(Buffer);
+    }
+  });
+
+  it("(e) mismatched dimensions → failed:dimension-mismatch with all four dimension fields", () => {
+    const baseline = makeImage(8, 8, solidBuffer(8, 8, 0, 255, 0));
+    const captured = makeImage(16, 8, solidBuffer(16, 8, 0, 255, 0));
+    const outcome = decideOutcome(baseline, captured, OPTS);
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed" && outcome.reason === "dimension-mismatch") {
+      expect(outcome.baselineWidth).toBe(8);
+      expect(outcome.baselineHeight).toBe(8);
+      expect(outcome.capturedWidth).toBe(16);
+      expect(outcome.capturedHeight).toBe(8);
+    }
   });
 });
