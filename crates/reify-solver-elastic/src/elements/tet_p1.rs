@@ -62,6 +62,62 @@ mod tests {
     }
 
     #[test]
+    fn shape_grad_at_returns_canonical_constant_gradients() {
+        let probes = [
+            ReferenceCoord::new(0.25, 0.25, 0.25),
+            ReferenceCoord::new(0.0, 0.0, 0.0),
+            ReferenceCoord::new(0.1, 0.2, 0.3),
+        ];
+        let expected = [
+            [-1.0, -1.0, -1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let mut prev: Option<Vec<[f64; 3]>> = None;
+        for p in probes {
+            let g = TetP1.shape_grad_at(p);
+            assert_eq!(g.len(), 4, "shape_grad_at must return N_NODES=4 entries");
+            for (i, row) in g.iter().enumerate() {
+                for k in 0..3 {
+                    assert!(
+                        (row[k] - expected[i][k]).abs() < TOL,
+                        "∇N_{i}({:?})[{k}] = {} expected {}",
+                        p,
+                        row[k],
+                        expected[i][k],
+                    );
+                }
+            }
+            if let Some(prev_g) = &prev {
+                for (a, b) in g.iter().zip(prev_g.iter()) {
+                    for k in 0..3 {
+                        assert!(
+                            (a[k] - b[k]).abs() < TOL,
+                            "P1 gradients must be constant across reference points",
+                        );
+                    }
+                }
+            }
+            prev = Some(g);
+        }
+    }
+
+    #[test]
+    fn shape_grad_at_sum_is_zero_partition_of_unity_consequence() {
+        let g = TetP1.shape_grad_at(ReferenceCoord::new(0.1, 0.2, 0.3));
+        let mut sum = [0.0_f64; 3];
+        for row in g {
+            for k in 0..3 {
+                sum[k] += row[k];
+            }
+        }
+        for k in 0..3 {
+            assert!((sum[k]).abs() < TOL, "Σ_i ∇N_i[{k}] = {}, expected 0", sum[k]);
+        }
+    }
+
+    #[test]
     fn shape_at_partition_of_unity_at_centroid_and_interior() {
         let probes = [
             ReferenceCoord::new(0.25, 0.25, 0.25),
