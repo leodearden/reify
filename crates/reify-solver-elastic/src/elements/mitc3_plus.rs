@@ -75,10 +75,51 @@ mod tests {
         assert_eq!(Mitc3Plus::N_TYING_POINTS, 3);
     }
 
+    const TOL: f64 = 1e-12;
+
+    /// Reference vertices v_0, v_1, v_2 in canonical ordering.
+    const REF_VERTICES: [ShellReferenceCoord; 3] = [
+        ShellReferenceCoord::new(0.0, 0.0),
+        ShellReferenceCoord::new(1.0, 0.0),
+        ShellReferenceCoord::new(0.0, 1.0),
+    ];
+
     #[test]
     fn shell_reference_coord_constructor_pins_xi_eta_fields() {
         let coord = ShellReferenceCoord::new(0.3, 0.4);
         assert_eq!(coord.xi, 0.3);
         assert_eq!(coord.eta, 0.4);
+    }
+
+    #[test]
+    fn shape_at_satisfies_kronecker_delta_at_reference_vertices() {
+        for (i, v) in REF_VERTICES.iter().enumerate() {
+            let n = Mitc3Plus.shape_at(*v);
+            assert_eq!(n.len(), 3, "shape_at must return N_NODES=3 entries");
+            for (j, &n_j) in n.iter().enumerate() {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (n_j - expected).abs() < TOL,
+                    "N_{j}({:?}) = {n_j}, expected {expected}",
+                    v,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shape_at_partition_of_unity_at_centroid_and_interior() {
+        let probes = [
+            ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
+            ShellReferenceCoord::new(0.2, 0.3),
+        ];
+        for p in &probes {
+            let sum: f64 = Mitc3Plus.shape_at(*p).iter().sum();
+            assert!(
+                (sum - 1.0).abs() < TOL,
+                "Σ N_i({:?}) = {sum}, expected 1.0",
+                p,
+            );
+        }
     }
 }
