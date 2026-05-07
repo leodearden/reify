@@ -898,6 +898,85 @@ fn curvature_at_on_placed_sphere_principal_directions_perpendicular_to_world_nor
     );
 }
 
+// ---------------------------------------------------------------------------
+// NaN / Inf input rejection (validate_uv_finite guard)
+// ---------------------------------------------------------------------------
+
+/// `surface_normal_at` rejects non-finite (u, v) inputs with
+/// `QueryError::QueryFailed` containing "must be finite".
+///
+/// The guard must fire before the FFI call so that NaN/Inf parametric
+/// coordinates never reach the C++ wrapper. The four bad-input cases cover:
+/// NaN-u, NaN-v, +Inf-u, and -Inf-v — the full non-finite input matrix.
+#[test]
+fn surface_normal_at_rejects_non_finite_uv() {
+    let (mut kernel, sphere_id) = sphere_kernel(5.0);
+    let faces = kernel
+        .extract_faces(sphere_id)
+        .expect("extract_faces should succeed for sphere");
+    let face = faces[0];
+
+    let bad_inputs: &[(f64, f64)] = &[
+        (f64::NAN, 0.0),
+        (0.0, f64::NAN),
+        (f64::INFINITY, 0.0),
+        (0.0, f64::NEG_INFINITY),
+    ];
+
+    for &(u, v) in bad_inputs {
+        match kernel.surface_normal_at(face, u, v) {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains("must be finite"),
+                    "surface_normal_at(u={u}, v={v}): expected error containing \
+                     'must be finite', got: {msg}"
+                );
+            }
+            other => panic!(
+                "surface_normal_at(u={u}, v={v}): expected \
+                 Err(QueryFailed(\"...must be finite...\")), got {other:?}"
+            ),
+        }
+    }
+}
+
+/// `curvature_at` rejects non-finite (u, v) inputs with
+/// `QueryError::QueryFailed` containing "must be finite".
+///
+/// Mirrors `surface_normal_at_rejects_non_finite_uv` for the `curvature_at`
+/// entrypoint — both share the same `validate_uv_finite` helper.
+#[test]
+fn curvature_at_rejects_non_finite_uv() {
+    let (mut kernel, sphere_id) = sphere_kernel(5.0);
+    let faces = kernel
+        .extract_faces(sphere_id)
+        .expect("extract_faces should succeed for sphere");
+    let face = faces[0];
+
+    let bad_inputs: &[(f64, f64)] = &[
+        (f64::NAN, 0.0),
+        (0.0, f64::NAN),
+        (f64::INFINITY, 0.0),
+        (0.0, f64::NEG_INFINITY),
+    ];
+
+    for &(u, v) in bad_inputs {
+        match kernel.curvature_at(face, u, v) {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains("must be finite"),
+                    "curvature_at(u={u}, v={v}): expected error containing \
+                     'must be finite', got: {msg}"
+                );
+            }
+            other => panic!(
+                "curvature_at(u={u}, v={v}): expected \
+                 Err(QueryFailed(\"...must be finite...\")), got {other:?}"
+            ),
+        }
+    }
+}
+
 /// Cross-API agreement on a placed (non-identity-location) REVERSED face.
 ///
 /// Covers the quadrant missing from the other placed tests: REVERSED orientation
