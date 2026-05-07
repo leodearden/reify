@@ -389,15 +389,22 @@ describe('bakeColours', () => {
 // Step 9 — barrel-export wiring through gui/src/viewport/index.ts
 // ---------------------------------------------------------------------------
 describe('barrel export wiring (viewport/index)', () => {
+  // The dynamic `import('../../viewport/index')` cold-loads a large module
+  // graph (~2.3 s in isolation). Under the full suite's concurrent load it
+  // can push past vitest's default 5 000 ms test timeout, so each barrel
+  // test gets an explicit 15 000 ms allowance. Once the first test resolves
+  // the import the module cache makes subsequent loads near-instant, but the
+  // override is applied uniformly to keep the tests robust to scheduling
+  // order (steward esc-3061-3).
   it('applyColormap is re-exported from the viewport barrel', async () => {
     const barrel = await import('../../viewport/index');
     expect(typeof barrel.applyColormap).toBe('function');
-  });
+  }, 15_000);
 
   it('bakeColours is re-exported from the viewport barrel', async () => {
     const barrel = await import('../../viewport/index');
     expect(typeof barrel.bakeColours).toBe('function');
-  });
+  }, 15_000);
 
   it('applyColormap returns a proper 3-element Array for all palettes and range modes', async () => {
     const barrel = await import('../../viewport/index');
@@ -424,5 +431,5 @@ describe('barrel export wiring (viewport/index)', () => {
     const opts: import('../../viewport/colormap').ColormapOptions = { nanColor: [0, 0, 1] };
     const nanResult = barrel.applyColormap(NaN, r, 'viridis', opts);
     expect(nanResult).toEqual([0, 0, 1]);
-  });
+  }, 15_000);
 });
