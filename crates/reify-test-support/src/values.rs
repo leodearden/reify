@@ -598,16 +598,13 @@ impl Default for TypeAliasMap {
 /// - `Velocity`: LENGTH / TIME (m/s)
 /// - `Acceleration`: LENGTH / TIME² (m/s²)
 pub fn common_type_aliases() -> HashMap<String, Type> {
-    let pressure_dim = FORCE.div(&DimensionVector::AREA);
     let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
-    let acceleration_dim =
-        DimensionVector::LENGTH.div(&DimensionVector::TIME.mul(&DimensionVector::TIME));
 
     TypeAliasMap::new()
         .alias(
             "Pressure",
             Type::Scalar {
-                dimension: pressure_dim,
+                dimension: DimensionVector::PRESSURE,
             },
         )
         .alias(
@@ -619,7 +616,7 @@ pub fn common_type_aliases() -> HashMap<String, Type> {
         .alias(
             "Acceleration",
             Type::Scalar {
-                dimension: acceleration_dim,
+                dimension: DimensionVector::ACCELERATION,
             },
         )
         .build()
