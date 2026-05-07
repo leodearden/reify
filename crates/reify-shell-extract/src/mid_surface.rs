@@ -480,6 +480,19 @@ const TRI_TABLE: [[i8; 16]; 256] = [
 /// An empty [`MidSurfaceMesh`] if `mask.voxels` is empty (after all validation
 /// passes). Otherwise a triangulated mesh of the medial surface with
 /// per-vertex through-thickness.
+///
+/// # Performance
+///
+/// This is a v0.4 skeleton implementation. The hot path is the per-cell
+/// `mask_set` `HashSet` probe (8 corner lookups per cell), iterated over the
+/// full `nx × ny × nz` SDF grid even when the medial mask is sparse. For
+/// PRD-realistic grids (256³ ≈ 16 M cells) this dominates wall time.
+///
+/// The obvious optimisation — iterating only over cells adjacent to voxels in
+/// `mask.voxels` — is deferred to a follow-up task once T3 / T4 land and
+/// clarify the downstream latency budget. See the parallel note in
+/// `medial::compute_medial_mask` which makes the same tradeoff for dense
+/// voxel iteration.
 pub fn extract_mid_surface(
     sdf: &SampledField,
     mask: &MedialMask,
@@ -516,8 +529,8 @@ pub fn extract_mid_surface(
     let sdf_origin = [sdf.bounds_min[0], sdf.bounds_min[1], sdf.bounds_min[2]];
     let tol = options.grid_alignment_tolerance;
     for i in 0..3 {
-        if (sdf_spacing[i] - mask.spacing[i]).abs() >= tol
-            || (sdf_origin[i] - mask.origin[i]).abs() >= tol
+        if (sdf_spacing[i] - mask.spacing[i]).abs() > tol
+            || (sdf_origin[i] - mask.origin[i]).abs() > tol
         {
             return Err(MidSurfaceError::MaskGridMismatch {
                 sdf_spacing,
@@ -602,6 +615,19 @@ pub fn extract_mid_surface(
 
                         // Per-vertex thickness: 2 × |φ(mask-corner voxel center)|.
                         // Pick the mask corner (bit is set in corner_mask).
+                        //
+                        // Binary-MC invariant: every edge emitted by TRI_TABLE has
+                        // exactly one in-mask and one out-of-mask endpoint (because
+                        // corner_mask == 0 and corner_mask == 255 are skipped above).
+                        // The assert below fires only when TRI_TABLE is wrong (e.g.
+                        // a transcription error emits an edge between two same-state
+                        // corners), which would silently corrupt thickness values.
+                        debug_assert_ne!(
+                            (corner_mask >> ca) & 1,
+                            (corner_mask >> cb) & 1,
+                            "binary-MC invariant violated: edge {edge} (corners {ca},{cb}) \
+                             has same mask state in corner_mask={corner_mask:#010b}"
+                        );
                         let ia = (i as i32) + (off_a[0] as i32);
                         let ja = (j as i32) + (off_a[1] as i32);
                         let ka = (k as i32) + (off_a[2] as i32);
@@ -948,6 +974,18 @@ mod tests {
             assert!(a < nv, "triangle index {a} >= vertices.len() {nv}");
             assert!(b < nv, "triangle index {b} >= vertices.len() {nv}");
             assert!(c < nv, "triangle index {c} >= vertices.len() {nv}");
+        }
+        // (e) all vertex z-coordinates lie near the analytic mid-surface (z ≈ 0).
+        // On the slab fixture every emitted vertex is the midpoint of a z-aligned
+        // edge that spans one non-mask and one mask voxel, so |z| ≤ 0.5 < 1.0.
+        // A regression in axis ordering, corner-index permutation, or
+        // `world_at_index` indexing would produce |z| ≥ 1.0 and trip this check.
+        for &v in &mesh.vertices {
+            assert!(
+                v[2].abs() < 1.0,
+                "slab mid-surface vertex z={:.6} should be near z=0 plane (|z| < 1.0)",
+                v[2]
+            );
         }
     }
 
