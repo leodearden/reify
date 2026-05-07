@@ -887,6 +887,13 @@ impl std::error::Error for TessError {}
 pub enum QueryError {
     InvalidHandle(GeometryHandleId),
     QueryFailed(String),
+    /// A surface-differential query received a non-finite parametric input.
+    ///
+    /// Emitted by FFI guards (`OcctKernel::surface_normal_at`,
+    /// `OcctKernel::curvature_at`) when `u` or `v` is NaN or ±Infinity.
+    /// The variant echoes back the bad inputs so callers can surface
+    /// structured diagnostics without parsing message strings.
+    NonFiniteParameter { u: f64, v: f64 },
 }
 
 impl fmt::Display for QueryError {
@@ -894,6 +901,10 @@ impl fmt::Display for QueryError {
         match self {
             QueryError::InvalidHandle(id) => write!(f, "invalid handle for query: {:?}", id),
             QueryError::QueryFailed(msg) => write!(f, "geometry query failed: {}", msg),
+            QueryError::NonFiniteParameter { u, v } => write!(
+                f,
+                "geometry query received non-finite parameter: u={u}, v={v}"
+            ),
         }
     }
 }

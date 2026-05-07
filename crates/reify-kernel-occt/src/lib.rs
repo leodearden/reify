@@ -168,12 +168,13 @@ fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError
 /// inputs — OCCT may silently produce nonsensical output for NaN/Inf inputs
 /// rather than reporting a structured error, so we reject upfront.
 ///
-/// Returns `QueryError::QueryFailed` if either component is non-finite.
+/// Returns `QueryError::NonFiniteParameter { u, v }` if either component
+/// is non-finite (NaN or ±Infinity). The variant echoes the bad inputs
+/// so callers can surface structured diagnostics without inspecting a
+/// message string.
 fn validate_uv_finite(u: f64, v: f64) -> Result<(), QueryError> {
     if !u.is_finite() || !v.is_finite() {
-        return Err(QueryError::QueryFailed(format!(
-            "(u, v) must be finite (got u={u}, v={v})"
-        )));
+        return Err(QueryError::NonFiniteParameter { u, v });
     }
     Ok(())
 }
@@ -771,9 +772,10 @@ impl OcctKernel {
     /// # Errors
     ///
     /// - `QueryError::InvalidHandle` — if the handle is unknown.
-    /// - `QueryError::QueryFailed` — if `(u, v)` contains NaN or ±Inf, if the
-    ///   shape is not a face, has no underlying surface, yields a degenerate
-    ///   normal, or any OCCT call fails.
+    /// - `QueryError::NonFiniteParameter` — if `(u, v)` contains NaN or ±Inf.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, yields a degenerate normal, or any OCCT call
+    ///   fails.
     pub fn surface_normal_at(
         &self,
         handle: GeometryHandleId,
@@ -807,9 +809,10 @@ impl OcctKernel {
     /// # Errors
     ///
     /// - `QueryError::InvalidHandle` — if the handle is unknown.
-    /// - `QueryError::QueryFailed` — if `(u, v)` contains NaN or ±Inf, if the
-    ///   shape is not a face, has no underlying surface, curvature is undefined
-    ///   at `(u, v)`, or any OCCT call fails.
+    /// - `QueryError::NonFiniteParameter` — if `(u, v)` contains NaN or ±Inf.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, curvature is undefined at `(u, v)`, or any OCCT
+    ///   call fails.
     pub fn curvature_at(
         &self,
         handle: GeometryHandleId,
