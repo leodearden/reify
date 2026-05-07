@@ -1,9 +1,13 @@
 // Split from lib.rs (task 2032) — build methods.
 
 use std::collections::HashMap;
+#[cfg(any(test, feature = "test-instrumentation"))]
+use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
 use reify_compiler::CompiledModule;
+#[cfg(any(test, feature = "test-instrumentation"))]
+use reify_types::{CapabilityDescriptor, Operation};
 use reify_types::{
     AttributeHistory, CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat,
     FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId, GeometryKernel,
@@ -13,6 +17,8 @@ use reify_types::{
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::DependencyTrace;
+#[cfg(any(test, feature = "test-instrumentation"))]
+use crate::dispatcher::{dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
@@ -822,6 +828,71 @@ impl Engine {
         module
             .default_tolerance
             .unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE)
+    }
+
+    /// Test-instrumentation accessor — compute the per-realization
+    /// tolerance budget by routing `demanded_tol` through the dispatcher's
+    /// per-stage allocation primitive.
+    ///
+    /// Synthesises a [`crate::dispatcher::DispatchPlan`] via
+    /// [`dispatch`]`(registry, Operation::BooleanUnion, ReprKind::BRep,
+    /// &available)` where `available = {ReprKind::BRep}`. On `Some(plan)`
+    /// returns [`per_stage_tolerance_for_plan`]`(&plan, demanded_tol)`. On
+    /// `None` (no plan: dispatcher could not find a kernel + conversion
+    /// chain that satisfies the request against the supplied registry)
+    /// returns `demanded_tol` unchanged — this mirrors the empty-conversion
+    /// pass-through contract pinned by
+    /// `dispatcher::tests::per_stage_tolerance_for_plan_empty_chain_returns_requested_tol_unchanged`,
+    /// just one level up in the call stack: no plan ⇒ no budget allocation.
+    ///
+    /// **Hard-coded `(op, demanded, available)` triple**: per the task 2874
+    /// design decision, the v0.2 occt-only inventory and BRep-on-BRep
+    /// realization metadata baseline mean the realization-level budget
+    /// query always issues `(BooleanUnion, BRep, {BRep})`. With this
+    /// triple, the BFS in [`dispatch`] returns at depth 0 whenever any
+    /// kernel in the registry supports `(BooleanUnion, BRep)`, yielding a
+    /// 0-conversion plan and `per_stage_tolerance_for_plan` passes the
+    /// demand through unchanged. Multi-kernel adapters (PRD §"Resolved
+    /// design decisions") will introduce richer per-realization
+    /// `Operation`/`ReprKind` metadata; the helper signature is stable
+    /// across that future, only the triple's source becomes
+    /// `RealizationDecl`-derived rather than hard-coded.
+    ///
+    /// **Step-12** wires this into the production `tessellate_from_values`
+    /// call path via [`crate::kernel_registry::collect_registry`]; the
+    /// `cfg`-gate on this accessor is dropped at that point so the
+    /// production path can call it without a feature toggle. Step-12 also
+    /// replaces the `Self::effective_tessellation_tolerance(module)`
+    /// argument to `kernel.tessellate(...)` with a per-realization budget
+    /// computed via this helper, threading per-output demanded tolerances
+    /// into the kernel-tessellation call site.
+    ///
+    /// **Cfg-gate rationale** (mirroring [`crate::Engine::realization_cache`]
+    /// /`feature_tag_table` precedent): pre-step-12 there is no production
+    /// caller, so exposing the helper publicly would leak an unstable
+    /// surface. The `any(test, feature = "test-instrumentation")` gate
+    /// matches the integration-test build configuration in
+    /// `crates/reify-eval/Cargo.toml:21` (the self-dev-dep that enables
+    /// `test-instrumentation`), so external integration tests in
+    /// `crates/reify-eval/tests/` can call this accessor without taking a
+    /// `pub` dependency on the helper.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn compute_realization_tolerance_budget(
+        &self,
+        registry: &BTreeMap<String, &CapabilityDescriptor>,
+        demanded_tol: f64,
+    ) -> f64 {
+        let mut available: HashSet<ReprKind> = HashSet::new();
+        available.insert(ReprKind::BRep);
+        match dispatch(
+            registry,
+            Operation::BooleanUnion,
+            ReprKind::BRep,
+            &available,
+        ) {
+            Some(plan) => per_stage_tolerance_for_plan(&plan, demanded_tol),
+            None => demanded_tol,
+        }
     }
 
     /// Shared helper: execute geometry operations and tessellate each realization.
