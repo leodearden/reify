@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { MeshStandardMaterial } from 'three';
-import type { MeshData } from '../../types';
+import type { MeshData, RawMeshData } from '../../types';
 
 // Track all created mocks.
 // mockBasicMaterials and mockPhongMaterials use vi.hoisted so they are initialized
@@ -137,6 +137,7 @@ vi.mock('three-mesh-bvh', () => ({
 }));
 
 import { createMeshManager } from '../../viewport/meshManager';
+import { convertRawMesh } from '../../types';
 import { Scene } from 'three';
 
 beforeEach(() => {
@@ -1459,6 +1460,65 @@ describe('meshManager', () => {
       const ghostMap5: Map<string, any> = (manager as any).getGhostMeshes();
       expect(ghostMap5.has('A')).toBe(true);
       expect(ghostMap5.size).toBe(1);
+    });
+  });
+
+  describe('end-to-end pipeline: RawMeshData → convertRawMesh → meshManager (E2E-01)', () => {
+    it('full IPC→TS→meshManager pipeline produces phong material and colour buffer', () => {
+      // Construct a RawMeshData JSON literal that mimics what the Rust serializer emits.
+      // (3 vertices: a right-angle triangle in the XY plane)
+      const raw: RawMeshData = {
+        entity_path: 'B',
+        vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        indices: [0, 1, 2],
+        normals: null,
+        scalar_channels: { vonMises: [10, 20, 30] },
+        displaced_positions: [0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0],
+      };
+
+      // Step 1: convert raw payload → typed MeshData
+      const converted = convertRawMesh(raw);
+
+      // Verify conversion preserved scalar_channels as Float32Array
+      expect(converted.scalar_channels).toBeDefined();
+      expect(converted.scalar_channels!.vonMises).toBeInstanceOf(Float32Array);
+      expect(Array.from(converted.scalar_channels!.vonMises)).toEqual([10, 20, 30]);
+
+      // Verify displaced_positions was converted
+      expect(converted.displaced_positions).toBeInstanceOf(Float32Array);
+
+      // Step 2: feed through meshManager with colorize
+      const sentinelBake = (s: Float32Array) =>
+        new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({ B: converted });
+
+      const mesh = manager.getSceneMeshes().get('B')!;
+      expect(mesh).toBeDefined();
+
+      // Material is MeshPhongMaterial with vertexColors
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      const mat = mesh.material as any;
+      expect(mat.vertexColors).toBe(true);
+      expect(mat.flatShading).toBe(false);
+      expect(mat.side).toBe(2); // DoubleSide
+
+      // Geometry has color attribute baked by sentinelBake([10, 20, 30])
+      const colorAttr = (mesh.geometry as any).attributes.color;
+      expect(colorAttr).toBeDefined();
+      expect(colorAttr.itemSize).toBe(3);
+      expect(Array.from(colorAttr.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
+
+      // displaced_positions field is preserved in converted MeshData but NOT applied
+      // to the position buffer (that is task G3 work).
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     });
   });
 });
