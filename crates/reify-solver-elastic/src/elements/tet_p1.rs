@@ -210,6 +210,11 @@ mod tests {
             "swapped node ordering must yield a negative det (got {})",
             j.det
         );
+        assert!(
+            (j.det - (-1.0)).abs() < TOL,
+            "swapped node ordering must yield det = -1 exactly (got {})",
+            j.det,
+        );
     }
 
     #[test]
