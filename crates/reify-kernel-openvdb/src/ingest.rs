@@ -632,23 +632,51 @@ fn extract_codomain_dimension(t: &Type) -> Result<DimensionVector, IngestError> 
 /// to identify the variant in error messages (e.g. `"Bool"`, `"Int"`,
 /// `"Geometry"`, `"Enum"`, `"Function"`, `"List"`, …).
 ///
-/// Mechanically derives the variant tag from `Type`'s derived `Debug`
-/// impl — we take the formatted string and chop at the first space, `{`,
-/// or `(`, which leaves only the bare variant name. This avoids
-/// duplicating `Type`'s variant set in this peer crate: a new `Type`
-/// variant added later automatically gets a sensible label here without
-/// any code change in `reify-kernel-openvdb`.
+/// Uses an exhaustive `match` over every `Type` variant, returning the
+/// exact Rust identifier name as a `&'static str`. The exhaustiveness
+/// check is the key property: adding a new variant to `Type` in
+/// `reify-types` produces a compiler error here, forcing a deliberate
+/// label decision rather than silently inheriting whatever `Debug`
+/// formatting happens to emit.
 ///
 /// Trade-off: payload data (e.g. the name inside `Type::Enum("Foo")`) is
 /// dropped — only the variant identity is preserved. That's the correct
 /// granularity for an "unsupported codomain" error message; the variant
 /// identity is the actionable contract.
 fn format_type_repr(t: &Type) -> String {
-    let dbg = format!("{t:?}");
-    dbg.split([' ', '{', '('])
-        .next()
-        .unwrap_or(&dbg)
-        .to_string()
+    match t {
+        Type::Bool => "Bool",
+        Type::Int => "Int",
+        Type::Real => "Real",
+        Type::String => "String",
+        Type::Scalar { .. } => "Scalar",
+        Type::Enum(_) => "Enum",
+        Type::List(_) => "List",
+        Type::Set(_) => "Set",
+        Type::Map(_, _) => "Map",
+        Type::Option(_) => "Option",
+        Type::Function { .. } => "Function",
+        Type::TypeParam(_) => "TypeParam",
+        Type::StructureRef(_) => "StructureRef",
+        Type::TraitObject(_) => "TraitObject",
+        Type::Field { .. } => "Field",
+        Type::Geometry => "Geometry",
+        Type::Point { .. } => "Point",
+        Type::Vector { .. } => "Vector",
+        Type::Tensor { .. } => "Tensor",
+        Type::Complex(_) => "Complex",
+        Type::Orientation(_) => "Orientation",
+        Type::Frame(_) => "Frame",
+        Type::Transform(_) => "Transform",
+        Type::Range(_) => "Range",
+        Type::Plane => "Plane",
+        Type::Axis => "Axis",
+        Type::BoundingBox => "BoundingBox",
+        Type::Matrix { .. } => "Matrix",
+        Type::Error => "Error",
+        Type::Union(_) => "Union",
+    }
+    .to_string()
 }
 
 #[cfg(test)]
@@ -695,6 +723,118 @@ mod tests {
         assert_eq!(
             extract_codomain_dimension(&Type::Real),
             Ok(DimensionVector::DIMENSIONLESS)
+        );
+    }
+
+    /// Contract table: `format_type_repr` returns the exact Rust variant
+    /// identifier name for every `Type` variant.
+    ///
+    /// This test is the regression net for the exhaustive-match refactor in
+    /// step 2: if any arm is misspelled or omitted, the compiler flags the
+    /// exhaustiveness failure (for missing arms) or this test catches a
+    /// wrong string at runtime.
+    #[test]
+    fn format_type_repr_returns_variant_identifier_name_for_each_type_variant() {
+        // Unit variants (9)
+        assert_eq!(format_type_repr(&Type::Bool), "Bool");
+        assert_eq!(format_type_repr(&Type::Int), "Int");
+        assert_eq!(format_type_repr(&Type::Real), "Real");
+        assert_eq!(format_type_repr(&Type::String), "String");
+        assert_eq!(format_type_repr(&Type::Geometry), "Geometry");
+        assert_eq!(format_type_repr(&Type::Plane), "Plane");
+        assert_eq!(format_type_repr(&Type::Axis), "Axis");
+        assert_eq!(format_type_repr(&Type::BoundingBox), "BoundingBox");
+        assert_eq!(format_type_repr(&Type::Error), "Error");
+
+        // Newtype-payload variants (13)
+        assert_eq!(format_type_repr(&Type::Enum("X".into())), "Enum");
+        assert_eq!(format_type_repr(&Type::List(Box::new(Type::Bool))), "List");
+        assert_eq!(format_type_repr(&Type::Set(Box::new(Type::Bool))), "Set");
+        assert_eq!(
+            format_type_repr(&Type::Option(Box::new(Type::Bool))),
+            "Option"
+        );
+        assert_eq!(
+            format_type_repr(&Type::Complex(Box::new(Type::Real))),
+            "Complex"
+        );
+        assert_eq!(
+            format_type_repr(&Type::Range(Box::new(Type::Int))),
+            "Range"
+        );
+        assert_eq!(format_type_repr(&Type::Orientation(3)), "Orientation");
+        assert_eq!(format_type_repr(&Type::Frame(3)), "Frame");
+        assert_eq!(format_type_repr(&Type::Transform(3)), "Transform");
+        assert_eq!(format_type_repr(&Type::TypeParam("T".into())), "TypeParam");
+        assert_eq!(
+            format_type_repr(&Type::StructureRef("S".into())),
+            "StructureRef"
+        );
+        assert_eq!(
+            format_type_repr(&Type::TraitObject("Tr".into())),
+            "TraitObject"
+        );
+        assert_eq!(
+            format_type_repr(&Type::Union(vec![Type::Bool, Type::Int])),
+            "Union"
+        );
+
+        // Two-element tuple variant (1)
+        assert_eq!(
+            format_type_repr(&Type::Map(Box::new(Type::Bool), Box::new(Type::Int))),
+            "Map"
+        );
+
+        // Struct-like variants (7)
+        assert_eq!(
+            format_type_repr(&Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS
+            }),
+            "Scalar"
+        );
+        assert_eq!(
+            format_type_repr(&Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Bool),
+            }),
+            "Function"
+        );
+        assert_eq!(
+            format_type_repr(&Type::Field {
+                domain: Box::new(Type::Real),
+                codomain: Box::new(Type::Real),
+            }),
+            "Field"
+        );
+        assert_eq!(
+            format_type_repr(&Type::Point {
+                n: 3,
+                quantity: Box::new(Type::Real),
+            }),
+            "Point"
+        );
+        assert_eq!(
+            format_type_repr(&Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Real),
+            }),
+            "Vector"
+        );
+        assert_eq!(
+            format_type_repr(&Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::Real),
+            }),
+            "Tensor"
+        );
+        assert_eq!(
+            format_type_repr(&Type::Matrix {
+                m: 2,
+                n: 3,
+                quantity: Box::new(Type::Real),
+            }),
+            "Matrix"
         );
     }
 }

@@ -1,5 +1,5 @@
-use reify_types::Value;
 use crate::eval_builtin;
+use reify_types::Value;
 
 pub(crate) fn axis_x_unit() -> Value {
     Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
@@ -48,13 +48,16 @@ pub(crate) fn identity_transform_value() -> Value {
 }
 
 pub(crate) fn planar_xy_joint() -> Value {
-    eval_builtin("planar", &[
-        axis_x_unit(),
-        axis_y_unit(),
-        length_range_0_to_1m(),
-        length_range_0_to_1m(),
-        angle_range_0_to_pi(),
-    ])
+    eval_builtin(
+        "planar",
+        &[
+            axis_x_unit(),
+            axis_y_unit(),
+            length_range_0_to_1m(),
+            length_range_0_to_1m(),
+            angle_range_0_to_pi(),
+        ],
+    )
 }
 
 pub(crate) fn spherical_joint() -> Value {

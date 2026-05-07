@@ -395,7 +395,8 @@ describe('barrel export wiring (viewport/index)', () => {
   // test load (npm test, ~89 files), the cold barrel import can exceed the
   // default 5 s budget even with the Three.js / Tauri mocks above (it passes
   // in ~332 ms in isolation). Bump the per-test budget to match the suite's
-  // heaviest-import scenarios; subsequent tests reuse the warm import cache.
+  // heaviest-import scenarios; subsequent tests reuse the warm import cache
+  // (steward esc-3061-3).
   it('applyColormap is re-exported from the viewport barrel', { timeout: 15000 }, async () => {
     const barrel = await import('../../viewport/index');
     expect(typeof barrel.applyColormap).toBe('function');

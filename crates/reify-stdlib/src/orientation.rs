@@ -385,11 +385,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             if !a.is_finite() || !b.is_finite() || !c.is_finite() {
                 return Some(Value::Undef);
             }
-            Value::List(vec![
-                Value::angle(a),
-                Value::angle(b),
-                Value::angle(c),
-            ])
+            Value::List(vec![Value::angle(a), Value::angle(b), Value::angle(c)])
         }
         "orient_to_axis_angle" => {
             if args.len() != 1 {
@@ -412,10 +408,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                 ([x / v_norm, y / v_norm, z / v_norm], a)
             };
             let mut m = BTreeMap::new();
-            m.insert(
-                Value::String("angle".to_string()),
-                Value::angle(angle),
-            );
+            m.insert(Value::String("angle".to_string()), Value::angle(angle));
             m.insert(
                 Value::String("axis".to_string()),
                 Value::Vector(vec![
@@ -514,8 +507,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             let half = angle / 2.0;
             let s = half.sin() / angle;
             sanitize_value(
-                normalize_quaternion(half.cos(), s * vx, s * vy, s * vz)
-                    .unwrap_or(Value::Undef),
+                normalize_quaternion(half.cos(), s * vx, s * vy, s * vz).unwrap_or(Value::Undef),
             )
         }
         "orient_axis_angle" => {
@@ -577,7 +569,9 @@ fn elementary_rotation_quat(axis: usize, angle: f64) -> (f64, f64, f64, f64) {
         0 => (c, s, 0.0, 0.0),
         1 => (c, 0.0, s, 0.0),
         2 => (c, 0.0, 0.0, s),
-        _ => unreachable!("elementary_rotation_quat called with axis > 2 — axes always come from orient_euler match"),
+        _ => unreachable!(
+            "elementary_rotation_quat called with axis > 2 — axes always come from orient_euler match"
+        ),
     }
 }
 
@@ -625,26 +619,58 @@ mod tests {
         let cases: [(&str, fn()); 4] = [
             ("w:", || {
                 assert_orientation_approx!(
-                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
-                    0.5, 0.0, 0.0, 0.0  // wrong w
+                    Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0
+                    },
+                    0.5,
+                    0.0,
+                    0.0,
+                    0.0 // wrong w
                 );
             }),
             ("x:", || {
                 assert_orientation_approx!(
-                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
-                    1.0, 0.5, 0.0, 0.0  // wrong x
+                    Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0
+                    },
+                    1.0,
+                    0.5,
+                    0.0,
+                    0.0 // wrong x
                 );
             }),
             ("y:", || {
                 assert_orientation_approx!(
-                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
-                    1.0, 0.0, 0.5, 0.0  // wrong y
+                    Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0
+                    },
+                    1.0,
+                    0.0,
+                    0.5,
+                    0.0 // wrong y
                 );
             }),
             ("z:", || {
                 assert_orientation_approx!(
-                    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
-                    1.0, 0.0, 0.0, 0.5  // wrong z
+                    Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0
+                    },
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.5 // wrong z
                 );
             }),
         ];
@@ -1718,13 +1744,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert_orientation_approx!(
-            eval_builtin("orient_compose", &[id, q]),
-            0.5,
-            0.5,
-            0.5,
-            0.5
-        );
+        assert_orientation_approx!(eval_builtin("orient_compose", &[id, q]), 0.5, 0.5, 0.5, 0.5);
     }
 
     /// Identity composed on the right should yield the left operand.
@@ -1742,13 +1762,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert_orientation_approx!(
-            eval_builtin("orient_compose", &[q, id]),
-            0.5,
-            0.5,
-            0.5,
-            0.5
-        );
+        assert_orientation_approx!(eval_builtin("orient_compose", &[q, id]), 0.5, 0.5, 0.5, 0.5);
     }
 
     /// Composing two 90° rotations about the same axis yields a 180° rotation
@@ -1870,13 +1884,7 @@ mod tests {
             y: 0.0,
             z: s,
         };
-        assert_orientation_approx!(
-            eval_builtin("orient_inverse", &[q90z]),
-            s,
-            0.0,
-            0.0,
-            -s
-        );
+        assert_orientation_approx!(eval_builtin("orient_inverse", &[q90z]), s, 0.0, 0.0, -s);
     }
 
     /// q ∘ inverse(q) ≈ identity (sign-insensitive due to double-cover).
@@ -1983,11 +1991,15 @@ mod tests {
                 let v0 = items[0].as_f64().unwrap();
                 let v1 = items[1].as_f64().unwrap();
                 let v2 = items[2].as_f64().unwrap();
-                assert!(v0.is_finite() && v1.is_finite() && v2.is_finite(),
-                    "near-identity log must be finite, got [{v0}, {v1}, {v2}]");
+                assert!(
+                    v0.is_finite() && v1.is_finite() && v2.is_finite(),
+                    "near-identity log must be finite, got [{v0}, {v1}, {v2}]"
+                );
                 // Leading-order Taylor: log ≈ 2*(x,y,z); verify within 1% relative tolerance
-                assert!((v0 - 1e-8).abs() < 1e-9,
-                    "near-identity x-component expected ~1e-8 got {v0}");
+                assert!(
+                    (v0 - 1e-8).abs() < 1e-9,
+                    "near-identity x-component expected ~1e-8 got {v0}"
+                );
                 assert!(v1.abs() < 1e-15);
                 assert!(v2.abs() < 1e-15);
             }
@@ -2119,7 +2131,11 @@ mod tests {
 
     #[test]
     fn orient_exp_nan_component_returns_undef() {
-        let nan_v = Value::Vector(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        let nan_v = Value::Vector(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
         assert!(eval_builtin("orient_exp", &[nan_v]).is_undef());
     }
 
@@ -2302,9 +2318,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(
-            eval_builtin("orient_slerp", &[Value::Real(1.0), q, Value::Real(0.5)]).is_undef()
-        );
+        assert!(eval_builtin("orient_slerp", &[Value::Real(1.0), q, Value::Real(0.5)]).is_undef());
     }
 
     #[test]
@@ -2315,9 +2329,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(
-            eval_builtin("orient_slerp", &[q, Value::Real(1.0), Value::Real(0.5)]).is_undef()
-        );
+        assert!(eval_builtin("orient_slerp", &[q, Value::Real(1.0), Value::Real(0.5)]).is_undef());
     }
 
     #[test]
@@ -2360,9 +2372,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(
-            eval_builtin("orient_slerp", &[q.clone(), q, Value::Real(f64::NAN)]).is_undef()
-        );
+        assert!(eval_builtin("orient_slerp", &[q.clone(), q, Value::Real(f64::NAN)]).is_undef());
     }
 
     #[test]
@@ -2392,19 +2402,16 @@ mod tests {
             Value::Vector(items) | Value::Tensor(items) | Value::Point(items)
                 if items.len() == 3 =>
             {
-                [
-                    items[0].as_f64()?,
-                    items[1].as_f64()?,
-                    items[2].as_f64()?,
-                ]
+                [items[0].as_f64()?, items[1].as_f64()?, items[2].as_f64()?]
             }
             _ => return None,
         };
         // angle should be Angle Scalar
         let angle = match angle_v {
-            Value::Scalar { si_value, dimension } if *dimension == DimensionVector::ANGLE => {
-                *si_value
-            }
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if *dimension == DimensionVector::ANGLE => *si_value,
             _ => return None,
         };
         Some((comps, angle))
@@ -2486,10 +2493,7 @@ mod tests {
                 Value::Real(axis_in[1]),
                 Value::Real(axis_in[2]),
             ]);
-            let q = eval_builtin(
-                "orient_axis_angle",
-                &[axis_v, Value::Real(*angle_in)],
-            );
+            let q = eval_builtin("orient_axis_angle", &[axis_v, Value::Real(*angle_in)]);
             let result = eval_builtin("orient_to_axis_angle", &[q]);
             let (axis_out, angle_out) = axis_angle_extract(&result)
                 .unwrap_or_else(|| panic!("expected axis-angle Map, got {:?}", result));
@@ -2538,7 +2542,10 @@ mod tests {
         let mut out = [0.0; 3];
         for (i, item) in items.iter().enumerate() {
             match item {
-                Value::Scalar { si_value, dimension } if *dimension == DimensionVector::ANGLE => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } if *dimension == DimensionVector::ANGLE => {
                     out[i] = *si_value;
                 }
                 _ => return None,
@@ -2555,10 +2562,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        let result = eval_builtin(
-            "orient_to_euler",
-            &[Value::String("xyz".to_string()), id],
-        );
+        let result = eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), id]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!(angles[0].abs() < 1e-12);
@@ -2580,10 +2584,7 @@ mod tests {
                 Value::Real(c),
             ],
         );
-        let result = eval_builtin(
-            "orient_to_euler",
-            &[Value::String("xyz".to_string()), q],
-        );
+        let result = eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), q]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!(
@@ -2620,10 +2621,7 @@ mod tests {
                 Value::Real(c),
             ],
         );
-        let result = eval_builtin(
-            "orient_to_euler",
-            &[Value::String("zyx".to_string()), q],
-        );
+        let result = eval_builtin("orient_to_euler", &[Value::String("zyx".to_string()), q]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!((angles[0] - a).abs() < 1e-10);
@@ -2639,13 +2637,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(
-            eval_builtin(
-                "orient_to_euler",
-                &[Value::String("abc".to_string()), q]
-            )
-            .is_undef()
-        );
+        assert!(eval_builtin("orient_to_euler", &[Value::String("abc".to_string()), q]).is_undef());
     }
 
     #[test]
@@ -2657,9 +2649,7 @@ mod tests {
             z: 0.0,
         };
         assert!(eval_builtin("orient_to_euler", &[]).is_undef());
-        assert!(
-            eval_builtin("orient_to_euler", &[Value::String("xyz".to_string())]).is_undef()
-        );
+        assert!(eval_builtin("orient_to_euler", &[Value::String("xyz".to_string())]).is_undef());
         assert!(
             eval_builtin(
                 "orient_to_euler",
@@ -2701,10 +2691,7 @@ mod tests {
             Value::Orientation { w, x, y, z } => (w, x, y, z),
             other => panic!("expected Orientation, got {:?}", other),
         };
-        let result = eval_builtin(
-            "orient_to_euler",
-            &[Value::String("xyz".to_string()), q],
-        );
+        let result = eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), q]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         // Recompose and verify equivalence to the original quaternion.

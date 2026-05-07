@@ -485,8 +485,7 @@ fn strip_world_sentinel(path: &[Value]) -> Option<Vec<Value>> {
     let first = path.first()?;
     let is_world = match first {
         Value::Map(m) => {
-            m.get(&Value::String("kind".to_string()))
-                == Some(&Value::String("world".to_string()))
+            m.get(&Value::String("kind".to_string())) == Some(&Value::String("world".to_string()))
         }
         _ => false,
     };
@@ -703,8 +702,7 @@ mod tests {
     fn loop_residual_twist_identical_chains_zero() {
         let a = vec![prismatic_x()];
         let b = vec![prismatic_x()];
-        let twist: [f64; 6] =
-            super::loop_residual_twist(&a, &[0.5], &b, &[0.5]).expect("twist");
+        let twist: [f64; 6] = super::loop_residual_twist(&a, &[0.5], &b, &[0.5]).expect("twist");
         for v in twist.iter() {
             assert!(v.abs() < 1e-12, "expected zero twist, got {twist:?}");
         }
@@ -768,12 +766,18 @@ mod tests {
 
     #[test]
     fn joint_range_midpoint_prismatic_neg_to_pos() {
-        let j = eval_builtin("prismatic", &[axis_x_unit(), Value::Range {
-            lower: Some(Box::new(Value::length(-2.0))),
-            upper: Some(Box::new(Value::length(2.0))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        }]);
+        let j = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(-2.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
         let mid = super::joint_range_midpoint(&j).expect("midpoint");
         assert!(mid.abs() < 1e-12);
     }
@@ -950,12 +954,7 @@ mod tests {
 
     // ── chain_jacobian_fd tests ──────────────────────────────────────────
 
-    fn assert_columns_close(
-        actual: &[[f64; 6]],
-        expected: &[[f64; 6]],
-        tol: f64,
-        label: &str,
-    ) {
+    fn assert_columns_close(actual: &[[f64; 6]], expected: &[[f64; 6]], tol: f64, label: &str) {
         assert_eq!(
             actual.len(),
             expected.len(),
@@ -995,13 +994,7 @@ mod tests {
     #[test]
     fn chain_jacobian_fd_two_joint_returns_two_columns() {
         let chain = vec![prismatic_x(), revolute_z()];
-        let cols = super::chain_jacobian_fd(
-            &chain,
-            &[0.5, 0.0],
-            &[0, 1],
-            1e-6,
-        )
-        .expect("cols");
+        let cols = super::chain_jacobian_fd(&chain, &[0.5, 0.0], &[0, 1], 1e-6).expect("cols");
         assert_eq!(cols.len(), 2);
         for col in &cols {
             for v in col.iter() {
@@ -1153,7 +1146,10 @@ mod tests {
         assert_eq!(cols.len(), 2, "expected 2 columns for 2 free indices");
         for col in &cols {
             for v in col.iter() {
-                assert!(v.is_finite(), "expected all column entries to be finite, got {col:?}");
+                assert!(
+                    v.is_finite(),
+                    "expected all column entries to be finite, got {col:?}"
+                );
             }
         }
         // Cross-chain reference: same joints without the fixed slot; free indices [0, 1].
@@ -1627,15 +1623,27 @@ mod tests {
             super::extract_loop_closure_chains(&record, &bindings)
                 .expect("extract_loop_closure_chains must return Some for a well-formed record");
 
-        assert_eq!(chain_a, vec![j_a.clone()], "chain_a should strip world sentinel");
+        assert_eq!(
+            chain_a,
+            vec![j_a.clone()],
+            "chain_a should strip world sentinel"
+        );
         assert_eq!(vals_a.len(), 1, "vals_a length must equal chain_a length");
         assert!(
             (vals_a[0] - 0.5).abs() < 1e-12,
             "vals_a[0] expected 0.5 (bound), got {}",
             vals_a[0]
         );
-        assert_eq!(chain_b, vec![j_b.clone()], "chain_b should strip world sentinel");
-        assert_eq!(vals_b_initial.len(), 1, "vals_b_initial length must equal chain_b length");
+        assert_eq!(
+            chain_b,
+            vec![j_b.clone()],
+            "chain_b should strip world sentinel"
+        );
+        assert_eq!(
+            vals_b_initial.len(),
+            1,
+            "vals_b_initial length must equal chain_b length"
+        );
         assert!(
             (vals_b_initial[0] - 0.5).abs() < 1e-12,
             "vals_b_initial[0] expected midpoint 0.5 (jB range 0..1m), got {}",

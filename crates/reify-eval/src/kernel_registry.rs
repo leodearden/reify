@@ -41,50 +41,31 @@
 //! "read once at engine startup" contract structurally rather than relying
 //! on caller discipline — both [`crate::Engine::with_registered_kernel`] and
 //! the future dispatcher wiring share the cached map and the centralised
-//! tie-break helper [`pick_lexmin_kernel`].
+//! tie-break helper [`pick_lexmin_kernel`]. The `(Operation, ReprKind)`
+//! uniqueness diagnostic ([`warn_if_duplicate_op_repr_pairs`]) is also
+//! amortised behind the same OnceLock: it runs once inside the init closure
+//! alongside [`build_registry`] and never repeats, mirroring the existing
+//! duplicate-NAME walk.
+//!
+//! **Debug-build note:** `OnceLock::get_or_init` leaves the cell
+//! uninitialised if the init closure panics (per stdlib semantics). In debug
+//! builds, a duplicate `(Operation, ReprKind)` pair triggers a
+//! `debug_assert!` inside [`warn_if_duplicate_op_repr_pairs`], which panics
+//! and leaves the cell uninitialised. Every subsequent `registry()` call will
+//! re-run the closure, re-allocate the descriptor map, re-run the duplicate
+//! walk, and re-panic — emitting multiple WARN events rather than exactly
+//! one. This only occurs on an adapter misconfiguration (a programming error)
+//! in debug builds; release builds follow the WARN path without panicking and
+//! the OnceLock is populated normally.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Memoized BTreeMap of every static-collected [`KernelRegistration`], keyed
 /// by `name`. Allocated once on first call and never rebuilt.
 static REGISTRY: OnceLock<BTreeMap<String, &'static KernelRegistration>> = OnceLock::new();
-
-/// Once-shot gate around `collect_registry()`'s call to
-/// [`warn_if_duplicate_op_repr_pairs`]. Mirrors how the surrounding
-/// `REGISTRY: OnceLock` amortises [`build_registry`]'s duplicate-NAME
-/// walk: the (Operation, ReprKind) uniqueness verdict is stable across
-/// calls because descriptor function pointers are fixed at link time, so
-/// running the O(kernels × supports) HashMap walk on every
-/// `collect_registry()` invocation would burn CPU for no diagnostic
-/// benefit. Consumed via `compare_exchange(false, true)` so the gate
-/// flips exactly once per process; subsequent calls observe `Err` and
-/// short-circuit.
-static UNIQUENESS_CHECKED: AtomicBool = AtomicBool::new(false);
-
-/// Counter tracking how many times `collect_registry()`'s gated branch
-/// has actually invoked [`warn_if_duplicate_op_repr_pairs`]. Because the
-/// surrounding [`UNIQUENESS_CHECKED`] gate uses `compare_exchange(false,
-/// true)`, this counter transitions 0 → 1 at most once across all
-/// `collect_registry()` callers in the process — its monotonic upper
-/// bound IS the at-most-once contract.
-///
-/// Crucially the `fetch_add(1)` lives INSIDE the gated branch, NOT at
-/// the top of the helper itself. This means helper-direct tests (which
-/// call the helper with synthetic input to exercise the warn/panic
-/// paths) do NOT inflate the counter and cannot interfere with parallel
-/// `collect_registry()`-based tests reading it.
-///
-/// Exposed at module scope (not `pub(crate)`) so the inner `tests`
-/// module can read it via `super::UNIQUENESS_CHECK_INVOCATIONS`. Pins
-/// the once-shot contract structurally: see
-/// [`tests::collect_registry_runs_uniqueness_check_at_most_once_across_calls`]
-/// which snapshots before/after three `collect_registry()` calls and
-/// asserts `delta <= 1`.
-static UNIQUENESS_CHECK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Borrowed accessor over the memoized registry of [`KernelRegistration`]
 /// records.
@@ -111,8 +92,24 @@ static UNIQUENESS_CHECK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 /// and trips a `debug_assert!` (and emits a `tracing::warn!`) on collision so
 /// such misconfigurations surface loudly in dev/test rather than producing
 /// arbitrary kernel selection in release.
+///
+/// # Duplicate `(Operation, ReprKind)` detection
+///
+/// The OnceLock init closure also invokes each kernel's descriptor function
+/// once (lazily, via iterator) and passes the results to
+/// [`warn_if_duplicate_op_repr_pairs`], surfacing duplicate-(op, repr)-pair
+/// misconfigurations at startup via `tracing::warn!` (and `debug_assert!` in
+/// debug builds). No intermediate collection is built — the iterator is
+/// consumed directly. This diagnostic runs exactly once per process,
+/// structurally guaranteed by the surrounding `OnceLock`.
 pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
-    REGISTRY.get_or_init(build_registry)
+    REGISTRY.get_or_init(|| {
+        let map = build_registry();
+        warn_if_duplicate_op_repr_pairs(
+            map.iter().map(|(name, reg)| (name.as_str(), (reg.descriptor)())),
+        );
+        map
+    })
 }
 
 /// The lexicographically smallest [`KernelRegistration`] in the memoized
@@ -149,33 +146,17 @@ pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
 /// Internally delegates to the memoized [`registry`] accessor so the
 /// inventory walk is never repeated; the per-call cost is one descriptor
 /// invocation per registered kernel plus the surrounding `BTreeMap`
-/// allocation. The [`warn_if_duplicate_op_repr_pairs`] uniqueness check
-/// (an O(kernels × supports) `HashMap` walk) is gated behind
-/// `UNIQUENESS_CHECKED` so it runs at most once per process — mirroring
-/// how [`build_registry`]'s duplicate-NAME check is amortised behind the
-/// surrounding `REGISTRY: OnceLock`. The invocation count is exposed via
-/// `UNIQUENESS_CHECK_INVOCATIONS` (an `AtomicUsize` incremented inside the
-/// gated branch) so the at-most-once contract can be pinned by unit tests
-/// via a delta snapshot rather than by inspecting the `UNIQUENESS_CHECKED`
-/// flag (which would only prove "at least once" — the opposite direction of
-/// the contract). The result itself is not memoized by design: callers
-/// receive a fresh, mutable `BTreeMap` each call. Per the PRD's "read once
-/// at engine startup" contract, callers SHOULD NOT call this on the hot
-/// dispatch path; the once-flag enforces that intent structurally for the
-/// diagnostic walk while leaving the result allocation per-call.
+/// allocation. The [`warn_if_duplicate_op_repr_pairs`] uniqueness diagnostic
+/// runs once per process inside [`registry`]'s OnceLock initialisation, so
+/// callers of `collect_registry()` do not pay that cost. The result itself is
+/// not memoized by design: callers receive a fresh, mutable `BTreeMap` each
+/// call. Per the PRD's "read once at engine startup" contract, callers SHOULD
+/// NOT call this on the hot dispatch path.
 pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
-    let result: BTreeMap<String, CapabilityDescriptor> = registry()
+    registry()
         .iter()
         .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
-        .collect();
-    if UNIQUENESS_CHECKED
-        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-        .is_ok()
-    {
-        UNIQUENESS_CHECK_INVOCATIONS.fetch_add(1, Ordering::Relaxed);
-        warn_if_duplicate_op_repr_pairs(&result);
-    }
-    result
+        .collect()
 }
 
 /// Emit a structured tracing event recording which kernel was selected and how
@@ -247,6 +228,15 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
 /// followed by `debug_assert!(false, ...)` that panics in debug builds.
 /// Mirrors [`build_registry`]'s duplicate-name detection pattern verbatim.
 ///
+/// # Iterator-based signature
+///
+/// Accepts `impl IntoIterator<Item = (&'a str, CapabilityDescriptor)>` so
+/// callers can pass a lazily-mapped iterator directly (e.g. from
+/// `map.iter().map(|(name, reg)| (name.as_str(), (reg.descriptor)()))`)
+/// without building a throwaway `BTreeMap<String, CapabilityDescriptor>`.
+/// The `&'a str` keys must outlive the internal `seen` map — they are
+/// borrowed from the caller's key collection, not from the iterator itself.
+///
 /// # Why `HashMap`, not `BTreeSet`
 ///
 /// [`Operation`] derives `Hash + Eq` but **not** `Ord/PartialOrd`, so
@@ -256,17 +246,18 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
 /// existing `Hash + Eq` and additionally records the previous claimer's name
 /// so the panic message reads `"kernels: {prev} vs {new}"` — a bare
 /// `insert() -> bool` would discard the previous owner's identity.
-/// Iteration-order determinism is preserved by the outer `BTreeMap` iteration
-/// (lexicographic on kernel name) and the inner `Vec` order (`supports`
-/// insertion order); `HashMap` only stores the lookup, not the iteration order.
-pub(crate) fn warn_if_duplicate_op_repr_pairs(
-    registered: &BTreeMap<String, CapabilityDescriptor>,
+/// Iteration-order determinism is preserved by the outer iterator order
+/// (lexicographic on kernel name when driven from a `BTreeMap`) and the
+/// inner `Vec` order (`supports` insertion order); `HashMap` only stores
+/// the lookup, not the iteration order.
+pub(crate) fn warn_if_duplicate_op_repr_pairs<'a>(
+    registered: impl IntoIterator<Item = (&'a str, CapabilityDescriptor)>,
 ) {
-    let mut seen: HashMap<(Operation, ReprKind), &str> = HashMap::new();
+    let mut seen: HashMap<(Operation, ReprKind), &'a str> = HashMap::new();
     for (name, descriptor) in registered {
         for &(op, repr) in &descriptor.supports {
             if let Some(prev_owner) = seen.insert((op, repr), name) {
-                if prev_owner == name.as_str() {
+                if prev_owner == name {
                     // Intra-kernel: this kernel's own `supports` Vec lists the same
                     // pair twice (e.g. a copy-paste bug in an adapter's descriptor
                     // function).  Disambiguate from the inter-kernel case so the
@@ -470,7 +461,9 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                warn_if_duplicate_op_repr_pairs(fixture);
+                warn_if_duplicate_op_repr_pairs(
+                    fixture.iter().map(|(k, v)| (k.as_str(), v.clone())),
+                );
             }));
         });
 
@@ -705,7 +698,7 @@ mod tests {
                 supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
             },
         );
-        warn_if_duplicate_op_repr_pairs(&registered);
+        warn_if_duplicate_op_repr_pairs(registered.iter().map(|(k, v)| (k.as_str(), v.clone())));
     }
 
     /// Contract pin: `warn_if_duplicate_op_repr_pairs` must emit exactly one
@@ -880,77 +873,4 @@ mod tests {
         );
     }
 
-    /// `collect_registry()` must invoke `warn_if_duplicate_op_repr_pairs` AT
-    /// MOST once across repeated calls, mirroring how `build_registry`'s
-    /// duplicate-NAME walk is amortised by the surrounding `OnceLock`.
-    ///
-    /// Pinned by snapshotting `super::UNIQUENESS_CHECK_INVOCATIONS` (an
-    /// `AtomicUsize` incremented INSIDE `collect_registry()`'s gated branch,
-    /// adjacent to the helper call) before and after a sequence of three
-    /// `collect_registry()` calls and asserting the delta is `<= 1`.
-    ///
-    /// # Why this asserts the right direction
-    ///
-    /// The previous version of this test asserted only
-    /// `super::UNIQUENESS_CHECKED.load(Acquire) == true`, which proves the
-    /// flag was set AT LEAST once — the OPPOSITE of the at-most-once
-    /// contract. A delta-based check on a counter that the gate itself
-    /// upper-bounds (the gate's `compare_exchange(false, true)` flips at
-    /// most once per process, so the adjacent `fetch_add(1)` runs at most
-    /// once) directly pins the AT MOST direction.
-    ///
-    /// # Regression scenarios this catches
-    ///
-    /// * Gate replaced with `if true { … fetch_add … helper(…) }`
-    ///   (always-on): three calls each enter the block → delta = 3 → FAIL.
-    /// * Gate removed but counter increment kept outside an `if` (so it runs
-    ///   unconditionally): same as above, delta = 3 → FAIL.
-    /// * `UNIQUENESS_CHECK_INVOCATIONS` deleted from the module entirely:
-    ///   this test fails to COMPILE with `cannot find value
-    ///   'UNIQUENESS_CHECK_INVOCATIONS' in module 'super'`, surfacing the
-    ///   regression at build time.
-    ///
-    /// # Why parallelism does not invalidate the assertion
-    ///
-    /// Helper-direct tests (`*_panics_on_duplicate_pair`,
-    /// `*_always_emits_warn_on_duplicate`,
-    /// `*_always_emits_warn_on_intra_kernel_duplicate`) call the helper
-    /// bypassing the gate, so they do NOT touch
-    /// `UNIQUENESS_CHECK_INVOCATIONS` (the increment lives INSIDE the gated
-    /// branch in `collect_registry()`, not at the top of the helper itself).
-    /// Other parallel `collect_registry()` callers (e.g.
-    /// `collect_registry_returns_typed_btreemap_smoke`) share the same gate
-    /// and so collectively contribute at most 1 to the global counter. Our
-    /// delta is therefore guaranteed `<= 1` regardless of test ordering or
-    /// thread interleaving.
-    ///
-    /// # Test pollution
-    ///
-    /// This test consumes the gate (if not already consumed by a prior
-    /// `collect_registry()`-calling test) for the rest of the binary, but
-    /// other tests are unaffected — production registry has no duplicates,
-    /// so the gated helper would have been a no-op regardless.
-    #[test]
-    fn collect_registry_runs_uniqueness_check_at_most_once_across_calls() {
-        use std::sync::atomic::Ordering;
-
-        let before = super::UNIQUENESS_CHECK_INVOCATIONS.load(Ordering::Relaxed);
-
-        let _ = collect_registry();
-        let _ = collect_registry();
-        let _ = collect_registry();
-
-        let after = super::UNIQUENESS_CHECK_INVOCATIONS.load(Ordering::Relaxed);
-        let delta = after - before;
-
-        assert!(
-            delta <= 1,
-            "collect_registry() must invoke warn_if_duplicate_op_repr_pairs \
-             AT MOST ONCE across repeated calls (the once-shot AtomicBool \
-             gate mirrors build_registry's OnceLock-amortised duplicate-NAME \
-             walk). Observed delta = {delta} across 3 collect_registry() \
-             calls in this test, which means the gate failed to short-circuit \
-             subsequent helper invocations.",
-        );
-    }
 }

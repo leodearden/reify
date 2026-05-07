@@ -355,7 +355,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             let theta = theta_sq.sqrt();
             const EPS: f64 = 1e-12;
             let r_val = if theta < EPS {
-                Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }
             } else {
                 let half = theta / 2.0;
                 let s = half.sin() / theta;
@@ -371,12 +376,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 // Taylor series:
                 //   (1 − cos|ω|)/|ω|² ≈ 1/2 − |ω|²/24 + |ω|⁴/720 − ...
                 //   (|ω| − sin|ω|)/|ω|³ ≈ 1/6 − |ω|²/120 + ...
-                (
-                    0.5 - theta_sq / 24.0,
-                    1.0 / 6.0 - theta_sq / 120.0,
-                )
+                (0.5 - theta_sq / 24.0, 1.0 / 6.0 - theta_sq / 120.0)
             } else {
-                ((1.0 - theta.cos()) / theta_sq, (theta - theta.sin()) / (theta_sq * theta))
+                (
+                    (1.0 - theta.cos()) / theta_sq,
+                    (theta - theta.sin()) / (theta_sq * theta),
+                )
             };
             // [ω]× linear = ω × linear.
             let cx = wy * lz - wz * ly;
@@ -486,11 +491,7 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             let mut m = BTreeMap::new();
             m.insert(
                 Value::String("angular".to_string()),
-                Value::Vector(vec![
-                    Value::Real(wx),
-                    Value::Real(wy),
-                    Value::Real(wz),
-                ]),
+                Value::Vector(vec![Value::Real(wx), Value::Real(wy), Value::Real(wz)]),
             );
             m.insert(
                 Value::String("linear".to_string()),
@@ -521,7 +522,12 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             // unit quaternion is unit, so no renormalize is needed here.
             let r_inv = quat_conj(r_n);
             debug_assert!(quaternion_is_finite(r_inv.0, r_inv.1, r_inv.2, r_inv.3));
-            let r_inv_val = Value::Orientation { w: r_inv.0, x: r_inv.1, y: r_inv.2, z: r_inv.3 };
+            let r_inv_val = Value::Orientation {
+                w: r_inv.0,
+                x: r_inv.1,
+                y: r_inv.2,
+                z: r_inv.3,
+            };
             // Inverse translation: t_inv = -R^-1 * t.
             let (rtx, rty, rtz) = quat_rotate(r_inv, t[0], t[1], t[2]);
             Value::Transform {
@@ -562,8 +568,18 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             // R = R1 * R2 (Hamilton product). r1_n and r2_n are unit by construction;
             // quat_mul of unit quaternions is unit (modulo FP rounding).
             let composed_r = quat_mul(r1_n, r2_n);
-            debug_assert!(quaternion_is_finite(composed_r.0, composed_r.1, composed_r.2, composed_r.3));
-            let r_val = Value::Orientation { w: composed_r.0, x: composed_r.1, y: composed_r.2, z: composed_r.3 };
+            debug_assert!(quaternion_is_finite(
+                composed_r.0,
+                composed_r.1,
+                composed_r.2,
+                composed_r.3
+            ));
+            let r_val = Value::Orientation {
+                w: composed_r.0,
+                x: composed_r.1,
+                y: composed_r.2,
+                z: composed_r.3,
+            };
             // t = R1 * t2 + t1.
             let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2[0], t2[1], t2[2]);
             Value::Transform {
@@ -2710,9 +2726,7 @@ mod tests {
         let t = make_transform(make_identity_orientation(), 0.0, 0.0, 0.0);
         assert!(eval_builtin("transform_compose", &[]).is_undef());
         assert!(eval_builtin("transform_compose", std::slice::from_ref(&t)).is_undef());
-        assert!(
-            eval_builtin("transform_compose", &[t.clone(), t.clone(), t.clone()]).is_undef()
-        );
+        assert!(eval_builtin("transform_compose", &[t.clone(), t.clone(), t.clone()]).is_undef());
     }
 
     /// transform_compose with non-Transform arg → Undef.
@@ -2755,7 +2769,12 @@ mod tests {
     /// - `transform_compose` returns `Undef` immediately, before `quat_mul` is called.
     #[test]
     fn transform_compose_overflow_quaternion_returns_undef() {
-        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_rot = Value::Orientation {
+            w: 1e200,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let bad_t = make_transform(bad_rot, 0.0, 0.0, 0.0);
         assert!(
             eval_builtin("transform_compose", &[bad_t.clone(), bad_t]).is_undef(),
@@ -2770,7 +2789,12 @@ mod tests {
     /// sees the quaternion, so translation magnitude is irrelevant.
     #[test]
     fn transform_compose_overflow_quaternion_nonzero_translation_returns_undef() {
-        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_rot = Value::Orientation {
+            w: 1e200,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let bad_t = make_transform(bad_rot, 1.0, 2.0, 3.0);
         assert!(
             eval_builtin("transform_compose", &[bad_t.clone(), bad_t]).is_undef(),
@@ -2925,7 +2949,12 @@ mod tests {
     /// - `transform_inverse` returns `Undef` immediately, before `quat_conj` is called.
     #[test]
     fn transform_inverse_overflow_quaternion_returns_undef() {
-        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_rot = Value::Orientation {
+            w: 1e200,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let bad_t = make_transform(bad_rot, 0.0, 0.0, 0.0);
         assert!(
             eval_builtin("transform_inverse", std::slice::from_ref(&bad_t)).is_undef(),
@@ -2940,7 +2969,12 @@ mod tests {
     /// sees the quaternion, so translation magnitude is irrelevant.
     #[test]
     fn transform_inverse_overflow_quaternion_nonzero_translation_returns_undef() {
-        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_rot = Value::Orientation {
+            w: 1e200,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let bad_t = make_transform(bad_rot, 1.0, 2.0, 3.0);
         assert!(
             eval_builtin("transform_inverse", std::slice::from_ref(&bad_t)).is_undef(),
@@ -2997,7 +3031,10 @@ mod tests {
         for (i, v) in lin.iter().enumerate() {
             assert!(v.abs() < 1e-12, "linear[{i}] = {v}, expected 0");
         }
-        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::DIMENSIONLESS);
+        assert_eq!(
+            map_vec3_dim(&result, "angular"),
+            DimensionVector::DIMENSIONLESS
+        );
         assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
     }
 
@@ -3012,10 +3049,25 @@ mod tests {
         for (i, v) in ang.iter().enumerate() {
             assert!(v.abs() < 1e-12, "angular[{i}] = {v}, expected 0");
         }
-        assert!((lin[0] - 1.0).abs() < 1e-12, "linear[0] = {}, expected 1", lin[0]);
-        assert!((lin[1] - 2.0).abs() < 1e-12, "linear[1] = {}, expected 2", lin[1]);
-        assert!((lin[2] - 3.0).abs() < 1e-12, "linear[2] = {}, expected 3", lin[2]);
-        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::DIMENSIONLESS);
+        assert!(
+            (lin[0] - 1.0).abs() < 1e-12,
+            "linear[0] = {}, expected 1",
+            lin[0]
+        );
+        assert!(
+            (lin[1] - 2.0).abs() < 1e-12,
+            "linear[1] = {}, expected 2",
+            lin[1]
+        );
+        assert!(
+            (lin[2] - 3.0).abs() < 1e-12,
+            "linear[2] = {}, expected 3",
+            lin[2]
+        );
+        assert_eq!(
+            map_vec3_dim(&result, "angular"),
+            DimensionVector::DIMENSIONLESS
+        );
         assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
     }
 
@@ -3163,7 +3215,12 @@ mod tests {
     /// `!norm_sq.is_finite()`, so the helper returns `None` and `transform_log` returns Undef.
     #[test]
     fn transform_log_overflow_quaternion_returns_undef() {
-        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_rot = Value::Orientation {
+            w: 1e200,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let bad_t = make_transform(bad_rot, 0.0, 0.0, 0.0);
         assert!(
             eval_builtin("transform_log", std::slice::from_ref(&bad_t)).is_undef(),
@@ -3180,7 +3237,12 @@ mod tests {
     /// that produces Undef, not coincidental zero translation.
     #[test]
     fn transform_log_overflow_quaternion_nonzero_translation_returns_undef() {
-        let bad_rot = Value::Orientation { w: 1e200, x: 0.0, y: 0.0, z: 0.0 };
+        let bad_rot = Value::Orientation {
+            w: 1e200,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let bad_t = make_transform(bad_rot, 1.0, 2.0, 3.0);
         assert!(
             eval_builtin("transform_log", std::slice::from_ref(&bad_t)).is_undef(),
@@ -3200,7 +3262,12 @@ mod tests {
         // Quaternion (1e-10, 0, 0, 0): r_norm_sq = 1e-20, in [1e-24, f64::EPSILON).
         // Normalises to the identity quaternion, so every operation returns the
         // zero twist / identity transform / etc. — just not Undef.
-        let small_quat = Value::Orientation { w: 1e-10_f64, x: 0.0, y: 0.0, z: 0.0 };
+        let small_quat = Value::Orientation {
+            w: 1e-10_f64,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let t = Value::Transform {
             rotation: Box::new(small_quat),
             translation: Box::new(Value::Vector(vec![
@@ -3230,7 +3297,12 @@ mod tests {
     /// three functions.
     #[test]
     fn degenerate_quat_zero_norm_returns_undef() {
-        let zero_quat = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let zero_quat = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let t_zero = Value::Transform {
             rotation: Box::new(zero_quat),
             translation: Box::new(Value::Vector(vec![
@@ -3270,7 +3342,12 @@ mod tests {
     /// switching to exact quaternion components instead of going through sqrt.
     fn assert_quat_norm_sq_outcome(r_norm_sq: f64, expect_undef: bool) {
         let w = r_norm_sq.sqrt();
-        let small_quat = Value::Orientation { w, x: 0.0, y: 0.0, z: 0.0 };
+        let small_quat = Value::Orientation {
+            w,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let t = Value::Transform {
             rotation: Box::new(small_quat),
             translation: Box::new(Value::Vector(vec![
@@ -3355,9 +3432,18 @@ mod tests {
         let t = Value::Transform {
             rotation: Box::new(make_identity_orientation()),
             translation: Box::new(Value::Vector(vec![
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::MASS },
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::MASS },
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::MASS },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::MASS,
+                },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::MASS,
+                },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::MASS,
+                },
             ])),
         };
         assert!(eval_builtin("transform_log", &[t]).is_undef());
@@ -3410,7 +3496,11 @@ mod tests {
         };
         m.insert(
             Value::String("linear".to_string()),
-            Value::Vector(vec![make_lin(linear[0]), make_lin(linear[1]), make_lin(linear[2])]),
+            Value::Vector(vec![
+                make_lin(linear[0]),
+                make_lin(linear[1]),
+                make_lin(linear[2]),
+            ]),
         );
         Value::Map(m)
     }
@@ -3620,13 +3710,21 @@ mod tests {
     /// transform_exp with NaN component → Undef.
     #[test]
     fn transform_exp_nan_angular_returns_undef() {
-        let twist = make_twist([f64::NAN, 0.0, 0.0], [0.0, 0.0, 0.0], DimensionVector::LENGTH);
+        let twist = make_twist(
+            [f64::NAN, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            DimensionVector::LENGTH,
+        );
         assert!(eval_builtin("transform_exp", &[twist]).is_undef());
     }
 
     #[test]
     fn transform_exp_inf_linear_returns_undef() {
-        let twist = make_twist([0.0, 0.0, 0.0], [f64::INFINITY, 0.0, 0.0], DimensionVector::LENGTH);
+        let twist = make_twist(
+            [0.0, 0.0, 0.0],
+            [f64::INFINITY, 0.0, 0.0],
+            DimensionVector::LENGTH,
+        );
         assert!(eval_builtin("transform_exp", &[twist]).is_undef());
     }
 
