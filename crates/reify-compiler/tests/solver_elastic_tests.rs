@@ -351,6 +351,96 @@ fn elastic_options_param_defaults_match_spec() {
     );
 }
 
+// ─── step-5 (shell params): ElasticOptions shell defaults ────────────────────
+
+/// Each of the four new shell-related `ElasticOptions` params must carry the
+/// canonical default declared in PRD T17
+/// (`docs/prds/v0_4/structural-analysis-shells.md`):
+///
+///   shell_threshold        = 0.2          (PRD line 63; thickness/extent ratio)
+///   shell_voxel_size       = none         (solver derives thickness/3 at runtime;
+///                                          PRD T1/T2/T18)
+///   shell_branch_prune_ratio = 1.0        (empirical placeholder per PRD line 89;
+///                                          PRD T3 will revise once extractor exists)
+///   shell_force            = ShellForce.Auto  (PRD line 60 "auto-classification
+///                                              by default")
+///
+/// `0.2` and `1.0` are asserted with strict equality — same IEEE-754
+/// round-to-nearest discipline as `cg_tolerance`.
+/// `shell_voxel_size = none` mirrors the `mesh_size = none` precedent;
+/// the result_type is `Option<Length>`.
+/// `shell_force = ShellForce.Auto` mirrors the `element_order = ElementOrder.P1`
+/// pattern.
+#[test]
+fn elastic_options_shell_param_defaults_match_spec() {
+    let template = find_structure("ElasticOptions");
+
+    // shell_threshold = 0.2 (strict equality, PRD T17 line 63)
+    let shell_threshold_default = require_default(template, "shell_threshold");
+    match &shell_threshold_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 0.2,
+            "shell_threshold default should be exactly 0.2, got: {}",
+            v
+        ),
+        other => panic!(
+            "shell_threshold default should be Literal(Value::Real(0.2)), got: {:?}",
+            other
+        ),
+    }
+
+    // shell_voxel_size = none, with result_type Option<Length>
+    let shell_voxel_size_default = require_default(template, "shell_voxel_size");
+    assert!(
+        matches!(&shell_voxel_size_default.kind, CompiledExprKind::OptionNone),
+        "shell_voxel_size default should be OptionNone, got: {:?}",
+        shell_voxel_size_default.kind
+    );
+    assert_eq!(
+        shell_voxel_size_default.result_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        })),
+        "shell_voxel_size default's result_type should be Option<Length>, got: {:?}",
+        shell_voxel_size_default.result_type
+    );
+
+    // shell_branch_prune_ratio = 1.0 (strict equality, empirical placeholder)
+    let shell_branch_prune_ratio_default = require_default(template, "shell_branch_prune_ratio");
+    match &shell_branch_prune_ratio_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 1.0,
+            "shell_branch_prune_ratio default should be exactly 1.0, got: {}",
+            v
+        ),
+        other => panic!(
+            "shell_branch_prune_ratio default should be Literal(Value::Real(1.0)), got: {:?}",
+            other
+        ),
+    }
+
+    // shell_force = ShellForce.Auto
+    let shell_force_default = require_default(template, "shell_force");
+    match &shell_force_default.kind {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+            assert_eq!(
+                type_name, "ShellForce",
+                "shell_force default should be ShellForce.Auto, got type_name {:?}",
+                type_name
+            );
+            assert_eq!(
+                variant, "Auto",
+                "shell_force default should be ShellForce.Auto, got variant {:?}",
+                variant
+            );
+        }
+        other => panic!(
+            "shell_force default should be Literal(Value::Enum {{ ShellForce, Auto }}), got: {:?}",
+            other
+        ),
+    }
+}
+
 // ─── step-9: ElasticOptions positivity constraints ───────────────────────────
 
 /// Recursively collect ValueRef member names from a compiled expression tree.
