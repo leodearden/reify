@@ -184,6 +184,9 @@ impl Mitc3Plus {
 
     /// Returns the three MITC3+ tying points in canonical A, B, C order.
     ///
+    /// The return type is `&'static [TyingPoint]` — the slice points to a
+    /// compile-time constant, so no allocation occurs.
+    ///
     /// The static slice contains:
     /// - `A = (½, 0)` — covariant `γ_ξζ` is sampled here.
     /// - `B = (0, ½)` — covariant `γ_ηζ` is sampled here.
@@ -362,8 +365,30 @@ mod tests {
     }
 
     #[test]
-    fn tying_points_returned_slice_is_static() {
-        let _: &'static [TyingPoint] = Mitc3Plus.tying_points();
+    fn interpolate_assumed_shear_satisfies_c_tying_identity() {
+        // At C = (½, ½), the MITC3+ assumed-strain formula guarantees:
+        //
+        //   γ_ξζ_out − γ_ηζ_out  =  at_c.γ_ξζ − at_c.γ_ηζ
+        //
+        // This identity pins the `c` parameter:
+        //   c = (at_c.γ_ξζ − at_c.γ_ηζ) − (at_a.γ_ξζ − at_b.γ_ηζ)
+        //
+        // A sign flip or swapped terms in `c` would not be caught by the
+        // A/B tying tests alone, because those identities evaluate at
+        // η=0 and ξ=0 respectively (the `η·c` and `ξ·c` cross-terms vanish).
+        let sampled = TyingShears {
+            at_a: ShearStrain { gamma_xi_zeta: 0.5, gamma_eta_zeta: 0.1 },
+            at_b: ShearStrain { gamma_xi_zeta: 0.2, gamma_eta_zeta: 0.8 },
+            at_c: ShearStrain { gamma_xi_zeta: 0.3, gamma_eta_zeta: 0.4 },
+        };
+        let c_coord = ShellReferenceCoord::new(0.5, 0.5);
+        let out_c = Mitc3Plus.interpolate_assumed_shear(sampled, c_coord);
+        let lhs = out_c.gamma_xi_zeta - out_c.gamma_eta_zeta;
+        let rhs = sampled.at_c.gamma_xi_zeta - sampled.at_c.gamma_eta_zeta;
+        assert!(
+            (lhs - rhs).abs() < TOL,
+            "at C: γ_ξζ − γ_ηζ = {lhs}, expected {rhs}",
+        );
     }
 
     #[test]
