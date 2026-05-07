@@ -49,6 +49,18 @@ impl ShellReferenceCoord {
 pub struct Mitc3Plus;
 
 impl Mitc3Plus {
+    /// Standard 3-node Lagrangian shape functions at `coord`.
+    ///
+    /// Returns `[1 − ξ − η, ξ, η]` — i.e. the barycentric coordinates of
+    /// reference vertex `v_i` in the canonical ordering `(0,0)`, `(1,0)`,
+    /// `(0,1)`.  These are the displacement shapes and the base-rotation
+    /// shapes; the bubble enrichment (rotation only) is exposed separately
+    /// via `bubble_at` / `bubble_grad_at`.
+    pub fn shape_at(&self, coord: ShellReferenceCoord) -> [f64; 3] {
+        let ShellReferenceCoord { xi, eta } = coord;
+        [1.0 - xi - eta, xi, eta]
+    }
+
     /// Number of Lagrangian nodes.
     pub const N_NODES: usize = 3;
 
