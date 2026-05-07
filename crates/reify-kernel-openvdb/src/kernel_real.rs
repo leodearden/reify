@@ -118,7 +118,7 @@ impl OpenVdbKernel {
         let grid = self
             .handles
             .get(&handle)
-            .ok_or_else(|| QueryError::InvalidHandle(handle))?;
+            .ok_or(QueryError::InvalidHandle(handle))?;
         Ok(openvdb_ffi::grid_active_voxel_count(grid))
     }
 
@@ -141,7 +141,7 @@ impl OpenVdbKernel {
         let grid = self
             .handles
             .get(&handle)
-            .ok_or_else(|| QueryError::InvalidHandle(handle))?;
+            .ok_or(QueryError::InvalidHandle(handle))?;
         Ok(openvdb_ffi::grid_sample_sdf(grid, x, y, z))
     }
 
@@ -159,7 +159,7 @@ impl OpenVdbKernel {
         let grid = self
             .handles
             .get(&handle)
-            .ok_or_else(|| ExportError::InvalidHandle(handle))?;
+            .ok_or(ExportError::InvalidHandle(handle))?;
         let path_str = path
             .to_str()
             .ok_or_else(|| ExportError::IoError("path is not valid UTF-8".into()))?;

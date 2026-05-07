@@ -11,6 +11,7 @@
 //! `cpp/openvdb_wrapper.h`). The cxx bridge maps them to Rust items in
 //! `crate::ffi`.
 
+#[allow(clippy::module_inception)]
 #[cxx::bridge(namespace = "reify_openvdb")]
 pub mod ffi {
     // Opaque handle wrapping openvdb::FloatGrid::Ptr. All ownership transfer
