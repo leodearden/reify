@@ -2534,6 +2534,111 @@ structure def WaterCooled : Cooled {
     );
 }
 
+/// Same 2x2 all-leaves-infeasible setup but with distinct, recognizable spans
+/// for T and U so the label anchor can be unambiguously verified.
+///
+/// Pins the **label-anchor convention** for the v0.2 cross-product `0 =>` arm
+/// (task 2663): exactly one label, anchored on `params[0].use_site_span`
+/// (here T's span `10..20`), NOT `params[1].use_site_span` (U's span `30..40`).
+///
+/// Convention shared with v0.1 BFS strict-Ambiguous and the post-2659
+/// cross-product Ambiguous diagnostics — every auto-type-param multi-param
+/// diagnostic anchors on the first param. Regression-style pin: would
+/// otherwise rely on impl reading.
+#[test]
+fn dfs_zero_feasible_diagnostic_anchored_on_first_param_use_site_span() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    // Distinct, recognizable spans so the assertion is unambiguous.
+    let t_span = SourceSpan::new(10, 20);
+    let u_span = SourceSpan::new(30, 40);
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: t_span,
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: u_span,
+        },
+    ];
+
+    let _outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "`0 =>` arm must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+
+    // Exactly one label.
+    assert_eq!(
+        diagnostics[0].labels.len(),
+        1,
+        "rich `0 =>` arm diagnostic must have exactly one label, got: {:?}",
+        diagnostics[0].labels
+    );
+
+    // Label anchored on T's span (params[0].use_site_span), NOT U's.
+    assert_eq!(
+        diagnostics[0].labels[0].span, t_span,
+        "label must anchor on params[0].use_site_span (T: 10..20), \
+         shared convention with v0.1 BFS strict-Ambiguous and post-2659 \
+         cross-product Ambiguous; got: {:?}",
+        diagnostics[0].labels[0].span
+    );
+    assert_ne!(
+        diagnostics[0].labels[0].span, u_span,
+        "label must NOT anchor on params[1].use_site_span (U: 30..40); got: {:?}",
+        diagnostics[0].labels[0].span
+    );
+}
+
 /// Multi-param strict-mode scenario where exactly one of the four cross-product
 /// leaves is feasible. Exercises the `1 =>` arm via the strict path: with
 /// `max_feasible_to_collect = 2` (strict mode), the search runs all four
