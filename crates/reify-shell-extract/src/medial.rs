@@ -335,6 +335,89 @@ mod tests {
         );
     }
 
+    /// Build an analytic-slab Regular3D `SampledField` representing
+    /// `φ(x, y, z) = |z| − half_thickness` over a `voxel_count^3`
+    /// grid centered on the origin with unit voxel spacing. Useful
+    /// for testing the medial-axis algorithm against a ground-truth
+    /// configuration whose medial axis is exactly the centerline
+    /// `z = 0` plane.
+    fn slab_sdf_3d(half_thickness_voxels: f64, voxel_count: usize) -> SampledField {
+        assert!(voxel_count >= 2, "slab grid needs ≥ 2 voxels per axis");
+        let n = voxel_count;
+        let spacing: f64 = 1.0;
+        let half_extent = (n as f64 - 1.0) / 2.0;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+
+        let axis_grid: Vec<f64> = (0..n)
+            .map(|i| bounds_min + (i as f64) * spacing)
+            .collect();
+        // Row-major flat layout: data[i*n*n + j*n + k] at index (i,j,k).
+        let mut data = Vec::with_capacity(n * n * n);
+        for &_x in &axis_grid {
+            for &_y in &axis_grid {
+                for &z in &axis_grid {
+                    data.push(z.abs() - half_thickness_voxels);
+                }
+            }
+        }
+        SampledField {
+            name: format!(
+                "slab-3d-h{half_thickness_voxels}-n{voxel_count}"
+            ),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![spacing, spacing, spacing],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Slab `φ = |z| − 3` on a 16×16×16 grid: the medial axis is the
+    /// `z = 0` (or nearest-voxel) centerline plane. Asserts:
+    ///
+    /// (a) the returned mask is non-empty;
+    /// (b) every voxel in the mask is on or adjacent to the
+    ///     centerline z-plane (`|k − center_k| ≤ 1`);
+    /// (c) the centerline plane is mostly populated
+    ///     (`mask.voxels.len() ≥ 16*16/2 = 128`).
+    #[test]
+    fn compute_medial_mask_flags_slab_centerline_voxels() {
+        let n = 16usize;
+        let sdf = slab_sdf_3d(3.0, n);
+        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect("slab compute succeeds");
+
+        // (a) non-empty
+        assert!(
+            !mask.voxels.is_empty(),
+            "slab medial mask must be non-empty"
+        );
+
+        // (b) every voxel near the centerline z-plane
+        let center_k = (n as i32 - 1) / 2;
+        for &[i, j, k] in &mask.voxels {
+            let dz = (k - center_k).abs();
+            assert!(
+                dz <= 1,
+                "slab voxel ({i},{j},{k}) is too far from centerline plane \
+                 (k={k}, center_k={center_k}, |dk|={dz})"
+            );
+        }
+
+        // (c) at least half the centerline plane is medial
+        let min_expected = (n * n / 2) as usize;
+        assert!(
+            mask.voxels.len() >= min_expected,
+            "slab medial mask has {} voxels; expected ≥ {min_expected} \
+             on a 16×16 centerline plane",
+            mask.voxels.len()
+        );
+    }
+
     /// Pin the empirical constants that the PRD's task-T1 description
     /// implicitly asserts:
     ///
