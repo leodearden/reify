@@ -7,6 +7,29 @@
 //! iff the two distances are within `distance_tolerance` AND the two
 //! surface-hit gradients are roughly antiparallel (encoding the gradient
 //! discontinuity at the medial axis).
+//!
+//! # Performance
+//!
+//! This is a v0.4-T1 *shippable skeleton*: per-voxel work in the inner
+//! loop performs two `gradient_at_world` calls (12 trilinear samples
+//! each) plus a bidirectional walk of up to `4 × max_thickness_voxels`
+//! trilinear samples. At PRD-realistic 256³ grids (~16 M voxels) the
+//! cost is on the order of `O(N³ · max_thickness_voxels)` trilinear
+//! interpolations. The current narrow-band-filtered slab/sphere
+//! fixtures (≈ 512 active voxels each) make this a non-issue for tests,
+//! but production use will need optimization before the T2/T3/T4
+//! follow-up tasks land. Deferred optimizations:
+//!
+//! - cache an explicit gradient grid (avoid recomputing central
+//!   differences inside the walk),
+//! - parallelize the outer voxel loop with `rayon`,
+//! - replace the dense iteration with OpenVDB's sparse active-voxel
+//!   iterator once the FFI ships (the `narrow_band_half_width_voxels`
+//!   filter here is an explicit emulation of that iterator on a dense
+//!   `SampledField`).
+//!
+//! No bug today — just a flag for the perf-tuning pass that follows
+//! once the OpenVDB FFI is wired in.
 
 use reify_types::value::{SampledField, SampledGridKind};
 
@@ -57,11 +80,27 @@ impl MedialMask {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MedialOptions {
     /// Relative-distance equality tolerance for the bidirectional ray
-    /// walk: a voxel is medial only if `|d⁺ − d⁻| / max(d⁺, d⁻) <
-    /// distance_tolerance`. Default `0.05` matches the PRD's "~5%"
-    /// language (T1 step-2). Tightening this (e.g. `0.001`) culls
-    /// near-medial voxels and converges the mask towards the exact
-    /// medial axis at the cost of mask sparsity.
+    /// walk: a voxel is medial only if `|d⁺ − d⁻| < distance_tolerance ·
+    /// max(d⁺, d⁻) + ½·voxelization_slack` (the slack is implementation
+    /// -side; see [`compute_medial_mask`]). Default `0.05` matches the
+    /// PRD's "~5%" language (T1 step-2).
+    ///
+    /// **Caveat — discriminative range.** The implementation composes
+    /// this *relative* tolerance with an *absolute* one-voxel slack to
+    /// admit voxels whose centers sit ½-voxel off the analytic medial
+    /// axis (which already produces a full-voxel asymmetry in d⁺/d⁻ on
+    /// even-N grids — see the inline comment in [`compute_medial_mask`]).
+    /// Because that absolute term is unconditional, this field only
+    /// *meaningfully* discriminates when `distance_tolerance · dmax >>
+    /// 1 voxel`, i.e. for solids whose half-thickness is much greater
+    /// than `1 / distance_tolerance` voxels (≈ 20 voxels at the default).
+    /// For thin shells (PRD-typical 3–10 voxels thick), the absolute
+    /// slack dominates and tightening this field has near-zero effect
+    /// on the mask. Loosening it to e.g. `0.5` *is* effective even for
+    /// thin shells (it admits more off-centerline voxels). The
+    /// `tightening_distance_tolerance_reduces_slab_mask_size` test
+    /// exercises this discriminative regime by bracketing the slab's
+    /// relative-error spectrum directly.
     pub distance_tolerance: f64,
     /// Narrow-band half-width measured in voxel-spacing units. Voxels
     /// with `|φ(v)| > narrow_band_half_width_voxels × spacing` are
@@ -311,14 +350,26 @@ pub fn compute_medial_mask(
                 //    points (the analytic medial of an axis-aligned
                 //    slab on an even-N grid lies on a half-voxel
                 //    boundary, so the two closest voxels see a
-                //    one-voxel asymmetry in d⁺/d⁻ that the strict
-                //    relative rule would reject). Equivalent to
-                //    requiring the bisecting midpoint of the two
+                //    one-voxel asymmetry in d⁺/d⁻ — namely
+                //    `min_spacing` — that the strict relative rule
+                //    would reject). The slack is therefore exactly
+                //    `min_spacing`, NOT `½·min_spacing`: a half-voxel
+                //    *offset* of the voxel center from the analytic
+                //    medial produces a full-voxel asymmetry in
+                //    d⁺/d⁻ along the gradient direction. Equivalent
+                //    to requiring the bisecting midpoint of the two
                 //    surface hits to lie within `½(min_spacing +
                 //    distance_tolerance × max(d⁺, d⁻))` of the voxel
-                //    center along the gradient direction — i.e. inside
-                //    the voxel itself, with a small relative-error
-                //    cushion.
+                //    center along the gradient direction — i.e.
+                //    inside the voxel itself, with a small
+                //    relative-error cushion.
+                //
+                //  CONSEQUENCE: for thicknesses ≪ 20 voxels the
+                //  absolute slack dominates and `distance_tolerance`
+                //  is effectively inert at typical (≤ 0.05) values.
+                //  See the doc comment on
+                //  `MedialOptions::distance_tolerance` for the
+                //  discriminative-regime caveat.
                 let abs_diff = (d_plus - d_minus).abs();
                 let equality_threshold = options.distance_tolerance * dmax + min_spacing;
                 if abs_diff < equality_threshold {
@@ -526,6 +577,24 @@ pub(crate) fn bidirectional_distances(
 /// `direction` (assumed unit) until the SDF sign changes, then
 /// linearly interpolates between the bracketing samples to recover the
 /// sub-voxel zero-crossing distance + world coordinate.
+///
+/// # Preconditions
+///
+/// **Monotonicity along `direction`** — caller is responsible for
+/// ensuring `φ` is monotone (or at least sign-monotone: no spurious
+/// zero-crossings before the geometric nearest surface) along the
+/// half-line `start + t·direction` for `t ∈ [0, max_steps · step_size]`.
+/// On non-monotone SDFs (e.g. a thin solid with an interior re-entrant
+/// feature, or a curvature-induced re-entry along the gradient
+/// half-line) this function returns the *first* zero-crossing in walk
+/// order, which may NOT be the geometric nearest surface point.
+/// [`compute_medial_mask`] satisfies this precondition for the slab,
+/// sphere, and thick-block fixtures (each is sign-monotone along the
+/// SDF gradient direction by construction); a non-convex thin solid
+/// (e.g. a C-channel cross-section) would violate it and silently
+/// misclassify boundary voxels — the regression-test surface here is
+/// thin, by design, until T2 lands the iso-surface extraction that
+/// will tighten correctness on irregular geometry.
 fn walk_to_zero(
     sdf: &SampledField,
     start: [f64; 3],
