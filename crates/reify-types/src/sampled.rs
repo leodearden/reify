@@ -46,8 +46,23 @@ pub const LINSPACE_MAX_INTERVALS: usize = 10_000_000;
 /// finite/positive spacing before calling this helper.  They remain here
 /// so this function stays safe to call from any future site that might not
 /// run the same pre-flight checks.
-pub fn linspace_inclusive(_start: f64, _stop: f64, _spacing: f64) -> Option<Vec<f64>> {
-    None
+pub fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Option<Vec<f64>> {
+    // Defense-in-depth: callers pre-flight-check these, but we guard here too.
+    if spacing <= 0.0 || !spacing.is_finite() || !start.is_finite() || !stop.is_finite() {
+        return Some(vec![start]);
+    }
+    let span = stop - start;
+    if span < 0.0 {
+        return Some(vec![start]);
+    }
+    // Round to nearest integer to avoid floating-point cliff effects:
+    // e.g. (2.0 - 0.0) / 1.0 may evaluate to 1.999… which .floor() → 1,
+    // producing [0.0, 1.0] instead of [0.0, 1.0, 2.0].
+    let n_intervals = (span / spacing).round() as usize;
+    if n_intervals > LINSPACE_MAX_INTERVALS {
+        return None;
+    }
+    Some((0..=n_intervals).map(|i| start + (i as f64) * spacing).collect())
 }
 
 #[cfg(test)]
