@@ -53,6 +53,8 @@ pub mod structural_classifier;
 pub use structural_classifier::{
     ParameterClass, classify_cell, realization_graph_shape_hash, stage_a_eligible,
 };
+pub mod sweep_classifier;
+pub use sweep_classifier::{classify_swept_body, SweptKind, SweptKindTable};
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
@@ -487,6 +489,23 @@ pub struct Engine {
     /// `feature_tag_table` once the attribute path covers all selector
     /// vocabulary.
     topology_attribute_table: TopologyAttributeTable,
+    /// Phase A swept-body classifications keyed by realization-final
+    /// `GeometryHandleId`. Mirrors the `feature_tag_table` /
+    /// `topology_attribute_table` shape and lifecycle.
+    ///
+    /// Populated by `Engine::execute_realization_ops` after a successful
+    /// realization completes — the realization's last `step_handles` entry is
+    /// the key, and the value is whatever `classify_swept_body(...)` returns
+    /// for the parallel `(ops, handles)` slice. Cleared and repopulated on
+    /// every `build()` / `build_snapshot()` / `tessellate_realizations()` /
+    /// `tessellate_snapshot()` call (per-build, not per-realization). Exposed
+    /// via `Engine::swept_kind_table()` for GUI / mesh-morphing consumers
+    /// that want to look up a Phase A `SweptKind` for a realized body.
+    ///
+    /// Phase B (axial-finishing recognition, PRD task #14) extends
+    /// `SweptKind` via additional fields/variants; the enum is
+    /// `#[non_exhaustive]` so that extension is non-breaking.
+    swept_kind_table: SweptKindTable,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     ///
