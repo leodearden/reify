@@ -220,6 +220,13 @@ pub fn run_local_feature_reports_face_records<F>(
 {
     const BOX_SIDE_M: f64 = 10.0e-3;
 
+    assert!(
+        param_m <= BOX_SIDE_M * 0.1,
+        "precondition violated: param_m ({param_m:.4e} m) must be ≤ {} m (10% of BOX_SIDE_M); \
+         larger values make the 90%-volume assertion meaningless",
+        BOX_SIDE_M * 0.1,
+    );
+
     let box_handle = kernel
         .execute(&GeometryOp::Box {
             width: Value::Real(BOX_SIDE_M),
