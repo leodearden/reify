@@ -218,12 +218,11 @@ mod tests {
         let centroid = ReferenceCoord::new(0.25, 0.25, 0.25);
         let g = TetP2.shape_grad_at(centroid);
         assert_eq!(g.len(), 10);
-        for i in 0..4 {
-            for k in 0..3 {
+        for (i, row) in g.iter().enumerate().take(4) {
+            for (k, val) in row.iter().enumerate() {
                 assert!(
-                    g[i][k].abs() < TOL,
-                    "∇N_{i}(centroid)[{k}] = {} expected 0 (4λ_i−1 = 0 at centroid)",
-                    g[i][k],
+                    val.abs() < TOL,
+                    "∇N_{i}(centroid)[{k}] = {val} expected 0 (4λ_i−1 = 0 at centroid)",
                 );
             }
         }
@@ -256,16 +255,14 @@ mod tests {
             let g = TetP2.shape_grad_at(*p);
             let mut sum = [0.0_f64; 3];
             for row in g {
-                for k in 0..3 {
-                    sum[k] += row[k];
+                for (k, rk) in row.iter().enumerate() {
+                    sum[k] += rk;
                 }
             }
-            for k in 0..3 {
+            for (k, s) in sum.iter().enumerate() {
                 assert!(
-                    sum[k].abs() < TOL,
-                    "Σ_i ∇N_i({:?})[{k}] = {}, expected 0",
-                    p,
-                    sum[k]
+                    s.abs() < TOL,
+                    "Σ_i ∇N_i({p:?})[{k}] = {s}, expected 0",
                 );
             }
         }

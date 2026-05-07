@@ -501,7 +501,7 @@ mod tests {
     /// Helper: extract the inner SampledField from a Sampled Value::Field.
     fn extract_sampled(v: &Value) -> &SampledField {
         match v {
-            Value::Field { source, lambda, .. } if matches!(source, FieldSourceKind::Sampled) => {
+            Value::Field { source: FieldSourceKind::Sampled, lambda, .. } => {
                 match lambda.as_ref() {
                     Value::SampledField(sf) => sf,
                     _ => panic!("expected SampledField in Sampled lambda slot"),

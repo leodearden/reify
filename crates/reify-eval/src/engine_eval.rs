@@ -668,7 +668,7 @@ pub(crate) fn elaborate_field(
 ///   `true` → cache invalidation signal (wired by PRD task 5).
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
-#[expect(dead_code, reason = "wired into elaborate_field by PRD task 5")]
+#[allow(dead_code, reason = "wired into elaborate_field by PRD task 5")]
 pub(crate) fn hash_imported_file_content(
     path: &str,
 ) -> std::io::Result<reify_types::ContentHash> {

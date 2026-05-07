@@ -508,7 +508,7 @@ fn lower_to_sampled_non_finite_bounds_returns_invalid_bounds() {
 ///   - InvalidSpacing: 1.0 > 0 and finite ✓
 ///   - InvalidBounds: 0.0 finite, 0.0 finite, 0.0 < 0.0 is false ✓
 ///   - axis_grids: linspace_inclusive(0.0, 0.0, 1.0) → [0.0] (1 node)
-///   → NEW DegenerateAxis guard fires here
+///     → NEW DegenerateAxis guard fires here
 #[test]
 fn lower_to_sampled_degenerate_axis_returns_degenerate_axis() {
     let grid = OpenVdbGridSource {
@@ -550,7 +550,7 @@ fn lower_to_sampled_degenerate_axis_returns_degenerate_axis() {
 ///   - InvalidSpacing: 1.0 > 0 and finite ✓
 ///   - InvalidBounds: 0.0 finite, 0.4 finite, 0.4 < 0.0 is false ✓
 ///   - axis_grids: linspace_inclusive(0.0, 0.4, 1.0) → round(0.4/1.0) = 0 intervals → [0.0] (1 node)
-///   → NEW DegenerateAxis guard fires here
+///     → NEW DegenerateAxis guard fires here
 #[test]
 fn lower_to_sampled_spacing_exceeds_span_returns_degenerate_axis() {
     let grid = OpenVdbGridSource {

@@ -157,7 +157,7 @@ mod tests {
     fn fixed_support_returns_map_with_correct_fields() {
         let selector = point_selector_stub();
 
-        let result = eval_builtin("FixedSupport", &[selector.clone()]);
+        let result = eval_builtin("FixedSupport", std::slice::from_ref(&selector));
 
         let map = match result {
             Value::Map(m) => m,
@@ -233,7 +233,7 @@ mod tests {
     fn pinned_support_returns_map_with_correct_fields() {
         let selector = point_selector_stub();
 
-        let result = eval_builtin("PinnedSupport", &[selector.clone()]);
+        let result = eval_builtin("PinnedSupport", std::slice::from_ref(&selector));
 
         let map = match result {
             Value::Map(m) => m,
@@ -728,8 +728,8 @@ mod tests {
             // PascalCase constructor names.  We map explicitly here so the test
             // still guards both the SUPPORT_KINDS list and the dispatch arms.
             let result = match *kind {
-                "fixed_support" => eval_supports("FixedSupport", &[stub_selector.clone()]),
-                "pinned_support" => eval_supports("PinnedSupport", &[stub_selector.clone()]),
+                "fixed_support" => eval_supports("FixedSupport", std::slice::from_ref(&stub_selector)),
+                "pinned_support" => eval_supports("PinnedSupport", std::slice::from_ref(&stub_selector)),
                 "displacement_support" => {
                     eval_supports("DisplacementSupport", &[stub_selector.clone(), length_vec.clone()])
                 }

@@ -491,11 +491,10 @@ mod tests {
     fn bubble_grad_vanishes_at_centroid() {
         // Centroid is the unique interior maximum of f_b, so ∇f_b = 0 there.
         let g = Mitc3Plus.bubble_grad_at(ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0));
-        for k in 0..2 {
+        for (k, gk) in g.iter().enumerate() {
             assert!(
-                g[k].abs() < TOL,
-                "bubble_grad_at(centroid)[{k}] = {}, expected 0",
-                g[k],
+                gk.abs() < TOL,
+                "bubble_grad_at(centroid)[{k}] = {gk}, expected 0",
             );
         }
     }
@@ -516,12 +515,12 @@ mod tests {
         let g = Mitc3Plus.shape_grad_at(ShellReferenceCoord::new(0.1, 0.2));
         let mut sum = [0.0_f64; 2];
         for row in g {
-            for k in 0..2 {
-                sum[k] += row[k];
+            for (k, rk) in row.iter().enumerate() {
+                sum[k] += rk;
             }
         }
-        for k in 0..2 {
-            assert!((sum[k]).abs() < TOL, "Σ_i ∇N_i[{k}] = {}, expected 0", sum[k]);
+        for (k, s) in sum.iter().enumerate() {
+            assert!(s.abs() < TOL, "Σ_i ∇N_i[{k}] = {s}, expected 0");
         }
     }
 }

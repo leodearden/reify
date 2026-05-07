@@ -170,11 +170,11 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 ///   - `cg_tolerance           : Real`            (CG convergence threshold)
 ///   - `threads                : Option<Int>`     (none = solver picks)
 ///   - `shell_threshold        : Real`            (thickness/extent ratio for auto-shell
-///                                                 classification; PRD T17 line 63)
+///     classification; PRD T17 line 63)
 ///   - `shell_voxel_size       : Option<Length>`  (voxel resolution for medial extraction;
-///                                                 none = solver derives thickness/3)
+///     none = solver derives thickness/3)
 ///   - `shell_branch_prune_ratio : Real`          (medial-axis spurious-branch pruning
-///                                                 threshold; empirical placeholder)
+///     threshold; empirical placeholder)
 ///   - `shell_force            : ShellForce`      (off/auto/on tri-state forcing)
 ///
 /// `mesh_size`, `threads`, and `shell_voxel_size` are encoded as `Option<T> = none`

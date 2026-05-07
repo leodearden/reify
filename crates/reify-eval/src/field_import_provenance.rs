@@ -98,25 +98,25 @@ mod tests {
         let any_hash = ContentHash::of(b"");
 
         // Gate 4 rejects NaN (a)
-        let r = build_field_import_provenance("p", "f", any_hash.clone(), Some(f64::NAN), 0);
+        let r = build_field_import_provenance("p", "f", any_hash, Some(f64::NAN), 0);
         assert_eq!(r.declared_tolerance_si, None, "NaN should be filtered");
 
         // Gate 4 rejects +Inf (b)
-        let r = build_field_import_provenance("p", "f", any_hash.clone(), Some(f64::INFINITY), 0);
+        let r = build_field_import_provenance("p", "f", any_hash, Some(f64::INFINITY), 0);
         assert_eq!(r.declared_tolerance_si, None, "+Inf should be filtered");
 
         // Gate 4 rejects -Inf (c)
         let r =
-            build_field_import_provenance("p", "f", any_hash.clone(), Some(f64::NEG_INFINITY), 0);
+            build_field_import_provenance("p", "f", any_hash, Some(f64::NEG_INFINITY), 0);
         assert_eq!(r.declared_tolerance_si, None, "-Inf should be filtered");
 
         // Gate 4 rejects negative finite (d)
-        let r = build_field_import_provenance("p", "f", any_hash.clone(), Some(-1.0e-3), 0);
+        let r = build_field_import_provenance("p", "f", any_hash, Some(-1.0e-3), 0);
         assert_eq!(r.declared_tolerance_si, None, "negative should be filtered");
 
         // Lower-boundary acceptance: zero is accepted (e), mirrors
         // extract_input_tolerance_promise_accepts_zero_promise
-        let r = build_field_import_provenance("p", "f", any_hash.clone(), Some(0.0), 0);
+        let r = build_field_import_provenance("p", "f", any_hash, Some(0.0), 0);
         assert_eq!(r.declared_tolerance_si, Some(0.0), "zero should be kept");
 
         // Typical valid case (f)
@@ -130,7 +130,7 @@ mod tests {
         let result = build_field_import_provenance(
             "fea_results.vdb",
             "OpenVDB",
-            hash.clone(),
+            hash,
             Some(50e-6),
             1_700_000_000,
         );
@@ -148,7 +148,7 @@ mod tests {
         let a = build_field_import_provenance(
             "fea_results.vdb",
             "OpenVDB",
-            hash.clone(),
+            hash,
             Some(50e-6),
             1_700_000_000,
         );
@@ -174,7 +174,7 @@ mod tests {
         // ContentHash::of(&[]) is well-formed; the builder must not panic
         // and must pass the hash through unchanged.
         let empty_hash = ContentHash::of(&[]);
-        let result = build_field_import_provenance("p", "f", empty_hash.clone(), None, 0);
+        let result = build_field_import_provenance("p", "f", empty_hash, None, 0);
         assert_eq!(result.content_hash, empty_hash);
     }
 }

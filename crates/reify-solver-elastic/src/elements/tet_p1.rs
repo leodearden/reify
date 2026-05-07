@@ -217,12 +217,12 @@ mod tests {
         let g = TetP1.shape_grad_at(ReferenceCoord::new(0.1, 0.2, 0.3));
         let mut sum = [0.0_f64; 3];
         for row in g {
-            for k in 0..3 {
-                sum[k] += row[k];
+            for (k, rk) in row.iter().enumerate() {
+                sum[k] += rk;
             }
         }
-        for k in 0..3 {
-            assert!((sum[k]).abs() < TOL, "Σ_i ∇N_i[{k}] = {}, expected 0", sum[k]);
+        for (k, s) in sum.iter().enumerate() {
+            assert!(s.abs() < TOL, "Σ_i ∇N_i[{k}] = {s}, expected 0");
         }
     }
 

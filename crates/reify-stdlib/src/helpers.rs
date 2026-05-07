@@ -1568,7 +1568,7 @@ mod tests {
         // < Value::String("test") < Value::String("zulu"), the iteration order
         // is alpha, kind, mike, zulu.
         let keys: Vec<&Value> = map.keys().collect();
-        let expected = vec![
+        let expected = [
             Value::String("alpha".to_string()),
             Value::String("kind".to_string()),
             Value::String("mike".to_string()),

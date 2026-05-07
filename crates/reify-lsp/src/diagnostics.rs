@@ -1789,6 +1789,7 @@ structure S {
     /// - `validate_module_emits_forbidden_decl_diagnostic_for_port_inside_specialization_scope`
     /// - `validate_module_emits_forbidden_decl_diagnostic_for_bare_sub_inside_specialization_scope`
     /// - `validate_module_emits_diagnostic_for_each_forbidden_decl_in_nested_specialization_scope`).
+    ///
     /// The canonical message
     /// format is pinned solely by compiler-side tests; the LSP layer checks
     /// presence-only, eliminating the dual-edit ratchet that arises from
