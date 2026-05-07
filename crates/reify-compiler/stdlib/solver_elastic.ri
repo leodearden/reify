@@ -160,13 +160,9 @@ structure def ElasticResult {
     // explicit in production code rather than relying solely on test coverage
     // (task 2544 convention).
     //
-    // Note: `constraint iterations <= max_iter` is intentionally omitted.
-    // Reify constraints can only reference value cells declared within the same
-    // `structure def` scope (cf. `tolerancing.ri:33`, `materials_mechanical.ri:83`
-    // for within-scope cross-field examples). `max_iter` lives on `ElasticOptions`,
-    // not on `ElasticResult`, and `ElasticResult` carries no slot through which to
-    // reach it. The cross-structure post-condition is enforced by the runtime FEA
-    // solver, which is the sole writer of `ElasticResult` values.
+    // Cross-structure invariant `iterations <= ElasticOptions.max_iter` is enforced
+    // by the runtime FEA solver — Reify constraints can only reference cells in the
+    // same `structure def` scope.
     constraint iterations >= 0
     // `max_von_mises` is the peak von-Mises equivalent stress — a Frobenius norm
     // of the deviatoric stress tensor, hence a magnitude. Negative values are

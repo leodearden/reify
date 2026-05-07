@@ -4,9 +4,11 @@
 //!
 //! Tests validate that the .ri file is loaded by the production stdlib path
 //! (mirroring `materials_fea_tests.rs`), that the enum and structures are
-//! correctly represented in the compiled module, and that the positivity
-//! constraints on `ElasticOptions.max_iter` and `ElasticOptions.cg_tolerance`
-//! are declared at the structure-def level.
+//! correctly represented in the compiled module, and that the positivity and
+//! upper-bound constraints on `ElasticOptions.max_iter` and
+//! `ElasticOptions.cg_tolerance`, and the non-negativity constraints on
+//! `ElasticResult.iterations` and `ElasticResult.max_von_mises`, are declared
+//! at the structure-def level.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
 //! exercises the same embedded + sequential-prelude compilation path as
@@ -391,7 +393,7 @@ fn elastic_options_constrains_max_iter_and_cg_tolerance_positive() {
     }
 }
 
-// ─── task-3044 step-3: ElasticOptions cg_tolerance upper bound ───────────────
+// ─── task-3044: ElasticOptions cg_tolerance upper bound ─────────────────────
 
 /// `ElasticOptions` must cap `cg_tolerance` strictly below 1:
 ///
@@ -453,7 +455,7 @@ fn elastic_options_caps_cg_tolerance_below_one() {
     );
 }
 
-// ─── task-3044 step-1: ElasticResult non-negativity constraints ──────────────
+// ─── task-3044: ElasticResult non-negativity constraints ─────────────────────
 
 /// `ElasticResult` must declare non-negativity constraints on `iterations` and
 /// `max_von_mises`:
