@@ -151,7 +151,7 @@ pub fn shell_element_stiffness(
     thickness: f64,
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord, ShearStrain, TyingShears};
+    use crate::elements::mitc3_plus::{Mitc3Plus, ShearStrain, TyingShears};
 
     let frame = build_shell_frame(nodes);
     let r = frame.r;   // rotation matrix: row i = local basis eᵢ in global coords
@@ -374,7 +374,7 @@ pub fn shell_element_stiffness(
 
     let qp_weight = 1.0 / 6.0; // each of A, B, C has weight 1/6 (sum=1/2=ref-tri area)
 
-    for (qp_idx, qp) in tying_pts.iter().enumerate() {
+    for qp in tying_pts.iter() {
         // Build projected covariant B_s at this quadrature point (2×18).
         let mut b_s_cov_qp = [[0.0_f64; 18]; 2];
         for dof in 0..18 {
@@ -549,6 +549,79 @@ mod tests {
         assert!(
             (u_k - u_analytical).abs() < 1e-9 * scale,
             "U_K={u_k}, U_analytical={u_analytical}, rel_err={}",
+            (u_k - u_analytical).abs() / scale,
+        );
+    }
+
+    // --- Transverse-shear patch test (step 9) ---
+
+    #[test]
+    fn shell_transverse_shear_patch_test_uniform_theta_y_matches_analytical_energy() {
+        // Uniform θ_y = α at all nodes → uniform γ_xz = α, γ_yz = 0.
+        // U_analytical = 0.5 · α² · κ · G · t · A.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.003_f64;
+        let k = shell_element_stiffness(&UNIT_TRI, t, &mat);
+
+        let mut u = [0.0_f64; 18];
+        for node in 0..3 {
+            u[6 * node + 4] = alpha; // θ_y
+        }
+
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let g = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let area = 0.5_f64;
+        let u_analytical = 0.5 * alpha * alpha * kappa * g * t * area;
+
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "U_K={u_k}, U_analytical={u_analytical}, rel_err={}",
+            (u_k - u_analytical).abs() / scale,
+        );
+    }
+
+    // --- Bending patch test (step 11) ---
+
+    #[test]
+    fn shell_bending_patch_test_linear_theta_y_matches_analytical_total_energy() {
+        // θ_y(node_i) = α · x_i: node0→0, node1→α, node2→0.
+        // Curvature κ_xx = -α (uniform), MITC3+ projects γ_xz to constant α/2.
+        // U_total = 0.5·α²·D_pl[0][0]·(t³/12)·A + 0.5·(α/2)²·κ·G·t·A.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.002_f64;
+        let k = shell_element_stiffness(&UNIT_TRI, t, &mat);
+
+        let mut u = [0.0_f64; 18];
+        // node0 at x=0: θ_y = 0
+        // node1 at x=1: θ_y = α
+        u[6 * 1 + 4] = alpha * 1.0;
+        // node2 at x=0: θ_y = 0
+
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let d = plane_stress_d(&mat);
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let g = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let area = 0.5_f64;
+        let u_bending = 0.5 * alpha * alpha * d[0][0] * (t * t * t / 12.0) * area;
+        let u_shear = 0.5 * (alpha / 2.0) * (alpha / 2.0) * kappa * g * t * area;
+        let u_analytical = u_bending + u_shear;
+
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "U_K={u_k}, U_analytical={u_analytical} (bending={u_bending}, shear={u_shear}), rel_err={}",
             (u_k - u_analytical).abs() / scale,
         );
     }
