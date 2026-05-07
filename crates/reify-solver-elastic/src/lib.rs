@@ -28,6 +28,7 @@
 //! ```
 //! use reify_solver_elastic::{
 //!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2,
+//!     Mitc3Plus, ShellReferenceCoord, TyingPoint,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -39,6 +40,13 @@
 //!     weight: 1.0 / 6.0,
 //! };
 //! let _ = Jacobian::from_matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+//!
+//! let _: Mitc3Plus = Mitc3Plus;
+//! assert_eq!(Mitc3Plus::N_NODES, 3);
+//! assert_eq!(Mitc3Plus::N_DOFS, 18);
+//! assert_eq!(Mitc3Plus::N_TYING_POINTS, 3);
+//! let _ = ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0);
+//! let _: &[TyingPoint] = Mitc3Plus.tying_points();
 //! ```
 
 pub mod elements;
