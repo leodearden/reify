@@ -60,7 +60,7 @@
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
-use crate::elements::{ReferenceElement, tet_p1::TetP1};
+use crate::elements::{ReferenceElement, tet_p1::TetP1, tet_p2::TetP2};
 
 /// Return `(M⁻¹)ᵀ = M⁻ᵀ` via the standard 3×3 cofactor / adjugate formula.
 ///
@@ -234,6 +234,32 @@ pub fn element_stiffness_p1(
     material: &IsotropicElastic,
 ) -> ElementStiffness {
     element_stiffness_generic(&TetP1, &phys_nodes[..], material)
+}
+
+/// Compute the 30×30 element stiffness for a P2 (quadratic) tetrahedron.
+///
+/// `phys_nodes` are the 10 nodal positions in canonical Hughes/Gmsh order:
+/// the 4 reference vertices `(0,0,0), (1,0,0), (0,1,0), (0,0,1)` followed
+/// by the 6 edge-midpoint nodes in `crate::elements::tet_p2::EDGES` order
+/// `(0,1), (1,2), (2,0), (0,3), (1,3), (2,3)`.
+///
+/// # Quadrature
+///
+/// Uses the 4-point Stroud rule from [`TetP2::quad_points`] (degree-2
+/// exact). For **straight-edge** P2 elements the geometric Jacobian is
+/// constant per element, so the BᵀDB integrand is degree-2 in reference
+/// coordinates and Stroud integrates it exactly — see the rationale in
+/// `crates/reify-solver-elastic/src/elements/tet_p2.rs:31-36`.
+///
+/// **Curved-edge** P2 (where the edge-midpoint nodes are nudged off the
+/// straight midpoint to follow a curved boundary) yields a non-constant
+/// Jacobian and would need the 11-point degree-4 rule; that case is
+/// deferred to v0.4+ per the crate-level scope note in `lib.rs:19-21`.
+pub fn element_stiffness_p2(
+    phys_nodes: &[[f64; 3]; 10],
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    element_stiffness_generic(&TetP2, &phys_nodes[..], material)
 }
 
 #[cfg(test)]
