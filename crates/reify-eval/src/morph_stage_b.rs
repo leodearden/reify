@@ -228,7 +228,20 @@ fn match_one_kind(
         });
     }
 
-    // 2. Imported-geometry pre-pass.
+    // 2. Distinct-handle precondition (debug builds only).
+    // Duplicate handles in `old` would silently overwrite earlier entries in
+    // `out` (HashMap::insert) while the `consumed.len() == new.len()` count
+    // check in step 6 still passes — the count cannot detect the collision.
+    // The upstream kernel (`extract_faces` / `extract_edges`) guarantees
+    // uniqueness by construction; we assert it here to catch any future caller
+    // that violates the contract.
+    debug_assert_eq!(
+        old.iter().collect::<HashSet<_>>().len(),
+        old.len(),
+        "old slice passed to match_one_kind contains duplicate GeometryHandleId"
+    );
+
+    // 3. Imported-geometry pre-pass.
     let old_attributed = old
         .iter()
         .filter(|&&h| old_table.lookup(h).is_some())
