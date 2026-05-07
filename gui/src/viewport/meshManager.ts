@@ -65,6 +65,24 @@ export interface MeshManagerContext {
   setVisibility: (entityPath: string, state: VisibilityState) => void;
   getGhostMeshes: () => Map<string, Mesh>;
   setColorize: (opts: MeshColorize | null) => void;
+  /**
+   * Rebuild mesh materials in place based on the current colorize state.
+   *
+   * When colorize is null: replaces each mesh's material with a fresh
+   * MeshStandardMaterial (using the deterministic entity colour), removes the
+   * `color` BufferAttribute from the geometry, and disposes the old material.
+   * Ghost clones share geometry (not material) with their originals, so they
+   * are unaffected.
+   *
+   * When colorize is set: ensures each mesh that has the channel uses
+   * MeshPhongMaterial with a baked colour attribute; meshes that lack the
+   * channel fall back to MeshStandardMaterial. This is the additive counterpart
+   * to the null path — it allows a mid-stream material upgrade without a full
+   * sync/re-sync cycle.
+   *
+   * In both branches geometry vertices/indices/normals/BVH are NOT touched.
+   */
+  rebuildMaterials: () => void;
 }
 
 /**
@@ -426,6 +444,48 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
   }
 
+  /**
+   * Rebuild mesh materials based on the current colorize state.
+   * See `MeshManagerContext.rebuildMaterials` JSDoc for the full contract.
+   */
+  function rebuildMaterials(): void {
+    for (const [entityPath, mesh] of meshMap) {
+      const geometry = mesh.geometry as BufferGeometry;
+      if (colorize === null) {
+        // Null path: dispose old material, remove colour attr, install standard material.
+        const oldMaterial = mesh.material as { dispose: () => void };
+        geometry.deleteAttribute('color');
+        mesh.material = new MeshStandardMaterial({
+          color: colorForEntity(entityPath),
+          side: DoubleSide,
+        });
+        oldMaterial.dispose();
+      } else {
+        // Set path: bake colour attribute and install phong material when channel present,
+        // otherwise fall back to the standard material path (same as null branch above).
+        const channels = meshScalarChannels.get(entityPath);
+        const scalars = channels?.[colorize.channel];
+        const oldMaterial = mesh.material as { dispose: () => void };
+        if (scalars && scalars.length > 0) {
+          const colors = colorize.bake(scalars);
+          geometry.setAttribute('color', new BufferAttribute(colors, 3));
+          mesh.material = new MeshPhongMaterial({
+            vertexColors: true,
+            flatShading: false,
+            side: DoubleSide,
+          });
+        } else {
+          geometry.deleteAttribute('color');
+          mesh.material = new MeshStandardMaterial({
+            color: colorForEntity(entityPath),
+            side: DoubleSide,
+          });
+        }
+        oldMaterial.dispose();
+      }
+    }
+  }
+
   function dispose(): void {
     for (const key of [...meshMap.keys()]) {
       removeMesh(key);
@@ -461,5 +521,5 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     return new Map(ghostMeshMap);
   }
 
-  return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes, setColorize };
+  return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes, setColorize, rebuildMaterials };
 }
