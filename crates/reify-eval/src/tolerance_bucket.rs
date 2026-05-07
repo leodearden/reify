@@ -78,7 +78,7 @@ impl<V> ToleranceBucket<V> {
     /// violate the sorted-ascending invariant.
     pub fn insert(&mut self, tol: f64, val: V) -> bool {
         debug_assert!(
-            tol.is_finite() && tol >= 0.0,
+            crate::tolerance_gate::is_valid_tolerance_si(tol),
             "ToleranceBucket: tolerance must be finite and non-negative, got {tol}"
         );
         // Reject if any existing entry already satisfies this tolerance.
@@ -130,7 +130,7 @@ impl<V> ToleranceBucket<V> {
     /// In debug builds, panics when `requested_tol` is `NaN`, infinite, or negative.
     pub fn lookup(&self, requested_tol: f64) -> Option<&V> {
         debug_assert!(
-            requested_tol.is_finite() && requested_tol >= 0.0,
+            crate::tolerance_gate::is_valid_tolerance_si(requested_tol),
             "ToleranceBucket: tolerance must be finite and non-negative, got {requested_tol}"
         );
         debug_assert!(
