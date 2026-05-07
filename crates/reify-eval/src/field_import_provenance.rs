@@ -20,15 +20,27 @@ use reify_types::{ContentHash, FieldImportProvenance};
 ///
 /// * `path` — source file path (absolute or relative).
 /// * `format` — format name, e.g. `"OpenVDB"`, `"STEP"`.
-/// * `file_bytes` — raw bytes of the source file at ingestion time; hashed
-///   deterministically via [`ContentHash::of`] (XXH3-128). Empty slices are
-///   accepted and produce a well-formed `ContentHash`.
+/// * `content_hash` — pre-computed [`ContentHash`] (XXH3-128) of the source
+///   file bytes at ingestion time. The caller is responsible for hashing —
+///   this separates the potentially large I/O pass (reading/hashing gigabytes)
+///   from this pure record-assembly function. Use
+///   [`ContentHash::of`] for small files; for large files, stream the bytes
+///   through an incremental hasher and pass the result here.
 /// * `declared_tolerance_si` — tolerance declared on the `Input` occurrence's
 ///   `param tolerance : Length = …`, in SI metres. Malformed values (NaN,
 ///   ±Inf, negative finite) are silently collapsed to `None` by the Gate 4
 ///   filter — see [`crate::tolerance_promise::extract_input_tolerance_promise`]
 ///   for the canonical reference. `Some(0.0)` is preserved (lower-boundary
 ///   acceptance, consistent with `extract_input_tolerance_promise_accepts_zero_promise`).
+///
+///   > **Warning — silent drop:** if you compute a tolerance programmatically
+///   > and pass `Some(value)` where `value` is NaN, ±Inf, or negative, the
+///   > resulting `FieldImportProvenance.declared_tolerance_si` will be `None`
+///   > with no error or warning. This is intentional (cross-extractor symmetry
+///   > with `extract_input_tolerance_promise`) but means the caller has no
+///   > runtime signal that the value was rejected. Validate tolerance values at
+///   > the source (parse / user-input boundary) rather than relying on this
+///   > function to surface programming errors.
 /// * `ingestion_timestamp_secs` — Unix epoch seconds at which ingestion
 ///   occurred; caller-supplied so this function stays a pure function with no
 ///   internal `SystemTime::now()` call.
@@ -36,10 +48,9 @@ use reify_types::{ContentHash, FieldImportProvenance};
 /// # Determinism
 ///
 /// The function is a pure function: identical inputs always produce identical
-/// `FieldImportProvenance` outputs. `ContentHash::of` is backed by XXH3-128
-/// (see `reify-types` `hash::deterministic` test); the caller controls the
-/// timestamp; the Gate 4 filter is a simple arithmetic predicate with no
-/// hidden state.
+/// `FieldImportProvenance` outputs. The caller controls both the
+/// pre-computed hash and the timestamp; the Gate 4 filter is a simple
+/// arithmetic predicate with no hidden state.
 ///
 /// # Cross-extractor symmetry
 ///
@@ -54,14 +65,14 @@ use reify_types::{ContentHash, FieldImportProvenance};
 pub fn build_field_import_provenance(
     path: &str,
     format: &str,
-    file_bytes: &[u8],
+    content_hash: ContentHash,
     declared_tolerance_si: Option<f64>,
     ingestion_timestamp_secs: u64,
 ) -> FieldImportProvenance {
     FieldImportProvenance {
         path: path.to_string(),
         format: format.to_string(),
-        content_hash: ContentHash::of(file_bytes),
+        content_hash,
         ingestion_timestamp_secs,
         // Gate 4 filter: mirrors `extract_input_tolerance_promise`'s Gate 4
         // (`tolerance_promise.rs:163-168`) for cross-extractor symmetry. A
@@ -70,6 +81,8 @@ pub fn build_field_import_provenance(
         // `is_promise_insufficient`'s debug_assert invariants.
         // `Some(0.0)` is preserved (lower-boundary acceptance — matches
         // `extract_input_tolerance_promise_accepts_zero_promise`).
+        // NOTE: malformed values are dropped silently — see the "Warning"
+        // in the function doc comment above.
         declared_tolerance_si: declared_tolerance_si.filter(|v| v.is_finite() && *v >= 0.0),
     }
 }
@@ -77,41 +90,46 @@ pub fn build_field_import_provenance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::ContentHash;
 
     #[test]
     fn build_field_import_provenance_filters_malformed_declared_tolerance_to_none() {
+        let any_hash = ContentHash::of(b"");
+
         // Gate 4 rejects NaN (a)
-        let r = build_field_import_provenance("p", "f", b"", Some(f64::NAN), 0);
+        let r = build_field_import_provenance("p", "f", any_hash.clone(), Some(f64::NAN), 0);
         assert_eq!(r.declared_tolerance_si, None, "NaN should be filtered");
 
         // Gate 4 rejects +Inf (b)
-        let r = build_field_import_provenance("p", "f", b"", Some(f64::INFINITY), 0);
+        let r = build_field_import_provenance("p", "f", any_hash.clone(), Some(f64::INFINITY), 0);
         assert_eq!(r.declared_tolerance_si, None, "+Inf should be filtered");
 
         // Gate 4 rejects -Inf (c)
-        let r = build_field_import_provenance("p", "f", b"", Some(f64::NEG_INFINITY), 0);
+        let r =
+            build_field_import_provenance("p", "f", any_hash.clone(), Some(f64::NEG_INFINITY), 0);
         assert_eq!(r.declared_tolerance_si, None, "-Inf should be filtered");
 
         // Gate 4 rejects negative finite (d)
-        let r = build_field_import_provenance("p", "f", b"", Some(-1.0e-3), 0);
+        let r = build_field_import_provenance("p", "f", any_hash.clone(), Some(-1.0e-3), 0);
         assert_eq!(r.declared_tolerance_si, None, "negative should be filtered");
 
         // Lower-boundary acceptance: zero is accepted (e), mirrors
         // extract_input_tolerance_promise_accepts_zero_promise
-        let r = build_field_import_provenance("p", "f", b"", Some(0.0), 0);
+        let r = build_field_import_provenance("p", "f", any_hash.clone(), Some(0.0), 0);
         assert_eq!(r.declared_tolerance_si, Some(0.0), "zero should be kept");
 
         // Typical valid case (f)
-        let r = build_field_import_provenance("p", "f", b"", Some(50e-6), 0);
+        let r = build_field_import_provenance("p", "f", any_hash, Some(50e-6), 0);
         assert_eq!(r.declared_tolerance_si, Some(50e-6), "valid positive should be kept");
     }
 
     #[test]
-    fn build_field_import_provenance_passes_through_typed_inputs_and_hashes_bytes() {
+    fn build_field_import_provenance_passes_through_typed_inputs_and_content_hash() {
+        let hash = ContentHash::of(&[0xCAu8, 0xFE, 0xBA, 0xBE]);
         let result = build_field_import_provenance(
             "fea_results.vdb",
             "OpenVDB",
-            &[0xCAu8, 0xFE, 0xBA, 0xBE],
+            hash.clone(),
             Some(50e-6),
             1_700_000_000,
         );
@@ -120,25 +138,23 @@ mod tests {
         assert_eq!(result.format, "OpenVDB");
         assert_eq!(result.ingestion_timestamp_secs, 1_700_000_000);
         assert_eq!(result.declared_tolerance_si, Some(50e-6));
-        assert_eq!(
-            result.content_hash,
-            ContentHash::of(&[0xCAu8, 0xFE, 0xBA, 0xBE])
-        );
+        assert_eq!(result.content_hash, hash);
     }
 
     #[test]
     fn build_field_import_provenance_is_deterministic_for_identical_inputs() {
+        let hash = ContentHash::of(b"identical bytes");
         let a = build_field_import_provenance(
             "fea_results.vdb",
             "OpenVDB",
-            b"identical bytes",
+            hash.clone(),
             Some(50e-6),
             1_700_000_000,
         );
         let b = build_field_import_provenance(
             "fea_results.vdb",
             "OpenVDB",
-            b"identical bytes",
+            hash,
             Some(50e-6),
             1_700_000_000,
         );
@@ -146,17 +162,18 @@ mod tests {
     }
 
     #[test]
-    fn build_field_import_provenance_distinguishes_distinct_byte_payloads() {
-        let a = build_field_import_provenance("p", "f", &[0x00, 0x01], None, 0);
-        let b = build_field_import_provenance("p", "f", &[0x00, 0x02], None, 0);
+    fn build_field_import_provenance_distinguishes_distinct_content_hashes() {
+        let a = build_field_import_provenance("p", "f", ContentHash::of(&[0x00, 0x01]), None, 0);
+        let b = build_field_import_provenance("p", "f", ContentHash::of(&[0x00, 0x02]), None, 0);
         assert_ne!(a.content_hash, b.content_hash);
     }
 
     #[test]
-    fn build_field_import_provenance_accepts_empty_file_bytes() {
-        let result = build_field_import_provenance("p", "f", &[], None, 0);
-        // Should not panic; content_hash should be well-formed and equal to
-        // ContentHash::of(&[]) for determinism.
-        assert_eq!(result.content_hash, ContentHash::of(&[]));
+    fn build_field_import_provenance_accepts_zero_content_hash() {
+        // ContentHash::of(&[]) is well-formed; the builder must not panic
+        // and must pass the hash through unchanged.
+        let empty_hash = ContentHash::of(&[]);
+        let result = build_field_import_provenance("p", "f", empty_hash.clone(), None, 0);
+        assert_eq!(result.content_hash, empty_hash);
     }
 }
