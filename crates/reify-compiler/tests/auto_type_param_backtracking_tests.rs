@@ -2011,6 +2011,231 @@ structure def WaterCooled : Cooled {
     );
 }
 
+/// Same 2x2 all-leaves-infeasible setup as the parameter-list/counts test.
+/// Pins the **smallest infeasibility witness** field of the rich format
+/// (task 2663). With backjumping (task 2660) landed, soundness guarantees
+/// the entire cross-product is infeasible whenever DFS exits with zero
+/// feasibles, so the witness collapses to the lex-first level-1 prefix:
+/// `(params[0].name, per_param_candidates[0][0])` with ruled-out count
+/// `cross_product_size / per_param_candidates[0].len()` (= 4 / 2 = 2).
+///
+/// Pins:
+/// (a) message contains `"smallest infeasibility witness"` substring
+/// (b) message contains `"T=ORingSeal"` — lex-first T candidate (alphabetical)
+/// (c) message contains `"rules out all 2"` — ruled-out descendant count
+#[test]
+fn dfs_zero_feasible_diagnostic_includes_smallest_infeasibility_witness() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let _outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "`0 =>` arm must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+
+    // (a) Witness section header.
+    assert!(
+        diagnostics[0].message.contains("smallest infeasibility witness"),
+        "rich format must contain 'smallest infeasibility witness' header; got: {:?}",
+        diagnostics[0].message
+    );
+    // (b) Lex-first level-1 prefix: T=ORingSeal (ORingSeal < RubberSeal alphabetically).
+    assert!(
+        diagnostics[0].message.contains("T=ORingSeal"),
+        "witness must name 'T=ORingSeal' (lex-first level-1 prefix); got: {:?}",
+        diagnostics[0].message
+    );
+    // (c) Ruled-out descendant count: cross_product_size / per_param_candidates[0].len() = 4/2 = 2.
+    assert!(
+        diagnostics[0].message.contains("rules out all 2"),
+        "witness must report 'rules out all 2' downstream assignments \
+         (cross_product_size / |params[0].candidates| = 4/2 = 2); got: {:?}",
+        diagnostics[0].message
+    );
+}
+
+/// Three-param 2x2x2 cross-product with all leaves infeasible. Pins that the
+/// witness anchors at the SHORTEST level (level 1, params[0]), not deeper —
+/// even when more params are available, the witness is always the lex-first
+/// level-1 prefix because every level-1 prefix has an all-infeasible sub-tree
+/// when the cross-product is fully infeasible.
+///
+/// Pins (in addition to the level-1 anchor):
+/// - witness names `T=<lex-first-Seal>` (i.e. `T=ORingSeal`)
+/// - ruled-out count = `8 / 2 = 4` (8 leaves total, 2 T candidates, sub-tree per T = 4)
+/// - witness does NOT include `U=` or `V=` — only level 1 is reported
+#[test]
+fn dfs_zero_feasible_witness_uses_lex_first_first_param_candidate_with_three_params() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+trait Mounted {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+
+structure def BoltedMount : Mounted {
+    param torque : Real = 50.0
+}
+
+structure def WeldedMount : Mounted {
+    param thickness : Real = 3.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+        AutoTypeParam {
+            name: "V".to_string(),
+            bounds: vec!["Mounted".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(50, 60),
+        },
+    ];
+
+    let _outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "`0 =>` arm must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+
+    // Witness names the lex-first T candidate.
+    assert!(
+        diagnostics[0].message.contains("T=ORingSeal"),
+        "witness must name 'T=ORingSeal' (lex-first level-1 prefix); got: {:?}",
+        diagnostics[0].message
+    );
+    // Ruled-out count = cross_product_size / |params[0].candidates| = 8/2 = 4.
+    assert!(
+        diagnostics[0].message.contains("rules out all 4"),
+        "witness must report 'rules out all 4' downstream assignments (8/2); got: {:?}",
+        diagnostics[0].message
+    );
+    // Witness anchors at level 1 only — does NOT name U or V.
+    // Locate the witness section and assert U/V are not part of the prefix.
+    let witness_idx = diagnostics[0]
+        .message
+        .find("smallest infeasibility witness")
+        .expect("witness section must be present");
+    let witness_section = &diagnostics[0].message[witness_idx..];
+    assert!(
+        !witness_section.contains("U="),
+        "level-1 witness must NOT include 'U=' in the witness section; got: {:?}",
+        witness_section
+    );
+    assert!(
+        !witness_section.contains("V="),
+        "level-1 witness must NOT include 'V=' in the witness section; got: {:?}",
+        witness_section
+    );
+}
+
 /// Multi-param strict-mode scenario where exactly one of the four cross-product
 /// leaves is feasible. Exercises the `1 =>` arm via the strict path: with
 /// `max_feasible_to_collect = 2` (strict mode), the search runs all four
