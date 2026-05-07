@@ -40,8 +40,8 @@
 ///
 /// This is the canonical predicate referenced by every tolerance Gate 4
 /// site in the eval crate.
-pub fn is_valid_tolerance_si(_v: f64) -> bool {
-    unimplemented!("step-1 RED: stub — implementation lands in step-2")
+pub fn is_valid_tolerance_si(v: f64) -> bool {
+    v.is_finite() && v >= 0.0
 }
 
 #[cfg(test)]
