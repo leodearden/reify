@@ -67,7 +67,7 @@ pub const EDGES: [(usize, usize); 6] = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), 
 /// Reference-coordinate gradients of the barycentric coordinates λ.
 /// `∇λ_0 = (-1,-1,-1)` (since `λ_0 = 1-ξ-η-ζ`), `∇λ_1 = e_x`,
 /// `∇λ_2 = e_y`, `∇λ_3 = e_z`.
-pub(super) const GRAD_LAMBDA: [[f64; 3]; 4] = [
+const GRAD_LAMBDA: [[f64; 3]; 4] = [
     [-1.0, -1.0, -1.0],
     [1.0, 0.0, 0.0],
     [0.0, 1.0, 0.0],
@@ -220,8 +220,12 @@ mod tests {
         let lambda_0 = 1.0 - p.xi - p.eta - p.zeta;
         let scalar = 4.0 * lambda_0 - 1.0;
         let g_p = TetP2.shape_grad_at(p);
+        // Hard-coded literal oracle for ∇λ_0 = (-1,-1,-1) so that a typo in
+        // GRAD_LAMBDA[0] is caught rather than silently passed; both sides of
+        // the assertion now reference independent sources of truth.
+        let grad_lambda_0_oracle = [-1.0_f64, -1.0, -1.0];
         for k in 0..3 {
-            let expected = scalar * GRAD_LAMBDA[0][k];
+            let expected = scalar * grad_lambda_0_oracle[k];
             assert!(
                 (g_p[0][k] - expected).abs() < TOL,
                 "∇N_0(p)[{k}] = {} expected {expected}",
