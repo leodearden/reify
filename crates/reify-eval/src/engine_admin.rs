@@ -165,6 +165,11 @@ impl Engine {
             // construction — task 2590 added the field + accessor as the
             // foundation; tasks 5-8 wire per-op auto-population.
             topology_attribute_table: TopologyAttributeTable::default(),
+            // Phase A swept-body classifier table (task 2982). Always empty
+            // after construction; populated per-realization by
+            // `Engine::execute_realization_ops` and cleared at every build
+            // entry point.
+            swept_kind_table: crate::sweep_classifier::SweptKindTable::default(),
             // Only initialised in test / `test-instrumentation` builds; the
             // field is absent in production (see lib.rs and engine_eval.rs
             // for the matching cfg gates on the declaration and read site).
@@ -196,6 +201,20 @@ impl Engine {
     /// becomes the only naming store.
     pub fn topology_attribute_table(&self) -> &TopologyAttributeTable {
         &self.topology_attribute_table
+    }
+
+    /// Return a reference to the Phase A swept-body classifier table populated
+    /// by the most recent `build()` / `build_snapshot()` /
+    /// `tessellate_realizations()` / `tessellate_snapshot()` call.
+    ///
+    /// Maps each successful realization's final `GeometryHandleId` to the
+    /// `SweptKind` returned by `classify_swept_body(ops, handles)` — see
+    /// `crates/reify-eval/src/sweep_classifier.rs` for the classifier surface
+    /// and Phase A acceptance matrix. Realizations whose final op is not a
+    /// recognised swept body (or whose sweep path is curved/twisted) leave no
+    /// entry. Task 2982.
+    pub fn swept_kind_table(&self) -> &crate::sweep_classifier::SweptKindTable {
+        &self.swept_kind_table
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.
