@@ -457,6 +457,86 @@ mod tests {
         );
     }
 
+    // ── Amendment: explicitly-rejected sweep variants ─────────────────────
+    // The module docs list `SweepGuided`, `LoftGuided`, and `Pipe` as Phase A
+    // rejects. They currently fall through the catch-all `_ => None` arm, which
+    // is correct, but a future refactor that splits the match could silently
+    // start accepting them. These tests pin the rejection so any such regression
+    // is caught.
+
+    #[test]
+    fn classify_swept_body_sweep_guided_returns_none() {
+        let ops = vec![GeometryOp::SweepGuided {
+            profile: GeometryHandleId(0),
+            path: GeometryHandleId(1),
+            guide: GeometryHandleId(2),
+        }];
+        let handles = vec![GeometryHandleId(3)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "GeometryOp::SweepGuided (auxiliary-guide twist potential) must be rejected for Phase A"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_loft_guided_returns_none() {
+        let ops = vec![GeometryOp::LoftGuided {
+            profiles: vec![GeometryHandleId(0), GeometryHandleId(1)],
+            guides: vec![GeometryHandleId(2)],
+        }];
+        let handles = vec![GeometryHandleId(3)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "GeometryOp::LoftGuided (multi-profile + guide) must be rejected for Phase A"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_pipe_returns_none() {
+        let ops = vec![GeometryOp::Pipe {
+            path: GeometryHandleId(0),
+            radius: Value::length(0.005),
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "GeometryOp::Pipe (non-canonical sweep) must be rejected for Phase A"
+        );
+    }
+
+    // ── Amendment: cross-realization path source is unresolvable ──────────
+    // The Sweep arm resolves a `path` handle by linear-scanning the parallel
+    // `handles` slice for the *current* realization only. If the path was
+    // produced in a different realization (e.g. via `named_steps` lookup) and
+    // its handle isn't present in this slice, the position lookup misses and
+    // the classifier returns `None` — even if the producing op was a
+    // `LineSegment` and would otherwise qualify. This test pins that
+    // documented limitation; if a future revision passes a richer handle→op
+    // map into the classifier and accepts cross-realization paths, this test
+    // is the right place to update.
+
+    #[test]
+    fn classify_swept_body_sweep_with_cross_realization_path_returns_none() {
+        // The Sweep references handle id 99, which was produced in a *prior*
+        // realization and is NOT present in this realization's `handles`
+        // slice. Even though the Sweep is otherwise well-formed and a
+        // hypothetical LineSegment producer would qualify, the path-source
+        // scan misses → `None`.
+        let ops = vec![GeometryOp::Sweep {
+            profile: GeometryHandleId(0),
+            path: GeometryHandleId(99),
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "Sweep with a path handle produced outside this realization slice must return None (cross-realization path resolution is out of scope for Phase A)"
+        );
+    }
+
     // ── Step-7: "no subsequent modifications" contract ────────────────────
     // These tests pin the implicit contract that any post-sweep modify op
     // (Translate / Fillet / Boolean / …) sits on top of the sweep as the
