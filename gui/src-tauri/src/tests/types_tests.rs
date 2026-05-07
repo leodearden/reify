@@ -1037,3 +1037,85 @@ fn serialize_finite_f32_map_neg_infinity_causes_error_with_channel_key() {
         "expected channel key 'vonMises' in error message: {msg}"
     );
 }
+
+// --- displaced_positions IPC wire tests (task 2959, step-5) ---
+
+/// (a) A `MeshData` with `displaced_positions: Some(vec![...])` serializes to
+/// JSON with a 3-element `"displaced_positions"` array.
+#[test]
+fn mesh_data_displaced_positions_some_serializes_to_array() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+    let arr = v.get("displaced_positions").expect("displaced_positions must be present");
+    let arr = arr.as_array().expect("displaced_positions must be an array");
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0].as_f64().unwrap(), 1.0);
+    assert_eq!(arr[1].as_f64().unwrap(), 2.0);
+    assert_eq!(arr[2].as_f64().unwrap(), 3.0);
+}
+
+/// (b) `displaced_positions: None` must be omitted from the wire
+/// (validates `skip_serializing_if = "Option::is_none"`).
+#[test]
+fn mesh_data_displaced_positions_none_omitted_from_wire() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![],
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+    assert!(
+        v.get("displaced_positions").is_none(),
+        "displaced_positions: None must be omitted from the wire"
+    );
+}
+
+/// (c) Round-trip: `Some(vec![1.0, 2.0, 3.0])` survives serde serialize/deserialize.
+#[test]
+fn mesh_data_displaced_positions_round_trips() {
+    let mesh = MeshData {
+        entity_path: "dp-test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+    let back: MeshData = serde_json::from_value(v).expect("deserialize should succeed");
+    assert_eq!(back.displaced_positions, Some(vec![1.0_f32, 2.0, 3.0]));
+}
+
+/// (d) NaN in a `Some(...)` displaced_positions triggers a serialization error
+/// mentioning "non-finite f32" — reusing the existing serialize_finite_f32_vec_opt semantics.
+#[test]
+fn mesh_data_displaced_positions_nan_causes_error() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: Some(vec![f32::NAN]),
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in error message: {msg}"
+    );
+}
