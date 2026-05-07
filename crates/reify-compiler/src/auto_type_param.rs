@@ -2285,7 +2285,7 @@ fn dfs_search(
 
 #[cfg(test)]
 mod helper_tests {
-    use super::{build_constraints_template, check_constraints_leaf};
+    use super::{build_constraints_template, check_constraints_leaf, dfs_search};
     use reify_test_support::MockConstraintChecker;
     use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
 
@@ -2520,6 +2520,59 @@ mod helper_tests {
         assert!(
             checker.saw_borrowed.load(Ordering::SeqCst),
             "check_constraints_leaf must pass Cow::Borrowed to the checker (no per-leaf clone)"
+        );
+    }
+
+    /// By induction, `j > level` is unreachable for well-formed blame_maps.
+    /// This test synthesizes a malformed blame_map (out-of-range param index 2
+    /// in a 2-param search) so the leaf returns `BackjumpTo(2)`, which routes to
+    /// the `j > level` arm at level 1.
+    ///
+    /// The expected substring `"internal error: entered unreachable code"` is
+    /// emitted by `unreachable!()` but NOT by `debug_assert!(false, …)` (which
+    /// starts with `"assertion failed: false"`), so this test fails before the
+    /// impl step and passes after — proper failing-first TDD.
+    #[test]
+    #[should_panic(expected = "internal error: entered unreachable code")]
+    fn dfs_search_panics_with_unreachable_when_blame_index_exceeds_param_count() {
+        use std::collections::{BTreeSet, HashMap};
+
+        let expr = literal_expr();
+        let id = ConstraintNodeId::new("C0", 0);
+
+        // 2-param search: only indices 0 and 1 are valid.
+        let per_param_candidates = vec![vec!["A".into()], vec!["B".into()]];
+        let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+            vec![(id.clone(), &expr)];
+
+        // Force the leaf to be infeasible so compute_deepest_blame_level is called.
+        let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+        let functions: &[CompiledFunction] = &[];
+        let leaf_values = reify_types::ValueMap::new();
+
+        // Malformed blame_map: blame "C0" on out-of-range index 2.
+        // By induction the production `compute_blame_map` cannot emit index 2 in a
+        // 2-param search, but dfs_search does not validate blame_map, so:
+        //   level-2 leaf returns BackjumpTo(2)
+        //   level-1 caller sees j=2 > level=1 → enters the `j > level` arm.
+        let mut blame_set = BTreeSet::new();
+        blame_set.insert(2usize);
+        let mut blame_map: HashMap<ConstraintNodeId, BTreeSet<usize>> = HashMap::new();
+        blame_map.insert(id.clone(), blame_set);
+
+        let mut current: Vec<String> = Vec::new();
+        let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
+        dfs_search(
+            0,
+            &per_param_candidates,
+            &mut current,
+            &mut feasible_assignments,
+            &constraints_template,
+            &leaf_values,
+            &checker,
+            functions,
+            usize::MAX,
+            &blame_map,
         );
     }
 }
