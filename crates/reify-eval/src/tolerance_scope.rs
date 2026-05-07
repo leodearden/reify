@@ -148,7 +148,7 @@ pub(crate) fn extract_tolerance_bindings(
             }) if *dimension == DimensionVector::LENGTH => *si_value,
             _ => continue,
         };
-        if !si_value.is_finite() || si_value < 0.0 {
+        if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
             continue;
         }
 
