@@ -618,3 +618,130 @@ structure def WeldedMount : Mounted {
         diagnostics[0].code
     );
 }
+
+// ─── Scenario 5: depth-bound fallback (PRD §"Resolved design decisions") ─────
+
+/// Scenario: depth-bound fallback fires because `params.len() (=2) > max_depth
+/// (=1)`.  DFS short-circuits to `emit_fallback_warning_and_delegate_to_bfs`,
+/// emitting one `AutoTypeParamDepthBoundExceeded` Warning and returning the
+/// v0.1 BFS outcome.
+///
+/// The setup uses exactly 1 candidate per param so BFS produces clean
+/// `Selected` outcomes with zero BFS diagnostics — the only diagnostic in the
+/// output is the depth-bound warning itself.
+///
+/// Pins PRD §"Resolved design decisions" "Default depth bound: 6 parameters"
+/// and the fallback rule (`params.len() > max_depth` ⇒ BFS fallback;
+/// `params.len() == max_depth` ⇒ DFS runs, pinned by
+/// `dfs_at_max_depth_runs_dfs_no_fallback_diagnostic`).
+#[test]
+fn bfs_fallback_above_depth_bound_emits_warning_and_runs_bfs() {
+    // One Seal candidate + one Cooled candidate: 2 params, 1 candidate each.
+    // BFS produces clean Selected × 2, zero BFS diagnostics.
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    // Capture BFS outcome for parity check.
+    let mut bfs_diagnostics = Vec::new();
+    let bfs_outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut bfs_diagnostics,
+    );
+    assert!(
+        bfs_diagnostics.is_empty(),
+        "BFS on 1-candidate-per-param must emit zero diagnostics (baseline); \
+         got: {:?}",
+        bfs_diagnostics
+    );
+
+    // DFS with max_depth=1: params.len()==2 > 1 → depth-bound fallback fires.
+    let mut dfs_diagnostics = Vec::new();
+    let dfs_outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        1, // max_depth=1; 2 params > 1 → fallback
+        usize::MAX,
+        &mut dfs_diagnostics,
+    );
+
+    // Outcome parity: DFS-with-fallback must match BFS exactly.
+    assert_eq!(
+        dfs_outcome, bfs_outcome,
+        "DFS above max_depth must delegate to BFS; outcome must match BFS's \
+         identical-input outcome. DFS: {:?}, BFS: {:?}",
+        dfs_outcome, bfs_outcome
+    );
+
+    // Exactly one extra diagnostic: the depth-bound warning.
+    assert_eq!(
+        dfs_diagnostics.len(),
+        1,
+        "DFS above max_depth (BFS baseline: 0 diagnostics) must emit exactly \
+         one DepthBoundExceeded Warning; got: {:?}",
+        dfs_diagnostics
+    );
+    let warn = &dfs_diagnostics[0];
+    assert_eq!(
+        warn.code,
+        Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded),
+        "diagnostic code must be AutoTypeParamDepthBoundExceeded; got: {:?}",
+        warn.code
+    );
+    assert_eq!(
+        warn.severity,
+        Severity::Warning,
+        "AutoTypeParamDepthBoundExceeded must be Severity::Warning; got: {:?}",
+        warn.severity
+    );
+    // Message must cite the param count (2) and the max_depth (1).
+    assert!(
+        warn.message.contains("2"),
+        "depth-bound message must mention param count '2'; got: {:?}",
+        warn.message
+    );
+    assert!(
+        warn.message.contains("1"),
+        "depth-bound message must mention max_depth '1'; got: {:?}",
+        warn.message
+    );
+}
