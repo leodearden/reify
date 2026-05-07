@@ -1114,15 +1114,18 @@ fn mesh_data_displaced_positions_round_trips() {
 
 /// (d) NaN in a `Some(...)` displaced_positions triggers a serialization error
 /// mentioning "non-finite f32" — reusing the existing serialize_finite_f32_vec_opt semantics.
+///
+/// Note: displaced_positions must have the same length as vertices (length contract).
+/// Use a matching-length vector so the length check passes and the NaN check fires.
 #[test]
 fn mesh_data_displaced_positions_nan_causes_error() {
     let mesh = MeshData {
         entity_path: "test".to_string(),
-        vertices: vec![0.0, 0.0, 0.0],
+        vertices: vec![0.0, 0.0, 0.0],   // 1 vertex → 3 floats
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
-        displaced_positions: Some(vec![f32::NAN]),
+        displaced_positions: Some(vec![f32::NAN, 0.0, 0.0]),  // 3 floats, length matches
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();
@@ -1130,5 +1133,90 @@ fn mesh_data_displaced_positions_nan_causes_error() {
     assert!(
         msg.contains("non-finite"),
         "expected 'non-finite' in error message: {msg}"
+    );
+}
+
+// --- MeshData length contract tests (amendment, suggestion 3) ---
+
+/// Serializing a MeshData whose scalar_channels entry has a different length
+/// than the vertex count must return `Err` with the channel name and "vertex count"
+/// in the error message.  This pins the length contract ("contract in production
+/// code rather than relying on test coverage", task 2544).
+#[test]
+fn meshdata_rejects_scalar_channel_with_wrong_length() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    // 3-vertex mesh (9 floats), but vonMises has only 2 values
+    channels.insert("vonMises".to_string(), vec![10.0_f32, 20.0]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        displaced_positions: None,
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("vonMises"),
+        "expected channel name 'vonMises' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("vertex count"),
+        "expected 'vertex count' in error message: {msg}"
+    );
+}
+
+/// Serializing a MeshData whose displaced_positions length differs from vertices
+/// length must return `Err` mentioning both "displaced_positions" and "vertices".
+#[test]
+fn meshdata_rejects_displaced_positions_with_wrong_length() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 9 floats
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: Some(vec![0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.6]), // 6 floats ≠ 9
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("displaced_positions"),
+        "expected 'displaced_positions' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("vertices"),
+        "expected 'vertices' in error message: {msg}"
+    );
+}
+
+/// Positive case: a correct-length scalar_channels entry serializes successfully.
+#[test]
+fn meshdata_accepts_matching_scalar_channel_length() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![10.0_f32, 20.0, 30.0]); // 3 values = 3 vertices
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        displaced_positions: None,
+    };
+
+    let v = serde_json::to_value(&mesh).expect("should serialize successfully");
+    assert_eq!(
+        v["scalar_channels"]["vonMises"].as_array().unwrap().len(),
+        3,
+        "vonMises must have 3 elements"
     );
 }
