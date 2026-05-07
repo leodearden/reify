@@ -40,6 +40,7 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "envelope_max" => envelope_reduce(args, false),
         "envelope_min" => envelope_reduce(args, true),
         "case_names" => case_names(args),
+        "result_for" => result_for(args),
         _ => return None,
     })
 }
@@ -86,6 +87,55 @@ fn case_names(args: &[Value]) -> Value {
         _ => return Value::Undef,
     };
     Value::List(cases.keys().cloned().collect())
+}
+
+/// Look up a single case by name from a `MultiCaseResult` struct instance.
+///
+/// # Input shape
+///
+/// `args == [Value::Map { "cases" -> Value::Map<Value::String, Value> }, Value::String(key)]`
+///
+/// The first arg is the `MultiCaseResult` struct instance (field-keyed by
+/// `Value::String`). The second arg is the case name to look up.
+///
+/// # Output
+///
+/// The `Value` stored at `cases[key]` (an `ElasticResult` Map), or
+/// `Value::Undef` if the key is absent from the Map.
+///
+/// # Failure modes
+///
+/// All argument-shape failures collapse to `Value::Undef` (silent-Undef
+/// discipline, mirroring `envelope_reduce`):
+///   - arity != 2
+///   - `args[0]` is not `Value::Map`
+///   - `args[1]` is not `Value::String`
+///   - outer Map has no `"cases"` key
+///   - `"cases"` value is not `Value::Map`
+///   - key is absent from the `cases` Map (missing key → silent Undef
+///     per PRD task #10 deferral; matches the `envelope_*` convention)
+///
+/// Diagnostic emission is deferred to PRD task #10.
+fn result_for(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    let outer = match &args[0] {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+    let key = match &args[1] {
+        Value::String(s) => s,
+        _ => return Value::Undef,
+    };
+    let cases = match outer.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(m)) => m,
+        _ => return Value::Undef,
+    };
+    cases
+        .get(&Value::String(key.clone()))
+        .cloned()
+        .unwrap_or(Value::Undef)
 }
 
 /// Per-grid-point reduction across a `Map<String, Field<Point3, T>>` of
