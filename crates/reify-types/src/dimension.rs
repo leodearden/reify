@@ -1107,4 +1107,24 @@ mod tests {
             "Torque and Energy content hashes must differ"
         );
     }
+
+    #[test]
+    fn acceleration_has_m_per_s_squared_exponents() {
+        let a = DimensionVector::ACCELERATION;
+        assert_eq!(a, DimensionVector::from_exps(&[(0, 1), (2, -2)]));
+        assert_eq!(a.canonical_name(), Some("Acceleration"));
+    }
+
+    #[test]
+    fn acceleration_equals_length_div_time_squared() {
+        assert_eq!(
+            DimensionVector::ACCELERATION,
+            DimensionVector::LENGTH.div(&DimensionVector::TIME.pow(2))
+        );
+    }
+
+    #[test]
+    fn acceleration_is_distinct_from_length() {
+        assert_ne!(DimensionVector::ACCELERATION, DimensionVector::LENGTH);
+    }
 }
