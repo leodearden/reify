@@ -269,4 +269,20 @@ mod tests {
             "FidgetKernel must allocate a real handle id, not the INVALID sentinel",
         );
     }
+
+    /// Pins the Box-primitive SDF construction. The body in step-2 still
+    /// rejects Box via the catch-all "not yet supported" branch, so this
+    /// test fails until step-4 wires the standard Inigo-Quilez box SDF.
+    #[test]
+    fn fidget_kernel_execute_box_returns_handle() {
+        let mut kernel = FidgetKernel::new();
+        let result = kernel.execute(&GeometryOp::Box {
+            width: Value::Real(2.0),
+            height: Value::Real(2.0),
+            depth: Value::Real(2.0),
+        });
+        let handle = result.expect("Box execution must succeed on FidgetKernel");
+        assert_eq!(handle.repr, BRepKind::Solid);
+        assert_ne!(handle.id, GeometryHandleId::INVALID);
+    }
 }
