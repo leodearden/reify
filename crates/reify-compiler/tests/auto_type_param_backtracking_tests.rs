@@ -4285,6 +4285,19 @@ structure def Hot2 : Hot {
          message must contain 'RubberSeal'; got: {:?}",
         diagnostics[0].message
     );
+    // Pins the optimization's actual trace: WITH backjumping, exactly 5 leaves
+    // are visited × 1 constraint per leaf = 5 id records.
+    //   Leaf 1 (ORingSeal, AirCooled, Hot1) → Violated → blame={T(0)} → backjump to T
+    //   → skips the entire ORingSeal sub-tree (leaves 2–4 under ORingSeal never visited)
+    //   Leaves 2–5 under RubberSeal → Satisfied (4 leaves)
+    // Without backjumping: all 8 leaves × 1 constraint = 8 id records.
+    assert_eq!(
+        checker.calls().len(),
+        5,
+        "WITH backjumping: 5 leaves visited × 1 constraint = 5 id records \
+         (vs 8 without backjumping); got: {:?}",
+        checker.calls().len()
+    );
 }
 
 /// Backjumping uses `max` over the **union** of all violated constraints' blame
