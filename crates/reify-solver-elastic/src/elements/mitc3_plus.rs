@@ -262,6 +262,31 @@ mod tests {
     }
 
     #[test]
+    fn tying_points_returns_three_canonical_edge_midpoints_in_a_b_c_order() {
+        let tp = Mitc3Plus.tying_points();
+        assert_eq!(tp.len(), 3, "must return exactly 3 tying points");
+        // A = (½, 0), B = (0, ½), C = (½, ½)
+        let expected_coords = [
+            ShellReferenceCoord::new(0.5, 0.0),
+            ShellReferenceCoord::new(0.0, 0.5),
+            ShellReferenceCoord::new(0.5, 0.5),
+        ];
+        for (i, (tp_i, &exp)) in tp.iter().zip(expected_coords.iter()).enumerate() {
+            assert!(
+                (tp_i.coord.xi - exp.xi).abs() < TOL && (tp_i.coord.eta - exp.eta).abs() < TOL,
+                "tying_points()[{i}].coord = {:?}, expected {:?}",
+                tp_i.coord,
+                exp,
+            );
+        }
+    }
+
+    #[test]
+    fn tying_points_returned_slice_is_static() {
+        let _: &'static [TyingPoint] = Mitc3Plus.tying_points();
+    }
+
+    #[test]
     fn bubble_grad_vanishes_at_centroid() {
         // Centroid is the unique interior maximum of f_b, so ∇f_b = 0 there.
         let g = Mitc3Plus.bubble_grad_at(ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0));
