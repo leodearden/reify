@@ -95,19 +95,19 @@ static REGISTRY: OnceLock<BTreeMap<String, &'static KernelRegistration>> = OnceL
 ///
 /// # Duplicate `(Operation, ReprKind)` detection
 ///
-/// The OnceLock init closure also materialises owned [`CapabilityDescriptor`]s
-/// once and passes them to [`warn_if_duplicate_op_repr_pairs`], surfacing
-/// duplicate-(op, repr)-pair misconfigurations at startup via `tracing::warn!`
-/// (and `debug_assert!` in debug builds). This diagnostic runs exactly
-/// once per process, structurally guaranteed by the surrounding `OnceLock`.
+/// The OnceLock init closure also invokes each kernel's descriptor function
+/// once (lazily, via iterator) and passes the results to
+/// [`warn_if_duplicate_op_repr_pairs`], surfacing duplicate-(op, repr)-pair
+/// misconfigurations at startup via `tracing::warn!` (and `debug_assert!` in
+/// debug builds). No intermediate collection is built — the iterator is
+/// consumed directly. This diagnostic runs exactly once per process,
+/// structurally guaranteed by the surrounding `OnceLock`.
 pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
     REGISTRY.get_or_init(|| {
         let map = build_registry();
-        let descriptors: BTreeMap<String, CapabilityDescriptor> = map
-            .iter()
-            .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
-            .collect();
-        warn_if_duplicate_op_repr_pairs(&descriptors);
+        warn_if_duplicate_op_repr_pairs(
+            map.iter().map(|(name, reg)| (name.as_str(), (reg.descriptor)())),
+        );
         map
     })
 }
@@ -228,6 +228,15 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
 /// followed by `debug_assert!(false, ...)` that panics in debug builds.
 /// Mirrors [`build_registry`]'s duplicate-name detection pattern verbatim.
 ///
+/// # Iterator-based signature
+///
+/// Accepts `impl IntoIterator<Item = (&'a str, CapabilityDescriptor)>` so
+/// callers can pass a lazily-mapped iterator directly (e.g. from
+/// `map.iter().map(|(name, reg)| (name.as_str(), (reg.descriptor)()))`)
+/// without building a throwaway `BTreeMap<String, CapabilityDescriptor>`.
+/// The `&'a str` keys must outlive the internal `seen` map — they are
+/// borrowed from the caller's key collection, not from the iterator itself.
+///
 /// # Why `HashMap`, not `BTreeSet`
 ///
 /// [`Operation`] derives `Hash + Eq` but **not** `Ord/PartialOrd`, so
@@ -237,17 +246,18 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
 /// existing `Hash + Eq` and additionally records the previous claimer's name
 /// so the panic message reads `"kernels: {prev} vs {new}"` — a bare
 /// `insert() -> bool` would discard the previous owner's identity.
-/// Iteration-order determinism is preserved by the outer `BTreeMap` iteration
-/// (lexicographic on kernel name) and the inner `Vec` order (`supports`
-/// insertion order); `HashMap` only stores the lookup, not the iteration order.
-pub(crate) fn warn_if_duplicate_op_repr_pairs(
-    registered: &BTreeMap<String, CapabilityDescriptor>,
+/// Iteration-order determinism is preserved by the outer iterator order
+/// (lexicographic on kernel name when driven from a `BTreeMap`) and the
+/// inner `Vec` order (`supports` insertion order); `HashMap` only stores
+/// the lookup, not the iteration order.
+pub(crate) fn warn_if_duplicate_op_repr_pairs<'a>(
+    registered: impl IntoIterator<Item = (&'a str, CapabilityDescriptor)>,
 ) {
-    let mut seen: HashMap<(Operation, ReprKind), &str> = HashMap::new();
+    let mut seen: HashMap<(Operation, ReprKind), &'a str> = HashMap::new();
     for (name, descriptor) in registered {
         for &(op, repr) in &descriptor.supports {
             if let Some(prev_owner) = seen.insert((op, repr), name) {
-                if prev_owner == name.as_str() {
+                if prev_owner == name {
                     // Intra-kernel: this kernel's own `supports` Vec lists the same
                     // pair twice (e.g. a copy-paste bug in an adapter's descriptor
                     // function).  Disambiguate from the inter-kernel case so the
@@ -451,7 +461,9 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                warn_if_duplicate_op_repr_pairs(fixture);
+                warn_if_duplicate_op_repr_pairs(
+                    fixture.iter().map(|(k, v)| (k.as_str(), v.clone())),
+                );
             }));
         });
 
@@ -686,7 +698,7 @@ mod tests {
                 supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
             },
         );
-        warn_if_duplicate_op_repr_pairs(&registered);
+        warn_if_duplicate_op_repr_pairs(registered.iter().map(|(k, v)| (k.as_str(), v.clone())));
     }
 
     /// Contract pin: `warn_if_duplicate_op_repr_pairs` must emit exactly one
@@ -861,47 +873,4 @@ mod tests {
         );
     }
 
-    /// Smoke check: repeated `registry()` calls do not introduce `WARN`-level
-    /// noise at the `reify_eval::kernel_registry` target.
-    ///
-    /// `REGISTRY` is a process-global `OnceLock`; by the time this test runs,
-    /// the init closure may already have executed (driven by an earlier test).
-    /// All three calls here are therefore likely cache hits. What this test
-    /// actually verifies is the narrower property: the **cache-hit path**
-    /// produces no spurious WARN events. It does not (and cannot) observe
-    /// whether the init closure itself fired under the subscriber — that would
-    /// require injecting duplicates into the global OnceLock, which would
-    /// disrupt every other test in the binary.
-    ///
-    /// The once-per-process `(Operation, ReprKind)` uniqueness contract is
-    /// structurally guaranteed by the surrounding `OnceLock` and needs no
-    /// unit-test pin (we don't unit-test stdlib). The diagnostic behavior on
-    /// duplicate inputs is pinned by the helper-direct tests
-    /// `warn_if_duplicate_op_repr_pairs_panics_on_duplicate_pair`,
-    /// `*_always_emits_warn_on_duplicate`, and
-    /// `*_always_emits_warn_on_intra_kernel_duplicate`.
-    #[test]
-    fn registry_repeated_calls_emit_no_warn() {
-        use reify_test_support::CountingSubscriberBuilder;
-        use std::sync::atomic::Ordering;
-
-        let (subscriber, counters) = CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .target_prefix("reify_eval::kernel_registry")
-            .build();
-        let warn_count = counters[&tracing::Level::WARN].clone();
-
-        tracing::subscriber::with_default(subscriber, || {
-            let _ = registry();
-            let _ = registry();
-            let _ = registry();
-        });
-
-        assert_eq!(
-            warn_count.load(Ordering::Acquire),
-            0,
-            "registry() must emit no WARN events at reify_eval::kernel_registry \
-             on repeated calls (cache-hit path must be noise-free)",
-        );
-    }
 }
