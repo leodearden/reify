@@ -10,11 +10,45 @@ use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 /// Second-order Lagrangian tetrahedron.
 pub struct TetP2;
 
+/// Canonical edge ordering for the P2 reference tet's 6 edge midpoints,
+/// as `(a, b)` index pairs into the 4 reference vertices.
+///
+/// Edge index 0..=5 maps to the corresponding entry here (Hughes/Gmsh
+/// ordering: bottom-face edges first, then vertical edges to vertex 3).
+/// Both `shape_at` and `shape_grad_at` consult this table so the edge
+/// indexing stays single-sourced.
+pub const EDGES: [(usize, usize); 6] = [
+    (0, 1),
+    (1, 2),
+    (2, 0),
+    (0, 3),
+    (1, 3),
+    (2, 3),
+];
+
 impl ReferenceElement for TetP2 {
     const N_NODES: usize = 10;
 
-    fn shape_at(&self, _coord: ReferenceCoord) -> Vec<f64> {
-        todo!("P2 shape functions — task 2914 step-12")
+    /// Quadratic Lagrangian P2 shape functions evaluated at `coord`.
+    ///
+    /// Returned in canonical 10-node order: the 4 vertex shapes
+    /// `λ_i (2 λ_i − 1)` (where `λ_0 = 1-ξ-η-ζ`, `λ_1 = ξ`, `λ_2 = η`,
+    /// `λ_3 = ζ`) followed by the 6 edge shapes `4 λ_a λ_b` for the
+    /// edge-pair `(a, b) = EDGES[edge_index]`.
+    fn shape_at(&self, coord: ReferenceCoord) -> Vec<f64> {
+        let ReferenceCoord { xi, eta, zeta } = coord;
+        let lambda = [1.0 - xi - eta - zeta, xi, eta, zeta];
+
+        let mut n = Vec::with_capacity(10);
+        // Vertex shapes
+        for &lam in &lambda {
+            n.push(lam * (2.0 * lam - 1.0));
+        }
+        // Edge shapes
+        for &(a, b) in &EDGES {
+            n.push(4.0 * lambda[a] * lambda[b]);
+        }
+        n
     }
 
     fn shape_grad_at(&self, _coord: ReferenceCoord) -> Vec<[f64; 3]> {
