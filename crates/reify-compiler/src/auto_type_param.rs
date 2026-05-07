@@ -1908,7 +1908,7 @@ fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
 ///
 /// See PRD section *"Backjumping reuses existing 'rejected because' channel"*
 /// for the rationale.
-pub fn build_constraint_blame_map(
+pub(crate) fn build_constraint_blame_map(
     template: &TopologyTemplate,
     params: &[AutoTypeParam],
 ) -> HashMap<ConstraintNodeId, BTreeSet<usize>> {
