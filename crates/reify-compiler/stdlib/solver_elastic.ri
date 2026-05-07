@@ -132,7 +132,7 @@ structure def ElasticOptions {
     param threads : Option<Int> = none
     param shell_threshold : Real = 0.2
     param shell_voxel_size : Option<Length> = none
-    param shell_branch_prune_ratio : Real = 1.0
+    param shell_branch_prune_ratio : Real = 1.01
     param shell_force : ShellForce = ShellForce.Auto
 
     // A non-positive `max_iter` would let the solver exit before doing any
