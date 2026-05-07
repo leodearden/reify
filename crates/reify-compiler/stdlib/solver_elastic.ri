@@ -145,4 +145,22 @@ structure def ElasticResult {
     param max_von_mises : Pressure
     param converged : Bool
     param iterations : Int
+
+    // `iterations` is a CG iteration count — a negative value is impossible.
+    // Declaring the lower bound at the structure-def level makes the contract
+    // explicit in production code rather than relying solely on test coverage
+    // (task 2544 convention).
+    //
+    // Note: `constraint iterations <= max_iter` is intentionally omitted.
+    // Reify constraints can only reference value cells declared within the same
+    // `structure def` scope (cf. `tolerancing.ri:33`, `materials_mechanical.ri:83`
+    // for within-scope cross-field examples). `max_iter` lives on `ElasticOptions`,
+    // not on `ElasticResult`, and `ElasticResult` carries no slot through which to
+    // reach it. The cross-structure post-condition is enforced by the runtime FEA
+    // solver, which is the sole writer of `ElasticResult` values.
+    constraint iterations >= 0
+    // `max_von_mises` is the peak von-Mises equivalent stress — a Frobenius norm
+    // of the deviatoric stress tensor, hence a magnitude. Negative values are
+    // physically impossible. Same task-2544 rationale as above.
+    constraint max_von_mises >= 0
 }
