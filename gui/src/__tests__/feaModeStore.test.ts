@@ -45,6 +45,49 @@ describe('feaModeStore', () => {
     });
   });
 
+  describe('lockCurrent', () => {
+    it('sets range to {mode:"locked", min, max, source:"current"} by default', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        const result = store.lockCurrent(5, 20);
+        expect(result).toBe(true);
+        expect(store.state.range).toEqual({ mode: 'locked', min: 5, max: 20, source: 'current' });
+        dispose();
+      });
+    });
+
+    it('uses explicit source string when provided', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        store.lockCurrent(7, 42, 'mesh:bracket');
+        expect(store.state.range).toEqual({ mode: 'locked', min: 7, max: 42, source: 'mesh:bracket' });
+        dispose();
+      });
+    });
+
+    it('returns false and does not mutate when min is non-finite', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        const before = { ...store.state.range };
+        const result = store.lockCurrent(NaN, 20);
+        expect(result).toBe(false);
+        expect(store.state.range).toEqual(before);
+        dispose();
+      });
+    });
+
+    it('returns false and does not mutate when max is non-finite', () => {
+      createRoot((dispose) => {
+        const store = createFeaModeStore();
+        const before = { ...store.state.range };
+        const result = store.lockCurrent(5, Infinity);
+        expect(result).toBe(false);
+        expect(store.state.range).toEqual(before);
+        dispose();
+      });
+    });
+  });
+
   describe('simple setters', () => {
     it('setEnabled(true) flips state.enabled to true', () => {
       createRoot((dispose) => {
