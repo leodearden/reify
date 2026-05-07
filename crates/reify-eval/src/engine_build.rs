@@ -562,10 +562,11 @@ impl Engine {
     ///
     /// # Tolerance wiring (task 2874)
     ///
-    /// `build` (alongside [`Self::build_snapshot`] and
-    /// [`Self::tessellate_realizations`]) participates in four production-
-    /// wiring contracts that route the demanded-tolerance subsystem from
-    /// authoring-time templates to kernel-time realization:
+    /// `build` (alongside [`Self::build_snapshot`],
+    /// [`Self::tessellate_realizations`], and [`Self::tessellate_snapshot`])
+    /// participates in four production-wiring contracts that route the
+    /// demanded-tolerance subsystem from authoring-time templates to
+    /// kernel-time realization:
     ///
     /// 1. **Imported-tolerance-promise diagnostics** — invokes
     ///    [`Self::emit_imported_tolerance_promise_diagnostics_for_module`]
@@ -573,7 +574,9 @@ impl Engine {
     ///    `BuildResult.diagnostics` carries every
     ///    `ImportedTolerancePromiseInsufficient` /
     ///    `InputTolerancePromiseIsZero` warning derivable from the active
-    ///    purpose bindings.
+    ///    purpose bindings. The two snapshot surfaces (`build_snapshot` and
+    ///    `tessellate_snapshot`) emit the same diagnostics AFTER
+    ///    `check_constraints_against_templates`, since neither calls `eval()`.
     /// 2. **Per-realization demanded tolerance** — precomputes
     ///    `(template_name, entity) → Option<f64>` via the
     ///    [`Engine::demanded_tolerance_for_output`] →
@@ -798,7 +801,10 @@ impl Engine {
     ///
     /// `tessellate_realizations` mirrors [`Self::build`] across all four
     /// production-wiring contracts — see that method's docstring for the
-    /// full description. The integration smoke
+    /// full description. The snapshot variant [`Self::tessellate_snapshot`]
+    /// participates in the same four-contract mirror with the same placement
+    /// nuance as [`Self::build_snapshot`] (diagnostics emit AFTER constraint
+    /// check, not before, since no eval() runs). The integration smoke
     /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
     /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs` pins all four
     /// axes (diagnostic emission, demanded-tolerance routing,
@@ -1645,6 +1651,16 @@ impl Engine {
         // Check constraints (guard-aware)
         let (constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
+
+        // Task 2874 (amendment): emit imported-tolerance-promise diagnostics
+        // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
+        // for every (Input × Output × active-purpose-binding) triple recognised
+        // in the post-eval snapshot. Mirrors the placement used by
+        // `build_snapshot` (after `check_constraints_against_templates`) — both
+        // surfaces operate on the existing snapshot without re-calling `eval()`,
+        // so the placement constraint that motivated the BEFORE-`check()` order
+        // in `build` / `tessellate_realizations` does not apply.
+        self.emit_imported_tolerance_promise_diagnostics_for_module(module, &mut diagnostics);
 
         // Execute geometry and tessellate. `values` is passed `&mut` so the
         // post-process inside `tessellate_from_values` can patch
