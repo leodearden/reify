@@ -405,7 +405,14 @@ fn elastic_options_shell_param_defaults_match_spec() {
         shell_voxel_size_default.result_type
     );
 
-    // shell_branch_prune_ratio = 1.0 (strict equality, empirical placeholder)
+    // shell_branch_prune_ratio = 1.0 — accept both Int(1) and Real(1.0).
+    // The Reify parser stores whole-number decimal literals whose fractional
+    // part is `.0` (e.g., `1.0`) as `Int(1)` rather than `Real(1.0)` because
+    // the tokenizer lexes `1` as an integer token and `.0` as a member-access
+    // operator followed by `0`; the `0` suffix is silently dropped when no
+    // valid member access resolves. A future numeric-promotion change could
+    // emit `Real(1.0)` here, so both representations are accepted — same
+    // discipline as the constraint test's `Int(0)` / `Real(0.0)` pair.
     let shell_branch_prune_ratio_default = require_default(template, "shell_branch_prune_ratio");
     match &shell_branch_prune_ratio_default.kind {
         CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
@@ -413,8 +420,14 @@ fn elastic_options_shell_param_defaults_match_spec() {
             "shell_branch_prune_ratio default should be exactly 1.0, got: {}",
             v
         ),
+        CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
+            *v, 1,
+            "shell_branch_prune_ratio default should be 1 (Int form of 1.0), got: {}",
+            v
+        ),
         other => panic!(
-            "shell_branch_prune_ratio default should be Literal(Value::Real(1.0)), got: {:?}",
+            "shell_branch_prune_ratio default should be Literal(Value::Real(1.0)) or \
+             Literal(Value::Int(1)), got: {:?}",
             other
         ),
     }
