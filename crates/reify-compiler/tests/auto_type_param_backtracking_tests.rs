@@ -123,6 +123,7 @@ fn dfs_empty_params_returns_vacuous_success() {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -186,6 +187,7 @@ structure def ORingSeal : Seal {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -274,6 +276,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -400,6 +403,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -522,6 +526,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -676,6 +681,7 @@ fn dfs_phase_a_overflow_on_first_param_halts_before_recursion() {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -777,6 +783,7 @@ structure def AirCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -898,6 +905,7 @@ structure def S7 : T7 { param x : Real = 7.0 }
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut dfs_diagnostics,
     );
 
@@ -998,6 +1006,7 @@ structure def S6 : T6 { param x : Real = 6.0 }
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1154,6 +1163,7 @@ structure def ORingSeal : Seal {
         &checker,
         functions,
         2, // 2 > 2 is false → DFS path
+        usize::MAX,
         &mut dfs_diagnostics,
     );
 
@@ -1200,6 +1210,7 @@ structure def ORingSeal : Seal {
         &checker,
         functions,
         1, // 2 > 1 is true → BFS-fallback path
+        usize::MAX,
         &mut bfs_diagnostics,
     );
 
@@ -1280,6 +1291,466 @@ structure def ORingSeal : Seal {
         bfs_last,
         &("U".to_string(), SelectionResult::NoCandidate),
         "BFS-fallback: last per_param entry must be the failing param (U, NoCandidate)"
+    );
+}
+
+// ─── DFS above max_cross_product_size emits warning + falls back to BFS (task 2662) ──
+
+/// Four `AutoTypeParam`s, each with 2 implementing structures (4 × 2 = 16
+/// cross-product leaf assignments). Calling DFS with `max_depth = 6` and
+/// `max_cross_product_size = 10` triggers the cap fallback: 16 > 10 ⇒
+/// orchestrator emits `AutoTypeParamCrossProductSizeExceeded` (Warning) and
+/// delegates back to `resolve_auto_type_params` (v0.1 BFS).
+///
+/// Mirrors `dfs_above_max_depth_emits_warning_and_falls_back_to_bfs` for the
+/// task 2662 cross-product hard cap. Pins:
+/// - DFS outcome equals what BFS would have returned for the same inputs.
+/// - Exactly one extra diagnostic compared to BFS's clean run, with code
+///   `AutoTypeParamCrossProductSizeExceeded` (Warning), message containing
+///   the cross-product size "16", the cap "10", a param name, and a
+///   substring like "falling back" or "BFS".
+/// - The label anchor is on `params[0].use_site_span` (declared-order halt
+///   anchors on the first param — same convention as the depth-bound branch).
+/// - The cap check uses strict `>`: `cross_product_size > max_cross_product_size`
+///   ⇒ fallback fires; the boundary case `==` is exercised in
+///   `dfs_at_max_cross_product_size_runs_dfs_no_fallback_diagnostic`.
+#[test]
+fn dfs_above_max_cross_product_size_emits_warning_and_falls_back_to_bfs() {
+    // Four distinct traits, each with 2 implementing structures.
+    let source = r#"
+trait T1 {}
+trait T2 {}
+trait T3 {}
+trait T4 {}
+
+structure def S1A : T1 { param x : Real = 1.0 }
+structure def S1B : T1 { param x : Real = 1.5 }
+structure def S2A : T2 { param x : Real = 2.0 }
+structure def S2B : T2 { param x : Real = 2.5 }
+structure def S3A : T3 { param x : Real = 3.0 }
+structure def S3B : T3 { param x : Real = 3.5 }
+structure def S4A : T4 { param x : Real = 4.0 }
+structure def S4B : T4 { param x : Real = 4.5 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+
+    let p0_span = SourceSpan::new(10, 15);
+    let params: Vec<AutoTypeParam> = (1..=4)
+        .map(|i| AutoTypeParam {
+            name: format!("P{}", i),
+            bounds: vec![format!("T{}", i)],
+            free: false,
+            use_site_span: if i == 1 {
+                p0_span
+            } else {
+                SourceSpan::new(10 * i, 10 * i + 5)
+            },
+        })
+        .collect();
+
+    // Capture BFS's outcome on the same inputs for parity comparison.
+    let mut bfs_diagnostics = Vec::new();
+    let bfs_outcome = resolve_auto_type_params(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        &mut bfs_diagnostics,
+    );
+
+    // Now run DFS with `max_depth = 6` and `max_cross_product_size = 10`
+    // (cross-product size 4 × 2 × 2 × 2 = 16 > 10 ⇒ cap fallback fires).
+    let mut dfs_diagnostics = Vec::new();
+    let dfs_outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        10,
+        &mut dfs_diagnostics,
+    );
+
+    // Outcome parity: DFS-with-cap-fallback must match BFS exactly.
+    assert_eq!(
+        dfs_outcome, bfs_outcome,
+        "DFS above max_cross_product_size must delegate to BFS — outcome must \
+         match BFS's identical-input outcome. DFS: {:?}, BFS: {:?}",
+        dfs_outcome, bfs_outcome
+    );
+
+    // Diagnostic delta: DFS emits one EXTRA `AutoTypeParamCrossProductSizeExceeded`
+    // Warning beyond BFS's diagnostics (BFS itself emits zero diagnostics on
+    // a clean 4-param happy path).
+    assert_eq!(
+        dfs_diagnostics.len(),
+        bfs_diagnostics.len() + 1,
+        "DFS above max_cross_product_size must emit exactly one extra diagnostic \
+         beyond BFS. DFS diagnostics: {:?}, BFS diagnostics: {:?}",
+        dfs_diagnostics, bfs_diagnostics
+    );
+    let extra = dfs_diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded))
+        .expect(
+            "DFS must emit exactly one AutoTypeParamCrossProductSizeExceeded \
+             diagnostic when cross_product_size > max_cross_product_size",
+        );
+    assert_eq!(
+        extra.severity,
+        Severity::Warning,
+        "AutoTypeParamCrossProductSizeExceeded must be a Warning severity, got: {:?}",
+        extra.severity
+    );
+    assert!(
+        extra.message.contains("16"),
+        "cap diagnostic must mention the cross-product size '16'; got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("10"),
+        "cap diagnostic must mention the max_cross_product_size '10'; got: {:?}",
+        extra.message
+    );
+    let mentions_param_name = extra.message.contains("P1")
+        || extra.message.contains("P2")
+        || extra.message.contains("P3")
+        || extra.message.contains("P4");
+    assert!(
+        mentions_param_name,
+        "cap diagnostic must name at least one auto-type-param (PRD: \"naming the parameters\"); got: {:?}",
+        extra.message
+    );
+    assert!(
+        extra.message.contains("falling back") || extra.message.contains("BFS"),
+        "cap diagnostic must include the canonical 'falling back'/'BFS' suffix \
+         shared with the depth-bound diagnostic; got: {:?}",
+        extra.message
+    );
+
+    // Label anchor: declared-order halt anchors on the first param's use-site span.
+    assert_eq!(
+        extra.labels.len(),
+        1,
+        "cap diagnostic must carry exactly one label; got: {:?}",
+        extra.labels
+    );
+    assert_eq!(
+        extra.labels[0].span, p0_span,
+        "cap diagnostic label must anchor on params[0].use_site_span (declared-order \
+         halt anchors on the first param); got: {:?}",
+        extra.labels[0].span
+    );
+}
+
+// ─── DFS at max_cross_product_size runs DFS (no fallback diagnostic) (task 2662) ──
+
+/// Four `AutoTypeParam`s, each with 2 implementing structures (4 × 2 = 16
+/// cross-product) — boundary case `cross_product_size == max_cross_product_size`.
+/// Calling DFS with `max_depth = 6` and `max_cross_product_size = 16` must run
+/// DFS proper (NOT the BFS fallback) — `cross_product_size > max_cross_product_size`
+/// is strict-greater, so `16 > 16` is false.
+///
+/// Pins the off-by-one boundary: `>` triggers fallback, `==` does not.
+/// This test is the upper-bound mirror of
+/// `dfs_above_max_cross_product_size_emits_warning_and_falls_back_to_bfs`,
+/// and parallels `dfs_at_max_depth_runs_dfs_no_fallback_diagnostic` for the
+/// task 2662 cross-product cap.
+///
+/// Pins:
+/// - `outcome.per_param.len() == 4` and every entry is `Selected`
+/// - `outcome.substitution.len() == 4` in declared order
+/// - zero `AutoTypeParamCrossProductSizeExceeded` diagnostics in the
+///   diagnostics vector (the cap branch must NOT fire when n == cap)
+#[test]
+fn dfs_at_max_cross_product_size_runs_dfs_no_fallback_diagnostic() {
+    // Four distinct traits, each with 2 implementing structures.
+    let source = r#"
+trait T1 {}
+trait T2 {}
+trait T3 {}
+trait T4 {}
+
+structure def S1A : T1 { param x : Real = 1.0 }
+structure def S1B : T1 { param x : Real = 1.5 }
+structure def S2A : T2 { param x : Real = 2.0 }
+structure def S2B : T2 { param x : Real = 2.5 }
+structure def S3A : T3 { param x : Real = 3.0 }
+structure def S3B : T3 { param x : Real = 3.5 }
+structure def S4A : T4 { param x : Real = 4.0 }
+structure def S4B : T4 { param x : Real = 4.5 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params: Vec<AutoTypeParam> = (1..=4)
+        .map(|i| AutoTypeParam {
+            name: format!("P{}", i),
+            // free=true so 4 free params don't trigger NonUnique on multiple
+            // feasibles (every trait has 2 candidates, so each param has 2
+            // feasibles and the cross-product has 16 distinct feasible leaves).
+            // free-mode picks the lex-first feasible deterministically.
+            bounds: vec![format!("T{}", i)],
+            free: true,
+            use_site_span: SourceSpan::new(10 * i, 10 * i + 5),
+        })
+        .collect();
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        16, // strict `>`: 16 > 16 is false → DFS path
+        &mut diagnostics,
+    );
+
+    // Four Selected entries in declared order, lex-first within each param:
+    // P1 ↦ S1A, P2 ↦ S2A, P3 ↦ S3A, P4 ↦ S4A.
+    assert_eq!(
+        outcome.per_param.len(),
+        4,
+        "DFS at max_cross_product_size boundary must produce 4 per_param entries \
+         (no fallback truncation), got: {:?}",
+        outcome.per_param
+    );
+    for (name, sel) in &outcome.per_param {
+        assert!(
+            matches!(sel, SelectionResult::Selected(_)),
+            "per_param entry for {} must be Selected (DFS ran end-to-end), got: {:?}",
+            name, sel
+        );
+    }
+    assert_eq!(
+        outcome.substitution.len(),
+        4,
+        "DFS at max_cross_product_size boundary must produce 4 substitution \
+         entries, got: {:?}",
+        outcome.substitution
+    );
+
+    // Critical assertion: NO `AutoTypeParamCrossProductSizeExceeded` diagnostic.
+    // The cap branch uses strict `>`, so `16 > 16` is false — the search runs
+    // DFS proper, not the BFS fallback.
+    let cap_diagnostics: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded))
+        .collect();
+    assert!(
+        cap_diagnostics.is_empty(),
+        "DFS at max_cross_product_size boundary (n == cap) must NOT emit \
+         AutoTypeParamCrossProductSizeExceeded (strict `>`: only n > cap triggers \
+         fallback), got: {:?}",
+        cap_diagnostics
+    );
+
+    // Total-diagnostic pin: with 4 free params each having 2 candidates, DFS
+    // visits 16 feasible cross-product leaves and routes through the all-free
+    // NonUnique branch, which emits exactly one `AutoTypeParamNonUnique`
+    // Warning (lex-first selected). Asserting `diagnostics.len() == 1` and
+    // pinning the sole code to NonUnique closes the off-by-one boundary in
+    // both directions: a regression that fired the cap warning at the
+    // boundary AND ran the all-free NonUnique path (double-emission)
+    // would not be caught by the `cap_diagnostics.is_empty()` filter alone.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS at max_cross_product_size boundary must emit exactly one diagnostic \
+         (the all-free NonUnique Warning) — no cap warning, no extras; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "the sole boundary-case diagnostic must be `AutoTypeParamNonUnique` \
+         (4 free params × 2 candidates ⇒ 16 feasibles ⇒ all-free NonUnique \
+         emits a single Warning); got: {:?}",
+        diagnostics[0].code
+    );
+}
+
+// ─── DFS empty-params with small cap returns vacuous success (task 2662) ──
+
+/// Empty `params` slice + paranoid small `max_cross_product_size = 1`.
+/// Pins that the empty-params early-return at the top of
+/// `resolve_auto_type_params_with_backtracking` precedes the cap check —
+/// a vacuous outcome is produced before either guard fires. Mirrors
+/// `dfs_empty_params_returns_vacuous_success` for the task 2662 cap.
+///
+/// Pins:
+/// - `outcome.per_param.is_empty()` and `outcome.substitution.is_empty()`
+/// - `diagnostics.is_empty()` — in particular, NO
+///   `AutoTypeParamCrossProductSizeExceeded` warning
+#[test]
+fn dfs_empty_params_with_small_cap_returns_vacuous_success() {
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        &template,
+        &checker,
+        functions,
+        6,
+        1, // smallest legal cap value (paranoid)
+        &mut diagnostics,
+    );
+
+    assert!(
+        outcome.per_param.is_empty(),
+        "DFS with empty params must return empty per_param even with a small \
+         cap (the empty-params early-return precedes the cap check), got: {:?}",
+        outcome.per_param
+    );
+    assert!(
+        outcome.substitution.is_empty(),
+        "DFS with empty params must return empty substitution even with a small \
+         cap, got: {:?}",
+        outcome.substitution
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "DFS with empty params must emit zero diagnostics — in particular, NO \
+         AutoTypeParamCrossProductSizeExceeded warning — even with a small cap, got: {:?}",
+        diagnostics
+    );
+}
+
+// ─── DFS Phase A overflow halts before cap check (task 2662) ──
+
+/// Phase A overflow on the first param + paranoid small `max_cross_product_size = 1`.
+/// Pins that Phase A's overflow early-return precedes the cap check — the
+/// cap branch is placed AFTER the Phase A enumeration loop in
+/// `resolve_auto_type_params_with_backtracking`, so any Phase A early-return
+/// (Empty or Overflow) returns from the function before the cap is computed
+/// or compared.
+///
+/// Drives the overflow path using `build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1)`
+/// to push T's pool above `MAX_AUTO_TYPE_PARAM_CANDIDATES = 10`. Two params
+/// declared so the call falls under multi-param dispatch (single-param
+/// short-circuit doesn't apply).
+///
+/// Pins:
+/// - outcome is the Phase-A-overflow shape
+///   (`per_param == [(T, Ambiguous(overflow_vec))]`, `substitution.is_empty()`)
+/// - the diagnostics contain a `AutoTypeParamPoolOverflow` (from Phase A)
+/// - the diagnostics contain ZERO `AutoTypeParamCrossProductSizeExceeded` —
+///   pinning that Phase A early-return short-circuits the cap evaluation.
+#[test]
+fn dfs_phase_a_overflow_on_first_param_halts_before_cap_check() {
+    // Drive Phase A's overflow path: 11 structures all implementing Seal,
+    // pushing the candidate pool above MAX_AUTO_TYPE_PARAM_CANDIDATES = 10.
+    let mut source = build_n_seal_structures(MAX_AUTO_TYPE_PARAM_CANDIDATES + 1);
+    // Add a second trait (Cooled) with one structure so the multi-param
+    // dispatch is exercised (single-param short-circuit would otherwise apply).
+    source.push_str("trait Cooled {}\n");
+    source.push_str("structure def AirCooled : Cooled { param x : Real = 1.0 }\n");
+    let module = parse_and_compile(&source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = MockConstraintChecker::new();
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()], // 11 structures ⇒ Phase A Overflow
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        1, // paranoid: smallest legal cap value
+        &mut diagnostics,
+    );
+
+    // Phase-A-overflow shape: length-1 [(T, Ambiguous(overflow_vec))].
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "DFS Phase A overflow halt must produce length-1 per_param (only the \
+         failing param recorded), got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(
+        outcome.per_param[0].0, "T",
+        "Phase A overflow halt must anchor on the failing param 'T', got: {:?}",
+        outcome.per_param[0].0
+    );
+    match &outcome.per_param[0].1 {
+        SelectionResult::Ambiguous(_) => {}
+        other => panic!(
+            "Phase A overflow halt must produce SelectionResult::Ambiguous \
+             (overflow_vec); got: {:?}",
+            other
+        ),
+    }
+    assert!(
+        outcome.substitution.is_empty(),
+        "Phase A overflow halt must yield empty substitution, got: {:?}",
+        outcome.substitution
+    );
+
+    // Phase A pushed the overflow diagnostic.
+    let overflow_count = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamPoolOverflow))
+        .count();
+    assert_eq!(
+        overflow_count, 1,
+        "Phase A must emit exactly one AutoTypeParamPoolOverflow diagnostic, \
+         got: {:?}",
+        diagnostics
+    );
+
+    // Critical assertion: NO `AutoTypeParamCrossProductSizeExceeded` — the
+    // Phase A overflow early-return precedes the cap check.
+    let cap_count = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded))
+        .count();
+    assert_eq!(
+        cap_count, 0,
+        "Phase A overflow halt must short-circuit before the cap evaluation, \
+         so zero AutoTypeParamCrossProductSizeExceeded diagnostics; got: {:?}",
+        diagnostics
     );
 }
 
@@ -1373,6 +1844,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1513,6 +1985,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1606,6 +2079,7 @@ structure def ORingSeal : Seal {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1737,6 +2211,7 @@ structure def AirCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1861,6 +2336,7 @@ structure def RubberSeal : Seal {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -1996,6 +2472,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2102,6 +2579,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2252,6 +2730,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2431,6 +2910,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2579,6 +3059,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -2900,6 +3381,7 @@ structure def Hot2 : Hot {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -3043,6 +3525,7 @@ structure def Hot2 : Hot {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -3181,6 +3664,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 
@@ -3302,6 +3786,7 @@ structure def WaterCooled : Cooled {
         &checker,
         functions,
         6,
+        usize::MAX,
         &mut diagnostics,
     );
 

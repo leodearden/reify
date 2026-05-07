@@ -16,7 +16,10 @@
 //!   `ManifestError::Parse(_)` (strict schema; mirrors the convention on
 //!   `[kernels]` / `[kernels.<id>]`).
 
-use reify_config::{DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH, Manifest, ManifestError};
+use reify_config::{
+    DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE, DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH, Manifest,
+    ManifestError,
+};
 
 /// When a manifest has no `[auto_type_params]` section, the parsed
 /// `AutoTypeParamsConfig` falls back to the PRD-decided default of 6.
@@ -55,6 +58,49 @@ fn custom_max_depth_round_trips() {
     );
 }
 
+/// A `[auto_type_params]` table with `max_cross_product_size = N` overrides
+/// the default of 100,000. Pins the serde wiring (`AutoTypeParamsRaw` is read
+/// into `AutoTypeParamsConfig`) and that the parsed value flows through to
+/// the public accessor — mirrors `custom_max_depth_round_trips` for the
+/// task 2662 cross-product hard cap.
+#[test]
+fn custom_max_cross_product_size_round_trips() {
+    let manifest =
+        Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 200000\n")
+            .expect("manifest with auto_type_params section must parse");
+    assert_eq!(
+        manifest.auto_type_params().max_cross_product_size,
+        200_000,
+        "parsed max_cross_product_size must override the default of 100,000"
+    );
+}
+
+/// When a manifest has no `[auto_type_params]` section, the parsed
+/// `AutoTypeParamsConfig` falls back to the PRD-decided default of 100,000
+/// for `max_cross_product_size`.
+///
+/// Also pins that the public constant
+/// `reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE` equals
+/// 100_000 — the single-source-of-truth that the compiler crate's eventual
+/// call-site will consume via
+/// `Manifest::auto_type_params().max_cross_product_size`. Mirrors
+/// `default_max_depth_is_six_when_section_omitted` for the task 2662
+/// cross-product hard cap.
+#[test]
+fn default_max_cross_product_size_is_100k_when_section_omitted() {
+    let manifest =
+        Manifest::from_toml_str("").expect("empty manifest must parse to defaults");
+    assert_eq!(
+        manifest.auto_type_params().max_cross_product_size,
+        100_000,
+        "default max_cross_product_size must be 100,000 (PRD-decided v0.2 default)"
+    );
+    assert_eq!(
+        DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE, 100_000,
+        "DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE constant must equal 100,000"
+    );
+}
+
 /// `max_depth = 0` is semantically meaningless: every search must visit at
 /// least one parameter. Pin the typed `ManifestError::InvalidMaxDepth(0)`
 /// rejection at parse time so misconfiguration cannot ship as a silent
@@ -70,6 +116,29 @@ fn zero_max_depth_rejected_with_typed_error() {
         ),
         other => panic!(
             "expected ManifestError::InvalidMaxDepth(0), got {:?}",
+            other
+        ),
+    }
+}
+
+/// `max_cross_product_size = 0` is semantically meaningless: every search
+/// must visit at least one leaf assignment. Pin the typed
+/// `ManifestError::InvalidMaxCrossProductSize(0)` rejection at parse time so
+/// misconfiguration cannot ship as a silent no-op (DFS would always fall
+/// back to BFS unconditionally for any non-empty params slice). Mirrors
+/// `zero_max_depth_rejected_with_typed_error` for the task 2662
+/// cross-product hard cap.
+#[test]
+fn zero_max_cross_product_size_rejected_with_typed_error() {
+    let err = Manifest::from_toml_str("[auto_type_params]\nmax_cross_product_size = 0\n")
+        .expect_err("max_cross_product_size = 0 must be rejected");
+    match err {
+        ManifestError::InvalidMaxCrossProductSize(n) => assert_eq!(
+            n, 0,
+            "InvalidMaxCrossProductSize payload must carry the offending value"
+        ),
+        other => panic!(
+            "expected ManifestError::InvalidMaxCrossProductSize(0), got {:?}",
             other
         ),
     }

@@ -206,7 +206,8 @@ pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_typ
         | DiagnosticCode::AutoTypeParamNoCandidate
         | DiagnosticCode::AutoTypeParamAmbiguous
         | DiagnosticCode::AutoTypeParamNonUnique
-        | DiagnosticCode::AutoTypeParamDepthBoundExceeded,
+        | DiagnosticCode::AutoTypeParamDepthBoundExceeded
+        | DiagnosticCode::AutoTypeParamCrossProductSizeExceeded,
     ) = diag.code
     {
         tracing::debug!(
@@ -750,17 +751,18 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let source = "auto";
-            // Exercise all five AutoTypeParam codes — each must emit one debug event.
-            // The fifth code (`AutoTypeParamDepthBoundExceeded`, task 2659) routes
-            // through the same `reify_lsp::auto_type_param` debug target as the
-            // original four so LSP consumers see a uniform debug stream for every
-            // auto-type-param diagnostic surface.
+            // Exercise all six AutoTypeParam codes — each must emit one debug event.
+            // The sixth code (`AutoTypeParamCrossProductSizeExceeded`, task 2662)
+            // routes through the same `reify_lsp::auto_type_param` debug target as
+            // the original five so LSP consumers see a uniform debug stream for
+            // every auto-type-param diagnostic surface.
             for code in [
                 DiagnosticCode::AutoTypeParamPoolOverflow,
                 DiagnosticCode::AutoTypeParamNoCandidate,
                 DiagnosticCode::AutoTypeParamAmbiguous,
                 DiagnosticCode::AutoTypeParamNonUnique,
                 DiagnosticCode::AutoTypeParamDepthBoundExceeded,
+                DiagnosticCode::AutoTypeParamCrossProductSizeExceeded,
             ] {
                 let diag = Diagnostic::error("auto-type-param error")
                     .with_code(code)
@@ -771,8 +773,8 @@ mod tests {
 
             assert_eq!(
                 debug_count.load(Ordering::Acquire),
-                5,
-                "expected exactly 5 debug events — one per AutoTypeParam variant — before \
+                6,
+                "expected exactly 6 debug events — one per AutoTypeParam variant — before \
                  processing the Shadowing diagnostic; a missing emission here cannot be \
                  masked by a spurious Shadowing event later"
             );
@@ -785,9 +787,9 @@ mod tests {
 
             assert_eq!(
                 debug_count.load(Ordering::Acquire),
-                5,
+                6,
                 "Shadowing diagnostic must not emit on reify_lsp::auto_type_param; \
-                 counter must remain 5 after the non-AutoTypeParam code is processed"
+                 counter must remain 6 after the non-AutoTypeParam code is processed"
             );
         });
     }

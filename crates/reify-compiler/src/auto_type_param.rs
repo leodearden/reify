@@ -1039,6 +1039,52 @@ pub fn resolve_auto_type_params(
 // below. The module-level rustdoc (top of file, "Phase E (v0.2) —
 // Backtracking" section) carries a one-line pointer to that function.
 
+/// Push a `Severity::Warning` diagnostic with the given `code` + `message`
+/// (anchored on `params[0].use_site_span` with a label rendered by
+/// `render_auto_type_param_label`) and tail-call into v0.1 BFS
+/// (`resolve_auto_type_params`). Used by the depth-bound and cross-product-cap
+/// guard branches in `resolve_auto_type_params_with_backtracking` to emit a
+/// "search-space-too-large" warning and delegate back to BFS.
+///
+/// Centralizes the shared invariants of the two fallback branches (label
+/// anchor, severity, BFS tail-call arg list) so that adding a new guard or
+/// changing the fallback shape is a one-line edit. The per-branch message
+/// content (depth-bound vs cap) and `DiagnosticCode` choice remain caller
+/// concerns — the helper takes them as arguments rather than baking either
+/// branch's wording into shared code.
+#[allow(clippy::too_many_arguments)]
+fn emit_fallback_warning_and_delegate_to_bfs(
+    code: DiagnosticCode,
+    message: String,
+    params: &[AutoTypeParam],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    parameterized_template: &TopologyTemplate,
+    constraint_checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> MultiParamResolutionOutcome {
+    let (_joined_bounds, label_message) =
+        render_auto_type_param_label(&params[0].bounds);
+    diagnostics.push(
+        Diagnostic::warning(message)
+            .with_code(code)
+            .with_label(DiagnosticLabel::new(
+                params[0].use_site_span,
+                label_message,
+            )),
+    );
+    resolve_auto_type_params(
+        params,
+        template_registry,
+        trait_registry,
+        parameterized_template,
+        constraint_checker,
+        functions,
+        diagnostics,
+    )
+}
+
 /// DFS over the cross-product of `auto:` candidate sets with a depth bound.
 ///
 /// Driving PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`.
@@ -1053,15 +1099,21 @@ pub fn resolve_auto_type_params(
 ///
 /// Above the depth bound `params.len() > max_depth`, the function emits
 /// `AutoTypeParamDepthBoundExceeded` (Severity::Warning) and delegates back
-/// to `resolve_auto_type_params` (BFS). The fallback is functionally correct
-/// (BFS is sound, just less complete than DFS over cross-product) so the
-/// user has a working compile — the warning is for auditability.
+/// to `resolve_auto_type_params` (BFS). Above the cross-product cap
+/// `cross_product_size > max_cross_product_size`, the function emits
+/// `AutoTypeParamCrossProductSizeExceeded` (Severity::Warning) and
+/// delegates back to `resolve_auto_type_params` (BFS). The two guards are
+/// independent — depth caps the parameter count, the cap caps the search
+/// space *given* the parameter count. Both fallbacks are functionally
+/// correct (BFS is sound, just less complete than DFS over cross-product)
+/// so the user has a working compile — the warnings are for auditability.
 ///
-/// `max_depth` is taken as a scalar (not a `&AutoTypeParamsConfig`) per the
-/// design decision: algorithm correctness does not depend on where the value
-/// was sourced, and this keeps the algorithm crate independent of
-/// `reify-config`. The eventual call-site reads
-/// `Manifest::auto_type_params().max_depth` and passes it in directly.
+/// Both `max_depth` and `max_cross_product_size` are taken as scalars (not a
+/// `&AutoTypeParamsConfig`) per the design decision: algorithm correctness
+/// does not depend on where the values were sourced, and this keeps the
+/// algorithm crate independent of `reify-config`. The eventual call-site
+/// reads `Manifest::auto_type_params().max_depth` and
+/// `.max_cross_product_size` and passes them in directly.
 ///
 /// # `per_param` shape
 ///
@@ -1072,12 +1124,12 @@ pub fn resolve_auto_type_params(
 ///
 /// # Out of scope (sibling tasks layered on top of this foundation)
 ///
-/// - Cross-product hard cap of 100k assignments — task 2662.
 /// - Rich diagnostic format with smallest infeasibility witness — task 2663.
 /// - Comprehensive v0.1 BFS-failure scenario coverage — task 2664.
 ///
-/// Task 2660 (backjumping via the "rejected because" channel) and task 2661
-/// (`auto(free)` cross-product NonUnique enumeration) now land in this module.
+/// Task 2660 (backjumping via the "rejected because" channel), task 2661
+/// (`auto(free)` cross-product NonUnique enumeration), and task 2662
+/// (cross-product hard cap with BFS fallback) now land in this module.
 /// - Type-substitution mechanics
 ///   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
 ///   deferred per the PRD's "Constraint-feasibility incremental binding
@@ -1085,11 +1137,12 @@ pub fn resolve_auto_type_params(
 //
 // `#[allow(clippy::too_many_arguments)]`: this signature mirrors v0.1's
 // `resolve_auto_type_params` (already at clippy's 7-arg ceiling) plus the
-// scalar `max_depth` that the algorithm needs but cannot derive. Bundling
-// these into a context struct would obscure the intentional parallel with the
-// BFS orchestrator's signature; the ambient convention across this crate
-// (35+ call sites) is to allow the lint on orchestration entry points where
-// the parameter list is the API contract itself.
+// scalars `max_depth` and `max_cross_product_size` that the algorithm needs
+// but cannot derive. Bundling these into a context struct would obscure the
+// intentional parallel with the BFS orchestrator's signature; the ambient
+// convention across this crate (35+ call sites) is to allow the lint on
+// orchestration entry points where the parameter list is the API contract
+// itself.
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_auto_type_params_with_backtracking(
     params: &[AutoTypeParam],
@@ -1099,6 +1152,7 @@ pub fn resolve_auto_type_params_with_backtracking(
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
     max_depth: usize,
+    max_cross_product_size: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> MultiParamResolutionOutcome {
     // Vacuous success: empty params slice is a valid no-op (parity with
@@ -1139,22 +1193,14 @@ pub fn resolve_auto_type_params_with_backtracking(
 
     // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
     if params.len() > max_depth {
-        let (_joined_bounds, label_message) =
-            render_auto_type_param_label(&params[0].bounds);
         let message = format!(
             "auto type-parameter search exceeded depth bound: {n} auto-type-params declared, max_depth = {m}; falling back to per-parameter BFS (v0.1 algorithm)",
             n = params.len(),
             m = max_depth,
         );
-        diagnostics.push(
-            Diagnostic::warning(message)
-                .with_code(DiagnosticCode::AutoTypeParamDepthBoundExceeded)
-                .with_label(DiagnosticLabel::new(
-                    params[0].use_site_span,
-                    label_message,
-                )),
-        );
-        return resolve_auto_type_params(
+        return emit_fallback_warning_and_delegate_to_bfs(
+            DiagnosticCode::AutoTypeParamDepthBoundExceeded,
+            message,
             params,
             template_registry,
             trait_registry,
@@ -1256,6 +1302,63 @@ pub fn resolve_auto_type_params_with_backtracking(
         }
     }
 
+    // Cross-product cap guard (task 2662): above the cap, fall back to v0.1
+    // BFS with a Warning diagnostic. Fires only after Phase A enumeration
+    // completes successfully — Phase A failures (Empty/Overflow) early-return
+    // before this branch and preserve the per_param/substitution shape pinned
+    // by their respective tests, so the cap check never sees a partial
+    // `per_param_candidates`.
+    //
+    // Saturating fold: `checked_mul` returns `None` on overflow, mapped to
+    // `usize::MAX`. With `MAX_AUTO_TYPE_PARAM_CANDIDATES = 10` and
+    // `max_depth = 6` the worst-case product is 10^6 = 1,000,000 (well below
+    // `usize::MAX` on every supported platform), but a future relaxation of
+    // either bound — or pathological per-param counts — could overflow.
+    // Saturating to `usize::MAX` ensures the cap check fires deterministically:
+    // any saturating result is by definition `> max_cross_product_size`
+    // (which `reify-config` validation forces to be a sane finite value).
+    //
+    // strict `>`: cross_product_size==max_cross_product_size still runs DFS;
+    // only cross_product_size>max_cross_product_size falls back. Equal-to-cap
+    // is a representable, deterministic search space and there's no
+    // algorithmic reason to refuse it.
+    //
+    // Canonical message form pinned in the DiagnosticCode doc-comment:
+    // see `DiagnosticCode::AutoTypeParamCrossProductSizeExceeded` in
+    // `crates/reify-types/src/diagnostics.rs`.
+    let cross_product_size: usize = per_param_candidates
+        .iter()
+        .map(|v| v.len())
+        .fold(1usize, |acc, n| acc.saturating_mul(n));
+    if cross_product_size > max_cross_product_size {
+        let param_names: Vec<&str> =
+            params.iter().map(|p| p.name.as_str()).collect();
+        let candidate_counts: Vec<usize> =
+            per_param_candidates.iter().map(|v| v.len()).collect();
+        let message = format!(
+            "auto type-parameter cross-product search exceeded size cap: \
+             {n} auto-type-params declared ({names}) with per-param candidate counts {counts:?} \
+             yielding cross-product size {size}, max_cross_product_size = {cap}; \
+             falling back to per-parameter BFS (v0.1 algorithm)",
+            n = params.len(),
+            names = param_names.join(", "),
+            counts = candidate_counts,
+            size = cross_product_size,
+            cap = max_cross_product_size,
+        );
+        return emit_fallback_warning_and_delegate_to_bfs(
+            DiagnosticCode::AutoTypeParamCrossProductSizeExceeded,
+            message,
+            params,
+            template_registry,
+            trait_registry,
+            parameterized_template,
+            constraint_checker,
+            functions,
+            diagnostics,
+        );
+    }
+
     // Single-param degenerate path: with exactly one param, the cross-product
     // collapses to a flat enumeration of that param's candidates and the
     // recursion is degenerate. Route through the existing Phase B / Phase C
@@ -1310,9 +1413,12 @@ pub fn resolve_auto_type_params_with_backtracking(
     // leaves). Strict-mode is cheaper in the common case because it terminates
     // as soon as 2 feasibles are found; only in the all-infeasible worst case
     // does strict-mode also visit O(K^N) leaves.
-    // TODO(task-2662): task 2662 layers a 100k hard cap on free-mode; until
-    // that lands, free-mode is unbounded and callers with large candidate sets
-    // may observe high latency.
+    //
+    // Task 2662's cross-product hard cap (`max_cross_product_size`) fires
+    // BEFORE this point — see the cap-check branch immediately after Phase A
+    // enumeration above. By construction, control reaches this multi-param
+    // dispatch only when `cross_product_size <= max_cross_product_size`, so
+    // the worst-case leaf count here is bounded by the cap (default 100,000).
     let any_strict = params.iter().any(|p| !p.free);
     let max_feasible_to_collect: usize = if any_strict { 2 } else { usize::MAX };
 
