@@ -163,7 +163,7 @@ pub fn extract_input_tolerance_promise(
     if dimension != DimensionVector::LENGTH {
         return None;
     }
-    if !si_value.is_finite() || si_value < 0.0 {
+    if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
         return None;
     }
     Some(si_value)
