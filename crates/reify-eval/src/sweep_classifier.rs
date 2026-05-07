@@ -42,6 +42,19 @@
 
 use reify_types::{GeometryHandleId, GeometryOp, Value};
 
+/// Tolerance for treating a [`GeometryOp::Revolve`]'s axis or angle as
+/// degenerate.
+///
+/// A revolve is rejected when:
+/// - every component of `axis_dir` has magnitude `< REVOLVE_DEGENERATE_TOLERANCE`
+///   (zero-length axis vector), or
+/// - `angle_rad.abs() < REVOLVE_DEGENERATE_TOLERANCE` (no rotation).
+///
+/// `1e-12` matches the project's general geometric-tolerance convention: tight
+/// enough to catch genuine zero-vector / zero-angle degenerates without
+/// rejecting legitimate near-axis-aligned values.
+const REVOLVE_DEGENERATE_TOLERANCE: f64 = 1e-12;
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// Recognised swept-body kinds produced by [`classify_swept_body`].
@@ -143,6 +156,28 @@ pub fn classify_swept_body(
                 axis: [0.0, 0.0, 1.0],
                 length: distance.clone(),
             })
+        }
+        GeometryOp::Revolve {
+            axis_origin,
+            axis_dir,
+            angle_rad,
+            ..
+        } => {
+            // Reject zero-length axis vector and zero-angle revolves; any
+            // other angle (including the full 2π case) qualifies.
+            if axis_dir
+                .iter()
+                .all(|c| c.abs() < REVOLVE_DEGENERATE_TOLERANCE)
+                || angle_rad.abs() < REVOLVE_DEGENERATE_TOLERANCE
+            {
+                None
+            } else {
+                Some(SweptKind::Revolve {
+                    axis_origin: *axis_origin,
+                    axis_dir: *axis_dir,
+                    angle_rad: *angle_rad,
+                })
+            }
         }
         _ => None,
     }
