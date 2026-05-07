@@ -220,7 +220,20 @@ mod tests {
     #[test]
     fn all_span_ends_fit_within_source_stub() {
         let len = source_stub().len() as u32;
-        assert!(sub_span().end <= len, "sub_span.end ({}) exceeds source_stub len ({})", sub_span().end, len);
+        for (name, span) in [
+            ("dummy_span", dummy_span()),
+            ("param_span", param_span()),
+            ("port_span", port_span()),
+            ("sub_span", sub_span()),
+        ] {
+            assert!(
+                span.end <= len,
+                "{}.end ({}) exceeds source_stub len ({})",
+                name,
+                span.end,
+                len,
+            );
+        }
     }
 
     #[test]
