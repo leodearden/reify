@@ -632,23 +632,51 @@ fn extract_codomain_dimension(t: &Type) -> Result<DimensionVector, IngestError> 
 /// to identify the variant in error messages (e.g. `"Bool"`, `"Int"`,
 /// `"Geometry"`, `"Enum"`, `"Function"`, `"List"`, …).
 ///
-/// Mechanically derives the variant tag from `Type`'s derived `Debug`
-/// impl — we take the formatted string and chop at the first space, `{`,
-/// or `(`, which leaves only the bare variant name. This avoids
-/// duplicating `Type`'s variant set in this peer crate: a new `Type`
-/// variant added later automatically gets a sensible label here without
-/// any code change in `reify-kernel-openvdb`.
+/// Uses an exhaustive `match` over every `Type` variant, returning the
+/// exact Rust identifier name as a `&'static str`. The exhaustiveness
+/// check is the key property: adding a new variant to `Type` in
+/// `reify-types` produces a compiler error here, forcing a deliberate
+/// label decision rather than silently inheriting whatever `Debug`
+/// formatting happens to emit.
 ///
 /// Trade-off: payload data (e.g. the name inside `Type::Enum("Foo")`) is
 /// dropped — only the variant identity is preserved. That's the correct
 /// granularity for an "unsupported codomain" error message; the variant
 /// identity is the actionable contract.
 fn format_type_repr(t: &Type) -> String {
-    let dbg = format!("{t:?}");
-    dbg.split([' ', '{', '('])
-        .next()
-        .unwrap_or(&dbg)
-        .to_string()
+    match t {
+        Type::Bool => "Bool",
+        Type::Int => "Int",
+        Type::Real => "Real",
+        Type::String => "String",
+        Type::Scalar { .. } => "Scalar",
+        Type::Enum(_) => "Enum",
+        Type::List(_) => "List",
+        Type::Set(_) => "Set",
+        Type::Map(_, _) => "Map",
+        Type::Option(_) => "Option",
+        Type::Function { .. } => "Function",
+        Type::TypeParam(_) => "TypeParam",
+        Type::StructureRef(_) => "StructureRef",
+        Type::TraitObject(_) => "TraitObject",
+        Type::Field { .. } => "Field",
+        Type::Geometry => "Geometry",
+        Type::Point { .. } => "Point",
+        Type::Vector { .. } => "Vector",
+        Type::Tensor { .. } => "Tensor",
+        Type::Complex(_) => "Complex",
+        Type::Orientation(_) => "Orientation",
+        Type::Frame(_) => "Frame",
+        Type::Transform(_) => "Transform",
+        Type::Range(_) => "Range",
+        Type::Plane => "Plane",
+        Type::Axis => "Axis",
+        Type::BoundingBox => "BoundingBox",
+        Type::Matrix { .. } => "Matrix",
+        Type::Error => "Error",
+        Type::Union(_) => "Union",
+    }
+    .to_string()
 }
 
 #[cfg(test)]
