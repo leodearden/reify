@@ -553,6 +553,195 @@ mod tests {
         );
     }
 
+    // --- Symmetry test (step 13) ---
+
+    #[test]
+    fn shell_element_stiffness_is_symmetric_within_fp_tolerance() {
+        let k = shell_element_stiffness(&UNIT_TRI, 0.05, &steel_like());
+        for i in 0..18 {
+            for j in 0..18 {
+                let kij = k.get(i, j);
+                let kji = k.get(j, i);
+                let scale = kij.abs().max(kji.abs()).max(1.0);
+                assert!(
+                    (kij - kji).abs() < 1e-9 * scale,
+                    "asymmetry at ({i},{j}): K[i][j]={kij}, K[j][i]={kji}",
+                );
+            }
+        }
+    }
+
+    // --- Rigid-body translation null-space (step 15) ---
+
+    #[test]
+    fn shell_has_rigid_body_translation_null_space() {
+        let k = shell_element_stiffness(&UNIT_TRI, 0.05, &steel_like());
+        for axis in 0..3 {
+            let mut u = [0.0_f64; 18];
+            for node in 0..3 {
+                u[6 * node + axis] = 1.0;
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < 1e-9,
+                "axis {axis}: linf(K·u_translation) = {}",
+                linf(&ku),
+            );
+        }
+    }
+
+    // --- Rigid-body rotation null-space (step 17) ---
+
+    #[test]
+    fn shell_has_rigid_body_rotation_null_space() {
+        // Centroid of unit triangle
+        let c = [1.0 / 3.0_f64, 1.0 / 3.0, 0.0_f64];
+        let nodes = UNIT_TRI;
+        let k = shell_element_stiffness(&nodes, 0.05, &steel_like());
+
+        // For each axis ω ∈ {e_x, e_y, e_z}, build 18-DOF rigid rotation mode.
+        // Displacement: u_i = ω × (x_i - c); rotation: θ_i = ω.
+        let omega = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        for &w in &omega {
+            let mut u = [0.0_f64; 18];
+            for node in 0..3 {
+                let dx = [nodes[node][0] - c[0], nodes[node][1] - c[1], nodes[node][2] - c[2]];
+                // u_i = ω × dx
+                let ux = w[1] * dx[2] - w[2] * dx[1];
+                let uy = w[2] * dx[0] - w[0] * dx[2];
+                let uz = w[0] * dx[1] - w[1] * dx[0];
+                u[6 * node + 0] = ux;
+                u[6 * node + 1] = uy;
+                u[6 * node + 2] = uz;
+                // θ_i = ω
+                u[6 * node + 3] = w[0];
+                u[6 * node + 4] = w[1];
+                u[6 * node + 5] = w[2];
+            }
+            let ku = matvec(&k, &u);
+            let norm_ku = linf(&ku);
+            // Tolerance relative to max absolute entry of K × |u| components
+            let ku_scale = k.data.iter().copied().fold(0.0_f64, f64::max) * 1.0;
+            let tol = 1e-9 * ku_scale.max(1.0);
+            assert!(
+                norm_ku < tol,
+                "ω={w:?}: linf(K·u_rotation) = {norm_ku}, tol = {tol}",
+            );
+        }
+    }
+
+    // --- Thickness scaling (step 19) ---
+
+    #[test]
+    fn shell_thickness_scaling_membrane_mode_doubles_with_t() {
+        let mat = steel_like();
+        let a = 0.01_f64;
+        let b = -0.005_f64;
+        let t = 0.05_f64;
+        let mut u = [0.0_f64; 18];
+        u[6 * 1 + 0] = a;
+        u[6 * 2 + 1] = b;
+
+        let k1 = shell_element_stiffness(&UNIT_TRI, t, &mat);
+        let k2 = shell_element_stiffness(&UNIT_TRI, 2.0 * t, &mat);
+        let ku1 = matvec(&k1, &u);
+        let ku2 = matvec(&k2, &u);
+
+        for i in 0..18 {
+            let scale = ku1[i].abs().max(1.0);
+            assert!(
+                (ku2[i] - 2.0 * ku1[i]).abs() < 1e-9 * scale,
+                "membrane scaling at DOF {i}: 2·K(t)·u = {}, K(2t)·u = {}",
+                2.0 * ku1[i],
+                ku2[i],
+            );
+        }
+    }
+
+    #[test]
+    fn shell_thickness_scaling_shear_mode_doubles_with_t() {
+        let mat = steel_like();
+        let alpha = 0.003_f64;
+        let t = 0.05_f64;
+        let mut u = [0.0_f64; 18];
+        for node in 0..3 { u[6 * node + 4] = alpha; }
+
+        let k1 = shell_element_stiffness(&UNIT_TRI, t, &mat);
+        let k2 = shell_element_stiffness(&UNIT_TRI, 2.0 * t, &mat);
+        let ku1 = matvec(&k1, &u);
+        let ku2 = matvec(&k2, &u);
+
+        for i in 0..18 {
+            let scale = ku1[i].abs().max(1.0);
+            assert!(
+                (ku2[i] - 2.0 * ku1[i]).abs() < 1e-9 * scale,
+                "shear scaling at DOF {i}: 2·K(t)·u = {}, K(2t)·u = {}",
+                2.0 * ku1[i],
+                ku2[i],
+            );
+        }
+    }
+
+    // --- Frame covariance (step 21) ---
+
+    #[test]
+    fn shell_strain_energy_invariant_under_global_rigid_rotation() {
+        // Membrane mode on xy-plane triangle.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let a = 0.01_f64;
+        let b = -0.005_f64;
+        let mut u_orig = [0.0_f64; 18];
+        u_orig[6 * 1 + 0] = a;
+        u_orig[6 * 2 + 1] = b;
+        let k_orig = shell_element_stiffness(&UNIT_TRI, t, &mat);
+        let ku_orig = matvec(&k_orig, &u_orig);
+        let u_k_orig: f64 = 0.5 * ku_orig.iter().zip(u_orig.iter()).map(|(a, b)| a * b).sum::<f64>();
+
+        // Global rotation Q: 30° about z, then 45° about y.
+        let cos30 = (30.0_f64.to_radians()).cos();
+        let sin30 = (30.0_f64.to_radians()).sin();
+        let cos45 = (45.0_f64.to_radians()).cos();
+        let sin45 = (45.0_f64.to_radians()).sin();
+        // Rz(30°)
+        let rz = [[cos30, -sin30, 0.0], [sin30, cos30, 0.0], [0.0, 0.0, 1.0]];
+        // Ry(45°)
+        let ry = [[cos45, 0.0, sin45], [0.0, 1.0, 0.0], [-sin45, 0.0, cos45]];
+        // Q = Ry · Rz
+        let q = mat3_mul(&ry, &rz);
+
+        // Rotate nodes
+        let mut rot_nodes = [[0.0_f64; 3]; 3];
+        for (ni, node) in UNIT_TRI.iter().enumerate() {
+            for i in 0..3 {
+                rot_nodes[ni][i] = q[i][0]*node[0] + q[i][1]*node[1] + q[i][2]*node[2];
+            }
+        }
+
+        // Rotate DOFs: each (u triple) and (θ triple) by Q
+        let mut u_rot = [0.0_f64; 18];
+        for node in 0..3 {
+            for triple in 0..2 { // 0=displacements, 1=rotations
+                let off = 6 * node + 3 * triple;
+                let v = [u_orig[off], u_orig[off+1], u_orig[off+2]];
+                for i in 0..3 {
+                    u_rot[off + i] = q[i][0]*v[0] + q[i][1]*v[1] + q[i][2]*v[2];
+                }
+            }
+        }
+
+        let k_rot = shell_element_stiffness(&rot_nodes, t, &mat);
+        let ku_rot = matvec(&k_rot, &u_rot);
+        let u_k_rot: f64 = 0.5 * ku_rot.iter().zip(u_rot.iter()).map(|(a, b)| a * b).sum::<f64>();
+
+        let scale = u_k_orig.abs().max(1.0);
+        assert!(
+            (u_k_orig - u_k_rot).abs() < 1e-9 * scale,
+            "frame covariance: U_orig={u_k_orig}, U_rot={u_k_rot}, diff={}",
+            (u_k_orig - u_k_rot).abs(),
+        );
+    }
+
     // --- Transverse-shear patch test (step 9) ---
 
     #[test]
