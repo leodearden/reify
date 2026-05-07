@@ -215,4 +215,63 @@ mod tests {
         // that `MedialError` is publicly named.
         let _: MedialError = MedialError::EmptyAxisGrid { axis: 0 };
     }
+
+    /// Build a Regular1D `SampledField` with three nodes along x. The
+    /// medial-axis test is intrinsically 3D; 1D inputs must be
+    /// rejected up front rather than silently producing an empty
+    /// mask.
+    fn one_d_field() -> SampledField {
+        SampledField {
+            name: "test-1d".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![2.0],
+            spacing: vec![1.0],
+            axis_grids: vec![vec![0.0, 1.0, 2.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![1.0, -1.0, 1.0],
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a Regular2D `SampledField` over a 3×3 grid.
+    fn two_d_field() -> SampledField {
+        SampledField {
+            name: "test-2d".to_string(),
+            kind: SampledGridKind::Regular2D,
+            bounds_min: vec![0.0, 0.0],
+            bounds_max: vec![2.0, 2.0],
+            spacing: vec![1.0, 1.0],
+            axis_grids: vec![vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 2.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![1.0; 9],
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn compute_medial_mask_rejects_regular1d_grids() {
+        let sdf = one_d_field();
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("1D input must be rejected");
+        assert_eq!(
+            err,
+            MedialError::UnsupportedGridKind {
+                found: SampledGridKind::Regular1D
+            }
+        );
+    }
+
+    #[test]
+    fn compute_medial_mask_rejects_regular2d_grids() {
+        let sdf = two_d_field();
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("2D input must be rejected");
+        assert_eq!(
+            err,
+            MedialError::UnsupportedGridKind {
+                found: SampledGridKind::Regular2D
+            }
+        );
+    }
 }
