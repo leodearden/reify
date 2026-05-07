@@ -389,10 +389,14 @@ describe('bakeColours', () => {
 // Step 9 — barrel-export wiring through gui/src/viewport/index.ts
 // ---------------------------------------------------------------------------
 describe('barrel export wiring (viewport/index)', () => {
+  // The first dynamic import of the barrel is a cold-start: it resolves the full
+  // transitive module graph (Three.js stubs, SolidJS, meshManager, selection …).
+  // Under heavy concurrent build load this can approach the default 5 000 ms
+  // limit. 15 000 ms gives headroom without masking genuine hangs.
   it('applyColormap is re-exported from the viewport barrel', async () => {
     const barrel = await import('../../viewport/index');
     expect(typeof barrel.applyColormap).toBe('function');
-  });
+  }, 15_000);
 
   it('bakeColours is re-exported from the viewport barrel', async () => {
     const barrel = await import('../../viewport/index');
