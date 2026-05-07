@@ -793,6 +793,92 @@ mod tests {
         );
     }
 
+    /// Build an analytic-sphere Regular3D `SampledField` representing
+    /// `φ(p) = |p| - radius` over a `voxel_count³` grid centered on
+    /// the origin with unit voxel spacing. The analytic medial axis
+    /// of a sphere is its single center point; under voxelization at
+    /// unit spacing it spreads to a small cluster of voxels near the
+    /// grid center, NOT a ring or shell.
+    fn sphere_sdf_3d(radius_voxels: f64, voxel_count: usize) -> SampledField {
+        assert!(voxel_count >= 2, "sphere grid needs ≥ 2 voxels per axis");
+        let n = voxel_count;
+        let spacing: f64 = 1.0;
+        let half_extent = (n as f64 - 1.0) / 2.0;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+
+        let axis_grid: Vec<f64> = (0..n)
+            .map(|i| bounds_min + (i as f64) * spacing)
+            .collect();
+        // Row-major flat layout: data[i*n*n + j*n + k] at index (i,j,k).
+        let mut data = Vec::with_capacity(n * n * n);
+        for &x in &axis_grid {
+            for &y in &axis_grid {
+                for &z in &axis_grid {
+                    let r = (x * x + y * y + z * z).sqrt();
+                    data.push(r - radius_voxels);
+                }
+            }
+        }
+        SampledField {
+            name: format!("sphere-3d-r{radius_voxels}-n{voxel_count}"),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![spacing, spacing, spacing],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Sphere `φ = |p| − 5` on a 16×16×16 grid: the analytic medial
+    /// axis is a single point at the grid center. Under voxelization
+    /// at unit spacing the medial mask should collapse to a small
+    /// cluster of voxels NEAR the center (within ~2 voxels) — not a
+    /// ring or shell at the band-shell radius. Asserts:
+    ///
+    /// (a) the returned mask is non-empty;
+    /// (b) every voxel in the mask lies within 2.0 voxels of the grid
+    ///     center (Euclidean distance, indices interpreted as
+    ///     coordinates).
+    #[test]
+    fn compute_medial_mask_on_sphere_collapses_to_center_voxels() {
+        let n = 16usize;
+        let sdf = sphere_sdf_3d(5.0, n);
+        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect("sphere compute succeeds");
+
+        // (a) non-empty
+        assert!(
+            !mask.voxels.is_empty(),
+            "sphere medial mask must be non-empty (medial axis is a \
+             single center point that voxelizes to a small cluster)"
+        );
+
+        // (b) every voxel in the mask is within 2 voxels of the grid
+        // center. The grid center for n=16 is between indices 7 and 8
+        // on each axis (no voxel exactly at origin); the cluster
+        // radius caps at 2.0 voxels in Euclidean index space.
+        let center = (n as f64 - 1.0) / 2.0;
+        for &[i, j, k] in &mask.voxels {
+            let di = (i as f64) - center;
+            let dj = (j as f64) - center;
+            let dk = (k as f64) - center;
+            let dist = (di * di + dj * dj + dk * dk).sqrt();
+            assert!(
+                dist <= 2.0,
+                "sphere medial voxel ({i},{j},{k}) is too far from grid \
+                 center (dist={dist:.3} voxels; cap=2.0). The medial \
+                 axis of a sphere is its center point; far-from-center \
+                 voxels are false positives — likely from the bidirectional \
+                 ray walk hitting the same surface patch on both sides \
+                 with poorly-defined gradient at the medial."
+            );
+        }
+    }
+
     /// Pin the empirical constants that the PRD's task-T1 description
     /// implicitly asserts:
     ///
