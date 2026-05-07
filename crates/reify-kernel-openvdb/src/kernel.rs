@@ -73,7 +73,7 @@ impl GeometryKernel for OpenVdbKernel {
     // the trait defaults — they error in the standard "not supported" fashion.
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(has_openvdb)))]
 mod tests {
     use super::*;
 
