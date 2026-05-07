@@ -311,9 +311,9 @@ mod tests {
         // unspecified — the rule is symmetric, only the multiset matters).
         for (xi_e, eta_e, zeta_e) in expected_pts {
             let found = qp.iter().any(|q| {
-                (q.coord.xi - xi_e).abs() < QUAD_TOL
-                    && (q.coord.eta - eta_e).abs() < QUAD_TOL
-                    && (q.coord.zeta - zeta_e).abs() < QUAD_TOL
+                (q.coord.xi - xi_e).abs() <= 4.0 * f64::EPSILON
+                    && (q.coord.eta - eta_e).abs() <= 4.0 * f64::EPSILON
+                    && (q.coord.zeta - zeta_e).abs() <= 4.0 * f64::EPSILON
                     && (q.weight - 1.0 / 24.0).abs() < QUAD_TOL
             });
             assert!(
