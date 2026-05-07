@@ -4494,6 +4494,11 @@ structure def WaterCooled : Cooled {
         },
     ];
 
+    // Bool(true) literal → empty blame in build_constraint_blame_map; see in-module
+    // `build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints`
+    // which pins that contract. The consequence asserted below is the end-to-end
+    // behavioral implication: empty blame map → DfsControl::Continue → ordinary backtrack.
+
     // Queue: [Violated, Satisfied]; default: Satisfied.
     // Leaf 1 = (ORingSeal, AirCooled) → Violated → blame empty → Continue
     //   (ordinary backtrack; NOT a backjump)

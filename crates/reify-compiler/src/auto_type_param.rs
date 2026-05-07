@@ -2277,6 +2277,50 @@ mod helper_tests {
         reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool)
     }
 
+    /// Construct a bare-bones [`crate::TopologyTemplate`] for testing, enumerating every
+    /// field in one place.
+    ///
+    /// All non-varying fields default to their empty/private/false/`None` equivalents.
+    /// This is the single source of truth for the exhaustive-field-enumeration pattern:
+    /// when `TopologyTemplate` gains a new field, add it here (default or empty is fine)
+    /// so tests pinning other contracts continue to compile unchanged.
+    ///
+    /// Note: does NOT use `TopologyTemplateBuilder` from `reify_test_support` — that
+    /// builder links against the compiled `reify_compiler` library artifact, causing a
+    /// "two versions of the same crate" mismatch inside `#[cfg(test)]`. Direct
+    /// construction from `crate::` types keeps both sides in the same compilation unit.
+    fn make_topology_template(
+        name: &str,
+        value_cells: Vec<crate::ValueCellDecl>,
+        constraints: Vec<crate::CompiledConstraint>,
+        content_hash_seed: &[u8],
+    ) -> crate::TopologyTemplate {
+        use reify_types::ContentHash;
+        crate::TopologyTemplate {
+            name: name.into(),
+            entity_kind: crate::EntityKind::Structure,
+            visibility: crate::Visibility::Private,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells,
+            constraints,
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: Default::default(),
+            objective: None,
+            meta: Default::default(),
+            content_hash: ContentHash::of(content_hash_seed),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+        }
+    }
+
     /// Empty `constraints_template` slice → vacuously no violations → `feasible == true`.
     #[test]
     fn check_constraints_leaf_returns_feasible_for_empty_constraints() {
@@ -2373,37 +2417,17 @@ mod helper_tests {
     /// `build_constraints_template` maps each `CompiledConstraint` in the
     /// `TopologyTemplate` to a `(ConstraintNodeId, &CompiledExpr)` pair,
     /// preserving order and borrowing (not cloning) the expr.
-    ///
-    /// Note: `TopologyTemplateBuilder` from `reify_test_support` cannot be used here
-    /// because it links against the compiled `reify_compiler` library artifact, causing
-    /// a "two versions of the same crate" mismatch in the `#[cfg(test)]` context.
-    /// Instead the template is constructed directly from `crate::` types so both sides
-    /// of the borrow refer to the same compilation unit.
     #[test]
     fn build_constraints_template_returns_pairs_for_each_template_constraint() {
-        use reify_types::{ContentHash, SourceSpan};
+        use reify_types::SourceSpan;
 
         let expr0 = literal_expr();
         let expr1 = reify_types::CompiledExpr::literal(Value::Bool(false), Type::Bool);
 
-        // Build TopologyTemplate directly from crate-internal types to avoid the
-        // "two versions of reify_compiler" diamond dependency that arises when
-        // using TopologyTemplateBuilder from reify_test_support inside cfg(test).
-        //
-        // Intentional construction surface: this test enumerates every field so it
-        // fails to compile when `TopologyTemplate` gains a new field without a
-        // corresponding addition here. The tested contract is narrow (id-order +
-        // ptr-equality of expr borrow), but exhaustive field coverage is the
-        // cheapest way to keep the fixture honest. When adding a new field to
-        // `TopologyTemplate`, add it here too (default or empty is fine).
-        let template = crate::TopologyTemplate {
-            name: "Bearing".into(),
-            entity_kind: crate::EntityKind::Structure,
-            visibility: crate::Visibility::Private,
-            type_params: vec![],
-            trait_bounds: vec![],
-            value_cells: vec![],
-            constraints: vec![
+        let template = make_topology_template(
+            "Bearing",
+            vec![],
+            vec![
                 crate::CompiledConstraint {
                     id: ConstraintNodeId::new("Bearing", 0),
                     label: None,
@@ -2421,21 +2445,8 @@ mod helper_tests {
                     optimized_target: None,
                 },
             ],
-            realizations: vec![],
-            sub_components: vec![],
-            ports: vec![],
-            connections: vec![],
-            guarded_groups: vec![],
-            structure_controlling: Default::default(),
-            objective: None,
-            meta: Default::default(),
-            content_hash: ContentHash::of(b"test-bearing"),
-            is_recursive: false,
-            annotations: vec![],
-            pragmas: vec![],
-            match_arm_groups: vec![],
-            forall_templates: vec![],
-        };
+            b"test-bearing",
+        );
 
         let pairs = build_constraints_template(&template);
 
@@ -2574,14 +2585,10 @@ mod helper_tests {
     /// The "no ref → absent" half is pinned by
     /// `build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints`.
     ///
-    /// Note: constructs `TopologyTemplate` directly from `crate::` types (not
-    /// `TopologyTemplateBuilder`) to avoid the "two versions of reify_compiler"
-    /// diamond dependency that arises when using `reify_test_support` inside
-    /// `#[cfg(test)]`.
     #[test]
     fn build_constraint_blame_map_returns_param_indices_referenced_by_constraint_expression() {
         use std::collections::BTreeSet;
-        use reify_types::{BinOp, ContentHash, SourceSpan, ValueCellId};
+        use reify_types::{BinOp, SourceSpan, ValueCellId};
 
         let field_t = ValueCellId::new("Coupling", "field_t");
         let field_u = ValueCellId::new("Coupling", "field_u");
@@ -2592,13 +2599,9 @@ mod helper_tests {
             Type::Bool,
         );
 
-        let template = crate::TopologyTemplate {
-            name: "Coupling".into(),
-            entity_kind: crate::EntityKind::Structure,
-            visibility: crate::Visibility::Private,
-            type_params: vec![],
-            trait_bounds: vec![],
-            value_cells: vec![
+        let template = make_topology_template(
+            "Coupling",
+            vec![
                 crate::ValueCellDecl {
                     id: field_t.clone(),
                     kind: crate::ValueCellKind::Param,
@@ -2618,7 +2621,7 @@ mod helper_tests {
                     span: SourceSpan::new(0, 0),
                 },
             ],
-            constraints: vec![
+            vec![
                 crate::CompiledConstraint {
                     id: ConstraintNodeId::new("Coupling", 0),
                     label: None,
@@ -2628,21 +2631,8 @@ mod helper_tests {
                     optimized_target: None,
                 },
             ],
-            realizations: vec![],
-            sub_components: vec![],
-            ports: vec![],
-            connections: vec![],
-            guarded_groups: vec![],
-            structure_controlling: Default::default(),
-            objective: None,
-            meta: Default::default(),
-            content_hash: ContentHash::of(b"test-coupling-blame"),
-            is_recursive: false,
-            annotations: vec![],
-            pragmas: vec![],
-            match_arm_groups: vec![],
-            forall_templates: vec![],
-        };
+            b"test-coupling-blame",
+        );
 
         let params = vec![
             AutoTypeParam {
@@ -2693,13 +2683,9 @@ mod helper_tests {
     /// `compute_deepest_blame_level` returns `None` for absent constraints and falls
     /// back to ordinary backtracking, so an accidental `map.insert(id, BTreeSet::new())`
     /// would incorrectly block backjumping even when no TypeParam blame exists.
-    ///
-    /// Note: constructs `TopologyTemplate` directly from `crate::` types (not
-    /// `TopologyTemplateBuilder`) to avoid the "two versions of reify_compiler"
-    /// diamond dependency.
     #[test]
     fn build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints() {
-        use reify_types::{ContentHash, SourceSpan, ValueCellId};
+        use reify_types::{SourceSpan, ValueCellId};
 
         let field_t = ValueCellId::new("Coupling", "field_t");
         let field_u = ValueCellId::new("Coupling", "field_u");
@@ -2713,13 +2699,9 @@ mod helper_tests {
         // c1: literal Bool(true) — no ValueRef, no TypeParam
         let expr_c1 = reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool);
 
-        let template = crate::TopologyTemplate {
-            name: "Coupling".into(),
-            entity_kind: crate::EntityKind::Structure,
-            visibility: crate::Visibility::Private,
-            type_params: vec![],
-            trait_bounds: vec![],
-            value_cells: vec![
+        let template = make_topology_template(
+            "Coupling",
+            vec![
                 crate::ValueCellDecl {
                     id: field_t.clone(),
                     kind: crate::ValueCellKind::Param,
@@ -2748,7 +2730,7 @@ mod helper_tests {
                     span: SourceSpan::new(0, 0),
                 },
             ],
-            constraints: vec![
+            vec![
                 crate::CompiledConstraint {
                     id: ConstraintNodeId::new("Coupling", 0),
                     label: None,
@@ -2766,21 +2748,8 @@ mod helper_tests {
                     optimized_target: None,
                 },
             ],
-            realizations: vec![],
-            sub_components: vec![],
-            ports: vec![],
-            connections: vec![],
-            guarded_groups: vec![],
-            structure_controlling: Default::default(),
-            objective: None,
-            meta: Default::default(),
-            content_hash: ContentHash::of(b"test-coupling-exclusion"),
-            is_recursive: false,
-            annotations: vec![],
-            pragmas: vec![],
-            match_arm_groups: vec![],
-            forall_templates: vec![],
-        };
+            b"test-coupling-exclusion",
+        );
 
         let params = vec![
             AutoTypeParam {
