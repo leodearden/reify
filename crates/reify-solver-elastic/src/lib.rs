@@ -26,5 +26,5 @@
 pub mod elements;
 
 pub use elements::{
-    QuadraturePoint, ReferenceCoord, ReferenceElement, tet_p1::TetP1, tet_p2::TetP2,
+    Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, tet_p1::TetP1, tet_p2::TetP2,
 };

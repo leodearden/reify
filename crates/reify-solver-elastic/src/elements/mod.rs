@@ -29,6 +29,32 @@ impl ReferenceCoord {
     }
 }
 
+/// Reference→physical Jacobian of an element at a single reference
+/// coordinate.
+///
+/// `matrix[i][j] = ∂x_i / ∂ξ_j` where `x` is the physical coordinate and
+/// `ξ` the reference coordinate. `det` is the determinant of `matrix`.
+///
+/// This is the **forward** map only. The inverse / transpose-inverse map
+/// (`Jᵀ⁻¹`) needed to push reference gradients into physical gradients
+/// for stiffness assembly is the consumer's responsibility (PRD task #8).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Jacobian {
+    pub matrix: [[f64; 3]; 3],
+    pub det: f64,
+}
+
+impl Jacobian {
+    /// Construct from a 3×3 matrix; computes the determinant via cofactor
+    /// expansion.
+    pub fn from_matrix(matrix: [[f64; 3]; 3]) -> Self {
+        let det = matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
+            - matrix[0][1] * (matrix[1][0] * matrix[2][2] - matrix[1][2] * matrix[2][0])
+            + matrix[0][2] * (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0]);
+        Self { matrix, det }
+    }
+}
+
 /// A quadrature point: a reference-coordinate location and its weight.
 ///
 /// Weights sum to the reference-tet volume `1/6` for every rule defined
@@ -71,6 +97,42 @@ pub trait ReferenceElement {
     ///
     /// Weights sum to the reference-tet volume `1/6`.
     fn quad_points(&self) -> &'static [QuadraturePoint];
+
+    /// Reference→physical Jacobian at `ref_coord`.
+    ///
+    /// Computes `J_ij = Σ_k phys_nodes[k][i] · shape_grad_at(ref_coord)[k][j]`.
+    ///
+    /// `phys_nodes.len()` must equal `Self::N_NODES` and the entries must
+    /// be ordered to match the canonical reference-vertex ordering pinned
+    /// in the implementing element module:
+    ///
+    /// - **`TetP1`** — vertices in `(0,0,0), (1,0,0), (0,1,0), (0,0,1)`
+    ///   order.
+    /// - **`TetP2`** — same vertex order followed by the 6 edge midpoints
+    ///   in canonical Hughes/Gmsh order `(0,1), (1,2), (2,0), (0,3),
+    ///   (1,3), (2,3)`.
+    fn jacobian(&self, phys_nodes: &[[f64; 3]], ref_coord: ReferenceCoord) -> Jacobian {
+        debug_assert_eq!(
+            phys_nodes.len(),
+            Self::N_NODES,
+            "phys_nodes.len() must equal Self::N_NODES",
+        );
+        let grads = self.shape_grad_at(ref_coord);
+        debug_assert_eq!(
+            grads.len(),
+            Self::N_NODES,
+            "shape_grad_at must return N_NODES rows",
+        );
+        let mut m = [[0.0_f64; 3]; 3];
+        for k in 0..Self::N_NODES {
+            for i in 0..3 {
+                for j in 0..3 {
+                    m[i][j] += phys_nodes[k][i] * grads[k][j];
+                }
+            }
+        }
+        Jacobian::from_matrix(m)
+    }
 }
 
 #[cfg(test)]
