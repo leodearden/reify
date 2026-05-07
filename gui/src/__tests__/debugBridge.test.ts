@@ -508,16 +508,19 @@ describe('debug bridge set_test_mode', () => {
     expect(window.__REIFY_DEBUG__!.testMode!()).toBe(true);
   });
 
-  it('set_test_mode does not throw when a viewport is wired', async () => {
+  it('set_test_mode does not call renderer.render (no WebGL re-render contract)', async () => {
     const stores = makeStores();
     await initDebugBridge(stores);
+
+    // Capture the render spy so we can assert it is never called
+    const rendererRender = vi.fn();
 
     // Wire a stub viewport onto the context after init
     window.__REIFY_DEBUG__!.viewport = {
       scene: {} as any,
       camera: {} as any,
       renderer: {
-        render: vi.fn(),
+        render: rendererRender,
         domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,abc') },
       } as any,
       getMeshes: vi.fn().mockReturnValue(new Map()),
@@ -526,13 +529,15 @@ describe('debug bridge set_test_mode', () => {
       flyToEntity: vi.fn(),
     };
 
-    // Should complete without throwing and return the expected payload
     await capturedHandler!({ payload: { id: 12, command: 'set_test_mode', params: { enabled: true } } });
 
     const calls = vi.mocked(invoke).mock.calls;
     const responseCall = calls.find((c) => c[0] === 'debug_response');
     expect(responseCall).toBeDefined();
     const result = JSON.parse((responseCall![1] as { id: number; result: string }).result);
-    expect(result).toEqual({ ok: true, test_mode: true });
+    // Minimal dispatch-succeeded guard (not re-asserting full payload shape owned by earlier test)
+    expect(result.ok).toBe(true);
+    // Regression lock-in: set_test_mode is CSS-only; it must never trigger a WebGL re-render
+    expect(rendererRender).not.toHaveBeenCalled();
   });
 });
