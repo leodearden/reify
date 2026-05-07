@@ -229,6 +229,17 @@ const MAX_AXES: usize = 3;
 /// below. Pinned by the 1-D / 2-D / 3-D test suites in
 /// `tests/field_reductions_tests.rs` (`argmax|argmin_sampled_field_*d_*`).
 ///
+/// # Shape-mismatch guard
+///
+/// If `sf.data.len() != prod(axis_grid lengths)`, this function returns
+/// `Value::Undef`. `engine_eval::build_sampled_field` enforces this
+/// shape-equality invariant at construction; this guard is defense-in-depth
+/// for SampledFields constructed directly (test fixtures, future ingest
+/// paths) that bypass that gate. It mirrors the "malformed runtime value →
+/// Undef" convention in `compute_extremum`'s defensive Sampled arm,
+/// `compute_argextremum`'s matching arm, and `wrap_coord_for_domain`'s
+/// catch-all Undef arm.
+///
 /// # Allocation
 ///
 /// All scratch buffers (`axis_lengths`, `per_axis`, `coords_si`) are
@@ -247,6 +258,18 @@ fn arg_coord_from_index(sf: &SampledField, linear_index: usize, domain_type: &Ty
     for (k, g) in sf.axis_grids.iter().enumerate().take(n) {
         axis_lengths[k] = g.len();
     }
+
+    // Defense-in-depth: a malformed SampledField with data.len() != prod(axis_lengths)
+    // would otherwise either (a) panic on division-by-zero in decompose_index when an
+    // axis_grid is empty (axis_lengths[k] == 0, rem % 0), or (b) silently return a wrong
+    // coord because decompose_index's modulo-at-every-level wraps an out-of-range linear
+    // index back into bounds. `engine_eval::build_sampled_field` rejects this shape
+    // mismatch at construction, but direct construction bypasses that gate.
+    let expected_len: usize = axis_lengths[..n].iter().product();
+    if sf.data.len() != expected_len {
+        return Value::Undef;
+    }
+
     let per_axis = decompose_index(linear_index, &axis_lengths[..n]);
 
     // Look up SI coords from axis_grids.

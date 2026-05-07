@@ -180,24 +180,34 @@ pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
     Value::Map(m)
 }
 
-/// Validate that `v` is a usable topology-selector target — i.e., not an
-/// obvious primitive.
+/// Validate that `v` is a usable topology-selector target.
 ///
 /// The topology-selector stdlib bindings (PRD `topology-selectors.md` task 5)
 /// have not yet landed — there is no `Value::Face` / `Value::Edge` / `Value::Body`
-/// variant today. This helper therefore only rejects obvious primitive
-/// non-selector values (`Value::Real`, `Value::Int`, `Value::Bool`, `Value::Undef`);
-/// any other shape (Map, List, String, Vector, Tensor, …) is accepted as an
-/// opaque pass-through. Full topology-kind validation belongs in the FEA
-/// evaluation pipeline (PRD task 16) when the engine resolves selectors against
-/// the kernel and can produce diagnostics with source spans.
+/// variant today. Until those land, only two placeholder shapes are accepted:
 ///
-/// Returns `Some(())` when the value is an acceptable selector, `None` when
-/// it is a primitive that cannot be a selector.
+/// - `Value::Map` — the canonical opaque-selector shape used by the existing
+///   stub fixtures (e.g. a Map with `kind: "face_stub"`).
+/// - `Value::String` — reserved for future named-selector sentinels, analogous
+///   to `pressure_load`'s `"normal"` direction sentinel.
+///
+/// Every other variant is rejected, including numeric primitives
+/// (`Real`/`Int`/`Bool`/`Undef`) and dimensioned containers
+/// (`Scalar`/`Complex`/`Vector`/`Tensor`/`Point`/`List`). The rejection of
+/// dimensioned containers in particular catches a real misuse class — e.g.
+/// the typo `point_load(force_vec, force_vec)` no longer silently embeds a
+/// force-dimensioned Vector under the `point` field.
+///
+/// Full topology-kind validation (face-vs-edge-vs-body distinction with
+/// source-span diagnostics) belongs in the FEA evaluation pipeline (PRD
+/// task 16) once the engine resolves selectors against the kernel.
+///
+/// Returns `Some(())` when the value is an acceptable selector placeholder,
+/// `None` otherwise.
 pub(crate) fn validate_selector_target(v: &Value) -> Option<()> {
     match v {
-        Value::Real(_) | Value::Int(_) | Value::Bool(_) | Value::Undef => None,
-        _ => Some(()),
+        Value::Map(_) | Value::String(_) => Some(()),
+        _ => None,
     }
 }
 
@@ -1092,11 +1102,7 @@ mod tests {
 
     #[test]
     fn validate_dimensionless_unit_axis_vec3_dimensionless_tensor_returns_components() {
-        let v = Value::Tensor(vec![
-            Value::Real(0.5),
-            Value::Real(-0.25),
-            Value::Real(1.5),
-        ]);
+        let v = Value::Tensor(vec![Value::Real(0.5), Value::Real(-0.25), Value::Real(1.5)]);
         assert_eq!(
             validate_dimensionless_unit_axis_vec3(&v),
             Some([0.5, -0.25, 1.5]),
@@ -1106,11 +1112,7 @@ mod tests {
 
     #[test]
     fn validate_dimensionless_unit_axis_vec3_dimensionless_point_returns_components() {
-        let v = Value::Point(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(1.0),
-        ]);
+        let v = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
         assert_eq!(
             validate_dimensionless_unit_axis_vec3(&v),
             Some([0.0, 0.0, 1.0]),
@@ -1182,11 +1184,7 @@ mod tests {
 
     #[test]
     fn validate_dimensionless_unit_axis_vec3_zero_vector_returns_none() {
-        let v = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         assert!(
             validate_dimensionless_unit_axis_vec3(&v).is_none(),
             "Zero-magnitude vector should return None"
@@ -1304,8 +1302,9 @@ mod tests {
     // ── validate_selector_target ──────────────────────────────────────────────
     //
     // Hoisted from supports.rs and loads.rs (byte-for-byte identical bodies).
-    // Rejects obvious primitive non-selector values; accepts any other shape
-    // (Map, List, String, Vector, Tensor, …) as an opaque pass-through.
+    // Narrowed to accept only Value::Map and Value::String as placeholder
+    // selector shapes; all other variants (including dimensioned containers
+    // like Vector/Tensor/Scalar/Point/Complex) are rejected.
 
     #[test]
     fn validate_selector_target_real_returns_none() {
@@ -1350,11 +1349,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_selector_target_empty_list_accepted() {
-        assert_eq!(
-            validate_selector_target(&Value::List(vec![])),
-            Some(()),
-            "Empty Value::List should be accepted as opaque selector"
+    fn validate_selector_target_empty_list_rejected() {
+        assert!(
+            validate_selector_target(&Value::List(vec![])).is_none(),
+            "Value::List is no longer accepted — placeholder selectors must be Map or String"
         );
     }
 
@@ -1368,20 +1366,103 @@ mod tests {
     }
 
     #[test]
-    fn validate_selector_target_empty_vector_accepted() {
+    fn validate_selector_target_arbitrary_string_accepted() {
+        // Pins the documented intent that *any* String is accepted — not just
+        // a known whitelist — as a placeholder shape until the topology-selector
+        // PRD task 5 introduces named-selector sentinels (e.g. "face1").
+        // The breadth is intentional: unlike dimensioned containers (Scalar,
+        // Vector, …), a String cannot be confused with a numeric typo, so
+        // accepting an arbitrary sentinel string imposes no safety risk.
+        // If a whitelist is introduced later, these tests must be tightened.
         assert_eq!(
-            validate_selector_target(&Value::Vector(vec![])),
+            validate_selector_target(&Value::String("face1".to_string())),
             Some(()),
-            "Empty Value::Vector should be accepted as opaque selector"
+            "Arbitrary face-selector String should be accepted as placeholder"
+        );
+        assert_eq!(
+            validate_selector_target(&Value::String("body_all".to_string())),
+            Some(()),
+            "Arbitrary body-selector String should be accepted as placeholder"
         );
     }
 
     #[test]
-    fn validate_selector_target_empty_tensor_accepted() {
-        assert_eq!(
-            validate_selector_target(&Value::Tensor(vec![])),
-            Some(()),
-            "Empty Value::Tensor should be accepted as opaque selector"
+    fn validate_selector_target_empty_vector_rejected() {
+        assert!(
+            validate_selector_target(&Value::Vector(vec![])).is_none(),
+            "Value::Vector is no longer accepted — placeholder selectors must be Map or String"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_empty_tensor_rejected() {
+        assert!(
+            validate_selector_target(&Value::Tensor(vec![])).is_none(),
+            "Value::Tensor is no longer accepted — placeholder selectors must be Map or String"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_scalar_rejected() {
+        // Lock the typo class at helper level: a force-dimensioned Scalar fed as
+        // a selector returns None (narrowed contract).
+        assert!(
+            validate_selector_target(&Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::FORCE,
+            })
+            .is_none(),
+            "Value::Scalar (force-dimensioned) should be rejected as selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_point_rejected() {
+        assert!(
+            validate_selector_target(&Value::Point(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]))
+            .is_none(),
+            "Value::Point should be rejected as selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_complex_rejected() {
+        assert!(
+            validate_selector_target(&Value::Complex {
+                re: 0.0,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            })
+            .is_none(),
+            "Value::Complex should be rejected as selector"
+        );
+    }
+
+    #[test]
+    fn validate_selector_target_vector_with_content_rejected() {
+        // Helper-level analog of the user-visible `point_load(force_vec, force_vec)`
+        // typo case: a FORCE-dimensioned 3-vector fed as a selector is rejected.
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 5000.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::FORCE,
+            },
+        ]);
+        assert!(
+            validate_selector_target(&v).is_none(),
+            "FORCE-dimensioned Vector should be rejected as selector"
         );
     }
 
@@ -1451,10 +1532,22 @@ mod tests {
     #[test]
     fn validate_dimensioned_vec3_vec4_returns_none() {
         let v = Value::Vector(vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
         assert!(
             validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
@@ -1482,11 +1575,7 @@ mod tests {
 
     #[test]
     fn validate_dimensioned_vec3_dimensionless_vs_length_returns_none() {
-        let v = Value::Vector(vec![
-            Value::Real(1.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         assert!(
             validate_dimensioned_vec3(&v, DimensionVector::LENGTH).is_none(),
             "DIMENSIONLESS vector with expected_dim=LENGTH should reject"
@@ -1531,10 +1620,10 @@ mod tests {
 
     #[test]
     fn make_kind_map_extra_fields_appear_under_expected_keys() {
-        let result = make_kind_map("test", vec![
-            ("alpha", Value::Real(1.0)),
-            ("beta", Value::Int(42)),
-        ]);
+        let result = make_kind_map(
+            "test",
+            vec![("alpha", Value::Real(1.0)), ("beta", Value::Int(42))],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),
@@ -1554,11 +1643,14 @@ mod tests {
     #[test]
     fn make_kind_map_btreemap_orders_keys_alphabetically() {
         // Insert in non-alpha order: zulu, alpha, mike. BTreeMap sorts.
-        let result = make_kind_map("test", vec![
-            ("zulu", Value::Int(3)),
-            ("alpha", Value::Int(1)),
-            ("mike", Value::Int(2)),
-        ]);
+        let result = make_kind_map(
+            "test",
+            vec![
+                ("zulu", Value::Int(3)),
+                ("alpha", Value::Int(1)),
+                ("mike", Value::Int(2)),
+            ],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),

@@ -23,9 +23,7 @@ use reify_types::Value;
 use crate::eval_builtin;
 use crate::joints::is_joint_value;
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
-use crate::loop_closure_solver::{
-    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
-};
+use crate::loop_closure_solver::{NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
 use crate::mechanism::is_world;
 
 /// Evaluate a snapshot/FK stdlib function by name.
@@ -334,8 +332,7 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                     // FK re-walk; the Snapshot Map carrier stays bare-Real
                     // so warm-start round-trips through pure f64 vectors
                     // (matches `StartStrategy::WarmStart(Vec<f64>)`).
-                    let per_loop_reals: Vec<Value> =
-                        x.iter().map(|&v| Value::Real(v)).collect();
+                    let per_loop_reals: Vec<Value> = x.iter().map(|&v| Value::Real(v)).collect();
                     free_values.push(Value::List(per_loop_reals));
 
                     for (k, &i) in free_b.iter().enumerate() {
@@ -743,9 +740,7 @@ fn snapshot_bodies(snap: &Value) -> Option<&[Value]> {
         Value::Map(m) => m,
         _ => return None,
     };
-    if map.get(&Value::String("kind".to_string()))
-        != Some(&Value::String("snapshot".to_string()))
-    {
+    if map.get(&Value::String("kind".to_string())) != Some(&Value::String("snapshot".to_string())) {
         return None;
     }
     match map.get(&Value::String("bodies".to_string())) {
@@ -793,7 +788,12 @@ fn make_snapshot(bodies: Vec<Value>, free_values: Vec<Value>) -> Value {
 /// `BTreeMap` iteration). Mirrors `make_body_record` in mechanism.rs
 /// but adds the FK-derived `world_transform` and drops `at`/`parent`
 /// (those belong to the source mechanism, not the snapshot).
-fn make_snapshot_body_record(id: Value, solid: Value, pose: Value, world_transform: Value) -> Value {
+fn make_snapshot_body_record(
+    id: Value,
+    solid: Value,
+    pose: Value,
+    world_transform: Value,
+) -> Value {
     let mut b = BTreeMap::new();
     b.insert(Value::String("id".to_string()), id);
     b.insert(Value::String("pose".to_string()), pose);
@@ -947,8 +947,7 @@ fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
     //     `Value::Real(0.0)` matches the minimal-value style used by
     //     the `motion_vars_for_joint` fixture's `"fixed"` arm.
     if let Value::Map(map) = joint
-        && map.get(&Value::String("kind".to_string()))
-            == Some(&Value::String("fixed".to_string()))
+        && map.get(&Value::String("kind".to_string())) == Some(&Value::String("fixed".to_string()))
     {
         return Some(Value::Real(0.0));
     }
@@ -1013,7 +1012,9 @@ fn make_binding(joint: Value, value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
+    use crate::test_fixtures::{
+        angle_range_0_to_pi, axis_x_unit, axis_z_unit, length_range_0_to_1m, planar_xy_joint,
+    };
     use reify_types::Value;
     use std::collections::BTreeMap;
 
@@ -1083,11 +1084,13 @@ mod tests {
         assert!(eval_builtin("bind", &[Value::Real(1.0), v.clone()]).is_undef());
 
         // String (not a Map at all)
-        assert!(eval_builtin(
-            "bind",
-            &[Value::String("not a joint".to_string()), v.clone()]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "bind",
+                &[Value::String("not a joint".to_string()), v.clone()]
+            )
+            .is_undef()
+        );
 
         // World sentinel — a Map with kind="world", but NOT one of the
         // joint kinds in JOINT_KINDS, so it must be rejected.
@@ -1150,7 +1153,10 @@ mod tests {
                 other => panic!("expected numeric component, got {:?}", other),
             }
         };
-        ((rw, rx, ry, rz), [read(&comps[0]), read(&comps[1]), read(&comps[2])])
+        (
+            (rw, rx, ry, rz),
+            [read(&comps[0]), read(&comps[1]), read(&comps[2])],
+        )
     }
 
     /// Simplest non-empty FK case: one body at a prismatic joint along +X
@@ -1178,7 +1184,11 @@ mod tests {
             Some(Value::List(b)) => b,
             other => panic!("expected snapshot bodies List, got {:?}", other),
         };
-        assert_eq!(bodies.len(), 1, "snapshot bodies should have exactly one record");
+        assert_eq!(
+            bodies.len(),
+            1,
+            "snapshot bodies should have exactly one record"
+        );
 
         // Body record's world_transform: translation (0.002, 0, 0), identity rotation.
         let body = match &bodies[0] {
@@ -1189,11 +1199,19 @@ mod tests {
             .get(&Value::String("world_transform".to_string()))
             .expect("body record must carry a world_transform field");
         let ((rw, rx, ry, rz), [tx, ty, tz]) = decompose_transform_for_assert(wt);
-        assert!((rw - 1.0).abs() < 1e-12, "rotation w should be 1.0, got {}", rw);
+        assert!(
+            (rw - 1.0).abs() < 1e-12,
+            "rotation w should be 1.0, got {}",
+            rw
+        );
         assert!(rx.abs() < 1e-12, "rotation x should be 0, got {}", rx);
         assert!(ry.abs() < 1e-12, "rotation y should be 0, got {}", ry);
         assert!(rz.abs() < 1e-12, "rotation z should be 0, got {}", rz);
-        assert!((tx - 0.002).abs() < 1e-12, "tx should be 0.002 m, got {}", tx);
+        assert!(
+            (tx - 0.002).abs() < 1e-12,
+            "tx should be 0.002 m, got {}",
+            tx
+        );
         assert!(ty.abs() < 1e-12, "ty should be 0, got {}", ty);
         assert!(tz.abs() < 1e-12, "tz should be 0, got {}", tz);
     }
@@ -1233,15 +1251,9 @@ mod tests {
         // Body A: at j_rev, parent defaulted to world.
         let m1 = eval_builtin("body", &[m0, solid_a, j_rev.clone()]);
         // Body B: at j_pris, parent j_rev.
-        let m2 = eval_builtin(
-            "body",
-            &[m1, solid_b, j_pris.clone(), j_rev.clone()],
-        );
+        let m2 = eval_builtin("body", &[m1, solid_b, j_pris.clone(), j_rev.clone()]);
 
-        let bind_rev = eval_builtin(
-            "bind",
-            &[j_rev, Value::angle(std::f64::consts::FRAC_PI_4)],
-        );
+        let bind_rev = eval_builtin("bind", &[j_rev, Value::angle(std::f64::consts::FRAC_PI_4)]);
         let bind_pris = eval_builtin("bind", &[j_pris, Value::length(2.0)]);
 
         let s = eval_builtin("snapshot", &[m2, Value::List(vec![bind_rev, bind_pris])]);
@@ -1286,14 +1298,10 @@ mod tests {
         let half = std::f64::consts::FRAC_PI_8;
         let qw = half.cos();
         let qz = half.sin();
-        let matches_pos = (rw - qw).abs() < 1e-9
-            && rx.abs() < 1e-9
-            && ry.abs() < 1e-9
-            && (rz - qz).abs() < 1e-9;
-        let matches_neg = (rw + qw).abs() < 1e-9
-            && rx.abs() < 1e-9
-            && ry.abs() < 1e-9
-            && (rz + qz).abs() < 1e-9;
+        let matches_pos =
+            (rw - qw).abs() < 1e-9 && rx.abs() < 1e-9 && ry.abs() < 1e-9 && (rz - qz).abs() < 1e-9;
+        let matches_neg =
+            (rw + qw).abs() < 1e-9 && rx.abs() < 1e-9 && ry.abs() < 1e-9 && (rz + qz).abs() < 1e-9;
         assert!(
             matches_pos || matches_neg,
             "body B rotation should be quaternion(R_z(π/4)) = ({}, 0, 0, {}) up to sign, \
@@ -1403,11 +1411,7 @@ mod tests {
             Value::String("kind".to_string()),
             Value::String("error".to_string()),
         );
-        assert!(eval_builtin(
-            "snapshot",
-            &[Value::Map(error_map), Value::List(vec![])]
-        )
-        .is_undef());
+        assert!(eval_builtin("snapshot", &[Value::Map(error_map), Value::List(vec![])]).is_undef());
     }
 
     /// `snapshot(m, non_list)` returns Undef when args[1] is not a
@@ -1418,11 +1422,13 @@ mod tests {
     fn snapshot_non_list_bindings_returns_undef() {
         let m0 = eval_builtin("mechanism", &[]);
         assert!(eval_builtin("snapshot", &[m0.clone(), Value::Real(1.0)]).is_undef());
-        assert!(eval_builtin(
-            "snapshot",
-            &[m0.clone(), Value::Map(std::collections::BTreeMap::new())]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "snapshot",
+                &[m0.clone(), Value::Map(std::collections::BTreeMap::new())]
+            )
+            .is_undef()
+        );
         assert!(eval_builtin("snapshot", &[m0, Value::Undef]).is_undef());
     }
 
@@ -1441,14 +1447,16 @@ mod tests {
         let valid_binding = eval_builtin("bind", &[j.clone(), Value::length(0.002)]);
 
         // Non-Map entry (Real)
-        assert!(eval_builtin(
-            "snapshot",
-            &[
-                m1.clone(),
-                Value::List(vec![valid_binding.clone(), Value::Real(0.5)])
-            ]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "snapshot",
+                &[
+                    m1.clone(),
+                    Value::List(vec![valid_binding.clone(), Value::Real(0.5)])
+                ]
+            )
+            .is_undef()
+        );
 
         // Map with kind != "binding"
         let mut wrong_kind = std::collections::BTreeMap::new();
@@ -1458,11 +1466,13 @@ mod tests {
         );
         wrong_kind.insert(Value::String("joint".to_string()), j.clone());
         wrong_kind.insert(Value::String("value".to_string()), Value::length(0.001));
-        assert!(eval_builtin(
-            "snapshot",
-            &[m1.clone(), Value::List(vec![Value::Map(wrong_kind)])]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "snapshot",
+                &[m1.clone(), Value::List(vec![Value::Map(wrong_kind)])]
+            )
+            .is_undef()
+        );
 
         // Map with kind="binding" but missing `joint` field
         let mut missing_joint = std::collections::BTreeMap::new();
@@ -1471,11 +1481,13 @@ mod tests {
             Value::String("binding".to_string()),
         );
         missing_joint.insert(Value::String("value".to_string()), Value::length(0.001));
-        assert!(eval_builtin(
-            "snapshot",
-            &[m1.clone(), Value::List(vec![Value::Map(missing_joint)])]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "snapshot",
+                &[m1.clone(), Value::List(vec![Value::Map(missing_joint)])]
+            )
+            .is_undef()
+        );
 
         // Map with kind="binding" but missing `value` field
         let mut missing_value = std::collections::BTreeMap::new();
@@ -1484,11 +1496,13 @@ mod tests {
             Value::String("binding".to_string()),
         );
         missing_value.insert(Value::String("joint".to_string()), j);
-        assert!(eval_builtin(
-            "snapshot",
-            &[m1, Value::List(vec![Value::Map(missing_value)])]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "snapshot",
+                &[m1, Value::List(vec![Value::Map(missing_value)])]
+            )
+            .is_undef()
+        );
     }
 
     // ── Errored-mechanism short-circuit ────────────────────────────────────
@@ -1575,14 +1589,8 @@ mod tests {
         );
 
         let m0 = eval_builtin("mechanism", &[]);
-        let m1 = eval_builtin(
-            "body",
-            &[m0, Value::String("a".to_string()), j_neg.clone()],
-        );
-        let m2 = eval_builtin(
-            "body",
-            &[m1, Value::String("b".to_string()), j_pos.clone()],
-        );
+        let m1 = eval_builtin("body", &[m0, Value::String("a".to_string()), j_neg.clone()]);
+        let m2 = eval_builtin("body", &[m1, Value::String("b".to_string()), j_pos.clone()]);
 
         let bind_neg = eval_builtin("bind", &[j_neg.clone(), Value::length(-0.5)]);
         let bind_pos = eval_builtin("bind", &[j_pos.clone(), Value::length(0.5)]);
@@ -1651,11 +1659,31 @@ mod tests {
         // → world translation (-0.5, 0, 0) and identity rotation.
         let result_0 = eval_builtin("transform_of", &[s.clone(), Value::Int(0)]);
         let ((rw0, rx0, ry0, rz0), [tx0, ty0, tz0]) = decompose_transform_for_assert(&result_0);
-        assert!((rw0 - 1.0).abs() < 1e-12, "body 0 rotation w should be 1, got {}", rw0);
-        assert!(rx0.abs() < 1e-12, "body 0 rotation x should be 0, got {}", rx0);
-        assert!(ry0.abs() < 1e-12, "body 0 rotation y should be 0, got {}", ry0);
-        assert!(rz0.abs() < 1e-12, "body 0 rotation z should be 0, got {}", rz0);
-        assert!((tx0 - (-0.5)).abs() < 1e-12, "body 0 tx should be -0.5, got {}", tx0);
+        assert!(
+            (rw0 - 1.0).abs() < 1e-12,
+            "body 0 rotation w should be 1, got {}",
+            rw0
+        );
+        assert!(
+            rx0.abs() < 1e-12,
+            "body 0 rotation x should be 0, got {}",
+            rx0
+        );
+        assert!(
+            ry0.abs() < 1e-12,
+            "body 0 rotation y should be 0, got {}",
+            ry0
+        );
+        assert!(
+            rz0.abs() < 1e-12,
+            "body 0 rotation z should be 0, got {}",
+            rz0
+        );
+        assert!(
+            (tx0 - (-0.5)).abs() < 1e-12,
+            "body 0 tx should be -0.5, got {}",
+            tx0
+        );
         assert!(ty0.abs() < 1e-12, "body 0 ty should be 0, got {}", ty0);
         assert!(tz0.abs() < 1e-12, "body 0 tz should be 0, got {}", tz0);
 
@@ -1663,11 +1691,31 @@ mod tests {
         // → world translation (+0.5, 0, 0) and identity rotation.
         let result_1 = eval_builtin("transform_of", &[s, Value::Int(1)]);
         let ((rw1, rx1, ry1, rz1), [tx1, ty1, tz1]) = decompose_transform_for_assert(&result_1);
-        assert!((rw1 - 1.0).abs() < 1e-12, "body 1 rotation w should be 1, got {}", rw1);
-        assert!(rx1.abs() < 1e-12, "body 1 rotation x should be 0, got {}", rx1);
-        assert!(ry1.abs() < 1e-12, "body 1 rotation y should be 0, got {}", ry1);
-        assert!(rz1.abs() < 1e-12, "body 1 rotation z should be 0, got {}", rz1);
-        assert!((tx1 - 0.5).abs() < 1e-12, "body 1 tx should be 0.5, got {}", tx1);
+        assert!(
+            (rw1 - 1.0).abs() < 1e-12,
+            "body 1 rotation w should be 1, got {}",
+            rw1
+        );
+        assert!(
+            rx1.abs() < 1e-12,
+            "body 1 rotation x should be 0, got {}",
+            rx1
+        );
+        assert!(
+            ry1.abs() < 1e-12,
+            "body 1 rotation y should be 0, got {}",
+            ry1
+        );
+        assert!(
+            rz1.abs() < 1e-12,
+            "body 1 rotation z should be 0, got {}",
+            rz1
+        );
+        assert!(
+            (tx1 - 0.5).abs() < 1e-12,
+            "body 1 tx should be 0.5, got {}",
+            tx1
+        );
         assert!(ty1.abs() < 1e-12, "body 1 ty should be 0, got {}", ty1);
         assert!(tz1.abs() < 1e-12, "body 1 tz should be 0, got {}", tz1);
     }
@@ -1724,21 +1772,17 @@ mod tests {
         // Wrong arity (0, 1, 3 args)
         assert!(eval_builtin("transform_of", &[]).is_undef());
         assert!(eval_builtin("transform_of", std::slice::from_ref(&s)).is_undef());
-        assert!(eval_builtin(
-            "transform_of",
-            &[s.clone(), Value::Int(0), Value::Int(1)]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin("transform_of", &[s.clone(), Value::Int(0), Value::Int(1)]).is_undef()
+        );
         // Non-snapshot first arg
         assert!(eval_builtin("transform_of", &[Value::Real(1.0), Value::Int(0)]).is_undef());
         let m0 = eval_builtin("mechanism", &[]);
         assert!(eval_builtin("transform_of", &[m0, Value::Int(0)]).is_undef());
         // Non-Int second arg: String, Real, world sentinel
-        assert!(eval_builtin(
-            "transform_of",
-            &[s.clone(), Value::String("0".to_string())]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin("transform_of", &[s.clone(), Value::String("0".to_string())]).is_undef()
+        );
         assert!(eval_builtin("transform_of", &[s.clone(), Value::Real(0.0)]).is_undef());
         assert!(eval_builtin("transform_of", &[s, eval_builtin("world", &[])]).is_undef());
     }
@@ -1794,10 +1838,18 @@ mod tests {
         let [minx, miny, minz] = decompose_point3_length_for_assert(min_v);
         let [maxx, maxy, maxz] = decompose_point3_length_for_assert(max_v);
 
-        assert!((minx - (-0.5)).abs() < 1e-12, "min.x should be -0.5, got {}", minx);
+        assert!(
+            (minx - (-0.5)).abs() < 1e-12,
+            "min.x should be -0.5, got {}",
+            minx
+        );
         assert!(miny.abs() < 1e-12, "min.y should be 0, got {}", miny);
         assert!(minz.abs() < 1e-12, "min.z should be 0, got {}", minz);
-        assert!((maxx - 0.5).abs() < 1e-12, "max.x should be 0.5, got {}", maxx);
+        assert!(
+            (maxx - 0.5).abs() < 1e-12,
+            "max.x should be 0.5, got {}",
+            maxx
+        );
         assert!(maxy.abs() < 1e-12, "max.y should be 0, got {}", maxy);
         assert!(maxz.abs() < 1e-12, "max.z should be 0, got {}", maxz);
 
@@ -1818,7 +1870,10 @@ mod tests {
                             i
                         );
                     }
-                    other => panic!("{}: component[{}] should be Value::Scalar, got {:?}", label, i, other),
+                    other => panic!(
+                        "{}: component[{}] should be Value::Scalar, got {:?}",
+                        label, i, other
+                    ),
                 }
             }
         };
@@ -1892,7 +1947,10 @@ mod tests {
                         i
                     );
                 }
-                other => panic!("COM component[{}] should be Value::Scalar, got {:?}", i, other),
+                other => panic!(
+                    "COM component[{}] should be Value::Scalar, got {:?}",
+                    i, other
+                ),
             }
         }
     }
@@ -1937,9 +1995,21 @@ mod tests {
             &[s, Value::Map(std::collections::BTreeMap::new())],
         );
         let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
-        assert!(cx.abs() < 1e-12, "COM.x with empty densities should be 0, got {}", cx);
-        assert!(cy.abs() < 1e-12, "COM.y with empty densities should be 0, got {}", cy);
-        assert!(cz.abs() < 1e-12, "COM.z with empty densities should be 0, got {}", cz);
+        assert!(
+            cx.abs() < 1e-12,
+            "COM.x with empty densities should be 0, got {}",
+            cx
+        );
+        assert!(
+            cy.abs() < 1e-12,
+            "COM.y with empty densities should be 0, got {}",
+            cy
+        );
+        assert!(
+            cz.abs() < 1e-12,
+            "COM.z with empty densities should be 0, got {}",
+            cz
+        );
     }
 
     /// `center_of_mass(s, Value::Undef)` is treated as the uniform
@@ -1951,9 +2021,21 @@ mod tests {
         let (s, _, _) = make_two_body_snapshot();
         let result = eval_builtin("center_of_mass", &[s, Value::Undef]);
         let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
-        assert!(cx.abs() < 1e-12, "COM.x with Undef densities should be 0, got {}", cx);
-        assert!(cy.abs() < 1e-12, "COM.y with Undef densities should be 0, got {}", cy);
-        assert!(cz.abs() < 1e-12, "COM.z with Undef densities should be 0, got {}", cz);
+        assert!(
+            cx.abs() < 1e-12,
+            "COM.x with Undef densities should be 0, got {}",
+            cx
+        );
+        assert!(
+            cy.abs() < 1e-12,
+            "COM.y with Undef densities should be 0, got {}",
+            cy
+        );
+        assert!(
+            cz.abs() < 1e-12,
+            "COM.z with Undef densities should be 0, got {}",
+            cz
+        );
     }
 
     // ── center_of_mass with per-body density Map ──────────────────────────
@@ -1993,14 +2075,8 @@ mod tests {
         );
 
         let m0 = eval_builtin("mechanism", &[]);
-        let m1 = eval_builtin(
-            "body",
-            &[m0, Value::String("a".to_string()), j_neg.clone()],
-        );
-        let m2 = eval_builtin(
-            "body",
-            &[m1, Value::String("b".to_string()), j_pos.clone()],
-        );
+        let m1 = eval_builtin("body", &[m0, Value::String("a".to_string()), j_neg.clone()]);
+        let m2 = eval_builtin("body", &[m1, Value::String("b".to_string()), j_pos.clone()]);
 
         let bind_neg = eval_builtin("bind", &[j_neg, Value::length(-1.0)]);
         let bind_pos = eval_builtin("bind", &[j_pos, Value::length(1.0)]);
@@ -2058,11 +2134,9 @@ mod tests {
         // List
         assert!(eval_builtin("center_of_mass", &[s.clone(), Value::List(vec![])]).is_undef());
         // String
-        assert!(eval_builtin(
-            "center_of_mass",
-            &[s, Value::String("uniform".to_string())]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin("center_of_mass", &[s, Value::String("uniform".to_string())]).is_undef()
+        );
     }
 
     /// `center_of_mass(s, {Int(0): String(...)})`: a non-numeric density
@@ -2100,11 +2174,9 @@ mod tests {
         let (s, _, _) = make_two_body_snapshot();
         // Wrong arity (0, 3 args)
         assert!(eval_builtin("center_of_mass", &[]).is_undef());
-        assert!(eval_builtin(
-            "center_of_mass",
-            &[s.clone(), Value::Undef, Value::Undef]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin("center_of_mass", &[s.clone(), Value::Undef, Value::Undef]).is_undef()
+        );
         // Non-snapshot first arg: Real, world sentinel, mechanism
         assert!(eval_builtin("center_of_mass", &[Value::Real(1.0)]).is_undef());
         assert!(eval_builtin("center_of_mass", &[eval_builtin("world", &[])]).is_undef());
@@ -2256,23 +2328,43 @@ mod tests {
         // Body A: at=jA, parent=world.  joint_parents = {jA: world}.
         let m1 = eval_builtin(
             "body",
-            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_a.clone(),
+                world.clone(),
+            ],
         );
         // Body B: at=jB, parent=world.  joint_parents = {jA: world, jB: world}.
         let m2 = eval_builtin(
             "body",
-            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_b.clone(),
+                world.clone(),
+            ],
         );
         // Body C: at=jX, parent=jA.  joint_parents = {jA: world, jB: world, jX: jA}.
         let m3 = eval_builtin(
             "body",
-            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
         );
         // Body D: at=jX, parent=jB.  Closing edge — jX is already mapped to jA.
         // loop_closures records path_a=[world, jA, jX], path_b=[world, jB, jX].
         let m4 = eval_builtin(
             "body",
-            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+            &[
+                m3,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
         );
 
         // Sanity: m4 must be a closed-chain mechanism with non-empty loop_closures.
@@ -2415,19 +2507,39 @@ mod tests {
         let m0 = eval_builtin("mechanism", &[]);
         let m1 = eval_builtin(
             "body",
-            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_a.clone(),
+                world.clone(),
+            ],
         );
         let m2 = eval_builtin(
             "body",
-            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_b.clone(),
+                world.clone(),
+            ],
         );
         let m3 = eval_builtin(
             "body",
-            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
         );
         let m4 = eval_builtin(
             "body",
-            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+            &[
+                m3,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
         );
 
         // Bind jA = 0.5m (driver) AND jX = 0 rad (pin the shared revolute
@@ -2494,7 +2606,10 @@ mod tests {
     fn snapshot_records_empty_free_values_for_open_chain() {
         let m0 = eval_builtin("mechanism", &[]);
         let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        let m1 = eval_builtin("body", &[m0, Value::String("solidA".to_string()), j.clone()]);
+        let m1 = eval_builtin(
+            "body",
+            &[m0, Value::String("solidA".to_string()), j.clone()],
+        );
 
         let bind = eval_builtin("bind", &[j, Value::length(0.002)]);
         let s = eval_builtin("snapshot", &[m1, Value::List(vec![bind])]);
@@ -2504,9 +2619,9 @@ mod tests {
             other => panic!("expected Snapshot Map, got {:?}", other),
         };
 
-        let free_values = smap
-            .get(&Value::String("free_values".to_string()))
-            .expect("Snapshot Map must carry a free_values field after step-6 (even for open-chain)");
+        let free_values = smap.get(&Value::String("free_values".to_string())).expect(
+            "Snapshot Map must carry a free_values field after step-6 (even for open-chain)",
+        );
         assert_eq!(
             free_values,
             &Value::List(vec![]),
@@ -2552,19 +2667,39 @@ mod tests {
         let m0 = eval_builtin("mechanism", &[]);
         let m1 = eval_builtin(
             "body",
-            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_a.clone(),
+                world.clone(),
+            ],
         );
         let m2 = eval_builtin(
             "body",
-            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_b.clone(),
+                world.clone(),
+            ],
         );
         let m3 = eval_builtin(
             "body",
-            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
         );
         let m4 = eval_builtin(
             "body",
-            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+            &[
+                m3,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
         );
 
         let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
@@ -2690,19 +2825,39 @@ mod tests {
         let m0 = eval_builtin("mechanism", &[]);
         let m1 = eval_builtin(
             "body",
-            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_a.clone(),
+                world.clone(),
+            ],
         );
         let m2 = eval_builtin(
             "body",
-            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_b.clone(),
+                world.clone(),
+            ],
         );
         let m3 = eval_builtin(
             "body",
-            &[m2, Value::String("solidC".to_string()), j_x.clone(), j_a.clone()],
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
         );
         let m4 = eval_builtin(
             "body",
-            &[m3, Value::String("solidD".to_string()), j_x.clone(), j_b.clone()],
+            &[
+                m3,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
         );
 
         let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
@@ -2711,10 +2866,7 @@ mod tests {
 
         // Pass an empty outer List as prev_free_values — mismatches the 1
         // loop_closures record.  Result must be Undef.
-        let s = eval_builtin(
-            "snapshot",
-            &[m4, bindings, Value::List(vec![])],
-        );
+        let s = eval_builtin("snapshot", &[m4, bindings, Value::List(vec![])]);
         assert!(
             s.is_undef(),
             "snapshot with mismatched-length warm-start arg must return Undef, got {:?}",

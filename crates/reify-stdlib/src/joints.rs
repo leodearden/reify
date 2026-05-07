@@ -154,7 +154,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             let mut m = BTreeMap::new();
-            m.insert(Value::String("kind".to_string()), Value::String("fixed".to_string()));
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String("fixed".to_string()),
+            );
             Value::Map(m)
         }
         // `transform_at(joint, motion_var?)` — evaluate a joint's rigid-body Transform.
@@ -218,7 +221,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     // scalar so that upstream type errors (e.g. a String accidentally
                     // reaching this call) propagate as Undef instead of being absorbed
                     // into a well-formed identity Transform.
-                    if !matches!(&args[1], Value::Real(_) | Value::Int(_) | Value::Scalar { .. }) {
+                    if !matches!(
+                        &args[1],
+                        Value::Real(_) | Value::Int(_) | Value::Scalar { .. }
+                    ) {
                         return Some(Value::Undef);
                     }
                     fixed_identity_transform()
@@ -261,14 +267,15 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     let [ux, uy, uz] = unit_x;
                     let [vx, vy, vz] = unit_y;
                     // Plane normal n = unit_x × unit_y (cross product).
-                    let (nx, ny, nz) = (
-                        uy * vz - uz * vy,
-                        uz * vx - ux * vz,
-                        ux * vy - uy * vx,
-                    );
+                    let (nx, ny, nz) = (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
                     // T_x: pure translation x * unit_axis_x
                     let t_x = Value::Transform {
-                        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                        rotation: Box::new(Value::Orientation {
+                            w: 1.0,
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        }),
                         translation: Box::new(Value::Vector(vec![
                             Value::length(x * ux),
                             Value::length(x * uy),
@@ -277,7 +284,12 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     };
                     // T_y: pure translation y * unit_axis_y
                     let t_y = Value::Transform {
-                        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                        rotation: Box::new(Value::Orientation {
+                            w: 1.0,
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        }),
                         translation: Box::new(Value::Vector(vec![
                             Value::length(y * vx),
                             Value::length(y * vy),
@@ -540,7 +552,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             let ratio = lead_si / (2.0 * std::f64::consts::PI);
             // Invariant: length_input rejects non-finite leads, so ratio is finite by
             // construction. assert! preserves this defense-in-depth in release builds.
-            assert!(ratio.is_finite(), "screw: ratio must be finite — length_input rejects non-finite leads");
+            assert!(
+                ratio.is_finite(),
+                "screw: ratio must be finite — length_input rejects non-finite leads"
+            );
             // Delegate to couple() — parent validation and Map layout come from there.
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
@@ -576,7 +591,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             let ratio = -(teeth_b as f64) / (teeth_a as f64);
             // Both teeth counts are strictly positive finite integers, so ratio is always finite
             // (i64-to-f64 is exact up to 2^53; division of two finite non-zero f64s is finite).
-            assert!(ratio.is_finite(), "gear: ratio must be finite — teeth_a and teeth_b are validated positive Ints");
+            assert!(
+                ratio.is_finite(),
+                "gear: ratio must be finite — teeth_a and teeth_b are validated positive Ints"
+            );
             // Delegate to couple() — parent validation and Map layout come from there.
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
@@ -607,7 +625,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             let ratio = pitch_radius_si;
             // Invariant: length_input rejects non-finite pitch radii, so ratio is finite by
             // construction. assert! preserves this defense-in-depth in release builds.
-            assert!(ratio.is_finite(), "rack_and_pinion: ratio must be finite — length_input rejects non-finite pitch_radius");
+            assert!(
+                ratio.is_finite(),
+                "rack_and_pinion: ratio must be finite — length_input rejects non-finite pitch_radius"
+            );
             // Delegate to couple() — parent validation and Map layout come from there.
             crate::eval_builtin("couple", &[args[0].clone(), Value::Real(ratio)])
         }
@@ -622,11 +643,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // preserves the original value so callers can inspect what was
             // passed to `prismatic`/`revolute`.
             match &args[0] {
-                Value::Map(m) => {
-                    m.get(&Value::String("axis".to_string()))
-                        .cloned()
-                        .unwrap_or(Value::Undef)
-                }
+                Value::Map(m) => m
+                    .get(&Value::String("axis".to_string()))
+                    .cloned()
+                    .unwrap_or(Value::Undef),
                 _ => Value::Undef,
             }
         }
@@ -635,11 +655,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             match &args[0] {
-                Value::Map(m) => {
-                    m.get(&Value::String("range".to_string()))
-                        .cloned()
-                        .unwrap_or(Value::Undef)
-                }
+                Value::Map(m) => m
+                    .get(&Value::String("range".to_string()))
+                    .cloned()
+                    .unwrap_or(Value::Undef),
                 _ => Value::Undef,
             }
         }
@@ -650,11 +669,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             match &args[0] {
-                Value::Map(m) => {
-                    m.get(&Value::String("ratio".to_string()))
-                        .cloned()
-                        .unwrap_or(Value::Undef)
-                }
+                Value::Map(m) => m
+                    .get(&Value::String("ratio".to_string()))
+                    .cloned()
+                    .unwrap_or(Value::Undef),
                 _ => Value::Undef,
             }
         }
@@ -665,11 +683,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             match &args[0] {
-                Value::Map(m) => {
-                    m.get(&Value::String("offset".to_string()))
-                        .cloned()
-                        .unwrap_or(Value::Undef)
-                }
+                Value::Map(m) => m
+                    .get(&Value::String("offset".to_string()))
+                    .cloned()
+                    .unwrap_or(Value::Undef),
                 _ => Value::Undef,
             }
         }
@@ -820,8 +837,7 @@ fn joint_jacobian_value(value: &Value) -> Value {
             // construction, but a hand-built Map could carry it. Mirrors
             // `transform_at`'s parent-kind validation.
             match parent_map.get(&Value::String("kind".to_string())) {
-                Some(Value::String(s))
-                    if matches!(s.as_str(), "prismatic" | "revolute") => {}
+                Some(Value::String(s)) if matches!(s.as_str(), "prismatic" | "revolute") => {}
                 _ => return Value::Undef,
             }
             // Recurse to the parent's Jacobian (always single-DOF at depth 1).
@@ -844,7 +860,12 @@ fn joint_jacobian_value(value: &Value) -> Value {
 /// `make_planar` / `make_spherical` helper pattern in this file.
 fn fixed_identity_transform() -> Value {
     Value::Transform {
-        rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+        rotation: Box::new(Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
         translation: Box::new(Value::Vector(vec![
             Value::length(0.0),
             Value::length(0.0),
@@ -924,7 +945,10 @@ fn scale_jacobian(jac: &Value, ratio: f64) -> Value {
 /// Returns `None` for any other variant (wrong dimension, non-finite, NaN, Inf).
 fn ratio_input(v: &Value) -> Option<f64> {
     match v {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             if *dimension == DimensionVector::DIMENSIONLESS && si_value.is_finite() {
                 Some(*si_value)
             } else {
@@ -946,7 +970,10 @@ fn ratio_input(v: &Value) -> Option<f64> {
 /// Returns `None` for any other variant (wrong dimension, non-finite).
 fn length_input(v: &Value) -> Option<f64> {
     match v {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             if *dimension == DimensionVector::LENGTH && si_value.is_finite() {
                 Some(*si_value)
             } else {
@@ -1121,7 +1148,15 @@ fn validate_range(value: &Value, expected_dim: DimensionVector) -> Option<()> {
 /// because the f64-per-joint signature of `chain_transform` /
 /// `chain_jacobian_fd` cannot represent multi-DOF motion variables; see
 /// `loop_closure::MULTI_DOF_KINDS`.
-pub(crate) const JOINT_KINDS: &[&str] = &["prismatic", "revolute", "coupling", "fixed", "planar", "spherical", "cylindrical"];
+pub(crate) const JOINT_KINDS: &[&str] = &[
+    "prismatic",
+    "revolute",
+    "coupling",
+    "fixed",
+    "planar",
+    "spherical",
+    "cylindrical",
+];
 
 /// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
 /// the strings in [`JOINT_KINDS`]. Used by `mechanism::body()` for
@@ -1148,7 +1183,10 @@ pub(crate) fn is_joint_value(v: &Value) -> bool {
 /// extracted to f64 by the caller).
 fn make_coupling(parent: Value, ratio: Value, offset: Value) -> Value {
     let mut m = BTreeMap::new();
-    m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("coupling".to_string()),
+    );
     m.insert(Value::String("offset".to_string()), offset);
     m.insert(Value::String("parent".to_string()), parent);
     m.insert(Value::String("ratio".to_string()), ratio);
@@ -1161,9 +1199,18 @@ fn make_coupling(parent: Value, ratio: Value, offset: Value) -> Value {
 /// Keys are in BTreeMap alphabetical order.  Raw (potentially unnormalised) axes
 /// are stored — normalisation happens at `transform_at` time, matching the
 /// prismatic/revolute `make_joint` precedent.
-fn make_planar(axis_x: Value, axis_y: Value, range_x: Value, range_y: Value, range_theta: Value) -> Value {
+fn make_planar(
+    axis_x: Value,
+    axis_y: Value,
+    range_x: Value,
+    range_y: Value,
+    range_theta: Value,
+) -> Value {
     let mut m = BTreeMap::new();
-    m.insert(Value::String("kind".to_string()), Value::String("planar".to_string()));
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("planar".to_string()),
+    );
     m.insert(Value::String("axis_x".to_string()), axis_x);
     m.insert(Value::String("axis_y".to_string()), axis_y);
     m.insert(Value::String("range_x".to_string()), range_x);
@@ -1182,7 +1229,10 @@ fn make_planar(axis_x: Value, axis_y: Value, range_x: Value, range_y: Value, ran
 /// half-angle) regardless of the axis direction.
 fn make_spherical(range_angle: Value) -> Value {
     let mut m = BTreeMap::new();
-    m.insert(Value::String("kind".to_string()), Value::String("spherical".to_string()));
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("spherical".to_string()),
+    );
     m.insert(Value::String("range_angle".to_string()), range_angle);
     Value::Map(m)
 }
@@ -1201,9 +1251,15 @@ fn make_spherical(range_angle: Value) -> Value {
 /// children) avoids axis duplication and keeps `joint_axis` working unchanged.
 fn make_cylindrical_joint(axis: Value, translation_range: Value, rotation_range: Value) -> Value {
     let mut m = BTreeMap::new();
-    m.insert(Value::String("kind".to_string()), Value::String("cylindrical".to_string()));
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("cylindrical".to_string()),
+    );
     m.insert(Value::String("axis".to_string()), axis);
-    m.insert(Value::String("translation_range".to_string()), translation_range);
+    m.insert(
+        Value::String("translation_range".to_string()),
+        translation_range,
+    );
     m.insert(Value::String("rotation_range".to_string()), rotation_range);
     Value::Map(m)
 }
@@ -1212,7 +1268,10 @@ fn make_cylindrical_joint(axis: Value, translation_range: Value, rotation_range:
 /// `"kind"`, `"axis"`, `"range"`.
 fn make_joint(kind: &str, axis: Value, range: Value) -> Value {
     let mut m = BTreeMap::new();
-    m.insert(Value::String("kind".to_string()), Value::String(kind.to_string()));
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String(kind.to_string()),
+    );
     m.insert(Value::String("axis".to_string()), axis);
     m.insert(Value::String("range".to_string()), range);
     Value::Map(m)
@@ -1319,10 +1378,13 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 
 #[cfg(test)]
 mod tests {
+    use super::{JOINT_KINDS, is_joint_value};
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint, spherical_joint};
+    use crate::test_fixtures::{
+        angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
+        length_range_0_to_1m, planar_xy_joint, spherical_joint,
+    };
     use reify_types::{DimensionVector, Value};
-    use super::{is_joint_value, JOINT_KINDS};
 
     // ── prismatic constructor: happy path ────────────────────────────────────
 
@@ -1620,7 +1682,8 @@ mod tests {
         let result = eval_builtin("prismatic", &[axis_x_unit(), inverted]);
         assert!(
             matches!(result, Value::Map(_)),
-            "inverted-range prismatic should construct successfully, got {:?}", result
+            "inverted-range prismatic should construct successfully, got {:?}",
+            result
         );
     }
 
@@ -1653,27 +1716,69 @@ mod tests {
     }
 
     /// Assert two `Value::Transform` are component-wise within tolerance.
-    fn assert_transform_approx(result: &Value, exp_rot: (f64, f64, f64, f64), exp_trans: [f64; 3], tol: f64, label: &str) {
+    fn assert_transform_approx(
+        result: &Value,
+        exp_rot: (f64, f64, f64, f64),
+        exp_trans: [f64; 3],
+        tol: f64,
+        label: &str,
+    ) {
         let (rot, trans) = match result {
-            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            Value::Transform {
+                rotation,
+                translation,
+            } => (rotation.as_ref(), translation.as_ref()),
             other => panic!("{}: expected Transform, got {:?}", label, other),
         };
         let (w, x, y, z) = match rot {
             Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
             other => panic!("{}: expected Orientation, got {:?}", label, other),
         };
-        assert!((w - exp_rot.0).abs() < tol, "{}: rotation.w expected {} got {}", label, exp_rot.0, w);
-        assert!((x - exp_rot.1).abs() < tol, "{}: rotation.x expected {} got {}", label, exp_rot.1, x);
-        assert!((y - exp_rot.2).abs() < tol, "{}: rotation.y expected {} got {}", label, exp_rot.2, y);
-        assert!((z - exp_rot.3).abs() < tol, "{}: rotation.z expected {} got {}", label, exp_rot.3, z);
+        assert!(
+            (w - exp_rot.0).abs() < tol,
+            "{}: rotation.w expected {} got {}",
+            label,
+            exp_rot.0,
+            w
+        );
+        assert!(
+            (x - exp_rot.1).abs() < tol,
+            "{}: rotation.x expected {} got {}",
+            label,
+            exp_rot.1,
+            x
+        );
+        assert!(
+            (y - exp_rot.2).abs() < tol,
+            "{}: rotation.y expected {} got {}",
+            label,
+            exp_rot.2,
+            y
+        );
+        assert!(
+            (z - exp_rot.3).abs() < tol,
+            "{}: rotation.z expected {} got {}",
+            label,
+            exp_rot.3,
+            z
+        );
 
         let comps = match trans {
             Value::Vector(v) if v.len() == 3 => v,
             other => panic!("{}: expected Vector(3), got {:?}", label, other),
         };
         for (i, (comp, &exp)) in comps.iter().zip(exp_trans.iter()).enumerate() {
-            let val = comp.as_f64().unwrap_or_else(|| panic!("{}: translation[{}] not numeric", label, i));
-            assert!((val - exp).abs() < tol, "{}: translation[{}] expected {} got {}", label, i, exp, val);
+            let val = comp
+                .as_f64()
+                .unwrap_or_else(|| panic!("{}: translation[{}] not numeric", label, i));
+            assert!(
+                (val - exp).abs() < tol,
+                "{}: translation[{}] expected {} got {}",
+                label,
+                i,
+                exp,
+                val
+            );
         }
     }
 
@@ -1683,32 +1788,52 @@ mod tests {
     fn prismatic_transform_at_x_axis_5m() {
         let joint = prismatic_x_joint();
         let result = eval_builtin("transform_at", &[joint, Value::length(5.0)]);
-        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [5.0, 0.0, 0.0], 1e-12,
-            "prismatic X, 5m");
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [5.0, 0.0, 0.0],
+            1e-12,
+            "prismatic X, 5m",
+        );
     }
 
     #[test]
     fn prismatic_transform_at_y_axis_3m() {
         let joint = prismatic_y_joint();
         let result = eval_builtin("transform_at", &[joint, Value::length(3.0)]);
-        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.0, 3.0, 0.0], 1e-12,
-            "prismatic Y, 3m");
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 3.0, 0.0],
+            1e-12,
+            "prismatic Y, 3m",
+        );
     }
 
     #[test]
     fn prismatic_transform_at_z_axis_neg2m() {
         let joint = prismatic_z_joint();
         let result = eval_builtin("transform_at", &[joint, Value::length(-2.0)]);
-        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.0, 0.0, -2.0], 1e-12,
-            "prismatic Z, -2m");
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, -2.0],
+            1e-12,
+            "prismatic Z, -2m",
+        );
     }
 
     #[test]
     fn prismatic_transform_at_zero_value() {
         let joint = prismatic_x_joint();
         let result = eval_builtin("transform_at", &[joint, Value::length(0.0)]);
-        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.0, 0.0, 0.0], 1e-12,
-            "prismatic X, 0m");
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "prismatic X, 0m",
+        );
     }
 
     #[test]
@@ -1728,8 +1853,13 @@ mod tests {
         };
         let joint = eval_builtin("prismatic", &[axis, range]);
         let result = eval_builtin("transform_at", &[joint, Value::length(sq2)]);
-        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [1.0, 1.0, 0.0], 1e-12,
-            "prismatic diagonal [1,1,0]/√2, √2 m");
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [1.0, 1.0, 0.0],
+            1e-12,
+            "prismatic diagonal [1,1,0]/√2, √2 m",
+        );
     }
 
     #[test]
@@ -1744,8 +1874,13 @@ mod tests {
         };
         let joint = eval_builtin("prismatic", &[axis, range]);
         let result = eval_builtin("transform_at", &[joint, Value::length(1.0)]);
-        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [1.0, 0.0, 0.0], 1e-12,
-            "prismatic unnormalized [2,0,0], 1m");
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [1.0, 0.0, 0.0],
+            1e-12,
+            "prismatic unnormalized [2,0,0], 1m",
+        );
     }
 
     #[test]
@@ -1753,8 +1888,13 @@ mod tests {
         // bare Value::Real(0.5) accepted as 0.5 metres
         let joint = prismatic_x_joint();
         let result = eval_builtin("transform_at", &[joint, Value::Real(0.5)]);
-        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.5, 0.0, 0.0], 1e-12,
-            "prismatic X, bare Real(0.5)");
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.5, 0.0, 0.0],
+            1e-12,
+            "prismatic X, bare Real(0.5)",
+        );
     }
 
     // ── transform_at on Revolute: helpers ────────────────────────────────────
@@ -1795,8 +1935,13 @@ mod tests {
         let result = eval_builtin("transform_at", &[joint, Value::angle(pi / 2.0)]);
         let cos = (pi / 4.0).cos();
         let sin = (pi / 4.0).sin();
-        assert_transform_approx(&result, (cos, 0.0, 0.0, sin), [0.0, 0.0, 0.0], 1e-12,
-            "revolute Z, π/2");
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, 0.0, sin),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "revolute Z, π/2",
+        );
     }
 
     #[test]
@@ -1805,8 +1950,13 @@ mod tests {
         let pi = std::f64::consts::PI;
         let joint = revolute_x_joint();
         let result = eval_builtin("transform_at", &[joint, Value::angle(pi)]);
-        assert_transform_approx(&result, (0.0, 1.0, 0.0, 0.0), [0.0, 0.0, 0.0], 1e-12,
-            "revolute X, π");
+        assert_transform_approx(
+            &result,
+            (0.0, 1.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "revolute X, π",
+        );
     }
 
     #[test]
@@ -1817,8 +1967,13 @@ mod tests {
         let result = eval_builtin("transform_at", &[joint, Value::angle(pi / 2.0)]);
         let cos = (pi / 4.0).cos();
         let sin = (pi / 4.0).sin();
-        assert_transform_approx(&result, (cos, 0.0, sin, 0.0), [0.0, 0.0, 0.0], 1e-12,
-            "revolute Y, π/2");
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, sin, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "revolute Y, π/2",
+        );
     }
 
     #[test]
@@ -1826,8 +1981,13 @@ mod tests {
         // angle = 0 → identity rotation
         let joint = revolute_z_joint();
         let result = eval_builtin("transform_at", &[joint, Value::angle(0.0)]);
-        assert_transform_approx(&result, (1.0, 0.0, 0.0, 0.0), [0.0, 0.0, 0.0], 1e-12,
-            "revolute Z, 0");
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "revolute Z, 0",
+        );
     }
 
     #[test]
@@ -1838,8 +1998,13 @@ mod tests {
         let result = eval_builtin("transform_at", &[joint, Value::Real(pi / 2.0)]);
         let cos = (pi / 4.0).cos();
         let sin = (pi / 4.0).sin();
-        assert_transform_approx(&result, (cos, 0.0, 0.0, sin), [0.0, 0.0, 0.0], 1e-12,
-            "revolute Z, bare Real(π/2)");
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, 0.0, sin),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "revolute Z, bare Real(π/2)",
+        );
     }
 
     #[test]
@@ -1857,8 +2022,13 @@ mod tests {
         let result = eval_builtin("transform_at", &[joint, Value::angle(pi / 2.0)]);
         let cos = (pi / 4.0).cos();
         let sin = (pi / 4.0).sin();
-        assert_transform_approx(&result, (cos, 0.0, 0.0, sin), [0.0, 0.0, 0.0], 1e-12,
-            "revolute unnormalized [0,0,2], π/2");
+        assert_transform_approx(
+            &result,
+            (cos, 0.0, 0.0, sin),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "revolute unnormalized [0,0,2], π/2",
+        );
     }
 
     #[test]
@@ -1877,9 +2047,15 @@ mod tests {
             other => panic!("expected Vector(3), got {:?}", other),
         };
         for (i, comp) in comps.iter().enumerate() {
-            let val = comp.as_f64().expect("translation component should be numeric");
-            assert!((val - 0.0).abs() < 1e-12,
-                "revolute translation[{}] should be 0, got {}", i, val);
+            let val = comp
+                .as_f64()
+                .expect("translation component should be numeric");
+            assert!(
+                (val - 0.0).abs() < 1e-12,
+                "revolute translation[{}] should be 0, got {}",
+                i,
+                val
+            );
         }
     }
 
@@ -1909,7 +2085,10 @@ mod tests {
     fn transform_at_revolute_with_mass_value_returns_undef() {
         use reify_types::DimensionVector;
         let joint = revolute_z_joint();
-        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        let mass = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
         assert!(
             eval_builtin("transform_at", &[joint, mass]).is_undef(),
             "Mass Scalar to Revolute should return Undef"
@@ -1939,7 +2118,10 @@ mod tests {
     fn transform_at_map_with_unknown_kind_returns_undef() {
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("sliding".to_string()),
+        );
         m.insert(Value::String("axis".to_string()), axis_x_unit());
         m.insert(Value::String("range".to_string()), length_range_0_to_1m());
         assert!(
@@ -1987,7 +2169,11 @@ mod tests {
     fn transform_at_three_args_returns_undef() {
         let joint = prismatic_x_joint();
         assert!(
-            eval_builtin("transform_at", &[joint, Value::length(1.0), Value::Real(0.0)]).is_undef(),
+            eval_builtin(
+                "transform_at",
+                &[joint, Value::length(1.0), Value::Real(0.0)]
+            )
+            .is_undef(),
             "3 args should return Undef"
         );
     }
@@ -2008,11 +2194,10 @@ mod tests {
     #[test]
     fn joint_ratio_prismatic_coupling_3arg_returns_ratio() {
         // 3-arg prismatic coupling: ratio = 2.0
-        let c = eval_builtin("couple", &[
-            prismatic_x_joint(),
-            Value::Real(2.0),
-            Value::length(0.5),
-        ]);
+        let c = eval_builtin(
+            "couple",
+            &[prismatic_x_joint(), Value::Real(2.0), Value::length(0.5)],
+        );
         assert_eq!(
             eval_builtin("joint_ratio", &[c]),
             Value::Real(2.0),
@@ -2033,11 +2218,10 @@ mod tests {
 
     #[test]
     fn joint_offset_prismatic_coupling_explicit_returns_stored_offset() {
-        let c = eval_builtin("couple", &[
-            prismatic_x_joint(),
-            Value::Real(1.0),
-            Value::length(0.5),
-        ]);
+        let c = eval_builtin(
+            "couple",
+            &[prismatic_x_joint(), Value::Real(1.0), Value::length(0.5)],
+        );
         assert_eq!(
             eval_builtin("joint_offset", &[c]),
             Value::length(0.5),
@@ -2048,11 +2232,10 @@ mod tests {
     #[test]
     fn joint_offset_revolute_coupling_returns_angle_offset() {
         let pi = std::f64::consts::PI;
-        let c = eval_builtin("couple", &[
-            revolute_z_joint(),
-            Value::Real(1.0),
-            Value::angle(pi / 4.0),
-        ]);
+        let c = eval_builtin(
+            "couple",
+            &[revolute_z_joint(), Value::Real(1.0), Value::angle(pi / 4.0)],
+        );
         assert_eq!(
             eval_builtin("joint_offset", &[c]),
             Value::angle(pi / 4.0),
@@ -2209,7 +2392,10 @@ mod tests {
         // 3-arg form: explicit offset stored as provided
         let parent = prismatic_x_joint();
         let offset = Value::length(0.5);
-        let result = eval_builtin("couple", &[parent.clone(), Value::Real(2.0), offset.clone()]);
+        let result = eval_builtin(
+            "couple",
+            &[parent.clone(), Value::Real(2.0), offset.clone()],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),
@@ -2273,7 +2459,10 @@ mod tests {
         let pi = std::f64::consts::PI;
         let parent = revolute_z_joint();
         let offset = Value::angle(pi / 4.0);
-        let result = eval_builtin("couple", &[parent.clone(), Value::Real(0.5), offset.clone()]);
+        let result = eval_builtin(
+            "couple",
+            &[parent.clone(), Value::Real(0.5), offset.clone()],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),
@@ -2304,7 +2493,10 @@ mod tests {
 
     #[test]
     fn couple_zero_args_returns_undef() {
-        assert!(eval_builtin("couple", &[]).is_undef(), "0 args should return Undef");
+        assert!(
+            eval_builtin("couple", &[]).is_undef(),
+            "0 args should return Undef"
+        );
     }
 
     #[test]
@@ -2318,12 +2510,16 @@ mod tests {
     #[test]
     fn couple_four_args_returns_undef() {
         assert!(
-            eval_builtin("couple", &[
-                prismatic_x_joint(),
-                Value::Real(1.0),
-                Value::length(0.0),
-                Value::Real(0.0),
-            ]).is_undef(),
+            eval_builtin(
+                "couple",
+                &[
+                    prismatic_x_joint(),
+                    Value::Real(1.0),
+                    Value::length(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
             "4 args should return Undef"
         );
     }
@@ -2361,7 +2557,10 @@ mod tests {
     fn couple_unknown_parent_kind_returns_undef() {
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("sliding".to_string()),
+        );
         m.insert(Value::String("axis".to_string()), axis_x_unit());
         assert!(
             eval_builtin("couple", &[Value::Map(m), Value::Real(1.0)]).is_undef(),
@@ -2372,7 +2571,11 @@ mod tests {
     #[test]
     fn couple_string_ratio_returns_undef() {
         assert!(
-            eval_builtin("couple", &[prismatic_x_joint(), Value::String("bad".to_string())]).is_undef(),
+            eval_builtin(
+                "couple",
+                &[prismatic_x_joint(), Value::String("bad".to_string())]
+            )
+            .is_undef(),
             "String ratio should return Undef"
         );
     }
@@ -2406,9 +2609,16 @@ mod tests {
     #[test]
     fn couple_prismatic_wrong_offset_dim_returns_undef() {
         use reify_types::DimensionVector;
-        let mass_offset = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        let mass_offset = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
         assert!(
-            eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0), mass_offset]).is_undef(),
+            eval_builtin(
+                "couple",
+                &[prismatic_x_joint(), Value::Real(1.0), mass_offset]
+            )
+            .is_undef(),
             "MASS offset for prismatic parent should return Undef"
         );
     }
@@ -2417,7 +2627,11 @@ mod tests {
     fn couple_revolute_wrong_offset_dim_returns_undef() {
         // Length offset for a revolute parent (needs Angle or bare Real)
         assert!(
-            eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0), Value::length(1.0)]).is_undef(),
+            eval_builtin(
+                "couple",
+                &[revolute_z_joint(), Value::Real(1.0), Value::length(1.0)]
+            )
+            .is_undef(),
             "Length offset for revolute parent should return Undef"
         );
     }
@@ -2425,7 +2639,11 @@ mod tests {
     #[test]
     fn couple_prismatic_nan_offset_returns_undef() {
         assert!(
-            eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0), Value::Real(f64::NAN)]).is_undef(),
+            eval_builtin(
+                "couple",
+                &[prismatic_x_joint(), Value::Real(1.0), Value::Real(f64::NAN)]
+            )
+            .is_undef(),
             "NaN offset should return Undef"
         );
     }
@@ -2451,7 +2669,10 @@ mod tests {
     fn couple_dimensionless_scalar_ratio_accepted() {
         use reify_types::DimensionVector;
         // DIMENSIONLESS Scalar is accepted by ratio_input and stored as Real
-        let ratio = Value::Scalar { si_value: 0.5, dimension: DimensionVector::DIMENSIONLESS };
+        let ratio = Value::Scalar {
+            si_value: 0.5,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let result = eval_builtin("couple", &[prismatic_x_joint(), ratio]);
         let map = match result {
             Value::Map(m) => m,
@@ -2468,7 +2689,10 @@ mod tests {
     fn couple_prismatic_int_offset_accepted() {
         // Value::Int(1) is accepted by length_input for a prismatic parent
         // and stored as Value::length(1.0)
-        let result = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0), Value::Int(1)]);
+        let result = eval_builtin(
+            "couple",
+            &[prismatic_x_joint(), Value::Real(1.0), Value::Int(1)],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),
@@ -2483,7 +2707,10 @@ mod tests {
     #[test]
     fn couple_prismatic_bare_real_offset_accepted() {
         // bare Value::Real(1.5) is accepted by length_input for a prismatic parent
-        let result = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0), Value::Real(1.5)]);
+        let result = eval_builtin(
+            "couple",
+            &[prismatic_x_joint(), Value::Real(1.0), Value::Real(1.5)],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),
@@ -2498,7 +2725,10 @@ mod tests {
     #[test]
     fn couple_revolute_int_offset_accepted() {
         // Value::Int(0) is accepted by trig_input for a revolute parent
-        let result = eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0), Value::Int(0)]);
+        let result = eval_builtin(
+            "couple",
+            &[revolute_z_joint(), Value::Real(1.0), Value::Int(0)],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),
@@ -2514,7 +2744,10 @@ mod tests {
     fn couple_revolute_bare_real_offset_accepted() {
         // bare Value::Real(π/4) is accepted by trig_input for a revolute parent
         let pi = std::f64::consts::PI;
-        let result = eval_builtin("couple", &[revolute_z_joint(), Value::Real(1.0), Value::Real(pi / 4.0)]);
+        let result = eval_builtin(
+            "couple",
+            &[revolute_z_joint(), Value::Real(1.0), Value::Real(pi / 4.0)],
+        );
         let map = match result {
             Value::Map(m) => m,
             other => panic!("expected Value::Map, got {:?}", other),
@@ -2529,14 +2762,13 @@ mod tests {
     // ── transform_at on Coupling: validation rejections ─────────────────────
 
     /// Build a minimal coupling Map by hand for testing defense-in-depth guards.
-    fn make_coupling_fixture(
-        parent: Value,
-        ratio: Value,
-        offset: Value,
-    ) -> Value {
+    fn make_coupling_fixture(parent: Value, ratio: Value, offset: Value) -> Value {
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("coupling".to_string()),
+        );
         m.insert(Value::String("offset".to_string()), offset);
         m.insert(Value::String("parent".to_string()), parent);
         m.insert(Value::String("ratio".to_string()), ratio);
@@ -2567,7 +2799,10 @@ mod tests {
     fn transform_at_coupling_mass_value_returns_undef() {
         use reify_types::DimensionVector;
         let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
-        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        let mass = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
         assert!(
             eval_builtin("transform_at", &[c, mass]).is_undef(),
             "MASS Scalar to coupling should return Undef"
@@ -2597,13 +2832,12 @@ mod tests {
         // Defense-in-depth: hand-built coupling Map with parent kind="sliding"
         use std::collections::BTreeMap;
         let mut sliding = BTreeMap::new();
-        sliding.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
-        sliding.insert(Value::String("axis".to_string()), axis_x_unit());
-        let c = make_coupling_fixture(
-            Value::Map(sliding),
-            Value::Real(1.0),
-            Value::length(0.0),
+        sliding.insert(
+            Value::String("kind".to_string()),
+            Value::String("sliding".to_string()),
         );
+        sliding.insert(Value::String("axis".to_string()), axis_x_unit());
+        let c = make_coupling_fixture(Value::Map(sliding), Value::Real(1.0), Value::length(0.0));
         assert!(
             eval_builtin("transform_at", &[c, Value::length(1.0)]).is_undef(),
             "coupling with sliding parent should return Undef"
@@ -2615,7 +2849,10 @@ mod tests {
         // Defense-in-depth: hand-built coupling Map without parent key
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("coupling".to_string()),
+        );
         m.insert(Value::String("ratio".to_string()), Value::Real(1.0));
         m.insert(Value::String("offset".to_string()), Value::length(0.0));
         // no "parent" key
@@ -2629,7 +2866,10 @@ mod tests {
     fn transform_at_coupling_missing_ratio_key_returns_undef() {
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("coupling".to_string()),
+        );
         m.insert(Value::String("parent".to_string()), prismatic_x_joint());
         m.insert(Value::String("offset".to_string()), Value::length(0.0));
         // no "ratio" key
@@ -2643,7 +2883,10 @@ mod tests {
     fn transform_at_coupling_missing_offset_key_returns_undef() {
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("coupling".to_string()),
+        );
         m.insert(Value::String("parent".to_string()), prismatic_x_joint());
         m.insert(Value::String("ratio".to_string()), Value::Real(1.0));
         // no "offset" key
@@ -2660,7 +2903,7 @@ mod tests {
         // hand-built Map could carry Value::Int instead.  The guard must fire.
         let c = make_coupling_fixture(
             prismatic_x_joint(),
-            Value::Int(1),       // Int, not Real — guard fires
+            Value::Int(1), // Int, not Real — guard fires
             Value::length(0.0),
         );
         assert!(
@@ -2678,7 +2921,7 @@ mod tests {
         let c = make_coupling_fixture(
             prismatic_x_joint(),
             Value::Real(1.0),
-            Value::Real(0.0),    // Real, not Scalar — guard fires
+            Value::Real(0.0), // Real, not Scalar — guard fires
         );
         assert!(
             eval_builtin("transform_at", &[c, Value::length(1.0)]).is_undef(),
@@ -2739,11 +2982,10 @@ mod tests {
     #[test]
     fn coupling_prismatic_with_offset() {
         // ratio=2.0, offset=1.0m, v=3.0m → coupled = 2*3+1 = 7m → [7,0,0]
-        let c = eval_builtin("couple", &[
-            prismatic_x_joint(),
-            Value::Real(2.0),
-            Value::length(1.0),
-        ]);
+        let c = eval_builtin(
+            "couple",
+            &[prismatic_x_joint(), Value::Real(2.0), Value::length(1.0)],
+        );
         let result = eval_builtin("transform_at", &[c, Value::length(3.0)]);
         assert_transform_approx(
             &result,
@@ -2792,11 +3034,10 @@ mod tests {
         // ratio=1.0, offset=π/4, v=π/4 → coupled = 1*(π/4) + π/4 = π/2
         // rotation about Z by π/2 = (cos(π/4), 0, 0, sin(π/4))
         let pi = std::f64::consts::PI;
-        let c = eval_builtin("couple", &[
-            revolute_z_joint(),
-            Value::Real(1.0),
-            Value::angle(pi / 4.0),
-        ]);
+        let c = eval_builtin(
+            "couple",
+            &[revolute_z_joint(), Value::Real(1.0), Value::angle(pi / 4.0)],
+        );
         let result = eval_builtin("transform_at", &[c, Value::angle(pi / 4.0)]);
         let cos = (pi / 4.0).cos();
         let sin = (pi / 4.0).sin();
@@ -2973,7 +3214,12 @@ mod tests {
         let result = eval_builtin("joint_jacobian", &[joint]);
         let ang = jac_vec3_components(&result, "angular");
         let lin = jac_vec3_components(&result, "linear");
-        assert_vec3_close(ang, [0.0, 0.0, 0.0], 1e-12, "unnormalized prismatic angular");
+        assert_vec3_close(
+            ang,
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "unnormalized prismatic angular",
+        );
         assert_vec3_close(
             lin,
             [1.0, 0.0, 0.0],
@@ -3009,7 +3255,12 @@ mod tests {
         let ang = jac_vec3_components(&result, "angular");
         let lin = jac_vec3_components(&result, "linear");
         assert_vec3_close(ang, [0.0, 0.0, 0.0], 1e-12, "coupling prismatic angular");
-        assert_vec3_close(lin, [2.0, 0.0, 0.0], 1e-12, "coupling prismatic linear (ratio=2)");
+        assert_vec3_close(
+            lin,
+            [2.0, 0.0, 0.0],
+            1e-12,
+            "coupling prismatic linear (ratio=2)",
+        );
     }
 
     #[test]
@@ -3074,7 +3325,10 @@ mod tests {
         // (f) Map with kind not in {prismatic, revolute, coupling}
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("sliding".to_string()),
+        );
         m.insert(Value::String("axis".to_string()), axis_x_unit());
         m.insert(Value::String("range".to_string()), length_range_0_to_1m());
         assert!(
@@ -3088,7 +3342,10 @@ mod tests {
         // (f) joint Map missing "axis" key
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("prismatic".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("prismatic".to_string()),
+        );
         m.insert(Value::String("range".to_string()), length_range_0_to_1m());
         assert!(
             eval_builtin("joint_jacobian", &[Value::Map(m)]).is_undef(),
@@ -3101,7 +3358,10 @@ mod tests {
         // (f) joint Map missing "axis" key
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("revolute".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("revolute".to_string()),
+        );
         m.insert(Value::String("range".to_string()), angle_range_0_to_pi());
         assert!(
             eval_builtin("joint_jacobian", &[Value::Map(m)]).is_undef(),
@@ -3114,7 +3374,10 @@ mod tests {
         // (f) coupling Map missing "parent" key
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("coupling".to_string()),
+        );
         m.insert(Value::String("ratio".to_string()), Value::Real(1.0));
         m.insert(Value::String("offset".to_string()), Value::length(0.0));
         // no "parent" key
@@ -3129,7 +3392,10 @@ mod tests {
         // Defense-in-depth: hand-built coupling Map without ratio key
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("coupling".to_string()),
+        );
         m.insert(Value::String("parent".to_string()), prismatic_x_joint());
         m.insert(Value::String("offset".to_string()), Value::length(0.0));
         // no "ratio" key
@@ -3147,7 +3413,10 @@ mod tests {
         use std::collections::BTreeMap;
         let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("prismatic".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("prismatic".to_string()),
+        );
         m.insert(Value::String("axis".to_string()), zero_axis);
         m.insert(Value::String("range".to_string()), length_range_0_to_1m());
         assert!(
@@ -3162,9 +3431,13 @@ mod tests {
         // at construction, but a hand-built coupling fixture could carry it.
         // joint_jacobian must reject (consistent with `couple` and transform_at).
         use std::collections::BTreeMap;
-        let inner = make_coupling_fixture(prismatic_x_joint(), Value::Real(1.0), Value::length(0.0));
+        let inner =
+            make_coupling_fixture(prismatic_x_joint(), Value::Real(1.0), Value::length(0.0));
         let mut outer = BTreeMap::new();
-        outer.insert(Value::String("kind".to_string()), Value::String("coupling".to_string()));
+        outer.insert(
+            Value::String("kind".to_string()),
+            Value::String("coupling".to_string()),
+        );
         outer.insert(Value::String("parent".to_string()), inner);
         outer.insert(Value::String("ratio".to_string()), Value::Real(1.0));
         outer.insert(Value::String("offset".to_string()), Value::length(0.0));
@@ -3224,20 +3497,29 @@ mod tests {
             Some(&Value::length(0.0)),
             "screw: default offset for prismatic parent should be Value::length(0.0)"
         );
-        assert_eq!(map.len(), 4, "screw coupling Map should have exactly 4 keys: kind, parent, ratio, offset");
+        assert_eq!(
+            map.len(),
+            4,
+            "screw coupling Map should have exactly 4 keys: kind, parent, ratio, offset"
+        );
         // Verify end-to-end kinematics: transform_at(result, length(2π)) → translation [1e-3, 0, 0]
         // Math: coupled = (1e-3/(2π)) * 2π + 0 = 1e-3 m, translated along prismatic-X axis.
         let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
-        assert_transform_approx(&xform, (1.0, 0.0, 0.0, 0.0), [1e-3, 0.0, 0.0], 1e-12,
-            "screw transform_at: 1mm lead, 2π input → [1e-3, 0, 0]");
+        assert_transform_approx(
+            &xform,
+            (1.0, 0.0, 0.0, 0.0),
+            [1e-3, 0.0, 0.0],
+            1e-12,
+            "screw transform_at: 1mm lead, 2π input → [1e-3, 0, 0]",
+        );
     }
 
     // ── screw constructor: validation rejections ─────────────────────────────
 
     #[test]
     fn screw_validation_rejections() {
-        use std::collections::BTreeMap;
         use reify_types::DimensionVector;
+        use std::collections::BTreeMap;
         let parent = prismatic_x_joint();
         let lead = Value::length(1e-3);
         let coupling_parent = eval_builtin("screw", &[parent.clone(), lead.clone()]);
@@ -3246,14 +3528,35 @@ mod tests {
         let cases: Vec<(Vec<Value>, &str)> = vec![
             (vec![], "0 args"),
             (vec![parent.clone()], "1 arg"),
-            (vec![parent.clone(), lead.clone(), Value::Real(0.0)], "3 args"),
+            (
+                vec![parent.clone(), lead.clone(), Value::Real(0.0)],
+                "3 args",
+            ),
             (vec![Value::Real(1.0), lead.clone()], "non-Map parent"),
-            (vec![coupling_parent, lead.clone()], "coupling parent (delegated to couple())"),
-            (vec![Value::Map(no_kind), lead.clone()], "Map parent missing 'kind'"),
-            (vec![parent.clone(), Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }], "MASS-dimensioned lead"),
+            (
+                vec![coupling_parent, lead.clone()],
+                "coupling parent (delegated to couple())",
+            ),
+            (
+                vec![Value::Map(no_kind), lead.clone()],
+                "Map parent missing 'kind'",
+            ),
+            (
+                vec![
+                    parent.clone(),
+                    Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DimensionVector::MASS,
+                    },
+                ],
+                "MASS-dimensioned lead",
+            ),
             (vec![parent.clone(), Value::Real(f64::NAN)], "NaN lead"),
             (vec![parent.clone(), Value::Real(f64::INFINITY)], "Inf lead"),
-            (vec![parent, Value::String("bad".to_string())], "String lead"),
+            (
+                vec![parent, Value::String("bad".to_string())],
+                "String lead",
+            ),
         ];
         for (args, label) in &cases {
             assert_builtin_undef("screw", args, label);
@@ -3295,15 +3598,24 @@ mod tests {
             Some(&Value::angle(0.0)),
             "gear: default offset for revolute parent should be Value::angle(0.0)"
         );
-        assert_eq!(map.len(), 4, "gear coupling Map should have exactly 4 keys: kind, parent, ratio, offset");
+        assert_eq!(
+            map.len(),
+            4,
+            "gear coupling Map should have exactly 4 keys: kind, parent, ratio, offset"
+        );
         // Verify end-to-end kinematics: transform_at(result, angle(π/3))
         // Math: coupled = -1.5 * (π/3) = -π/2 rad about Z-axis
         //   → rotation quaternion for -π/2 about Z = (cos(-π/4), 0, 0, sin(-π/4))
         let xform = eval_builtin("transform_at", &[result, Value::angle(pi / 3.0)]);
         let cos_q = (-pi / 4.0).cos();
         let sin_q = (-pi / 4.0).sin();
-        assert_transform_approx(&xform, (cos_q, 0.0, 0.0, sin_q), [0.0, 0.0, 0.0], 1e-12,
-            "gear transform_at: 20:30 ratio, π/3 input → -π/2 rotation about Z");
+        assert_transform_approx(
+            &xform,
+            (cos_q, 0.0, 0.0, sin_q),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "gear transform_at: 20:30 ratio, π/3 input → -π/2 rotation about Z",
+        );
     }
 
     // ── gear constructor: validation rejections ──────────────────────────────
@@ -3319,17 +3631,57 @@ mod tests {
             (vec![], "0 args"),
             (vec![parent.clone()], "1 arg"),
             (vec![parent.clone(), ta.clone()], "2 args"),
-            (vec![parent.clone(), ta.clone(), tb.clone(), Value::Real(0.0)], "4 args"),
-            (vec![Value::Real(1.0), ta.clone(), tb.clone()], "non-Map parent"),
-            (vec![coupling_parent, ta.clone(), tb.clone()], "coupling parent (delegated to couple())"),
-            (vec![parent.clone(), Value::Int(0), tb.clone()], "teeth_a=0 (division by zero)"),
-            (vec![parent.clone(), Value::Int(-5), tb.clone()], "negative teeth_a"),
-            (vec![parent.clone(), ta.clone(), Value::Int(0)], "teeth_b=0 (degenerate)"),
-            (vec![parent.clone(), ta.clone(), Value::Int(-3)], "negative teeth_b"),
-            (vec![parent.clone(), Value::Real(20.0), tb.clone()], "Real teeth_a (Int-only contract)"),
-            (vec![parent.clone(), ta.clone(), Value::Real(30.0)], "Real teeth_b (Int-only contract)"),
-            (vec![parent.clone(), Value::Scalar { si_value: 20.0, dimension: DimensionVector::DIMENSIONLESS }, tb.clone()], "Scalar teeth_a (Int-only contract)"),
-            (vec![parent, Value::String("bad".to_string()), tb], "String teeth_a"),
+            (
+                vec![parent.clone(), ta.clone(), tb.clone(), Value::Real(0.0)],
+                "4 args",
+            ),
+            (
+                vec![Value::Real(1.0), ta.clone(), tb.clone()],
+                "non-Map parent",
+            ),
+            (
+                vec![coupling_parent, ta.clone(), tb.clone()],
+                "coupling parent (delegated to couple())",
+            ),
+            (
+                vec![parent.clone(), Value::Int(0), tb.clone()],
+                "teeth_a=0 (division by zero)",
+            ),
+            (
+                vec![parent.clone(), Value::Int(-5), tb.clone()],
+                "negative teeth_a",
+            ),
+            (
+                vec![parent.clone(), ta.clone(), Value::Int(0)],
+                "teeth_b=0 (degenerate)",
+            ),
+            (
+                vec![parent.clone(), ta.clone(), Value::Int(-3)],
+                "negative teeth_b",
+            ),
+            (
+                vec![parent.clone(), Value::Real(20.0), tb.clone()],
+                "Real teeth_a (Int-only contract)",
+            ),
+            (
+                vec![parent.clone(), ta.clone(), Value::Real(30.0)],
+                "Real teeth_b (Int-only contract)",
+            ),
+            (
+                vec![
+                    parent.clone(),
+                    Value::Scalar {
+                        si_value: 20.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    tb.clone(),
+                ],
+                "Scalar teeth_a (Int-only contract)",
+            ),
+            (
+                vec![parent, Value::String("bad".to_string()), tb],
+                "String teeth_a",
+            ),
         ];
         for (args, label) in &cases {
             assert_builtin_undef("gear", args, label);
@@ -3372,21 +3724,30 @@ mod tests {
             Some(&Value::length(0.0)),
             "rack_and_pinion: default offset for prismatic parent should be Value::length(0.0)"
         );
-        assert_eq!(map.len(), 4, "rack_and_pinion coupling Map should have exactly 4 keys: kind, parent, ratio, offset");
+        assert_eq!(
+            map.len(),
+            4,
+            "rack_and_pinion coupling Map should have exactly 4 keys: kind, parent, ratio, offset"
+        );
         // Verify end-to-end kinematics: transform_at(result, length(2π))
         // Math: coupled = 0.01 * 2π + 0 = 0.02π m, translated along prismatic-X axis.
         let xform = eval_builtin("transform_at", &[result, Value::length(2.0 * pi)]);
         let expected_x = 0.01 * 2.0 * pi;
-        assert_transform_approx(&xform, (1.0, 0.0, 0.0, 0.0), [expected_x, 0.0, 0.0], 1e-12,
-            "rack_and_pinion transform_at: 10mm pitch, 2π input → 0.02π translation");
+        assert_transform_approx(
+            &xform,
+            (1.0, 0.0, 0.0, 0.0),
+            [expected_x, 0.0, 0.0],
+            1e-12,
+            "rack_and_pinion transform_at: 10mm pitch, 2π input → 0.02π translation",
+        );
     }
 
     // ── rack_and_pinion constructor: validation rejections ───────────────────
 
     #[test]
     fn rack_and_pinion_validation_rejections() {
-        use std::collections::BTreeMap;
         use reify_types::DimensionVector;
+        use std::collections::BTreeMap;
         let parent = prismatic_x_joint();
         let pr = Value::length(0.01);
         let coupling_parent = eval_builtin("rack_and_pinion", &[parent.clone(), pr.clone()]);
@@ -3397,12 +3758,36 @@ mod tests {
             (vec![parent.clone()], "1 arg"),
             (vec![parent.clone(), pr.clone(), Value::Real(0.0)], "3 args"),
             (vec![Value::Real(1.0), pr.clone()], "non-Map parent"),
-            (vec![coupling_parent, pr.clone()], "coupling parent (delegated to couple())"),
-            (vec![Value::Map(no_kind), pr.clone()], "Map parent missing 'kind'"),
-            (vec![parent.clone(), Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }], "MASS-dimensioned pitch_radius"),
-            (vec![parent.clone(), Value::Real(f64::NAN)], "NaN pitch_radius"),
-            (vec![parent.clone(), Value::Real(f64::INFINITY)], "Inf pitch_radius"),
-            (vec![parent, Value::String("bad".to_string())], "String pitch_radius"),
+            (
+                vec![coupling_parent, pr.clone()],
+                "coupling parent (delegated to couple())",
+            ),
+            (
+                vec![Value::Map(no_kind), pr.clone()],
+                "Map parent missing 'kind'",
+            ),
+            (
+                vec![
+                    parent.clone(),
+                    Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DimensionVector::MASS,
+                    },
+                ],
+                "MASS-dimensioned pitch_radius",
+            ),
+            (
+                vec![parent.clone(), Value::Real(f64::NAN)],
+                "NaN pitch_radius",
+            ),
+            (
+                vec![parent.clone(), Value::Real(f64::INFINITY)],
+                "Inf pitch_radius",
+            ),
+            (
+                vec![parent, Value::String("bad".to_string())],
+                "String pitch_radius",
+            ),
         ];
         for (args, label) in &cases {
             assert_builtin_undef("rack_and_pinion", args, label);
@@ -3422,7 +3807,10 @@ mod tests {
         no_kind.insert(Value::String("axis".to_string()), axis_x_unit());
 
         let mut unknown_kind = BTreeMap::new();
-        unknown_kind.insert(Value::String("kind".to_string()), Value::String("sliding".to_string()));
+        unknown_kind.insert(
+            Value::String("kind".to_string()),
+            Value::String("sliding".to_string()),
+        );
 
         let mut non_string_kind = BTreeMap::new();
         non_string_kind.insert(Value::String("kind".to_string()), Value::Int(0));
@@ -3430,9 +3818,15 @@ mod tests {
         let cases: Vec<(&str, Value)> = vec![
             ("Real(1.0)", Value::Real(1.0)),
             ("Int(0)", Value::Int(0)),
-            ("bare String 'prismatic'", Value::String("prismatic".to_string())),
+            (
+                "bare String 'prismatic'",
+                Value::String("prismatic".to_string()),
+            ),
             ("Map without 'kind' key", Value::Map(no_kind)),
-            ("Map with kind='sliding' (not in JOINT_KINDS)", Value::Map(unknown_kind)),
+            (
+                "Map with kind='sliding' (not in JOINT_KINDS)",
+                Value::Map(unknown_kind),
+            ),
             ("Map with kind=Int(0)", Value::Map(non_string_kind)),
         ];
         for (label, v) in &cases {
@@ -3446,7 +3840,10 @@ mod tests {
         // Every kind in JOINT_KINDS must be recognized as a joint value.
         for &kind in JOINT_KINDS {
             let mut m = BTreeMap::new();
-            m.insert(Value::String("kind".to_string()), Value::String(kind.to_string()));
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String(kind.to_string()),
+            );
             assert!(
                 is_joint_value(&Value::Map(m)),
                 "Map with kind='{}' (in JOINT_KINDS) should be a joint value",
@@ -3455,7 +3852,10 @@ mod tests {
         }
         // A kind not in JOINT_KINDS must not be recognized.
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("not_a_joint".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("not_a_joint".to_string()),
+        );
         assert!(
             !is_joint_value(&Value::Map(m)),
             "Map with kind='not_a_joint' should not be a joint value"
@@ -3491,8 +3891,8 @@ mod tests {
     fn joint_kind_minimal_fixture(kind: &str) -> Vec<(Value, Value)> {
         match kind {
             "prismatic" => vec![(prismatic_x_joint(), Value::length(0.0))],
-            "revolute"  => vec![(revolute_z_joint(),  Value::angle(0.0))],
-            "coupling"  => {
+            "revolute" => vec![(revolute_z_joint(), Value::angle(0.0))],
+            "coupling" => {
                 let coupling_p = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
                 assert!(
                     !coupling_p.is_undef(),
@@ -3515,14 +3915,23 @@ mod tests {
             // Using zero values keeps the fixture minimal while exercising all dispatch arms.
             "planar" => vec![(
                 planar_xy_joint(),
-                Value::List(vec![Value::length(0.0), Value::length(0.0), Value::angle(0.0)]),
+                Value::List(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    Value::angle(0.0),
+                ]),
             )],
             // 3-DOF spherical joint: motion variable is a unit-quaternion `Value::Orientation`.
             // The identity quaternion is the minimal-rotation fixture, exercising the
             // `transform_at` and `joint_jacobian_value` spherical arms via the dispatch tests.
             "spherical" => vec![(
                 spherical_joint(),
-                Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
             )],
             // 2-DOF cylindrical joint: motion variable is a 2-element
             // `Value::List` of `[length, angle]` (translation distance,
@@ -3609,7 +4018,11 @@ mod tests {
             Some(&Value::String("fixed".to_string())),
             "kind field should be 'fixed'"
         );
-        assert_eq!(map.len(), 1, "fixed joint Map should have exactly 1 key (only 'kind')");
+        assert_eq!(
+            map.len(),
+            1,
+            "fixed joint Map should have exactly 1 key (only 'kind')"
+        );
     }
 
     /// `fixed` rejects any non-empty argument list — a 0-DOF joint has no
@@ -3644,12 +4057,20 @@ mod tests {
         };
         assert_eq!(
             map.get(&Value::String("angular".to_string())),
-            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            Some(&Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0)
+            ])),
             "angular twist column should be [0, 0, 0]"
         );
         assert_eq!(
             map.get(&Value::String("linear".to_string())),
-            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            Some(&Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0)
+            ])),
             "linear twist column should be [0, 0, 0]"
         );
     }
@@ -3670,17 +4091,32 @@ mod tests {
         // Primary case: second arg is a bare Real.
         let result = eval_builtin("transform_at", &[fj.clone(), Value::Real(0.0)]);
         let (rot, trans) = match &result {
-            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
-            other => panic!("transform_at(fixed, 0.0): expected Transform, got {:?}", other),
+            Value::Transform {
+                rotation,
+                translation,
+            } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!(
+                "transform_at(fixed, 0.0): expected Transform, got {:?}",
+                other
+            ),
         };
         assert_eq!(
             rot,
-            &Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            &Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            },
             "identity rotation"
         );
         assert_eq!(
             trans,
-            &Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]),
+            &Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0)
+            ]),
             "zero translation"
         );
 
@@ -3689,31 +4125,48 @@ mod tests {
         let undef_result = eval_builtin("transform_at", &[fj.clone(), Value::Undef]);
         assert!(
             undef_result.is_undef(),
-            "transform_at(fixed, Undef): expected Undef (Undef propagation), got {:?}", undef_result
+            "transform_at(fixed, Undef): expected Undef (Undef propagation), got {:?}",
+            undef_result
         );
 
         // Numeric/dimensioned scalar args — all should yield the identity Transform.
         // (Dimension is not validated; a 0-DOF joint has no motion variable.)
         for (label, second_arg) in [
-            ("Real(1.5)",   Value::Real(1.5)),
+            ("Real(1.5)", Value::Real(1.5)),
             ("length(2.5)", Value::length(2.5)),
-            ("angle(1.0)",  Value::angle(1.0)),
-            ("Int(5)",      Value::Int(5)),
+            ("angle(1.0)", Value::angle(1.0)),
+            ("Int(5)", Value::Int(5)),
         ] {
             let r2 = eval_builtin("transform_at", &[fj.clone(), second_arg]);
             assert!(
                 matches!(&r2, Value::Transform { .. }),
-                "transform_at(fixed, {label}): expected Transform, got {:?}", r2
+                "transform_at(fixed, {label}): expected Transform, got {:?}",
+                r2
             );
             let (r, t) = match &r2 {
-                Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+                Value::Transform {
+                    rotation,
+                    translation,
+                } => (rotation.as_ref(), translation.as_ref()),
                 _ => unreachable!(),
             };
-            assert_eq!(r, &Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
-                "identity rotation for {label}");
+            assert_eq!(
+                r,
+                &Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0
+                },
+                "identity rotation for {label}"
+            );
             assert_eq!(
                 t,
-                &Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]),
+                &Value::Vector(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    Value::length(0.0)
+                ]),
                 "zero translation for {label}"
             );
         }
@@ -3732,12 +4185,20 @@ mod tests {
         let fj = eval_builtin("fixed", &[]);
 
         for (label, second_arg) in [
-            ("String(\"foo\")",        Value::String("foo".to_string())),
-            ("List(empty)",            Value::List(vec![])),
-            ("Map(empty)",             Value::Map(BTreeMap::new())),
-            ("Vector([0.0])",          Value::Vector(vec![Value::Real(0.0)])),
-            ("Bool(true)",             Value::Bool(true)),
-            ("Orientation(identity)",  Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+            ("String(\"foo\")", Value::String("foo".to_string())),
+            ("List(empty)", Value::List(vec![])),
+            ("Map(empty)", Value::Map(BTreeMap::new())),
+            ("Vector([0.0])", Value::Vector(vec![Value::Real(0.0)])),
+            ("Bool(true)", Value::Bool(true)),
+            (
+                "Orientation(identity)",
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
         ] {
             assert!(
                 eval_builtin("transform_at", &[fj.clone(), second_arg]).is_undef(),
@@ -3767,17 +4228,29 @@ mod tests {
         // (a) Primary case: 1-arg fixed joint → identity Transform
         let result = eval_builtin("transform_at", std::slice::from_ref(&fj));
         let (rot, trans) = match &result {
-            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            Value::Transform {
+                rotation,
+                translation,
+            } => (rotation.as_ref(), translation.as_ref()),
             other => panic!("transform_at(fixed): expected Transform, got {:?}", other),
         };
         assert_eq!(
             rot,
-            &Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            &Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            },
             "1-arg fixed: identity rotation"
         );
         assert_eq!(
             trans,
-            &Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]),
+            &Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0)
+            ]),
             "1-arg fixed: zero translation"
         );
 
@@ -3789,7 +4262,11 @@ mod tests {
 
         // (c) 3-arg call → Undef (arity guard preserved)
         assert!(
-            eval_builtin("transform_at", &[fj.clone(), Value::Real(0.0), Value::Real(0.0)]).is_undef(),
+            eval_builtin(
+                "transform_at",
+                &[fj.clone(), Value::Real(0.0), Value::Real(0.0)]
+            )
+            .is_undef(),
             "transform_at(fixed, 0.0, 0.0): expected Undef (3-arg arity guard)"
         );
 
@@ -3845,13 +4322,16 @@ mod tests {
         let range_x = length_range_0_to_1m();
         let range_y = length_range_0_to_1m();
         let range_theta = angle_range_0_to_pi();
-        let result = eval_builtin("planar", &[
-            axis_x.clone(),
-            axis_y.clone(),
-            range_x.clone(),
-            range_y.clone(),
-            range_theta.clone(),
-        ]);
+        let result = eval_builtin(
+            "planar",
+            &[
+                axis_x.clone(),
+                axis_y.clone(),
+                range_x.clone(),
+                range_y.clone(),
+                range_theta.clone(),
+            ],
+        );
 
         let map = match result {
             Value::Map(m) => m,
@@ -4019,13 +4499,16 @@ mod tests {
         let s2 = std::f64::consts::FRAC_1_SQRT_2; // 1/√2
         let ax = Value::Vector(vec![Value::Real(s2), Value::Real(s2), Value::Real(0.0)]);
         let ay = Value::Vector(vec![Value::Real(-s2), Value::Real(s2), Value::Real(0.0)]);
-        let joint = eval_builtin("planar", &[
-            ax,
-            ay,
-            length_range_0_to_1m(),
-            length_range_0_to_1m(),
-            angle_range_0_to_pi(),
-        ]);
+        let joint = eval_builtin(
+            "planar",
+            &[
+                ax,
+                ay,
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        );
         let motion = Value::List(vec![
             Value::length(1.0),
             Value::length(0.0),
@@ -4063,13 +4546,20 @@ mod tests {
         let pi = std::f64::consts::PI;
         let ax = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let ay = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
-        let joint = eval_builtin("planar", &[
-            ax, ay,
-            length_range_0_to_1m(),
-            length_range_0_to_1m(),
-            angle_range_0_to_pi(),
-        ]);
-        assert!(!joint.is_undef(), "planar([1,0,0],[0,0,1],...) should build OK");
+        let joint = eval_builtin(
+            "planar",
+            &[
+                ax,
+                ay,
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        );
+        assert!(
+            !joint.is_undef(),
+            "planar([1,0,0],[0,0,1],...) should build OK"
+        );
         let theta = pi / 4.0;
         let motion = Value::List(vec![
             Value::length(0.0),
@@ -4103,25 +4593,87 @@ mod tests {
 
         let cases: &[(&str, Value)] = &[
             // (a) wrong List length
-            ("List of 2",   Value::List(vec![Value::length(0.0), Value::length(0.0)])),
-            ("List of 4",   Value::List(vec![Value::length(0.0), Value::length(0.0), Value::angle(0.0), Value::Real(0.0)])),
-            ("List of 0",   Value::List(vec![])),
+            (
+                "List of 2",
+                Value::List(vec![Value::length(0.0), Value::length(0.0)]),
+            ),
+            (
+                "List of 4",
+                Value::List(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    Value::angle(0.0),
+                    Value::Real(0.0),
+                ]),
+            ),
+            ("List of 0", Value::List(vec![])),
             // (b) wrong container type
-            ("bare Real",   Value::Real(0.0)),
-            ("Vector(3)",   Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::angle(0.0)])),
-            ("bare Map",    Value::Map(Default::default())),
+            ("bare Real", Value::Real(0.0)),
+            (
+                "Vector(3)",
+                Value::Vector(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    Value::angle(0.0),
+                ]),
+            ),
+            ("bare Map", Value::Map(Default::default())),
             // (c) wrong dimension: element 0 is Angle (should be Length)
-            ("elem[0] is Angle",   Value::List(vec![Value::angle(0.0), Value::length(0.0), Value::angle(0.0)])),
+            (
+                "elem[0] is Angle",
+                Value::List(vec![
+                    Value::angle(0.0),
+                    Value::length(0.0),
+                    Value::angle(0.0),
+                ]),
+            ),
             // (d) wrong dimension: element 2 is Length (should be Angle)
-            ("elem[2] is Length",  Value::List(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)])),
+            (
+                "elem[2] is Length",
+                Value::List(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    Value::length(0.0),
+                ]),
+            ),
             // (e) wrong dimension: mass-typed element
-            ("elem[0] mass",       Value::List(vec![mass_scalar.clone(), Value::length(0.0), Value::angle(0.0)])),
-            ("elem[1] mass",       Value::List(vec![Value::length(0.0), mass_scalar.clone(), Value::angle(0.0)])),
-            ("elem[2] mass",       Value::List(vec![Value::length(0.0), Value::length(0.0), mass_scalar.clone()])),
+            (
+                "elem[0] mass",
+                Value::List(vec![
+                    mass_scalar.clone(),
+                    Value::length(0.0),
+                    Value::angle(0.0),
+                ]),
+            ),
+            (
+                "elem[1] mass",
+                Value::List(vec![
+                    Value::length(0.0),
+                    mass_scalar.clone(),
+                    Value::angle(0.0),
+                ]),
+            ),
+            (
+                "elem[2] mass",
+                Value::List(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    mass_scalar.clone(),
+                ]),
+            ),
             // (f) Undef element propagates Undef result
-            ("elem[0] Undef",      Value::List(vec![Value::Undef, Value::length(0.0), Value::angle(0.0)])),
-            ("elem[1] Undef",      Value::List(vec![Value::length(0.0), Value::Undef, Value::angle(0.0)])),
-            ("elem[2] Undef",      Value::List(vec![Value::length(0.0), Value::length(0.0), Value::Undef])),
+            (
+                "elem[0] Undef",
+                Value::List(vec![Value::Undef, Value::length(0.0), Value::angle(0.0)]),
+            ),
+            (
+                "elem[1] Undef",
+                Value::List(vec![Value::length(0.0), Value::Undef, Value::angle(0.0)]),
+            ),
+            (
+                "elem[2] Undef",
+                Value::List(vec![Value::length(0.0), Value::length(0.0), Value::Undef]),
+            ),
         ];
 
         for (label, motion_vars) in cases {
@@ -4154,12 +4706,21 @@ mod tests {
         // (joints.rs:1079-1088): kind, axis_x, axis_y, range_x, range_y, range_theta.
         let make_map = |axis_y: Value| -> Value {
             let mut m = BTreeMap::new();
-            m.insert(Value::String("kind".to_string()),        Value::String("planar".to_string()));
-            m.insert(Value::String("axis_x".to_string()),      Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]));
-            m.insert(Value::String("axis_y".to_string()),      axis_y);
-            m.insert(Value::String("range_x".to_string()),     length_range_0_to_1m());
-            m.insert(Value::String("range_y".to_string()),     length_range_0_to_1m());
-            m.insert(Value::String("range_theta".to_string()), angle_range_0_to_pi());
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String("planar".to_string()),
+            );
+            m.insert(
+                Value::String("axis_x".to_string()),
+                Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            );
+            m.insert(Value::String("axis_y".to_string()), axis_y);
+            m.insert(Value::String("range_x".to_string()), length_range_0_to_1m());
+            m.insert(Value::String("range_y".to_string()), length_range_0_to_1m());
+            m.insert(
+                Value::String("range_theta".to_string()),
+                angle_range_0_to_pi(),
+            );
             Value::Map(m)
         };
 
@@ -4172,9 +4733,15 @@ mod tests {
 
         let cases: &[(&str, Value)] = &[
             // axis_x = axis_y = [1,0,0]  →  dot = +1  →  zero cross product
-            ("parallel",      Value::Vector(vec![Value::Real( 1.0), Value::Real(0.0), Value::Real(0.0)])),
+            (
+                "parallel",
+                Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
             // axis_x = [1,0,0], axis_y = [-1,0,0]  →  dot = -1  →  zero cross product
-            ("anti-parallel", Value::Vector(vec![Value::Real(-1.0), Value::Real(0.0), Value::Real(0.0)])),
+            (
+                "anti-parallel",
+                Value::Vector(vec![Value::Real(-1.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
         ];
 
         for (label, axis_y) in cases {
@@ -4207,12 +4774,20 @@ mod tests {
         };
         assert_eq!(
             map.get(&Value::String("angular".to_string())),
-            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            Some(&Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0)
+            ])),
             "angular twist column should be [0, 0, 0]"
         );
         assert_eq!(
             map.get(&Value::String("linear".to_string())),
-            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            Some(&Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0)
+            ])),
             "linear twist column should be [0, 0, 0]"
         );
     }
@@ -4222,14 +4797,18 @@ mod tests {
     #[test]
     fn planar_invalid_args_returns_undef() {
         // Axis helpers for validation cases
-        let ax = axis_x_unit();  // [1, 0, 0]
-        let ay = axis_y_unit();  // [0, 1, 0]
+        let ax = axis_x_unit(); // [1, 0, 0]
+        let ay = axis_y_unit(); // [0, 1, 0]
         let rx = length_range_0_to_1m();
         let ry = length_range_0_to_1m();
         let rt = angle_range_0_to_pi();
 
         // Wrong dimensioned axis (LENGTH-typed Vector3)
-        let length_axis = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        let length_axis = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         // 2-component axis
         let axis2 = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]);
         // Non-vector axis
@@ -4237,7 +4816,11 @@ mod tests {
         // Zero axis
         let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         // NaN axis
-        let nan_axis = Value::Vector(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        let nan_axis = Value::Vector(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
         // Non-perpendicular: axis_y = [1,1,0] — dot with [1,0,0] = 1/√2 ≠ 0
         let non_perp_y = Value::Vector(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(0.0)]);
         // Parallel: axis_y = axis_x = [1,0,0]
@@ -4256,34 +4839,188 @@ mod tests {
 
         let cases: &[(&str, &[Value])] = &[
             // (a) wrong arg counts
-            ("0 args",  &[]),
-            ("1 arg",   std::slice::from_ref(&ax)),
-            ("4 args",  &[ax.clone(), ay.clone(), rx.clone(), ry.clone()]),
-            ("6 args",  &[ax.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone(), Value::Real(0.0)]),
+            ("0 args", &[]),
+            ("1 arg", std::slice::from_ref(&ax)),
+            ("4 args", &[ax.clone(), ay.clone(), rx.clone(), ry.clone()]),
+            (
+                "6 args",
+                &[
+                    ax.clone(),
+                    ay.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                    Value::Real(0.0),
+                ],
+            ),
             // (b) axis_x invalid variants
-            ("axis_x: bare Real",          &[non_vec.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
-            ("axis_x: 2-component",        &[axis2.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
-            ("axis_x: LENGTH-dimensioned", &[length_axis.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
-            ("axis_x: zero",               &[zero_axis.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
-            ("axis_x: NaN",                &[nan_axis.clone(), ay.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            (
+                "axis_x: bare Real",
+                &[
+                    non_vec.clone(),
+                    ay.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
+            (
+                "axis_x: 2-component",
+                &[
+                    axis2.clone(),
+                    ay.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
+            (
+                "axis_x: LENGTH-dimensioned",
+                &[
+                    length_axis.clone(),
+                    ay.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
+            (
+                "axis_x: zero",
+                &[
+                    zero_axis.clone(),
+                    ay.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
+            (
+                "axis_x: NaN",
+                &[
+                    nan_axis.clone(),
+                    ay.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
             // (c) axis_y invalid variants (axis_x valid = [1,0,0])
-            ("axis_y: bare Real",          &[ax.clone(), non_vec.clone(), rx.clone(), ry.clone(), rt.clone()]),
-            ("axis_y: 2-component",        &[ax.clone(), axis2.clone(), rx.clone(), ry.clone(), rt.clone()]),
-            ("axis_y: LENGTH-dimensioned", &[ax.clone(), length_axis.clone(), rx.clone(), ry.clone(), rt.clone()]),
-            ("axis_y: zero",               &[ax.clone(), zero_axis.clone(), rx.clone(), ry.clone(), rt.clone()]),
-            ("axis_y: NaN",                &[ax.clone(), nan_axis.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            (
+                "axis_y: bare Real",
+                &[
+                    ax.clone(),
+                    non_vec.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
+            (
+                "axis_y: 2-component",
+                &[
+                    ax.clone(),
+                    axis2.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
+            (
+                "axis_y: LENGTH-dimensioned",
+                &[
+                    ax.clone(),
+                    length_axis.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
+            (
+                "axis_y: zero",
+                &[
+                    ax.clone(),
+                    zero_axis.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
+            (
+                "axis_y: NaN",
+                &[
+                    ax.clone(),
+                    nan_axis.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
             // (d) non-perpendicular axes
-            ("non-perpendicular axes",     &[ax.clone(), non_perp_y.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            (
+                "non-perpendicular axes",
+                &[
+                    ax.clone(),
+                    non_perp_y.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
             // (e) parallel axes (degenerate + fails perpendicularity)
-            ("parallel axes (axis_y = axis_x)", &[ax.clone(), parallel_y.clone(), rx.clone(), ry.clone(), rt.clone()]),
+            (
+                "parallel axes (axis_y = axis_x)",
+                &[
+                    ax.clone(),
+                    parallel_y.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
             // (f) range_x wrong dimension
-            ("range_x: Angle-dimensioned", &[ax.clone(), ay.clone(), angle_range.clone(), ry.clone(), rt.clone()]),
+            (
+                "range_x: Angle-dimensioned",
+                &[
+                    ax.clone(),
+                    ay.clone(),
+                    angle_range.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
             // (g) range_y wrong dimension
-            ("range_y: Angle-dimensioned", &[ax.clone(), ay.clone(), rx.clone(), angle_range.clone(), rt.clone()]),
+            (
+                "range_y: Angle-dimensioned",
+                &[
+                    ax.clone(),
+                    ay.clone(),
+                    rx.clone(),
+                    angle_range.clone(),
+                    rt.clone(),
+                ],
+            ),
             // (h) range_theta wrong dimension
-            ("range_theta: Length-dimensioned", &[ax.clone(), ay.clone(), rx.clone(), ry.clone(), length_range.clone()]),
+            (
+                "range_theta: Length-dimensioned",
+                &[
+                    ax.clone(),
+                    ay.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    length_range.clone(),
+                ],
+            ),
             // (i) unbounded range
-            ("range_x: unbounded",         &[ax.clone(), ay.clone(), unbounded.clone(), ry.clone(), rt.clone()]),
+            (
+                "range_x: unbounded",
+                &[
+                    ax.clone(),
+                    ay.clone(),
+                    unbounded.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
         ];
 
         for (label, args) in cases {
@@ -4312,27 +5049,110 @@ mod tests {
             // (a) bare Real
             ("bare Real(0.5)", Value::Real(0.5)),
             // (b) Vector(4) — wrong container even though component count matches
-            ("Vector(4)", Value::Vector(vec![
-                Value::Real(0.0), Value::Real(0.0), Value::Real(0.0), Value::Real(1.0),
-            ])),
+            (
+                "Vector(4)",
+                Value::Vector(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(1.0),
+                ]),
+            ),
             // (c) Euler-tuple shape (List of three angles) — deliberately rejected
-            ("List(3 angles)", Value::List(vec![
-                Value::angle(0.1), Value::angle(0.2), Value::angle(0.3),
-            ])),
+            (
+                "List(3 angles)",
+                Value::List(vec![
+                    Value::angle(0.1),
+                    Value::angle(0.2),
+                    Value::angle(0.3),
+                ]),
+            ),
             // (d) NaN components
-            ("Orientation w=NaN", Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
-            ("Orientation x=NaN", Value::Orientation { w: 1.0, x: f64::NAN, y: 0.0, z: 0.0 }),
-            ("Orientation y=NaN", Value::Orientation { w: 1.0, x: 0.0, y: f64::NAN, z: 0.0 }),
-            ("Orientation z=NaN", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NAN }),
+            (
+                "Orientation w=NaN",
+                Value::Orientation {
+                    w: f64::NAN,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "Orientation x=NaN",
+                Value::Orientation {
+                    w: 1.0,
+                    x: f64::NAN,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "Orientation y=NaN",
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: f64::NAN,
+                    z: 0.0,
+                },
+            ),
+            (
+                "Orientation z=NaN",
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: f64::NAN,
+                },
+            ),
             // (e) Inf components — one Inf per axis covers the symmetric
             // `quaternion_is_finite` arms; +Inf and -Inf are mixed across
             // axes to exercise both signs.
-            ("Orientation w=Inf", Value::Orientation { w: f64::INFINITY, x: 0.0, y: 0.0, z: 0.0 }),
-            ("Orientation x=Inf", Value::Orientation { w: 1.0, x: f64::INFINITY, y: 0.0, z: 0.0 }),
-            ("Orientation y=Inf", Value::Orientation { w: 1.0, x: 0.0, y: f64::INFINITY, z: 0.0 }),
-            ("Orientation z=-Inf", Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: f64::NEG_INFINITY }),
+            (
+                "Orientation w=Inf",
+                Value::Orientation {
+                    w: f64::INFINITY,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "Orientation x=Inf",
+                Value::Orientation {
+                    w: 1.0,
+                    x: f64::INFINITY,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "Orientation y=Inf",
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: f64::INFINITY,
+                    z: 0.0,
+                },
+            ),
+            (
+                "Orientation z=-Inf",
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: f64::NEG_INFINITY,
+                },
+            ),
             // (f) zero-norm quaternion (normalize_quaternion returns None)
-            ("Orientation all-zero", Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 }),
+            (
+                "Orientation all-zero",
+                Value::Orientation {
+                    w: 0.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
         ];
 
         for (label, motion) in &cases {
@@ -4348,7 +5168,12 @@ mod tests {
     #[test]
     fn transform_at_spherical_identity_quaternion_returns_identity() {
         let sj = spherical_joint();
-        let identity_q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let identity_q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let result = eval_builtin("transform_at", &[sj, identity_q]);
         assert_transform_approx(
             &result,
@@ -4372,7 +5197,12 @@ mod tests {
         // (a) 90° about +Z: q = (cos(π/4), 0, 0, sin(π/4))
         let cos_q4 = (pi / 4.0).cos();
         let sin_q4 = (pi / 4.0).sin();
-        let q_z90 = Value::Orientation { w: cos_q4, x: 0.0, y: 0.0, z: sin_q4 };
+        let q_z90 = Value::Orientation {
+            w: cos_q4,
+            x: 0.0,
+            y: 0.0,
+            z: sin_q4,
+        };
         let result = eval_builtin("transform_at", &[spherical_joint(), q_z90]);
         assert_transform_approx(
             &result,
@@ -4383,7 +5213,12 @@ mod tests {
         );
 
         // (b) 180° about +X: q = (0, 1, 0, 0)
-        let q_x180 = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let q_x180 = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let result = eval_builtin("transform_at", &[spherical_joint(), q_x180]);
         assert_transform_approx(
             &result,
@@ -4400,7 +5235,10 @@ mod tests {
         let q_general = eval_builtin("orient_axis_angle", &[axis_xy, Value::Real(pi / 3.0)]);
         let (gw, gx, gy, gz) = match &q_general {
             Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
-            other => panic!("orient_axis_angle did not produce an Orientation: {:?}", other),
+            other => panic!(
+                "orient_axis_angle did not produce an Orientation: {:?}",
+                other
+            ),
         };
         let result = eval_builtin("transform_at", &[spherical_joint(), q_general.clone()]);
         assert_transform_approx(
@@ -4431,18 +5269,32 @@ mod tests {
 
         let cases: Vec<(&str, Vec<Value>)> = vec![
             // (a) wrong arg counts
-            ("0 args",  vec![]),
-            ("2 args",  vec![angle_range_0_to_pi(), angle_range_0_to_pi()]),
-            ("3 args",  vec![angle_range_0_to_pi(), angle_range_0_to_pi(), angle_range_0_to_pi()]),
+            ("0 args", vec![]),
+            ("2 args", vec![angle_range_0_to_pi(), angle_range_0_to_pi()]),
+            (
+                "3 args",
+                vec![
+                    angle_range_0_to_pi(),
+                    angle_range_0_to_pi(),
+                    angle_range_0_to_pi(),
+                ],
+            ),
             // (b) range_angle wrong dimension (LENGTH-typed range)
             ("LENGTH-typed range", vec![length_range_0_to_1m()]),
             // (c) range_angle unbounded
             ("unbounded upper", vec![unbounded_upper]),
             ("unbounded lower", vec![unbounded_lower]),
             // (d) range_angle non-Range types
-            ("bare Real",   vec![Value::Real(0.0)]),
-            ("bare Vector", vec![Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])]),
-            ("bare Map",    vec![Value::Map(Default::default())]),
+            ("bare Real", vec![Value::Real(0.0)]),
+            (
+                "bare Vector",
+                vec![Value::Vector(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ])],
+            ),
+            ("bare Map", vec![Value::Map(Default::default())]),
         ];
 
         for (label, args) in &cases {
@@ -4504,12 +5356,20 @@ mod tests {
         };
         assert_eq!(
             map.get(&Value::String("angular".to_string())),
-            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            Some(&Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0)
+            ])),
             "angular twist column should be [0, 0, 0]"
         );
         assert_eq!(
             map.get(&Value::String("linear".to_string())),
-            Some(&Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
+            Some(&Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0)
+            ])),
             "linear twist column should be [0, 0, 0]"
         );
     }
@@ -4565,7 +5425,10 @@ mod tests {
 
         // (a) hand-built Map with kind="cylindrical"
         let mut m = BTreeMap::new();
-        m.insert(Value::String("kind".to_string()), Value::String("cylindrical".to_string()));
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("cylindrical".to_string()),
+        );
         assert!(
             is_joint_value(&Value::Map(m)),
             "Map with kind='cylindrical' should be a joint value once step-16 adds the kind to JOINT_KINDS"
@@ -4760,7 +5623,11 @@ mod tests {
             Value::List(v) => v,
             other => panic!("{label}: expected List, got {:?}", other),
         };
-        assert_eq!(items.len(), 2, "{label}: List should have exactly 2 columns");
+        assert_eq!(
+            items.len(),
+            2,
+            "{label}: List should have exactly 2 columns"
+        );
 
         // column [0]: prismatic DOF
         assert_jacobian_map_components(
@@ -4842,27 +5709,42 @@ mod tests {
         let cyl = cylindrical_z_joint();
 
         let undef_cases: &[(&str, Value)] = &[
-            ("bare scalar Length",
-             Value::length(0.5)),
-            ("List of 0",
-             Value::List(vec![])),
-            ("List of 1 element",
-             Value::List(vec![Value::length(0.5)])),
-            ("List of 3 elements",
-             Value::List(vec![Value::length(0.5), Value::angle(0.0), Value::angle(0.0)])),
-            ("dim-swapped: [angle, length]",
-             Value::List(vec![Value::angle(0.5), Value::length(0.5)])),
-            ("NaN translation, valid angle",
-             Value::List(vec![Value::Real(f64::NAN), Value::angle(0.0)])),
-            ("Inf translation, valid angle",
-             Value::List(vec![Value::Real(f64::INFINITY), Value::angle(0.0)])),
-            ("valid translation, NaN rotation",
-             Value::List(vec![Value::length(0.0), Value::Real(f64::NAN)])),
-            ("zero translation, Inf rotation",
-             Value::List(vec![Value::length(0.0), Value::Real(f64::INFINITY)])),
+            ("bare scalar Length", Value::length(0.5)),
+            ("List of 0", Value::List(vec![])),
+            ("List of 1 element", Value::List(vec![Value::length(0.5)])),
+            (
+                "List of 3 elements",
+                Value::List(vec![
+                    Value::length(0.5),
+                    Value::angle(0.0),
+                    Value::angle(0.0),
+                ]),
+            ),
+            (
+                "dim-swapped: [angle, length]",
+                Value::List(vec![Value::angle(0.5), Value::length(0.5)]),
+            ),
+            (
+                "NaN translation, valid angle",
+                Value::List(vec![Value::Real(f64::NAN), Value::angle(0.0)]),
+            ),
+            (
+                "Inf translation, valid angle",
+                Value::List(vec![Value::Real(f64::INFINITY), Value::angle(0.0)]),
+            ),
+            (
+                "valid translation, NaN rotation",
+                Value::List(vec![Value::length(0.0), Value::Real(f64::NAN)]),
+            ),
+            (
+                "zero translation, Inf rotation",
+                Value::List(vec![Value::length(0.0), Value::Real(f64::INFINITY)]),
+            ),
             // Vector container is rejected (List-only contract, mirrors planar).
-            ("Vector container (wrong shape — List required)",
-             Value::Vector(vec![Value::length(0.5), Value::angle(0.0)])),
+            (
+                "Vector container (wrong shape — List required)",
+                Value::Vector(vec![Value::length(0.5), Value::angle(0.0)]),
+            ),
         ];
 
         for (label, motion) in undef_cases {
@@ -4910,7 +5792,11 @@ mod tests {
         let rr = angle_range_0_to_pi();
 
         // Wrong-dimensioned axis (LENGTH-typed Vector3)
-        let length_axis = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        let length_axis = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         // 2-component axis
         let axis2 = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)]);
         // Non-vector axis
@@ -4918,7 +5804,11 @@ mod tests {
         // Zero axis
         let zero_axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         // NaN axis
-        let nan_axis = Value::Vector(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        let nan_axis = Value::Vector(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
         // Unbounded range (lower=Some, upper=None)
         let unbounded = Value::Range {
             lower: Some(Box::new(Value::length(0.0))),
@@ -4935,24 +5825,57 @@ mod tests {
 
         let cases: Vec<(&str, Vec<Value>)> = vec![
             // (a) wrong arg counts
-            ("0 args",  vec![]),
-            ("1 arg",   vec![ax.clone()]),
-            ("2 args",  vec![ax.clone(), tr.clone()]),
-            ("4 args",  vec![ax.clone(), tr.clone(), rr.clone(), Value::Real(0.0)]),
+            ("0 args", vec![]),
+            ("1 arg", vec![ax.clone()]),
+            ("2 args", vec![ax.clone(), tr.clone()]),
+            (
+                "4 args",
+                vec![ax.clone(), tr.clone(), rr.clone(), Value::Real(0.0)],
+            ),
             // (b) axis invalid variants
-            ("axis: bare Real",          vec![non_vec.clone(), tr.clone(), rr.clone()]),
-            ("axis: 2-component",        vec![axis2.clone(), tr.clone(), rr.clone()]),
-            ("axis: LENGTH-dimensioned", vec![length_axis.clone(), tr.clone(), rr.clone()]),
-            ("axis: zero",               vec![zero_axis.clone(), tr.clone(), rr.clone()]),
-            ("axis: NaN",                vec![nan_axis.clone(), tr.clone(), rr.clone()]),
+            (
+                "axis: bare Real",
+                vec![non_vec.clone(), tr.clone(), rr.clone()],
+            ),
+            (
+                "axis: 2-component",
+                vec![axis2.clone(), tr.clone(), rr.clone()],
+            ),
+            (
+                "axis: LENGTH-dimensioned",
+                vec![length_axis.clone(), tr.clone(), rr.clone()],
+            ),
+            (
+                "axis: zero",
+                vec![zero_axis.clone(), tr.clone(), rr.clone()],
+            ),
+            ("axis: NaN", vec![nan_axis.clone(), tr.clone(), rr.clone()]),
             // (c) translation_range invalid
-            ("translation_range: bare Real",  vec![ax.clone(), Value::Real(1.0), rr.clone()]),
-            ("translation_range: unbounded",  vec![ax.clone(), unbounded.clone(), rr.clone()]),
-            ("translation_range: ANGLE-dim",  vec![ax.clone(), angle_range_0_to_pi(), rr.clone()]),
+            (
+                "translation_range: bare Real",
+                vec![ax.clone(), Value::Real(1.0), rr.clone()],
+            ),
+            (
+                "translation_range: unbounded",
+                vec![ax.clone(), unbounded.clone(), rr.clone()],
+            ),
+            (
+                "translation_range: ANGLE-dim",
+                vec![ax.clone(), angle_range_0_to_pi(), rr.clone()],
+            ),
             // (d) rotation_range invalid
-            ("rotation_range: bare Real",     vec![ax.clone(), tr.clone(), Value::Real(1.0)]),
-            ("rotation_range: unbounded",     vec![ax.clone(), tr.clone(), unbounded_angle.clone()]),
-            ("rotation_range: LENGTH-dim",    vec![ax.clone(), tr.clone(), length_range_0_to_1m()]),
+            (
+                "rotation_range: bare Real",
+                vec![ax.clone(), tr.clone(), Value::Real(1.0)],
+            ),
+            (
+                "rotation_range: unbounded",
+                vec![ax.clone(), tr.clone(), unbounded_angle.clone()],
+            ),
+            (
+                "rotation_range: LENGTH-dim",
+                vec![ax.clone(), tr.clone(), length_range_0_to_1m()],
+            ),
         ];
 
         for (label, args) in &cases {
@@ -4976,7 +5899,11 @@ mod tests {
         let rotation_range = angle_range_0_to_pi();
         let result = eval_builtin(
             "cylindrical",
-            &[axis.clone(), translation_range.clone(), rotation_range.clone()],
+            &[
+                axis.clone(),
+                translation_range.clone(),
+                rotation_range.clone(),
+            ],
         );
 
         let map = match result {
@@ -5012,5 +5939,4 @@ mod tests {
             map.keys().collect::<Vec<_>>()
         );
     }
-
 }
