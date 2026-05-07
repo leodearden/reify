@@ -1118,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn acceleration_has_m_per_s_squared_exponents() {
+    fn acceleration_canonical_name_is_acceleration() {
         let a = DimensionVector::ACCELERATION;
         assert_eq!(a.canonical_name(), Some("Acceleration"));
     }
@@ -1137,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn force_density_has_kg_per_m_squared_per_s_squared_exponents() {
+    fn force_density_canonical_name_is_force_density() {
         let fd = DimensionVector::FORCE_DENSITY;
         assert_eq!(fd.canonical_name(), Some("ForceDensity"));
     }
