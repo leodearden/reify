@@ -1020,3 +1020,162 @@ fn external_collection_sub_indexed_dot_cluster_dot_divergent_types_emits_diagnos
     // errors in the surrounding expr.
     assert_no_cascade(&errors);
 }
+
+// ─── Task 3045 regression tests — non-finite / out-of-range literal index ────
+//
+// These tests pin the guard added at expr.rs:1342 that rejects NaN, ±∞, and
+// large-magnitude finite floats (e.g. 1e20) as collection-sub indices.
+// Previously those values passed the `n.fract() != 0.0 || *n < 0.0` check and
+// `*n as i64` saturated silently to i64::MAX, producing a bogus ValueRef
+// pointing to a non-existent cell.
+
+/// Task 3045: `bolts[NaN].across_flats` must emit exactly one "out of range or
+/// non-finite" error diagnostic and return a poison literal, not a silent ValueRef.
+///
+/// Constructs:
+/// ```text
+/// structure def Bolt   { param across_flats : Real }
+/// structure def Driver {
+///     sub bolts : List<Bolt>
+///     let probe = bolts[NaN].across_flats
+/// }
+/// ```
+#[test]
+fn collection_sub_indexed_nan_emits_out_of_range_diagnostic() {
+    let bolt = structure_with_members("Bolt", vec![param_member("across_flats", "Real")]);
+
+    let probe_expr = member_access(index_access(make_ident_expr("bolts"), f64::NAN), "across_flats");
+    let probe = let_member("probe", probe_expr);
+    let driver = structure_with_members(
+        "Driver",
+        vec![collection_sub_member("bolts", "Bolt"), probe],
+    );
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_collection_sub_nan_index"),
+        declarations: vec![bolt, driver],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors = error_diagnostics(&compiled);
+
+    let matching: Vec<&&reify_types::Diagnostic> = errors
+        .iter()
+        .filter(|d| d.message.contains("out of range or non-finite"))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one 'out of range or non-finite' error for NaN index, \
+         got {} (all errors: {:#?})",
+        matching.len(),
+        errors
+    );
+    assert_no_cascade(&errors);
+}
+
+/// Task 3045: `bolts[+∞].across_flats` must emit exactly one "out of range or
+/// non-finite" error diagnostic and return a poison literal.
+///
+/// Constructs:
+/// ```text
+/// structure def Bolt   { param across_flats : Real }
+/// structure def Driver {
+///     sub bolts : List<Bolt>
+///     let probe = bolts[+inf].across_flats
+/// }
+/// ```
+#[test]
+fn collection_sub_indexed_infinity_emits_out_of_range_diagnostic() {
+    let bolt = structure_with_members("Bolt", vec![param_member("across_flats", "Real")]);
+
+    let probe_expr = member_access(
+        index_access(make_ident_expr("bolts"), f64::INFINITY),
+        "across_flats",
+    );
+    let probe = let_member("probe", probe_expr);
+    let driver = structure_with_members(
+        "Driver",
+        vec![collection_sub_member("bolts", "Bolt"), probe],
+    );
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_collection_sub_infinity_index"),
+        declarations: vec![bolt, driver],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors = error_diagnostics(&compiled);
+
+    let matching: Vec<&&reify_types::Diagnostic> = errors
+        .iter()
+        .filter(|d| d.message.contains("out of range or non-finite"))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one 'out of range or non-finite' error for +∞ index, \
+         got {} (all errors: {:#?})",
+        matching.len(),
+        errors
+    );
+    assert_no_cascade(&errors);
+}
+
+/// Task 3045: `bolts[1e20].across_flats` must emit exactly one "out of range or
+/// non-finite" error diagnostic and return a poison literal, not a silent ValueRef
+/// pointing to a bogus `Driver.bolts[9223372036854775807]` cell.
+///
+/// 1e20 is a finite, integer-valued float that passes `n.fract() != 0.0 || *n < 0.0`
+/// but is larger than i64::MAX — the silent-saturation case closed by task 3045.
+///
+/// Constructs:
+/// ```text
+/// structure def Bolt   { param across_flats : Real }
+/// structure def Driver {
+///     sub bolts : List<Bolt>
+///     let probe = bolts[1e20].across_flats
+/// }
+/// ```
+#[test]
+fn collection_sub_indexed_1e20_emits_out_of_range_diagnostic() {
+    let bolt = structure_with_members("Bolt", vec![param_member("across_flats", "Real")]);
+
+    let probe_expr = member_access(index_access(make_ident_expr("bolts"), 1e20_f64), "across_flats");
+    let probe = let_member("probe", probe_expr);
+    let driver = structure_with_members(
+        "Driver",
+        vec![collection_sub_member("bolts", "Bolt"), probe],
+    );
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_collection_sub_1e20_index"),
+        declarations: vec![bolt, driver],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors = error_diagnostics(&compiled);
+
+    let matching: Vec<&&reify_types::Diagnostic> = errors
+        .iter()
+        .filter(|d| d.message.contains("out of range or non-finite"))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one 'out of range or non-finite' error for 1e20 index, \
+         got {} (all errors: {:#?})",
+        matching.len(),
+        errors
+    );
+    assert_no_cascade(&errors);
+}
