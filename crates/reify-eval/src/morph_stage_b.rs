@@ -788,6 +788,41 @@ mod tests {
         );
     }
 
+    /// Bug: when `old_faces` is empty and `new_faces` contains a single unattributed
+    /// handle, the current code enters the imported-geometry pre-pass which computes
+    /// `old_attributed == 0` (vacuously — empty slice) and `new_attributed == 0`
+    /// (h(20) absent from new_table), triggering `NamingLayerError::Imported`.
+    ///
+    /// The correct result is `CountMismatch { old_count: 0, new_count: 1 }` because
+    /// asymmetric counts make a bijection impossible regardless of attribution status.
+    ///
+    /// See task 3057: asymmetric-empty + unattributed-handle scenario.
+    #[test]
+    fn stage_b_eligible_empty_old_with_unattributed_new_returns_count_mismatch() {
+        let old_table = TopologyAttributeTable::default(); // empty — no attributes
+        let new_table = TopologyAttributeTable::default(); // empty — h(20) deliberately absent
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[],      // old_faces: empty
+            &[h(20)], // new_faces: one handle, unattributed
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            result,
+            Err(BijectionFailure::CountMismatch {
+                kind: SubShapeKind::Face,
+                old_count: 0,
+                new_count: 1,
+            }),
+            "empty old_faces vs one unattributed new face must be CountMismatch, \
+             not NamingLayerError::Imported"
+        );
+    }
+
     // step-15: vertex_to_vertex is always empty in v0.2
     /// Behaviour guard: even when old_vertices and new_vertices are non-empty and
     /// both carry attributes in their respective tables, `vertex_to_vertex` must
