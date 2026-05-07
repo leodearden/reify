@@ -250,20 +250,26 @@ fn match_one_kind(
     // The upstream kernel (`extract_faces` / `extract_edges`) guarantees
     // uniqueness by construction; we assert it here to catch any future caller
     // that violates the contract.
+    // Gated behind `#[cfg(debug_assertions)]` so the HashSet allocation and
+    // per-iteration insert are structurally absent (not merely DCE-eligible)
+    // in release builds. See task 3102 / Task 2727 (`tolerance_scope.rs`) for
+    // precedent.
+    #[cfg(debug_assertions)]
     {
         let mut seen = HashSet::with_capacity(old.len());
         for &h in old {
-            debug_assert!(
+            assert!(
                 seen.insert(h),
                 "old slice passed to match_one_kind contains duplicate GeometryHandleId: {:?}",
                 h
             );
         }
     }
+    #[cfg(debug_assertions)]
     {
         let mut seen = HashSet::with_capacity(new.len());
         for &h in new {
-            debug_assert!(
+            assert!(
                 seen.insert(h),
                 "new slice passed to match_one_kind contains duplicate GeometryHandleId: {:?}",
                 h
@@ -360,7 +366,9 @@ fn match_one_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable};
+    use reify_types::{
+        CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable,
+    };
 
     fn feat() -> FeatureId {
         FeatureId::new("Feature#realization[0]")
@@ -413,16 +421,7 @@ mod tests {
     fn stage_b_eligible_empty_inputs_returns_empty_correspondence_map() {
         let old_table = TopologyAttributeTable::default();
         let new_table = TopologyAttributeTable::default();
-        let result = stage_b_eligible(
-            &old_table,
-            &new_table,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-        );
+        let result = stage_b_eligible(&old_table, &new_table, &[], &[], &[], &[], &[], &[]);
         let map = result.expect("empty inputs must succeed");
         assert!(
             map.face_to_face.is_empty(),
@@ -738,11 +737,18 @@ mod tests {
             &[],
         );
         let map = result.expect("two distinct matching faces must succeed");
-        assert_eq!(map.face_to_face.len(), 2, "both pairs must be in face_to_face");
+        assert_eq!(
+            map.face_to_face.len(),
+            2,
+            "both pairs must be in face_to_face"
+        );
         assert_eq!(map.face_to_face.get(&h(10)), Some(&h(20)), "h(10) → h(20)");
         assert_eq!(map.face_to_face.get(&h(11)), Some(&h(21)), "h(11) → h(21)");
         assert!(map.edge_to_edge.is_empty(), "edge_to_edge must be empty");
-        assert!(map.vertex_to_vertex.is_empty(), "vertex_to_vertex must be empty");
+        assert!(
+            map.vertex_to_vertex.is_empty(),
+            "vertex_to_vertex must be empty"
+        );
     }
 
     // amend-1b: duplicate-attribute pairs (two old + two new sharing identical
@@ -772,10 +778,22 @@ mod tests {
             &[],
         );
         let map = result.expect("duplicate attributes: greedy first-fit must succeed");
-        assert_eq!(map.face_to_face.len(), 2, "both duplicate-attr pairs must be matched");
+        assert_eq!(
+            map.face_to_face.len(),
+            2,
+            "both duplicate-attr pairs must be matched"
+        );
         // Greedy first-fit assigns h(10)→h(20) and h(11)→h(21) (slice order).
-        assert_eq!(map.face_to_face.get(&h(10)), Some(&h(20)), "h(10) → h(20) (first-fit)");
-        assert_eq!(map.face_to_face.get(&h(11)), Some(&h(21)), "h(11) → h(21) (first-fit)");
+        assert_eq!(
+            map.face_to_face.get(&h(10)),
+            Some(&h(20)),
+            "h(10) → h(20) (first-fit)"
+        );
+        assert_eq!(
+            map.face_to_face.get(&h(11)),
+            Some(&h(21)),
+            "h(11) → h(21) (first-fit)"
+        );
     }
 
     // amend-2: faces AND edges populated together in one call — guards against
@@ -801,10 +819,21 @@ mod tests {
         );
         let map = result.expect("matching face + edge in same call must succeed");
         assert_eq!(map.face_to_face.len(), 1, "one face pair");
-        assert_eq!(map.face_to_face.get(&h(10)), Some(&h(20)), "face: h(10) → h(20)");
+        assert_eq!(
+            map.face_to_face.get(&h(10)),
+            Some(&h(20)),
+            "face: h(10) → h(20)"
+        );
         assert_eq!(map.edge_to_edge.len(), 1, "one edge pair");
-        assert_eq!(map.edge_to_edge.get(&h(30)), Some(&h(40)), "edge: h(30) → h(40)");
-        assert!(map.vertex_to_vertex.is_empty(), "vertex_to_vertex must be empty");
+        assert_eq!(
+            map.edge_to_edge.get(&h(30)),
+            Some(&h(40)),
+            "edge: h(30) → h(40)"
+        );
+        assert!(
+            map.vertex_to_vertex.is_empty(),
+            "vertex_to_vertex must be empty"
+        );
     }
 
     // amend-3: partial attribution on the NEW side — symmetric coverage for the
@@ -913,7 +942,9 @@ mod tests {
     // step-1 (task 3055): duplicate old handles → should panic in debug builds
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "old slice passed to match_one_kind contains duplicate GeometryHandleId")]
+    #[should_panic(
+        expected = "old slice passed to match_one_kind contains duplicate GeometryHandleId"
+    )]
     fn match_one_kind_panics_in_debug_on_duplicate_old_handles() {
         // old_table: one attribute under h(10); new_table: two attributes under
         // h(20)/h(30). Both sides are attributed so the imported pre-pass is
@@ -939,7 +970,9 @@ mod tests {
     // step-3 (task 3055): duplicate new handles → should panic in debug builds
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "new slice passed to match_one_kind contains duplicate GeometryHandleId")]
+    #[should_panic(
+        expected = "new slice passed to match_one_kind contains duplicate GeometryHandleId"
+    )]
     fn match_one_kind_panics_in_debug_on_duplicate_new_handles() {
         // old_table: two attributes under h(10)/h(11); new_table: one attribute
         // under h(20). Both sides are attributed so the imported pre-pass is
