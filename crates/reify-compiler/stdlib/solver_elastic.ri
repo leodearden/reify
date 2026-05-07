@@ -70,7 +70,7 @@ enum ShellForce { Off, Auto, On }
 // ── ElasticOptions ───────────────────────────────────────────────────────────
 
 // `ElasticOptions` is the configuration object passed to the FEA solver.
-// All nine params have sensible defaults so a bare `ElasticOptions()`
+// All eleven params have sensible defaults so a bare `ElasticOptions()`
 // instantiation compiles and yields the standard solver setup; callers
 // override individual fields at construction (e.g.,
 // `ElasticOptions(element_order: ElementOrder.P2, max_iter: 5000)`).
@@ -124,6 +124,23 @@ enum ShellForce { Off, Auto, On }
 //                            3-D solid formulation for all bodies; `On`
 //                            forces shell formulation for all bodies.
 //                            See `ShellForce` enum doc.
+//   force_tet              — when `true`, disables hex/wedge promotion entirely
+//                            and forces a pure tetrahedral mesh. Default `false`
+//                            (promotion is automatic when detection succeeds).
+//                            Useful for debugging or A/B accuracy studies at
+//                            equal DOF count. PRD `docs/prds/v0_3/hex-wedge-
+//                            meshing.md` task #9, §"Two opposing escape hatches".
+//                            Mutual exclusion: `!(force_tet && require_hex_wedge)`
+//                            is enforced by a structure-level constraint.
+//   require_hex_wedge      — when `true`, upgrades any tet fall-back to a hard
+//                            error ("tell me if my geometry doesn't qualify").
+//                            Default `false` (fall-back to tets is silent).
+//                            Designed for thin-body performance-tuning workflows
+//                            where the caller needs confirmation that hex/wedge
+//                            elements were actually generated. PRD `docs/prds/
+//                            v0_3/hex-wedge-meshing.md` task #9, §"Two opposing
+//                            escape hatches". Mutual exclusion: same constraint
+//                            as `force_tet` above.
 structure def ElasticOptions {
     param element_order : ElementOrder = ElementOrder.P1
     param mesh_size : Option<Length> = none
@@ -134,6 +151,8 @@ structure def ElasticOptions {
     param shell_voxel_size : Option<Length> = none
     param shell_branch_prune_ratio : Real = 1.01
     param shell_force : ShellForce = ShellForce.Auto
+    param force_tet : Bool = false
+    param require_hex_wedge : Bool = false
 
     // A non-positive `max_iter` would let the solver exit before doing any
     // work; declaring the lower bound at the structure-def level makes the
