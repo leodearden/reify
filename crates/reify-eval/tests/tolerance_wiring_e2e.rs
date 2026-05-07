@@ -421,6 +421,112 @@ fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
     );
 }
 
+/// Step-13 (locks the partial-order semantics on the realization-cache
+/// integration: a tighter demand cannot be served by a looser cached entry).
+///
+/// The `RealizationCache::lookup` rule (`cached_tol ≤ requested_tol`)
+/// implements the "tighter satisfies looser" contract pinned at
+/// `realization_cache.rs:101-116`: a cache populated at 1e-6 satisfies a
+/// later request at any `tol ≥ 1e-6` (looser-or-equal), but a request at
+/// `tol < 1e-6` (tighter) MUST miss because the cached representation is
+/// at 1e-6 precision — insufficient for the tighter consumer. This test
+/// pins that the cache integration honours that rule end-to-end through
+/// `Engine::execute_realization_ops`'s cache-hit short-circuit (step-8).
+///
+/// Setup mirrors step-7 except a SECOND `manufacturing_tighter` purpose at
+/// 1e-9 m is compiled into the same module. After the first `build()` (with
+/// `manufacturing` at 1e-6 active) the cache is populated at
+/// `("MyDesign", BRep, 1e-6)`. We then deactivate `manufacturing`, activate
+/// `manufacturing_tighter` (which substitutes a fresh 1e-9 m
+/// `RepresentationWithin` constraint at the same subject), and run `build()`
+/// again. The second build's pre-`check()` precompute computes
+/// `demanded_tol = Some(1e-9)` (the tightest contributor across the active
+/// scope), threads that into `execute_realization_ops`, and the cache lookup
+/// at `("MyDesign", BRep, 1e-9)` MISSES the cached `1e-6` entry — kernel
+/// re-executes the realization ops, growing `kernel.operations()`.
+///
+/// The post-second-build `kernel.operations()` count must therefore strictly
+/// EXCEED the post-first-build count (cache-miss path: kernel was invoked
+/// again to satisfy the tighter demand). If the assertion fails — i.e. the
+/// counts are equal — the cache is incorrectly serving a tighter request
+/// from a looser cached entry, breaking the partial-order contract.
+///
+/// Step-14 (verification-only impl) confirms that no new wiring is needed:
+/// the bucket lookup primitive already enforces `cached_tol ≤ requested_tol`,
+/// and the engine wiring threads the requested tolerance to the bucket's
+/// lookup unchanged. If this test FAILS today, the bug is in the
+/// step-6 / step-8 wiring's cache-key value plumbing (stale `demanded_tol`
+/// captured across builds) — investigate at the precompute site
+/// (`tessellate_realizations` / `build`) and at the cache-lookup site at the
+/// top of `execute_realization_ops`.
+#[test]
+fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_cache_miss_when_purpose_changes_demand".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .compiled_purpose(manufacturing_purpose("manufacturing_tighter", 1e-9))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_handle = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let _build1 = engine.build(&module, ExportFormat::Step);
+    let ops_after_first = ops_handle.lock().unwrap().len();
+    assert!(
+        ops_after_first >= 1,
+        "expected first build() to invoke the kernel at least once \
+         (cache miss → realization ops dispatched, cache populated at \
+         (MyDesign, BRep, 1e-6)); got ops_after_first={}",
+        ops_after_first,
+    );
+    // Confirm the cache was populated at the looser tolerance — proves the
+    // setup of the partial-order test is correct (without this pin, a bug
+    // that fails to populate the cache at all would cause the second build
+    // to also see ops_after_second > ops_after_first via the same "no cache"
+    // path, falsely satisfying the test's headline assertion below).
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .is_some(),
+        "expected first build to populate the cache at (MyDesign, BRep, 1e-6); \
+         partial-order test premise requires this entry to exist before the \
+         tighter-demand request",
+    );
+
+    // Switch to a strictly-tighter purpose: deactivate the 1µm manufacturing
+    // and activate the 1nm one. `activate_purpose` is a no-op if the named
+    // purpose is already active, so we MUST deactivate first to swap demand.
+    engine.deactivate_purpose("manufacturing");
+    engine.activate_purpose("manufacturing_tighter", "MyDesign");
+
+    let _build2 = engine.build(&module, ExportFormat::Step);
+    let ops_after_second = ops_handle.lock().unwrap().len();
+    assert!(
+        ops_after_second > ops_after_first,
+        "expected second build() at the strictly-tighter demanded tolerance \
+         (1e-9) to MISS the cached entry at (MyDesign, BRep, 1e-6) and \
+         re-invoke the kernel — the partial-order rule (cached_tol ≤ \
+         requested_tol) blocks a 1e-6 cached entry from satisfying a 1e-9 \
+         request because 1e-6 > 1e-9 (\"tighter\" is not \"looser-or-equal\"). \
+         Got ops_after_first={}, ops_after_second={} — equal counts indicate \
+         the cache served a tighter request from a looser cached entry, \
+         violating the partial-order contract pinned by \
+         `RealizationCache::lookup` (realization_cache.rs:101-116) and \
+         `ToleranceBucket::lookup`.",
+        ops_after_first,
+        ops_after_second,
+    );
+}
+
 /// Step-9 (failing initially; passes once step-10 adds the
 /// `Engine::compute_realization_tolerance_budget(&self, registry, demanded_tol)`
 /// helper that synthesises a `DispatchPlan` via
