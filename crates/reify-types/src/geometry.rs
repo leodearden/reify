@@ -2730,6 +2730,31 @@ mod tests {
         assert_eq!(records.face_generated.len(), 1);
     }
 
+    #[test]
+    fn sweep_op_history_records_exposes_silent_drop_count_field() {
+        // (a) Default value is zero — no drops on the happy path.
+        assert_eq!(
+            SweepOpHistoryRecords::default().silent_drop_count,
+            0,
+            "default silent_drop_count must be 0"
+        );
+        // (b) The field can be set and read back.
+        let records = SweepOpHistoryRecords {
+            silent_drop_count: 7,
+            ..SweepOpHistoryRecords::default()
+        };
+        assert_eq!(
+            records.silent_drop_count, 7,
+            "silent_drop_count should round-trip through struct literal"
+        );
+        // (c) Clone preserves the value.
+        let cloned = records.clone();
+        assert_eq!(
+            cloned.silent_drop_count, 7,
+            "clone must preserve silent_drop_count"
+        );
+    }
+
     // --- task 5a (#2573): AttributeHistory enum + execute_with_history default ---
 
     #[test]
