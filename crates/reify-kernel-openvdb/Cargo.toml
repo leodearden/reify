@@ -4,10 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "OpenVDB voxel-Boolean kernel adapter"
+build = "build.rs"
 
 [dependencies]
 reify-types.workspace = true
 inventory.workspace = true
+cxx = "1"
+
+[build-dependencies]
+cxx-build = "1"
+cc = "1"
 
 # `reify-eval` is a dev-dependency (not a normal dep) for the same reason the
 # OCCT, Manifold, and Fidget adapters exclude it from production deps: adapter
@@ -20,3 +26,4 @@ inventory.workspace = true
 [dev-dependencies]
 reify-eval.workspace = true
 reify-test-support.workspace = true
+tempfile.workspace = true
