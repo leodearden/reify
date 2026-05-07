@@ -1762,8 +1762,8 @@ fn dfs_phase_a_overflow_on_first_param_halts_before_cap_check() {
 /// in `resolve_auto_type_params_with_backtracking`: Phase A enumeration phase
 /// completes for both T and U, recursion enters and visits every leaf, and
 /// every leaf is infeasible — `feasible_assignments.len() == 0`. The
-/// orchestrator then emits a single `AutoTypeParamNoCandidate` (zero-rejections
-/// form) anchored on `params[0]` and produces
+/// orchestrator then emits a single `AutoTypeParamNoCandidate` (v0.2 rich
+/// cross-product form) anchored on `params[0]` and produces
 /// `per_param == [(T, NoCandidate)]`, `substitution == []`.
 ///
 /// Distinct from the Phase A empty-pool halt
@@ -1774,14 +1774,15 @@ fn dfs_phase_a_overflow_on_first_param_halts_before_cap_check() {
 /// same outward `NoCandidate` shape but reach it through different paths,
 /// and the branch is small but distinct enough to drift independently.
 ///
-/// Pins:
+/// Narrowed in task 2663 to its **core shape contract** only:
 /// - `per_param == [(T, NoCandidate)]` — single-entry, anchored on params[0]
 /// - `substitution.is_empty()`
-/// - exactly one `AutoTypeParamNoCandidate` diagnostic
-/// - the diagnostic uses the zero-rejections message form (no
-///   "rejected by constraint" suffix), confirming the `0 =>` arm reuses
-///   `emit_no_candidate_zero_rejections` rather than a Phase C all-rejected
-///   path
+/// - exactly one `AutoTypeParamNoCandidate` Error diagnostic
+///
+/// Message-content pins for the v0.2 rich format (parameter list, candidate
+/// counts, cross-product size, depth context, smallest infeasibility witness,
+/// `Diagnostic::candidates` shape, label anchor) live in the dedicated
+/// `dfs_zero_feasible_diagnostic_*` tests below.
 #[test]
 fn dfs_multi_param_all_leaves_violated_emits_no_candidate_on_first_param() {
     let source = r#"
@@ -1874,20 +1875,10 @@ structure def WaterCooled : Cooled {
         Severity::Error,
         "AutoTypeParamNoCandidate must be Error severity"
     );
-    // Zero-rejections message form: bound mentioned, no "rejected by constraint"
-    // suffix (distinguishes the cross-product `0 =>` arm from a hypothetical
-    // Phase C all-rejected path that would carry per-candidate rejection
-    // detail). Pins reuse of `emit_no_candidate_zero_rejections`.
-    assert!(
-        diagnostics[0].message.contains("'Seal'"),
-        "DFS `0 =>` arm diagnostic must mention params[0]'s bound 'Seal'; got: {:?}",
-        diagnostics[0].message
-    );
-    assert!(
-        !diagnostics[0].message.contains("rejected by constraint"),
-        "DFS `0 =>` arm (zero-rejections form) must NOT mention 'rejected by constraint'; got: {:?}",
-        diagnostics[0].message
-    );
+    // Message-content pins (parameter list, candidate counts, cross-product
+    // size, depth context, smallest infeasibility witness, candidates field,
+    // label anchor) live in the dedicated `dfs_zero_feasible_diagnostic_*`
+    // tests below. This test is narrowed to the core shape contract.
 }
 
 // ─── v0.2 rich diagnostic format — `0 =>` arm cross-product no-feasible ────

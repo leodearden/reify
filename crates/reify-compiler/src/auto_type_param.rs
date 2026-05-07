@@ -440,6 +440,14 @@ fn emit_no_feasible_cross_product_diagnostic(
         size = cross_product_size,
     );
 
+    // Single label anchored on `params[0].use_site_span` — the
+    // **first-param anchoring convention** shared by every multi-param
+    // auto-type-param diagnostic (v0.1 BFS strict-Ambiguous, post-2659
+    // cross-product Ambiguous, this v0.2 cross-product no-feasible). The
+    // label-message string is rendered via `render_auto_type_param_label`
+    // (single source of truth for diagnostic-label wording across all
+    // emission sites). Pinned by
+    // `dfs_zero_feasible_diagnostic_anchored_on_first_param_use_site_span`.
     diagnostics.push(
         Diagnostic::error(message)
             .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
