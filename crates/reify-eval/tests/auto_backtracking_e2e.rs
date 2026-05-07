@@ -313,3 +313,162 @@ structure def WaterCooled : Cooled {
         diagnostics
     );
 }
+
+// ─── Scenario 3: 3-param, blame T — DFS backjumps from V directly to T ───────
+
+/// Scenario: 3 coupled auto-params `[T: Seal, U: Cooled, V: Mounted]`, 2
+/// candidates each (8-leaf cross-product).  The parameterized template carries
+/// one constraint whose expression references a cell typed as
+/// `TypeParam("T")`.  `build_constraint_blame_map` therefore records blame set
+/// `{0}` (= T) for that constraint.
+///
+/// With queue `[Violated]` and default `Satisfied`, the first leaf
+/// `(ORingSeal, AirCooled, BoltedMount)` is infeasible, blame = T(0).
+/// DFS backjumps from level 2 (V) directly to level 0 (T), skipping U
+/// entirely — the entire `(ORingSeal, *, *)` sub-tree (4 leaves) is skipped.
+/// DFS advances T to RubberSeal and finds `(RubberSeal, AirCooled, BoltedMount)`
+/// as the lex-first feasible leaf.
+///
+/// Observable distinction from normal (non-backjumping) DFS: without
+/// backjumping the second leaf would be `(ORingSeal, AirCooled, WeldedMount)`
+/// (Satisfied), yielding T=ORingSeal in the result.  With backjumping,
+/// T=RubberSeal is the first T candidate that actually appears in a feasible
+/// leaf — proving the backjump skipped the ORingSeal sub-tree.
+///
+/// Pins task 2660 deepest-blame backjump semantics,
+/// PRD §"Sketch of approach" backjumping bullet.
+#[test]
+fn bfs_fails_3_param_violation_blames_first_param_dfs_backjumps_directly() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+trait Mounted {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+
+structure def BoltedMount : Mounted {
+    param torque : Real = 50.0
+}
+
+structure def WeldedMount : Mounted {
+    param thickness : Real = 3.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template: one cell typed TypeParam("T") + one constraint that ValueRefs
+    // it.  build_constraint_blame_map records blame = {T(0)} for this
+    // constraint.  When the constraint is violated, DFS backjumps to T level.
+    let field_t = ValueCellId::new("Coupling", "field_t");
+    let expr_t = CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .constraint("Coupling", 0, None, expr_t)
+        .build();
+
+    // Queue: leaf 1 (ORingSeal, AirCooled, BoltedMount) → Violated, blame T(0)
+    //        → backjump to T; all subsequent leaves use default Satisfied.
+    let checker =
+        MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "V".to_string(),
+            bounds: vec!["Mounted".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    // With backjumping to T: the entire (ORingSeal, *, *) sub-tree is skipped.
+    // Lex-first feasible is (RubberSeal, AirCooled, BoltedMount).
+    // Without backjumping (normal DFS): second leaf would be
+    // (ORingSeal, AirCooled, WeldedMount) → T=ORingSeal.
+    assert_eq!(
+        outcome.substitution[0],
+        ("T".to_string(), "RubberSeal".to_string()),
+        "WITH backjumping to T(0): T must be RubberSeal (not ORingSeal); \
+         backjump skipped the entire (ORingSeal,*,*) sub-tree; got: {:?}",
+        outcome.substitution
+    );
+    assert_eq!(
+        outcome.substitution[1],
+        ("U".to_string(), "AirCooled".to_string()),
+        "U must be AirCooled (lex-first Cooled under RubberSeal); got: {:?}",
+        outcome.substitution
+    );
+    assert_eq!(
+        outcome.substitution[2],
+        ("V".to_string(), "BoltedMount".to_string()),
+        "V must be BoltedMount (lex-first Mounted under RubberSeal, AirCooled); got: {:?}",
+        outcome.substitution
+    );
+    // With backjumping, ORingSeal was never recorded as part of a feasible
+    // leaf — must NOT appear in the NonUnique witness list.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "4 feasibles under RubberSeal → exactly one NonUnique Warning; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert!(
+        !diagnostics[0].message.contains("ORingSeal"),
+        "WITH backjumping: ORingSeal sub-tree never visited as feasible; \
+         NonUnique message must NOT mention 'ORingSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("RubberSeal"),
+        "all feasibles are under RubberSeal; NonUnique message must contain \
+         'RubberSeal'; got: {:?}",
+        diagnostics[0].message
+    );
+}
