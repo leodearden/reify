@@ -83,7 +83,8 @@ pub fn build_field_import_provenance(
         // `extract_input_tolerance_promise_accepts_zero_promise`).
         // NOTE: malformed values are dropped silently — see the "Warning"
         // in the function doc comment above.
-        declared_tolerance_si: declared_tolerance_si.filter(|v| v.is_finite() && *v >= 0.0),
+        declared_tolerance_si: declared_tolerance_si
+            .filter(|v| crate::tolerance_gate::is_valid_tolerance_si(*v)),
     }
 }
 
