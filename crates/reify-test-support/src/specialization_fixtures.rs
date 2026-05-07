@@ -43,8 +43,15 @@ pub fn sub_span() -> SourceSpan {
     SourceSpan::new(90, 110)
 }
 
-/// Zero span: bytes 0–0.  Used by the compiler integration tests where the
-/// structure-level span is conventionally zero.
+/// Zero span: bytes 0–0.  Used at **member-level** positions in the
+/// compiler integration tests in
+/// `tests/specialization_scope_validation_tests.rs` — sub-member spans,
+/// param-member spans, `MatchArmDeclArmDecl` spans, the discriminant
+/// `Expr` span, and `MatchArmDeclGroupDecl` spans — where exact byte
+/// offsets don't matter for the diagnostic assertions under test.
+///
+/// The **structure-level** span in those tests comes from
+/// [`parsed_module_with_structure_members`], which uses [`dummy_span()`].
 pub fn zero_span() -> SourceSpan {
     SourceSpan::new(0, 0)
 }
