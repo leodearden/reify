@@ -41,6 +41,29 @@ impl ShellReferenceCoord {
     }
 }
 
+/// An edge-midpoint tying point used for the assumed transverse-shear strain
+/// interpolation in MITC3+ (Bathe & Lee 2014).
+///
+/// Three tying points A, B, C sit at the edge midpoints of the reference
+/// triangle.  The covariant transverse-shear strains are sampled at these
+/// points and blended to form the assumed strain field used in the element
+/// stiffness matrix (T6 concern).
+///
+/// - **A** = `(½, 0)` — midpoint of the `v_0–v_1` edge; `γ_ξζ` sampled here.
+/// - **B** = `(0, ½)` — midpoint of the `v_0–v_2` edge; `γ_ηζ` sampled here.
+/// - **C** = `(½, ½)` — midpoint of the `v_1–v_2` edge; both components coupled.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TyingPoint {
+    pub coord: ShellReferenceCoord,
+}
+
+/// Static array of the three MITC3+ tying points in canonical A, B, C order.
+const TYING_POINTS: &[TyingPoint] = &[
+    TyingPoint { coord: ShellReferenceCoord::new(0.5, 0.0) }, // A
+    TyingPoint { coord: ShellReferenceCoord::new(0.0, 0.5) }, // B
+    TyingPoint { coord: ShellReferenceCoord::new(0.5, 0.5) }, // C
+];
+
 /// MITC3+ Reissner-Mindlin triangular shell element.
 ///
 /// Three-node element on the reference triangle with vertices `(0,0)`,
@@ -110,6 +133,16 @@ impl Mitc3Plus {
     pub fn shape_at(&self, coord: ShellReferenceCoord) -> [f64; 3] {
         let ShellReferenceCoord { xi, eta } = coord;
         [1.0 - xi - eta, xi, eta]
+    }
+
+    /// Returns the three MITC3+ tying points in canonical A, B, C order.
+    ///
+    /// The static slice contains:
+    /// - `A = (½, 0)` — covariant `γ_ξζ` is sampled here.
+    /// - `B = (0, ½)` — covariant `γ_ηζ` is sampled here.
+    /// - `C = (½, ½)` — both components coupled here.
+    pub fn tying_points(&self) -> &'static [TyingPoint] {
+        TYING_POINTS
     }
 
     /// Number of Lagrangian nodes.
