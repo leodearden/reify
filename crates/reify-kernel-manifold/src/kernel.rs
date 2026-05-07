@@ -147,8 +147,22 @@ impl GeometryKernel for ManifoldKernel {
                 let result = l.union(r);
                 Ok(self.store(result))
             }
+            GeometryOp::Difference { left, right } => {
+                let l = self.shapes.get(&left.0).ok_or_else(|| {
+                    GeometryError::OperationFailed(format!(
+                        "Manifold Difference: left handle {left:?} not found"
+                    ))
+                })?;
+                let r = self.shapes.get(&right.0).ok_or_else(|| {
+                    GeometryError::OperationFailed(format!(
+                        "Manifold Difference: right handle {right:?} not found"
+                    ))
+                })?;
+                let result = l.difference(r);
+                Ok(self.store(result))
+            }
             // Other ops continue to return the stub error until later steps
-            // wire them in (step-4: Difference, step-6: Intersection).
+            // wire them in (step-6: Intersection).
             _ => Err(GeometryError::OperationFailed(STUB_MSG.into())),
         }
     }
