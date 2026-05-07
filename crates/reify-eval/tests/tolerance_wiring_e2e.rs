@@ -625,3 +625,140 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
          on this registry shape.",
     );
 }
+
+/// Step-15 (final integration smoke; pins all four wiring axes
+/// simultaneously against `Engine::tessellate_realizations`).
+///
+/// Single test that builds the canonical fixture — `step_input_template(50µm)`
+/// + `step_output_template(1µm)` + `MyDesign` realization (one Box primitive op)
+/// + `manufacturing_purpose("manufacturing", 1µm)` — runs
+/// `engine.tessellate_realizations(&module)`, and asserts ALL FOUR
+/// production-wiring contracts hold simultaneously:
+///
+/// 1. **Imported-tolerance-promise diagnostic emission**: `TessellateResult.diagnostics`
+///    contains exactly one `Severity::Warning` carrying
+///    `DiagnosticCode::ImportedTolerancePromiseInsufficient` whose message
+///    names `"STEPInput"`. Pinned independently by step-1 against `build()`;
+///    this step pins the same emission contract on the `tessellate_realizations()`
+///    surface so a future refactor that splits the diagnostic emission helper
+///    between `build` and `tessellate_realizations` cannot disconnect one
+///    without the other.
+/// 2. **Demanded-tolerance routing through per-stage budget to kernel.tessellate**:
+///    the recording mock kernel's `tessellate_tolerances` records exactly one
+///    entry equal to `1e-6` (the demanded tolerance, routed through
+///    `compute_realization_tolerance_budget` against the default registry's
+///    empty-conversion plan, which passes the demand through unchanged).
+///    Pinned independently by step-11; this step locks it as part of the
+///    integration-axis bundle.
+/// 3. **RealizationCache populated at the demanded tolerance**:
+///    `engine.realization_cache().lookup("MyDesign", ReprKind::BRep, 1e-6)`
+///    returns `Some(_)` after `tessellate_realizations()` completes. Pinned
+///    independently by step-5 against `build()`; this step pins the same
+///    cache-population contract on the `tessellate_realizations()` surface.
+/// 4. **Per-realization budget consumption (implicitly pinned by axis 2)**:
+///    the budget pipeline runs through `compute_realization_tolerance_budget`
+///    with the inventory-collected registry — under the v0.2 occt-only
+///    inventory the dispatch returns a 0-conversion plan and the demand
+///    passes through bit-exactly; multi-kernel adapters will produce a
+///    real chain when they land. Step-9 pins the multi-stage primitive
+///    in isolation; this step's axis 2 pin asserts the integration carries
+///    the demand value through to the kernel correctly.
+///
+/// **Why a single test for all four axes**: each axis is already
+/// independently pinned by a step-N regression test, but the integration
+/// shape — running them simultaneously through ONE invocation of
+/// `tessellate_realizations` — guards against a future refactor that
+/// re-orders the build pipeline and disconnects one of the axes. A
+/// regression here flags an ordering bug in the wiring even when each
+/// individual unit test still passes.
+///
+/// **Reuses the recording-extension on `MockGeometryKernel`**:
+/// `tessellate_tolerances_ref()` (added in step-11) gives shared access to
+/// the recorded `tessellate(handle, tol)` calls so the kernel can be
+/// transferred into the engine via `Box::new` and we can still observe
+/// the recorded tolerances after `tessellate_realizations()` returns.
+#[test]
+fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_end_to_end_tolerance_wiring_smoke".to_string(),
+    ]))
+    .template(step_input_template(50e-6))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let tess_tols_handle = kernel.tessellate_tolerances_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let tess = engine.tessellate_realizations(&module);
+
+    // ── Axis 1: ImportedTolerancePromiseInsufficient diagnostic on tessellate ──
+    let promise_warnings: Vec<_> = tess
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::ImportedTolerancePromiseInsufficient)
+        })
+        .collect();
+    assert_eq!(
+        promise_warnings.len(),
+        1,
+        "axis 1: TessellateResult.diagnostics must contain exactly one \
+         ImportedTolerancePromiseInsufficient warning (50µm promise vs 1µm \
+         demand → strict-< insufficient); got {} matching diagnostics. Full \
+         diagnostic set: {:?}",
+        promise_warnings.len(),
+        tess.diagnostics,
+    );
+    assert!(
+        promise_warnings[0].message.contains("STEPInput"),
+        "axis 1: warning message must name the input template so authors \
+         can locate the import site; got: {:?}",
+        promise_warnings[0].message,
+    );
+
+    // ── Axis 2: kernel.tessellate received the demanded tolerance ──
+    let recorded_tols = tess_tols_handle.lock().unwrap().clone();
+    assert_eq!(
+        recorded_tols.len(),
+        1,
+        "axis 2: expected exactly one tessellate(handle, tol) call (one \
+         realization with one terminal handle); got {} recorded tolerance(s): \
+         {:?}",
+        recorded_tols.len(),
+        recorded_tols,
+    );
+    assert_eq!(
+        recorded_tols[0], 1e-6,
+        "axis 2: kernel.tessellate must receive the demanded tolerance \
+         (1µm from STEPOutput body + manufacturing(1e-6)) routed through \
+         compute_realization_tolerance_budget with the default registry's \
+         empty-conversion plan (pass-through). Got {} (the module-pragma \
+         default 0.0001 indicates the per-stage budget pipeline is bypassed \
+         and effective_tessellation_tolerance is forwarded instead). Full \
+         recorded tolerances: {:?}",
+        recorded_tols[0],
+        recorded_tols,
+    );
+
+    // ── Axis 3: RealizationCache populated at the demanded tolerance ──
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .is_some(),
+        "axis 3: tessellate_realizations() must populate the RealizationCache \
+         at (\"MyDesign\", ReprKind::BRep, 1e-6) after a successful realization \
+         (mirrors the build() population contract pinned by step-5). Cache \
+         len={}, dump: {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+}
