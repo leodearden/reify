@@ -4101,6 +4101,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-mesh-morph"
+version = "0.1.0"
+dependencies = [
+ "reify-compiler",
+ "reify-eval",
+ "reify-types",
+]
+
+[[package]]
 name = "reify-runtime"
 version = "0.1.0"
 dependencies = [
