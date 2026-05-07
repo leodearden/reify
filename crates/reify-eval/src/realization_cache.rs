@@ -81,7 +81,8 @@ impl<V> RealizationCache<V> {
     ///
     /// In debug builds, panics if `tol` is NaN, infinite, or negative.
     /// This forwards [`ToleranceBucket`]'s precondition: `tol` must be finite and
-    /// non-negative (`tol.is_finite() && tol >= 0.0`).
+    /// non-negative (`tol.is_finite() && tol >= 0.0`; see
+    /// [`crate::tolerance_gate::is_valid_tolerance_si`]).
     pub fn insert(&mut self, entity: &str, repr_kind: ReprKind, tol: f64, val: V) -> bool {
         let inner = self.buckets.entry(repr_kind).or_default();
         if let Some(bucket) = inner.get_mut(entity) {
@@ -105,7 +106,8 @@ impl<V> RealizationCache<V> {
     ///
     /// In debug builds, panics if `tol` is NaN, infinite, or negative.
     /// This forwards [`ToleranceBucket`]'s precondition: `tol` must be finite and
-    /// non-negative (`tol.is_finite() && tol >= 0.0`).
+    /// non-negative (`tol.is_finite() && tol >= 0.0`; see
+    /// [`crate::tolerance_gate::is_valid_tolerance_si`]).
     pub fn lookup(&self, entity: &str, repr_kind: ReprKind, tol: f64) -> Option<&V> {
         self.buckets
             .get(&repr_kind)
