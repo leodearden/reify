@@ -556,6 +556,52 @@ fn elastic_options_constrains_positivity_invariants() {
     }
 }
 
+// ─── amend: shell_threshold upper-bound constraint ───────────────────────────
+
+/// `ElasticOptions` must also declare an upper-bound constraint on
+/// `shell_threshold`: a threshold ≥ 1 would classify every body as
+/// shell-eligible (since `thickness/extent` ∈ [0, 1] for any non-degenerate
+/// body — thickness is always ≤ the body's maximum extent), silently
+/// defeating the purpose of Auto mode. The constraint `shell_threshold < 1`
+/// prevents this silent misuse. PRD T17, §"Resolved design decisions",
+/// structural-analysis-shells.md (classification rule).
+#[test]
+fn elastic_options_constrains_shell_threshold_below_one() {
+    let template = find_structure("ElasticOptions");
+
+    let matched = template.constraints.iter().any(|c| {
+        // Check for a `<` BinOp with a ValueRef to `shell_threshold` on the
+        // left and the literal `1` on the right. Accept Int(1) or Real(1.0)
+        // for the RHS — the parser stores the `1` token as Int(1) and a
+        // future numeric-promotion change could legitimately emit Real(1.0).
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Lt
+                    || !collect_value_ref_members(left).contains(&"shell_threshold")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(1)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        matched,
+        "ElasticOptions should declare `constraint shell_threshold < 1`; \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ─── step-11: ElasticResult param shape ──────────────────────────────────────
 
 /// `ElasticResult` is the FEA solver-output container. It must declare

@@ -151,6 +151,14 @@ structure def ElasticOptions {
     // `thickness/extent < threshold`, so no body would be treated as
     // shell-eligible. Mirrors the `cg_tolerance > 0` discipline.
     constraint shell_threshold > 0
+    // `shell_threshold` also has a natural upper bound of 1: the ratio
+    // `thickness/extent` is in [0, 1] for any non-degenerate body (thickness
+    // is always ≤ the body's maximum extent), so a threshold ≥ 1 would
+    // classify every body as shell-eligible regardless of its actual shape,
+    // silently defeating the purpose of Auto mode. The constraint prevents
+    // this silent misuse. PRD T17, §"Resolved design decisions",
+    // structural-analysis-shells.md (classification rule).
+    constraint shell_threshold < 1
     // `shell_branch_prune_ratio` is a length ratio for medial-axis spurious-
     // branch removal: branches whose length is less than
     // `ratio × local_thickness` are pruned (PRD T17, §"Open design
