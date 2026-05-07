@@ -57,19 +57,6 @@ pub struct MedialMask {
     pub voxels: Vec<[i32; 3]>,
 }
 
-impl MedialMask {
-    /// Construct an empty mask carrying the input grid's voxel
-    /// metadata. Used as the trivial result for grids that contain no
-    /// active narrow-band voxels.
-    pub fn empty(spacing: [f64; 3], origin: [f64; 3]) -> Self {
-        Self {
-            spacing,
-            origin,
-            voxels: Vec::new(),
-        }
-    }
-}
-
 /// Tunable thresholds for the medial-axis test.
 ///
 /// Defaults are pinned to PRD-derived values
@@ -214,20 +201,13 @@ impl std::error::Error for MedialError {}
 
 /// Compute the per-voxel medial mask for a Regular3D narrow-band SDF.
 ///
-/// # Algorithm overview (filled in step-8)
+/// # Algorithm overview
 ///
 /// For each voxel inside the narrow band, walk the normalized SDF
 /// gradient in `+g` and `−g` until each ray crosses the zero level set;
 /// tag the voxel as medial iff (a) `|d⁺ − d⁻| / max(d⁺, d⁻) <
 /// distance_tolerance` AND (b) the gradients sampled at the two hit
 /// points are roughly antiparallel (`g_a · g_b < normal_antiparallel_threshold`).
-///
-/// # Step-2 stub
-///
-/// Currently returns an empty mask carrying the input grid's
-/// `spacing` / `bounds_min`. The narrow-band loop is wired in step-8
-/// once steps 3–6 fix the input-validation surface and the options
-/// constants.
 pub fn compute_medial_mask(
     sdf: &SampledField,
     options: &MedialOptions,
@@ -698,9 +678,15 @@ mod tests {
     /// `MedialError`, and `compute_medial_mask` are reachable from
     /// the crate root, and the function is callable.
     ///
-    /// The single voxel sits at `phi = +1.0`, well outside any
-    /// reasonable narrow band — the mask must be empty regardless of
-    /// downstream-algorithm behaviour.
+    /// The single voxel sits at `phi = +1.0` (which IS inside the
+    /// default 3-voxel narrow band at unit spacing); the mask comes
+    /// back empty because a 1×1×1 grid has identically-zero
+    /// central-difference gradient (every axis collapses to a single
+    /// sample) so the lone voxel is rejected by the
+    /// `GRADIENT_EPSILON` degenerate-gradient filter, NOT by the
+    /// narrow-band threshold. The test still validates that the
+    /// public surface compiles and the function returns Ok regardless
+    /// of which guard fires.
     #[test]
     fn public_surface_is_callable_on_empty_field() {
         let sdf = one_voxel_field(1.0);
@@ -708,8 +694,9 @@ mod tests {
         let mask: MedialMask = compute_medial_mask(&sdf, &opts).expect("Ok mask");
         assert!(
             mask.voxels.is_empty(),
-            "single-voxel grid with phi=+1.0 (entirely outside any narrow band) \
-             must yield an empty medial mask"
+            "single-voxel grid has zero central-difference gradient and \
+             must be rejected by the GRADIENT_EPSILON filter, yielding an \
+             empty medial mask"
         );
 
         // Reach the error type from the crate root too — sanity-checks

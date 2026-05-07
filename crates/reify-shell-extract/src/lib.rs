@@ -40,8 +40,13 @@
 //! use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
 //! use std::sync::atomic::AtomicBool;
 //!
-//! // Trivial 1×1×1 grid with a single voxel at SDF = +1.0 — entirely outside
-//! // any reasonable narrow band, so the mask must be empty.
+//! // Trivial 1×1×1 grid with a single voxel at SDF = +1.0. The mask comes
+//! // back empty because a 1×1×1 grid has identically-zero central-difference
+//! // gradient (every axis collapses to a single sample), so the lone voxel
+//! // is rejected by the GRADIENT_EPSILON degenerate-gradient filter — NOT
+//! // by the narrow-band threshold (|φ|=1.0 is well inside the default
+//! // 3-voxel band at unit spacing). This still smoke-tests the public
+//! // surface end-to-end without invoking the algorithm body.
 //! let sdf = SampledField {
 //!     name: "smoke".to_string(),
 //!     kind: SampledGridKind::Regular3D,
