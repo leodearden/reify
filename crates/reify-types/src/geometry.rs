@@ -763,6 +763,58 @@ pub struct Mesh {
     pub normals: Option<Vec<f32>>,
 }
 
+/// FEA element-order discriminator for a tet-based [`VolumeMesh`].
+///
+/// `P1` tetrahedra carry 4 corner nodes per element (linear shape functions,
+/// 4 indices in `tet_indices` per element). `P2` tetrahedra carry 10 nodes
+/// per element — 4 corners plus 6 edge midpoints in Gmsh's canonical local
+/// ordering (quadratic shape functions, 10 indices per element).
+///
+/// Used both as an explicit field on [`VolumeMesh`] and as one of the inputs
+/// to the volume-mesh cache key (`reify_kernel_gmsh::cache_key`), so changing
+/// element order between two otherwise-identical mesh requests produces a
+/// distinct cache entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElementOrderTag {
+    /// 4-node tetrahedral element (linear shape functions).
+    P1,
+    /// 10-node tetrahedral element (quadratic shape functions; 4 corners +
+    /// 6 edge midpoints in Gmsh canonical order).
+    P2,
+}
+
+/// Volumetric tetrahedral mesh produced by the v0.3 surface→volume meshing
+/// pipeline (e.g. Gmsh HXT).
+///
+/// Mirrors [`Mesh`]'s field shape (`vertices: Vec<f32>` flat XYZ triples,
+/// optional flat `normals`) so existing helpers that walk vertex positions
+/// can share code. The structural difference is `tet_indices`: a flat array
+/// of **4 indices per element for P1** (one tet = 4 corner indices), or
+/// **10 indices per element for P2** (4 corner + 6 edge-midpoint indices in
+/// Gmsh's canonical local ordering). Distinct from `Mesh::indices` (3
+/// indices per surface triangle).
+///
+/// `element_order` tags the per-element arity so downstream consumers
+/// (`reify-solver-elastic` for FEA stiffness assembly, future GUI volume
+/// renderers) can read the index stride without round-tripping through a
+/// separate metadata channel.
+#[derive(Debug, Clone)]
+pub struct VolumeMesh {
+    /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
+    pub vertices: Vec<f32>,
+    /// Tet element indices: 4 per element for P1, 10 per element for P2
+    /// (4 corner + 6 edge midpoints in Gmsh canonical order).
+    pub tet_indices: Vec<u32>,
+    /// Element order discriminator (P1 = 4 nodes/elem, P2 = 10 nodes/elem).
+    pub element_order: ElementOrderTag,
+    /// Optional per-vertex normals (flat, same layout as `vertices`); seldom
+    /// populated for volume meshes since interior nodes have no canonical
+    /// surface-normal direction, but kept here as an `Option` so a future
+    /// boundary-extraction step can carry surface normals through without
+    /// changing the type's shape.
+    pub normals: Option<Vec<f32>>,
+}
+
 /// Errors from geometry operations.
 #[derive(Debug, Clone)]
 pub enum GeometryError {
