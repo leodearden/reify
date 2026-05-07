@@ -170,13 +170,17 @@ impl OpenVdbKernel {
 
     /// Open a `.vdb` file and register the named `FloatGrid` as a new handle.
     ///
-    /// Only available in test/test-fixture builds — callers wanting to
-    /// roundtrip a file in integration tests use this method to get back a
-    /// handle they can pass to `active_voxel_count` / `sample_sdf_at`.
+    /// Intended for use by integration tests that need to round-trip a grid
+    /// written by [`Self::write_vdb_grid`] back into a handle they can pass
+    /// to `active_voxel_count` / `sample_sdf_at`.
+    ///
+    /// The method is always-public (not cfg-gated) because integration tests
+    /// compile the lib without `cfg(test)` set, so a `#[cfg(test)]` gate
+    /// would hide it from `tests/*.rs`. The name `_for_test` signals the
+    /// intended usage.
     ///
     /// Returns `Err(GeometryError::OperationFailed)` if the file can't be
     /// opened, the grid is absent, or the grid isn't a `FloatGrid`.
-    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn open_vdb_grid_for_test(
         &mut self,
         path: &Path,

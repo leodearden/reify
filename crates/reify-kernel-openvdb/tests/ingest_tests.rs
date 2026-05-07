@@ -638,6 +638,11 @@ fn lower_to_sampled_excessive_axis_returns_excessive_axis_length() {
 /// The surrounding prose ("OpenVDB", task ID, etc.) is incidental and
 /// intentionally not pinned, so future rewording (or the FFI body landing)
 /// doesn't have to update test assertions.
+///
+/// This test is gated `cfg(not(has_openvdb))` because when the real FFI is
+/// present the stub body is replaced by the real read path (see task 3095
+/// step-8). The parallel `cfg(has_openvdb)` test is added in step-9.
+#[cfg(not(has_openvdb))]
 #[test]
 fn read_vdb_file_returns_ffi_not_implemented_with_path() {
     let result = read_vdb_file("path/to/example.vdb", "voxel_grid", &Type::length());

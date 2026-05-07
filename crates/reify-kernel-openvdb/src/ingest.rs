@@ -208,6 +208,18 @@ pub enum IngestError {
         /// if the span/spacing ratio overflows `usize`).
         n_intervals: usize,
     },
+    /// Returned by [`read_vdb_file`] (cfg(has_openvdb) mode) when the
+    /// underlying `openvdb::io::File` layer fails — file not found, wrong
+    /// grid type, missing grid name, etc.
+    ///
+    /// The `path` payload names the file the caller asked to read so the
+    /// error message can identify it concretely in a multi-import workflow.
+    FileReadError {
+        /// The path the caller asked to read.
+        path: String,
+        /// Detail string from the underlying FFI exception.
+        detail: String,
+    },
 }
 
 /// v0.2 OpenVDB units → [`DimensionVector`] lookup table.
@@ -489,24 +501,31 @@ pub fn validate_grid_units(
     Ok(())
 }
 
-/// v0.2 stub for the file-read entry point.
+/// Read a `.vdb` file and lower the named `FloatGrid` to a [`SampledField`].
 ///
-/// Real OpenVDB FFI is deferred to a follow-up task per the
-/// `reify-kernel-openvdb` crate doc. This function returns
-/// [`IngestError::FfiNotImplemented`] carrying `path` so the caller can
-/// distinguish the v0.2 surface-scaffold case from a real read failure.
-/// The signature is final — once the FFI lands, only the body changes.
+/// When `cfg(has_openvdb)` is set (i.e. `/opt/reify-deps` is present), this
+/// function opens the file via the OpenVDB FFI, extracts grid metadata and
+/// active-voxel data, and delegates downstream validation/lowering to
+/// [`lower_to_sampled`].
+///
+/// When `cfg(has_openvdb)` is NOT set (stub build), the function returns
+/// [`IngestError::FfiNotImplemented`] so callers can distinguish the
+/// stub-mode surface-scaffold from a real read failure.
 ///
 /// # Parameters
 ///
-/// - `path`: filesystem path to the `.vdb` file. The stub names this back
-///   in the error variant and Display message.
-/// - `grid_name`: name of the grid inside the multi-grid `.vdb` file.
-///   Currently unused (the stub returns before reading); pinned in the
-///   public signature so the follow-up FFI body has the contract.
-/// - `codomain_type`: codomain type the field declaration declared.
-///   Currently unused (the stub returns before validation); pinned in the
-///   public signature so the follow-up FFI body can pre-validate units.
+/// - `path`: filesystem path to the `.vdb` file.
+/// - `grid_name`: name of the `FloatGrid` inside the `.vdb` file.
+/// - `codomain_type`: codomain type declared by the field definition;
+///   used to validate grid units via [`lower_to_sampled`].
+///
+/// # Errors
+///
+/// - `cfg(has_openvdb)`: returns [`IngestError::FileReadError`] for
+///   file-not-found, missing/wrong-type grid, or other FFI-layer failures;
+///   propagates all [`IngestError`] variants from [`lower_to_sampled`].
+/// - `cfg(not(has_openvdb))`: always returns [`IngestError::FfiNotImplemented`].
+#[cfg(not(has_openvdb))]
 pub fn read_vdb_file(
     path: &str,
     _grid_name: &str,
@@ -515,6 +534,65 @@ pub fn read_vdb_file(
     Err(IngestError::FfiNotImplemented {
         path: path.to_string(),
     })
+}
+
+/// Real `read_vdb_file` body — compiled only when `cfg(has_openvdb)` is set.
+///
+/// Opens the named `FloatGrid` from `path` via the cxx-bridge FFI, densifies
+/// active voxels into a row-major f64 buffer over the active bounding box,
+/// and calls [`lower_to_sampled`] to produce the final [`IngestOutcome`].
+///
+/// # Layout
+///
+/// The densified buffer from `grid_densify_to_buffer` is z-outermost
+/// (Z × Y × X), matching the axis order exposed by `grid_bbox_{min,max}`:
+/// axis-0 = X (bounds_min/max[0]), axis-1 = Y, axis-2 = Z.
+/// The `OpenVdbGridSource` is constructed accordingly so `lower_to_sampled`'s
+/// axis-count × data-shape checks always match.
+#[cfg(has_openvdb)]
+pub fn read_vdb_file(
+    path: &str,
+    grid_name: &str,
+    codomain_type: &Type,
+) -> Result<IngestOutcome, IngestError> {
+    use crate::ffi::ffi as openvdb_ffi;
+
+    // Open and read the named FloatGrid from the .vdb file.
+    let grid_handle = openvdb_ffi::read_vdb_grid_ffi(path, grid_name)
+        .map_err(|e| IngestError::FileReadError {
+            path: path.to_string(),
+            detail: e.to_string(),
+        })?;
+
+    // Extract grid metadata via FFI accessors.
+    let voxel_size = openvdb_ffi::grid_voxel_size(&grid_handle);
+    let bbox_min_arr = openvdb_ffi::grid_bbox_min(&grid_handle);
+    let bbox_max_arr = openvdb_ffi::grid_bbox_max(&grid_handle);
+    let units_str = openvdb_ffi::grid_units(&grid_handle);
+
+    // Densify all active voxels into a flat f32 buffer (z-outermost) and
+    // convert to f64 for the in-memory model.
+    let raw_buffer: Vec<f32> = openvdb_ffi::grid_densify_to_buffer(&grid_handle);
+    let data: Vec<f64> = raw_buffer.iter().map(|&v| v as f64).collect();
+
+    // Build the in-memory source model.  Axis-0 = X, Axis-1 = Y, Axis-2 = Z.
+    // bounds_min/max come from the world-space voxel-center coordinates of the
+    // active bounding box; spacing = voxel_size (isotropic grid).
+    let source = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular3D,
+        bounds_min: bbox_min_arr.to_vec(),
+        bounds_max: bbox_max_arr.to_vec(),
+        spacing: vec![voxel_size; 3],
+        data,
+        units: if units_str.is_empty() {
+            None
+        } else {
+            Some(units_str.to_string())
+        },
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+
+    lower_to_sampled(&source, grid_name, codomain_type)
 }
 
 impl std::fmt::Display for IngestError {
@@ -596,6 +674,10 @@ impl std::fmt::Display for IngestError {
                 f,
                 "OpenVDB grid axis {axis} requires {n_intervals} intervals, which exceeds the \
                  maximum of {LINSPACE_MAX_INTERVALS}; reduce the axis span or increase the spacing"
+            ),
+            IngestError::FileReadError { path, detail } => write!(
+                f,
+                "OpenVDB file read failed for '{path}': {detail}"
             ),
         }
     }
