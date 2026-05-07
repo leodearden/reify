@@ -1144,11 +1144,13 @@ mod tests {
     /// `open_file`) must enable `get_source_location` to return `Ok` with a
     /// meaningful span.
     ///
-    /// Before the fix in step-2, `update_source` set `state.compiled = Some(...)` and
-    /// inserted into `state.files` but never set `state.active_file`, leaving
-    /// `get_source_location` to return `Err("no active file")`.  After the fix,
-    /// `update_source` calls `state.active_file.get_or_insert_with(...)`, so the
-    /// caller does not need a prior `load_file` / `open_file` call.
+    /// `update_source` achieves this via an unconditional
+    /// `state.active_file = Some(canonical.clone())`.  `get_or_insert_with` was
+    /// rejected because it would leave `active_file` pointing at a stale prior
+    /// file when `update_source` switches files — see the production-code comment
+    /// above the unconditional-set site for the full rationale, and
+    /// `update_source_after_load_file_switches_active_file` for the regression
+    /// guard.
     #[test]
     fn update_source_enables_get_source_location_without_load_file() {
         let ctx = fresh_ctx();
