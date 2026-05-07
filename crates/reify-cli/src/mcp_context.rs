@@ -410,7 +410,7 @@ impl ReifyToolContext for CliToolContext {
             entry.dirty = true;
         } else {
             state.files.insert(
-                canonical,
+                canonical.clone(),
                 FileEntry {
                     content: content.to_string(),
                     dirty: true,
@@ -418,12 +418,7 @@ impl ReifyToolContext for CliToolContext {
             );
         }
         state.compiled = Some(compiled);
-        // NOTE: active_file is intentionally NOT set here.  Callers must
-        // invoke load_file / open_file before update_source-driven edits are
-        // addressable via get_source_location or get_diagnostics (both now
-        // return Err("no active file") when active_file is None).  Fixing
-        // this asymmetry — e.g., initializing active_file on first use — is
-        // a follow-up task; see reviewer suggestion on design_coherence.
+        state.active_file.get_or_insert_with(|| canonical.clone());
 
         Ok(UpdateResult {
             success: true,
