@@ -194,8 +194,56 @@ impl GeometryKernel for ManifoldKernel {
         Err(ExportError::FormatError(STUB_MSG.into()))
     }
 
-    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-        Err(TessError::TessellationFailed(STUB_MSG.into()))
+    /// Materialise the stored [`Manifold`] as a `reify_types::Mesh`.
+    ///
+    /// `tolerance` is intentionally unused at this layer — manifold meshes
+    /// are exact, and the underlying [`Manifold`] carries its own tolerance
+    /// set at construction (see `manifold-csg`'s tolerance-tracking
+    /// invariants). Callers passing non-zero values are not rejected; the
+    /// argument is accepted for trait-conformance with [`GeometryKernel`].
+    ///
+    /// f64→f32 narrowing happens at this boundary because Reify's
+    /// `Mesh.vertices: Vec<f32>` is the boundary contract (per Decision 4
+    /// in the task plan: "narrow at the boundary; manifold internals stay
+    /// f64"). `n_props` from `to_mesh_f64` is `3` (xyz) for the position-
+    /// only meshes this kernel ingests; we extract only the first three
+    /// properties per vertex to stay robust against manifold internally
+    /// growing the property block (e.g. merge-tag layers).
+    fn tessellate(&self, handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        let manifold = self
+            .shapes
+            .get(&handle.0)
+            .ok_or(TessError::InvalidHandle(handle))?;
+
+        let (vert_props_f64, n_props, tri_indices_u64) = manifold.to_mesh_f64();
+
+        // Extract xyz triplets from each n_props-sized vertex block.
+        // For our position-only meshes n_props == 3, but manifold may
+        // internally maintain additional property layers; we deliberately
+        // copy only the first three.
+        debug_assert!(
+            n_props >= 3,
+            "manifold.to_mesh_f64 must return at least 3 properties (xyz)",
+        );
+        let n_verts = vert_props_f64.len() / n_props;
+        let mut vertices: Vec<f32> = Vec::with_capacity(n_verts * 3);
+        for v in 0..n_verts {
+            let base = v * n_props;
+            vertices.push(vert_props_f64[base] as f32);
+            vertices.push(vert_props_f64[base + 1] as f32);
+            vertices.push(vert_props_f64[base + 2] as f32);
+        }
+
+        // u64→u32 narrowing: manifold's u64 indices are nominal; in
+        // practice meshes that fit Reify's Vec<u32> contract have
+        // <= 4-billion vertices.
+        let indices: Vec<u32> = tri_indices_u64.iter().map(|&i| i as u32).collect();
+
+        Ok(Mesh {
+            vertices,
+            indices,
+            normals: None,
+        })
     }
     // extract_edges, extract_faces, execute_with_history, query_many all use
     // the trait defaults — they error in the standard "not supported" fashion.
