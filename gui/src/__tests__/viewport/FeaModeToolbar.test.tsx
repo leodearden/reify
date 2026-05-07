@@ -56,3 +56,76 @@ describe('FeaModeToolbar — smoke-and-toggle suite', () => {
     expect(screen.queryByTestId('fea-mode-range-mode')).toBeNull();
   });
 });
+
+/** Helper: render toolbar with store pre-enabled so body controls are visible. */
+function renderEnabled(overrides?: { availableChannels?: string[]; onLockCurrent?: () => void }) {
+  const store = createFeaModeStore();
+  store.setEnabled(true);
+  render(() => <FeaModeToolbar store={store} {...overrides} />);
+  return store;
+}
+
+describe('FeaModeToolbar — channel + palette dropdown suite', () => {
+  it('(a) channel select is present when enabled', () => {
+    renderEnabled();
+    expect(screen.getByTestId('fea-mode-channel-select')).toBeTruthy();
+  });
+
+  it('(a) channel select lists availableChannels when provided', () => {
+    renderEnabled({ availableChannels: ['vonMises', 'displacement_magnitude', 'principal_stress'] });
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toEqual(['vonMises', 'displacement_magnitude', 'principal_stress']);
+  });
+
+  it('(a) channel select falls back to [vonMises, displacement_magnitude] when no availableChannels', () => {
+    renderEnabled();
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toContain('vonMises');
+    expect(options).toContain('displacement_magnitude');
+    expect(options).toHaveLength(2);
+  });
+
+  it('(b) channel select value reflects store.state.channel', () => {
+    const store = renderEnabled();
+    // Default channel is 'vonMises'
+    const select = screen.getByTestId('fea-mode-channel-select') as HTMLSelectElement;
+    expect(select.value).toBe(store.state.channel);
+    expect(select.value).toBe('vonMises');
+  });
+
+  it('(c) changing channel select updates store.state.channel', () => {
+    const store = renderEnabled({ availableChannels: ['vonMises', 'displacement_magnitude'] });
+    const select = screen.getByTestId('fea-mode-channel-select');
+    fireEvent.change(select, { target: { value: 'displacement_magnitude' } });
+    expect(store.state.channel).toBe('displacement_magnitude');
+  });
+
+  it('(d) palette select lists exactly viridis, magma, rainbow', () => {
+    renderEnabled();
+    const select = screen.getByTestId('fea-mode-palette-select') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toEqual(['viridis', 'magma', 'rainbow']);
+  });
+
+  it('(d) palette select defaults to viridis', () => {
+    renderEnabled();
+    const select = screen.getByTestId('fea-mode-palette-select') as HTMLSelectElement;
+    expect(select.value).toBe('viridis');
+  });
+
+  it('(d) changing palette select calls store.setPalette', () => {
+    const store = renderEnabled();
+    const select = screen.getByTestId('fea-mode-palette-select');
+    fireEvent.change(select, { target: { value: 'magma' } });
+    expect(store.state.palette).toBe('magma');
+  });
+
+  it('(e) palette select has title attribute containing "perceptual"', () => {
+    renderEnabled();
+    const select = screen.getByTestId('fea-mode-palette-select');
+    const title = select.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('perceptual');
+  });
+});
