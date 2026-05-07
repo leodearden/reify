@@ -49,7 +49,7 @@ pub fn per_stage_tolerance(requested_tol: f64, n_stages: usize) -> f64 {
         "tolerance_budget: n_stages must be ≥ 1, got {n_stages}"
     );
     debug_assert!(
-        requested_tol.is_finite() && requested_tol >= 0.0,
+        crate::tolerance_gate::is_valid_tolerance_si(requested_tol),
         "tolerance_budget: requested_tol must be finite and non-negative, got {requested_tol}"
     );
     if n_stages == 1 {
