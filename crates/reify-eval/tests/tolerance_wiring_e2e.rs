@@ -246,3 +246,94 @@ fn build_populates_realization_cache_keyed_on_demanded_tolerance() {
         engine.realization_cache(),
     );
 }
+
+/// Step-7 (failing initially; passes once step-8 adds the cache-hit
+/// short-circuit at the top of `Engine::execute_realization_ops`).
+///
+/// Setup mirrors step-5 — `STEPOutput(1µm)` + `MyDesign` realization (one
+/// `Box` primitive op) + manufacturing purpose at 1µm. The cache key
+/// `("MyDesign", ReprKind::BRep, 1e-6)` is populated on the first `build()`
+/// (verified by step-5's test), so a second `build()` with the same module
+/// and the same demand should see the cache lookup succeed at the top of
+/// `execute_realization_ops` and return the cached terminal handle without
+/// dispatching the realization's ops to the kernel.
+///
+/// The test pins this contract by:
+/// 1. Constructing a `MockGeometryKernel` and grabbing its
+///    `operations_ref()` (an `Arc<Mutex<Vec<GeometryOpRecord>>>`) BEFORE
+///    transferring ownership into the engine — that gives us a stable
+///    shared-handle on the kernel's recorded-operations vector across the
+///    two `build()` calls.
+/// 2. Running the first `build()` and asserting the recorded-ops vector
+///    grew by ≥1 entry (kernel was invoked: cache miss, op dispatched,
+///    cache populated by step-6's post-realization insert).
+/// 3. Re-activating the purpose because `build()` calls `check()` which
+///    calls `eval()` which clears `active_purpose_bindings` (engine_eval.rs
+///    around lines 1149-1150). Without re-activation the second build's
+///    pre-`check()` precompute would observe an empty tolerance scope, the
+///    threaded `demanded_tol` would be `None`, and the cache lookup at the
+///    top of `execute_realization_ops` would not even fire — defeating the
+///    test's premise. (This mirrors the pattern step-13 documents for the
+///    cache-miss-on-tighter-demand case.)
+/// 4. Running the second `build()` and asserting the recorded-ops vector
+///    DID NOT grow — the realization was served entirely from cache.
+///
+/// Today (pre step-8) the cache short-circuit does not exist, so even
+/// though `realization_cache.lookup(…)` returns `Some(_)` at the top of
+/// `execute_realization_ops`, nothing consults that lookup before the op
+/// loop runs. The kernel re-executes the realization's ops on every
+/// build, so the second-build assertion FAILS. Once step-8 wires the
+/// realization-level short-circuit (push cached handle, write
+/// `named_steps`, return early), the assertion passes.
+#[test]
+fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cache_hit() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_second_build_short_circuits_via_cache_hit".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_handle = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let _build1 = engine.build(&module, ExportFormat::Step);
+    let ops_after_first = ops_handle.lock().unwrap().len();
+    assert!(
+        ops_after_first >= 1,
+        "expected first build() to invoke the kernel at least once \
+         (cache miss → realization ops dispatched, cache populated); got \
+         ops_after_first={}",
+        ops_after_first,
+    );
+
+    // Re-activate purpose: build() above called check() which called eval()
+    // which cleared `active_purpose_bindings` (engine_eval.rs:1149-1150). The
+    // pre-`check()` precompute on the second build would otherwise observe
+    // an empty scope and yield `demanded_tol = None`, suppressing the cache
+    // lookup. Re-activation puts the same `(manufacturing → MyDesign)`
+    // binding back so the second build observes `demanded_tol = Some(1e-6)`,
+    // matching the cache key populated by the first build.
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let _build2 = engine.build(&module, ExportFormat::Step);
+    let ops_after_second = ops_handle.lock().unwrap().len();
+    assert_eq!(
+        ops_after_second, ops_after_first,
+        "expected second build() to be served entirely from RealizationCache \
+         (cache hit at (MyDesign, BRep, 1e-6) populated by the first build); \
+         got ops_after_first={}, ops_after_second={} — kernel was invoked \
+         {} additional time(s) on the second build, indicating the \
+         cache-hit short-circuit at the top of execute_realization_ops is \
+         absent or mis-keyed.",
+        ops_after_first,
+        ops_after_second,
+        ops_after_second - ops_after_first,
+    );
+}
