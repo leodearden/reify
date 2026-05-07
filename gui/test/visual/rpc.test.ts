@@ -76,4 +76,30 @@ describe("parseRpcResponse", () => {
       expect(result.value).toEqual({});
     }
   });
+
+  it("(g) image content with no data field → ok:false, error:'image content missing data field'", () => {
+    const envelope = {
+      result: {
+        content: [{ type: "image" }], // data field absent
+      },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("image content missing data field");
+    }
+  });
+
+  it("(h) text content with no text field → ok:false, error:'text content missing text field'", () => {
+    const envelope = {
+      result: {
+        content: [{ type: "text" }], // text field absent
+      },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("text content missing text field");
+    }
+  });
 });

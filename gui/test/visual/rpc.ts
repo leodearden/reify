@@ -43,12 +43,18 @@ export function parseRpcResponse<T = unknown>(envelope: unknown): RpcResult<T> {
 
     // Branch 3: image content
     if (first.type === "image") {
+      if (typeof first.data !== "string") {
+        return { ok: false, error: "image content missing data field" };
+      }
       return { ok: true, value: { data: first.data } as unknown as T };
     }
 
     // Branch 4: text content — try JSON parse, fall back to raw string
     if (first.type === "text") {
-      const text = first.text as string;
+      if (typeof first.text !== "string") {
+        return { ok: false, error: "text content missing text field" };
+      }
+      const text = first.text;
       try {
         return { ok: true, value: JSON.parse(text) as T };
       } catch {

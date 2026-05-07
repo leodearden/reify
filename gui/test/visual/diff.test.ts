@@ -74,18 +74,25 @@ describe("compareImages", () => {
     expect(result.mismatchPct).toBeGreaterThan(0.01);
   });
 
-  it("(d) two 8×8 buffers differing in <1% pixels → status:match (within tolerance)", () => {
-    // 8×8 = 64 pixels, <1% means 0 pixels differ (since 1% of 64 = 0.64, i.e., 0 full pixels)
-    // Change 0 pixels — identical buffers
-    const buf = solidBuffer(8, 8, 200, 100, 50);
-    const baseline = makeImage(8, 8, buf);
-    const captured = makeImage(8, 8, Buffer.from(buf));
+  it("(d) 32×32 buffers with exactly 1 pixel flipped (~0.001 mismatch) → status:match (within tolerance)", () => {
+    // 32×32 = 1024 pixels total; 1 flipped pixel → mismatchPct ≈ 0.001 < 0.01 limit.
+    // Exercises the within-tolerance-but-non-zero path, unlike (a) which uses identical buffers.
+    const baseBuf = solidBuffer(32, 32, 200, 100, 50);
+    const capBuf = Buffer.from(baseBuf);
+    // Flip exactly one pixel (index 0) to a visually distinct colour so pixelmatch counts it.
+    capBuf[0] = 50; // R was 200
+    capBuf[1] = 200; // G was 100
+    capBuf[2] = 100; // B was  50
+    // alpha stays 255
+    const baseline = makeImage(32, 32, baseBuf);
+    const captured = makeImage(32, 32, capBuf);
     const result = compareImages(baseline, captured, {
       pixelThreshold: 0.1,
       mismatchPctLimit: 0.01,
     });
     expect(result.status).toBe("match");
-    expect(result.mismatchPct).toBeLessThanOrEqual(0.01);
+    expect(result.mismatchedPixels).toBe(1);
+    expect(result.mismatchPct).toBeLessThan(0.01);
   });
 });
 
