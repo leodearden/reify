@@ -85,7 +85,12 @@ fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
         },
         "compute_eigenvalues_3x3 assumes a symmetric matrix but got non-symmetric entries: \
          a01={} vs a10={}, a02={} vs a20={}, a12={} vs a21={}",
-        d[1], d[3], d[2], d[6], d[5], d[7]
+        d[1],
+        d[3],
+        d[2],
+        d[6],
+        d[5],
+        d[7]
     );
 
     let a00 = d[0];
@@ -299,14 +304,20 @@ mod tests {
     fn von_mises_wrong_arg_count_returns_undef() {
         assert!(eval_analysis("von_mises", &[]).unwrap().is_undef());
         let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
-        assert!(eval_analysis("von_mises", &[t.clone(), t]).unwrap().is_undef());
+        assert!(
+            eval_analysis("von_mises", &[t.clone(), t])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     #[test]
     fn von_mises_non_matrix_returns_undef() {
-        assert!(eval_analysis("von_mises", &[Value::Real(42.0)])
-            .unwrap()
-            .is_undef());
+        assert!(
+            eval_analysis("von_mises", &[Value::Real(42.0)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     #[test]
@@ -392,13 +403,17 @@ mod tests {
     #[test]
     fn principal_stresses_wrong_args_return_undef() {
         assert!(eval_analysis("principal_stresses", &[]).unwrap().is_undef());
-        assert!(eval_analysis("principal_stresses", &[Value::Real(1.0)])
-            .unwrap()
-            .is_undef());
+        assert!(
+            eval_analysis("principal_stresses", &[Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
         let m2x2 = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
-        assert!(eval_analysis("principal_stresses", &[m2x2])
-            .unwrap()
-            .is_undef());
+        assert!(
+            eval_analysis("principal_stresses", &[m2x2])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     // ── max_shear tests ─────────────────────────────────────────────────────
@@ -443,9 +458,11 @@ mod tests {
     #[test]
     fn max_shear_wrong_args_return_undef() {
         assert!(eval_analysis("max_shear", &[]).unwrap().is_undef());
-        assert!(eval_analysis("max_shear", &[Value::Real(1.0)])
-            .unwrap()
-            .is_undef());
+        assert!(
+            eval_analysis("max_shear", &[Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
     }
 
     // ── safety_factor tests ─────────────────────────────────────────────────

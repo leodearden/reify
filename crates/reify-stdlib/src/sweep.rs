@@ -446,9 +446,7 @@ fn build_snapshot_list(mechanism: &Value, metas: &[DimMeta]) -> Value {
         // the next step on a cold call rather than dropping the sweep,
         // matching the "best-effort warm-start" stance of the design.
         prev_free_values = match &snap {
-            Value::Map(m) => m
-                .get(&Value::String("free_values".to_string()))
-                .cloned(),
+            Value::Map(m) => m.get(&Value::String("free_values".to_string())).cloned(),
             _ => None,
         };
         snapshots.push(snap);
@@ -497,7 +495,10 @@ fn make_sweep_dim(joint: Value, range: Value, steps: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, planar_xy_joint};
+    use crate::test_fixtures::{
+        angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m,
+        planar_xy_joint,
+    };
     use reify_types::Value;
 
     // ── dim(joint, range, steps): happy path ─────────────────────────────
@@ -588,12 +589,21 @@ mod tests {
 
         // String (not a Map at all)
         assert!(
-            eval_builtin("dim", &[Value::String("not a joint".to_string()), r.clone(), n.clone()])
-                .is_undef()
+            eval_builtin(
+                "dim",
+                &[
+                    Value::String("not a joint".to_string()),
+                    r.clone(),
+                    n.clone()
+                ]
+            )
+            .is_undef()
         );
 
         // world sentinel — Map with kind="world", not a joint
-        assert!(eval_builtin("dim", &[eval_builtin("world", &[]), r.clone(), n.clone()]).is_undef());
+        assert!(
+            eval_builtin("dim", &[eval_builtin("world", &[]), r.clone(), n.clone()]).is_undef()
+        );
 
         // fixed joint — kind="fixed" has no motion variable
         let fixed = eval_builtin("fixed", &[]);
@@ -617,8 +627,11 @@ mod tests {
 
         // String
         assert!(
-            eval_builtin("dim", &[j.clone(), Value::String("nope".to_string()), n.clone()])
-                .is_undef()
+            eval_builtin(
+                "dim",
+                &[j.clone(), Value::String("nope".to_string()), n.clone()]
+            )
+            .is_undef()
         );
 
         // Map (not a Range)
@@ -637,9 +650,7 @@ mod tests {
         assert!(eval_builtin("dim", &[j.clone(), r.clone(), Value::Real(11.0)]).is_undef());
 
         // String
-        assert!(
-            eval_builtin("dim", &[j, r, Value::String("eleven".to_string())]).is_undef()
-        );
+        assert!(eval_builtin("dim", &[j, r, Value::String("eleven".to_string())]).is_undef());
     }
 
     /// `dim(joint, range, Int(-1))` returns Undef — negative step counts
@@ -661,15 +672,11 @@ mod tests {
     fn dim_dimension_mismatch_returns_undef() {
         // Prismatic joint + angle range → Undef.
         let j_pris = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        assert!(
-            eval_builtin("dim", &[j_pris, angle_range_0_to_pi(), Value::Int(11)]).is_undef()
-        );
+        assert!(eval_builtin("dim", &[j_pris, angle_range_0_to_pi(), Value::Int(11)]).is_undef());
 
         // Revolute joint + length range → Undef.
         let j_rev = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
-        assert!(
-            eval_builtin("dim", &[j_rev, length_range_0_to_1m(), Value::Int(11)]).is_undef()
-        );
+        assert!(eval_builtin("dim", &[j_rev, length_range_0_to_1m(), Value::Int(11)]).is_undef());
     }
 
     // ── sweep(m, joint, range, steps): degenerate inputs ──────────────────
@@ -692,10 +699,7 @@ mod tests {
     #[test]
     fn sweep_steps_zero_returns_empty_list() {
         let (m, j) = make_one_body_prismatic_mechanism();
-        let result = eval_builtin(
-            "sweep",
-            &[m, j, length_range_0_to_1m(), Value::Int(0)],
-        );
+        let result = eval_builtin("sweep", &[m, j, length_range_0_to_1m(), Value::Int(0)]);
         assert_eq!(
             result,
             Value::List(vec![]),
@@ -757,15 +761,16 @@ mod tests {
     fn sweep_eleven_steps_evenly_spaced_first_last_match_snapshot() {
         let (m, j) = make_one_body_prismatic_mechanism();
         let r = length_range_0_to_1m();
-        let result = eval_builtin(
-            "sweep",
-            &[m.clone(), j.clone(), r.clone(), Value::Int(11)],
-        );
+        let result = eval_builtin("sweep", &[m.clone(), j.clone(), r.clone(), Value::Int(11)]);
         let list = match result {
             Value::List(l) => l,
             other => panic!("expected Value::List, got {:?}", other),
         };
-        assert_eq!(list.len(), 11, "sweep with steps=11 should produce 11 snapshots");
+        assert_eq!(
+            list.len(),
+            11,
+            "sweep with steps=11 should produce 11 snapshots"
+        );
 
         // Each snapshot is a Snapshot Map with kind="snapshot"; body 0
         // sits at world translation (i/10, 0, 0).
@@ -789,16 +794,23 @@ mod tests {
                 expected_x,
                 tx
             );
-            assert!(ty.abs() < 1e-12, "snap[{}] body translation y should be 0, got {}", i, ty);
-            assert!(tz.abs() < 1e-12, "snap[{}] body translation z should be 0, got {}", i, tz);
+            assert!(
+                ty.abs() < 1e-12,
+                "snap[{}] body translation y should be 0, got {}",
+                i,
+                ty
+            );
+            assert!(
+                tz.abs() < 1e-12,
+                "snap[{}] body translation z should be 0, got {}",
+                i,
+                tz
+            );
         }
 
         // First snapshot equals snapshot(m, [bind(j, length(0.0))]).
         let bind_lo = eval_builtin("bind", &[j.clone(), Value::length(0.0)]);
-        let snap_lo = eval_builtin(
-            "snapshot",
-            &[m.clone(), Value::List(vec![bind_lo])],
-        );
+        let snap_lo = eval_builtin("snapshot", &[m.clone(), Value::List(vec![bind_lo])]);
         assert_eq!(
             list[0], snap_lo,
             "first sweep element should equal snapshot(m, [bind(j, length(0))])"
@@ -880,9 +892,7 @@ mod tests {
         assert!(eval_builtin("sweep", std::slice::from_ref(&m)).is_undef());
         assert!(eval_builtin("sweep", &[m.clone(), j.clone()]).is_undef());
         assert!(eval_builtin("sweep", &[m.clone(), j.clone(), r.clone()]).is_undef());
-        assert!(
-            eval_builtin("sweep", &[m, j, r, n.clone(), n]).is_undef()
-        );
+        assert!(eval_builtin("sweep", &[m, j, r, n.clone(), n]).is_undef());
     }
 
     /// `sweep(non_mechanism, ...)` returns Undef when args[0] is not a
@@ -895,8 +905,11 @@ mod tests {
 
         // Real
         assert!(
-            eval_builtin("sweep", &[Value::Real(1.0), j.clone(), r.clone(), n.clone()])
-                .is_undef()
+            eval_builtin(
+                "sweep",
+                &[Value::Real(1.0), j.clone(), r.clone(), n.clone()]
+            )
+            .is_undef()
         );
 
         // world sentinel — Map with kind="world"
@@ -926,8 +939,11 @@ mod tests {
 
         // Real
         assert!(
-            eval_builtin("sweep", &[m.clone(), Value::Real(1.0), r.clone(), n.clone()])
-                .is_undef()
+            eval_builtin(
+                "sweep",
+                &[m.clone(), Value::Real(1.0), r.clone(), n.clone()]
+            )
+            .is_undef()
         );
 
         // world sentinel
@@ -957,8 +973,11 @@ mod tests {
 
         // Real
         assert!(
-            eval_builtin("sweep", &[m.clone(), j.clone(), Value::Real(1.0), n.clone()])
-                .is_undef()
+            eval_builtin(
+                "sweep",
+                &[m.clone(), j.clone(), Value::Real(1.0), n.clone()]
+            )
+            .is_undef()
         );
 
         // Map (not a Range)
@@ -966,9 +985,7 @@ mod tests {
         assert!(eval_builtin("sweep", &[m.clone(), j.clone(), other, n.clone()]).is_undef());
 
         // List
-        assert!(
-            eval_builtin("sweep", &[m, j, Value::List(vec![]), n]).is_undef()
-        );
+        assert!(eval_builtin("sweep", &[m, j, Value::List(vec![]), n]).is_undef());
     }
 
     /// `sweep(m, joint, range, non_int_steps)` returns Undef.
@@ -979,15 +996,15 @@ mod tests {
 
         // Real
         assert!(
-            eval_builtin("sweep", &[m.clone(), j.clone(), r.clone(), Value::Real(11.0)])
-                .is_undef()
+            eval_builtin(
+                "sweep",
+                &[m.clone(), j.clone(), r.clone(), Value::Real(11.0)]
+            )
+            .is_undef()
         );
 
         // String
-        assert!(
-            eval_builtin("sweep", &[m, j, r, Value::String("eleven".to_string())])
-                .is_undef()
-        );
+        assert!(eval_builtin("sweep", &[m, j, r, Value::String("eleven".to_string())]).is_undef());
     }
 
     /// `sweep(m, joint, range, Int(<0))` returns Undef.
@@ -997,8 +1014,7 @@ mod tests {
         let r = length_range_0_to_1m();
 
         assert!(
-            eval_builtin("sweep", &[m.clone(), j.clone(), r.clone(), Value::Int(-1)])
-                .is_undef()
+            eval_builtin("sweep", &[m.clone(), j.clone(), r.clone(), Value::Int(-1)]).is_undef()
         );
         assert!(eval_builtin("sweep", &[m, j, r, Value::Int(-3)]).is_undef());
     }
@@ -1026,13 +1042,8 @@ mod tests {
         // walk to even start; build a dedicated one so the mismatch
         // surfaces from the sweep arm's range guard, not from snapshot.
         let m0 = eval_builtin("mechanism", &[]);
-        let m_rev = eval_builtin(
-            "body",
-            &[m0, Value::String("a".to_string()), j_rev.clone()],
-        );
-        assert!(
-            eval_builtin("sweep", &[m_rev, j_rev, length_range_0_to_1m(), n]).is_undef()
-        );
+        let m_rev = eval_builtin("body", &[m0, Value::String("a".to_string()), j_rev.clone()]);
+        assert!(eval_builtin("sweep", &[m_rev, j_rev, length_range_0_to_1m(), n]).is_undef());
     }
 
     // ── sweep() steps == 1 single-snapshot-at-lower semantic ─────────────
@@ -1046,15 +1057,16 @@ mod tests {
     fn sweep_steps_one_returns_single_snapshot_at_lower() {
         let (m, j) = make_one_body_prismatic_mechanism();
         let r = length_range_0_to_1m();
-        let result = eval_builtin(
-            "sweep",
-            &[m.clone(), j.clone(), r, Value::Int(1)],
-        );
+        let result = eval_builtin("sweep", &[m.clone(), j.clone(), r, Value::Int(1)]);
         let list = match result {
             Value::List(l) => l,
             other => panic!("expected Value::List, got {:?}", other),
         };
-        assert_eq!(list.len(), 1, "sweep with steps=1 should yield exactly 1 snapshot");
+        assert_eq!(
+            list.len(),
+            1,
+            "sweep with steps=1 should yield exactly 1 snapshot"
+        );
 
         // Single element equals snapshot(m, [bind(j, length(0.0))]).
         let bind_lo = eval_builtin("bind", &[j, Value::length(0.0)]);
@@ -1079,9 +1091,7 @@ mod tests {
             lower_inclusive: false,
             upper_inclusive: true,
         };
-        assert!(
-            eval_builtin("sweep", &[m.clone(), j.clone(), no_lower, n.clone()]).is_undef()
-        );
+        assert!(eval_builtin("sweep", &[m.clone(), j.clone(), no_lower, n.clone()]).is_undef());
 
         // No upper bound
         let no_upper = Value::Range {
@@ -1175,23 +1185,11 @@ mod tests {
         // Body A: at j_x, parent=world.
         let m1 = eval_builtin("body", &[m0, solid_a, j_x.clone()]);
         // Body B: at j_y, parent=j_x.
-        let m2 = eval_builtin(
-            "body",
-            &[m1, solid_b, j_y.clone(), j_x.clone()],
-        );
+        let m2 = eval_builtin("body", &[m1, solid_b, j_y.clone(), j_x.clone()]);
 
-        let dim_x = eval_builtin(
-            "dim",
-            &[j_x.clone(), length_range_0_to_1m(), Value::Int(2)],
-        );
-        let dim_y = eval_builtin(
-            "dim",
-            &[j_y.clone(), length_range_0_to_1m(), Value::Int(3)],
-        );
-        let result = eval_builtin(
-            "sweep_grid",
-            &[m2.clone(), Value::List(vec![dim_x, dim_y])],
-        );
+        let dim_x = eval_builtin("dim", &[j_x.clone(), length_range_0_to_1m(), Value::Int(2)]);
+        let dim_y = eval_builtin("dim", &[j_y.clone(), length_range_0_to_1m(), Value::Int(3)]);
+        let result = eval_builtin("sweep_grid", &[m2.clone(), Value::List(vec![dim_x, dim_y])]);
         let list = match result {
             Value::List(l) => l,
             other => panic!("expected Value::List, got {:?}", other),
@@ -1248,10 +1246,7 @@ mod tests {
         // Last snapshot equals snapshot(m, [bind(j_x, 1m), bind(j_y, 1m)]).
         let bind_x_hi = eval_builtin("bind", &[j_x, Value::length(1.0)]);
         let bind_y_hi = eval_builtin("bind", &[j_y, Value::length(1.0)]);
-        let snap_last = eval_builtin(
-            "snapshot",
-            &[m2, Value::List(vec![bind_x_hi, bind_y_hi])],
-        );
+        let snap_last = eval_builtin("snapshot", &[m2, Value::List(vec![bind_x_hi, bind_y_hi])]);
         assert_eq!(
             list[5], snap_last,
             "last sweep_grid element should equal snapshot at (hi, hi)"
@@ -1280,13 +1275,7 @@ mod tests {
         // 0, 1, 3 args
         assert!(eval_builtin("sweep_grid", &[]).is_undef());
         assert!(eval_builtin("sweep_grid", std::slice::from_ref(&m)).is_undef());
-        assert!(
-            eval_builtin(
-                "sweep_grid",
-                &[m, dims_empty.clone(), dims_empty]
-            )
-            .is_undef()
-        );
+        assert!(eval_builtin("sweep_grid", &[m, dims_empty.clone(), dims_empty]).is_undef());
     }
 
     /// `sweep_grid(non_mechanism, dims)` returns Undef when args[0] is
@@ -1296,9 +1285,7 @@ mod tests {
         let dims_empty = Value::List(vec![]);
 
         // Real
-        assert!(
-            eval_builtin("sweep_grid", &[Value::Real(1.0), dims_empty.clone()]).is_undef()
-        );
+        assert!(eval_builtin("sweep_grid", &[Value::Real(1.0), dims_empty.clone()]).is_undef());
 
         // world sentinel — Map with kind="world"
         assert!(
@@ -1325,16 +1312,11 @@ mod tests {
         let (m, _) = make_one_body_prismatic_mechanism();
 
         // Real
-        assert!(
-            eval_builtin("sweep_grid", &[m.clone(), Value::Real(1.0)]).is_undef()
-        );
+        assert!(eval_builtin("sweep_grid", &[m.clone(), Value::Real(1.0)]).is_undef());
 
         // Map (a SweepDim by itself, not wrapped in a List)
         let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        let single_dim = eval_builtin(
-            "dim",
-            &[j, length_range_0_to_1m(), Value::Int(2)],
-        );
+        let single_dim = eval_builtin("dim", &[j, length_range_0_to_1m(), Value::Int(2)]);
         assert!(eval_builtin("sweep_grid", &[m.clone(), single_dim]).is_undef());
 
         // Undef
@@ -1360,13 +1342,7 @@ mod tests {
 
         // Map without kind="sweep_dim" (a Mechanism, for instance)
         let mech_other = eval_builtin("mechanism", &[]);
-        assert!(
-            eval_builtin(
-                "sweep_grid",
-                &[m.clone(), Value::List(vec![mech_other])]
-            )
-            .is_undef()
-        );
+        assert!(eval_builtin("sweep_grid", &[m.clone(), Value::List(vec![mech_other])]).is_undef());
 
         // Map with kind="sweep_dim" but missing the `joint` field
         let mut bad_map = std::collections::BTreeMap::new();
@@ -1374,10 +1350,7 @@ mod tests {
             Value::String("kind".to_string()),
             Value::String("sweep_dim".to_string()),
         );
-        bad_map.insert(
-            Value::String("range".to_string()),
-            length_range_0_to_1m(),
-        );
+        bad_map.insert(Value::String("range".to_string()), length_range_0_to_1m());
         bad_map.insert(Value::String("steps".to_string()), Value::Int(2));
         // No `joint` key
         assert!(
@@ -1413,16 +1386,9 @@ mod tests {
         );
         let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
         bad_map3.insert(Value::String("joint".to_string()), j);
-        bad_map3.insert(
-            Value::String("range".to_string()),
-            length_range_0_to_1m(),
-        );
+        bad_map3.insert(Value::String("range".to_string()), length_range_0_to_1m());
         assert!(
-            eval_builtin(
-                "sweep_grid",
-                &[m, Value::List(vec![Value::Map(bad_map3)])]
-            )
-            .is_undef()
+            eval_builtin("sweep_grid", &[m, Value::List(vec![Value::Map(bad_map3)])]).is_undef()
         );
     }
 
@@ -1450,16 +1416,9 @@ mod tests {
             other => panic!("expected errored Mechanism Map, got {:?}", other),
         }
 
-        let dim_b = eval_builtin(
-            "dim",
-            &[j_b, angle_range_0_to_pi(), Value::Int(3)],
-        );
+        let dim_b = eval_builtin("dim", &[j_b, angle_range_0_to_pi(), Value::Int(3)]);
         assert!(
-            eval_builtin(
-                "sweep_grid",
-                &[errored, Value::List(vec![dim_b])]
-            )
-            .is_undef(),
+            eval_builtin("sweep_grid", &[errored, Value::List(vec![dim_b])]).is_undef(),
             "sweep_grid() on errored mechanism must yield Undef"
         );
     }
@@ -1560,17 +1519,32 @@ mod tests {
         let m0 = eval_builtin("mechanism", &[]);
         let m1 = eval_builtin(
             "body",
-            &[m0, Value::String("solidA".to_string()), j_a.clone(), world.clone()],
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_a.clone(),
+                world.clone(),
+            ],
         );
         let m2 = eval_builtin(
             "body",
-            &[m1, Value::String("solidB".to_string()), j_b.clone(), world.clone()],
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_b.clone(),
+                world.clone(),
+            ],
         );
         // Closing edge: body C at jB, parent jA — jB's existing parent
         // is world, so this differs and produces a loop_closure record.
         let m3 = eval_builtin(
             "body",
-            &[m2, Value::String("solidC".to_string()), j_b.clone(), j_a.clone()],
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j_b.clone(),
+                j_a.clone(),
+            ],
         );
 
         // Sanity: confirm m3 has exactly one loop_closures record before sweeping.
@@ -1584,11 +1558,9 @@ mod tests {
                     .get(&Value::String("loop_closures".to_string()))
                     .expect("mechanism must carry a loop_closures field");
                 match lc {
-                    Value::List(records) => assert_eq!(
-                        records.len(),
-                        1,
-                        "exactly one loop-closure record expected"
-                    ),
+                    Value::List(records) => {
+                        assert_eq!(records.len(), 1, "exactly one loop-closure record expected")
+                    }
                     other => panic!("loop_closures must be a List, got {:?}", other),
                 }
             }
@@ -1596,10 +1568,7 @@ mod tests {
         }
 
         // Sweep jA over [0, 1]m in 5 steps → driver values: 0, 0.25, 0.5, 0.75, 1.0.
-        let result = eval_builtin(
-            "sweep",
-            &[m3, j_a, length_range_0_to_1m(), Value::Int(5)],
-        );
+        let result = eval_builtin("sweep", &[m3, j_a, length_range_0_to_1m(), Value::Int(5)]);
         let snaps = match result {
             Value::List(s) => s,
             other => panic!("sweep must return a List of snapshots, got {:?}", other),
@@ -1672,10 +1641,7 @@ mod tests {
             "body",
             &[m0, Value::String("solidA".to_string()), j.clone()],
         );
-        let result = eval_builtin(
-            "sweep",
-            &[m1, j, length_range_0_to_1m(), Value::Int(5)],
-        );
+        let result = eval_builtin("sweep", &[m1, j, length_range_0_to_1m(), Value::Int(5)]);
         let snaps = match result {
             Value::List(s) => s,
             other => panic!("sweep must return a List, got {:?}", other),

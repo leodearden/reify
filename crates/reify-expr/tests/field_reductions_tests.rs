@@ -970,3 +970,126 @@ fn argcount_gating_argmin_field_then_extra_arg_returns_undef() {
         "argmin(field, scalar) (2 args) should fall through to eval_builtin and return Undef (no binding)"
     );
 }
+
+// ── Step 20: shape-mismatch defense-in-depth ──────────────────────────────────
+
+/// `argmax(field)` over a Sampled field whose `data.len()` does not equal
+/// the product of the axis-grid lengths returns `Value::Undef`.
+///
+/// Defense-in-depth pin: `build_sampled_field`'s shape-equality invariant
+/// (`engine_eval.rs`: rejects fields where `data.len() != prod(axis_lengths)`)
+/// normally prevents this case. The `make_sampled_1d` helper enforces axis
+/// non-emptiness but not the shape-product equality, so it transparently
+/// produces the malformed fixture without modification — the same pattern
+/// that `make_sampled_empty` uses for the empty-data test.
+///
+/// Pre-fix: returns `Value::Scalar { si_value: 0.0, dimension: LENGTH }`
+/// because `argmax_argmin_index` returns `Some(4)` (linear index of the max
+/// value `100.0`), then `decompose_index(4, &[2])` wraps `4 % 2 = 0` back
+/// into bounds, yielding `axis_grids[0][0] = 0.0`.
+#[test]
+fn argmax_sampled_field_with_shape_mismatch_returns_undef() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    // axis length = 2, prod = 2; data length = 5 — shape mismatch (5 ≠ 2)
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0],
+        vec![1.0, 2.0, 3.0, 4.0, 100.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Undef,
+        "argmax(field) with data.len() != prod(axis_lengths) should return Value::Undef"
+    );
+}
+
+/// `argmin(field)` over a Sampled field whose `data.len()` does not equal
+/// the product of the axis-grid lengths returns `Value::Undef`.
+///
+/// Defense-in-depth pin: mirrors `argmax_sampled_field_with_shape_mismatch_returns_undef`.
+///
+/// Pre-fix: returns `Value::Scalar { si_value: 0.0, dimension: LENGTH }`
+/// because `argmax_argmin_index` returns `Some(0)` (linear index of the min
+/// value `1.0`), `decompose_index(0, &[2])` yields `per_axis = [0]`, and
+/// `axis_grids[0][0] = 0.0`.
+#[test]
+fn argmin_sampled_field_with_shape_mismatch_returns_undef() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    // axis length = 2, prod = 2; data length = 5 — shape mismatch (5 ≠ 2)
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0],
+        vec![1.0, 2.0, 3.0, 4.0, 100.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Undef,
+        "argmin(field) with data.len() != prod(axis_lengths) should return Value::Undef"
+    );
+}
+
+/// `argmax(field)` over a 2-D Sampled field whose `data.len()` does not equal
+/// the product of the axis-grid lengths returns `Value::Undef`.
+///
+/// Defense-in-depth pin: exercises the multi-axis product branch
+/// (`axis_lengths[..n].iter().product()` for N=2) of the shape-mismatch guard
+/// in `arg_coord_from_index`. axis0 = [0.0, 1.0] (length 2), axis1 =
+/// [0.0, 1.0, 2.0] (length 3), prod = 2 × 3 = 6; data length = 5 — shape
+/// mismatch (5 ≠ 6). The 1-D test reduces the product to a single term, so
+/// this 2-D case is the smallest fixture that exercises the N>1 code path.
+#[test]
+fn argmax_sampled_field_2d_with_shape_mismatch_returns_undef() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain = Type::point2(length.clone());
+    // axis0 length = 2, axis1 length = 3, prod = 6; data length = 5 — shape mismatch (5 ≠ 6)
+    let sf = make_sampled_2d(
+        "f",
+        vec![0.0, 1.0],
+        vec![0.0, 1.0, 2.0],
+        vec![1.0, 2.0, 3.0, 4.0, 100.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+
+    let expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        domain.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Undef,
+        "argmax(field) over 2-D field with data.len() != prod(axis_lengths) should return Value::Undef"
+    );
+}

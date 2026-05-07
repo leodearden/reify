@@ -198,44 +198,52 @@ impl ReifyToolContext for CliToolContext {
             .collect())
     }
 
+    /// Returns `Ok(vec![])` when `compiled` or `active_file` is absent (nothing to
+    /// report).  This differs intentionally from `get_source_location`, which returns
+    /// `Err` for the same states — see the doc comment on that method for the
+    /// rationale.  Callers that need to distinguish "not ready" from "no diagnostics"
+    /// must check whether `get_source_location` succeeds, not inspect the vec length.
     fn get_diagnostics(&self) -> Result<Vec<DiagnosticInfo>, ToolError> {
         let state = self.lock_state();
+
+        let compiled = match &state.compiled {
+            Some(c) => c,
+            None => return Ok(vec![]),
+        };
+        let file_path = match &state.active_file {
+            Some(p) => p,
+            None => return Ok(vec![]),
+        };
+        let source = state
+            .files
+            .get(file_path)
+            .map(|f| f.content.as_str())
+            .ok_or_else(|| {
+                ToolError::EngineError(format!("active_file {file_path} not in files map"))
+            })?;
+
         let mut result = Vec::new();
-
-        if let Some(compiled) = &state.compiled {
-            let file_path = state
-                .active_file
-                .as_ref()
-                .ok_or_else(|| ToolError::EngineError("no active file".to_string()))?;
-            let source = state
-                .files
-                .get(file_path)
-                .map(|f| f.content.as_str())
-                .unwrap_or("");
-
-            for diag in &compiled.diagnostics {
-                // Use the first label's span if available, otherwise default to (1,1)
-                let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
-                {
-                    let (l, c) =
-                        reify_types::byte_offset_to_line_col(source, label.span.start as usize);
-                    let (el, ec) =
-                        reify_types::byte_offset_to_line_col(source, label.span.end as usize);
-                    (l as u32, c as u32, el as u32, ec as u32)
-                } else {
-                    (1, 1, 1, 1)
-                };
-                result.push(DiagnosticInfo {
-                    file_path: file_path.clone(),
-                    line,
-                    column,
-                    end_line,
-                    end_column,
-                    severity: diag.severity.as_wire_str().to_owned(),
-                    message: diag.message.clone(),
-                    code: None,
-                });
-            }
+        for diag in &compiled.diagnostics {
+            // Use the first label's span if available, otherwise default to (1,1)
+            let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first() {
+                let (l, c) =
+                    reify_types::byte_offset_to_line_col(source, label.span.start as usize);
+                let (el, ec) =
+                    reify_types::byte_offset_to_line_col(source, label.span.end as usize);
+                (l as u32, c as u32, el as u32, ec as u32)
+            } else {
+                (1, 1, 1, 1)
+            };
+            result.push(DiagnosticInfo {
+                file_path: file_path.clone(),
+                line,
+                column,
+                end_line,
+                end_column,
+                severity: diag.severity.as_wire_str().to_owned(),
+                message: diag.message.clone(),
+                code: None,
+            });
         }
 
         Ok(result)
@@ -341,6 +349,14 @@ impl ReifyToolContext for CliToolContext {
         Ok(SelectionInfo::default())
     }
 
+    /// Returns `Err` (not `Ok` with a sentinel) when `compiled` or `active_file` is
+    /// absent.  This differs from `get_diagnostics`, which returns `Ok(vec![])` for
+    /// the same states.  The asymmetry is intentional: `get_diagnostics` has a
+    /// natural "nothing to report" empty-vec value, while `get_source_location`
+    /// returns a single `SourceLocationInfo` with no natural empty equivalent — an
+    /// absent active file is a caller error that deserves a visible `Err`.  Callers
+    /// that want to distinguish "not ready" from "entity not found" can inspect the
+    /// error message; both arms use `ToolError::EngineError`.
     fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
         let state = self.lock_state();
         let compiled = state
@@ -355,7 +371,9 @@ impl ReifyToolContext for CliToolContext {
             .files
             .get(file_path)
             .map(|f| f.content.as_str())
-            .unwrap_or("");
+            .ok_or_else(|| {
+                ToolError::EngineError(format!("active_file {file_path} not in files map"))
+            })?;
         reify_eval::resolve_entity_source_location(compiled, source, file_path, entity_path)
             .ok_or_else(|| {
                 ToolError::EngineError(format!("entity not found: {entity_path}"))
@@ -410,7 +428,7 @@ impl ReifyToolContext for CliToolContext {
             entry.dirty = true;
         } else {
             state.files.insert(
-                canonical,
+                canonical.clone(),
                 FileEntry {
                     content: content.to_string(),
                     dirty: true,
@@ -418,12 +436,14 @@ impl ReifyToolContext for CliToolContext {
             );
         }
         state.compiled = Some(compiled);
-        // NOTE: active_file is intentionally NOT set here.  Callers must
-        // invoke load_file / open_file before update_source-driven edits are
-        // addressable via get_source_location or get_diagnostics (both now
-        // return Err("no active file") when active_file is None).  Fixing
-        // this asymmetry — e.g., initializing active_file on first use — is
-        // a follow-up task; see reviewer suggestion on design_coherence.
+        // Unconditional set: compiled, active_file, and the files-map source must always
+        // describe the same file.  get_or_insert_with was previously used to preserve a
+        // prior load_file/open_file selection, but that leaves active_file pointing at
+        // "a.ri" while compiled holds b.ri's module — byte-span offsets from b's
+        // diagnostics would then be resolved against a's source, producing wrong
+        // line/column numbers.  Callers that need to switch active files explicitly
+        // without recompiling should use open_file.
+        state.active_file = Some(canonical.clone());
 
         Ok(UpdateResult {
             success: true,
@@ -1081,42 +1101,73 @@ mod tests {
         );
     }
 
-    /// Regression guard: `get_source_location` must return
-    /// `Err(ToolError::EngineError("no active file"))` when no active file is set,
-    /// even when a compiled module exists in state.
+    /// Baseline guard: on a freshly-constructed context (no `update_source` /
+    /// `load_file` / `open_file` call), the two "not-ready" code paths must behave
+    /// as documented:
     ///
-    /// This state is reachable via `update_source` on a fresh context (no prior
-    /// `load_file` / `open_file`): `update_source` sets `state.compiled = Some(...)`
-    /// and inserts into `state.files`, but never sets `state.active_file`.  Without
-    /// the fix, `get_source_location` falls through with an empty `file_path` and
-    /// returns `Ok(SourceLocationInfo { file_path: "", line: 1, column: 1, ... })` —
-    /// a garbage span.  The test goes red against the unfixed code and green after
-    /// the fix in step-2.
+    /// - `get_diagnostics` → `Ok(vec![])` (nothing to report; the `compiled = None`
+    ///   early-return short-circuits before any active-file check).
+    /// - `get_source_location` → `Err(EngineError("no compiled module"))` (no natural
+    ///   empty value; the method documents that it returns `Err` on missing state).
+    ///
+    /// This test locks in the intentional asymmetry described in the doc comments on
+    /// both methods.  A future refactor that accidentally changes either branch will
+    /// fail here before reaching callers.
     #[test]
-    fn get_source_location_returns_error_when_no_active_file() {
+    fn fresh_ctx_not_ready_baseline() {
         let ctx = fresh_ctx();
-        // update_source sets compiled + files but leaves active_file = None.
+
+        // get_diagnostics returns Ok(vec![]) — "nothing to report" sentinel.
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics on fresh ctx must return Ok, not Err");
+        assert!(
+            diags.is_empty(),
+            "get_diagnostics on a fresh ctx (no compiled module) must return Ok(vec![]), got: {:?}",
+            diags
+        );
+
+        // get_source_location returns Err — no natural empty sentinel exists.
+        let err = ctx
+            .get_source_location("AnyEntity")
+            .expect_err("get_source_location on fresh ctx must return Err (no compiled module)");
+        match &err {
+            ToolError::EngineError(msg) => assert!(
+                msg.contains("no compiled module"),
+                "Err message must say 'no compiled module', got: {msg:?}"
+            ),
+            other => panic!("expected ToolError::EngineError, got {other:?}"),
+        }
+    }
+
+    /// Positive guard: `update_source` on a fresh context (no prior `load_file` /
+    /// `open_file`) must enable `get_source_location` to return `Ok` with a
+    /// meaningful span.
+    ///
+    /// Before the fix in step-2, `update_source` set `state.compiled = Some(...)` and
+    /// inserted into `state.files` but never set `state.active_file`, leaving
+    /// `get_source_location` to return `Err("no active file")`.  After the fix,
+    /// `update_source` calls `state.active_file.get_or_insert_with(...)`, so the
+    /// caller does not need a prior `load_file` / `open_file` call.
+    #[test]
+    fn update_source_enables_get_source_location_without_load_file() {
+        let ctx = fresh_ctx();
         let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
         let update = ctx
             .update_source(BRACKET_PATH, &source)
             .expect("update_source should succeed with valid content");
         assert!(update.success, "update_source must succeed so compiled=Some is set");
-        // No load_file / open_file → active_file is still None.
-        let result = ctx.get_source_location("Bracket");
-        match result {
-            Err(ToolError::EngineError(ref msg)) if msg.contains("no active file") => {
-                // Correct: error contains the expected message.
-            }
-            Ok(loc) => panic!(
-                "expected Err(\"no active file\"), \
-                 got Ok(file_path={:?}, line={}, column={})",
-                loc.file_path, loc.line, loc.column
-            ),
-            Err(other) => panic!(
-                "expected Err(ToolError::EngineError(\"no active file\")), got Err({:?})",
-                other
-            ),
-        }
+        // No load_file / open_file — update_source alone must enable get_source_location.
+        let loc = ctx
+            .get_source_location("Bracket")
+            .expect("get_source_location should return Ok after update_source alone");
+        assert!(
+            !loc.file_path.is_empty(),
+            "file_path must be non-empty after update_source, got {:?}",
+            loc.file_path
+        );
+        assert!(loc.line >= 1, "line must be 1-based, got {}", loc.line);
+        assert!(loc.column >= 1, "column must be 1-based, got {}", loc.column);
     }
 
     /// Happy-path counter-case: `get_source_location` must return `Ok` with a
@@ -1139,38 +1190,101 @@ mod tests {
         assert!(loc.column >= 1, "column must be 1-based, got {}", loc.column);
     }
 
-    /// Regression guard: `get_diagnostics` must return
-    /// `Err(ToolError::EngineError("no active file"))` when no active file is
-    /// set, even when a compiled module exists in state.
+    /// Positive guard: `update_source` on a fresh context (no prior `load_file` /
+    /// `open_file`) must enable `get_diagnostics` to return `Ok` with non-empty
+    /// diagnostics carrying a non-empty `file_path` that matches the canonicalized
+    /// source path.
     ///
-    /// Same reachable state as the `get_source_location` regression test:
-    /// `update_source` on a fresh context sets `compiled` and `files` but
-    /// leaves `active_file = None`.
+    /// Uses `bracket_compile_error.ri` (not `bracket.ri`) because `bracket.ri` has
+    /// zero diagnostics — an empty-vec result would pass even against broken code.
+    /// `bracket_compile_error.ri` is parse-clean but emits at least one Error
+    /// diagnostic, making the assertion meaningful.
     #[test]
-    fn get_diagnostics_returns_error_when_no_active_file() {
+    fn update_source_enables_get_diagnostics_without_load_file() {
         let ctx = fresh_ctx();
-        let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let source =
+            std::fs::read_to_string(BRACKET_COMPILE_ERROR_PATH).expect("fixture must be readable");
         let update = ctx
-            .update_source(BRACKET_PATH, &source)
+            .update_source(BRACKET_COMPILE_ERROR_PATH, &source)
             .expect("update_source should succeed with valid content");
         assert!(update.success, "update_source must succeed so compiled=Some is set");
-        // No load_file / open_file → active_file is still None.
-        let result = ctx.get_diagnostics();
-        match result {
-            Err(ToolError::EngineError(ref msg)) if msg.contains("no active file") => {
-                // Correct: error contains the expected message.
-            }
-            Ok(diags) => panic!(
-                "expected Err(\"no active file\"), \
-                 got Ok({} diagnostics with file_path={:?})",
-                diags.len(),
-                diags.first().map(|d| d.file_path.as_str()).unwrap_or("<empty>")
-            ),
-            Err(other) => panic!(
-                "expected Err(ToolError::EngineError(\"no active file\")), got Err({:?})",
-                other
-            ),
-        }
+        // No load_file / open_file — update_source alone must enable get_diagnostics.
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should return Ok after update_source alone");
+        assert!(
+            !diags.is_empty(),
+            "bracket_compile_error.ri should produce at least one diagnostic"
+        );
+        // Use get_source(None) to read back the exact path update_source stored,
+        // rather than re-deriving it via std::fs::canonicalize — which may produce a
+        // different normalisation (symlink trees, macOS case-folding, etc.) and make
+        // the test flaky.
+        let expected_path = ctx
+            .get_source(None)
+            .expect("active_file should be set after update_source")
+            .file_path;
+        let has_matching_path = diags.iter().any(|d| d.file_path == expected_path);
+        assert!(
+            has_matching_path,
+            "at least one diagnostic must have file_path={:?}; got {:?}",
+            expected_path,
+            diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Regression guard: when `load_file("a.ri")` is followed by
+    /// `update_source("b.ri", ...)`, `active_file` must switch to b.ri so that
+    /// `get_diagnostics` returns spans against b's source — not a's.
+    ///
+    /// Before the amendment that replaced `get_or_insert_with` with an unconditional
+    /// set, `active_file` would remain "a.ri" after the `update_source` call even
+    /// though `compiled` had been replaced by b's module.  Any diagnostic whose
+    /// label spans index into b's source bytes would then be resolved against a's
+    /// source, producing wrong line/column numbers (or panics on out-of-range spans).
+    #[test]
+    fn update_source_after_load_file_switches_active_file() {
+        let ctx = fresh_ctx();
+        // Step 1: load a.ri (bracket.ri — parse- and compile-clean).
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed for bracket.ri");
+
+        // Step 2: update_source with b.ri (bracket_compile_error.ri — has diagnostics).
+        let source =
+            std::fs::read_to_string(BRACKET_COMPILE_ERROR_PATH).expect("fixture must be readable");
+        let update = ctx
+            .update_source(BRACKET_COMPILE_ERROR_PATH, &source)
+            .expect("update_source should succeed for bracket_compile_error.ri");
+        assert!(update.success, "update_source must succeed so compiled=Some is set");
+
+        // active_file must have switched to b.ri.
+        let active_path = ctx
+            .get_source(None)
+            .expect("active_file should be set")
+            .file_path;
+        let b_canonical = std::fs::canonicalize(BRACKET_COMPILE_ERROR_PATH)
+            .expect("fixture must be canonicalizable")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(
+            active_path, b_canonical,
+            "active_file must point to the last-updated file (b.ri), not the previously loaded a.ri"
+        );
+
+        // Diagnostics must be for b.ri (bracket_compile_error has at least one Error).
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should return Ok");
+        assert!(
+            !diags.is_empty(),
+            "bracket_compile_error.ri should produce at least one diagnostic"
+        );
+        let all_b = diags.iter().all(|d| d.file_path == b_canonical);
+        assert!(
+            all_b,
+            "all diagnostics must carry b.ri's file_path, got: {:?}",
+            diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
+        );
     }
 
     /// Regression guard: `get_diagnostics` must emit severity strings in

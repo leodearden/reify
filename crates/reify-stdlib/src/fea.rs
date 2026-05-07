@@ -296,7 +296,10 @@ fn grids_equal(a: &SampledField, b: &SampledField) -> bool {
 /// Bit-equal float-slice comparison. Used by `grids_equal` to mirror
 /// `SampledField::PartialEq`'s `to_bits()` discipline.
 fn floats_bit_equal(a: &[f64], b: &[f64]) -> bool {
-    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits())
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 #[cfg(test)]
@@ -331,8 +334,16 @@ mod tests {
             *axis1.last().expect("axis1 must be non-empty"),
         ];
         let spacing = vec![
-            if axis0.len() >= 2 { axis0[1] - axis0[0] } else { 1.0 },
-            if axis1.len() >= 2 { axis1[1] - axis1[0] } else { 1.0 },
+            if axis0.len() >= 2 {
+                axis0[1] - axis0[0]
+            } else {
+                1.0
+            },
+            if axis1.len() >= 2 {
+                axis1[1] - axis1[0]
+            } else {
+                1.0
+            },
         ];
         SampledField {
             name: name.to_string(),
@@ -367,9 +378,21 @@ mod tests {
             *axis2.last().expect("axis2 must be non-empty"),
         ];
         let spacing = vec![
-            if axis0.len() >= 2 { axis0[1] - axis0[0] } else { 1.0 },
-            if axis1.len() >= 2 { axis1[1] - axis1[0] } else { 1.0 },
-            if axis2.len() >= 2 { axis2[1] - axis2[0] } else { 1.0 },
+            if axis0.len() >= 2 {
+                axis0[1] - axis0[0]
+            } else {
+                1.0
+            },
+            if axis1.len() >= 2 {
+                axis1[1] - axis1[0]
+            } else {
+                1.0
+            },
+            if axis2.len() >= 2 {
+                axis2[1] - axis2[0]
+            } else {
+                1.0
+            },
         ];
         SampledField {
             name: name.to_string(),
@@ -501,12 +524,14 @@ mod tests {
     /// Helper: extract the inner SampledField from a Sampled Value::Field.
     fn extract_sampled(v: &Value) -> &SampledField {
         match v {
-            Value::Field { source: FieldSourceKind::Sampled, lambda, .. } => {
-                match lambda.as_ref() {
-                    Value::SampledField(sf) => sf,
-                    _ => panic!("expected SampledField in Sampled lambda slot"),
-                }
-            }
+            Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda,
+                ..
+            } => match lambda.as_ref() {
+                Value::SampledField(sf) => sf,
+                _ => panic!("expected SampledField in Sampled lambda slot"),
+            },
             _ => panic!("expected Sampled Value::Field, got {:?}", v),
         }
     }
@@ -828,20 +853,12 @@ mod tests {
     #[test]
     fn envelope_max_grid_bounds_min_mismatch_returns_undef() {
         let case_a = wrap_sampled_field(
-            make_sampled_1d(
-                "a",
-                vec![0.0, 1.0, 2.0, 3.0],
-                vec![1.0, 2.0, 3.0, 4.0],
-            ),
+            make_sampled_1d("a", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
             Type::Real,
             Type::Real,
         );
         let case_b = wrap_sampled_field(
-            make_sampled_1d(
-                "b",
-                vec![1.0, 2.0, 3.0, 4.0],
-                vec![1.0, 2.0, 3.0, 4.0],
-            ),
+            make_sampled_1d("b", vec![1.0, 2.0, 3.0, 4.0], vec![1.0, 2.0, 3.0, 4.0]),
             Type::Real,
             Type::Real,
         );
@@ -855,11 +872,7 @@ mod tests {
         // points). Same data length so any data-length-only check would miss
         // this; the grid-kind / axis-count check rejects.
         let case_a = wrap_sampled_field(
-            make_sampled_1d(
-                "a",
-                vec![0.0, 1.0, 2.0, 3.0],
-                vec![1.0, 2.0, 3.0, 4.0],
-            ),
+            make_sampled_1d("a", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
             Type::Real,
             Type::Real,
         );
@@ -1082,7 +1095,10 @@ mod tests {
 
         // Grid kind, axis_grids, bounds, spacing all preserved from refs.
         assert_eq!(sf.kind, SampledGridKind::Regular3D);
-        assert_eq!(sf.axis_grids, vec![axis.clone(), axis.clone(), axis.clone()]);
+        assert_eq!(
+            sf.axis_grids,
+            vec![axis.clone(), axis.clone(), axis.clone()]
+        );
         assert_eq!(sf.bounds_min, vec![0.0, 0.0, 0.0]);
         assert_eq!(sf.bounds_max, vec![1.0, 1.0, 1.0]);
         assert_eq!(sf.spacing, vec![1.0, 1.0, 1.0]);
@@ -1129,7 +1145,11 @@ mod tests {
 
         assert_eq!(sf.data[0], 3.0);
         // NaN != NaN under PartialEq — must use is_nan.
-        assert!(sf.data[1].is_nan(), "expected NaN at index 1, got {}", sf.data[1]);
+        assert!(
+            sf.data[1].is_nan(),
+            "expected NaN at index 1, got {}",
+            sf.data[1]
+        );
         assert_eq!(sf.data[2], 3.0);
     }
 }
