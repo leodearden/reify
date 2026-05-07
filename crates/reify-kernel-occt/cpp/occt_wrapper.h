@@ -761,7 +761,8 @@ double min_clearance(const OcctShape& a, const OcctShape& b);
 /// query vertex — uninteresting). This ordering mirrors `query_distance` and
 /// `min_clearance` for call-site consistency.
 ///
-/// See OcctKernel::closest_point_on_shape rustdoc for the dist<1e-10 shell-fallback rationale and multi-shell caveat.
+/// See OcctKernel::closest_point_on_shape in crates/reify-kernel-occt/src/lib.rs for the
+/// dist<1e-10 shell-fallback rationale and multi-shell caveat.
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz);
 
 /// Test whether the query point (px, py, pz) lies on the BREP boundary

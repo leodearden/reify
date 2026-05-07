@@ -2865,7 +2865,7 @@ Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, doub
                     gp_Pnt p = shell_dist.PointOnShape1(1);
                     return Point3{p.X(), p.Y(), p.Z()};
                 }
-                break; // first shell only
+                break; // first shell only — multi-shell solids may not pick the outer shell; see rustdoc
             }
         }
         gp_Pnt p = dist.PointOnShape1(1);
