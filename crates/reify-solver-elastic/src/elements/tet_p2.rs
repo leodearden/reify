@@ -25,8 +25,8 @@ pub struct TetP2;
 /// Hard-coded to 17 significant figures rather than computed at runtime:
 /// `f64::sqrt` is not `const fn`, and a `OnceLock` for a 4-entry static
 /// slice would be needless ceremony. The literals match
-/// `(5 ± k √5) / 20` rounded to nearest representable `f64` (within 1 ulp
-/// of `5.0_f64.sqrt()` evaluated at runtime — see the
+/// `(5 ± k √5) / 20` rounded to nearest representable `f64` (within 4 ×
+/// `f64::EPSILON` of `(5 ± k √5) / 20` evaluated at runtime — see the
 /// `quad_points_is_four_point_stroud_rule` test).
 ///
 /// Degree-2 is sufficient for stiffness assembly with **straight-edge**
@@ -311,17 +311,17 @@ mod tests {
         // Transcription guard: check the hard-coded literals against the
         // runtime formula with a 4 × ε budget that covers the rounding chain
         // (sqrt → sub → div).  This is a separate concern from the multiset
-        // check below — it locks the source-comment claim ("within 1 ulp of
-        // √5 at runtime") into CI without coupling to any single bit pattern.
+        // check below — it locks the source-comment claim ("within 4 × ε of
+        // (5 ± k √5)/20 at runtime") into CI without coupling to any single bit pattern.
         assert!(
             (TET_P2_STROUD_A - a).abs() <= 4.0 * f64::EPSILON,
-            "TET_P2_STROUD_A ({}) is not within 4 ulp of (5-√5)/20 ({})",
+            "TET_P2_STROUD_A ({}) is not within 4 × f64::EPSILON of (5-√5)/20 ({})",
             TET_P2_STROUD_A,
             a
         );
         assert!(
             (TET_P2_STROUD_B - b).abs() <= 4.0 * f64::EPSILON,
-            "TET_P2_STROUD_B ({}) is not within 4 ulp of (5+3√5)/20 ({})",
+            "TET_P2_STROUD_B ({}) is not within 4 × f64::EPSILON of (5+3√5)/20 ({})",
             TET_P2_STROUD_B,
             b
         );
