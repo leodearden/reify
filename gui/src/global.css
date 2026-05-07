@@ -32,8 +32,8 @@ body {
  * frames across consecutive runs. Activated by the `set_test_mode` MCP tool
  * (gui/src/debug/bridge.ts), which sets data-test-mode="true" on <html>.
  * Using !important ensures hover/focus pseudo-class rules are overridden too.
- * See design decision in .task/plan.json: single global rule preferred over
- * per-component toggling because the animated surface spans 7+ CSS modules. */
+ * Single global rule preferred over per-component toggling because the
+ * animated surface spans 7+ CSS modules. */
 :root[data-test-mode='true'] *,
 :root[data-test-mode='true'] *::before,
 :root[data-test-mode='true'] *::after {
