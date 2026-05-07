@@ -1324,4 +1324,127 @@ mod tests {
                 .is_undef()
         );
     }
+
+    // ── result_for dispatcher signal ─────────────────────────────────────────
+
+    #[test]
+    fn result_for_dispatcher_returns_some() {
+        // `result_for` must be a recognised FEA function name — `eval_fea`
+        // must return `Some(_)`, not `None`. The actual value may be Undef
+        // (wrong arity), but `None` would mean the arm is missing.
+        assert!(eval_fea("result_for", &[]).is_some());
+    }
+
+    // ── result_for happy path ────────────────────────────────────────────────
+
+    #[test]
+    fn result_for_existing_key_returns_the_elastic_result_value() {
+        // Fixture: MCR with one case "operating" whose ElasticResult has
+        // iterations=42 as a recognisable distinguishing value.
+        let er_op = make_fixture_elastic_result(42);
+        let mcr = make_multi_case_result_value(&[("operating", er_op.clone())]);
+
+        let result = eval_fea(
+            "result_for",
+            &[mcr, Value::String("operating".to_string())],
+        )
+        .unwrap();
+
+        assert_eq!(
+            result, er_op,
+            "result_for should return the exact ElasticResult value for the key"
+        );
+    }
+
+    #[test]
+    fn result_for_missing_key_returns_undef() {
+        let er_op = make_fixture_elastic_result(42);
+        let mcr = make_multi_case_result_value(&[("operating", er_op)]);
+
+        let result = eval_fea(
+            "result_for",
+            &[mcr, Value::String("missing".to_string())],
+        )
+        .unwrap();
+
+        assert!(
+            result.is_undef(),
+            "result_for with a missing key should return Undef (silent-Undef per PRD task #10)"
+        );
+    }
+
+    // ── result_for argument-shape negative paths ─────────────────────────────
+
+    #[test]
+    fn result_for_zero_args_returns_undef() {
+        assert!(eval_fea("result_for", &[]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn result_for_one_arg_returns_undef() {
+        // arity must be exactly 2 (mcr, key)
+        let mcr = make_multi_case_result_value(&[]);
+        assert!(eval_fea("result_for", &[mcr]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn result_for_three_args_returns_undef() {
+        let mcr = make_multi_case_result_value(&[]);
+        assert!(
+            eval_fea(
+                "result_for",
+                &[mcr, Value::String("k".to_string()), Value::Int(3)]
+            )
+            .unwrap()
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn result_for_non_map_first_arg_returns_undef() {
+        assert!(
+            eval_fea("result_for", &[Value::Int(1), Value::String("k".to_string())])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn result_for_non_string_key_returns_undef() {
+        // Second arg must be Value::String — passing e.g. Value::Real rejects.
+        let mcr = make_multi_case_result_value(&[]);
+        assert!(
+            eval_fea("result_for", &[mcr, Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn result_for_map_without_cases_field_returns_undef() {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("other".to_string()), Value::Int(1));
+        assert!(
+            eval_fea(
+                "result_for",
+                &[Value::Map(m), Value::String("k".to_string())]
+            )
+            .unwrap()
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn result_for_cases_field_non_map_returns_undef() {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("cases".to_string()), Value::Int(99));
+        assert!(
+            eval_fea(
+                "result_for",
+                &[Value::Map(m), Value::String("k".to_string())]
+            )
+            .unwrap()
+            .is_undef()
+        );
+    }
 }
