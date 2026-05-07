@@ -1179,3 +1179,101 @@ fn collection_sub_indexed_1e20_emits_out_of_range_diagnostic() {
     );
     assert_no_cascade(&errors);
 }
+
+/// Task 3045 amendment: pin the cluster-aware branch's `>` → `>=` boundary fix.
+///
+/// Without the fix (`> i64::MAX as f64`), `n = 2^63` satisfies
+/// `n > i64::MAX as f64 == false` (because `i64::MAX = 2^63 − 1` is not
+/// representable in f64 — it rounds UP to `2^63`), so the cluster branch enters
+/// the `else` arm and calls `resolve_cluster_inner_member` with `*n as i64`
+/// saturating silently to `i64::MAX`.  With the `>=` fix, the guard fires and
+/// control falls through to the regular indexed-access branch, where the
+/// `!n.is_finite() || *n >= i64::MAX as f64` guard added in step-2 emits the
+/// explicit diagnostic.  This test exercises the cluster-routing path
+/// (`sub_match_arm_groups` populated for `bolts`) and therefore covers the first
+/// guard change, which the three step-1 tests do not reach (they use a plain
+/// `collection_sub_member` with no match-arm group).
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure def HexHead    { param across_flats : Real }
+/// structure def SocketHead { param across_flats : Real }
+/// structure def Bolt {
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }
+/// }
+/// structure def Driver {
+///     sub bolts : List<Bolt>
+///     let probe = bolts[2^63].head.across_flats   // 2^63 == i64::MAX as f64
+/// }
+/// ```
+/// Without the `>` → `>=` fix this would silently produce a ValueRef to
+/// `Driver.bolts[9223372036854775807]` (saturated i64::MAX).  With the fix it
+/// emits exactly one "out of range or non-finite" diagnostic and a poison literal.
+#[test]
+fn cluster_routing_path_i64_max_boundary_emits_out_of_range_diagnostic() {
+    let bolt_match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = structure_with_members(
+        "Bolt",
+        vec![param_member("head_type", "HeadType"), bolt_match_group],
+    );
+
+    // Driver { sub bolts : List<Bolt>; let probe = bolts[2^63].head.across_flats }
+    // 2.0_f64.powi(63) == i64::MAX as f64 (the f64 value that i64::MAX rounds UP to)
+    let probe_expr = member_access(
+        member_access(
+            index_access(make_ident_expr("bolts"), 2.0_f64.powi(63)),
+            "head",
+        ),
+        "across_flats",
+    );
+    let probe = let_member("probe", probe_expr);
+    let driver = structure_with_members(
+        "Driver",
+        vec![collection_sub_member("bolts", "Bolt"), probe],
+    );
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_collection_sub_cluster_i64max_boundary"),
+        declarations: vec![
+            head_type_enum(),
+            structure_with_members("HexHead", vec![param_member("across_flats", "Real")]),
+            structure_with_members("SocketHead", vec![param_member("across_flats", "Real")]),
+            bolt,
+            driver,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors = error_diagnostics(&compiled);
+
+    let matching: Vec<&&reify_types::Diagnostic> = errors
+        .iter()
+        .filter(|d| d.message.contains("out of range or non-finite"))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one 'out of range or non-finite' error for 2^63 cluster index, \
+         got {} (all errors: {:#?})",
+        matching.len(),
+        errors
+    );
+    assert_no_cascade(&errors);
+}

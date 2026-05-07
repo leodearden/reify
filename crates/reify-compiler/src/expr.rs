@@ -1283,12 +1283,24 @@ pub(crate) fn compile_expr_guarded(
                     clusters.iter().find(|(g, _)| &g.name == group_name)
                 && let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind
             {
-                if !n.is_finite() || *n >= i64::MAX as f64 || n.fract() != 0.0 || *n < 0.0 {
-                    // Non-finite, out-of-range, fractional, or negative index — delegate to
-                    // the existing indexed-access branch for a consistent error message.
-                    // `>= i64::MAX as f64` (not `>`) is required because i64::MAX cannot be
-                    // represented exactly in f64; it rounds UP to 2^63, so `n = 2^63`
-                    // satisfies `n > i64::MAX as f64 == false` and would silently saturate.
+                if !n.is_finite() || *n >= i64::MAX as f64 {
+                    // Out-of-range or non-finite index in a cluster-routing pattern:
+                    // emit the diagnostic directly rather than falling through.
+                    // Fall-through would skip the next block (it guards on
+                    // `object.kind == IndexAccess`, but here `object.kind` is
+                    // `MemberAccess`) and reach `compile_expr_guarded`, which
+                    // recurses on `col[i].<cluster>` and emits a misleading
+                    // "unknown member '<cluster>' on collection sub" error.
+                    // `>= i64::MAX as f64` (not `>`) is required: i64::MAX rounds
+                    // UP to 2^63 in f64, so `n = 2^63` satisfies
+                    // `n > i64::MAX as f64 == false` and would silently saturate.
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error("collection index is out of range or non-finite")
+                            .with_label(DiagnosticLabel::new(expr.span, "invalid index")),
+                    );
+                } else if n.fract() != 0.0 || *n < 0.0 {
+                    // Fractional or negative: fall through for a consistent error.
                 } else {
                     let i = *n as i64;
                     let scoped_entity =
@@ -1303,8 +1315,8 @@ pub(crate) fn compile_expr_guarded(
                         diagnostics,
                     );
                 }
-                // Non-literal index: the `&& let NumberLiteral(n)` guard above
-                // short-circuits so control falls through to the indexed-access branch.
+                // Non-literal index or fractional/negative: the guards above
+                // short-circuit so control falls through to the indexed-access branch.
             }
 
             // Check if this is an indexed collection member access: collection[i].member
@@ -1356,13 +1368,18 @@ pub(crate) fn compile_expr_guarded(
                         );
                     }
                     if n.fract() != 0.0 || *n < 0.0 {
-                        diagnostics.push(
+                        // Anti-cascade (task-1921): use make_poison_literal (Type::Error)
+                        // rather than Value::Undef typed as member_type. A fractional or
+                        // negative index means the index expression is fundamentally invalid;
+                        // returning member_type would let downstream type-checks see a
+                        // "well-typed" hole and potentially emit cascade diagnostics.
+                        return make_poison_literal(
+                            diagnostics,
                             Diagnostic::error(
                                 "collection index must be a non-negative integer literal",
                             )
                             .with_label(DiagnosticLabel::new(expr.span, "invalid index")),
                         );
-                        return CompiledExpr::literal(Value::Undef, member_type);
                     }
                     let i = *n as i64;
                     let scoped_entity = format!("{}.{}[{}]", scope.entity_name, name, i);
