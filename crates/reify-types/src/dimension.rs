@@ -206,6 +206,9 @@ impl DimensionVector {
     /// `density: Density`.
     pub const MASS_DENSITY: DimensionVector =
         DimensionVector::from_exps(&[(0, -3), (1, 1)]);
+    /// Acceleration: m·s⁻² (LENGTH / TIME²)
+    pub const ACCELERATION: DimensionVector =
+        DimensionVector::from_exps(&[(0, 1), (2, -2)]);
 
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
@@ -356,8 +359,8 @@ pub const FORCE: DimensionVector = {
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
 /// special-cases `"Dimensionless" => DimensionVector::DIMENSIONLESS` as a separate fallback arm.
 ///
-/// The slice contains 32 entries, one per named singleton, in the same order as the
-/// original `canonical_name` match arms (LENGTH .. MASS_DENSITY).
+/// The slice contains 33 entries, one per named singleton, in the same order as the
+/// original `canonical_name` match arms (LENGTH .. ACCELERATION).
 pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::LENGTH, "Length"),
     (DimensionVector::MASS, "Mass"),
@@ -391,6 +394,7 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::DYNAMIC_VISCOSITY, "DynamicViscosity"),
     (DimensionVector::MOMENT_OF_INERTIA, "MomentOfInertia"),
     (DimensionVector::MASS_DENSITY, "Density"),
+    (DimensionVector::ACCELERATION, "Acceleration"),
 ];
 
 impl fmt::Display for DimensionVector {
