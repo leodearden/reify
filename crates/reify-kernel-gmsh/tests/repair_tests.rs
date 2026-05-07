@@ -46,6 +46,38 @@ fn sliver_triangles_below_area_threshold_are_collapsed() {
         repaired.indices.len(),
         repaired.indices.len() / 3
     );
+    // Identity check: the surviving triangle must be the WELL-FORMED one
+    // (corners at (0,0,0), (1,0,0), (0.5,0.866,0)), not the sliver. A
+    // length-only assertion would still pass if a regression accidentally
+    // dropped the well-formed triangle and kept the sliver. Look up each
+    // surviving index in the (compacted) vertices array and assert the
+    // triple matches the well-formed triangle's coordinates.
+    let expected: [(f32, f32, f32); 3] = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.5, 0.866, 0.0),
+    ];
+    let tol: f32 = 1e-6;
+    for (slot, &idx) in repaired.indices.iter().enumerate() {
+        let off = (idx as usize) * 3;
+        let got = (
+            repaired.vertices[off],
+            repaired.vertices[off + 1],
+            repaired.vertices[off + 2],
+        );
+        let want = expected[slot];
+        assert!(
+            (got.0 - want.0).abs() < tol
+                && (got.1 - want.1).abs() < tol
+                && (got.2 - want.2).abs() < tol,
+            "surviving index {} (slot {}) should reference the well-formed \
+             triangle's corner {:?}; got {:?}",
+            idx,
+            slot,
+            want,
+            got
+        );
+    }
 }
 
 /// Vertices closer than `vertex_merge_epsilon` are merged into a single
