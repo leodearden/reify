@@ -950,6 +950,83 @@ describe('meshManager', () => {
     });
   });
 
+  describe('colorize material disposal (C-04)', () => {
+    const sentinelBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+    function makeColorizedMeshData(entityPath: string): MeshData {
+      return {
+        entity_path: entityPath,
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+    }
+
+    it('(a) dispose() on a manager with a colorized mesh calls dispose() on the MeshPhongMaterial', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({ A: makeColorizedMeshData('A') });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat = mesh.material as any;
+
+      // Verify the material is a phong material
+      expect(mockPhongMaterials.some((m: any) => m === mat)).toBe(true);
+      expect(mat.dispose).not.toHaveBeenCalled();
+
+      manager.dispose();
+
+      // Material dispose must have been called (no resource leak)
+      expect(mat.dispose).toHaveBeenCalled();
+    });
+
+    it('(b) sync() removing a colorized mesh disposes its MeshPhongMaterial', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({ A: makeColorizedMeshData('A'), B: makeColorizedMeshData('B') });
+
+      const meshA = manager.getSceneMeshes().get('A')!;
+      const matA = meshA.material as any;
+      expect(mockPhongMaterials.some((m: any) => m === matA)).toBe(true);
+
+      // Remove A by syncing without it
+      manager.sync({ B: makeColorizedMeshData('B') });
+
+      expect(matA.dispose).toHaveBeenCalled();
+    });
+
+    it('(c) MeshPhongMaterial disposal does not affect the remaining mesh', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({ A: makeColorizedMeshData('A'), B: makeColorizedMeshData('B') });
+
+      const meshB = manager.getSceneMeshes().get('B')!;
+      const matB = meshB.material as any;
+
+      // Remove A
+      manager.sync({ B: makeColorizedMeshData('B') });
+
+      // B's material should NOT have been disposed
+      expect(matB.dispose).not.toHaveBeenCalled();
+      // B is still in the scene
+      expect(manager.getSceneMeshes().has('B')).toBe(true);
+    });
+  });
+
   describe('ghost visibility', () => {
     // Helper: create manager, add one mesh, then reset mock call history so tests
     // start with zero recorded call counts.
