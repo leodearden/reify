@@ -2236,6 +2236,186 @@ structure def WeldedMount : Mounted {
     );
 }
 
+/// Same 2x2 all-leaves-infeasible setup. Pins the **depth context** field
+/// of the rich format (task 2663). Reports both the actual param count and
+/// the configured `max_depth` bound so the user can immediately tell their
+/// distance from the bound.
+///
+/// Pins:
+/// - message contains `"depth: 2"` — actual param count
+/// - message contains `"max_depth = 6"` — configured bound
+#[test]
+fn dfs_zero_feasible_diagnostic_includes_depth_context() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let _outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "`0 =>` arm must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+
+    assert!(
+        diagnostics[0].message.contains("depth: 2"),
+        "rich format must contain 'depth: 2' (params.len()); got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("max_depth = 6"),
+        "rich format must contain 'max_depth = 6' (configured bound); got: {:?}",
+        diagnostics[0].message
+    );
+}
+
+/// 2x2 all-leaves-infeasible setup at the depth boundary: `n == max_depth`.
+/// The depth-bound branch uses strict `>` (line 1195 of auto_type_param.rs),
+/// so n == max_depth still runs DFS rather than falling back to BFS. Pins
+/// that the rich diagnostic correctly reports `depth: 2 max_depth = 2` even
+/// at the boundary (no spurious cap-hit text, no fallback to v0.1 BFS path).
+#[test]
+fn dfs_zero_feasible_diagnostic_at_depth_boundary() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    // max_depth = 2 (== params.len()) — boundary; DFS still runs (strict `>`).
+    let _outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        2,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "`0 =>` arm must emit exactly one diagnostic at depth boundary, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "boundary case must take the rich `0 =>` arm, not depth-bound fallback; got: {:?}",
+        diagnostics[0].code
+    );
+
+    assert!(
+        diagnostics[0].message.contains("depth: 2"),
+        "depth-boundary message must contain 'depth: 2'; got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("max_depth = 2"),
+        "depth-boundary message must contain 'max_depth = 2'; got: {:?}",
+        diagnostics[0].message
+    );
+}
+
 /// Multi-param strict-mode scenario where exactly one of the four cross-product
 /// leaves is feasible. Exercises the `1 =>` arm via the strict path: with
 /// `max_feasible_to_collect = 2` (strict mode), the search runs all four
