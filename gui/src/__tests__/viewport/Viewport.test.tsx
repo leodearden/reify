@@ -45,6 +45,8 @@ const mockMeshDispose = vi.fn();
 const mockMeshGetSceneMeshes = vi.fn(() => new Map());
 const mockMeshGetGhostMeshes = vi.fn(() => new Map());
 const mockMeshSetVisibility = vi.fn();
+const mockMeshSetColorize = vi.fn();
+const mockMeshRebuildMaterials = vi.fn();
 
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
@@ -107,6 +109,8 @@ vi.mock('../../viewport/meshManager', () => ({
     getSceneMeshes: mockMeshGetSceneMeshes,
     getGhostMeshes: mockMeshGetGhostMeshes,
     setVisibility: mockMeshSetVisibility,
+    setColorize: mockMeshSetColorize,
+    rebuildMaterials: mockMeshRebuildMaterials,
   })),
 }));
 
@@ -145,6 +149,9 @@ beforeEach(() => {
   mockControlsTarget.x = 0;
   mockControlsTarget.y = 0;
   mockControlsTarget.z = 0;
+  // Reset FEA mock state
+  mockMeshSetColorize.mockClear();
+  mockMeshRebuildMaterials.mockClear();
 });
 
 describe('Viewport', () => {
