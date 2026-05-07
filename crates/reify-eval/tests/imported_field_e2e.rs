@@ -26,7 +26,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_types::{
-    FIELD_ENTITY_PREFIX, DiagnosticCode, FieldSourceKind, ModulePath, Value, ValueCellId,
+    FIELD_ENTITY_PREFIX, DiagnosticCode, FieldSourceKind, Value, ValueCellId,
 };
 
 /// Embedded source fixture — an `imported` field in a minimal module.
@@ -47,13 +47,13 @@ field def pressure_map : Point3 -> Scalar {
 /// Pins the currently-shipping v0.2 deferral pipeline for `imported` field
 /// sources end-to-end:
 ///
-/// 1. The source string parses without errors.
-/// 2. Compiling emits at least one `Severity::Error` with
-///    `DiagnosticCode::FieldImportedV02`, whose message contains `"v0.2"` and
-///    `"imported"`.
-/// 3. `compiled.fields` has exactly one entry whose `source` is
+/// 1. Compiling emits at least one `Severity::Error` with
+///    `DiagnosticCode::FieldImportedV02`.  Message wording and label details
+///    are pinned by `compile_field_imported_emits_v02_deferral_diagnostic` in
+///    `crates/reify-compiler/tests/field_compile_tests.rs`.
+/// 2. `compiled.fields` has exactly one entry whose `source` is
 ///    `CompiledFieldSource::Imported`.
-/// 4. `Engine::eval` produces a `Value::Field { source: FieldSourceKind::Imported,
+/// 3. `Engine::eval` produces a `Value::Field { source: FieldSourceKind::Imported,
 ///    lambda }` where `*lambda == Value::Undef` (the placeholder lowered by
 ///    `engine_eval::elaborate_field`).
 ///
@@ -61,53 +61,24 @@ field def pressure_map : Point3 -> Scalar {
 /// test as described in the file-level rustdoc.
 #[test]
 fn imported_field_smoke_pins_v02_deferral_pipeline() {
-    // 1. Parse — must succeed with no parse errors.
-    let parsed = reify_syntax::parse(IMPORTED_FIELD_SOURCE, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // 2. Compile — intentionally uses compile_source_with_stdlib, NOT
+    // 1. Compile — intentionally uses compile_source_with_stdlib, NOT
     //    parse_and_compile_with_stdlib, because the FieldImportedV02 deferral
-    //    is a Severity::Error by design; parse_and_compile_with_stdlib would
-    //    panic here.
+    //    is a Severity::Error by design; parse_and_compile_with_stdlib panics
+    //    on any Severity::Error.  compile_source_with_stdlib panics only on
+    //    parse errors, which also enforces the parse-correctness contract.
     let compiled = compile_source_with_stdlib(IMPORTED_FIELD_SOURCE);
 
-    // 2a. Expect at least one FieldImportedV02 error.
+    // Expect at least one FieldImportedV02 error.  Message wording and label
+    // details are pinned by the compiler-crate test; pin only the code here
+    // so this test doesn't need updating if the wording changes.
     let errors = errors_only(&compiled);
     assert!(
-        !errors.is_empty(),
-        "expected at least one Severity::Error for imported field source, got no errors"
+        errors.iter().any(|d| d.code == Some(DiagnosticCode::FieldImportedV02)),
+        "expected DiagnosticCode::FieldImportedV02, got: {:?}",
+        errors.iter().map(|d| d.code).collect::<Vec<_>>()
     );
 
-    let has_v02_deferral = errors.iter().any(|d| {
-        d.code == Some(DiagnosticCode::FieldImportedV02)
-            && d.message.contains("v0.2")
-            && d.message.contains("imported")
-    });
-    assert!(
-        has_v02_deferral,
-        "expected DiagnosticCode::FieldImportedV02 with message containing 'v0.2' and 'imported', \
-         got: {:?}",
-        errors
-            .iter()
-            .map(|d| (d.code, d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    // 2b. The deferral diagnostic must carry at least one label.
-    let deferral = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::FieldImportedV02))
-        .unwrap();
-    assert!(
-        !deferral.labels.is_empty(),
-        "FieldImportedV02 diagnostic should carry at least one label"
-    );
-
-    // 3. Exactly one compiled field, with CompiledFieldSource::Imported.
+    // 2. Exactly one compiled field, with CompiledFieldSource::Imported.
     assert_eq!(
         compiled.fields.len(),
         1,
@@ -121,7 +92,7 @@ fn imported_field_smoke_pins_v02_deferral_pipeline() {
         field.source
     );
 
-    // 4. Eval — FieldSourceKind::Imported + lambda == Value::Undef.
+    // 3. Eval — FieldSourceKind::Imported + lambda == Value::Undef.
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
