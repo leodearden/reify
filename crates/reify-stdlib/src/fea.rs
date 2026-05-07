@@ -26,6 +26,7 @@
 //! are selected via IEEE 754 `total_cmp`, and the first finite case at
 //! each index wins on ties (strict `is_lt`/`is_gt`, not `is_le`/`is_ge`).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -43,6 +44,29 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "result_for" => result_for(args),
         _ => return None,
     })
+}
+
+/// Extract the inner `cases` `BTreeMap` from a `MultiCaseResult` struct
+/// instance (`Value::Map { "cases" -> Value::Map }`).
+///
+/// Returns `Some` with a reference to the inner BTreeMap when the shape
+/// matches, or `None` on any shape mismatch:
+///   - `arg` is not `Value::Map`
+///   - outer Map has no `"cases"` key
+///   - `"cases"` value is not `Value::Map`
+///
+/// Factored out to avoid the four-step boilerplate duplicated between
+/// `case_names` and `result_for`. Every future accessor that reads `cases`
+/// from a `MultiCaseResult` instance should route through this helper.
+fn extract_cases_map(arg: &Value) -> Option<&BTreeMap<Value, Value>> {
+    let outer = match arg {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    match outer.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(m)) => Some(m),
+        _ => None,
+    }
 }
 
 /// Return the keys of the `cases` Map inside a `MultiCaseResult` struct
@@ -68,9 +92,7 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// All argument-shape failures collapse to `Value::Undef` (silent-Undef
 /// discipline, mirroring `envelope_reduce`):
 ///   - arity != 1
-///   - `args[0]` is not `Value::Map`
-///   - outer Map has no `"cases"` key
-///   - `"cases"` value is not `Value::Map`
+///   - `args[0]` is not `Value::Map` or has no `"cases"` key mapping to a Map
 ///
 /// Diagnostic emission is deferred to PRD task #10 (Diagnostic mapping for
 /// multi-case-specific failure modes).
@@ -78,15 +100,10 @@ fn case_names(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    let outer = match &args[0] {
-        Value::Map(m) => m,
-        _ => return Value::Undef,
-    };
-    let cases = match outer.get(&Value::String("cases".to_string())) {
-        Some(Value::Map(m)) => m,
-        _ => return Value::Undef,
-    };
-    Value::List(cases.keys().cloned().collect())
+    match extract_cases_map(&args[0]) {
+        Some(cases) => Value::List(cases.keys().cloned().collect()),
+        None => Value::Undef,
+    }
 }
 
 /// Look up a single case by name from a `MultiCaseResult` struct instance.
@@ -120,22 +137,17 @@ fn result_for(args: &[Value]) -> Value {
     if args.len() != 2 {
         return Value::Undef;
     }
-    let outer = match &args[0] {
-        Value::Map(m) => m,
-        _ => return Value::Undef,
-    };
     let key = match &args[1] {
         Value::String(s) => s,
         _ => return Value::Undef,
     };
-    let cases = match outer.get(&Value::String("cases".to_string())) {
-        Some(Value::Map(m)) => m,
-        _ => return Value::Undef,
-    };
-    cases
-        .get(&Value::String(key.clone()))
-        .cloned()
-        .unwrap_or(Value::Undef)
+    match extract_cases_map(&args[0]) {
+        Some(cases) => cases
+            .get(&Value::String(key.clone()))
+            .cloned()
+            .unwrap_or(Value::Undef),
+        None => Value::Undef,
+    }
 }
 
 /// Per-grid-point reduction across a `Map<String, Field<Point3, T>>` of

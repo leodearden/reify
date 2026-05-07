@@ -156,6 +156,16 @@ fn loadcase_struct_has_correct_param_shape() {
             member, expected_ty, cell.cell_type
         );
     }
+
+    // Pin the canonical declaration order: name, loads, supports, options.
+    // LoadCase follows the positional-argument convention used elsewhere in
+    // the stdlib (e.g. ElasticResult). A silent re-ordering would change
+    // positional-construction semantics without test coverage.
+    assert_eq!(
+        names,
+        vec!["name", "loads", "supports", "options"],
+        "LoadCase params must be declared in canonical order [name, loads, supports, options]"
+    );
 }
 
 // ─── LoadCase param defaults ──────────────────────────────────────────────────
@@ -261,5 +271,59 @@ fn multi_case_result_struct_has_correct_param_shape() {
         "MultiCaseResult.cases should have no default_expr (solver-only-produced), \
          but got: {:?}",
         cell.default_expr
+    );
+}
+
+// ─── shallow-kind-match invariant ────────────────────────────────────────────
+
+/// Pins the runtime shallow-kind-match invariant that `List<Real>` placeholder
+/// types silently accept a `Value::List` of any inner element kinds.
+///
+/// `LoadCase.loads` and `LoadCase.supports` are typed `List<Real>` as
+/// placeholders (pending `trait def Load` / `trait def Support`). The Reify
+/// runtime type-checker is shallow kind-match only (`value_type_kind_matches`
+/// in `reify-eval/src/lib.rs`): `Type::List(_)` accepts any `Value::List`
+/// regardless of inner element kinds. At runtime, load constructors produce
+/// `Value::Map` instances (not `Value::Real`), but these pass the shallow
+/// kind-match because only the outer `List` kind is checked.
+///
+/// This test compiles a `LoadCase` instantiation with integer list literals
+/// for `loads` and `supports`, and asserts no Error-severity diagnostics are
+/// emitted. If the type-checker is ever tightened to validate inner element
+/// kinds, this test fails first — surfacing the breakage before downstream
+/// PRD task #2 (`solve_load_cases`) lands.
+#[test]
+fn loadcase_list_real_placeholder_compiles_without_errors() {
+    // Compile a user source that passes integer-list literals for `loads` and
+    // `supports`. The declared types are `List<Real>`; integer literals are
+    // `List<Int>` (or implicitly-coerced `List<Real>`). Either way, the
+    // compiler must not emit an Error-severity diagnostic — the `List<Real>`
+    // placeholder is intentionally permissive to allow runtime kind-tagged
+    // Map values (load/support constructors) in the same slot.
+    let source = r#"
+structure def ShallowKindPinTest {
+    let lc = LoadCase(name: "operating", loads: [1, 2, 3], supports: [4, 5, 6])
+}
+"#;
+    let parsed = parse_with_stdlib(
+        source,
+        ModulePath::from_dotted("test.shallow_kind_pin").expect("valid dotted path"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "ShallowKindPinTest source should parse without errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = compile_with_stdlib(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "LoadCase with integer-list loads/supports should not produce Error-severity \
+         diagnostics (shallow-kind-match invariant: List<Real> accepts any List): {errors:?}"
     );
 }

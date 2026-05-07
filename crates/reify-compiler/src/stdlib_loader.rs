@@ -88,7 +88,7 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             ),
             (
                 "std.fea.multi_case",
-                include_str!("../stdlib/fea.ri"),
+                include_str!("../stdlib/fea_multi_case.ri"),
             ),
             ("std.analysis", include_str!("../stdlib/analysis.ri")),
             ("std.tolerancing", include_str!("../stdlib/tolerancing.ri")),

@@ -37,6 +37,21 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// `MultiCaseResult` is represented as the runtime `Value::Map{"cases" ->
 /// Value::Map}` shape via nested map literals (no struct-constructor call).
 ///
+/// # Coverage note
+///
+/// This file does NOT exercise `LoadCase` or `MultiCaseResult` struct
+/// *definitions* through the parse→compile→eval pipeline. Struct constructors
+/// (e.g. `LoadCase(...)`, `MultiCaseResult(...)`) evaluate to `Value::Undef`
+/// in the current engine, so attempting to assert their fields would always
+/// observe Undef regardless of struct validity. Struct-presence coverage
+/// (template existence, param shapes, defaults) is delegated to the
+/// compiler-level test in
+/// `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`, which
+/// inspects the compiled module directly via `load_stdlib_module()`. Future
+/// maintainers: if struct constructors are wired to produce real Values,
+/// promote the struct-construction assertions from the compiler test into
+/// this smoke test.
+///
 /// Bindings:
 ///   `cases`      = `map{"operating" => 42, "overload" => 99}` (inner Map)
 ///   `mcr`        = `map{"cases" => cases}` (struct-shaped outer Map)
