@@ -1,9 +1,9 @@
-/// Shared axis-grid utilities for sampled fields.
-///
-/// Both `reify-eval` (user-defined `sampled` field sources) and
-/// `reify-kernel-openvdb` (imported OpenVDB grids) need the same
-/// axis-grid builder.  This module is the single canonical home so
-/// that the two call-sites share one implementation and one cap constant.
+//! Shared axis-grid utilities for sampled fields.
+//!
+//! Both `reify-eval` (user-defined `sampled` field sources) and
+//! `reify-kernel-openvdb` (imported OpenVDB grids) need the same
+//! axis-grid builder.  This module is the single canonical home so
+//! that the two call-sites share one implementation and one cap constant.
 
 /// Maximum number of intervals allowed per axis in [`linspace_inclusive`].
 ///
