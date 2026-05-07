@@ -48,13 +48,16 @@ use reify_types::{GeometryHandleId, GeometryOp, Value};
 /// degenerate.
 ///
 /// A revolve is rejected when:
-/// - every component of `axis_dir` has magnitude `< REVOLVE_DEGENERATE_TOLERANCE`
+/// - the Euclidean norm of `axis_dir` is `< REVOLVE_DEGENERATE_TOLERANCE`
 ///   (zero-length axis vector), or
 /// - `angle_rad.abs() < REVOLVE_DEGENERATE_TOLERANCE` (no rotation).
 ///
 /// `1e-12` matches the project's general geometric-tolerance convention: tight
 /// enough to catch genuine zero-vector / zero-angle degenerates without
-/// rejecting legitimate near-axis-aligned values.
+/// rejecting legitimate near-axis-aligned values. The norm test (rather than
+/// componentwise) means tiny-but-nonzero axes like `[1e-11, 0.0, 0.0]` (norm
+/// ~1e-11, effectively zero) are correctly rejected as degenerate even though
+/// one component nominally exceeds the tolerance.
 const REVOLVE_DEGENERATE_TOLERANCE: f64 = 1e-12;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -211,10 +214,13 @@ pub fn classify_swept_body(
             ..
         } => {
             // Reject zero-length axis vector and zero-angle revolves; any
-            // other angle (including the full 2π case) qualifies.
-            if axis_dir
-                .iter()
-                .all(|c| c.abs() < REVOLVE_DEGENERATE_TOLERANCE)
+            // other angle (including the full 2π case) qualifies. Use the
+            // Euclidean norm (rather than a per-component check) so a tiny
+            // axis like `[1e-11, 0.0, 0.0]` — norm ~1e-11, geometrically a
+            // zero vector — is correctly rejected even though one component
+            // nominally exceeds `REVOLVE_DEGENERATE_TOLERANCE`.
+            let axis_norm_sq: f64 = axis_dir.iter().map(|c| c * c).sum();
+            if axis_norm_sq < REVOLVE_DEGENERATE_TOLERANCE * REVOLVE_DEGENERATE_TOLERANCE
                 || angle_rad.abs() < REVOLVE_DEGENERATE_TOLERANCE
             {
                 None
