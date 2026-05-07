@@ -202,7 +202,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "set_test_mode",
-            description: "Freeze time-driven UI (CSS animations, transitions, pulses) so visual-regression screenshots are pixel-stable. Frontend-mediated. Returns { ok: true, test_mode: bool }.",
+            description: "Freeze CSS animations and transitions for pixel-stable DOM screenshots. Does NOT pause JS-driven animations or the Three.js render loop. Returns { ok: true, test_mode: bool }.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
