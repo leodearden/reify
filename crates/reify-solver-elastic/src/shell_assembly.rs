@@ -117,6 +117,20 @@ pub fn plane_stress_d(material: &IsotropicElastic) -> [[f64; 3]; 3] {
     ]
 }
 
+/// Inline 3×3 matrix multiply: C = A · B.
+#[inline]
+fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut c = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                c[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    c
+}
+
 /// Compute the 18×18 element stiffness matrix for a MITC3+ shell element.
 ///
 /// `nodes` are the three physical vertex positions in global coordinates.
@@ -126,12 +140,325 @@ pub fn plane_stress_d(material: &IsotropicElastic) -> [[f64; 3]; 3] {
 /// Returns an [`ElementStiffness`] with `n_dofs = 18`. DOF ordering is
 /// `6 · node_idx + i` with `i ∈ {0..5}` for `(u_x, u_y, u_z, θ_x, θ_y, θ_z)`.
 /// The drilling rotation `θ_z` (i=5) carries zero stiffness by construction.
+///
+/// # Contributions
+///
+/// K = K_membrane + K_bending + K_shear, assembled in local mid-surface frame
+/// then rotated into global: `K_global[a..a+3, b..b+3] = Rᵀ · K_local[...] · R`.
+#[allow(clippy::needless_range_loop)]
 pub fn shell_element_stiffness(
-    _nodes: &[[f64; 3]; 3],
-    _thickness: f64,
-    _material: &IsotropicElastic,
+    nodes: &[[f64; 3]; 3],
+    thickness: f64,
+    material: &IsotropicElastic,
 ) -> ElementStiffness {
-    ElementStiffness::zeros(18)
+    use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord, ShearStrain, TyingShears};
+
+    let frame = build_shell_frame(nodes);
+    let r = frame.r;   // rotation matrix: row i = local basis eᵢ in global coords
+    let area = frame.area;
+    let t = thickness;
+    let d_pl = plane_stress_d(material);
+
+    // Shear modulus G and transverse-shear D scalar: κ·G
+    let e = material.youngs_modulus;
+    let nu = material.poisson_ratio;
+    let g = e / (2.0 * (1.0 + nu));
+    let kappa_g = KAPPA * g;
+
+    // --- Local 2D coordinates of nodes (x_loc = R · (p_i - p0)) ---
+    // e3 component is zero for a flat triangle (by construction of R).
+    let mut xloc = [[0.0_f64; 2]; 3]; // [node][local_x, local_y]
+    for i in 0..3 {
+        let d = [
+            nodes[i][0] - frame.origin[0],
+            nodes[i][1] - frame.origin[1],
+            nodes[i][2] - frame.origin[2],
+        ];
+        xloc[i][0] = r[0][0]*d[0] + r[0][1]*d[1] + r[0][2]*d[2]; // x_loc
+        xloc[i][1] = r[1][0]*d[0] + r[1][1]*d[1] + r[1][2]*d[2]; // y_loc
+    }
+
+    // 2D shape gradients via the standard triangle formula.
+    // For nodes (x0,y0),(x1,y1),(x2,y2) with signed area A_signed = area (positive):
+    //   ∂N_i/∂x = (y_j - y_k) / (2·A_signed)
+    //   ∂N_i/∂y = (x_k - x_j) / (2·A_signed)
+    // cyclic: i→j→k = 0→1→2→0
+    let two_a = 2.0 * area;
+    let x = [xloc[0][0], xloc[1][0], xloc[2][0]];
+    let y = [xloc[0][1], xloc[1][1], xloc[2][1]];
+
+    // dN[i] = [dN_i/dx, dN_i/dy] in local frame
+    let dn = [
+        [(y[1] - y[2]) / two_a, (x[2] - x[1]) / two_a],
+        [(y[2] - y[0]) / two_a, (x[0] - x[2]) / two_a],
+        [(y[0] - y[1]) / two_a, (x[1] - x[0]) / two_a],
+    ];
+
+    // --- 18×18 K_local (assembled in local frame) ---
+    let mut k_loc = [[0.0_f64; 18]; 18];
+
+    // ---- Membrane K (step 8) ----
+    // B_m is 3×9 (rows: ε_xx, ε_yy, γ_xy; cols: u_x_0,u_y_0, u_x_1,u_y_1, u_x_2,u_y_2)
+    // Per node i, the 2-col block in B_m is:
+    //   row 0 (ε_xx):  [dN_i/dx, 0      ]
+    //   row 1 (ε_yy):  [0,       dN_i/dy]
+    //   row 2 (γ_xy):  [dN_i/dy, dN_i/dx]
+    //
+    // Global DOFs for in-plane: node i → local DOFs 6i+0 (u_x), 6i+1 (u_y)
+    // K_m[a][b] += Σ_r Σ_s B_m[r][col_a] · (t·D_pl)[r][s] · B_m[s][col_b] · area
+    // (1-point rule, integrand constant)
+    let t_dpl = {
+        let mut td = [[0.0_f64; 3]; 3];
+        for i in 0..3 { for j in 0..3 { td[i][j] = t * d_pl[i][j]; } }
+        td
+    };
+    for ni in 0..3 {
+        for nj in 0..3 {
+            // B_m columns for node i (2 cols) × B_m columns for node j (2 cols)
+            // col offsets within the 9-col membrane sub-block: 2·n
+            // but in local K, DOF = 6·n + {0,1}
+            let doi = [6*ni, 6*ni+1]; // local DOF indices for (u_x, u_y) of node i
+            let doj = [6*nj, 6*nj+1];
+            // B_m sub-block for node i (3×2):
+            let bmi = [[dn[ni][0], 0.0], [0.0, dn[ni][1]], [dn[ni][1], dn[ni][0]]];
+            let bmj = [[dn[nj][0], 0.0], [0.0, dn[nj][1]], [dn[nj][1], dn[nj][0]]];
+            // K_m sub-block (2×2) for (node_i, node_j):
+            // K_m_ij[a][b] = Σ_r Σ_s bmi[r][a] · t_dpl[r][s] · bmj[s][b] · area
+            for a in 0..2 {
+                for b in 0..2 {
+                    let mut v = 0.0;
+                    for r in 0..3 {
+                        for s in 0..3 {
+                            v += bmi[r][a] * t_dpl[r][s] * bmj[s][b];
+                        }
+                    }
+                    k_loc[doi[a]][doj[b]] += v * area;
+                }
+            }
+        }
+    }
+
+    // ---- Bending K (step 12, implemented here together) ----
+    // B_b is 3×9 (rows: κ_xx, κ_yy, 2κ_xy; mapping per-node (θ_x, θ_y))
+    // Per node i, 2-col block:
+    //   row 0 (κ_xx = -∂θ_y/∂x): [0,        -dN_i/dx]
+    //   row 1 (κ_yy = +∂θ_x/∂y): [+dN_i/dy,  0      ]
+    //   row 2 (2κ_xy = ∂θ_x/∂x - ∂θ_y/∂y): [+dN_i/dx, -dN_i/dy]
+    //
+    // Global DOFs for rotations: node i → 6i+3 (θ_x), 6i+4 (θ_y)
+    // K_b = B_bᵀ · (t³/12 · D_pl) · B_b · area
+    let t3_12_dpl = {
+        let factor = t * t * t / 12.0;
+        let mut td = [[0.0_f64; 3]; 3];
+        for i in 0..3 { for j in 0..3 { td[i][j] = factor * d_pl[i][j]; } }
+        td
+    };
+    for ni in 0..3 {
+        for nj in 0..3 {
+            let doi = [6*ni+3, 6*ni+4]; // θ_x, θ_y DOF indices for node i
+            let doj = [6*nj+3, 6*nj+4];
+            // B_b sub-block (3×2) for node i:
+            let bbi = [[0.0, -dn[ni][0]], [dn[ni][1], 0.0], [dn[ni][0], -dn[ni][1]]];
+            let bbj = [[0.0, -dn[nj][0]], [dn[nj][1], 0.0], [dn[nj][0], -dn[nj][1]]];
+            for a in 0..2 {
+                for b in 0..2 {
+                    let mut v = 0.0;
+                    for r in 0..3 {
+                        for s in 0..3 {
+                            v += bbi[r][a] * t3_12_dpl[r][s] * bbj[s][b];
+                        }
+                    }
+                    k_loc[doi[a]][doj[b]] += v * area;
+                }
+            }
+        }
+    }
+
+    // ---- Transverse-shear K (step 10, implemented here) ----
+    // MITC3+ assumed-strain interpolation.
+    // Physical DOFs per node for shear: u_z (6n+2), θ_x (6n+3), θ_y (6n+4).
+    //
+    // Local 2D Jacobian from reference (ξ,η) to local (x_loc, y_loc):
+    //   J2 = [[∂x/∂ξ, ∂x/∂η], [∂y/∂ξ, ∂y/∂η]]
+    //      = [[x1-x0, x2-x0], [y1-y0, y2-y0]]
+    // Inverse (for 2×2): J2⁻¹ = (1/det) · [[d, -b], [-c, a]] for [[a,b],[c,d]]
+    //
+    // Covariant → physical transform: γ_phys = J2⁻ᵀ · γ_cov
+    let jac2 = [
+        [x[1] - x[0], x[2] - x[0]],
+        [y[1] - y[0], y[2] - y[0]],
+    ];
+    let det2 = jac2[0][0]*jac2[1][1] - jac2[0][1]*jac2[1][0];
+    // J2⁻ᵀ: (J2⁻¹)ᵀ — maps covariant (ξ,η) components to physical (x,y)
+    // J2⁻¹ = (1/det) · [[jac2[1][1], -jac2[0][1]], [-jac2[1][0], jac2[0][0]]]
+    // J2⁻ᵀ[i][j] = J2⁻¹[j][i]
+    let inv_t = [
+        [ jac2[1][1] / det2, -jac2[1][0] / det2],
+        [-jac2[0][1] / det2,  jac2[0][0] / det2],
+    ];
+
+    // Shape function values at a reference point (for tying-point sampling)
+    let shape_at = |xi: f64, eta: f64| -> [f64; 3] {
+        [1.0 - xi - eta, xi, eta]
+    };
+
+    // Reference shape gradients (constant): ∂N/∂ξ and ∂N/∂η
+    // ∇ξ N_i: dN[i]/dξ = [-1, 1, 0], dN[i]/dη = [-1, 0, 1]
+    let dn_ref = [[-1.0_f64, -1.0], [1.0, 0.0], [0.0, 1.0]];
+
+    // Covariant shear at a tying point (ξ_t, η_t):
+    // γ_ξζ = Σ_i (∂N_i/∂ξ · u_z_i + N_i · θ_y_i)
+    // γ_ηζ = Σ_i (∂N_i/∂η · u_z_i - N_i · θ_x_i)
+    //
+    // For a given DOF vector u, the contributions per node are in columns
+    // (u_z=DOF2, θ_x=DOF3, θ_y=DOF4).
+    // We build B_s rows as: [γ_cov_xi, γ_cov_eta] × 18-DOF columns.
+    //
+    // But since we need to evaluate B_s at multiple quadrature points and
+    // also sample at tying points, we use the full MITC3+ pipeline:
+    //   1. Sample covariant strains at A, B, C.
+    //   2. Interpolate via Mitc3Plus::interpolate_assumed_shear.
+    //   3. Convert to physical via J2⁻ᵀ.
+    //   4. Accumulate K_s += B_sᵀ · (κ·G·t·I₂) · B_s · det2 · w_q.
+    //
+    // Quadrature: 3-point edge-midpoint (A,B,C) with weight 1/6 each.
+    // det2 is the Jacobian determinant (reference → local), weight = 1/6.
+    // The 3 quadrature points coincide with the MITC3+ tying points.
+
+    let tying_pts = Mitc3Plus.tying_points();
+    // tying_pts = [A=(0.5,0), B=(0,0.5), C=(0.5,0.5)]
+
+    // Build per-node covariant shear row contributions at each tying point.
+    // B_cov_at_tp[tp_idx][row][dof] where row in {xi_zeta, eta_zeta}, dof in 0..18.
+    // But we only need the per-node block: node n contributes to DOFs {6n+2, 6n+3, 6n+4}.
+
+    // For each quadrature point (= tying point), compute the MITC3+ projected
+    // covariant shear B_s_cov (2×18), then apply J2⁻ᵀ to get B_s_phys (2×18).
+
+    // For the assumed-strain, we first build the 3×(DOFs for u_z,θ_x,θ_y)
+    // covariant strains at each tying point.
+    // covariant strain at tying point tp = (xi_t, eta_t):
+    //   γ_ξζ = Σ_i dn_ref[i][0] * u_z_i + N_i(tp) * θ_y_i
+    //   γ_ηζ = Σ_i dn_ref[i][1] * u_z_i - N_i(tp) * θ_x_i
+
+    // We treat this as a linear operator on the 18-DOF vector and build
+    // a 2×18 matrix B_cov_tp for each tying point. Then we assemble
+    // TyingShears from {at_a: B_cov_tp[0], at_b: B_cov_tp[1], at_c: B_cov_tp[2]}.
+    // Actually the interpolation formula takes scalar inputs, so we must
+    // handle the linearity differently: we propagate the whole B matrix.
+
+    // B_cov[tp][component][dof]: covariant shear B-matrix at each tying point
+    let mut b_cov = [[[0.0_f64; 18]; 2]; 3]; // [tp][cov_component][dof]
+    for (tp_idx, tp) in tying_pts.iter().enumerate() {
+        let xi_t = tp.coord.xi;
+        let eta_t = tp.coord.eta;
+        let n_at_tp = shape_at(xi_t, eta_t); // [N_0, N_1, N_2]
+        for node in 0..3 {
+            let dof_uz = 6 * node + 2;
+            let dof_tx = 6 * node + 3;
+            let dof_ty = 6 * node + 4;
+            // γ_ξζ contribution from this node: dn_ref[node][0]*u_z + N*θ_y
+            b_cov[tp_idx][0][dof_uz] += dn_ref[node][0];
+            b_cov[tp_idx][0][dof_ty] += n_at_tp[node];
+            // γ_ηζ contribution from this node: dn_ref[node][1]*u_z - N*θ_x
+            b_cov[tp_idx][1][dof_uz] += dn_ref[node][1];
+            b_cov[tp_idx][1][dof_tx] -= n_at_tp[node];
+        }
+    }
+
+    // For each quadrature point (= tying point, weight=1/6, det2 is Jacobian),
+    // compute the MITC3+ projected B_s_phys (2×18) and accumulate K_s.
+    // The MITC3+ interpolation is linear: for each DOF column d, the projected
+    // covariant strain is interpolate_assumed_shear(sampled_for_column_d, qp).
+    // We handle this column-by-column for all 18 DOFs, building B_s_phys[2][18].
+
+    let qp_weight = 1.0 / 6.0; // each of A, B, C has weight 1/6 (sum=1/2=ref-tri area)
+
+    for (qp_idx, qp) in tying_pts.iter().enumerate() {
+        // Build projected covariant B_s at this quadrature point (2×18).
+        let mut b_s_cov_qp = [[0.0_f64; 18]; 2];
+        for dof in 0..18 {
+            // For column `dof`, the covariant strain at each tying point is b_cov[tp][comp][dof].
+            let sampled = TyingShears {
+                at_a: ShearStrain {
+                    gamma_xi_zeta: b_cov[0][0][dof],
+                    gamma_eta_zeta: b_cov[0][1][dof],
+                },
+                at_b: ShearStrain {
+                    gamma_xi_zeta: b_cov[1][0][dof],
+                    gamma_eta_zeta: b_cov[1][1][dof],
+                },
+                at_c: ShearStrain {
+                    gamma_xi_zeta: b_cov[2][0][dof],
+                    gamma_eta_zeta: b_cov[2][1][dof],
+                },
+            };
+            let projected = Mitc3Plus.interpolate_assumed_shear(sampled, qp.coord);
+            b_s_cov_qp[0][dof] = projected.gamma_xi_zeta;
+            b_s_cov_qp[1][dof] = projected.gamma_eta_zeta;
+        }
+
+        // Convert covariant to physical: b_s_phys = J2⁻ᵀ · b_s_cov
+        let mut b_s_phys = [[0.0_f64; 18]; 2];
+        for dof in 0..18 {
+            b_s_phys[0][dof] = inv_t[0][0]*b_s_cov_qp[0][dof] + inv_t[0][1]*b_s_cov_qp[1][dof];
+            b_s_phys[1][dof] = inv_t[1][0]*b_s_cov_qp[0][dof] + inv_t[1][1]*b_s_cov_qp[1][dof];
+        }
+
+        // Accumulate K_s += B_sᵀ · (κ·G·t) · B_s · det2 · weight
+        let scale = kappa_g * t * det2 * qp_weight;
+        for a in 0..18 {
+            for b in 0..18 {
+                let v = (b_s_phys[0][a] * b_s_phys[0][b]
+                       + b_s_phys[1][a] * b_s_phys[1][b])
+                      * scale;
+                k_loc[a][b] += v;
+            }
+        }
+    }
+
+    // ---- Symmetrize K_local (mirror upper → lower) ----
+    for a in 0..18 {
+        for b in (a + 1)..18 {
+            let v = k_loc[a][b];
+            k_loc[b][a] = v;
+        }
+    }
+
+    // ---- Local → Global rotation: K_global[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R ----
+    // T = blkdiag(R, R, R, R, R, R) — 6 blocks of 3×3, one per node's (u,θ) triples.
+    // Apply Rᵀ on left, R on right, for each pair of 3-DOF blocks.
+    let mut k_glob = [[0.0_f64; 18]; 18];
+    for bi in 0..6 { // block row index
+        for bj in 0..6 { // block col index
+            let row_off = 3 * bi;
+            let col_off = 3 * bj;
+            // Extract 3×3 sub-block from k_loc
+            let mut sub = [[0.0_f64; 3]; 3];
+            for p in 0..3 {
+                for q in 0..3 {
+                    sub[p][q] = k_loc[row_off + p][col_off + q];
+                }
+            }
+            // Rᵀ · sub · R
+            let rt_sub = mat3_mul(&[[r[0][0],r[1][0],r[2][0]],[r[0][1],r[1][1],r[2][1]],[r[0][2],r[1][2],r[2][2]]], &sub);
+            let rt_sub_r = mat3_mul(&rt_sub, &r);
+            for p in 0..3 {
+                for q in 0..3 {
+                    k_glob[row_off + p][col_off + q] = rt_sub_r[p][q];
+                }
+            }
+        }
+    }
+
+    // Pack into ElementStiffness
+    let mut k_e = ElementStiffness::zeros(18);
+    for i in 0..18 {
+        for j in 0..18 {
+            k_e.data[i * 18 + j] = k_glob[i][j];
+        }
+    }
+    k_e
 }
 
 #[cfg(test)]
