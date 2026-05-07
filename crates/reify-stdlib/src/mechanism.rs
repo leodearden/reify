@@ -324,11 +324,7 @@ fn walk_to_world(joint_parents: &BTreeMap<Value, Value>, start: &Value) -> Vec<V
 /// Cycle-safe: bounded at `joint_parents.len() + 1` so any pre-existing
 /// cycle (which would only be present in defensive scenarios — the
 /// builder eagerly rejects every cycle-creating edge) cannot loop here.
-fn cycle_introduced(
-    pre_edge: &BTreeMap<Value, Value>,
-    at: &Value,
-    parent: &Value,
-) -> bool {
+fn cycle_introduced(pre_edge: &BTreeMap<Value, Value>, at: &Value, parent: &Value) -> bool {
     let mut current = parent.clone();
     let cap = pre_edge.len() + 1;
     for _ in 0..cap {
@@ -358,10 +354,7 @@ fn cycle_introduced(
 /// `error_path1` and `error_path2` are emitted as empty `Value::List`s
 /// for v0.1 error-Map shape uniformity (see module-level doc lines 13-16);
 /// `duplicate_solid` has no path-shaped diagnostic context.
-fn make_duplicate_solid_error(
-    mech_map: &BTreeMap<Value, Value>,
-    message: String,
-) -> Value {
+fn make_duplicate_solid_error(mech_map: &BTreeMap<Value, Value>, message: String) -> Value {
     let mut new_map = mech_map.clone();
     new_map.insert(
         Value::String("error".to_string()),
@@ -394,10 +387,7 @@ fn make_loop_closure_record(
 ) -> Value {
     let mut m = BTreeMap::new();
     m.insert(Value::String("body_id".to_string()), Value::Int(body_id));
-    m.insert(
-        Value::String("closing_joint".to_string()),
-        closing_joint,
-    );
+    m.insert(Value::String("closing_joint".to_string()), closing_joint);
     m.insert(
         Value::String("kind".to_string()),
         Value::String("loop_closure".to_string()),
@@ -563,14 +553,20 @@ fn append_body(
         Value::String("loop_closures".to_string()),
         Value::List(loop_closures),
     );
-    new_map.insert(Value::String("next_id".to_string()), Value::Int(next_id + 1));
+    new_map.insert(
+        Value::String("next_id".to_string()),
+        Value::Int(next_id + 1),
+    );
     Value::Map(new_map)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::test_fixtures::{axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m, angle_range_0_to_pi, identity_transform_value};
+    use crate::test_fixtures::{
+        angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, identity_transform_value,
+        length_range_0_to_1m,
+    };
     use reify_types::Value;
     use std::collections::BTreeMap;
 
@@ -759,10 +755,7 @@ mod tests {
         let solid_b = Value::String("solidB".to_string());
 
         let m1 = eval_builtin("body", &[m0, solid_a.clone(), j_a.clone()]);
-        let m2 = eval_builtin(
-            "body",
-            &[m1, solid_b.clone(), j_b.clone(), j_a.clone()],
-        );
+        let m2 = eval_builtin("body", &[m1, solid_b.clone(), j_b.clone(), j_a.clone()]);
 
         let map = match m2 {
             Value::Map(m) => m,
@@ -890,18 +883,20 @@ mod tests {
 
         // 6 args
         let extra = Value::String("extra".to_string());
-        assert!(eval_builtin(
-            "body",
-            &[
-                m0.clone(),
-                solid.clone(),
-                j.clone(),
-                world.clone(),
-                pose.clone(),
-                extra,
-            ]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "body",
+                &[
+                    m0.clone(),
+                    solid.clone(),
+                    j.clone(),
+                    world.clone(),
+                    pose.clone(),
+                    extra,
+                ]
+            )
+            .is_undef()
+        );
     }
 
     /// `body(non_mechanism, ...)` returns Undef when args[0] is not a
@@ -926,11 +921,7 @@ mod tests {
         let m0 = eval_builtin("mechanism", &[]);
         let solid = Value::String("solidA".to_string());
 
-        assert!(eval_builtin(
-            "body",
-            &[m0, solid, Value::String("foo".to_string())]
-        )
-        .is_undef());
+        assert!(eval_builtin("body", &[m0, solid, Value::String("foo".to_string())]).is_undef());
     }
 
     /// 4-arg `body(m, solid, j, non_joint_non_world)` returns Undef when
@@ -992,7 +983,11 @@ mod tests {
             Some(Value::List(b)) => b,
             other => panic!("expected bodies List, got {:?}", other),
         };
-        assert_eq!(bodies.len(), 2, "closing body must be appended (bodies.len()==2)");
+        assert_eq!(
+            bodies.len(),
+            2,
+            "closing body must be appended (bodies.len()==2)"
+        );
 
         // Second body record: at=j_x, parent=j_b, id=1.
         let body1 = match &bodies[1] {
@@ -1031,7 +1026,11 @@ mod tests {
             Some(Value::List(lc)) => lc,
             other => panic!("expected loop_closures List, got {:?}", other),
         };
-        assert_eq!(loop_closures.len(), 1, "exactly one loop-closure entry expected");
+        assert_eq!(
+            loop_closures.len(),
+            1,
+            "exactly one loop-closure entry expected"
+        );
 
         let lc = match &loop_closures[0] {
             Value::Map(m) => m,
@@ -1125,7 +1124,11 @@ mod tests {
             Some(Value::List(b)) => b,
             other => panic!("expected bodies List, got {:?}", other),
         };
-        assert_eq!(bodies.len(), 2, "closing body must be appended (bodies.len()==2)");
+        assert_eq!(
+            bodies.len(),
+            2,
+            "closing body must be appended (bodies.len()==2)"
+        );
 
         // Spanning tree: only j_a → j_b, NOT j_b → j_a.
         let jp = match map.get(&Value::String("joint_parents".to_string())) {
@@ -1149,7 +1152,11 @@ mod tests {
             Some(Value::List(lc)) => lc,
             other => panic!("expected loop_closures List, got {:?}", other),
         };
-        assert_eq!(loop_closures.len(), 1, "exactly one loop-closure entry expected");
+        assert_eq!(
+            loop_closures.len(),
+            1,
+            "exactly one loop-closure entry expected"
+        );
 
         let lc = match &loop_closures[0] {
             Value::Map(m) => m,
@@ -1175,7 +1182,12 @@ mod tests {
         );
         assert_eq!(
             lc.get(&Value::String("path_b".to_string())),
-            Some(&Value::List(vec![world.clone(), j_b.clone(), j_a.clone(), j_b.clone()])),
+            Some(&Value::List(vec![
+                world.clone(),
+                j_b.clone(),
+                j_a.clone(),
+                j_b.clone()
+            ])),
             "path_b should be [world, j_b, j_a, j_b] (closing edge at=j_b appended)"
         );
     }
@@ -1228,14 +1240,21 @@ mod tests {
             Some(Value::Map(jp)) => jp,
             other => panic!("expected joint_parents Map, got {:?}", other),
         };
-        assert!(jp.is_empty(), "joint_parents should be empty for a self-loop");
+        assert!(
+            jp.is_empty(),
+            "joint_parents should be empty for a self-loop"
+        );
 
         // loop_closures: one entry.
         let loop_closures = match map.get(&Value::String("loop_closures".to_string())) {
             Some(Value::List(lc)) => lc,
             other => panic!("expected loop_closures List, got {:?}", other),
         };
-        assert_eq!(loop_closures.len(), 1, "exactly one loop-closure entry expected");
+        assert_eq!(
+            loop_closures.len(),
+            1,
+            "exactly one loop-closure entry expected"
+        );
 
         let lc = match &loop_closures[0] {
             Value::Map(m) => m,
@@ -1405,18 +1424,24 @@ mod tests {
         // Non-mechanism Map → Undef.
         let world = eval_builtin("world", &[]);
         assert!(
-            eval_builtin("body_id_of", &[world, Value::String("anything".to_string())]).is_undef(),
+            eval_builtin(
+                "body_id_of",
+                &[world, Value::String("anything".to_string())]
+            )
+            .is_undef(),
             "non-mechanism Map yields Undef"
         );
 
         // Wrong arity → Undef.
         assert!(eval_builtin("body_id_of", &[]).is_undef());
         assert!(eval_builtin("body_id_of", std::slice::from_ref(&m2)).is_undef());
-        assert!(eval_builtin(
-            "body_id_of",
-            &[m2, Value::String("a".to_string()), Value::Int(1)]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "body_id_of",
+                &[m2, Value::String("a".to_string()), Value::Int(1)]
+            )
+            .is_undef()
+        );
     }
 
     /// `body_id_of` on an errored Mechanism returns `Value::Undef` —
@@ -1542,10 +1567,7 @@ mod tests {
         };
         // Wrong type: Int instead of List.  A present-but-wrong-typed
         // loop_closures field simulates a corrupt Mechanism Map.
-        map.insert(
-            Value::String("loop_closures".to_string()),
-            Value::Int(0),
-        );
+        map.insert(Value::String("loop_closures".to_string()), Value::Int(0));
         let mech = Value::Map(map);
 
         let result = eval_builtin("body", &[mech, solid, j]);

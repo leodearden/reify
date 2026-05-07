@@ -55,8 +55,12 @@ use crate::helpers::{
 /// Not yet referenced by any external caller — the FEA solver (PRD task 16)
 /// will wire this up when it lands.
 #[allow(dead_code)]
-pub(crate) const SUPPORT_KINDS: &[&str] =
-    &["fixed_support", "pinned_support", "displacement_support", "roller_support"];
+pub(crate) const SUPPORT_KINDS: &[&str] = &[
+    "fixed_support",
+    "pinned_support",
+    "displacement_support",
+    "roller_support",
+];
 
 /// Returns `true` if `v` is a support `Value::Map` produced by this module —
 /// i.e., a Map with a `kind` field whose value is one of `SUPPORT_KINDS`.
@@ -68,7 +72,13 @@ pub(crate) fn is_support_value(v: &Value) -> bool {
     match v {
         Value::Map(m) => m
             .get(&Value::String("kind".to_string()))
-            .and_then(|k| if let Value::String(s) = k { Some(s.as_str()) } else { None })
+            .and_then(|k| {
+                if let Value::String(s) = k {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
             .is_some_and(|s| SUPPORT_KINDS.contains(&s)),
         _ => false,
     }
@@ -108,10 +118,13 @@ pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensioned_vec3(&args[1], DimensionVector::LENGTH).is_none() {
                 return Some(Value::Undef);
             }
-            make_kind_map("displacement_support", vec![
-                ("displacement", args[1].clone()),
-                ("target", args[0].clone()),
-            ])
+            make_kind_map(
+                "displacement_support",
+                vec![
+                    ("displacement", args[1].clone()),
+                    ("target", args[0].clone()),
+                ],
+            )
         }
         "RollerSupport" => {
             if args.len() != 2 {
@@ -123,10 +136,10 @@ pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
             if validate_dimensionless_unit_axis_vec3(&args[1]).is_none() {
                 return Some(Value::Undef);
             }
-            make_kind_map("roller_support", vec![
-                ("normal", args[1].clone()),
-                ("target", args[0].clone()),
-            ])
+            make_kind_map(
+                "roller_support",
+                vec![("normal", args[1].clone()), ("target", args[0].clone())],
+            )
         }
         _ => return None,
     })
@@ -189,8 +202,11 @@ mod tests {
     #[test]
     fn fixed_support_two_args_returns_undef() {
         assert!(
-            eval_builtin("FixedSupport", &[point_selector_stub(), point_selector_stub()])
-                .is_undef(),
+            eval_builtin(
+                "FixedSupport",
+                &[point_selector_stub(), point_selector_stub()]
+            )
+            .is_undef(),
             "two args should return Undef"
         );
     }
@@ -265,8 +281,11 @@ mod tests {
     #[test]
     fn pinned_support_two_args_returns_undef() {
         assert!(
-            eval_builtin("PinnedSupport", &[point_selector_stub(), point_selector_stub()])
-                .is_undef(),
+            eval_builtin(
+                "PinnedSupport",
+                &[point_selector_stub(), point_selector_stub()]
+            )
+            .is_undef(),
             "two args should return Undef"
         );
     }
@@ -310,7 +329,10 @@ mod tests {
         let target = point_selector_stub();
         let displacement = make_scalar_vec3([0.001, 0.0, 0.0], DimensionVector::LENGTH);
 
-        let result = eval_builtin("DisplacementSupport", &[target.clone(), displacement.clone()]);
+        let result = eval_builtin(
+            "DisplacementSupport",
+            &[target.clone(), displacement.clone()],
+        );
 
         let map = match result {
             Value::Map(m) => m,
@@ -367,13 +389,14 @@ mod tests {
     #[test]
     fn displacement_support_dimensionless_displacement_returns_undef() {
         // A raw dimensionless vector (Value::Real components) — not LENGTH-dimensioned.
-        let dimensionless = Value::Vector(vec![
-            Value::Real(0.001),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let dimensionless =
+            Value::Vector(vec![Value::Real(0.001), Value::Real(0.0), Value::Real(0.0)]);
         assert!(
-            eval_builtin("DisplacementSupport", &[point_selector_stub(), dimensionless]).is_undef()
+            eval_builtin(
+                "DisplacementSupport",
+                &[point_selector_stub(), dimensionless]
+            )
+            .is_undef()
         );
     }
 
@@ -389,35 +412,38 @@ mod tests {
     fn displacement_support_two_component_displacement_returns_undef() {
         // Only 2 LENGTH-dimensioned scalar components — wrong arity.
         let two_comp = Value::Vector(vec![
-            Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.001,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
-        assert!(
-            eval_builtin("DisplacementSupport", &[point_selector_stub(), two_comp]).is_undef()
-        );
+        assert!(eval_builtin("DisplacementSupport", &[point_selector_stub(), two_comp]).is_undef());
     }
 
     #[test]
     fn displacement_support_nan_displacement_returns_undef() {
         let nan_disp = make_scalar_vec3([f64::NAN, 0.0, 0.0], DimensionVector::LENGTH);
-        assert!(
-            eval_builtin("DisplacementSupport", &[point_selector_stub(), nan_disp]).is_undef()
-        );
+        assert!(eval_builtin("DisplacementSupport", &[point_selector_stub(), nan_disp]).is_undef());
     }
 
     #[test]
     fn displacement_support_inf_displacement_returns_undef() {
         let inf_disp = make_scalar_vec3([f64::INFINITY, 0.0, 0.0], DimensionVector::LENGTH);
-        assert!(
-            eval_builtin("DisplacementSupport", &[point_selector_stub(), inf_disp]).is_undef()
-        );
+        assert!(eval_builtin("DisplacementSupport", &[point_selector_stub(), inf_disp]).is_undef());
     }
 
     #[test]
     fn displacement_support_non_vector_displacement_returns_undef() {
         assert!(
-            eval_builtin("DisplacementSupport", &[point_selector_stub(), Value::Real(0.001)])
-                .is_undef()
+            eval_builtin(
+                "DisplacementSupport",
+                &[point_selector_stub(), Value::Real(0.001)]
+            )
+            .is_undef()
         );
     }
 
@@ -429,11 +455,7 @@ mod tests {
         // Non-unit input to exercise the un-normalized contract: a regression that
         // silently normalized the normal would shrink magnitude 2.5 → 1.0 and fail
         // the round-trip assertion below.
-        let normal = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(2.5),
-        ]);
+        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.5)]);
 
         let result = eval_builtin("RollerSupport", &[target.clone(), normal.clone()]);
 
@@ -465,11 +487,7 @@ mod tests {
         // RollerSupport's contract is to preserve magnitude at consume time;
         // this test fails immediately if a future change re-normalizes input.
         let target = point_selector_stub();
-        let normal = Value::Vector(vec![
-            Value::Real(3.0),
-            Value::Real(4.0),
-            Value::Real(0.0),
-        ]);
+        let normal = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
 
         let result = eval_builtin("RollerSupport", &[target, normal]);
 
@@ -517,11 +535,7 @@ mod tests {
 
     #[test]
     fn roller_support_three_args_returns_undef() {
-        let normal = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(1.0),
-        ]);
+        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
         assert!(
             eval_builtin(
                 "RollerSupport",
@@ -533,24 +547,14 @@ mod tests {
 
     #[test]
     fn roller_support_invalid_target_returns_undef() {
-        let normal = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(1.0),
-        ]);
+        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
         assert!(eval_builtin("RollerSupport", &[Value::Real(1.0), normal]).is_undef());
     }
 
     #[test]
     fn roller_support_zero_magnitude_normal_returns_undef() {
-        let zero_normal = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
-        assert!(
-            eval_builtin("RollerSupport", &[point_selector_stub(), zero_normal]).is_undef()
-        );
+        let zero_normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("RollerSupport", &[point_selector_stub(), zero_normal]).is_undef());
     }
 
     #[test]
@@ -577,17 +581,13 @@ mod tests {
     fn roller_support_length_dimensioned_normal_returns_undef() {
         // LENGTH-dimensioned rather than dimensionless — should reject.
         let length_normal = make_scalar_vec3([0.0, 0.0, 1.0], DimensionVector::LENGTH);
-        assert!(
-            eval_builtin("RollerSupport", &[point_selector_stub(), length_normal]).is_undef()
-        );
+        assert!(eval_builtin("RollerSupport", &[point_selector_stub(), length_normal]).is_undef());
     }
 
     #[test]
     fn roller_support_two_component_normal_returns_undef() {
         let two_comp = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0)]);
-        assert!(
-            eval_builtin("RollerSupport", &[point_selector_stub(), two_comp]).is_undef()
-        );
+        assert!(eval_builtin("RollerSupport", &[point_selector_stub(), two_comp]).is_undef());
     }
 
     #[test]
@@ -604,7 +604,12 @@ mod tests {
         use super::SUPPORT_KINDS;
         assert_eq!(
             SUPPORT_KINDS,
-            &["fixed_support", "pinned_support", "displacement_support", "roller_support"]
+            &[
+                "fixed_support",
+                "pinned_support",
+                "displacement_support",
+                "roller_support"
+            ]
         );
     }
 
@@ -622,7 +627,10 @@ mod tests {
     fn is_support_value_recognises_fixed_support() {
         use super::is_support_value;
         let v = eval_builtin("FixedSupport", &[point_selector_stub()]);
-        assert!(is_support_value(&v), "is_support_value should recognize FixedSupport result");
+        assert!(
+            is_support_value(&v),
+            "is_support_value should recognize FixedSupport result"
+        );
     }
 
     #[test]
@@ -639,8 +647,7 @@ mod tests {
     #[test]
     fn is_support_value_recognises_roller_support() {
         use super::is_support_value;
-        let normal =
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
         let v = eval_builtin("RollerSupport", &[point_selector_stub(), normal]);
         assert!(
             is_support_value(&v),
@@ -681,7 +688,10 @@ mod tests {
         let negative_cases: Vec<(&str, Value)> = vec![
             ("Real(1.0)", Value::Real(1.0)),
             ("Int(0)", Value::Int(0)),
-            ("String(\"fixed_support\")", Value::String("fixed_support".to_string())),
+            (
+                "String(\"fixed_support\")",
+                Value::String("fixed_support".to_string()),
+            ),
             ("Map without kind key", map_no_kind),
             ("Map with kind=\"not_a_support\"", map_wrong_kind),
             ("Map with kind=Int(0)", map_int_kind),
@@ -705,7 +715,7 @@ mod tests {
     /// catch it.
     #[test]
     fn support_kinds_all_dispatched_by_eval_supports() {
-        use super::{eval_supports, is_support_value, SUPPORT_KINDS};
+        use super::{SUPPORT_KINDS, eval_supports, is_support_value};
 
         let stub_selector = Value::Map({
             let mut m = BTreeMap::new();
@@ -716,11 +726,8 @@ mod tests {
             m
         });
         let length_vec = make_scalar_vec3([0.001, 0.0, 0.0], DimensionVector::LENGTH);
-        let dimensionless_z = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(1.0),
-        ]);
+        let dimensionless_z =
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
 
         for kind in SUPPORT_KINDS {
             // NOTE: SUPPORT_KINDS contains the snake_case kind-tag strings used
@@ -728,14 +735,20 @@ mod tests {
             // PascalCase constructor names.  We map explicitly here so the test
             // still guards both the SUPPORT_KINDS list and the dispatch arms.
             let result = match *kind {
-                "fixed_support" => eval_supports("FixedSupport", std::slice::from_ref(&stub_selector)),
-                "pinned_support" => eval_supports("PinnedSupport", std::slice::from_ref(&stub_selector)),
-                "displacement_support" => {
-                    eval_supports("DisplacementSupport", &[stub_selector.clone(), length_vec.clone()])
+                "fixed_support" => {
+                    eval_supports("FixedSupport", std::slice::from_ref(&stub_selector))
                 }
-                "roller_support" => {
-                    eval_supports("RollerSupport", &[stub_selector.clone(), dimensionless_z.clone()])
+                "pinned_support" => {
+                    eval_supports("PinnedSupport", std::slice::from_ref(&stub_selector))
                 }
+                "displacement_support" => eval_supports(
+                    "DisplacementSupport",
+                    &[stub_selector.clone(), length_vec.clone()],
+                ),
+                "roller_support" => eval_supports(
+                    "RollerSupport",
+                    &[stub_selector.clone(), dimensionless_z.clone()],
+                ),
                 other => panic!(
                     "SUPPORT_KINDS contains '{}' but no fixture is defined for it — \
                      add a fixture arm to this test and an arm to eval_supports",

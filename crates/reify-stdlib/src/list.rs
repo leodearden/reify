@@ -63,10 +63,7 @@ mod tests {
 
     #[test]
     fn single_multi_element_list_returns_undef() {
-        let result = eval_builtin(
-            "single",
-            &[Value::List(vec![Value::Int(1), Value::Int(2)])],
-        );
+        let result = eval_builtin("single", &[Value::List(vec![Value::Int(1), Value::Int(2)])]);
         assert!(
             result.is_undef(),
             "single([1, 2]) should be Undef, got {:?}",

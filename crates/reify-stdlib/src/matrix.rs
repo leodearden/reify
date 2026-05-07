@@ -239,7 +239,9 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
 ///
 /// Handles both `Value::Matrix(rows)` and nested `Value::Tensor` (rank-2 Tensor).
 /// All elements must share the same dimension and be numeric.
-pub(crate) fn matrix_components_f64(v: &Value) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
+pub(crate) fn matrix_components_f64(
+    v: &Value,
+) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
     enum Rows<'a> {
         Matrix(&'a [Vec<Value>]),
         Tensor(&'a [Value]),

@@ -336,11 +336,7 @@ fn solve_normal_equations(a: &mut [f64], b: &mut [f64], n: usize, pivot_eps: f64
 /// Result invariant: `NotConverged.x` and `NotConverged.residual_norm` always
 /// correspond to the same iterate — `residual_norm` is the combined norm
 /// (`sqrt(linear² + angular²)`) of `r(x)` at the returned `x`.
-pub fn newton_solve<F>(
-    x0: Vec<f64>,
-    mut residual_jac: F,
-    config: &NewtonConfig,
-) -> NewtonOutcome
+pub fn newton_solve<F>(x0: Vec<f64>, mut residual_jac: F, config: &NewtonConfig) -> NewtonOutcome
 where
     F: FnMut(&[f64]) -> Option<(Vec<f64>, Vec<Vec<f64>>)>,
 {
@@ -416,8 +412,11 @@ where
         // triangle and diagonal, so no mirroring is needed.
         for i in 0..n {
             for j in 0..=i {
-                jtj_flat[i * n + j] =
-                    j_cols[i].iter().zip(j_cols[j].iter()).map(|(a, b)| a * b).sum();
+                jtj_flat[i * n + j] = j_cols[i]
+                    .iter()
+                    .zip(j_cols[j].iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
             }
             jtr[i] = j_cols[i].iter().zip(r.iter()).map(|(a, b)| a * b).sum();
         }
@@ -661,8 +660,7 @@ pub fn mechanism_loop_closure_chains(
         Value::Map(m) => m,
         _ => return None,
     };
-    if map.get(&Value::String("kind".to_string()))
-        != Some(&Value::String("mechanism".to_string()))
+    if map.get(&Value::String("kind".to_string())) != Some(&Value::String("mechanism".to_string()))
     {
         return None;
     }
@@ -708,9 +706,17 @@ pub fn mechanism_loop_closure_chains(
         // and the self-loop ([j, j], j twice) without a chain_b.last() call.
         let is_cycle = chain_b.iter().filter(|j| *j == &closing_joint).count() > 1;
         let entry = if is_cycle {
-            LoopClosureChain::Cycle { chain_a, chain_b, closing_joint }
+            LoopClosureChain::Cycle {
+                chain_a,
+                chain_b,
+                closing_joint,
+            }
         } else {
-            LoopClosureChain::WellFormed { chain_a, chain_b, closing_joint }
+            LoopClosureChain::WellFormed {
+                chain_a,
+                chain_b,
+                closing_joint,
+            }
         };
         pairs.push(entry);
     }
@@ -740,8 +746,7 @@ fn strip_world_sentinel(path: &[reify_types::Value]) -> Option<Vec<reify_types::
     let first = path.first()?;
     let is_world = match first {
         Value::Map(m) => {
-            m.get(&Value::String("kind".to_string()))
-                == Some(&Value::String("world".to_string()))
+            m.get(&Value::String("kind".to_string())) == Some(&Value::String("world".to_string()))
         }
         _ => false,
     };
@@ -926,7 +931,10 @@ pub fn solve_loop_closure_with_diagnostics(
         diagnostics.push(diag);
     }
 
-    LoopClosureReport { outcome, diagnostics }
+    LoopClosureReport {
+        outcome,
+        diagnostics,
+    }
 }
 
 /// Single validation entry point used by both [`solve_loop_closure`] and
@@ -1006,9 +1014,7 @@ mod tests {
     /// Build a residual+jacobian closure for a 1-D linear residual r(x) = x - target.
     /// J column shape: [0,0,0, 1,0,0] (linear in x).
     #[allow(clippy::type_complexity)] // test helper; unwrapping into a type alias would reduce clarity
-    fn linear_1d_closure(
-        target: f64,
-    ) -> impl FnMut(&[f64]) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+    fn linear_1d_closure(target: f64) -> impl FnMut(&[f64]) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
         move |x: &[f64]| {
             assert_eq!(x.len(), 1);
             // Linear residual on first linear component.
@@ -1148,7 +1154,11 @@ mod tests {
         };
         let outcome = newton_solve(vec![0.0, 0.0], closure, &cfg);
         match outcome {
-            NewtonOutcome::Converged { x, iters, residual_norm } => {
+            NewtonOutcome::Converged {
+                x,
+                iters,
+                residual_norm,
+            } => {
                 assert!(
                     (x[0] - 1.4).abs() < 1e-9,
                     "expected x[0] ≈ 1.4, got {}",
@@ -1242,12 +1252,12 @@ mod tests {
         };
         let outcome = newton_solve(vec![5.0], closure, &cfg);
         match outcome {
-            NewtonOutcome::Converged { x, iters, residual_norm } => {
-                assert!(
-                    (x[0] - 2.0).abs() < 1e-6,
-                    "expected x≈2.0, got {}",
-                    x[0]
-                );
+            NewtonOutcome::Converged {
+                x,
+                iters,
+                residual_norm,
+            } => {
+                assert!((x[0] - 2.0).abs() < 1e-6, "expected x≈2.0, got {}", x[0]);
                 assert!(
                     iters >= 2,
                     "non-linear case must require multiple Newton iters; got iters={iters}"
@@ -1628,7 +1638,11 @@ mod tests {
         );
 
         match outcome {
-            NewtonOutcome::Converged { x, iters: _, residual_norm } => {
+            NewtonOutcome::Converged {
+                x,
+                iters: _,
+                residual_norm,
+            } => {
                 assert_eq!(x.len(), 2);
                 // Rotation about z must match.
                 assert!(
@@ -1637,19 +1651,13 @@ mod tests {
                     x[0]
                 );
                 // Prismatic length must match.
-                assert!(
-                    (x[1] - 0.5).abs() < 1e-5,
-                    "expected t ≈ 0.5, got {}",
-                    x[1]
-                );
+                assert!((x[1] - 0.5).abs() < 1e-5, "expected t ≈ 0.5, got {}", x[1]);
                 assert!(
                     residual_norm < 1e-6,
                     "expected tight residual after convergence, got {residual_norm}"
                 );
             }
-            other => panic!(
-                "expected Converged on revolute+prismatic loop closure, got {other:?}"
-            ),
+            other => panic!("expected Converged on revolute+prismatic loop closure, got {other:?}"),
         }
     }
 
@@ -1925,10 +1933,13 @@ mod tests {
 
         // Build joints (from existing test helpers in this file).
         let j_a = eval_builtin("prismatic", &[axis_x(), length_range(0.0, 1.0)]);
-        let j_b = eval_builtin("prismatic", &[
-            Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]),
-            length_range(0.0, 1.0),
-        ]);
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]),
+                length_range(0.0, 1.0),
+            ],
+        );
         let j_x = revolute_z_0_to_pi();
         let solid_a = Value::String("solidA".to_string());
         let solid_b = Value::String("solidB".to_string());
@@ -1946,19 +1957,27 @@ mod tests {
         assert_eq!(pairs.len(), 1, "one loop-closure pair expected");
 
         let (chain_a, chain_b, cj) = match &pairs[0] {
-            super::LoopClosureChain::WellFormed { chain_a, chain_b, closing_joint } => {
-                (chain_a, chain_b, closing_joint)
-            }
+            super::LoopClosureChain::WellFormed {
+                chain_a,
+                chain_b,
+                closing_joint,
+            } => (chain_a, chain_b, closing_joint),
             other => panic!("expected WellFormed, got {:?}", other),
         };
         // chain_a = [j_a, j_x] (world sentinel stripped from [world, j_a, j_x])
         assert_eq!(chain_a.len(), 2, "chain_a should have 2 elements");
         assert_eq!(&chain_a[0], &j_a, "chain_a[0] should be j_a");
-        assert_eq!(&chain_a[1], &j_x, "chain_a[1] should be j_x (closing joint)");
+        assert_eq!(
+            &chain_a[1], &j_x,
+            "chain_a[1] should be j_x (closing joint)"
+        );
         // chain_b = [j_b, j_x] (world sentinel stripped from [world, j_b, j_x])
         assert_eq!(chain_b.len(), 2, "chain_b should have 2 elements");
         assert_eq!(&chain_b[0], &j_b, "chain_b[0] should be j_b");
-        assert_eq!(&chain_b[1], &j_x, "chain_b[1] should be j_x (closing joint)");
+        assert_eq!(
+            &chain_b[1], &j_x,
+            "chain_b[1] should be j_x (closing joint)"
+        );
         // closing_joint is propagated from the loop-closure record.
         assert_eq!(cj, &j_x, "closing_joint should be j_x");
     }
@@ -2100,9 +2119,11 @@ mod tests {
         // First pair: chain_a = [j_a, j_x], chain_b = [j_b, j_x], closing_joint = j_x.
         // j_x appears exactly once in chain_b → WellFormed.
         let (chain_a0, chain_b0, cj0) = match &pairs[0] {
-            super::LoopClosureChain::WellFormed { chain_a, chain_b, closing_joint } => {
-                (chain_a, chain_b, closing_joint)
-            }
+            super::LoopClosureChain::WellFormed {
+                chain_a,
+                chain_b,
+                closing_joint,
+            } => (chain_a, chain_b, closing_joint),
             other => panic!("expected WellFormed for first pair, got {:?}", other),
         };
         assert_eq!(chain_a0, &vec![j_a.clone(), j_x.clone()]);
@@ -2112,9 +2133,11 @@ mod tests {
         // Second pair: chain_a = [j_a, j_y], chain_b = [j_b, j_y], closing_joint = j_y.
         // j_y appears exactly once in chain_b → WellFormed.
         let (chain_a1, chain_b1, cj1) = match &pairs[1] {
-            super::LoopClosureChain::WellFormed { chain_a, chain_b, closing_joint } => {
-                (chain_a, chain_b, closing_joint)
-            }
+            super::LoopClosureChain::WellFormed {
+                chain_a,
+                chain_b,
+                closing_joint,
+            } => (chain_a, chain_b, closing_joint),
             other => panic!("expected WellFormed for second pair, got {:?}", other),
         };
         assert_eq!(chain_a1, &vec![j_a.clone(), j_y.clone()]);
@@ -2305,10 +2328,7 @@ mod tests {
             Value::String("mechanism".to_string()),
         );
         // `loop_closures` present but wrong type — mirrors mechanism.rs:1547.
-        mech.insert(
-            Value::String("loop_closures".to_string()),
-            Value::Int(0),
-        );
+        mech.insert(Value::String("loop_closures".to_string()), Value::Int(0));
 
         assert_eq!(
             super::mechanism_loop_closure_chains(&Value::Map(mech)),
@@ -2358,9 +2378,11 @@ mod tests {
         assert_eq!(pairs.len(), 1, "one loop-closure pair expected");
 
         let (chain_a, chain_b, cj) = match &pairs[0] {
-            super::LoopClosureChain::Cycle { chain_a, chain_b, closing_joint } => {
-                (chain_a, chain_b, closing_joint)
-            }
+            super::LoopClosureChain::Cycle {
+                chain_a,
+                chain_b,
+                closing_joint,
+            } => (chain_a, chain_b, closing_joint),
             other => panic!("expected Cycle, got {:?}", other),
         };
         // chain_a = [j_b]  (world sentinel stripped from [world, j_b])
@@ -2419,12 +2441,18 @@ mod tests {
             "mechanism_loop_closure_chains must return Some for a self-loop mechanism"
         );
         let pairs = chains.unwrap();
-        assert_eq!(pairs.len(), 1, "one loop-closure pair expected for self-loop");
+        assert_eq!(
+            pairs.len(),
+            1,
+            "one loop-closure pair expected for self-loop"
+        );
 
         let (chain_a, chain_b, cj) = match &pairs[0] {
-            super::LoopClosureChain::Cycle { chain_a, chain_b, closing_joint } => {
-                (chain_a, chain_b, closing_joint)
-            }
+            super::LoopClosureChain::Cycle {
+                chain_a,
+                chain_b,
+                closing_joint,
+            } => (chain_a, chain_b, closing_joint),
             other => panic!("expected Cycle for self-loop, got {:?}", other),
         };
         // chain_a = [j]    (world sentinel stripped from [world, j])
