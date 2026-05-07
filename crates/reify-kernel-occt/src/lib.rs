@@ -1060,13 +1060,15 @@ impl OcctKernel {
                 ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
             let duplicate_parent_subshape_index_count =
                 ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
+            let silent_drop_count =
+                ffi::ffi::sweep_op_history_silent_drop_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
             // live (separate `std::vector`s in the wrapper).
             let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
             let records = SweepOpHistoryRecords {
-                silent_drop_count: 0,
+                silent_drop_count,
                 face_modified,
                 face_generated,
                 face_deleted,
@@ -1188,13 +1190,15 @@ impl OcctKernel {
                 ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
             let duplicate_parent_subshape_index_count =
                 ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
+            let silent_drop_count =
+                ffi::ffi::sweep_op_history_silent_drop_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off — `take_result_shape` leaves `history` with
             // an empty result pointer, but the record buffers are still
             // live (separate `std::vector`s in the wrapper).
             let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
             let records = SweepOpHistoryRecords {
-                silent_drop_count: 0,
+                silent_drop_count,
                 face_modified,
                 face_generated,
                 face_deleted,
@@ -1269,11 +1273,13 @@ impl OcctKernel {
                 ffi::ffi::sweep_op_history_unsynthesized_profile_edge_count(&history);
             let duplicate_parent_subshape_index_count =
                 ffi::ffi::sweep_op_history_duplicate_parent_subshape_index_count(&history);
+            let silent_drop_count =
+                ffi::ffi::sweep_op_history_silent_drop_count(&history);
             // Take the result shape last, after all record buffers have
             // been read off (mirrors extrude/revolve pattern).
             let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
             let records = SweepOpHistoryRecords {
-                silent_drop_count: 0,
+                silent_drop_count,
                 face_modified,
                 face_generated,
                 face_deleted,

@@ -991,34 +991,31 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
         // We still walk it for completeness — non-trivial profiles can
         // produce face-typed Modified entries.
         //
-        // `_prism_drops` is a local discard: SweepOpHistory has no
-        // silent_drop_count field yet. The counter is plumbed here so the
-        // template signatures are consistent with make_local_feature_with_history_impl,
-        // which DOES thread the count into LocalFeatureOpHistory::silent_drop_count.
-        uint32_t _prism_drops = 0;
         emit_sweep_modified_deleted_for_parent(
             maker, profile.face_map(), result_face_map,
-            history->face_modified, history->face_deleted, _prism_drops);
+            history->face_modified, history->face_deleted,
+            history->silent_drop_count);
 
         // Edges (same-type modified): profile edge → result edge. Modified
         // edges from a prism are also typically empty.
         emit_sweep_modified_deleted_for_parent(
             maker, profile.edge_map(), result_edge_map,
-            history->edge_modified, history->edge_deleted, _prism_drops);
+            history->edge_modified, history->edge_deleted,
+            history->silent_drop_count);
 
         // Cross-type Generated: profile EDGES generate result FACES (the
         // lateral side faces of the swept solid). parent_subshape_index in
         // each face_generated record is the profile edge index.
         emit_sweep_generated_cross_type(
             maker, profile.edge_map(), result_face_map, TopAbs_FACE,
-            history->face_generated, _prism_drops);
+            history->face_generated, history->silent_drop_count);
 
         // Cross-type Generated: profile VERTICES generate result EDGES
         // (the lateral edges joining the start/end caps). parent_subshape_index
         // in each edge_generated record is the profile vertex index.
         emit_sweep_generated_cross_type(
             maker, profile_vertex_map, result_edge_map, TopAbs_EDGE,
-            history->edge_generated, _prism_drops);
+            history->edge_generated, history->silent_drop_count);
 
         // Caps: FirstShape() == profile-as-placed (start cap),
         //       LastShape()  == swept-end (end cap).
@@ -1114,32 +1111,31 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
         // is typically empty for revolve (face sub-shapes go to FirstShape /
         // LastShape, captured separately as caps under partial revolution);
         // IsDeleted is empty too. We still walk it for completeness.
-        // `_revolve_drops` is a local discard for the same reason as the
-        // prism: SweepOpHistory has no silent_drop_count field yet.
-        uint32_t _revolve_drops = 0;
         emit_sweep_modified_deleted_for_parent(
             maker, profile.face_map(), result_face_map,
-            history->face_modified, history->face_deleted, _revolve_drops);
+            history->face_modified, history->face_deleted,
+            history->silent_drop_count);
 
         // Edges (same-type modified): profile edge → result edge. Modified
         // edges from a revolve are also typically empty.
         emit_sweep_modified_deleted_for_parent(
             maker, profile.edge_map(), result_edge_map,
-            history->edge_modified, history->edge_deleted, _revolve_drops);
+            history->edge_modified, history->edge_deleted,
+            history->silent_drop_count);
 
         // Cross-type Generated: profile EDGES generate result FACES (the
         // lateral revolved faces). parent_subshape_index in each
         // face_generated record is the profile edge index.
         emit_sweep_generated_cross_type(
             maker, profile.edge_map(), result_face_map, TopAbs_FACE,
-            history->face_generated, _revolve_drops);
+            history->face_generated, history->silent_drop_count);
 
         // Cross-type Generated: profile VERTICES generate result EDGES
         // (lateral edges joining the start/end caps under partial
         // revolution; circular trace edges under full revolution).
         emit_sweep_generated_cross_type(
             maker, profile_vertex_map, result_edge_map, TopAbs_EDGE,
-            history->edge_generated, _revolve_drops);
+            history->edge_generated, history->silent_drop_count);
 
         // Caps: under PARTIAL revolution, FirstShape() and LastShape()
         // reference distinct cap faces and both lists are populated.
@@ -1200,31 +1196,30 @@ std::unique_ptr<SweepOpHistory> make_pipe_with_history(
         // Faces (same-type modified): profile face → result face. Modified
         // is typically empty for sweep (face sub-shapes go to FirstShape /
         // LastShape, captured separately as caps); IsDeleted is empty too.
-        // `_pipe_drops` is a local discard for the same reason as the
-        // prism: SweepOpHistory has no silent_drop_count field yet.
-        uint32_t _pipe_drops = 0;
         emit_sweep_modified_deleted_for_parent(
             maker, profile.face_map(), result_face_map,
-            history->face_modified, history->face_deleted, _pipe_drops);
+            history->face_modified, history->face_deleted,
+            history->silent_drop_count);
 
         // Edges (same-type modified): profile edge → result edge. Modified
         // edges from a sweep are also typically empty.
         emit_sweep_modified_deleted_for_parent(
             maker, profile.edge_map(), result_edge_map,
-            history->edge_modified, history->edge_deleted, _pipe_drops);
+            history->edge_modified, history->edge_deleted,
+            history->silent_drop_count);
 
         // Cross-type Generated: profile EDGES generate result FACES (the
         // lateral swept side faces). parent_subshape_index in each
         // face_generated record is the profile edge index.
         emit_sweep_generated_cross_type(
             maker, profile.edge_map(), result_face_map, TopAbs_FACE,
-            history->face_generated, _pipe_drops);
+            history->face_generated, history->silent_drop_count);
 
         // Cross-type Generated: profile VERTICES generate result EDGES
         // (the lateral edges joining the start/end caps).
         emit_sweep_generated_cross_type(
             maker, profile_vertex_map, result_edge_map, TopAbs_EDGE,
-            history->edge_generated, _pipe_drops);
+            history->edge_generated, history->silent_drop_count);
 
         // Caps: FirstShape() == profile-as-placed (start of spine),
         //       LastShape()  == profile at the spine end.
@@ -1283,6 +1278,10 @@ uint32_t sweep_op_history_unsynthesized_profile_edge_count(const SweepOpHistory&
 
 uint32_t sweep_op_history_duplicate_parent_subshape_index_count(const SweepOpHistory& history) {
     return history.duplicate_parent_subshape_index_count;
+}
+
+uint32_t sweep_op_history_silent_drop_count(const SweepOpHistory& history) {
+    return history.silent_drop_count;
 }
 
 // --- BRepOffsetAPI_ThruSections loft history (task 2619, step-6) ---

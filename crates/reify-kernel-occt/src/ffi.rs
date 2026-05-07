@@ -260,6 +260,9 @@ pub mod ffi {
         /// because their parent_subshape_index duplicated the preceding record.
         /// Zero for a well-formed sweep.
         fn sweep_op_history_duplicate_parent_subshape_index_count(history: &SweepOpHistory) -> u32;
+        /// Count of Modified/Generated children silently dropped because they could not
+        /// be found in the result face/edge map. Zero for a well-formed sweep.
+        fn sweep_op_history_silent_drop_count(history: &SweepOpHistory) -> u32;
 
         // --- BRepOffsetAPI_ThruSections loft history (task 2619, step-6) ---
 

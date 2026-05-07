@@ -207,6 +207,19 @@ uint32_t boolean_op_history_silent_drop_count(const BooleanOpHistory& history);
 /// hands it off to the kernel via `std::move`.
 struct SweepOpHistory {
     std::unique_ptr<OcctShape> result;
+    /// Count of Modified/Generated children that the sweep primitive observed
+    /// but could not map back into the result face/edge map. Should be zero
+    /// for a well-formed sweep; non-zero indicates a kernel correspondence
+    /// loss or map-type mismatch.
+    ///
+    /// Single bulk accumulator: each `make_prism_with_history` /
+    /// `make_revolve_with_history` / `make_pipe_with_history` call passes this
+    /// field as `out_drop_count` to all four `emit_sweep_*` calls (face
+    /// Modified, face Generated, edge Modified, edge Generated), so it
+    /// aggregates drops across shape kinds without per-kind breakdown.
+    /// If a future consumer needs finer-grained diagnostics, split this field
+    /// into separate face/edge counters before adding new call sites.
+    uint32_t silent_drop_count = 0;
     std::vector<uint32_t> face_modified;
     std::vector<uint32_t> face_generated;
     std::vector<uint32_t> face_deleted;
@@ -463,6 +476,9 @@ uint32_t sweep_op_history_unsynthesized_profile_edge_count(const SweepOpHistory&
 /// their parent_subshape_index duplicated the preceding record (after stable-sort).
 /// Zero for a well-formed full revolve.
 uint32_t sweep_op_history_duplicate_parent_subshape_index_count(const SweepOpHistory& history);
+/// Count of Modified/Generated children silently dropped because they could not
+/// be found in the result face/edge map. Zero for a well-formed sweep.
+uint32_t sweep_op_history_silent_drop_count(const SweepOpHistory& history);
 
 /// Test fixture: run `revolve_synthesis_post_sort_and_dedup` on a synthetic flat
 /// `face_generated`-layout input (`parent_index, parent_subshape_index,
