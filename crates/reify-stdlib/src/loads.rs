@@ -13,8 +13,8 @@
 use reify_types::{DimensionVector, Value};
 
 use crate::helpers::{
-    make_kind_map, validate_dimensioned_vec3, validate_dimensionless_unit_axis_vec3,
-    validate_selector_target,
+    make_kind_map, validate_dimensioned_scalar, validate_dimensioned_vec3,
+    validate_dimensionless_unit_axis_vec3, validate_selector_target,
 };
 
 /// Earth standard gravity in m/s² (CGPM 1901 definition).
@@ -198,28 +198,6 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
 }
 
 // ── Validators ───────────────────────────────────────────────────────────────
-
-/// Validate that `v` is a `Value::Scalar` with dimension matching `expected_dim`
-/// and a finite SI value.
-///
-/// Returns `Some(si_value)` on success, `None` on any failure.
-fn validate_dimensioned_scalar(v: &Value, expected_dim: DimensionVector) -> Option<f64> {
-    match v {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => {
-            if *dimension != expected_dim {
-                return None;
-            }
-            if !si_value.is_finite() {
-                return None;
-            }
-            Some(*si_value)
-        }
-        _ => None,
-    }
-}
 
 /// Validate a pressure-load direction argument.
 ///

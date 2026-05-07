@@ -211,6 +211,28 @@ pub(crate) fn validate_selector_target(v: &Value) -> Option<()> {
     }
 }
 
+/// Validate that `v` is a `Value::Scalar` with dimension matching `expected_dim`
+/// and a finite SI value.
+///
+/// Returns `Some(si_value)` on success, `None` on any failure.
+pub(crate) fn validate_dimensioned_scalar(v: &Value, expected_dim: DimensionVector) -> Option<f64> {
+    match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            if *dimension != expected_dim {
+                return None;
+            }
+            if !si_value.is_finite() {
+                return None;
+            }
+            Some(*si_value)
+        }
+        _ => None,
+    }
+}
+
 /// Validate that `v` is a `Value::Vector` (or Tensor/Point) of exactly 3
 /// numeric components with a consistent dimension matching `expected_dim`,
 /// all finite.
