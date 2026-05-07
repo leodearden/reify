@@ -7,7 +7,7 @@
 //! See `crates/reify-eval/src/sweep_classifier.rs` for the pure classifier
 //! plus its unit tests; this file pins the engine wire-up that calls it.
 
-use reify_compiler::{CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind, SweepKind};
+use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind};
 use reify_eval::SweptKind;
 use reify_test_support::*;
 use reify_types::{ExportFormat, Type, Value};
@@ -248,5 +248,109 @@ fn engine_swept_kind_table_resets_between_builds() {
         table_after_build_2.is_empty(),
         "after build #2 (modify-tail realization on the same Engine), swept_kind_table must be empty (per-build reset cleared the build #1 entry, classifier rejected the modify tail), got len() == {}",
         table_after_build_2.len()
+    );
+}
+
+/// (d) Revolve realization populates the table with a single
+/// `SweptKind::Revolve` keyed by the realization's final handle.
+///
+/// # What this test covers
+///
+/// `CompiledGeometryOp::Sweep { kind: SweepKind::Revolve, profiles, args }` is
+/// compiled by `compile_geometry_op`'s Revolve arm into
+/// `GeometryOp::Revolve { profile, axis_origin, axis_dir, angle_rad }`. That arm
+/// reads **seven named f64 args**: `ox`, `oy`, `oz` (axis origin), `ax`, `ay`,
+/// `az` (axis direction), and `angle` (angle in radians). All seven are
+/// `Type::Real` — they are dimensionless ratios/radians, not length-typed.
+///
+/// # Non-degenerate parameters chosen
+///
+/// axis_dir = (0, 0, 1) — unit-length +Z vector; axis_norm = 1.0, well above the
+/// `GEOMETRY_EPSILON ≈ 1e-12` degeneracy guard in `compile_geometry_op` and the
+/// `REVOLVE_DEGENERATE_TOLERANCE` check in the classifier. angle = π/2 (90°);
+/// |angle| = π/2, well above the `DEGENERATE_ANGLE_RAD = 1e-12` guard. Avoids
+/// any edge-case paths (full 2π, negative angle) — those are covered by the unit
+/// tests in `sweep_classifier.rs`.
+///
+/// # Regression guarded
+///
+/// A future change to `compile_geometry_op`'s Revolve arm that drops
+/// `GeometryOp::Revolve` emission, swaps the axis/angle field order, or changes
+/// the degeneracy threshold would cause `classify_swept_body` to miss the entry
+/// or produce the wrong variant fields. The unit tests in `sweep_classifier.rs`
+/// exercise the pure classifier with hand-built `&[GeometryOp]` slices, bypassing
+/// `compile_geometry_op` and `Engine::execute_realization_ops` — this e2e test
+/// pins the full wiring path.
+#[test]
+fn engine_swept_kind_table_records_revolve_realization() {
+    let e = "TestSweptRevolve";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    // Op 0: Sphere — stand-in profile to produce a handle at step index 0.
+    // The classifier only inspects the *last* op, so any handle-producing op works.
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    // Op 1: Revolve(Step(0), axis=+Z, angle=π/2). The seven f64 args are
+    // Type::Real (not length-typed) because they are dimensionless ratios /
+    // radians — matches the precedent in stress_sweep_degenerate.rs:108.
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("angle".into(), real_literal(std::f64::consts::FRAC_PI_2)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_revolve"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry operations (Sphere + Revolve), got {}",
+        ops.len()
+    );
+
+    let final_handle = ops.last().unwrap().result_handle;
+
+    let table = engine.swept_kind_table();
+    assert_eq!(
+        table.len(),
+        1,
+        "expected exactly one swept-kind table entry after a single Revolve realization, got len() == {}",
+        table.len()
+    );
+    assert_eq!(
+        table.lookup(final_handle),
+        Some(&SweptKind::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        }),
+        "the realization's final handle must map to SweptKind::Revolve with axis=+Z and angle=π/2"
     );
 }
