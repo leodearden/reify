@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as child_process from "node:child_process";
 import { PNG } from "pngjs";
-import { parseRpcResponse } from "./rpc.js";
+import { parseRpcResponse, type RpcResult } from "./rpc.js";
 import { decideOutcome } from "./diff.js";
 import type { ImageData } from "./diff.js";
 import { resolveRepoRoot, assertRepoRootStructure } from "./paths.js";
@@ -65,7 +65,7 @@ const SCENARIOS: Scenario[] = [
 async function rpc<T>(
   method: string,
   args: Record<string, unknown>,
-): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+): Promise<RpcResult<T>> {
   try {
     const response = await fetch(DEBUG_URL, {
       method: "POST",
@@ -94,6 +94,16 @@ async function waitForDebugServer(timeoutMs = SERVER_TIMEOUT_MS): Promise<void> 
   const deadline = Date.now() + timeoutMs;
   let lastError = "timeout";
   while (Date.now() < deadline) {
+    // Short-circuit early if spawn() itself failed (e.g. ENOENT) or the child exited
+    // before the debug server became ready — avoids burning the full 600 s timeout.
+    if (spawnFailed) {
+      throw new Error("GUI process failed to start — see logs above");
+    }
+    if (guiProcess !== null && guiProcess.exitCode !== null) {
+      throw new Error(
+        `GUI process exited unexpectedly (code ${guiProcess.exitCode}) before debug server became ready`,
+      );
+    }
     const result = await rpc("health", {});
     if (result.ok) {
       console.log("[harness] debug server ready");
@@ -108,6 +118,8 @@ async function waitForDebugServer(timeoutMs = SERVER_TIMEOUT_MS): Promise<void> 
 // ─── GUI process management ───────────────────────────────────────────────────
 
 let guiProcess: child_process.ChildProcess | null = null;
+/** Set to true by the error handler if spawn() itself fails (e.g. ENOENT). */
+let spawnFailed = false;
 
 function spawnGui(launchFixture: string): void {
   const fixturePath = path.join(REPO_ROOT, launchFixture);
@@ -126,6 +138,7 @@ function spawnGui(launchFixture: string): void {
   );
   guiProcess.on("error", (err) => {
     console.error(`[harness] GUI process error: ${err.message}`);
+    spawnFailed = true;
   });
 }
 
@@ -171,18 +184,16 @@ type HarnessExitCode = 0 | 1 | 2;
 
 async function main(): Promise<HarnessExitCode> {
   let anyFailed = false;
-
-  // Verify first fixture exists before spawning anything
+  // INVARIANT: SCENARIOS[0].fixture bootstraps the GUI process; subsequent scenarios call
+  // open_file without relaunching. If scenarios are ever filtered or reordered (e.g. a
+  // future --grep flag), move the launch fixture to a neutral empty .ri and rely entirely
+  // on open_file for all scenarios — or keep this invariant and document it clearly.
   const firstFixture = SCENARIOS[0].fixture;
-  const firstFixturePath = path.join(REPO_ROOT, firstFixture);
-  if (!fs.existsSync(firstFixturePath)) {
-    console.error(`[harness] ERROR: fixture not found: ${firstFixturePath}`);
-    return 2;
-  }
 
-  spawnGui(firstFixture);
-
+  // spawnGui() is the single source-of-truth for the fixture existence check; its throw
+  // is caught below along with any other harness-level errors.
   try {
+    spawnGui(firstFixture);
     await waitForDebugServer();
 
     for (const scenario of SCENARIOS) {
@@ -273,7 +284,7 @@ async function main(): Promise<HarnessExitCode> {
           );
           break;
 
-        case "failed":
+        case "failed": {
           anyFailed = true;
           // Write actual screenshot
           const actualPath = path.join(SCREENSHOTS_DIR, `${scenario.name}.actual.png`);
@@ -295,6 +306,7 @@ async function main(): Promise<HarnessExitCode> {
             console.error(`       actual: ${actualPath}`);
           }
           break;
+        }
       }
     }
   } catch (err) {
@@ -306,6 +318,17 @@ async function main(): Promise<HarnessExitCode> {
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
+
+function shutdown(exitCode: number): void {
+  reapGui().finally(() => {
+    process.exit(exitCode);
+  });
+}
+
+// Ensure the spawned reify-gui + vite tree is reaped on Ctrl-C / CI cancellation.
+// Without these handlers the child processes leak and leave ports 1420/3939 bound.
+process.on("SIGINT", () => shutdown(130));
+process.on("SIGTERM", () => shutdown(143));
 
 main()
   .then((code) => {
