@@ -2016,9 +2016,16 @@ structure S {
         msg.contains("'f'"),
         "diagnostic should name field 'f', got: {msg:?}"
     );
+    // Pin the cap value rather than prose phrases — if the cap constant changes or
+    // the message omits it, this assertion catches the regression.
+    let cap = reify_types::sampled::LINSPACE_MAX_INTERVALS.to_string();
     assert!(
-        msg.contains("interval cap") || msg.contains("too many grid nodes") || msg.contains("10000000"),
-        "diagnostic should mention the interval cap, got: {msg:?}"
+        msg.contains(&cap),
+        "diagnostic should contain the cap value ({cap}), got: {msg:?}"
+    );
+    assert!(
+        msg.contains("axis 0"),
+        "diagnostic should identify the offending axis (axis 0), got: {msg:?}"
     );
 
     let val = result
