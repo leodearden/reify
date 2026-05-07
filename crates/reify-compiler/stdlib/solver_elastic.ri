@@ -167,6 +167,7 @@ structure def ElasticOptions {
     param threads : Option<Int> = none
     param shell_threshold : Real = 0.2
     param shell_voxel_size : Option<Length> = none
+    // NOTE(parser-quirk, esc-3030-68): do NOT normalize to 1.0 — see doc above.
     param shell_branch_prune_ratio : Real = 1.01
     param shell_force : ShellForce = ShellForce.Auto
     param force_tet : Bool = false
