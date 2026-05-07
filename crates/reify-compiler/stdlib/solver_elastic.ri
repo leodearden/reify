@@ -119,6 +119,19 @@ enum ShellForce { Off, Auto, On }
 //                            PRD T3 will revise). Non-positive values would
 //                            silently disable pruning; enforced by
 //                            `constraint shell_branch_prune_ratio > 0`.
+//                            TODO(parser-quirk, esc-3030-68): the default is
+//                            1.01, NOT 1.0 — do not "normalize" it back to
+//                            1.0. Whole-number Real literals like `1.0` are
+//                            stored as `Int(1)` due to a tokenizer quirk: the
+//                            lexer reads `1` as an Int token, then `.0` as a
+//                            member-access that resolves to nothing, so `1.0`
+//                            silently re-types the field as Int. The 1.01 value
+//                            was chosen specifically to exercise the Real parser
+//                            path and avoid this bug. Cross-ref: the
+//                            `elastic_options_shell_param_defaults_match_spec`
+//                            test docstring documents the same quirk. PRD T3
+//                            will revise the empirical default; until then,
+//                            any change must keep the value non-integer.
 //   shell_force            — off/auto/on tri-state forcing. `Auto` (default)
 //                            classifies by `shell_threshold`; `Off` forces
 //                            3-D solid formulation for all bodies; `On`
