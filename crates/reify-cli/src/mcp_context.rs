@@ -423,6 +423,10 @@ impl ReifyToolContext for CliToolContext {
         // (cells removed by the new module) are pruned inside eval().
         let mut state = self.lock_state();
         ensure_engine(&mut state).eval(&compiled);
+        // Drop entries for any previously-loaded file: state.files must reflect
+        // the same single canonical source as compiled and active_file.  See
+        // task 3100 and the loud-failure invariant landed in task 3054.
+        state.files.retain(|key, _| key == &canonical);
         if let Some(entry) = state.files.get_mut(&canonical) {
             entry.content = content.to_string();
             entry.dirty = true;
@@ -436,13 +440,14 @@ impl ReifyToolContext for CliToolContext {
             );
         }
         state.compiled = Some(compiled);
-        // Unconditional set: compiled, active_file, and the files-map source must always
-        // describe the same file.  get_or_insert_with was previously used to preserve a
-        // prior load_file/open_file selection, but that leaves active_file pointing at
-        // "a.ri" while compiled holds b.ri's module — byte-span offsets from b's
-        // diagnostics would then be resolved against a's source, producing wrong
-        // line/column numbers.  Callers that need to switch active files explicitly
-        // without recompiling should use open_file.
+        // After the retain() above, state.files contains at most one entry whose key
+        // matches `canonical`.  Combined with this unconditional set, compiled,
+        // active_file, and state.files always describe a single canonical source.
+        // get_or_insert_with was previously used to preserve a prior load_file/open_file
+        // selection, but that leaves active_file pointing at "a.ri" while compiled holds
+        // b.ri's module — byte-span offsets from b's diagnostics would then be resolved
+        // against a's source, producing wrong line/column numbers.  Callers that need
+        // multi-file semantics must use open_file (which does not prune).
         state.active_file = Some(canonical.clone());
 
         Ok(UpdateResult {
