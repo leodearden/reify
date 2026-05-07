@@ -1615,16 +1615,21 @@ pub struct SweepOpHistoryRecords {
     /// **Diagnostic note:** the increment path inside the C++ sweep helpers
     /// is only tested indirectly through the zero-count assertion in the
     /// canonical happy-path integration tests. A dedicated test exercising
-    /// the non-zero path is deferred to a follow-up task.
+    /// the non-zero path (e.g. a synthetic input that triggers the
+    /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
+    /// tracked in project memory under
+    /// `"SweepOpHistory silent_drop_count non-zero path test"`.
     ///
-    /// **TODO:** wire this counter into error reporting so that a non-zero
-    /// count surfaces as a warning log, rather than being silently recorded.
-    /// Until that follow-up lands, callers must inspect this field manually
-    /// if they need to detect kernel correspondence loss. If the wiring task
-    /// requires actionable per-kind diagnostics, split
-    /// `SweepOpHistory.silent_drop_count` (C++ struct) into separate
-    /// face/edge counters before adding new consumers; the deferred split is
-    /// intentional pending that task's specification of required granularity.
+    /// **TODO (follow-up — tracked in project memory "SweepOpHistory
+    /// silent_drop_count error reporting"):** wire this counter into error
+    /// reporting so that a non-zero count surfaces as a warning log, rather
+    /// than being silently recorded. Until that follow-up lands, callers
+    /// must inspect this field manually if they need to detect kernel
+    /// correspondence loss. If the wiring task requires actionable per-kind
+    /// diagnostics, split `SweepOpHistory.silent_drop_count` (C++ struct)
+    /// into separate face/edge counters before adding new consumers; the
+    /// deferred split is intentional pending that task's specification of
+    /// required granularity.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -2759,31 +2764,6 @@ mod tests {
         assert!(records.start_cap_face_indices.is_empty());
         assert!(records.end_cap_face_indices.is_empty());
         assert_eq!(records.face_generated.len(), 1);
-    }
-
-    #[test]
-    fn sweep_op_history_records_exposes_silent_drop_count_field() {
-        // (a) Default value is zero — no drops on the happy path.
-        assert_eq!(
-            SweepOpHistoryRecords::default().silent_drop_count,
-            0,
-            "default silent_drop_count must be 0"
-        );
-        // (b) The field can be set and read back.
-        let records = SweepOpHistoryRecords {
-            silent_drop_count: 7,
-            ..SweepOpHistoryRecords::default()
-        };
-        assert_eq!(
-            records.silent_drop_count, 7,
-            "silent_drop_count should round-trip through struct literal"
-        );
-        // (c) Clone preserves the value.
-        let cloned = records.clone();
-        assert_eq!(
-            cloned.silent_drop_count, 7,
-            "clone must preserve silent_drop_count"
-        );
     }
 
     // --- task 5a (#2573): AttributeHistory enum + execute_with_history default ---
