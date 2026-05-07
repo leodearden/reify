@@ -967,6 +967,70 @@ mod tests {
         }
     }
 
+    /// Tightening `distance_tolerance` from `0.05` (default) to `0.001`
+    /// (50× stricter) on the same 16×16×16 slab used in step-7 must
+    /// monotonically shrink the mask: every voxel in the strict mask
+    /// must also be in the default mask, and the strict mask cannot be
+    /// larger. This pins the `distance_tolerance` field as actually
+    /// wired to the medial decision in `compute_medial_mask`'s inner
+    /// loop — a future regression that hardcodes the threshold or
+    /// renames the field would surface here.
+    ///
+    /// Both masks are required to be non-empty (the slab medial axis is
+    /// well-populated on the centerline plane regardless of tolerance).
+    #[test]
+    fn tightening_distance_tolerance_reduces_slab_mask_size() {
+        use std::collections::HashSet;
+
+        let n = 16usize;
+        let sdf = slab_sdf_3d(3.0, n);
+
+        let default_opts = MedialOptions::default();
+        let strict_opts = MedialOptions {
+            distance_tolerance: 0.001,
+            ..MedialOptions::default()
+        };
+
+        let default_mask = compute_medial_mask(&sdf, &default_opts)
+            .expect("slab compute (default tolerance) succeeds");
+        let strict_mask = compute_medial_mask(&sdf, &strict_opts)
+            .expect("slab compute (strict tolerance) succeeds");
+
+        // (a) both non-zero
+        assert!(
+            !default_mask.voxels.is_empty(),
+            "default-tolerance slab mask must be non-empty"
+        );
+        assert!(
+            !strict_mask.voxels.is_empty(),
+            "strict-tolerance slab mask must be non-empty (strictness \
+             should not collapse the mask entirely on a slab whose \
+             medial-axis voxels see d⁺ ≈ d⁻ to within machine epsilon \
+             at the centerline)"
+        );
+
+        // (b) monotonic non-increase
+        assert!(
+            strict_mask.voxels.len() <= default_mask.voxels.len(),
+            "tightening distance_tolerance from 0.05 to 0.001 must not \
+             grow the mask: strict={} default={}",
+            strict_mask.voxels.len(),
+            default_mask.voxels.len()
+        );
+
+        // (c) strict ⊂ default (voxel-set inclusion)
+        let default_set: HashSet<[i32; 3]> = default_mask.voxels.iter().copied().collect();
+        for v in &strict_mask.voxels {
+            assert!(
+                default_set.contains(v),
+                "strict-tolerance voxel {v:?} is missing from the default \
+                 mask — distance_tolerance is not monotonically wired \
+                 (a stricter threshold should never accept a voxel that \
+                 the looser threshold rejected)"
+            );
+        }
+    }
+
     /// Thick block `φ = max(|p_i|) − 6` on a 16×16×16 grid: the analytic
     /// medial axis is a single point at the cube centroid (origin). The
     /// deep interior (`|φ| ≫ 3`) is excluded by the narrow-band filter,
