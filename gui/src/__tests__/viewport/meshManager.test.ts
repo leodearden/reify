@@ -1679,4 +1679,113 @@ describe('meshManager', () => {
       expect(ghostMap.size).toBe(0);
     });
   });
+
+  describe('rebuildMaterials — colorize=set path', () => {
+    const sentinelBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+    function setupStandardMeshWithScalars() {
+      // Create manager WITHOUT colorize → mesh gets MeshStandardMaterial, no color attr
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+      manager.sync({ A: meshData });
+      return { scene, manager };
+    }
+
+    it('(a) after setColorize+rebuildMaterials, mesh material is MeshPhongMaterial with vertexColors', () => {
+      const { manager } = setupStandardMeshWithScalars();
+      const mesh = manager.getSceneMeshes().get('A')!;
+      // Confirm starts as standard material (no colorize at creation)
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(false);
+
+      manager.setColorize({ channel: 'vonMises', bake: sentinelBake });
+      manager.rebuildMaterials();
+
+      // Material should now be MeshPhongMaterial
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(false);
+      // With vertexColors = true
+      expect((mesh.material as any).vertexColors).toBe(true);
+    });
+
+    it('(b) previous MeshStandardMaterial dispose was called', () => {
+      const { manager } = setupStandardMeshWithScalars();
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const oldMaterial = mesh.material as any;
+      expect(mockMaterials.some((m: any) => m === oldMaterial)).toBe(true);
+
+      manager.setColorize({ channel: 'vonMises', bake: sentinelBake });
+      manager.rebuildMaterials();
+
+      expect(oldMaterial.dispose).toHaveBeenCalledOnce();
+    });
+
+    it('(c) color BufferAttribute is present with baked scalar values', () => {
+      const { manager } = setupStandardMeshWithScalars();
+      const mesh = manager.getSceneMeshes().get('A')!;
+      // Confirm no color attr before rebuild
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+
+      manager.setColorize({ channel: 'vonMises', bake: sentinelBake });
+      manager.rebuildMaterials();
+
+      // sentinelBake([10, 20, 30]) = [10, 0, 0, 20, 0, 0, 30, 0, 0]
+      const colorAttr = (mesh.geometry as any).attributes.color;
+      expect(colorAttr).toBeDefined();
+      expect(colorAttr.itemSize).toBe(3);
+      expect(Array.from(colorAttr.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
+    });
+
+    it('(d) channel-absent fallback: mesh missing the colorize channel keeps MeshStandardMaterial', () => {
+      // Create manager without colorize, sync mesh with displacement_magnitude only (no vonMises)
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      const meshData: MeshData = {
+        entity_path: 'B',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { displacement_magnitude: new Float32Array([0.1, 0.2, 0.3]) },
+      };
+      manager.sync({ B: meshData });
+
+      const mesh = manager.getSceneMeshes().get('B')!;
+      const oldMaterial = mesh.material as any;
+      expect(mockMaterials.some((m: any) => m === oldMaterial)).toBe(true);
+
+      // setColorize for vonMises, but this mesh only has displacement_magnitude
+      manager.setColorize({ channel: 'vonMises', bake: sentinelBake });
+      manager.rebuildMaterials();
+
+      // Still MeshStandardMaterial (channel absent → fallback path)
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(false);
+      // No color attribute on geometry
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+      // Old material was disposed (replaced with a fresh standard material)
+      expect(oldMaterial.dispose).toHaveBeenCalledOnce();
+    });
+
+    it('(e) BVH computeBoundsTree is NOT called during rebuildMaterials colorize=set path', () => {
+      const { manager } = setupStandardMeshWithScalars();
+      vi.clearAllMocks(); // reset after sync
+
+      manager.setColorize({ channel: 'vonMises', bake: sentinelBake });
+      manager.rebuildMaterials();
+
+      expect(mockComputeBoundsTree).not.toHaveBeenCalled();
+    });
+  });
 });
