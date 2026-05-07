@@ -50,6 +50,7 @@ fn mesh_data_serializes_with_expected_fields() {
         indices: vec![0, 1, 2],
         normals: Some(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
         scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
     assert_eq!(v["entity_path"], json!("Bracket.body"));
@@ -534,6 +535,7 @@ fn serialize_finite_f32_vec_all_finite_values_round_trip() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
     let arr = v["vertices"].as_array().unwrap();
@@ -553,6 +555,7 @@ fn serialize_finite_f32_vec_empty_vec_serializes_to_empty_array() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
     let arr = v["vertices"].as_array().unwrap();
@@ -567,6 +570,7 @@ fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -582,6 +586,7 @@ fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -597,6 +602,7 @@ fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_in
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -614,6 +620,7 @@ fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
         indices: vec![0],
         normals: Some(vec![0.0, 0.0, f32::NAN]),
         scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -638,6 +645,7 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -907,6 +915,7 @@ fn mesh_data_scalar_channels_round_trips() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: channels,
+        displaced_positions: None,
     };
 
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
@@ -938,6 +947,7 @@ fn mesh_data_empty_scalar_channels_omitted_from_wire() {
         indices: vec![],
         normals: None,
         scalar_channels: HashMap::new(),
+        displaced_positions: None,
     };
 
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
@@ -966,6 +976,7 @@ fn serialize_finite_f32_map_nan_causes_error_with_channel_key() {
         indices: vec![],
         normals: None,
         scalar_channels: channels,
+        displaced_positions: None,
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();
@@ -995,6 +1006,7 @@ fn serialize_finite_f32_map_infinity_causes_error_with_channel_key() {
         indices: vec![],
         normals: None,
         scalar_channels: channels,
+        displaced_positions: None,
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();
@@ -1024,6 +1036,7 @@ fn serialize_finite_f32_map_neg_infinity_causes_error_with_channel_key() {
         indices: vec![],
         normals: None,
         scalar_channels: channels,
+        displaced_positions: None,
     };
 
     let err = serde_json::to_value(&mesh).unwrap_err();

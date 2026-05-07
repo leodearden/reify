@@ -126,6 +126,15 @@ pub struct MeshData {
     #[serde(default, skip_serializing_if = "HashMap::is_empty",
             serialize_with = "serialize_finite_f32_map")]
     pub scalar_channels: HashMap<String, Vec<f32>>,
+    /// Packed displaced vertex positions produced by the FEA deformation field.
+    ///
+    /// Same layout as `vertices` (`[x0, y0, z0, x1, y1, z1, ...]`).  Omitted
+    /// from the wire when `None` so non-FEA meshes stay compact.  Wiring into
+    /// the rendered position buffer is deferred to task G3 (FEA-mode UI);
+    /// pinning the field now lets G3 land without re-touching the IPC contract.
+    #[serde(default, skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_finite_f32_vec_opt")]
+    pub displaced_positions: Option<Vec<f32>>,
 }
 
 /// A value cell (param, let, or auto) for the property editor.
