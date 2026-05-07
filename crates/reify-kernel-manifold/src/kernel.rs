@@ -417,6 +417,56 @@ mod tests {
         assert_ok_handle(result, "Intersection");
     }
 
+    /// RED for step-7 of task 3093: pins that `tessellate(handle, 0.0)`
+    /// over a stored Union result returns a non-empty `Mesh` whose index
+    /// count is a multiple of three.
+    ///
+    /// Tolerance is `0.0` because manifold meshes are exact — the
+    /// underlying [`Manifold`] carries its own tolerance set at
+    /// construction, and the `tessellate` boundary intentionally ignores
+    /// the caller-supplied tolerance for the v0.2 path. Step-8 wires
+    /// `tessellate` via `Manifold::to_mesh_gl64()`.
+    ///
+    /// Currently fails because `tessellate` returns the stub
+    /// `TessError::TessellationFailed`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn tessellate_of_stored_union_returns_nonempty_mesh() {
+        let mut kernel = ManifoldKernel::new();
+        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
+        let r = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
+
+        let union_handle = kernel
+            .execute(&GeometryOp::Union {
+                left: l,
+                right: r,
+            })
+            .expect("Union of two valid cubes must succeed");
+
+        let mesh = kernel
+            .tessellate(union_handle.id, 0.0)
+            .expect("tessellate of stored Union must succeed");
+
+        assert!(
+            !mesh.vertices.is_empty(),
+            "tessellated Union mesh must have at least one vertex",
+        );
+        assert!(
+            !mesh.indices.is_empty(),
+            "tessellated Union mesh must have at least one triangle",
+        );
+        assert_eq!(
+            mesh.indices.len() % 3,
+            0,
+            "tessellated Union mesh indices must be a multiple of 3 (triangles)",
+        );
+        assert_eq!(
+            mesh.vertices.len() % 3,
+            0,
+            "tessellated Union mesh vertices must be a multiple of 3 (xyz triplets)",
+        );
+    }
+
     /// PRD docs/prds/v0_2/persistent-naming-v2.md line 70: ManifoldKernel is
     /// the first concrete impl of `KernelAttributeHook`. This test pins the
     /// "ManifoldKernel opts into the hook AND is reachable through the
