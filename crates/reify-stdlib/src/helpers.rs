@@ -1598,6 +1598,151 @@ mod tests {
         );
     }
 
+    // ── validate_dimensioned_scalar ───────────────────────────────────────────
+    //
+    // Hoisted from loads.rs. Validates a single Scalar value with a specified
+    // expected dimension and a finite SI value.
+
+    #[test]
+    fn validate_dimensioned_scalar_force_happy_path_returns_si_value() {
+        let v = Value::Scalar {
+            si_value: 5000.0,
+            dimension: DimensionVector::FORCE,
+        };
+        assert_eq!(
+            validate_dimensioned_scalar(&v, DimensionVector::FORCE),
+            Some(5000.0),
+            "FORCE scalar with expected_dim=FORCE should return Some(si_value)"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_pressure_happy_path_returns_si_value() {
+        let v = Value::Scalar {
+            si_value: 5e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert_eq!(
+            validate_dimensioned_scalar(&v, DimensionVector::PRESSURE),
+            Some(5e6),
+            "PRESSURE scalar with expected_dim=PRESSURE should return Some(si_value)"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_wrong_dimension_returns_none() {
+        let v = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::FORCE,
+        };
+        assert!(
+            validate_dimensioned_scalar(&v, DimensionVector::LENGTH).is_none(),
+            "FORCE scalar with expected_dim=LENGTH should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_dimensionless_vs_length_returns_none() {
+        let v = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            validate_dimensioned_scalar(&v, DimensionVector::LENGTH).is_none(),
+            "DIMENSIONLESS scalar with expected_dim=LENGTH should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_nan_si_value_returns_none() {
+        let v = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::ACCELERATION,
+        };
+        assert!(
+            validate_dimensioned_scalar(&v, DimensionVector::ACCELERATION).is_none(),
+            "NaN si_value should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_pos_inf_si_value_returns_none() {
+        let v = Value::Scalar {
+            si_value: f64::INFINITY,
+            dimension: DimensionVector::FORCE,
+        };
+        assert!(
+            validate_dimensioned_scalar(&v, DimensionVector::FORCE).is_none(),
+            "+Inf si_value should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_neg_inf_si_value_returns_none() {
+        let v = Value::Scalar {
+            si_value: f64::NEG_INFINITY,
+            dimension: DimensionVector::FORCE,
+        };
+        assert!(
+            validate_dimensioned_scalar(&v, DimensionVector::FORCE).is_none(),
+            "-Inf si_value should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_real_returns_none() {
+        assert!(
+            validate_dimensioned_scalar(&Value::Real(1.0), DimensionVector::LENGTH).is_none(),
+            "Bare Real should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_int_returns_none() {
+        assert!(
+            validate_dimensioned_scalar(&Value::Int(7), DimensionVector::LENGTH).is_none(),
+            "Int should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_bool_returns_none() {
+        assert!(
+            validate_dimensioned_scalar(&Value::Bool(true), DimensionVector::LENGTH).is_none(),
+            "Bool should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_undef_returns_none() {
+        assert!(
+            validate_dimensioned_scalar(&Value::Undef, DimensionVector::LENGTH).is_none(),
+            "Undef should return None"
+        );
+    }
+
+    #[test]
+    fn validate_dimensioned_scalar_vector_returns_none() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::FORCE,
+            },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::FORCE,
+            },
+        ]);
+        assert!(
+            validate_dimensioned_scalar(&v, DimensionVector::FORCE).is_none(),
+            "Vector (non-Scalar container) should return None"
+        );
+    }
+
     // ── make_kind_map ─────────────────────────────────────────────────────────
     //
     // Hoisted from supports.rs (make_support_map) and loads.rs (make_load_map),
