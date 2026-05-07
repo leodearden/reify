@@ -295,6 +295,25 @@ mod tests {
         }
     }
 
+    /// Pin macro-helper: structural `Ok(GeometryHandle)` shape for the three
+    /// boolean op tests below. Match-on-Ok rather than `assert_eq!` because
+    /// `GeometryError` does not derive `PartialEq`.
+    #[cfg(feature = "test-fixtures")]
+    fn assert_ok_handle(result: Result<GeometryHandle, GeometryError>, label: &str) {
+        match result {
+            Ok(GeometryHandle { id, .. }) => {
+                assert_ne!(
+                    id,
+                    GeometryHandleId::INVALID,
+                    "{label} must return a real (non-INVALID) handle id",
+                );
+            }
+            other => panic!(
+                "{label} of two valid stored cubes must return Ok(GeometryHandle); got {other:?}"
+            ),
+        }
+    }
+
     /// RED for step-1 of task 3093: pins that `execute(GeometryOp::Union)`
     /// over two stored unit cubes returns `Ok(GeometryHandle { .. })`.
     ///
@@ -319,18 +338,30 @@ mod tests {
             right: r,
         });
 
-        match result {
-            Ok(GeometryHandle { id, .. }) => {
-                assert_ne!(
-                    id,
-                    GeometryHandleId::INVALID,
-                    "Union must return a real (non-INVALID) handle id",
-                );
-            }
-            other => panic!(
-                "Union of two valid stored cubes must return Ok(GeometryHandle); got {other:?}"
-            ),
-        }
+        assert_ok_handle(result, "Union");
+    }
+
+    /// RED for step-3 of task 3093: pins that
+    /// `execute(GeometryOp::Difference)` over two overlapping stored unit
+    /// cubes returns `Ok(GeometryHandle { .. })`.
+    ///
+    /// Cubes overlap by 0.5 in x so the difference is a non-degenerate
+    /// volume (no early empty-result short-circuit). Currently fails
+    /// because the `Difference` arm of `execute` returns the stub error
+    /// from step-2; step-4 wires it to `Manifold::difference`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn difference_of_two_stored_cubes_returns_ok_handle() {
+        let mut kernel = ManifoldKernel::new();
+        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
+        let r = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
+
+        let result = kernel.execute(&GeometryOp::Difference {
+            left: l,
+            right: r,
+        });
+
+        assert_ok_handle(result, "Difference");
     }
 
     /// PRD docs/prds/v0_2/persistent-naming-v2.md line 70: ManifoldKernel is
