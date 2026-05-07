@@ -92,16 +92,14 @@ pub fn openvdb_capability_descriptor() -> CapabilityDescriptor {
     CapabilityDescriptor { supports }
 }
 
-/// Factory invoked by the engine once at startup, returning the stub
-/// [`OpenVdbKernel`](crate::kernel::OpenVdbKernel).
+/// Factory invoked by the engine once at startup, returning an `OpenVdbKernel`.
 ///
-/// Real OpenVDB FFI is deferred to a follow-up task; this stub factory
-/// ensures the `inventory::submit!` below compiles and the registration
-/// materialises in `reify_eval::kernel_registry::registry()`. When the
-/// follow-up task adds real FFI, this function can switch behind
-/// `cfg(has_openvdb)` without changing the registration shape.
+/// When `cfg(has_openvdb)` is set, this creates the real FFI-backed kernel
+/// (`kernel_real::OpenVdbKernel`). Otherwise it creates the stub kernel
+/// (`kernel::OpenVdbKernel`). The single `crate::OpenVdbKernel` ident resolves
+/// to the correct type in both cases via the `pub use` cfg-gate in `lib.rs`.
 fn openvdb_factory() -> Box<dyn GeometryKernel> {
-    Box::new(crate::kernel::OpenVdbKernel::new())
+    Box::new(crate::OpenVdbKernel::new())
 }
 
 // Unconditional submit — no `cfg(has_openvdb)` gate (see design decisions in

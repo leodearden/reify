@@ -4089,10 +4089,14 @@ dependencies = [
 name = "reify-kernel-openvdb"
 version = "0.1.0"
 dependencies = [
+ "cc",
+ "cxx",
+ "cxx-build",
  "inventory",
  "reify-eval",
  "reify-test-support",
  "reify-types",
+ "tempfile",
 ]
 
 [[package]]
