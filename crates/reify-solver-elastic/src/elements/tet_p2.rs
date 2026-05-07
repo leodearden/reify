@@ -249,4 +249,70 @@ mod tests {
         let sum: f64 = TetP2.shape_at(centroid).iter().sum();
         assert!((sum - 1.0).abs() < TOL, "Σ N_i(centroid) = {sum}");
     }
+
+    /// Quadrature tolerance — slightly looser than `TOL` because the
+    /// Stroud constants involve `√5`, which loses a couple of bits of
+    /// precision relative to closed-form rationals.
+    const QUAD_TOL: f64 = 1e-10;
+
+    #[test]
+    fn quad_points_is_four_point_stroud_rule() {
+        // Stroud (1971) symmetric degree-2 rule on the unit tet:
+        // a = (5 - √5)/20, b = (5 + 3√5)/20, weight 1/24 each.
+        let qp = TetP2.quad_points();
+        assert_eq!(qp.len(), 4, "P2 quadrature is a 4-point Stroud rule");
+
+        let sqrt5 = 5.0_f64.sqrt();
+        let a = (5.0 - sqrt5) / 20.0;
+        let b = (5.0 + 3.0 * sqrt5) / 20.0;
+        let expected_pts = [(a, a, a), (b, a, a), (a, b, a), (a, a, b)];
+
+        // Match each expected point to a quadrature entry (ordering
+        // unspecified — the rule is symmetric, only the multiset matters).
+        for (xi_e, eta_e, zeta_e) in expected_pts {
+            let found = qp.iter().any(|q| {
+                (q.coord.xi - xi_e).abs() < QUAD_TOL
+                    && (q.coord.eta - eta_e).abs() < QUAD_TOL
+                    && (q.coord.zeta - zeta_e).abs() < QUAD_TOL
+                    && (q.weight - 1.0 / 24.0).abs() < QUAD_TOL
+            });
+            assert!(
+                found,
+                "Stroud point ({xi_e}, {eta_e}, {zeta_e}) with weight 1/24 not found in {qp:?}"
+            );
+        }
+
+        // Total weight = reference-tet volume = 1/6.
+        let w_sum: f64 = qp.iter().map(|q| q.weight).sum();
+        assert!((w_sum - 1.0 / 6.0).abs() < QUAD_TOL);
+    }
+
+    #[test]
+    fn quad_rule_integrates_constant_to_reference_volume() {
+        // ∫_T 1 dV = 1/6.
+        let qp = TetP2.quad_points();
+        let i: f64 = qp.iter().map(|q| q.weight).sum();
+        assert!((i - 1.0 / 6.0).abs() < QUAD_TOL);
+    }
+
+    #[test]
+    fn quad_rule_integrates_linear_xi_exactly() {
+        // ∫_T ξ dV = 1/24 (degree-1 — exact for any rule with degree ≥ 1).
+        let qp = TetP2.quad_points();
+        let i: f64 = qp.iter().map(|q| q.weight * q.coord.xi).sum();
+        assert!((i - 1.0 / 24.0).abs() < QUAD_TOL);
+    }
+
+    #[test]
+    fn quad_rule_integrates_quadratic_xi_squared_exactly() {
+        // ∫_T ξ² dV = 1/60 (analytical — degree-2 Stroud is exact for
+        // quadratic monomials).
+        let qp = TetP2.quad_points();
+        let i: f64 = qp.iter().map(|q| q.weight * q.coord.xi * q.coord.xi).sum();
+        assert!(
+            (i - 1.0 / 60.0).abs() < QUAD_TOL,
+            "∫ ξ² dV = {i}, expected 1/60 = {}",
+            1.0 / 60.0
+        );
+    }
 }
