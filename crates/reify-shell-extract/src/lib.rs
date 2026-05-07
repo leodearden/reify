@@ -33,7 +33,34 @@
 //! OpenVDB FFI lands, the storage backing can be swapped behind the same
 //! public API without changing T2/T3/T4 callers.
 //!
-//! # Re-export smoke test
+//! # Mid-surface extraction smoke test
+//!
+//! ```
+//! use reify_shell_extract::{
+//!     extract_mid_surface, MedialMask, MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions,
+//! };
+//! use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+//! use std::sync::atomic::AtomicBool;
+//!
+//! let sdf = SampledField {
+//!     name: "smoke-mid".to_string(),
+//!     kind: SampledGridKind::Regular3D,
+//!     bounds_min: vec![0.0, 0.0, 0.0],
+//!     bounds_max: vec![0.0, 0.0, 0.0],
+//!     spacing: vec![1.0, 1.0, 1.0],
+//!     axis_grids: vec![vec![0.0], vec![0.0], vec![0.0]],
+//!     interpolation: InterpolationKind::Linear,
+//!     data: vec![1.0],
+//!     oob_emitted: AtomicBool::new(false),
+//! };
+//! let mask = MedialMask { spacing: [1.0, 1.0, 1.0], origin: [0.0, 0.0, 0.0], voxels: vec![] };
+//! let mesh: MidSurfaceMesh =
+//!     extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default()).unwrap();
+//! assert!(mesh.vertices.is_empty() && mesh.triangles.is_empty() && mesh.thickness.is_empty());
+//! let _: MidSurfaceError = MidSurfaceError::EmptyAxisGrid { axis: 0 };
+//! ```
+//!
+//! # Medial-mask extraction smoke test
 //!
 //! ```
 //! use reify_shell_extract::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
@@ -64,5 +91,9 @@
 //! ```
 
 pub mod medial;
+pub mod mid_surface;
 
 pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
+pub use mid_surface::{
+    MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extract_mid_surface,
+};
