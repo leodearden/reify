@@ -240,6 +240,11 @@ fn match_one_kind(
         old.len(),
         "old slice passed to match_one_kind contains duplicate GeometryHandleId"
     );
+    debug_assert_eq!(
+        new.iter().collect::<HashSet<_>>().len(),
+        new.len(),
+        "new slice passed to match_one_kind contains duplicate GeometryHandleId"
+    );
 
     // 3. Imported-geometry pre-pass.
     let old_attributed = old
