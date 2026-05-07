@@ -49,8 +49,12 @@
 //! let _: &[TyingPoint] = Mitc3Plus.tying_points();
 //! ```
 
+pub mod assembly;
+pub mod constitutive;
 pub mod elements;
 
+pub use assembly::{ElementOrder, ElementStiffness, element_stiffness};
+pub use constitutive::IsotropicElastic;
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, tet_p1::TetP1, tet_p2::TetP2,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
