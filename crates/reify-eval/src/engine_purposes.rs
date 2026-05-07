@@ -262,6 +262,21 @@ impl Engine {
     /// incremental-update strategy keyed on entity_ref) inside this
     /// helper. Keep the recompute entry point so callers don't have to
     /// know the strategy changed.
+    ///
+    /// **Note on `Engine::realization_cache` interaction (task 2874 step-14)**:
+    /// this helper does NOT explicitly clear or invalidate the realization
+    /// cache. The cache's partial-order rule (`cached_tol ≤ requested_tol`,
+    /// enforced by `RealizationCache::lookup` → `ToleranceBucket::lookup`)
+    /// produces the correct cache-miss behaviour when the recomputed scope
+    /// tightens the demanded tolerance for a previously-cached entity, and
+    /// the correct cache-hit behaviour when the scope loosens or remains
+    /// unchanged. Pinned by the integration test
+    /// `cache_lookup_misses_when_purpose_changes_demanded_tolerance` in
+    /// `crates/reify-eval/tests/tolerance_wiring_e2e.rs`. A future task that
+    /// introduces handle-stability hazards orthogonal to the demanded
+    /// tolerance (e.g. parameter edits invalidating the underlying geometry)
+    /// will need its own invalidation strategy — that is OUT OF SCOPE for
+    /// this MVP wiring.
     fn recompute_tolerance_scope(&mut self) {
         self.active_tolerance_scope.clear();
 

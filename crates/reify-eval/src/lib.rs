@@ -501,10 +501,23 @@ pub struct Engine {
     /// stale-handle hazards are mitigated by the partial-order rule, and finer-
     /// grained invalidation is left for follow-up tasks.
     ///
-    /// `#[allow(dead_code)]` is needed at the pre-1 commit boundary (the field
-    /// is initialised but not yet read — the read sites land in step-6 / step-8
-    /// of task 2874). The allow can be removed once those steps land.
-    #[allow(dead_code)]
+    /// **Partial-order miss verification (task 2874 step-14)**: a tighter
+    /// demanded tolerance MUST NOT be served by a looser cached entry. The
+    /// rule is enforced structurally by `RealizationCache::lookup` →
+    /// `ToleranceBucket::lookup`'s `cached_tol ≤ requested_tol` predicate
+    /// (`realization_cache.rs:101-116`); the engine wiring threads the
+    /// requested tolerance through to that predicate unchanged at both the
+    /// insert site (`execute_realization_ops` post-success) and the lookup
+    /// site (`execute_realization_ops` cache-hit short-circuit at the top of
+    /// the helper). The integration test
+    /// `cache_lookup_misses_when_purpose_changes_demanded_tolerance` in
+    /// `tests/tolerance_wiring_e2e.rs` pins this end-to-end: cache populated
+    /// at 1µm, second build at 1nm misses → kernel re-executes. No cache
+    /// clearing on `recompute_tolerance_scope` is required because the
+    /// partial-order rule already produces the correct cache-miss behaviour
+    /// when the demanded tolerance tightens between builds. (Conversely, a
+    /// loosening change between builds will hit the tighter cached entry —
+    /// exactly the win the cache exists to deliver.)
     realization_cache: crate::realization_cache::RealizationCache<GeometryHandleId>,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
