@@ -200,42 +200,45 @@ impl ReifyToolContext for CliToolContext {
 
     fn get_diagnostics(&self) -> Result<Vec<DiagnosticInfo>, ToolError> {
         let state = self.lock_state();
+
+        let compiled = match &state.compiled {
+            Some(c) => c,
+            None => return Ok(vec![]),
+        };
+        let file_path = match &state.active_file {
+            Some(p) => p,
+            None => return Ok(vec![]),
+        };
+        let source = state
+            .files
+            .get(file_path)
+            .map(|f| f.content.as_str())
+            .ok_or_else(|| {
+                ToolError::EngineError(format!("active_file {file_path} not in files map"))
+            })?;
+
         let mut result = Vec::new();
-
-        if let Some(compiled) = &state.compiled {
-            let file_path = state
-                .active_file
-                .as_ref()
-                .ok_or_else(|| ToolError::EngineError("no active file".to_string()))?;
-            let source = state
-                .files
-                .get(file_path)
-                .map(|f| f.content.as_str())
-                .unwrap_or("");
-
-            for diag in &compiled.diagnostics {
-                // Use the first label's span if available, otherwise default to (1,1)
-                let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
-                {
-                    let (l, c) =
-                        reify_types::byte_offset_to_line_col(source, label.span.start as usize);
-                    let (el, ec) =
-                        reify_types::byte_offset_to_line_col(source, label.span.end as usize);
-                    (l as u32, c as u32, el as u32, ec as u32)
-                } else {
-                    (1, 1, 1, 1)
-                };
-                result.push(DiagnosticInfo {
-                    file_path: file_path.clone(),
-                    line,
-                    column,
-                    end_line,
-                    end_column,
-                    severity: diag.severity.as_wire_str().to_owned(),
-                    message: diag.message.clone(),
-                    code: None,
-                });
-            }
+        for diag in &compiled.diagnostics {
+            // Use the first label's span if available, otherwise default to (1,1)
+            let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first() {
+                let (l, c) =
+                    reify_types::byte_offset_to_line_col(source, label.span.start as usize);
+                let (el, ec) =
+                    reify_types::byte_offset_to_line_col(source, label.span.end as usize);
+                (l as u32, c as u32, el as u32, ec as u32)
+            } else {
+                (1, 1, 1, 1)
+            };
+            result.push(DiagnosticInfo {
+                file_path: file_path.clone(),
+                line,
+                column,
+                end_line,
+                end_column,
+                severity: diag.severity.as_wire_str().to_owned(),
+                message: diag.message.clone(),
+                code: None,
+            });
         }
 
         Ok(result)
