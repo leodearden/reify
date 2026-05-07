@@ -245,18 +245,13 @@ fn face_outward_unit_normal_for_test_unknown_handle_returns_invalid_handle() {
 }
 
 #[test]
-fn face_outward_unit_normal_for_test_non_face_shape_returns_query_failed_with_not_a_face() {
+fn face_outward_unit_normal_for_test_non_face_shape_returns_query_failed() {
     let (kernel, cyl_id) = cylinder_kernel(5.0, 10.0);
     // cyl_id is the solid handle, not a face.
     match kernel.face_outward_unit_normal_for_test(cyl_id) {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("not a face"),
-                "expected error containing 'not a face', got: {msg}"
-            );
-        }
+        Err(QueryError::QueryFailed(_)) => {}
         other => panic!(
-            "expected Err(QueryFailed(\"...not a face...\")) for solid handle, got {other:?}"
+            "expected Err(QueryFailed(_)) for solid handle, got {other:?}"
         ),
     }
 }

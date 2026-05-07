@@ -866,6 +866,7 @@ impl std::error::Error for ExportError {}
 
 /// Errors from tessellation.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum TessError {
     InvalidHandle(GeometryHandleId),
     TessellationFailed(String),
@@ -884,6 +885,7 @@ impl std::error::Error for TessError {}
 
 /// Errors from geometry queries.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum QueryError {
     InvalidHandle(GeometryHandleId),
     QueryFailed(String),
