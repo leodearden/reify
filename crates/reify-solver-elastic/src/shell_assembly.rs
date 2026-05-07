@@ -16,6 +16,74 @@
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 
+/// Local mid-surface coordinate frame for a MITC3+ shell element.
+///
+/// `r[i][j]` is the j-th global component of local basis vector `eᵢ`:
+/// - `r[0]` = `e1` (along edge p0→p1, in-plane)
+/// - `r[1]` = `e2` (in-plane, perpendicular to e1)
+/// - `r[2]` = `e3` (outward normal, right-handed)
+///
+/// The transform `x_local = R · x_global` maps global vectors to local.
+/// `origin` is the first node `p0`.
+pub struct ShellFrame {
+    /// Origin of the local frame (physical position of node 0).
+    pub origin: [f64; 3],
+    /// 3×3 rotation matrix: rows are the local basis vectors in global coords.
+    pub r: [[f64; 3]; 3],
+    /// Area of the physical triangle `= 0.5 · |(p1−p0) × (p2−p0)|`.
+    pub area: f64,
+}
+
+/// Build the local mid-surface frame for a three-node shell element.
+///
+/// # Frame construction
+///
+/// - `e1 = (p1 − p0) / |p1 − p0|`
+/// - `n = (p1 − p0) × (p2 − p0)` (unnormalized right-handed normal)
+/// - `area = 0.5 · |n|`
+/// - `e3 = n / |n|` (unit normal)
+/// - `e2 = e3 × e1` (in-plane, orthogonal to e1)
+///
+/// The resulting frame is right-handed and orthonormal.
+pub fn build_shell_frame(nodes: &[[f64; 3]; 3]) -> ShellFrame {
+    let p0 = nodes[0];
+    let p1 = nodes[1];
+    let p2 = nodes[2];
+
+    // Edge vectors
+    let d01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    let d02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+
+    // e1: normalize d01
+    let len01 = (d01[0] * d01[0] + d01[1] * d01[1] + d01[2] * d01[2]).sqrt();
+    debug_assert!(len01 > 1e-30, "degenerate shell element: p0 == p1");
+    let e1 = [d01[0] / len01, d01[1] / len01, d01[2] / len01];
+
+    // Normal (cross product d01 × d02)
+    let cx = d01[1] * d02[2] - d01[2] * d02[1];
+    let cy = d01[2] * d02[0] - d01[0] * d02[2];
+    let cz = d01[0] * d02[1] - d01[1] * d02[0];
+    let len_n = (cx * cx + cy * cy + cz * cz).sqrt();
+    debug_assert!(len_n > 1e-30, "degenerate shell element: collinear nodes");
+    let area = 0.5 * len_n;
+
+    // e3: unit normal
+    let e3 = [cx / len_n, cy / len_n, cz / len_n];
+
+    // e2 = e3 × e1
+    let e2 = [
+        e3[1] * e1[2] - e3[2] * e1[1],
+        e3[2] * e1[0] - e3[0] * e1[2],
+        e3[0] * e1[1] - e3[1] * e1[0],
+    ];
+
+    ShellFrame {
+        origin: p0,
+        r: [e1, e2, e3],
+        area,
+    }
+}
+
 /// Compute the 18×18 element stiffness matrix for a MITC3+ shell element.
 ///
 /// `nodes` are the three physical vertex positions in global coordinates.
