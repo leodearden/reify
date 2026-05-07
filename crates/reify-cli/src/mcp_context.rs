@@ -1081,42 +1081,34 @@ mod tests {
         );
     }
 
-    /// Regression guard: `get_source_location` must return
-    /// `Err(ToolError::EngineError("no active file"))` when no active file is set,
-    /// even when a compiled module exists in state.
+    /// Positive guard: `update_source` on a fresh context (no prior `load_file` /
+    /// `open_file`) must enable `get_source_location` to return `Ok` with a
+    /// meaningful span.
     ///
-    /// This state is reachable via `update_source` on a fresh context (no prior
-    /// `load_file` / `open_file`): `update_source` sets `state.compiled = Some(...)`
-    /// and inserts into `state.files`, but never sets `state.active_file`.  Without
-    /// the fix, `get_source_location` falls through with an empty `file_path` and
-    /// returns `Ok(SourceLocationInfo { file_path: "", line: 1, column: 1, ... })` —
-    /// a garbage span.  The test goes red against the unfixed code and green after
-    /// the fix in step-2.
+    /// Before the fix in step-2, `update_source` set `state.compiled = Some(...)` and
+    /// inserted into `state.files` but never set `state.active_file`, leaving
+    /// `get_source_location` to return `Err("no active file")`.  After the fix,
+    /// `update_source` calls `state.active_file.get_or_insert_with(...)`, so the
+    /// caller does not need a prior `load_file` / `open_file` call.
     #[test]
-    fn get_source_location_returns_error_when_no_active_file() {
+    fn update_source_enables_get_source_location_without_load_file() {
         let ctx = fresh_ctx();
-        // update_source sets compiled + files but leaves active_file = None.
         let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
         let update = ctx
             .update_source(BRACKET_PATH, &source)
             .expect("update_source should succeed with valid content");
         assert!(update.success, "update_source must succeed so compiled=Some is set");
-        // No load_file / open_file → active_file is still None.
-        let result = ctx.get_source_location("Bracket");
-        match result {
-            Err(ToolError::EngineError(ref msg)) if msg.contains("no active file") => {
-                // Correct: error contains the expected message.
-            }
-            Ok(loc) => panic!(
-                "expected Err(\"no active file\"), \
-                 got Ok(file_path={:?}, line={}, column={})",
-                loc.file_path, loc.line, loc.column
-            ),
-            Err(other) => panic!(
-                "expected Err(ToolError::EngineError(\"no active file\")), got Err({:?})",
-                other
-            ),
-        }
+        // No load_file / open_file — update_source alone must enable get_source_location.
+        let loc = ctx
+            .get_source_location("Bracket")
+            .expect("get_source_location should return Ok after update_source alone");
+        assert!(
+            !loc.file_path.is_empty(),
+            "file_path must be non-empty after update_source, got {:?}",
+            loc.file_path
+        );
+        assert!(loc.line >= 1, "line must be 1-based, got {}", loc.line);
+        assert!(loc.column >= 1, "column must be 1-based, got {}", loc.column);
     }
 
     /// Happy-path counter-case: `get_source_location` must return `Ok` with a
@@ -1139,38 +1131,43 @@ mod tests {
         assert!(loc.column >= 1, "column must be 1-based, got {}", loc.column);
     }
 
-    /// Regression guard: `get_diagnostics` must return
-    /// `Err(ToolError::EngineError("no active file"))` when no active file is
-    /// set, even when a compiled module exists in state.
+    /// Positive guard: `update_source` on a fresh context (no prior `load_file` /
+    /// `open_file`) must enable `get_diagnostics` to return `Ok` with non-empty
+    /// diagnostics carrying a non-empty `file_path` that matches the canonicalized
+    /// source path.
     ///
-    /// Same reachable state as the `get_source_location` regression test:
-    /// `update_source` on a fresh context sets `compiled` and `files` but
-    /// leaves `active_file = None`.
+    /// Uses `bracket_compile_error.ri` (not `bracket.ri`) because `bracket.ri` has
+    /// zero diagnostics — an empty-vec result would pass even against broken code.
+    /// `bracket_compile_error.ri` is parse-clean but emits at least one Error
+    /// diagnostic, making the assertion meaningful.
     #[test]
-    fn get_diagnostics_returns_error_when_no_active_file() {
+    fn update_source_enables_get_diagnostics_without_load_file() {
         let ctx = fresh_ctx();
-        let source = std::fs::read_to_string(BRACKET_PATH).expect("fixture must be readable");
+        let source =
+            std::fs::read_to_string(BRACKET_COMPILE_ERROR_PATH).expect("fixture must be readable");
         let update = ctx
-            .update_source(BRACKET_PATH, &source)
+            .update_source(BRACKET_COMPILE_ERROR_PATH, &source)
             .expect("update_source should succeed with valid content");
         assert!(update.success, "update_source must succeed so compiled=Some is set");
-        // No load_file / open_file → active_file is still None.
-        let result = ctx.get_diagnostics();
-        match result {
-            Err(ToolError::EngineError(ref msg)) if msg.contains("no active file") => {
-                // Correct: error contains the expected message.
-            }
-            Ok(diags) => panic!(
-                "expected Err(\"no active file\"), \
-                 got Ok({} diagnostics with file_path={:?})",
-                diags.len(),
-                diags.first().map(|d| d.file_path.as_str()).unwrap_or("<empty>")
-            ),
-            Err(other) => panic!(
-                "expected Err(ToolError::EngineError(\"no active file\")), got Err({:?})",
-                other
-            ),
-        }
+        // No load_file / open_file — update_source alone must enable get_diagnostics.
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should return Ok after update_source alone");
+        assert!(
+            !diags.is_empty(),
+            "bracket_compile_error.ri should produce at least one diagnostic"
+        );
+        let expected_path = std::fs::canonicalize(BRACKET_COMPILE_ERROR_PATH)
+            .expect("fixture path must be canonicalizable")
+            .to_string_lossy()
+            .to_string();
+        let has_matching_path = diags.iter().any(|d| d.file_path == expected_path);
+        assert!(
+            has_matching_path,
+            "at least one diagnostic must have file_path={:?}; got {:?}",
+            expected_path,
+            diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
+        );
     }
 
     /// Regression guard: `get_diagnostics` must emit severity strings in
