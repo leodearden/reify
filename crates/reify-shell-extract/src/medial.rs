@@ -294,4 +294,46 @@ mod tests {
             }
         );
     }
+
+    /// Pin the empirical constants that the PRD's task-T1 description
+    /// implicitly asserts:
+    ///
+    /// - `distance_tolerance == 0.05` — the PRD's "~5%" relative-distance
+    ///   equality threshold for the bidirectional ray walk.
+    /// - `narrow_band_half_width_voxels == 3.0` — covers the smallest medial
+    ///   axis at the PRD's `thickness/3` voxel-size default (smallest
+    ///   medial slab is 3 voxels thick → half-width 1.5; 3 leaves headroom
+    ///   for gradient sampling at the boundary voxels).
+    /// - `normal_antiparallel_threshold == -0.5` — opposing-face hits whose
+    ///   gradients dot to less than this (i.e. roughly antiparallel,
+    ///   ≥120° between normals) count as "distinct surface patches" per
+    ///   the gradient-discontinuity signature.
+    /// - `max_thickness_voxels == 64.0` — bidirectional ray walk
+    ///   truncation in voxel units; covers thick (≪64-voxel half-thickness)
+    ///   solids without a runaway walk on degenerate gradients.
+    ///
+    /// Also destructures the public field set: catches accidental
+    /// renames at compile time (the destructuring fails to compile if
+    /// any field is renamed, removed, or added).
+    #[test]
+    fn medial_options_defaults_pin_empirical_constants() {
+        let opts = MedialOptions::default();
+        assert_eq!(opts.distance_tolerance, 0.05);
+        assert_eq!(opts.narrow_band_half_width_voxels, 3.0);
+        assert_eq!(opts.normal_antiparallel_threshold, -0.5);
+        assert_eq!(opts.max_thickness_voxels, 64.0);
+
+        // Pattern-destructure all public fields; smoke-tests the
+        // struct shape so a future field rename is caught here.
+        let MedialOptions {
+            distance_tolerance,
+            narrow_band_half_width_voxels,
+            normal_antiparallel_threshold,
+            max_thickness_voxels,
+        } = opts;
+        assert_eq!(distance_tolerance, 0.05);
+        assert_eq!(narrow_band_half_width_voxels, 3.0);
+        assert_eq!(normal_antiparallel_threshold, -0.5);
+        assert_eq!(max_thickness_voxels, 64.0);
+    }
 }
