@@ -115,6 +115,33 @@ mod tests {
     }
 
     #[test]
+    fn quad_points_is_one_point_centroid_rule() {
+        let qp = TetP1.quad_points();
+        assert_eq!(qp.len(), 1, "P1 quadrature is a 1-point centroid rule");
+        let q = qp[0];
+        assert!((q.coord.xi - 0.25).abs() < TOL);
+        assert!((q.coord.eta - 0.25).abs() < TOL);
+        assert!((q.coord.zeta - 0.25).abs() < TOL);
+        assert!((q.weight - 1.0 / 6.0).abs() < TOL);
+    }
+
+    #[test]
+    fn quad_rule_integrates_constant_to_reference_volume() {
+        // ∫_T 1 dV = 1/6 (reference-tet volume)
+        let qp = TetP1.quad_points();
+        let i: f64 = qp.iter().map(|q| q.weight * 1.0).sum();
+        assert!((i - 1.0 / 6.0).abs() < TOL);
+    }
+
+    #[test]
+    fn quad_rule_integrates_linear_xi_exactly() {
+        // ∫_T ξ dV = 1/24 (analytical, exact for 1-point Gauss on linears).
+        let qp = TetP1.quad_points();
+        let i: f64 = qp.iter().map(|q| q.weight * q.coord.xi).sum();
+        assert!((i - 1.0 / 24.0).abs() < TOL);
+    }
+
+    #[test]
     fn shape_grad_at_sum_is_zero_partition_of_unity_consequence() {
         let g = TetP1.shape_grad_at(ReferenceCoord::new(0.1, 0.2, 0.3));
         let mut sum = [0.0_f64; 3];
