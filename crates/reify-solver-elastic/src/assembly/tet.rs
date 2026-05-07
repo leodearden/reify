@@ -332,6 +332,99 @@ mod tests {
         }
     }
 
+    /// Shared patch-test helper.
+    ///
+    /// Computes U_K = 0.5 · uᵀ · K · u (treating K as flat row-major) and
+    /// U_analytical = 0.5 · εᵀ · D · ε · V, returning `(U_K, U_analytical)`.
+    fn strain_energies(
+        k: &crate::assembly::ElementStiffness,
+        u: &[f64],
+        eps_voigt: &[f64; 6],
+        d: &[[f64; 6]; 6],
+        volume: f64,
+    ) -> (f64, f64) {
+        // U_K = 0.5 · uᵀ K u
+        let ku = matvec(k, u);
+        let mut u_dot_ku = 0.0;
+        for i in 0..u.len() {
+            u_dot_ku += u[i] * ku[i];
+        }
+        let u_k = 0.5 * u_dot_ku;
+
+        // U_analytical = 0.5 · εᵀ D ε V
+        let mut d_eps = [0.0_f64; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                d_eps[i] += d[i][j] * eps_voigt[j];
+            }
+        }
+        let mut eps_dot_d_eps = 0.0;
+        for i in 0..6 {
+            eps_dot_d_eps += eps_voigt[i] * d_eps[i];
+        }
+        let u_analytical = 0.5 * eps_dot_d_eps * volume;
+        (u_k, u_analytical)
+    }
+
+    #[test]
+    fn p1_strain_energy_patch_test_matches_normal_strain_mode() {
+        // Linear displacement u(x) = A·x with A = diag(a, b, c); the
+        // resulting strain field is constant (ε_xx = a, ε_yy = b, ε_zz = c,
+        // shears zero), so for a P1 tet with linear shapes the FE
+        // strain energy must equal the analytical 0.5 εᵀDε V exactly
+        // (modulo FP).
+        let (a, b, c) = (0.01, -0.005, 0.003);
+        let mat = dimensionless_steel_like();
+        let d = mat.d_matrix();
+        let k = element_stiffness_p1(&UNIT_TET_P1, &mat);
+
+        let mut u = vec![0.0; 12];
+        for (node_idx, x) in UNIT_TET_P1.iter().enumerate() {
+            // (A · x)[axis] = A_axis_axis · x[axis] for diagonal A
+            u[3 * node_idx] = a * x[0];
+            u[3 * node_idx + 1] = b * x[1];
+            u[3 * node_idx + 2] = c * x[2];
+        }
+        let eps_voigt = [a, b, c, 0.0, 0.0, 0.0];
+        let volume = 1.0 / 6.0;
+
+        let (u_k, u_a) = strain_energies(&k, &u, &eps_voigt, &d, volume);
+        let scale = u_a.abs().max(1e-300);
+        assert!(
+            (u_k - u_a).abs() < 1e-9 * scale,
+            "U_K = {u_k}, U_analytical = {u_a} (rel err {})",
+            (u_k - u_a).abs() / scale,
+        );
+    }
+
+    #[test]
+    fn p1_strain_energy_patch_test_matches_pure_shear_mode() {
+        // Linear displacement u_x = (s/2) y, u_y = (s/2) x, u_z = 0
+        // ⇒ ε_xx = ε_yy = ε_zz = 0, ε_xy = s/2, γ_xy = 2 ε_xy = s.
+        // ε_voigt = [0, 0, 0, s, 0, 0].
+        let s = 0.004;
+        let mat = dimensionless_steel_like();
+        let d = mat.d_matrix();
+        let k = element_stiffness_p1(&UNIT_TET_P1, &mat);
+
+        let mut u = vec![0.0; 12];
+        for (node_idx, x) in UNIT_TET_P1.iter().enumerate() {
+            u[3 * node_idx] = 0.5 * s * x[1];
+            u[3 * node_idx + 1] = 0.5 * s * x[0];
+            u[3 * node_idx + 2] = 0.0;
+        }
+        let eps_voigt = [0.0, 0.0, 0.0, s, 0.0, 0.0];
+        let volume = 1.0 / 6.0;
+
+        let (u_k, u_a) = strain_energies(&k, &u, &eps_voigt, &d, volume);
+        let scale = u_a.abs().max(1e-300);
+        assert!(
+            (u_k - u_a).abs() < 1e-9 * scale,
+            "U_K = {u_k}, U_analytical = {u_a} (rel err {})",
+            (u_k - u_a).abs() / scale,
+        );
+    }
+
     #[test]
     fn p1_volume_scaling_doubles_stiffness_when_edge_length_doubles() {
         // K ∝ L for isotropic linear-elastic affine maps: B ∝ 1/L
