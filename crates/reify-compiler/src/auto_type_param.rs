@@ -341,6 +341,81 @@ fn emit_no_candidate_zero_rejections(
     );
 }
 
+/// Emit an [`AutoTypeParamNoCandidate`] diagnostic for the v0.2 cross-product
+/// `0 =>` arm: the DFS exhausted every cross-product leaf with no feasibles.
+///
+/// This emits the **rich multi-param message form** documented in the
+/// `AutoTypeParamNoCandidate` doc-comment (parallel to `AutoTypeParamAmbiguous`'s
+/// multi-param shape). The message reports:
+/// - parameter names in declared order (`[T, U, …]`)
+/// - per-parameter candidate counts (`T=N, U=M, …`)
+/// - cross-product size (`N × M × …`)
+/// - depth context (`depth: n (max_depth = m)`)
+/// - smallest infeasibility witness — see "Witness algorithm" below.
+///
+/// # Witness algorithm
+///
+/// Backjumping (task 2660) guarantees that when DFS exits with
+/// `feasible_assignments.is_empty()`, the entire cross-product is infeasible
+/// (every skipped sub-tree shares the violated constraints with the leaf that
+/// triggered the backjump). Therefore EVERY level-1 prefix has an
+/// all-infeasible descendant sub-tree, and the smallest infeasibility witness
+/// — shortest declared-order × lex-within-param prefix whose sub-tree is
+/// entirely infeasible, tie-broken by largest sub-tree size then lex-first
+/// FQN — collapses to the lex-first level-1 prefix:
+///
+/// ```text
+/// (params[0].name, per_param_candidates[0][0])
+/// ```
+///
+/// with ruled-out count `cross_product_size / per_param_candidates[0].len()`.
+/// This is purely derivable from the orchestrator's existing inputs; no
+/// extension to `dfs_search` is needed.
+///
+/// # Label and candidates conventions
+///
+/// - Label anchors on `params[0].use_site_span` (same convention as v0.1 BFS
+///   strict-Ambiguous and the post-2659 cross-product Ambiguous — every
+///   auto-type-param multi-param diagnostic anchors on the first param).
+/// - `Diagnostic::candidates` carries the witness's FQN list in declared
+///   parameter order (length 1 for level-1 witness — the FQN-only invariant
+///   pinned in `crates/reify-types/src/diagnostics.rs::Diagnostic::candidates`
+///   is preserved; the `T=fqn` rendering with param-name pairing lives in the
+///   human-readable message only).
+///
+/// [`AutoTypeParamNoCandidate`]: reify_types::DiagnosticCode::AutoTypeParamNoCandidate
+fn emit_no_feasible_cross_product_diagnostic(
+    params: &[AutoTypeParam],
+    per_param_candidates: &[Vec<String>],
+    cross_product_size: usize,
+    _max_depth: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+    let per_param_counts: Vec<String> = params
+        .iter()
+        .zip(per_param_candidates.iter())
+        .map(|(p, candidates)| format!("{}={}", p.name, candidates.len()))
+        .collect();
+
+    let (_joined_bounds, label_message) = render_auto_type_param_label(&params[0].bounds);
+    let message = format!(
+        "auto type-parameter cross-product search found no feasible assignment for parameters [{names}]: \
+         candidates per parameter: {counts}; \
+         cross-product size: {size}",
+        names = param_names.join(", "),
+        counts = per_param_counts.join(", "),
+        size = cross_product_size,
+    );
+
+    diagnostics.push(
+        Diagnostic::error(message)
+            .with_code(DiagnosticCode::AutoTypeParamNoCandidate)
+            .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message))
+            .with_candidates(Vec::<String>::new()),
+    );
+}
+
 /// The result of [`enumerate_candidates`].
 ///
 /// Three arms map to three downstream actions for callers:
@@ -1455,14 +1530,16 @@ pub fn resolve_auto_type_params_with_backtracking(
 
     match feasible_assignments.len() {
         0 => {
-            // Zero feasible cross-product assignments. v0.1 parity: emit a
-            // zero-rejections NoCandidate on params[0] and halt. Richer
-            // rejection summaries (smallest infeasibility witness across the
-            // cross-product) is task 2663's scope; here we surface the
-            // bare-bones NoCandidate so the user has a working diagnostic.
-            emit_no_candidate_zero_rejections(
-                &params[0].bounds,
-                params[0].use_site_span,
+            // Zero feasible cross-product assignments. Emit the v0.2 rich
+            // diagnostic (task 2663): parameter list, per-param candidate
+            // counts, cross-product size, depth context, and smallest
+            // infeasibility witness. See `emit_no_feasible_cross_product_diagnostic`
+            // for the witness algorithm and message form.
+            emit_no_feasible_cross_product_diagnostic(
+                params,
+                &per_param_candidates,
+                cross_product_size,
+                max_depth,
                 diagnostics,
             );
             MultiParamResolutionOutcome {
