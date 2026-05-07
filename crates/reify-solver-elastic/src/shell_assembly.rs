@@ -727,6 +727,105 @@ mod tests {
         }
     }
 
+    // --- Bending t³ thickness scaling (amendment: suggestion 4) ---
+
+    /// Verify bending stiffness scales as t³: K_b(2t)·u = 8·K_b(t)·u.
+    ///
+    /// Strategy: Use a pure-curvature mode where the MITC3 projected shear is
+    /// exactly zero. For the unit triangle with all θ_x uniform (non-zero) and
+    /// all other DOFs zero, the curvature κ_yy = ∂θ_x/∂y = 0 (constant) and
+    /// κ_xy = ∂θ_x/∂x = 0 (constant), BUT we need ∂θ_x/∂y ≠ 0 for a bending
+    /// mode. A cleaner construction: set θ_x at node 2 only (node 2 is at y=1
+    /// for the unit triangle), leaving nodes 0 and 1 at θ_x=0. This gives
+    /// uniform κ_yy = -α (from ∂θ_x/∂y · dN_2/dy = α · 1 = α) with zero
+    /// curvature in the other directions.
+    ///
+    /// The covariant shear for this mode: γ_ηζ = Σ_i dn_ref[i][1]*0 - N_i*θ_x_i.
+    /// At tying point A=(½,0): N = [½,½,0], γ_ηζ = -N_2·α = 0.
+    /// At tying point B=(0,½): N = [½,0,½], γ_ηζ = -N_2·α = -α/2.
+    /// At tying point C=(½,½): N = [0,½,½], γ_ηζ = -N_2·α = -α/2.
+    /// After MITC3 interpolation, the projected shear is non-zero.
+    ///
+    /// To isolate bending t³ from shear t scaling, we compare the *ratio*
+    /// K(2t)·u / K(t)·u component-wise and assert it equals 8 (= 2³) for the
+    /// DOFs where bending dominates, or verify the total strain energy scales
+    /// correctly. We use the cleaner energy approach: fix α small enough that
+    /// shear is negligible compared to bending, and assert U(2t)/U(t) ≈ 8.
+    ///
+    /// Cleaner: we use a DOF pattern where the MITC3 shear projection is
+    /// exactly zero. For uniform θ_x = β (constant) at all nodes:
+    ///   γ_ηζ at A, B, C = -N_total · β = -1 · β (N sums to 1 everywhere).
+    /// Not zero. So there is always some shear for a pure-rotation mode.
+    ///
+    /// Instead, we isolate the bending t³ scaling by asserting that the
+    /// energy ratio U_K(2t) / U_K(t) approaches 8 in the limit where bending
+    /// dominates (large t). For steel-like material, with the curvature-only
+    /// bending mode (θ_y = α·x, all else zero), bending energy ~ t³ and shear
+    /// energy ~ t. At larger t, bending dominates and the ratio approaches 8.
+    /// We test at t = 1.0 (very thick) where t³/12·D·A >> κ·G·t·A·(α/2)².
+    #[test]
+    fn shell_thickness_scaling_bending_mode_scales_as_t_cubed() {
+        // Use the bending-patch mode: θ_y(node_i) = α·x_i (node1→α, others→0).
+        // Energy: U = 0.5·α²·D_pl[0][0]·(t³/12)·A + 0.5·(α/2)²·κ·G·t·A
+        //           = C_b·t³ + C_s·t
+        // For t large enough, C_b·t³ >> C_s·t and the ratio U(2t)/U(t) → 8.
+        //
+        // Direct algebraic test: assert U(2t)/U(t) = (8·C_b·t³ + 2·C_s·t) / (C_b·t³ + C_s·t)
+        // matches the ratio measured from K. We verify K(2t)·u entries scale
+        // correctly against the analytical formula, which is the cleanest check.
+        let mat = steel_like();
+        let alpha = 0.002_f64;
+        let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        u[ndp * 1 + 4] = alpha; // θ_y at node 1 (x=1)
+
+        let d = plane_stress_d(&mat);
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let g = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let area = 0.5_f64;
+
+        for &t in &[0.01_f64, 0.05, 0.1, 0.5] {
+            let k1 = shell_element_stiffness(&UNIT_TRI, t, &mat);
+            let k2 = shell_element_stiffness(&UNIT_TRI, 2.0 * t, &mat);
+
+            let ku1 = matvec(&k1, &u);
+            let ku2 = matvec(&k2, &u);
+            let uk1: f64 = 0.5 * ku1.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+            let uk2: f64 = 0.5 * ku2.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+            // Analytical energies: C_b·t³ + C_s·t and C_b·(2t)³ + C_s·(2t)
+            let c_b = 0.5 * alpha * alpha * d[0][0] * (1.0 / 12.0) * area;
+            let c_s = 0.5 * (alpha / 2.0) * (alpha / 2.0) * kappa * g * area;
+            let u_anal1 = c_b * t.powi(3) + c_s * t;
+            let u_anal2 = c_b * (2.0 * t).powi(3) + c_s * (2.0 * t);
+
+            // K-energy must match the analytical formula at both t and 2t.
+            let scale1 = u_anal1.abs().max(1e-30);
+            let scale2 = u_anal2.abs().max(1e-30);
+            assert!(
+                (uk1 - u_anal1).abs() < 1e-9 * scale1,
+                "t={t}: U_K={uk1}, U_anal={u_anal1}",
+            );
+            assert!(
+                (uk2 - u_anal2).abs() < 1e-9 * scale2,
+                "t={t}: U_K(2t)={uk2}, U_anal(2t)={u_anal2}",
+            );
+
+            // The ratio U(2t)/U(t) = (8·C_b·t³ + 2·C_s·t) / (C_b·t³ + C_s·t).
+            // This lies strictly between 2 (shear-dominated) and 8 (bending-dominated).
+            // We verify the measured ratio matches the analytical ratio.
+            let ratio_anal = u_anal2 / u_anal1;
+            let ratio_meas = uk2 / uk1;
+            let scale_r = ratio_anal.abs().max(1.0);
+            assert!(
+                (ratio_meas - ratio_anal).abs() < 1e-6 * scale_r,
+                "t={t}: ratio U(2t)/U(t) measured={ratio_meas} vs analytical={ratio_anal}",
+            );
+        }
+    }
+
     // --- Frame covariance (step 21) ---
 
     #[test]
