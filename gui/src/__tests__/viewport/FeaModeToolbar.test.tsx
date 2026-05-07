@@ -129,3 +129,79 @@ describe('FeaModeToolbar — channel + palette dropdown suite', () => {
     expect(title.toLowerCase()).toContain('perceptual');
   });
 });
+
+describe('FeaModeToolbar — range-mode suite', () => {
+  it('(a) range-mode container is present when enabled', () => {
+    renderEnabled();
+    expect(screen.getByTestId('fea-mode-range-mode')).toBeTruthy();
+  });
+
+  it('(a) range-mode container has three radio inputs: auto, fixed, locked', () => {
+    renderEnabled();
+    expect(screen.getByTestId('fea-mode-range-mode-auto')).toBeTruthy();
+    expect(screen.getByTestId('fea-mode-range-mode-fixed')).toBeTruthy();
+    expect(screen.getByTestId('fea-mode-range-mode-locked')).toBeTruthy();
+  });
+
+  it('(b) selecting fixed radio calls store.setRange with mode fixed', () => {
+    const store = renderEnabled();
+    // Default range mode is auto
+    expect(store.state.range.mode).toBe('auto');
+
+    fireEvent.click(screen.getByTestId('fea-mode-range-mode-fixed'));
+
+    expect(store.state.range.mode).toBe('fixed');
+  });
+
+  it('(c) when range.mode is auto, min/max number inputs are NOT rendered', () => {
+    const store = renderEnabled();
+    expect(store.state.range.mode).toBe('auto');
+
+    expect(screen.queryByTestId('fea-mode-range-min')).toBeNull();
+    expect(screen.queryByTestId('fea-mode-range-max')).toBeNull();
+  });
+
+  it('(d) when range.mode is fixed, min and max inputs are rendered with current values', () => {
+    const store = renderEnabled();
+    store.setRange({ mode: 'fixed', min: 5, max: 50 });
+
+    expect(screen.getByTestId('fea-mode-range-min')).toBeTruthy();
+    expect(screen.getByTestId('fea-mode-range-max')).toBeTruthy();
+
+    const minInput = screen.getByTestId('fea-mode-range-min') as HTMLInputElement;
+    const maxInput = screen.getByTestId('fea-mode-range-max') as HTMLInputElement;
+    expect(parseFloat(minInput.value)).toBe(5);
+    expect(parseFloat(maxInput.value)).toBe(50);
+  });
+
+  it('(d) when range.mode is locked, min and max inputs are rendered', () => {
+    const store = renderEnabled();
+    store.lockCurrent(10, 100);
+
+    expect(screen.getByTestId('fea-mode-range-min')).toBeTruthy();
+    expect(screen.getByTestId('fea-mode-range-max')).toBeTruthy();
+  });
+
+  it('(e) typing into min input calls store.setRange with new min', () => {
+    const store = renderEnabled();
+    store.setRange({ mode: 'fixed', min: 0, max: 100 });
+
+    const minInput = screen.getByTestId('fea-mode-range-min');
+    fireEvent.input(minInput, { target: { value: '25' } });
+
+    expect(store.state.range.mode).toBe('fixed');
+    expect((store.state.range as { min: number }).min).toBe(25);
+  });
+
+  it('(f) Lock current button is rendered when enabled and clicking calls onLockCurrent once', () => {
+    const onLockCurrent = vi.fn();
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => <FeaModeToolbar store={store} onLockCurrent={onLockCurrent} />);
+
+    const btn = screen.getByTestId('fea-mode-lock-current');
+    expect(btn).toBeTruthy();
+    fireEvent.click(btn);
+    expect(onLockCurrent).toHaveBeenCalledTimes(1);
+  });
+});
