@@ -3718,8 +3718,9 @@ mod tests {
         }
     }
 
-    /// Verify that the new multi-kernel `ReprKind` (BRep | Mesh | Sdf | Voxel) has
-    /// `Hash + Eq + Copy + Debug` and that all four variants are pairwise distinct.
+    /// Verify that the v0.3 multi-kernel `ReprKind` (BRep | Mesh | Sdf | Voxel |
+    /// VolumeMesh) has `Hash + Eq + Copy + Debug` and that all five variants are
+    /// pairwise distinct.
     ///
     /// The compile-time `match` arm at the end proves exhaustiveness — any future
     /// variant addition will cause a compile error here, prompting the developer to
@@ -3732,9 +3733,10 @@ mod tests {
             ReprKind::Mesh,
             ReprKind::Sdf,
             ReprKind::Voxel,
+            ReprKind::VolumeMesh,
         ];
 
-        // All four variants are pairwise distinct (6 pairs).
+        // All five variants are pairwise distinct (10 pairs).
         for i in 0..variants.len() {
             for j in 0..variants.len() {
                 if i != j {
@@ -3743,12 +3745,12 @@ mod tests {
             }
         }
 
-        // All four variants survive a HashMap round-trip (requires Hash + Eq + Copy).
+        // All five variants survive a HashMap round-trip (requires Hash + Eq + Copy).
         let mut map: HashMap<ReprKind, u32> = HashMap::new();
         for (idx, v) in variants.iter().enumerate() {
             map.insert(*v, idx as u32); // *v requires Copy
         }
-        assert_eq!(map.len(), 4, "all 4 ReprKind variants must be stored as distinct keys");
+        assert_eq!(map.len(), 5, "all 5 ReprKind variants must be stored as distinct keys");
         for (idx, v) in variants.iter().enumerate() {
             assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
         }
@@ -3761,6 +3763,7 @@ mod tests {
             ReprKind::Mesh => {}
             ReprKind::Sdf => {}
             ReprKind::Voxel => {}
+            ReprKind::VolumeMesh => {}
         }
     }
 
@@ -3819,11 +3822,12 @@ mod tests {
             Operation::CurveInterpCurve,
             Operation::CurveBezierCurve,
             Operation::CurveNurbsCurve,
-            // Convert (4 — one per ReprKind)
+            // Convert (5 — one per ReprKind)
             Operation::Convert { from: ReprKind::BRep },
             Operation::Convert { from: ReprKind::Mesh },
             Operation::Convert { from: ReprKind::Sdf },
             Operation::Convert { from: ReprKind::Voxel },
+            Operation::Convert { from: ReprKind::VolumeMesh },
         ];
 
         // (No count-pinning assertion: the compile-time exhaustive `match`
