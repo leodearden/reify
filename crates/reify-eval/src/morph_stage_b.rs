@@ -199,7 +199,7 @@ pub fn stage_b_eligible(
 /// `consumed.len() == new.len()` check still passes — the count-equality
 /// guard cannot detect the collision because both `old.len()` and
 /// `consumed.len()` inflate identically. The violation is caught in debug
-/// builds by the step-2 `debug_assert_eq!` checks.
+/// builds by the step-2 `debug_assert!` checks.
 ///
 /// ## Algorithm
 ///
@@ -250,16 +250,26 @@ fn match_one_kind(
     // The upstream kernel (`extract_faces` / `extract_edges`) guarantees
     // uniqueness by construction; we assert it here to catch any future caller
     // that violates the contract.
-    debug_assert_eq!(
-        old.iter().collect::<HashSet<_>>().len(),
-        old.len(),
-        "old slice passed to match_one_kind contains duplicate GeometryHandleId"
-    );
-    debug_assert_eq!(
-        new.iter().collect::<HashSet<_>>().len(),
-        new.len(),
-        "new slice passed to match_one_kind contains duplicate GeometryHandleId"
-    );
+    {
+        let mut seen = HashSet::with_capacity(old.len());
+        for &h in old {
+            debug_assert!(
+                seen.insert(h),
+                "old slice passed to match_one_kind contains duplicate GeometryHandleId: {:?}",
+                h
+            );
+        }
+    }
+    {
+        let mut seen = HashSet::with_capacity(new.len());
+        for &h in new {
+            debug_assert!(
+                seen.insert(h),
+                "new slice passed to match_one_kind contains duplicate GeometryHandleId: {:?}",
+                h
+            );
+        }
+    }
 
     // 3. Imported-geometry pre-pass.
     let old_attributed = old
@@ -904,7 +914,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "old slice passed to match_one_kind contains duplicate GeometryHandleId")]
-    fn match_one_kind_panics_in_debug_on_duplicate_old_face_handles() {
+    fn match_one_kind_panics_in_debug_on_duplicate_old_handles() {
         // old_table: one attribute under h(10); new_table: two attributes under
         // h(20)/h(30). Both sides are attributed so the imported pre-pass is
         // bypassed and execution reaches the precondition site.
@@ -930,7 +940,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "new slice passed to match_one_kind contains duplicate GeometryHandleId")]
-    fn match_one_kind_panics_in_debug_on_duplicate_new_face_handles() {
+    fn match_one_kind_panics_in_debug_on_duplicate_new_handles() {
         // old_table: two attributes under h(10)/h(11); new_table: one attribute
         // under h(20). Both sides are attributed so the imported pre-pass is
         // bypassed and execution reaches the precondition site.
