@@ -55,8 +55,38 @@ impl Default for RepairConfig {
 /// Optional `normals` are dropped; the v0.3 mesher recomputes them downstream
 /// if needed (carrying old normals across a re-indexing introduces subtle
 /// alignment bugs and the volume mesher does not require them).
+///
+/// # Transitive (chain) merging
+///
+/// The algorithm performs a single first-match-wins pass, so it is **transitive**
+/// by construction: if A↔B and B↔C are each within `vertex_merge_epsilon` but
+/// A↔C is not, all three vertices still collapse to A's position. The classic
+/// chain case is three near-collinear vertices A, B, C separated by ε each —
+/// A↔C is 2ε apart yet the function unifies them via B. This is intentional for
+/// v0.3 — it produces a well-defined survivor for arbitrarily long chains and
+/// matches the typical caller intent (collapse pathological clusters of OCCT
+/// duplicates regardless of pair-wise spacing). Future maintainers reading this
+/// function should NOT assume the function only merges directly-coincident
+/// pairs; pairs at >ε can also be unified through intermediate vertices.
 pub fn repair_surface_mesh(mesh: &Mesh, cfg: RepairConfig) -> Mesh {
     let vert_count = mesh.vertices.len() / 3;
+
+    // Debug-only perf canary: the O(n²) merge scan is cheap on v0.3 surface
+    // meshes (typically <100k vertices) but visibly slow above that.
+    // `debug_assert!` fires only in debug/test builds, so production is
+    // unaffected; CI runs in debug-or-test mode and will surface a regression
+    // if a future caller hands us a much larger mesh before the spatial-hash
+    // refinement lands. Threshold chosen as `LARGE_VERT_THRESHOLD` constant
+    // for ease of future tuning.
+    const LARGE_VERT_THRESHOLD: usize = 100_000;
+    debug_assert!(
+        vert_count <= LARGE_VERT_THRESHOLD,
+        "repair_surface_mesh: vertex count {} exceeds the O(n²) scan's \
+         comfort threshold ({}). Consider landing the spatial-hash bucket \
+         refinement before relying on this code path at scale.",
+        vert_count,
+        LARGE_VERT_THRESHOLD,
+    );
 
     // -----------------------------------------------------------------
     // (1) Build vertex-merge map: each vertex → its lowest-index near-coincident

@@ -61,6 +61,18 @@ impl Default for AutoSizeConfig {
 /// Returns `0.0` when `mesh.indices` is empty (no triangles → no edges
 /// → no minimum). Callers should treat a zero return as "auto-size
 /// unavailable" and fall back to a configured default.
+///
+/// # Panics
+///
+/// Panics with an out-of-bounds slice access if any value in
+/// `mesh.indices` is ≥ `mesh.vertices.len() / 3`. The implementation
+/// indexes `mesh.vertices[idx as usize * 3 + {0,1,2}]` directly without
+/// a bounds check on every triangle. The upstream invariant is that
+/// surface meshes produced by the kernel pipeline are well-formed (all
+/// indices in range); enforcing the precondition at the function
+/// boundary would slow the inner loop on the well-formed common case.
+/// If you are passing a `Mesh` from an unverified source, validate
+/// indices against `vertices.len() / 3` before calling.
 pub fn auto_mesh_size_from_features(mesh: &Mesh, cfg: AutoSizeConfig) -> f64 {
     let mut min_edge: f64 = f64::INFINITY;
     for tri in mesh.indices.chunks_exact(3) {
