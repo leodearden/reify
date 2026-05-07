@@ -472,4 +472,78 @@ mod tests {
             "Revolve followed by Union is no longer a recognised swept body (last op is Union)"
         );
     }
+
+    // ── Step-9: SweptKindTable record / lookup / len / is_empty ───────────
+
+    #[test]
+    fn swept_kind_table_new_is_empty() {
+        let table = SweptKindTable::default();
+        assert!(table.is_empty(), "default-constructed table must be empty");
+        assert_eq!(table.len(), 0, "default-constructed table must have len() == 0");
+    }
+
+    #[test]
+    fn swept_kind_table_record_and_lookup_round_trips() {
+        let mut table = SweptKindTable::default();
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+        };
+        table.record(GeometryHandleId(7), kind.clone());
+        assert_eq!(table.len(), 1, "table must have len() == 1 after one record");
+        assert!(!table.is_empty(), "table must not be empty after one record");
+        assert_eq!(
+            table.lookup(GeometryHandleId(7)),
+            Some(&kind),
+            "lookup must round-trip the recorded kind"
+        );
+    }
+
+    #[test]
+    fn swept_kind_table_lookup_unknown_returns_none() {
+        let table = SweptKindTable::default();
+        assert_eq!(
+            table.lookup(GeometryHandleId(99)),
+            None,
+            "lookup of an unrecorded id must return None"
+        );
+
+        // And on a populated table — a different id must still miss.
+        let mut populated = SweptKindTable::default();
+        populated.record(
+            GeometryHandleId(1),
+            SweptKind::Extrude {
+                axis: [0.0, 0.0, 1.0],
+                length: Value::length(0.005),
+            },
+        );
+        assert_eq!(
+            populated.lookup(GeometryHandleId(2)),
+            None,
+            "lookup of an unrecorded id on a populated table must return None"
+        );
+    }
+
+    #[test]
+    fn swept_kind_table_record_overwrites_existing() {
+        let mut table = SweptKindTable::default();
+        let id = GeometryHandleId(3);
+        let first = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.005),
+        };
+        let second = SweptKind::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        };
+        table.record(id, first);
+        table.record(id, second.clone());
+        assert_eq!(table.len(), 1, "second record at the same id must not grow len()");
+        assert_eq!(
+            table.lookup(id),
+            Some(&second),
+            "second record must overwrite the first (last-write-wins)"
+        );
+    }
 }
