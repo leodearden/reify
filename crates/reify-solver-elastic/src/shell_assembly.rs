@@ -68,10 +68,70 @@ mod tests {
         v.iter().fold(0.0_f64, |acc, x| acc.max(x.abs()))
     }
 
+    const WIDE_TRI: [[f64; 3]; 3] = [
+        [0.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [0.0, 3.0, 0.0],
+    ];
+
     #[test]
     fn shell_element_stiffness_returns_18_by_18_for_unit_triangle() {
         let k = shell_element_stiffness(&UNIT_TRI, 0.05, &steel_like());
         assert_eq!(k.n_dofs, 18);
         assert_eq!(k.data.len(), 324);
+    }
+
+    // --- ShellFrame tests (step 3) ---
+
+    #[test]
+    fn build_shell_frame_returns_orthonormal_rotation() {
+        let frame = build_shell_frame(&WIDE_TRI);
+        let r = frame.r;
+        // Each row has unit norm.
+        for i in 0..3 {
+            let norm_sq = r[i][0] * r[i][0] + r[i][1] * r[i][1] + r[i][2] * r[i][2];
+            assert!(
+                (norm_sq - 1.0).abs() < 1e-12,
+                "row {i} norm² = {norm_sq}, expected 1.0",
+            );
+        }
+        // Rows are mutually orthogonal.
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                let dot = r[i][0] * r[j][0] + r[i][1] * r[j][1] + r[i][2] * r[j][2];
+                assert!(
+                    dot.abs() < 1e-12,
+                    "rows {i} · {j} = {dot}, expected 0",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_shell_frame_normal_is_perpendicular_to_in_plane_edges() {
+        let frame = build_shell_frame(&WIDE_TRI);
+        let n = frame.r[2]; // e3 = normal
+        let p0 = WIDE_TRI[0];
+        let p1 = WIDE_TRI[1];
+        let p2 = WIDE_TRI[2];
+        let e01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let dot01 = n[0] * e01[0] + n[1] * e01[1] + n[2] * e01[2];
+        let dot02 = n[0] * e02[0] + n[1] * e02[1] + n[2] * e02[2];
+        assert!(dot01.abs() < 1e-12, "n · e01 = {dot01}, expected 0");
+        assert!(dot02.abs() < 1e-12, "n · e02 = {dot02}, expected 0");
+    }
+
+    #[test]
+    fn build_shell_frame_area_matches_half_cross_product_norm() {
+        let frame = build_shell_frame(&WIDE_TRI);
+        // For nodes (0,0,0), (2,0,0), (0,3,0):
+        // cross = (2,0,0) × (0,3,0) = (0,0,6) → |cross| = 6 → area = 3.
+        let expected_area = 3.0_f64;
+        assert!(
+            (frame.area - expected_area).abs() < 1e-12,
+            "area = {}, expected {expected_area}",
+            frame.area,
+        );
     }
 }
