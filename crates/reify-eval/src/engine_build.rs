@@ -996,9 +996,48 @@ impl Engine {
     /// inserts `(realization_id.entity, ReprKind::BRep, t, last_handle)` into
     /// the cache. When `demanded_tol` is `None` (no demand contributor exists
     /// for this realization) no cache entry is written — preserving the
-    /// historical "no tolerance contract → no caching" semantics. Step-8
-    /// extends this with the symmetric cache-hit short-circuit at the top of
-    /// the helper.
+    /// historical "no tolerance contract → no caching" semantics.
+    ///
+    /// **Cache-hit short-circuit** (task 2874, step-8 wiring): at the very
+    /// start of the helper — BEFORE the `for (op_idx, op) in
+    /// operations.iter().enumerate()` op loop — when both `demanded_tol`
+    /// and `realization_name` are `Some(_)` AND
+    /// `realization_cache.lookup(realization_id.entity, ReprKind::BRep, t)`
+    /// returns `Some(&handle)`, the helper:
+    ///   - pushes the cached handle onto `step_handles` (mirrors the
+    ///     successful-realization handle-stack post-condition),
+    ///   - inserts `(name, cached_handle)` into `named_steps` (mirrors the
+    ///     post-rollback `named_steps` write so downstream
+    ///     `GeomRef::Sub("body")` lookups continue to resolve),
+    ///   - returns early — skipping the kernel op loop, the
+    ///     `compile_geometry_op` evaluations, the per-op
+    ///     `feature_tag_table` / `topology_attribute_table` populations, the
+    ///     rollback-truncation gate, and the post-loop cache-insert
+    ///     (idempotent: the entry already exists, and re-inserting at the
+    ///     same `(entity, repr, tol)` key would be a no-op under the
+    ///     partial-order semantics).
+    /// `realization_name = None` paths (anonymous realizations) bypass the
+    /// short-circuit so the named_steps write is never skipped where it
+    /// otherwise would not happen — anonymous realizations are not part of
+    /// the cache contract today. The post-condition the cache-hit branch
+    /// preserves is "after this helper returns successfully, the terminal
+    /// handle is the last entry in `step_handles[handle_start..]` AND
+    /// `named_steps[name] = terminal_handle`" — exactly the contract the
+    /// op-loop success path establishes (see the post-rollback
+    /// `step_handles[handle_start..].last()` block below).
+    ///
+    /// **Known limitation** (recorded as a design decision): a cache-hit
+    /// short-circuit skips per-op `feature_tag_table` /
+    /// `topology_attribute_table` populations, including the kernel-attribute
+    /// hook propagation added in task 2875. Both tables are reset to
+    /// `default()` at the start of every `build()` (see callers around
+    /// engine_build.rs `feature_tag_table = FeatureTagTable::default()` /
+    /// `topology_attribute_table = TopologyAttributeTable::default()`), so a
+    /// cache-served handle has no entries in those tables on the second
+    /// build. v0.2 callers do not combine `activate_purpose` with attribute
+    /// queries today, so this is documented (not regressed) in scope; a
+    /// follow-up task can either cache the table entries alongside the
+    /// handle or skip the table reset for engines with non-empty cache.
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
@@ -1020,6 +1059,31 @@ impl Engine {
         demanded_tol: Option<f64>,
     ) {
         let handle_start = step_handles.len();
+
+        // Task 2874, step-8: cache-hit short-circuit. When the caller has
+        // threaded a demanded tolerance AND the realization is named (the
+        // `named_steps` contract requires a name to write into the map),
+        // probe the per-engine `RealizationCache` at
+        // `(entity_id, ReprKind::BRep, demanded_tol)`. On hit we push the
+        // cached terminal handle, write `named_steps[name] = cached_handle`,
+        // and return — preserving the post-condition the success path
+        // establishes below. On miss (or when either guard is `None`) we
+        // fall through to the kernel op loop, and step-6's post-success
+        // insert at the bottom of the helper populates the cache for the
+        // NEXT call. The lookup uses `RealizationCache`'s partial-order
+        // "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`),
+        // so a tighter request automatically misses a looser cached entry
+        // (see step-13's pin).
+        if let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
+            if let Some(&cached_handle) =
+                realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol)
+            {
+                step_handles.push(cached_handle);
+                named_steps.insert(name.to_string(), cached_handle);
+                return;
+            }
+        }
+
         let mut had_failure = false;
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
