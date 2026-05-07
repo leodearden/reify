@@ -494,6 +494,11 @@ pub(crate) fn compile_unit(
 // --- Type resolution ---
 
 /// Resolve a type name to a `Type`.
+///
+/// Named-dimension lookups delegate to `reify_types::NAMED_DIMENSIONS` (the single source of
+/// truth shared with `resolve_dimension_type`). Future named-dimension additions only require a
+/// one-line append to that table. `"Dimensionless"` is special-cased here — as in
+/// `resolve_dimension_type` — because it is intentionally absent from `NAMED_DIMENSIONS`.
 pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
     match name {
         "Scalar" => Some(Type::length()), // Default scalar is length-dimensioned in M1
@@ -502,115 +507,17 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Int" => Some(Type::Int),
         "Real" => Some(Type::Real),
         "String" => Some(Type::String),
-        // SI base dimensions
-        "Length" => Some(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        }),
-        "Mass" => Some(Type::Scalar {
-            dimension: DimensionVector::MASS,
-        }),
-        "Time" => Some(Type::Scalar {
-            dimension: DimensionVector::TIME,
-        }),
-        "Current" => Some(Type::Scalar {
-            dimension: DimensionVector::CURRENT,
-        }),
-        "Temperature" => Some(Type::Scalar {
-            dimension: DimensionVector::TEMPERATURE,
-        }),
-        "AmountOfSubstance" => Some(Type::Scalar {
-            dimension: DimensionVector::AMOUNT_OF_SUBSTANCE,
-        }),
-        "LuminousIntensity" => Some(Type::Scalar {
-            dimension: DimensionVector::LUMINOUS_INTENSITY,
-        }),
-        "Angle" => Some(Type::Scalar {
-            dimension: DimensionVector::ANGLE,
-        }),
-        "SolidAngle" => Some(Type::Scalar {
-            dimension: DimensionVector::SOLID_ANGLE,
-        }),
-        "Money" => Some(Type::Scalar {
-            dimension: DimensionVector::MONEY,
-        }),
-        // Geometric derived dimensions
-        "Area" => Some(Type::Scalar {
-            dimension: DimensionVector::AREA,
-        }),
-        "Volume" => Some(Type::Scalar {
-            dimension: DimensionVector::VOLUME,
-        }),
-        // SI derived dimensions
-        "Force" => Some(Type::Scalar {
-            dimension: DimensionVector::FORCE,
-        }),
-        "Energy" => Some(Type::Scalar {
-            dimension: DimensionVector::ENERGY,
-        }),
-        "Power" => Some(Type::Scalar {
-            dimension: DimensionVector::POWER,
-        }),
-        "Pressure" => Some(Type::Scalar {
-            dimension: DimensionVector::PRESSURE,
-        }),
-        "Frequency" => Some(Type::Scalar {
-            dimension: DimensionVector::FREQUENCY,
-        }),
-        "Voltage" => Some(Type::Scalar {
-            dimension: DimensionVector::VOLTAGE,
-        }),
-        "Charge" => Some(Type::Scalar {
-            dimension: DimensionVector::CHARGE,
-        }),
-        "Capacitance" => Some(Type::Scalar {
-            dimension: DimensionVector::CAPACITANCE,
-        }),
-        "Resistance" => Some(Type::Scalar {
-            dimension: DimensionVector::RESISTANCE,
-        }),
-        "Conductance" => Some(Type::Scalar {
-            dimension: DimensionVector::CONDUCTANCE,
-        }),
-        "Inductance" => Some(Type::Scalar {
-            dimension: DimensionVector::INDUCTANCE,
-        }),
-        "MagneticFlux" => Some(Type::Scalar {
-            dimension: DimensionVector::MAGNETIC_FLUX,
-        }),
-        "MagneticFluxDensity" => Some(Type::Scalar {
-            dimension: DimensionVector::MAGNETIC_FLUX_DENSITY,
-        }),
-        "LuminousFlux" => Some(Type::Scalar {
-            dimension: DimensionVector::LUMINOUS_FLUX,
-        }),
-        "Illuminance" => Some(Type::Scalar {
-            dimension: DimensionVector::ILLUMINANCE,
-        }),
-        "AbsorbedDose" => Some(Type::Scalar {
-            dimension: DimensionVector::ABSORBED_DOSE,
-        }),
-        "AngularVelocity" => Some(Type::Scalar {
-            dimension: DimensionVector::ANGULAR_VELOCITY,
-        }),
-        "DynamicViscosity" => Some(Type::Scalar {
-            dimension: DimensionVector::DYNAMIC_VISCOSITY,
-        }),
-        "MomentOfInertia" => Some(Type::Scalar {
-            dimension: DimensionVector::MOMENT_OF_INERTIA,
-        }),
-        "Density" => Some(Type::Scalar {
-            dimension: DimensionVector::MASS_DENSITY,
-        }),
-        "Acceleration" => Some(Type::Scalar {
-            dimension: DimensionVector::ACCELERATION,
-        }),
-        "ForceDensity" => Some(Type::Scalar {
-            dimension: DimensionVector::FORCE_DENSITY,
-        }),
+        // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
+        // None for it); mirror the special-case used in resolve_dimension_type.
         "Dimensionless" => Some(Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         }),
-        _ => None,
+        // All named-dimension singletons: delegate to the shared NAMED_DIMENSIONS table so
+        // future additions require only a one-line change there.
+        _ => reify_types::NAMED_DIMENSIONS
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(dim, _)| Type::Scalar { dimension: *dim }),
     }
 }
 
