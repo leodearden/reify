@@ -880,3 +880,63 @@ fn joint_descriptor_optional_fields_serialize_as_null() {
     assert!(v["driving_param_cell_id"].is_null(), "driving_param_cell_id should be null when None");
     assert!(v["current_value_si"].is_null(), "current_value_si should be null when None");
 }
+
+// --- scalar_channels IPC wire tests (task 2959, step-1) ---
+
+/// A `MeshData` with a populated `scalar_channels` map serializes to a JSON
+/// object with the expected channel keys and values, and round-trips through
+/// `serde_json::to_value` / `from_value` preserving the map contents.
+#[test]
+fn mesh_data_scalar_channels_round_trips() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![10.0_f32, 20.0, 30.0]);
+
+    let mesh = MeshData {
+        entity_path: "Test.body".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+
+    // (a) JSON must contain a scalar_channels object with key "vonMises"
+    let sc = v.get("scalar_channels").expect("scalar_channels must be present");
+    assert!(sc.is_object(), "scalar_channels must be a JSON object");
+    let arr = sc["vonMises"].as_array().expect("vonMises must be an array");
+    assert_eq!(arr.len(), 3, "vonMises array must have 3 elements");
+    assert_eq!(arr[0].as_f64().unwrap(), 10.0);
+    assert_eq!(arr[1].as_f64().unwrap(), 20.0);
+    assert_eq!(arr[2].as_f64().unwrap(), 30.0);
+
+    // (b) Deserializing back yields the same struct
+    let back: MeshData = serde_json::from_value(v).expect("deserialize should succeed");
+    assert_eq!(back.entity_path, "Test.body");
+    assert_eq!(back.scalar_channels.get("vonMises").unwrap(), &vec![10.0_f32, 20.0, 30.0]);
+}
+
+/// A `MeshData` with an empty `scalar_channels` HashMap must omit the field
+/// entirely from the serialized JSON (validates `skip_serializing_if = "HashMap::is_empty"`).
+#[test]
+fn mesh_data_empty_scalar_channels_omitted_from_wire() {
+    use std::collections::HashMap;
+
+    let mesh = MeshData {
+        entity_path: "Test.body".to_string(),
+        vertices: vec![],
+        indices: vec![],
+        normals: None,
+        scalar_channels: HashMap::new(),
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+
+    // Empty scalar_channels must not appear in the wire format
+    assert!(
+        v.get("scalar_channels").is_none(),
+        "empty scalar_channels must be omitted from the wire"
+    );
+}
