@@ -584,6 +584,47 @@ fn lower_to_sampled_spacing_exceeds_span_returns_degenerate_axis() {
 }
 
 // ---------------------------------------------------------------------------
+// Step-3060: ExcessiveAxisLength cap guard
+// ---------------------------------------------------------------------------
+
+/// Task 3060: `lower_to_sampled` rejects an axis whose interval count would
+/// exceed [`reify_types::sampled::LINSPACE_MAX_INTERVALS`].
+///
+/// Pre-flight pipeline for `bounds_min=[0.0]`, `bounds_max=[1e308]`, `spacing=[1.0]`:
+///   - AxisLengthMismatch: 1 == 1 ✓
+///   - EmptyGrid: 4 elements ≠ 0 ✓
+///   - InvalidSpacing: 1.0 > 0 and finite ✓
+///   - InvalidBounds: 0.0 finite, 1e308 finite, 1e308 < 0.0 is false ✓
+///   - axis_grids: linspace_inclusive(0.0, 1e308, 1.0) → None (cap exceeded)
+///     → ExcessiveAxisLength fires here
+#[test]
+fn lower_to_sampled_excessive_axis_returns_excessive_axis_length() {
+    use reify_types::sampled::LINSPACE_MAX_INTERVALS;
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![1e308],
+        spacing: vec![1.0],
+        data: vec![0.0; 4],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "huge", &Type::length());
+    match result {
+        Err(IngestError::ExcessiveAxisLength { axis, n_intervals }) => {
+            assert_eq!(axis, 0);
+            assert!(
+                n_intervals > LINSPACE_MAX_INTERVALS,
+                "expected n_intervals > {LINSPACE_MAX_INTERVALS}, got {n_intervals}"
+            );
+        }
+        other => panic!(
+            "expected Err(IngestError::ExcessiveAxisLength {{ … }}), got {other:?}"
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Step-11 RED: read_vdb_file v0.2 stub contract
 // ---------------------------------------------------------------------------
 
