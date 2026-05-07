@@ -1,4 +1,4 @@
-//! Shell-element stiffness assembly for the MITC3+ Reissner-Mindlin shell.
+//! Shell-element stiffness assembly for the Reissner-Mindlin MITC3 shell.
 //!
 //! # PRD reference
 //!
@@ -6,12 +6,32 @@
 //!
 //! # Overview
 //!
-//! Computes the per-element 18×18 stiffness matrix for the MITC3+
-//! Reissner-Mindlin shell under a constant-thickness isotropic linear-elastic
-//! constitutive law. Through-thickness integration is closed-form; element K
-//! is assembled in a local mid-surface frame and then rotated into the global
-//! frame so it is ready for the global sparse-assembly consumer (PRD T#11).
-//! Output is a [`crate::assembly::ElementStiffness`] with `n_dofs = 18`.
+//! Computes the per-element 18×18 stiffness matrix for a three-node
+//! Reissner-Mindlin shell element under a constant-thickness isotropic
+//! linear-elastic constitutive law. Through-thickness integration is
+//! closed-form; element K is assembled in a local mid-surface frame and then
+//! rotated into the global frame so it is ready for the global sparse-assembly
+//! consumer (PRD T#11). Output is a [`crate::assembly::ElementStiffness`]
+//! with `n_dofs = 18`.
+//!
+//! # Shear-locking mitigation: MITC3 assumed-strain field
+//!
+//! Transverse-shear locking is eliminated via the mixed interpolation of
+//! tensorial components (MITC) technique: covariant shear strains are sampled
+//! at three edge-midpoint tying points (A, B, C) and blended via the affine
+//! formula from `Mitc3Plus::interpolate_assumed_shear`. This corresponds to
+//! the **MITC3** formulation (Bathe & Dvorkin 1985).
+//!
+//! # Deferred: MITC3+ cubic-bubble enrichment
+//!
+//! The MITC3+ element (Bathe & Lee 2014) adds a deviatoric cubic-bubble
+//! rotation field to the covariant-shear sampling at the tying points, which
+//! further reduces residual locking on curved or twisted geometries. That
+//! enrichment is **not** wired here — the covariant shears at tying points
+//! are computed from the standard three-node linear rotation field only.
+//! The patch tests included pass because they exercise constant or affine
+//! fields that are insensitive to the bubble. The '+' enrichment is tracked
+//! as a follow-up task (PRD v0.4 T8 / curved-geometry accuracy).
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
@@ -139,7 +159,15 @@ fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 ///
 /// Returns an [`ElementStiffness`] with `n_dofs = 18`. DOF ordering is
 /// `6 · node_idx + i` with `i ∈ {0..5}` for `(u_x, u_y, u_z, θ_x, θ_y, θ_z)`.
-/// The drilling rotation `θ_z` (i=5) carries zero stiffness by construction.
+///
+/// The drilling rotation `θ_z` (i=5) carries **zero stiffness** by
+/// construction: pure MITC3 has no in-plane rotational stiffness. Every
+/// drilling row and column of the returned matrix is zero, producing a zero
+/// pivot on each drilling DOF in the global assembled system. The global
+/// sparse-assembly consumer (PRD T#11) is responsible for handling these
+/// singular directions — either by constraining drilling DOFs explicitly or
+/// by adding an artificial Allman/Hughes drilling stiffness at the assembly
+/// layer.
 ///
 /// # Contributions
 ///
