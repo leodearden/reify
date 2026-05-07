@@ -28,7 +28,10 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
-use reify_types::{CapabilityDescriptor, Operation, ReprKind};
+use reify_kernel_fidget::FidgetKernel;
+use reify_types::{
+    CapabilityDescriptor, GeometryKernel, GeometryOp, Operation, ReprKind, Value,
+};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"fidget"`
 /// when the fidget adapter is linked in (i.e. the `inventory::submit!` in
@@ -109,4 +112,102 @@ fn fidget_dispatches_for_sdf_boolean_when_only_kernel() {
          got conversions = {:?}",
         plan.conversions,
     );
+}
+
+/// End-to-end pin proving done-criterion #4: a `field def`-shaped SDF
+/// realization flows dispatcher → fidget kernel → JIT eval without ever
+/// touching OCCT meshing.
+///
+/// The factory call proves the registry's inventory submission produces
+/// a working `Box<dyn GeometryKernel>`. We additionally drive a fresh
+/// `FidgetKernel` directly for the eval steps (the trait object alone is
+/// sufficient for execute, but `evaluate_sdf_at` is an inherent method
+/// not on the trait).
+#[test]
+fn fidget_dispatcher_to_kernel_chain_realizes_sdf_without_occt() {
+    // 1. Pull the registry and find the fidget entry.
+    let reg = kernel_registry::registry();
+    let fidget_entry = reg
+        .get("fidget")
+        .expect("registry must contain \"fidget\" — see linker-anchor pattern in companion test");
+
+    // 2. The factory must produce a working `Box<dyn GeometryKernel>`.
+    //    Use it to prove the boxed kernel can execute a Sphere op via the
+    //    trait surface — that's the contract the dispatcher relies on.
+    let mut boxed: Box<dyn reify_types::GeometryKernel> = (fidget_entry.factory)();
+    let _sphere_via_factory = boxed
+        .execute(&GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        })
+        .expect("execute(Sphere) on the boxed registry-factory kernel must succeed");
+
+    // 3. Re-pin the dispatcher selection: with `{Sdf}` available, fidget
+    //    wins (BooleanUnion, Sdf) zero-conversion. This is the precondition
+    //    for the chain — the test above proves it; we re-assert it locally
+    //    so a regression here does not silently fall through.
+    let owned: BTreeMap<String, CapabilityDescriptor> = reg
+        .iter()
+        .map(|(k, entry)| (k.clone(), (entry.descriptor)()))
+        .collect();
+    let view: BTreeMap<String, &CapabilityDescriptor> =
+        owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+    let available: HashSet<ReprKind> = HashSet::from([ReprKind::Sdf]);
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Sdf, &available)
+        .expect("dispatch must succeed for (BooleanUnion, Sdf)");
+    assert_eq!(plan.kernel, "fidget");
+    assert!(plan.conversions.is_empty());
+
+    // 4. Drive a fresh kernel for the eval chain. (The boxed factory kernel
+    //    above proved the registry entry works; here we use FidgetKernel
+    //    directly because evaluate_sdf_at is an inherent method, not part
+    //    of the dyn-safe trait.)
+    let mut kernel = FidgetKernel::new();
+
+    // Build two unit-radius spheres centred at (±0.5, 0, 0). Fidget's Tree
+    // operates on the implicit (x,y,z) — to translate a primitive we need
+    // a translated SDF expression. Since Translate is not in the kernel's
+    // op surface, we pin the simpler "two-coincident-spheres" union which
+    // still exercises the symbolic-graph composition path. The analytical
+    // answer for `min(sphere_a, sphere_a)` matches the single-sphere SDF
+    // exactly.
+    let a = kernel
+        .execute(&GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        })
+        .expect("Sphere a")
+        .id;
+    let b = kernel
+        .execute(&GeometryOp::Sphere {
+            radius: Value::Real(2.0),
+        })
+        .expect("Sphere b")
+        .id;
+    let union = kernel
+        .execute(&GeometryOp::Union { left: a, right: b })
+        .expect("Union via Tree composition")
+        .id;
+
+    // 5. Evaluate at four sample points. min(sphere_a(r=1), sphere_b(r=2)).
+    //    Sphere SDF at distance d from origin = d − r. min(d−1, d−2) = d−2
+    //    for any point (b is the larger sphere so dominates the union).
+    //    Sample at:
+    //      origin       d=0          → min(−1, −2) = −2
+    //      (1.0, 0, 0)  d=1          → min(0, −1)  = −1
+    //      (2.0, 0, 0)  d=2          → min(1, 0)   = 0
+    //      (3.0, 0, 0)  d=3          → min(2, 1)   = 1
+    let cases: &[(f32, f32, f32, f32)] = &[
+        (0.0, 0.0, 0.0, -2.0),
+        (1.0, 0.0, 0.0, -1.0),
+        (2.0, 0.0, 0.0, 0.0),
+        (3.0, 0.0, 0.0, 1.0),
+    ];
+    for &(x, y, z, expected) in cases {
+        let got = kernel
+            .evaluate_sdf_at(union, x, y, z)
+            .expect("evaluate_sdf_at must succeed on the union handle");
+        assert!(
+            (got - expected).abs() < 1e-5,
+            "union SDF({x},{y},{z}): expected {expected}, got {got}",
+        );
+    }
 }
