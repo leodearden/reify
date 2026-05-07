@@ -37,4 +37,4 @@ export { findFuzzyCandidate, suffixMatch, structuralMatch } from './fuzzyPathMat
 export type { StalePathMetadata } from './fuzzyPathMatcher';
 
 export { createFeaModeStore } from './feaModeStore';
-export type { FeaModeState, FeaModeStoreState, FeaModeStore } from './feaModeStore';
+export type { FeaModeState, FeaModeStore } from './feaModeStore';

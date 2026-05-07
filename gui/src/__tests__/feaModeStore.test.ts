@@ -2,231 +2,185 @@ import { describe, it, expect } from 'vitest';
 import { createRoot } from 'solid-js';
 import { createFeaModeStore } from '../stores';
 
+/**
+ * Run `fn` inside a SolidJS root and dispose immediately after.
+ * Removes repetitive createRoot boilerplate from each `it` block.
+ */
+function withRoot<T>(fn: () => T): T {
+  let result!: T;
+  createRoot((dispose) => {
+    result = fn();
+    dispose();
+  });
+  return result;
+}
+
 describe('feaModeStore', () => {
   describe('initial state', () => {
-    it('state.enabled is false', () => {
-      createRoot((dispose) => {
+    it('defaults: enabled=false, channel=vonMises, palette=viridis, range={auto,0,1}, autoEnabledOnce=false', () => {
+      withRoot(() => {
         const store = createFeaModeStore();
         expect(store.state.enabled).toBe(false);
-        dispose();
-      });
-    });
-
-    it('state.channel is "vonMises"', () => {
-      createRoot((dispose) => {
-        const store = createFeaModeStore();
         expect(store.state.channel).toBe('vonMises');
-        dispose();
-      });
-    });
-
-    it('state.palette is "viridis"', () => {
-      createRoot((dispose) => {
-        const store = createFeaModeStore();
         expect(store.state.palette).toBe('viridis');
-        dispose();
-      });
-    });
-
-    it('state.range is {mode:"auto", min:0, max:1}', () => {
-      createRoot((dispose) => {
-        const store = createFeaModeStore();
         expect(store.state.range).toEqual({ mode: 'auto', min: 0, max: 1 });
-        dispose();
-      });
-    });
-
-    it('state.autoEnabledOnce is false', () => {
-      createRoot((dispose) => {
-        const store = createFeaModeStore();
         expect(store.state.autoEnabledOnce).toBe(false);
-        dispose();
       });
     });
   });
 
   describe('tryAutoEnable', () => {
     it('first call flips state.enabled true and returns true', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         const result = store.tryAutoEnable();
         expect(result).toBe(true);
         expect(store.state.enabled).toBe(true);
-        dispose();
       });
     });
 
     it('first call sets autoEnabledOnce to true', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         store.tryAutoEnable();
         expect(store.state.autoEnabledOnce).toBe(true);
-        dispose();
       });
     });
 
     it('first call with channel arg updates state.channel', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         store.tryAutoEnable('displacement_magnitude');
         expect(store.state.channel).toBe('displacement_magnitude');
-        dispose();
       });
     });
 
     it('first call without channel arg leaves state.channel unchanged', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         store.tryAutoEnable();
         expect(store.state.channel).toBe('vonMises');
-        dispose();
       });
     });
 
     it('second call after setEnabled(false) does NOT re-enable (one-shot sticky)', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         store.tryAutoEnable();           // first call – fires
         store.setEnabled(false);          // user disables
         const result = store.tryAutoEnable(); // second call – should be no-op
         expect(result).toBe(false);
         expect(store.state.enabled).toBe(false);
-        dispose();
       });
     });
 
     it('returns false on second call even without user disabling', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         store.tryAutoEnable();
         const result = store.tryAutoEnable();
         expect(result).toBe(false);
-        dispose();
+      });
+    });
+
+    it('user can still change channel after auto-enable', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.tryAutoEnable(); // fires with no channel arg (channel stays 'vonMises')
+        store.setChannel('displacement_magnitude');
+        expect(store.state.channel).toBe('displacement_magnitude');
       });
     });
   });
 
   describe('lockCurrent', () => {
     it('sets range to {mode:"locked", min, max, source:"current"} by default', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         const result = store.lockCurrent(5, 20);
         expect(result).toBe(true);
         expect(store.state.range).toEqual({ mode: 'locked', min: 5, max: 20, source: 'current' });
-        dispose();
       });
     });
 
     it('uses explicit source string when provided', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         store.lockCurrent(7, 42, 'mesh:bracket');
         expect(store.state.range).toEqual({ mode: 'locked', min: 7, max: 42, source: 'mesh:bracket' });
-        dispose();
       });
     });
 
     it('returns false and does not mutate when min is non-finite', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         const before = { ...store.state.range };
         const result = store.lockCurrent(NaN, 20);
         expect(result).toBe(false);
         expect(store.state.range).toEqual(before);
-        dispose();
       });
     });
 
     it('returns false and does not mutate when max is non-finite', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         const before = { ...store.state.range };
         const result = store.lockCurrent(5, Infinity);
         expect(result).toBe(false);
         expect(store.state.range).toEqual(before);
-        dispose();
       });
     });
   });
 
   describe('simple setters', () => {
-    it('setEnabled(true) flips state.enabled to true', () => {
-      createRoot((dispose) => {
+    it('setEnabled toggles state.enabled', () => {
+      withRoot(() => {
         const store = createFeaModeStore();
         store.setEnabled(true);
         expect(store.state.enabled).toBe(true);
-        dispose();
-      });
-    });
-
-    it('setEnabled(false) flips state.enabled back to false', () => {
-      createRoot((dispose) => {
-        const store = createFeaModeStore();
-        store.setEnabled(true);
         store.setEnabled(false);
         expect(store.state.enabled).toBe(false);
-        dispose();
       });
     });
 
     it('setChannel updates state.channel', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         store.setChannel('displacement_magnitude');
         expect(store.state.channel).toBe('displacement_magnitude');
-        dispose();
       });
     });
 
     it('setPalette updates state.palette', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         store.setPalette('magma');
         expect(store.state.palette).toBe('magma');
-        dispose();
       });
     });
 
     it('setRange with valid fixed range updates state.range deeply', () => {
-      createRoot((dispose) => {
+      withRoot(() => {
         const store = createFeaModeStore();
         const result = store.setRange({ mode: 'fixed', min: 10, max: 50 });
         expect(result).toBe(true);
         expect(store.state.range).toEqual({ mode: 'fixed', min: 10, max: 50 });
-        dispose();
       });
     });
 
-    it('setRange with NaN min returns false and does not mutate', () => {
-      createRoot((dispose) => {
+    it('setRange returns false and does not mutate on non-finite bounds', () => {
+      withRoot(() => {
         const store = createFeaModeStore();
         const before = { ...store.state.range };
-        const result = store.setRange({ mode: 'fixed', min: NaN, max: 50 });
-        expect(result).toBe(false);
-        expect(store.state.range).toEqual(before);
-        dispose();
-      });
-    });
 
-    it('setRange with NaN max returns false and does not mutate', () => {
-      createRoot((dispose) => {
-        const store = createFeaModeStore();
-        const before = { ...store.state.range };
-        const result = store.setRange({ mode: 'fixed', min: 0, max: NaN });
-        expect(result).toBe(false);
+        expect(store.setRange({ mode: 'fixed', min: NaN, max: 50 })).toBe(false);
         expect(store.state.range).toEqual(before);
-        dispose();
-      });
-    });
 
-    it('setRange with Infinity max returns false and does not mutate', () => {
-      createRoot((dispose) => {
-        const store = createFeaModeStore();
-        const before = { ...store.state.range };
-        const result = store.setRange({ mode: 'fixed', min: 0, max: Infinity });
-        expect(result).toBe(false);
+        expect(store.setRange({ mode: 'fixed', min: 0, max: NaN })).toBe(false);
         expect(store.state.range).toEqual(before);
-        dispose();
+
+        expect(store.setRange({ mode: 'fixed', min: 0, max: Infinity })).toBe(false);
+        expect(store.state.range).toEqual(before);
       });
     });
   });

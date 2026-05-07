@@ -22,9 +22,6 @@ export interface FeaModeState {
   autoEnabledOnce: boolean;
 }
 
-/** Alias for the store state type (matches existing store naming convention). */
-export type FeaModeStoreState = FeaModeState;
-
 /** Return type of createFeaModeStore(). */
 export interface FeaModeStore {
   state: FeaModeState;
@@ -55,7 +52,7 @@ const DEFAULT_RANGE: Range = { mode: 'auto', min: 0, max: 1 };
  * Mutations are added incrementally in subsequent steps.
  */
 export function createFeaModeStore(): FeaModeStore {
-  const [state, setState] = createStore<FeaModeStoreState>({
+  const [state, setState] = createStore<FeaModeState>({
     enabled: false,
     channel: 'vonMises',
     palette: 'viridis',

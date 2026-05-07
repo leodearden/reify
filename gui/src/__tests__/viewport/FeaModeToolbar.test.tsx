@@ -250,16 +250,27 @@ describe('FeaModeToolbar — collapsible suite', () => {
     expect(screen.getByTestId('fea-mode-channel-select')).toBeTruthy();
   });
 
-  it('(e) collapse state is local — fresh component starts uncollapsed', () => {
-    // Mount a second, fresh component to verify collapse state is NOT in the store
-    const store2 = createFeaModeStore();
-    store2.setEnabled(true);
-    render(() => <FeaModeToolbar store={store2} />);
+  it('(e) collapse state is local — collapsing one instance does not affect another sharing the same store', () => {
+    // Both toolbars share a single store — proves collapsed signal is NOT in the store.
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => (
+      <div>
+        <FeaModeToolbar store={store} />
+        <FeaModeToolbar store={store} />
+      </div>
+    ));
 
-    // A fresh component starts with collapsed=false (body visible when enabled)
-    // Find the channel select among all instances
-    const selects = screen.getAllByTestId('fea-mode-channel-select');
-    // There should be at least one (from the fresh component)
-    expect(selects.length).toBeGreaterThan(0);
+    // Both instances should be uncollapsed initially — two channel selects visible
+    const selectsBefore = screen.getAllByTestId('fea-mode-channel-select');
+    expect(selectsBefore.length).toBe(2);
+
+    // Collapse the first instance only (first toggle button)
+    const toggles = screen.getAllByTestId('fea-mode-collapse-toggle');
+    fireEvent.click(toggles[0]);
+
+    // After collapsing the first, only one channel select should remain (the second instance)
+    const selectsAfter = screen.getAllByTestId('fea-mode-channel-select');
+    expect(selectsAfter.length).toBe(1);
   });
 });
