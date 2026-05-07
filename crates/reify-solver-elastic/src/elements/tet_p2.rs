@@ -62,13 +62,16 @@ const TET_P2_QUAD: &[QuadraturePoint] = &[
 /// ordering: bottom-face edges first, then vertical edges to vertex 3).
 /// Both `shape_at` and `shape_grad_at` consult this table so the edge
 /// indexing stays single-sourced.
-pub const EDGES: [(usize, usize); 6] = [
-    (0, 1),
-    (1, 2),
-    (2, 0),
-    (0, 3),
-    (1, 3),
-    (2, 3),
+pub const EDGES: [(usize, usize); 6] = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)];
+
+/// Reference-coordinate gradients of the barycentric coordinates λ.
+/// `∇λ_0 = (-1,-1,-1)` (since `λ_0 = 1-ξ-η-ζ`), `∇λ_1 = e_x`,
+/// `∇λ_2 = e_y`, `∇λ_3 = e_z`.
+const GRAD_LAMBDA: [[f64; 3]; 4] = [
+    [-1.0, -1.0, -1.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
 ];
 
 impl ReferenceElement for TetP2 {
@@ -127,12 +130,6 @@ impl ReferenceElement for TetP2 {
     fn shape_grad_at(&self, coord: ReferenceCoord) -> Vec<[f64; 3]> {
         let ReferenceCoord { xi, eta, zeta } = coord;
         let lambda = [1.0 - xi - eta - zeta, xi, eta, zeta];
-        const GRAD_LAMBDA: [[f64; 3]; 4] = [
-            [-1.0, -1.0, -1.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ];
 
         let mut g = Vec::with_capacity(10);
         // Vertex-node gradients: ∇N_i = (4 λ_i − 1) ∇λ_i.
@@ -201,16 +198,6 @@ mod tests {
         }
     }
 
-    /// Reference-coordinate gradients of the barycentric coordinates λ.
-    /// `∇λ_0 = (-1,-1,-1)` (since `λ_0 = 1-ξ-η-ζ`), `∇λ_1 = e_x`,
-    /// `∇λ_2 = e_y`, `∇λ_3 = e_z`.
-    const GRAD_LAMBDA: [[f64; 3]; 4] = [
-        [-1.0, -1.0, -1.0],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, 1.0],
-    ];
-
     #[test]
     fn shape_grad_at_vertex_nodes_match_chain_rule_at_centroid() {
         // At centroid: λ_i = 1/4 for i=0..3, so 4λ_i − 1 = 0 ⇒ all
@@ -233,8 +220,12 @@ mod tests {
         let lambda_0 = 1.0 - p.xi - p.eta - p.zeta;
         let scalar = 4.0 * lambda_0 - 1.0;
         let g_p = TetP2.shape_grad_at(p);
+        // Hard-coded literal oracle for ∇λ_0 = (-1,-1,-1) so that a typo in
+        // GRAD_LAMBDA[0] is caught rather than silently passed; both sides of
+        // the assertion now reference independent sources of truth.
+        let grad_lambda_0_oracle = [-1.0_f64, -1.0, -1.0];
         for k in 0..3 {
-            let expected = scalar * GRAD_LAMBDA[0][k];
+            let expected = scalar * grad_lambda_0_oracle[k];
             assert!(
                 (g_p[0][k] - expected).abs() < TOL,
                 "∇N_0(p)[{k}] = {} expected {expected}",
@@ -260,10 +251,7 @@ mod tests {
                 }
             }
             for (k, s) in sum.iter().enumerate() {
-                assert!(
-                    s.abs() < TOL,
-                    "Σ_i ∇N_i({p:?})[{k}] = {s}, expected 0",
-                );
+                assert!(s.abs() < TOL, "Σ_i ∇N_i({p:?})[{k}] = {s}, expected 0",);
             }
         }
     }

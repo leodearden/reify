@@ -883,91 +883,92 @@ impl Engine {
                 diagnostics,
             );
             match geom_op {
-                Ok(geom_op) => match kernel.execute_with_history(&geom_op) {
-                    Ok((handle, attribute_history)) => {
-                        // Record the parallel-array feature tag for this handle.
-                        if let Some(&tag) = feature_tags.get(op_idx) {
-                            feature_tag_table.record(handle.id, tag);
-                        }
-                        // v0.2 persistent-naming-v2 (PRD task 6, #2574): seed
-                        // per-face/per-edge `TopologyAttribute` records for
-                        // primitive constructors (Box / Cylinder / Sphere).
-                        // Non-primitive variants are no-ops at zero kernel
-                        // cost — `seed_primitive_attributes_for_handle` skips
-                        // the extract_* calls entirely for them. A seeding
-                        // failure (e.g. extract_faces / FaceNormal query
-                        // error) emits a Warning diagnostic and continues:
-                        // attribute seeding is auxiliary metadata, not
-                        // primary geometry, so it must not regress the
-                        // realization to Failed when only the metadata path
-                        // breaks. Per-task design decision recorded in
-                        // .task/plan.json.
-                        let feature_id = FeatureId::from(realization_id);
-                        if let Err(e) = seed_primitive_attributes_for_handle(
-                            topology_attribute_table,
-                            kernel,
-                            handle.id,
-                            &feature_id,
-                            &geom_op,
-                        ) {
-                            diagnostics.push(Diagnostic::warning(format!(
+                Ok(geom_op) => {
+                    match kernel.execute_with_history(&geom_op) {
+                        Ok((handle, attribute_history)) => {
+                            // Record the parallel-array feature tag for this handle.
+                            if let Some(&tag) = feature_tags.get(op_idx) {
+                                feature_tag_table.record(handle.id, tag);
+                            }
+                            // v0.2 persistent-naming-v2 (PRD task 6, #2574): seed
+                            // per-face/per-edge `TopologyAttribute` records for
+                            // primitive constructors (Box / Cylinder / Sphere).
+                            // Non-primitive variants are no-ops at zero kernel
+                            // cost — `seed_primitive_attributes_for_handle` skips
+                            // the extract_* calls entirely for them. A seeding
+                            // failure (e.g. extract_faces / FaceNormal query
+                            // error) emits a Warning diagnostic and continues:
+                            // attribute seeding is auxiliary metadata, not
+                            // primary geometry, so it must not regress the
+                            // realization to Failed when only the metadata path
+                            // breaks. Per-task design decision recorded in
+                            // .task/plan.json.
+                            let feature_id = FeatureId::from(realization_id);
+                            if let Err(e) = seed_primitive_attributes_for_handle(
+                                topology_attribute_table,
+                                kernel,
+                                handle.id,
+                                &feature_id,
+                                &geom_op,
+                            ) {
+                                diagnostics.push(Diagnostic::warning(format!(
                                 "topology-attribute seeding failed for {realization_id} op {op_idx}: {e}"
                             )));
-                        }
-                        // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
-                        // attribute population for sweep ops (extrude / revolve).
-                        // Mirrors the seeding warning idiom above — a failure
-                        // here is auxiliary-metadata-only and must not regress
-                        // the realization to Failed. Non-attributable ops
-                        // return `AttributeHistory::None` from the default
-                        // `GeometryKernel::execute_with_history` impl, so this
-                        // match is a no-op for them.
-                        if let Err(e) = populate_attribute_history(
-                            topology_attribute_table,
-                            kernel,
-                            &feature_id,
-                            &geom_op,
-                            handle.id,
-                            &attribute_history,
-                        ) {
-                            diagnostics.push(Diagnostic::warning(format!(
+                            }
+                            // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
+                            // attribute population for sweep ops (extrude / revolve).
+                            // Mirrors the seeding warning idiom above — a failure
+                            // here is auxiliary-metadata-only and must not regress
+                            // the realization to Failed. Non-attributable ops
+                            // return `AttributeHistory::None` from the default
+                            // `GeometryKernel::execute_with_history` impl, so this
+                            // match is a no-op for them.
+                            if let Err(e) = populate_attribute_history(
+                                topology_attribute_table,
+                                kernel,
+                                &feature_id,
+                                &geom_op,
+                                handle.id,
+                                &attribute_history,
+                            ) {
+                                diagnostics.push(Diagnostic::warning(format!(
                                 "topology-attribute attribute history population failed for {realization_id} op {op_idx}: {e}"
                             )));
-                        }
-                        // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
-                        // propagation for non-BRep kernels.  Runs immediately after
-                        // `populate_attribute_history` (BRep-first ordering per design
-                        // decision: OCCT-native population writes first; the hook is the
-                        // non-BRep path that returns `FellThrough` for OCCT shapes — a
-                        // near-zero-cost no-op — and routes to `propagate_attributes` for
-                        // kernels that advertise a hook).  Skipped entirely when
-                        // `parent_handles_for_op` returns an empty slice (primitives,
-                        // curve constructors, Pipe) so vacuous hook calls are never made.
-                        //
-                        // Mutual-exclusion contract: a kernel MUST NOT both return a
-                        // non-`None` `AttributeHistory` from `execute_with_history` AND
-                        // advertise an `attribute_hook()` for the same op.  The engine
-                        // invokes both paths unconditionally for every parent-having op;
-                        // if both populate the same `(feature_id, handle)` slots, the
-                        // second write wins silently.  This contract is currently only
-                        // enforced by convention: OCCT's `attribute_hook()` returns
-                        // `None`, and Manifold's `execute_with_history` always returns
-                        // `AttributeHistory::None` — the two paths are cleanly disjoint
-                        // for all kernels that exist today.
-                        let parent_handles = parent_handles_for_op(&geom_op);
-                        if !parent_handles.is_empty() {
-                            // All three Ok variants (Propagated / Discarded /
-                            // FellThrough) are intentionally swallowed: the hook
-                            // emits its own tracing::warn! on Discarded; the
-                            // dispatcher emits tracing::debug! when the kernel does
-                            // not advertise a hook (None → FellThrough); a hook that
-                            // itself returns Ok(FellThrough) is passed through
-                            // silently; and Propagated is the success case.  Only
-                            // Err(QueryError) needs user-facing visibility (mirrors
-                            // the populate_attribute_history failure idiom above and
-                            // the task-2574 "auxiliary metadata MUST NOT regress
-                            // Failed" convention).
-                            if let Err(e) = crate::kernel_attribute_hook::propagate_via_kernel_attribute_hook(
+                            }
+                            // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
+                            // propagation for non-BRep kernels.  Runs immediately after
+                            // `populate_attribute_history` (BRep-first ordering per design
+                            // decision: OCCT-native population writes first; the hook is the
+                            // non-BRep path that returns `FellThrough` for OCCT shapes — a
+                            // near-zero-cost no-op — and routes to `propagate_attributes` for
+                            // kernels that advertise a hook).  Skipped entirely when
+                            // `parent_handles_for_op` returns an empty slice (primitives,
+                            // curve constructors, Pipe) so vacuous hook calls are never made.
+                            //
+                            // Mutual-exclusion contract: a kernel MUST NOT both return a
+                            // non-`None` `AttributeHistory` from `execute_with_history` AND
+                            // advertise an `attribute_hook()` for the same op.  The engine
+                            // invokes both paths unconditionally for every parent-having op;
+                            // if both populate the same `(feature_id, handle)` slots, the
+                            // second write wins silently.  This contract is currently only
+                            // enforced by convention: OCCT's `attribute_hook()` returns
+                            // `None`, and Manifold's `execute_with_history` always returns
+                            // `AttributeHistory::None` — the two paths are cleanly disjoint
+                            // for all kernels that exist today.
+                            let parent_handles = parent_handles_for_op(&geom_op);
+                            if !parent_handles.is_empty() {
+                                // All three Ok variants (Propagated / Discarded /
+                                // FellThrough) are intentionally swallowed: the hook
+                                // emits its own tracing::warn! on Discarded; the
+                                // dispatcher emits tracing::debug! when the kernel does
+                                // not advertise a hook (None → FellThrough); a hook that
+                                // itself returns Ok(FellThrough) is passed through
+                                // silently; and Propagated is the success case.  Only
+                                // Err(QueryError) needs user-facing visibility (mirrors
+                                // the populate_attribute_history failure idiom above and
+                                // the task-2574 "auxiliary metadata MUST NOT regress
+                                // Failed" convention).
+                                if let Err(e) = crate::kernel_attribute_hook::propagate_via_kernel_attribute_hook(
                                 &*kernel,
                                 topology_attribute_table,
                                 &geom_op,
@@ -979,32 +980,33 @@ impl Engine {
                                     "kernel attribute hook propagation failed for {realization_id} op {op_idx}: {e}"
                                 )));
                             }
+                            }
+                            step_handles.push(handle.id);
+                            // Capture the compiled op parallel to step_handles for
+                            // post-loop classification (task 2982). Cleared on
+                            // rollback below. Pushed last in this arm so all the
+                            // earlier `&geom_op` borrows above have already
+                            // released — we move ownership rather than cloning.
+                            realization_ops.push(geom_op);
                         }
-                        step_handles.push(handle.id);
-                        // Capture the compiled op parallel to step_handles for
-                        // post-loop classification (task 2982). Cleared on
-                        // rollback below. Pushed last in this arm so all the
-                        // earlier `&geom_op` borrows above have already
-                        // released — we move ownership rather than cloning.
-                        realization_ops.push(geom_op);
-                    }
-                    Err(e) => {
-                        let err_msg = format!("geometry error: {}", e);
-                        diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
-                            DiagnosticLabel::new(realization_span, "in this realization"),
-                        ));
-                        // Arch §9.1 lines 868–877: surface the kernel error to the
-                        // caller so the realization NodeId can be marked Failed in
-                        // the eval cache and a single EventKind::Failed event emitted.
-                        // First-error-wins inside a single realization: if a later
-                        // call into this helper somehow triggers another kernel error
-                        // (it won't — we `break` immediately), the first one is kept.
-                        if kernel_error_out.is_none() {
-                            *kernel_error_out = Some(ErrorRef::new(err_msg));
+                        Err(e) => {
+                            let err_msg = format!("geometry error: {}", e);
+                            diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                                DiagnosticLabel::new(realization_span, "in this realization"),
+                            ));
+                            // Arch §9.1 lines 868–877: surface the kernel error to the
+                            // caller so the realization NodeId can be marked Failed in
+                            // the eval cache and a single EventKind::Failed event emitted.
+                            // First-error-wins inside a single realization: if a later
+                            // call into this helper somehow triggers another kernel error
+                            // (it won't — we `break` immediately), the first one is kept.
+                            if kernel_error_out.is_none() {
+                                *kernel_error_out = Some(ErrorRef::new(err_msg));
+                            }
+                            break;
                         }
-                        break;
                     }
-                },
+                }
                 Err(err) => {
                     diagnostics.push(
                         Diagnostic::error(format!("failed to compile geometry operation: {}", err))
@@ -2525,8 +2527,12 @@ mod tests {
             // ── Curve constructors ────────────────────────────────────────────
             Case {
                 op: GeometryOp::LineSegment {
-                    x1: 0.0, y1: 0.0, z1: 0.0,
-                    x2: 1.0, y2: 0.0, z2: 0.0,
+                    x1: 0.0,
+                    y1: 0.0,
+                    z1: 0.0,
+                    x2: 1.0,
+                    y2: 0.0,
+                    z2: 0.0,
                 },
                 expected: vec![],
                 label: "LineSegment → empty (curve constructor, no parents)",
@@ -2687,7 +2693,11 @@ mod tests {
                         GeometryHandleId(12),
                     ],
                 },
-                expected: vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+                expected: vec![
+                    GeometryHandleId(10),
+                    GeometryHandleId(11),
+                    GeometryHandleId(12),
+                ],
                 label: "Loft → all profiles in input order (multi-profile, ordering preserved)",
             },
             Case {
@@ -2699,7 +2709,11 @@ mod tests {
                     ],
                     guides: vec![GeometryHandleId(30), GeometryHandleId(31)],
                 },
-                expected: vec![GeometryHandleId(20), GeometryHandleId(21), GeometryHandleId(22)],
+                expected: vec![
+                    GeometryHandleId(20),
+                    GeometryHandleId(21),
+                    GeometryHandleId(22),
+                ],
                 // Most error-prone exclusion: a regression that appended guides to
                 // the parent list would be silently missed without this case.
                 label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",

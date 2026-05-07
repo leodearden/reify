@@ -956,10 +956,13 @@ impl OcctKernel {
                     "local-feature operation requires a BRepKind::Solid input shape, got {other:?}"
                 )))
             }
-            // repr unknown (e.g. handle whose repr was lost on warm-start round-trip):
-            // fall through to get_shape below, which returns InvalidReference for
-            // genuinely missing handles without conflating "repr-lost-but-shape-present"
-            // with "handle not found" (esc-2655-26 suggestion #4 / task 2821 amendment).
+            // `repr_of` returns `None` iff `shape_id` is unknown to this kernel.
+            // The "repr-lost-but-shape-present" case is unreachable: `store_with_repr`
+            // and `with_warm_state` keep `self.shapes` and `self.reprs` in lock-step
+            // (see `repr_of` doc).  Fall through to `get_shape` below, which returns
+            // `InvalidReference` for genuinely unknown handles rather than a false
+            // "requires Solid" rejection (esc-2655-26 suggestion #4 / task 2821
+            // amendment; comment aligned by task 2905 / esc-2821-61 #1).
             None => {}
         }
         let (result_shape, records) = {

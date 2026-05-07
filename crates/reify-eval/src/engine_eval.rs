@@ -13,6 +13,7 @@ use reify_types::{
     SampledField, SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId,
     ValueMap, VersionId,
 };
+use reify_types::sampled::linspace_inclusive;
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
@@ -669,9 +670,7 @@ pub(crate) fn elaborate_field(
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
 #[allow(dead_code, reason = "wired into elaborate_field by PRD task 5")]
-pub(crate) fn hash_imported_file_content(
-    path: &str,
-) -> std::io::Result<reify_types::ContentHash> {
+pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_types::ContentHash> {
     // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
     // allocation per call.  If `ContentHash` (or `xxhash_rust::xxh3`) later exposes an
@@ -851,9 +850,27 @@ fn build_sampled_field(
         }
     }
 
-    let axis_grids: Vec<Vec<f64>> = (0..bounds_min.len())
-        .map(|i| linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i]))
-        .collect();
+    let mut axis_grids: Vec<Vec<f64>> = Vec::with_capacity(bounds_min.len());
+    for i in 0..bounds_min.len() {
+        match linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i]) {
+            Ok(g) => axis_grids.push(g),
+            Err(_) => {
+                push_invalid_config(
+                    ctx,
+                    format!(
+                        "sampled field '{name}': axis {i} requires too many grid nodes \
+                         (bounds_min={} bounds_max={} spacing={} exceeds the {} interval cap); \
+                         reduce the span or increase the spacing",
+                        bounds_min[i],
+                        bounds_max[i],
+                        spacing[i],
+                        reify_types::sampled::LINSPACE_MAX_INTERVALS,
+                    ),
+                );
+                return None;
+            }
+        }
+    }
 
     // (2) Each axis grid must have ≥ 2 nodes.  A degenerate axis
     //     (e.g. zero-length bounds span, or `bounds_min > bounds_max`
@@ -1096,31 +1113,6 @@ fn parse_data(data_val: &Value) -> Option<Vec<f64>> {
         }
     }
     Some(data)
-}
-
-/// Inclusive linspace from `start` to `stop` with step `spacing`.  Produces
-/// `[start, start+spacing, …, stop]` (or as close as `floor((stop-start)/spacing)`
-/// admits).  Returns `[start]` for non-positive spans (degenerate-but-valid).
-///
-/// The `spacing <= 0.0 || !is_finite()` and `span < 0.0` fallback arms are
-/// defense-in-depth: `build_sampled_field`'s step-24 pre-flight invariants
-/// (positive-and-finite spacing per axis; ≥ 2 nodes per axis grid) reject
-/// every input that would reach those arms before this helper is called.
-/// They remain as primitive-level guards so this function stays safe to
-/// call from any future site that might not run the pre-flight checks.
-fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Vec<f64> {
-    if spacing <= 0.0 || !spacing.is_finite() || !start.is_finite() || !stop.is_finite() {
-        return vec![start];
-    }
-    let span = stop - start;
-    if span < 0.0 {
-        return vec![start];
-    }
-    // Round to nearest integer to avoid floating-point cliff effects on
-    // exact-fit cases (e.g. (2.0 - 0.0) / 1.0 → 1.999… instead of 2).
-    let n_intervals = (span / spacing).round() as usize;
-    let count = n_intervals + 1;
-    (0..count).map(|i| start + (i as f64) * spacing).collect()
 }
 
 impl Engine {
@@ -2900,8 +2892,8 @@ mod invariant_tests {
 /// the `TempDir` guard's `Drop` impl removes the directory unconditionally.
 #[cfg(test)]
 mod imported_file_hash_tests {
-    use std::fs;
     use reify_types::ContentHash;
+    use std::fs;
 
     use super::hash_imported_file_content;
 
@@ -2938,10 +2930,10 @@ mod imported_file_hash_tests {
         fs::write(&path1, bytes).expect("write file_a");
         fs::write(&path2, bytes).expect("write file_b");
 
-        let hash1 = hash_imported_file_content(path1.to_str().expect("path1 utf8"))
-            .expect("hash file_a");
-        let hash2 = hash_imported_file_content(path2.to_str().expect("path2 utf8"))
-            .expect("hash file_b");
+        let hash1 =
+            hash_imported_file_content(path1.to_str().expect("path1 utf8")).expect("hash file_a");
+        let hash2 =
+            hash_imported_file_content(path2.to_str().expect("path2 utf8")).expect("hash file_b");
         assert_eq!(
             hash1, hash2,
             "path-independence: same content at different paths must yield the same ContentHash"
