@@ -29,5 +29,6 @@ tempfile.workspace = true
 # transitive test compile of crates that dev-depend on `reify-test-support`
 # with the `eval-helpers` feature, preserving `scripts/occt-touching-crates.txt`.
 reify-kernel-occt.workspace = true
+reify-kernel-openvdb.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true
