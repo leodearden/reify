@@ -686,6 +686,54 @@ describe('meshManager', () => {
     expect((mesh.geometry as any).dispose).toHaveBeenCalledTimes(1);
   });
 
+  describe('scalar_channels backwards-compat (C-01)', () => {
+    it('createMeshManager without colorize option: mesh with scalar_channels still uses MeshStandardMaterial', () => {
+      const { manager } = setup();
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+
+      manager.sync({ A: meshData });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(mesh).toBeDefined();
+
+      // Material should be in mockMaterials (MeshStandardMaterial), not a phong material
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+
+      // Geometry must have NO 'color' attribute
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+    });
+
+    it('createMeshManager without colorize option: mesh with multiple scalar_channels has no color attribute', () => {
+      const { manager } = setup();
+      const meshData: MeshData = {
+        entity_path: 'B',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+        scalar_channels: {
+          vonMises: new Float32Array([10, 20, 30]),
+          displacement_magnitude: new Float32Array([0.1, 0.2, 0.3]),
+        },
+      };
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      manager.sync({ B: meshData });
+      warnSpy.mockRestore();
+
+      const mesh = manager.getSceneMeshes().get('B')!;
+      expect(mesh).toBeDefined();
+
+      // No color attribute — scalar_channels are ignored when colorize is unset
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+    });
+  });
+
   describe('ghost visibility', () => {
     // Helper: create manager, add one mesh, then reset mock call history so tests
     // start with zero recorded call counts.
