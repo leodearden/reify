@@ -49,6 +49,7 @@ fn mesh_data_serializes_with_expected_fields() {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         indices: vec![0, 1, 2],
         normals: Some(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+        scalar_channels: std::collections::HashMap::new(),
     };
     let v = serde_json::to_value(&mesh).unwrap();
     assert_eq!(v["entity_path"], json!("Bracket.body"));
@@ -532,6 +533,7 @@ fn serialize_finite_f32_vec_all_finite_values_round_trip() {
         vertices: vec![1.5, -2.25, 3.0],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
     };
     let v = serde_json::to_value(&mesh).unwrap();
     let arr = v["vertices"].as_array().unwrap();
@@ -550,6 +552,7 @@ fn serialize_finite_f32_vec_empty_vec_serializes_to_empty_array() {
         vertices: vec![],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
     };
     let v = serde_json::to_value(&mesh).unwrap();
     let arr = v["vertices"].as_array().unwrap();
@@ -563,6 +566,7 @@ fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
         vertices: vec![f32::NAN],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -577,6 +581,7 @@ fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
         vertices: vec![f32::INFINITY],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -591,6 +596,7 @@ fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_in
         vertices: vec![f32::NEG_INFINITY],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -607,6 +613,7 @@ fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
         vertices: vec![0.0, 0.0, 0.0],
         indices: vec![0],
         normals: Some(vec![0.0, 0.0, f32::NAN]),
+        scalar_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -630,6 +637,7 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
         vertices: vec![1.0, 2.0, f32::NAN],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();

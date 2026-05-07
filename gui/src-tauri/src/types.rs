@@ -41,6 +41,41 @@ where
     seq.end()
 }
 
+/// Custom serializer for `HashMap<String, Vec<f32>>` that rejects non-finite values.
+///
+/// Mirrors [`serialize_finite_f32_vec`] but operates on a map of named scalar
+/// channels.  Each channel's values are validated element-by-element; the
+/// channel key is included in the error message for diagnostics.
+///
+/// # Note
+///
+/// Same partial-output caveat as [`serialize_finite_f32_vec`] — with in-memory
+/// serializers like `serde_json::to_value` the partial map is simply dropped on
+/// `Err`.  Callers using streaming serializers must discard partial output on
+/// error.
+fn serialize_finite_f32_map<S>(
+    map: &HashMap<String, Vec<f32>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut smap = serializer.serialize_map(Some(map.len()))?;
+    for (key, values) in map {
+        // Validate all values in this channel before writing the entry.
+        for &v in values {
+            if !v.is_finite() {
+                return Err(S::Error::custom(format!(
+                    "non-finite f32 value ({v}) in scalar channel '{key}'"
+                )));
+            }
+        }
+        smap.serialize_entry(key, values)?;
+    }
+    smap.end()
+}
+
 /// Custom serializer for `Option<Vec<f32>>` that rejects non-finite values.
 ///
 /// Mirrors [`serialize_finite_f32_vec`] but handles the `None` case
@@ -81,6 +116,16 @@ pub struct MeshData {
     pub indices: Vec<u32>,
     #[serde(serialize_with = "serialize_finite_f32_vec_opt")]
     pub normals: Option<Vec<f32>>,
+    /// Per-vertex scalar attribute channels (e.g. `"vonMises"` stress).
+    ///
+    /// Each entry maps a channel name to a flat `Vec<f32>` of length
+    /// `vertex_count`.  Omitted from the wire when empty so non-FEA meshes
+    /// stay compact.  Populated by the kernel-side FEA sourcing task (G2);
+    /// plumbed here so the IPC contract is established without churning the
+    /// wire format later.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty",
+            serialize_with = "serialize_finite_f32_map")]
+    pub scalar_channels: HashMap<String, Vec<f32>>,
 }
 
 /// A value cell (param, let, or auto) for the property editor.

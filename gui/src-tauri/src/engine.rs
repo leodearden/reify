@@ -508,6 +508,7 @@ impl EngineSession {
                         vertices: mesh.vertices,
                         indices: mesh.indices,
                         normals: mesh.normals,
+                        scalar_channels: std::collections::HashMap::new(),
                     })
                     .collect();
                 (meshes, tess_diags)
