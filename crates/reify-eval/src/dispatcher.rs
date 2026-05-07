@@ -304,7 +304,7 @@ pub fn long_chain_threshold_from_env_value(value: Option<&str>) -> Duration {
 /// carries the same assertion).
 pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> f64 {
     debug_assert!(
-        requested_tol.is_finite() && requested_tol >= 0.0,
+        crate::tolerance_gate::is_valid_tolerance_si(requested_tol),
         "dispatcher: requested_tol must be finite and non-negative, got {requested_tol}"
     );
     if plan.conversions.is_empty() {
