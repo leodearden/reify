@@ -198,6 +198,11 @@ impl ReifyToolContext for CliToolContext {
             .collect())
     }
 
+    /// Returns `Ok(vec![])` when `compiled` or `active_file` is absent (nothing to
+    /// report).  This differs intentionally from `get_source_location`, which returns
+    /// `Err` for the same states — see the doc comment on that method for the
+    /// rationale.  Callers that need to distinguish "not ready" from "no diagnostics"
+    /// must check whether `get_source_location` succeeds, not inspect the vec length.
     fn get_diagnostics(&self) -> Result<Vec<DiagnosticInfo>, ToolError> {
         let state = self.lock_state();
 
@@ -1094,6 +1099,45 @@ mod tests {
             0,
             "fresh_ctx must return a context whose engine has not been constructed yet"
         );
+    }
+
+    /// Baseline guard: on a freshly-constructed context (no `update_source` /
+    /// `load_file` / `open_file` call), the two "not-ready" code paths must behave
+    /// as documented:
+    ///
+    /// - `get_diagnostics` → `Ok(vec![])` (nothing to report; the `compiled = None`
+    ///   early-return short-circuits before any active-file check).
+    /// - `get_source_location` → `Err(EngineError("no compiled module"))` (no natural
+    ///   empty value; the method documents that it returns `Err` on missing state).
+    ///
+    /// This test locks in the intentional asymmetry described in the doc comments on
+    /// both methods.  A future refactor that accidentally changes either branch will
+    /// fail here before reaching callers.
+    #[test]
+    fn fresh_ctx_not_ready_baseline() {
+        let ctx = fresh_ctx();
+
+        // get_diagnostics returns Ok(vec![]) — "nothing to report" sentinel.
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics on fresh ctx must return Ok, not Err");
+        assert!(
+            diags.is_empty(),
+            "get_diagnostics on a fresh ctx (no compiled module) must return Ok(vec![]), got: {:?}",
+            diags
+        );
+
+        // get_source_location returns Err — no natural empty sentinel exists.
+        let err = ctx
+            .get_source_location("AnyEntity")
+            .expect_err("get_source_location on fresh ctx must return Err (no compiled module)");
+        match &err {
+            ToolError::EngineError(msg) => assert!(
+                msg.contains("no compiled module"),
+                "Err message must say 'no compiled module', got: {msg:?}"
+            ),
+            other => panic!("expected ToolError::EngineError, got {other:?}"),
+        }
     }
 
     /// Positive guard: `update_source` on a fresh context (no prior `load_file` /
