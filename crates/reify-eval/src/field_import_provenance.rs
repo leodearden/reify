@@ -107,4 +107,38 @@ mod tests {
             ContentHash::of(&[0xCAu8, 0xFE, 0xBA, 0xBE])
         );
     }
+
+    #[test]
+    fn build_field_import_provenance_is_deterministic_for_identical_inputs() {
+        let a = build_field_import_provenance(
+            "fea_results.vdb",
+            "OpenVDB",
+            b"identical bytes",
+            Some(50e-6),
+            1_700_000_000,
+        );
+        let b = build_field_import_provenance(
+            "fea_results.vdb",
+            "OpenVDB",
+            b"identical bytes",
+            Some(50e-6),
+            1_700_000_000,
+        );
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn build_field_import_provenance_distinguishes_distinct_byte_payloads() {
+        let a = build_field_import_provenance("p", "f", &[0x00, 0x01], None, 0);
+        let b = build_field_import_provenance("p", "f", &[0x00, 0x02], None, 0);
+        assert_ne!(a.content_hash, b.content_hash);
+    }
+
+    #[test]
+    fn build_field_import_provenance_accepts_empty_file_bytes() {
+        let result = build_field_import_provenance("p", "f", &[], None, 0);
+        // Should not panic; content_hash should be well-formed and equal to
+        // ContentHash::of(&[]) for determinism.
+        assert_eq!(result.content_hash, ContentHash::of(&[]));
+    }
 }
