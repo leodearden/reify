@@ -471,18 +471,32 @@ fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
     }
 }
 
-/// `ElasticOptions` enforces the runtime invariant that `max_iter` and
-/// `cg_tolerance` are strictly positive via two structure-level constraint
-/// declarations:
+/// `ElasticOptions` enforces strict-positivity invariants on four params via
+/// structure-level constraint declarations:
 ///
 ///   constraint max_iter > 0
 ///   constraint cg_tolerance > 0
+///   constraint shell_threshold > 0
+///   constraint shell_branch_prune_ratio > 0
 ///
-/// A negative `max_iter` or non-positive `cg_tolerance` is nonsensical and
-/// would silently corrupt the solver. Encoding the invariants as first-class
-/// `constraint` declarations (rather than relying on documentation + tests)
-/// matches the project convention in task 2544: "the contract in production
-/// code is made explicit rather than relying on test coverage."
+/// Rationale for each:
+///   max_iter              — a non-positive cap lets the solver exit before
+///                           doing any work.
+///   cg_tolerance          — must be strictly positive for `||r||/||b|| <
+///                           cg_tolerance` to terminate; zero or negative
+///                           would silently exhaust `max_iter` on every solve.
+///   shell_threshold       — a non-positive thickness/extent ratio would
+///                           silently prevent all auto-classification (no body
+///                           would ever be flagged as shell-eligible in Auto
+///                           mode). PRD T17.
+///   shell_branch_prune_ratio — a non-positive ratio would silently disable
+///                           medial-axis pruning (no spurious branches
+///                           removed). PRD T17.
+///
+/// Encoding these as first-class `constraint` declarations (rather than
+/// relying on documentation + tests) matches the project convention in task
+/// 2544: "the contract in production code is made explicit rather than
+/// relying on test coverage."
 ///
 /// The assertion shape mirrors the constraint-injection check in
 /// `materials_fea_tests.rs::elastic_material_trait_constrains_poisson_ratio_to_half_open_unit`:
@@ -490,17 +504,18 @@ fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
 /// expression with `collect_value_ref_members`, and asserts that the entry's
 /// op is `>` and references the expected member name.
 #[test]
-fn elastic_options_constrains_max_iter_and_cg_tolerance_positive() {
+fn elastic_options_constrains_positivity_invariants() {
     let template = find_structure("ElasticOptions");
 
     assert!(
-        template.constraints.len() >= 2,
-        "ElasticOptions should declare at least 2 constraints (max_iter > 0 \
-         and cg_tolerance > 0), got {} constraints",
+        template.constraints.len() >= 4,
+        "ElasticOptions should declare at least 4 constraints (max_iter > 0, \
+         cg_tolerance > 0, shell_threshold > 0, shell_branch_prune_ratio > 0), \
+         got {} constraints",
         template.constraints.len()
     );
 
-    for required in &["max_iter", "cg_tolerance"] {
+    for required in &["max_iter", "cg_tolerance", "shell_threshold", "shell_branch_prune_ratio"] {
         let matched = template.constraints.iter().any(|c| {
             // Check the constraint expression is a `>` BinOp with a ValueRef
             // to the required member on the left side and the literal `0` on
