@@ -924,7 +924,7 @@ mod tests {
 
     /// Display rendering must include both the offending input (so the
     /// user can spot the typo) and the env-var name (so the user knows
-    /// where to look). Mirrors the `ManifestError::InvalidMaxDepth`
+    /// where to look). Mirrors the `ManifestError::InvalidAutoTypeParamConfig`
     /// rendering style.
     #[test]
     fn invalid_max_bytes_display_mentions_input_and_variable() {
