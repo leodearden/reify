@@ -268,13 +268,13 @@ mod tests {
     use reify_types::{DimensionVector, Value};
     use std::collections::BTreeMap;
 
-    /// Build a simple opaque selector stub (Map with kind="point_stub").
-    fn point_selector_stub() -> Value {
+    /// Build a simple opaque selector stub (Map with the given `kind`).
+    fn selector_stub(kind: &str) -> Value {
         Value::Map({
             let mut m = BTreeMap::new();
             m.insert(
                 Value::String("kind".to_string()),
-                Value::String("point_stub".to_string()),
+                Value::String(kind.to_string()),
             );
             m
         })
@@ -284,15 +284,7 @@ mod tests {
 
     #[test]
     fn point_load_returns_map_with_correct_fields() {
-        // Opaque selector stub: a Map that is clearly not a primitive.
-        let selector = Value::Map({
-            let mut m = BTreeMap::new();
-            m.insert(
-                Value::String("kind".to_string()),
-                Value::String("point_stub".to_string()),
-            );
-            m
-        });
+        let selector = selector_stub("point_stub");
         let force = make_scalar_vec3([5000.0, 0.0, 0.0], DimensionVector::FORCE);
 
         let result = eval_builtin("point_load", &[selector.clone(), force.clone()]);
@@ -332,7 +324,7 @@ mod tests {
     #[test]
     fn point_load_one_arg_returns_undef() {
         assert!(
-            eval_builtin("point_load", &[point_selector_stub()]).is_undef(),
+            eval_builtin("point_load", &[selector_stub("point_stub")]).is_undef(),
             "one arg should return Undef"
         );
     }
@@ -341,7 +333,7 @@ mod tests {
     fn point_load_three_args_returns_undef() {
         let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
         assert!(
-            eval_builtin("point_load", &[point_selector_stub(), force.clone(), force]).is_undef(),
+            eval_builtin("point_load", &[selector_stub("point_stub"), force.clone(), force]).is_undef(),
             "three args should return Undef"
         );
     }
@@ -350,7 +342,7 @@ mod tests {
     fn point_load_force_with_length_dim_returns_undef() {
         let wrong_dim_force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
         assert!(
-            eval_builtin("point_load", &[point_selector_stub(), wrong_dim_force]).is_undef(),
+            eval_builtin("point_load", &[selector_stub("point_stub"), wrong_dim_force]).is_undef(),
             "force with LENGTH dimension should return Undef"
         );
     }
@@ -359,7 +351,7 @@ mod tests {
     fn point_load_force_with_nan_component_returns_undef() {
         let nan_force = make_scalar_vec3([f64::NAN, 0.0, 0.0], DimensionVector::FORCE);
         assert!(
-            eval_builtin("point_load", &[point_selector_stub(), nan_force]).is_undef(),
+            eval_builtin("point_load", &[selector_stub("point_stub"), nan_force]).is_undef(),
             "force with NaN component should return Undef"
         );
     }
@@ -378,7 +370,7 @@ mod tests {
             },
         ]);
         assert!(
-            eval_builtin("point_load", &[point_selector_stub(), vec2]).is_undef(),
+            eval_builtin("point_load", &[selector_stub("point_stub"), vec2]).is_undef(),
             "force Vec2 should return Undef"
         );
     }
@@ -387,7 +379,7 @@ mod tests {
     fn point_load_force_not_a_vector_returns_undef() {
         let scalar = Value::Real(5.0);
         assert!(
-            eval_builtin("point_load", &[point_selector_stub(), scalar]).is_undef(),
+            eval_builtin("point_load", &[selector_stub("point_stub"), scalar]).is_undef(),
             "force = Real should return Undef"
         );
     }
@@ -435,35 +427,11 @@ mod tests {
         );
     }
 
-    // ── Helper: face selector stub ───────────────────────────────────────────
-
-    fn face_selector_stub() -> Value {
-        Value::Map({
-            let mut m = BTreeMap::new();
-            m.insert(
-                Value::String("kind".to_string()),
-                Value::String("face_stub".to_string()),
-            );
-            m
-        })
-    }
-
-    fn body_selector_stub() -> Value {
-        Value::Map({
-            let mut m = BTreeMap::new();
-            m.insert(
-                Value::String("kind".to_string()),
-                Value::String("body_stub".to_string()),
-            );
-            m
-        })
-    }
-
     // ── pressure_load constructor: 3-arg happy path ──────────────────────────
 
     #[test]
     fn pressure_load_3arg_returns_map_with_correct_fields() {
-        let face = face_selector_stub();
+        let face = selector_stub("face_stub");
         let magnitude = Value::Scalar {
             si_value: 5e6,
             dimension: DimensionVector::PRESSURE,
@@ -507,7 +475,7 @@ mod tests {
 
     #[test]
     fn pressure_load_normal_string_direction_accepted() {
-        let face = face_selector_stub();
+        let face = selector_stub("face_stub");
         let magnitude = Value::Scalar {
             si_value: 5e6,
             dimension: DimensionVector::PRESSURE,
@@ -536,7 +504,7 @@ mod tests {
 
     #[test]
     fn pressure_load_2arg_defaults_direction_to_normal() {
-        let face = face_selector_stub();
+        let face = selector_stub("face_stub");
         let magnitude = Value::Scalar {
             si_value: 5e6,
             dimension: DimensionVector::PRESSURE,
@@ -579,7 +547,7 @@ mod tests {
             dimension: DimensionVector::FORCE, // wrong: should be PRESSURE
         };
         assert!(
-            eval_builtin("pressure_load", &[face_selector_stub(), force_dim_mag]).is_undef(),
+            eval_builtin("pressure_load", &[selector_stub("face_stub"), force_dim_mag]).is_undef(),
             "magnitude with FORCE dimension should return Undef"
         );
     }
@@ -588,7 +556,7 @@ mod tests {
     fn pressure_load_magnitude_not_scalar_returns_undef() {
         let not_scalar = Value::Real(5.0);
         assert!(
-            eval_builtin("pressure_load", &[face_selector_stub(), not_scalar]).is_undef(),
+            eval_builtin("pressure_load", &[selector_stub("face_stub"), not_scalar]).is_undef(),
             "magnitude = Real should return Undef"
         );
     }
@@ -600,7 +568,7 @@ mod tests {
             dimension: DimensionVector::PRESSURE,
         };
         assert!(
-            eval_builtin("pressure_load", &[face_selector_stub(), nan_mag]).is_undef(),
+            eval_builtin("pressure_load", &[selector_stub("face_stub"), nan_mag]).is_undef(),
             "magnitude NaN should return Undef"
         );
     }
@@ -616,7 +584,7 @@ mod tests {
         assert!(
             eval_builtin(
                 "pressure_load",
-                &[face_selector_stub(), pressure_mag, bad_dir]
+                &[selector_stub("face_stub"), pressure_mag, bad_dir]
             )
             .is_undef(),
             "direction with LENGTH dimension should return Undef"
@@ -634,7 +602,7 @@ mod tests {
         assert!(
             eval_builtin(
                 "pressure_load",
-                &[face_selector_stub(), pressure_mag, zero_dir]
+                &[selector_stub("face_stub"), pressure_mag, zero_dir]
             )
             .is_undef(),
             "zero direction vector should return Undef"
@@ -661,7 +629,7 @@ mod tests {
         assert!(
             eval_builtin(
                 "pressure_load",
-                &[face_selector_stub(), pressure_mag, overflow_dir]
+                &[selector_stub("face_stub"), pressure_mag, overflow_dir]
             )
             .is_undef(),
             "direction with squared-magnitude overflow (+inf) should return Undef"
@@ -678,7 +646,7 @@ mod tests {
         assert!(
             eval_builtin(
                 "pressure_load",
-                &[face_selector_stub(), pressure_mag, bad_sentinel]
+                &[selector_stub("face_stub"), pressure_mag, bad_sentinel]
             )
             .is_undef(),
             "direction string other than \"normal\" should return Undef"
@@ -708,7 +676,7 @@ mod tests {
     #[test]
     fn pressure_load_one_arg_returns_undef() {
         assert!(
-            eval_builtin("pressure_load", &[face_selector_stub()]).is_undef(),
+            eval_builtin("pressure_load", &[selector_stub("face_stub")]).is_undef(),
             "1 arg → Undef"
         );
     }
@@ -724,7 +692,7 @@ mod tests {
         assert!(
             eval_builtin(
                 "pressure_load",
-                &[face_selector_stub(), pressure_mag, dir, extra]
+                &[selector_stub("face_stub"), pressure_mag, dir, extra]
             )
             .is_undef(),
             "4 args → Undef"
@@ -735,7 +703,7 @@ mod tests {
 
     #[test]
     fn traction_load_returns_map_with_correct_fields() {
-        let face = face_selector_stub();
+        let face = selector_stub("face_stub");
         // Shear traction with normal+tangential components (Pa).
         let traction = make_scalar_vec3([2e6, 0.0, -1e6], DimensionVector::PRESSURE);
 
@@ -769,7 +737,7 @@ mod tests {
     fn traction_load_traction_force_dim_returns_undef() {
         let bad = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
         assert!(
-            eval_builtin("traction_load", &[face_selector_stub(), bad]).is_undef(),
+            eval_builtin("traction_load", &[selector_stub("face_stub"), bad]).is_undef(),
             "traction with FORCE dim → Undef"
         );
     }
@@ -778,7 +746,7 @@ mod tests {
     fn traction_load_traction_dimensionless_returns_undef() {
         let bad = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         assert!(
-            eval_builtin("traction_load", &[face_selector_stub(), bad]).is_undef(),
+            eval_builtin("traction_load", &[selector_stub("face_stub"), bad]).is_undef(),
             "dimensionless traction → Undef"
         );
     }
@@ -787,7 +755,7 @@ mod tests {
     fn traction_load_traction_nan_returns_undef() {
         let nan_vec = make_scalar_vec3([f64::NAN, 0.0, 0.0], DimensionVector::PRESSURE);
         assert!(
-            eval_builtin("traction_load", &[face_selector_stub(), nan_vec]).is_undef(),
+            eval_builtin("traction_load", &[selector_stub("face_stub"), nan_vec]).is_undef(),
             "NaN traction component → Undef"
         );
     }
@@ -805,7 +773,7 @@ mod tests {
             },
         ]);
         assert!(
-            eval_builtin("traction_load", &[face_selector_stub(), vec2]).is_undef(),
+            eval_builtin("traction_load", &[selector_stub("face_stub"), vec2]).is_undef(),
             "2-component traction → Undef"
         );
     }
@@ -813,7 +781,7 @@ mod tests {
     #[test]
     fn traction_load_traction_real_returns_undef() {
         assert!(
-            eval_builtin("traction_load", &[face_selector_stub(), Value::Real(1.0)]).is_undef(),
+            eval_builtin("traction_load", &[selector_stub("face_stub"), Value::Real(1.0)]).is_undef(),
             "traction = Real → Undef"
         );
     }
@@ -838,7 +806,7 @@ mod tests {
     #[test]
     fn traction_load_one_arg_returns_undef() {
         assert!(
-            eval_builtin("traction_load", &[face_selector_stub()]).is_undef(),
+            eval_builtin("traction_load", &[selector_stub("face_stub")]).is_undef(),
             "1 arg → Undef"
         );
     }
@@ -849,7 +817,7 @@ mod tests {
         assert!(
             eval_builtin(
                 "traction_load",
-                &[face_selector_stub(), traction.clone(), traction]
+                &[selector_stub("face_stub"), traction.clone(), traction]
             )
             .is_undef(),
             "3 args → Undef"
@@ -862,7 +830,7 @@ mod tests {
     fn body_force_returns_map_with_correct_fields() {
         use super::force_density_dim;
 
-        let body = body_selector_stub();
+        let body = selector_stub("body_stub");
         // Weight-density of steel ≈ 7850 kg/m³ × 9.81 m/s² ≈ 77 kN/m³.
         let fd = make_scalar_vec3([0.0, 0.0, -77000.0], force_density_dim());
 
@@ -907,7 +875,7 @@ mod tests {
         // FORCE instead of ForceDensity.
         let bad = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::FORCE);
         assert!(
-            eval_builtin("body_force", &[body_selector_stub(), bad]).is_undef(),
+            eval_builtin("body_force", &[selector_stub("body_stub"), bad]).is_undef(),
             "FORCE dim → Undef"
         );
     }
@@ -916,7 +884,7 @@ mod tests {
     fn body_force_pressure_dim_returns_undef() {
         let bad = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::PRESSURE);
         assert!(
-            eval_builtin("body_force", &[body_selector_stub(), bad]).is_undef(),
+            eval_builtin("body_force", &[selector_stub("body_stub"), bad]).is_undef(),
             "PRESSURE dim → Undef"
         );
     }
@@ -926,7 +894,7 @@ mod tests {
         use super::force_density_dim;
         let inf_vec = make_scalar_vec3([f64::INFINITY, 0.0, 0.0], force_density_dim());
         assert!(
-            eval_builtin("body_force", &[body_selector_stub(), inf_vec]).is_undef(),
+            eval_builtin("body_force", &[selector_stub("body_stub"), inf_vec]).is_undef(),
             "Inf component → Undef"
         );
     }
@@ -954,7 +922,7 @@ mod tests {
             },
         ]);
         assert!(
-            eval_builtin("body_force", &[body_selector_stub(), vec4]).is_undef(),
+            eval_builtin("body_force", &[selector_stub("body_stub"), vec4]).is_undef(),
             "4-component vector → Undef"
         );
     }
@@ -977,7 +945,7 @@ mod tests {
     #[test]
     fn body_force_one_arg_returns_undef() {
         assert!(
-            eval_builtin("body_force", &[body_selector_stub()]).is_undef(),
+            eval_builtin("body_force", &[selector_stub("body_stub")]).is_undef(),
             "1 arg → Undef"
         );
     }
@@ -987,7 +955,7 @@ mod tests {
         use super::force_density_dim;
         let fd = make_scalar_vec3([0.0, 0.0, -77000.0], force_density_dim());
         assert!(
-            eval_builtin("body_force", &[body_selector_stub(), fd.clone(), fd]).is_undef(),
+            eval_builtin("body_force", &[selector_stub("body_stub"), fd.clone(), fd]).is_undef(),
             "3 args → Undef"
         );
     }
