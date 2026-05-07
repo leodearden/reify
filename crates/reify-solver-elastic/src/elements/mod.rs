@@ -80,6 +80,31 @@ pub struct QuadraturePoint {
 /// reference→physical Jacobian (forward map only; inverse / Jᵀ⁻¹
 /// mapping for physical-gradient assembly is the consumer's
 /// responsibility — see PRD task #8).
+///
+/// # Performance note (deferred refactor)
+///
+/// `shape_at` and `shape_grad_at` currently return `Vec<f64>` /
+/// `Vec<[f64; 3]>`, which heap-allocates on every call. The skeleton
+/// crate has no hot-path consumers yet, so this is acceptable for the
+/// v0.3 reference-element ship, but stiffness assembly (PRD task #8)
+/// calls these once per element per quadrature point — millions of
+/// times for nontrivial meshes.
+///
+/// When task #8 wires assembly, switch the return type to a
+/// stack-friendly form before consumers proliferate. Two viable shapes:
+///
+/// 1. Fill-in-place variants — `fn shape_at_into(&self, coord, out:
+///    &mut [f64])` and `fn shape_grad_at_into(&self, coord, out:
+///    &mut [[f64; 3]])` — letting the caller reuse a single buffer
+///    across the inner quadrature loop.
+/// 2. Fixed-capacity returns — `SmallVec<[f64; 16]>` /
+///    `SmallVec<[[f64; 3]; 16]>` (16 covers P1 / P2 / future hex8 with
+///    no spill), giving an inline buffer without changing the call
+///    site's signature.
+///
+/// `N_NODES` is an associated `const`, so either rework is a local
+/// change in `tet_p1.rs` / `tet_p2.rs`; the trait-level signature
+/// change is the only cross-cutting concern.
 pub trait ReferenceElement {
     /// Number of Lagrangian nodes per element (e.g., 4 for P1, 10 for P2).
     const N_NODES: usize;
@@ -135,37 +160,8 @@ pub trait ReferenceElement {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::{QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2};
-
-    #[test]
-    fn reference_coord_constructor_exposes_components() {
-        let c = ReferenceCoord::new(0.1, 0.2, 0.3);
-        assert_eq!(c.xi, 0.1);
-        assert_eq!(c.eta, 0.2);
-        assert_eq!(c.zeta, 0.3);
-    }
-
-    #[test]
-    fn quadrature_point_carries_coord_and_weight() {
-        let q = QuadraturePoint {
-            coord: ReferenceCoord::new(0.25, 0.25, 0.25),
-            weight: 1.0 / 6.0,
-        };
-        assert_eq!(q.coord.xi, 0.25);
-        assert_eq!(q.coord.eta, 0.25);
-        assert_eq!(q.coord.zeta, 0.25);
-        assert_eq!(q.weight, 1.0 / 6.0);
-    }
-
-    #[test]
-    fn tet_p1_implements_reference_element_with_four_nodes() {
-        assert_eq!(<TetP1 as ReferenceElement>::N_NODES, 4);
-    }
-
-    #[test]
-    fn tet_p2_implements_reference_element_with_ten_nodes() {
-        assert_eq!(<TetP2 as ReferenceElement>::N_NODES, 10);
-    }
-}
+// Behavioral coverage for the trait surface lives in the per-element
+// modules (`tet_p1.rs`, `tet_p2.rs`): Kronecker delta, partition of
+// unity, quadrature integration, and Jacobian determinants exercise
+// every public method of `ReferenceElement`. A doc-test on the crate
+// root (`lib.rs`) smoke-tests the re-export wiring.

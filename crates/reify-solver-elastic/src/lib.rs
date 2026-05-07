@@ -22,6 +22,24 @@
 //! - Bridging the stdlib-side `ElementOrder` enum (in
 //!   `crates/reify-compiler/stdlib/solver_elastic.ri`) to the Rust solver
 //!   types → PRD task #16's job.
+//!
+//! # Re-export smoke test
+//!
+//! ```
+//! use reify_solver_elastic::{
+//!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2,
+//! };
+//!
+//! let _: TetP1 = TetP1;
+//! let _: TetP2 = TetP2;
+//! assert_eq!(<TetP1 as ReferenceElement>::N_NODES, 4);
+//! assert_eq!(<TetP2 as ReferenceElement>::N_NODES, 10);
+//! let _ = QuadraturePoint {
+//!     coord: ReferenceCoord::new(0.25, 0.25, 0.25),
+//!     weight: 1.0 / 6.0,
+//! };
+//! let _ = Jacobian::from_matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+//! ```
 
 pub mod elements;
 
