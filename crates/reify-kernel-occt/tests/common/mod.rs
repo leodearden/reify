@@ -221,6 +221,10 @@ pub fn run_local_feature_reports_face_records<F>(
     const BOX_SIDE_M: f64 = 10.0e-3;
 
     assert!(
+        param_m > 0.0,
+        "precondition violated: param_m must be positive, got {param_m:.4e} m",
+    );
+    assert!(
         param_m <= BOX_SIDE_M * 0.1,
         "precondition violated: param_m ({param_m:.4e} m) must be ≤ {} m (10% of BOX_SIDE_M); \
          larger values make the 90%-volume assertion meaningless",

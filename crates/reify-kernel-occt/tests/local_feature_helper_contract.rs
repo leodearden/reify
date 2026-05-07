@@ -87,6 +87,29 @@ fn helper_panics_when_face_generated_parent_index_nonzero() {
 }
 
 /// Verify the helper panics with a message containing "precondition violated"
+/// when `param_m` is non-positive (zero or negative).
+///
+/// A zero or negative radius/distance would produce meaningless geometry
+/// (OCCT may reject it silently or return a trivial result), causing the
+/// volume assertions to fail with confusing messages rather than a clear
+/// precondition error. The lower-bound assertion fires at the very top of
+/// `run_local_feature_reports_face_records`, before the box build and before
+/// the `op` closure is invoked — same trick as
+/// `helper_panics_when_param_m_exceeds_precondition`.
+#[test]
+#[should_panic(expected = "precondition violated")]
+fn helper_panics_when_param_m_nonpositive() {
+    let kernel = OcctKernelHandle::spawn();
+    // -1.0e-3 m is unambiguously non-positive.
+    common::run_local_feature_reports_face_records(
+        &kernel,
+        -1.0e-3,
+        |_, _| panic!("op closure should not be reached when precondition fails"),
+        "test_op",
+    );
+}
+
+/// Verify the helper panics with a message containing "precondition violated"
 /// when `param_m` exceeds `BOX_SIDE_M * 0.1` (1 mm on a 10 mm cube).
 ///
 /// The precondition assertion fires at the very top of
