@@ -8,6 +8,74 @@
 
 pub mod tet;
 
+use crate::constitutive::IsotropicElastic;
+
+/// Tetrahedral element interpolation order — P1 (linear, 4 nodes) or
+/// P2 (quadratic, 10 nodes).
+///
+/// This is the **Rust-side** order enum local to `reify-solver-elastic`.
+/// Bridging to the stdlib-side `ElementOrder` enum (in
+/// `crates/reify-compiler/stdlib/solver_elastic.ri`) is PRD task #16's
+/// job and lives in the engine-integration layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementOrder {
+    /// 4-node linear (P1) tetrahedron; `n_dofs = 12`.
+    P1,
+    /// 10-node quadratic (P2) tetrahedron with edge-midpoint nodes;
+    /// `n_dofs = 30`.
+    P2,
+}
+
+/// Public dispatch entry point: compute the element-stiffness matrix
+/// for a single tetrahedron of the given interpolation order.
+///
+/// Routes to [`tet::element_stiffness_p1`] for `ElementOrder::P1`
+/// (requires `phys_nodes.len() == 4`) or [`tet::element_stiffness_p2`]
+/// for `ElementOrder::P2` (requires `phys_nodes.len() == 10`).
+///
+/// The slice-shaped signature lets a single dispatcher accept either
+/// node count without const-generic gymnastics. Length is checked at
+/// runtime; a mismatch panics with a descriptive message naming the
+/// expected `ElementOrder` variant and the observed length.
+///
+/// # Panics
+///
+/// Panics if `phys_nodes.len()` does not match the expected node count
+/// for `order` (4 for `P1`, 10 for `P2`).
+pub fn element_stiffness(
+    order: ElementOrder,
+    phys_nodes: &[[f64; 3]],
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    match order {
+        ElementOrder::P1 => {
+            assert_eq!(
+                phys_nodes.len(),
+                4,
+                "ElementOrder::P1 requires 4 phys_nodes, got {}",
+                phys_nodes.len(),
+            );
+            // Length checked above, so the conversion is infallible.
+            let arr: &[[f64; 3]; 4] = phys_nodes
+                .try_into()
+                .expect("phys_nodes.len() == 4 just asserted");
+            tet::element_stiffness_p1(arr, material)
+        }
+        ElementOrder::P2 => {
+            assert_eq!(
+                phys_nodes.len(),
+                10,
+                "ElementOrder::P2 requires 10 phys_nodes, got {}",
+                phys_nodes.len(),
+            );
+            let arr: &[[f64; 3]; 10] = phys_nodes
+                .try_into()
+                .expect("phys_nodes.len() == 10 just asserted");
+            tet::element_stiffness_p2(arr, material)
+        }
+    }
+}
+
 /// A dense, square element-stiffness matrix `K_e` of size `n_dofs × n_dofs`.
 ///
 /// The DOF index is `3 · node_idx + axis` (node-major, axis-minor; `axis ∈
