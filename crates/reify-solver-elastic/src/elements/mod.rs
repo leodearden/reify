@@ -148,13 +148,13 @@ pub trait ReferenceElement {
     ///   in canonical Hughes/Gmsh order `(0,1), (1,2), (2,0), (0,3),
     ///   (1,3), (2,3)`.
     fn jacobian(&self, phys_nodes: &[[f64; 3]], ref_coord: ReferenceCoord) -> Jacobian {
-        debug_assert_eq!(
+        assert_eq!(
             phys_nodes.len(),
             Self::N_NODES,
             "phys_nodes.len() must equal Self::N_NODES",
         );
         let grads = self.shape_grad_at(ref_coord);
-        debug_assert_eq!(
+        assert_eq!(
             grads.len(),
             Self::N_NODES,
             "shape_grad_at must return N_NODES rows",
