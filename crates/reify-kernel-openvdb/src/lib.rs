@@ -34,6 +34,10 @@ pub mod ingest;
 pub mod kernel;
 pub mod register;
 
+// Real FFI bridge — only compiled when the build script detects OpenVDB.
+#[cfg(has_openvdb)]
+pub mod ffi;
+
 pub use ingest::{
     IngestError, IngestOutcome, KNOWN_UNITS, OpenVdbGridKind, OpenVdbGridSource,
     OpenVdbInterpolation, lower_to_sampled, read_vdb_file, validate_grid_units,

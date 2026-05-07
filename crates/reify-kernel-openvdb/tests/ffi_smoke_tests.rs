@@ -12,7 +12,11 @@
 #[cfg(has_openvdb)]
 #[test]
 fn openvdb_version_is_13() {
-    let version = reify_kernel_openvdb::ffi::openvdb_version_string();
+    // cxx-bridge generates the functions at ffi::ffi:: (matching OCCT's
+    // crate::ffi::ffi:: convention; the outer mod is the file, the inner is
+    // the cxx::bridge-generated module).
+    reify_kernel_openvdb::ffi::ffi::openvdb_initialize();
+    let version = reify_kernel_openvdb::ffi::ffi::openvdb_version_string();
     assert!(
         version.starts_with("13."),
         "Expected libopenvdb 13.x from conda-forge env; got {version:?}"
