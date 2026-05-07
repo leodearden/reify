@@ -15,7 +15,7 @@
 ///
 /// All fields are optional except `deterministic`; the mesher fills defaults
 /// from the auto-size and config layers when a field is `None`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct MeshingOptions {
     /// Target characteristic mesh edge length (millimetres). When `None`,
     /// the mesher derives a default from the smallest geometric feature
@@ -32,14 +32,4 @@ pub struct MeshingOptions {
     /// produced; treating the flag as part of the key would force re-meshing
     /// on every flag flip and defeat the cross-machine reproducibility purpose.
     pub deterministic: bool,
-}
-
-impl Default for MeshingOptions {
-    fn default() -> Self {
-        Self {
-            mesh_size: None,
-            threads: None,
-            deterministic: false,
-        }
-    }
 }
