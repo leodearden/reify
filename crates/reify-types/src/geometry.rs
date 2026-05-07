@@ -1597,6 +1597,35 @@ pub struct BooleanOpHistoryRecords {
 /// entries on the result handles.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SweepOpHistoryRecords {
+    /// Count of Modified/Generated children that the FFI sweep primitive
+    /// observed but could not map back into the result face/edge map (i.e.
+    /// the child shape reported by BRepPrimAPI / BRepOffsetAPI was absent
+    /// from the result's TopExp map). For vanilla sweep operations this
+    /// should be zero; a non-zero value indicates a kernel correspondence
+    /// loss or map-type mismatch.
+    ///
+    /// **Bulk counter:** this is a single accumulator that aggregates drops
+    /// across all four `emit_sweep_*` invocations per sweep variant — that
+    /// is, `make_prism_with_history` / `make_revolve_with_history` /
+    /// `make_pipe_with_history` each accumulate drops from their respective
+    /// Modified/Generated/face/edge emission calls into this field. It does
+    /// **not** break down by shape kind (face vs. edge) or by which operand
+    /// produced the miss.
+    ///
+    /// **Diagnostic note:** the increment path inside the C++ sweep helpers
+    /// is only tested indirectly through the zero-count assertion in the
+    /// canonical happy-path integration tests. A dedicated test exercising
+    /// the non-zero path is deferred to a follow-up task.
+    ///
+    /// **TODO:** wire this counter into error reporting so that a non-zero
+    /// count surfaces as a warning log, rather than being silently recorded.
+    /// Until that follow-up lands, callers must inspect this field manually
+    /// if they need to detect kernel correspondence loss. If the wiring task
+    /// requires actionable per-kind diagnostics, split
+    /// `SweepOpHistory.silent_drop_count` (C++ struct) into separate
+    /// face/edge counters before adding new consumers; the deferred split is
+    /// intentional pending that task's specification of required granularity.
+    pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
     pub face_deleted: Vec<DeletedRecord>,
@@ -2645,6 +2674,7 @@ mod tests {
         // identify which faces are caps; the cap lists come from
         // BRepBuilderAPI_Sweep::FirstShape()/LastShape()).
         let records = SweepOpHistoryRecords {
+            silent_drop_count: 0,
             face_modified: vec![HistoryRecord {
                 parent_index: 0,
                 parent_subshape_index: 1,
@@ -2691,6 +2721,7 @@ mod tests {
     #[test]
     fn sweep_op_history_records_clone_preserves_value() {
         let records = SweepOpHistoryRecords {
+            silent_drop_count: 0,
             face_modified: Vec::new(),
             face_generated: vec![HistoryRecord {
                 parent_index: 0,

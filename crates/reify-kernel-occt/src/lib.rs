@@ -1066,6 +1066,7 @@ impl OcctKernel {
             // live (separate `std::vector`s in the wrapper).
             let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
             let records = SweepOpHistoryRecords {
+                silent_drop_count: 0,
                 face_modified,
                 face_generated,
                 face_deleted,
@@ -1193,6 +1194,7 @@ impl OcctKernel {
             // live (separate `std::vector`s in the wrapper).
             let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
             let records = SweepOpHistoryRecords {
+                silent_drop_count: 0,
                 face_modified,
                 face_generated,
                 face_deleted,
@@ -1271,6 +1273,7 @@ impl OcctKernel {
             // been read off (mirrors extrude/revolve pattern).
             let result_shape = ffi::ffi::sweep_op_history_take_result_shape(history.pin_mut());
             let records = SweepOpHistoryRecords {
+                silent_drop_count: 0,
                 face_modified,
                 face_generated,
                 face_deleted,
