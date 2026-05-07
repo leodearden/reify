@@ -708,6 +708,75 @@ fn elastic_options_constrains_shell_threshold_below_one() {
     );
 }
 
+// ─── task-2990: ElasticOptions force_tet / require_hex_wedge mutual-exclusion ──
+
+/// `ElasticOptions` must declare a mutual-exclusion constraint preventing
+/// `force_tet` and `require_hex_wedge` from both being `true`:
+///
+///   constraint !(force_tet && require_hex_wedge)
+///
+/// `force_tet` and `require_hex_wedge` are opposing escape hatches (PRD
+/// `docs/prds/v0_3/hex-wedge-meshing.md` task #9, §"Two opposing escape
+/// hatches"): `force_tet` disables hex/wedge promotion entirely; `require_hex_wedge`
+/// upgrades any tet fall-back to a hard error. Setting both `true` is a
+/// contradiction — the constraint flags it as a validation error at construction
+/// time, following the task-2544 convention: "the contract in production code is
+/// made explicit rather than relying solely on test coverage."
+///
+/// Both the **operator chain** (UnOp::Not over BinOp::And) and the **operand
+/// identity** (union of collect_value_ref_members across both sides must contain
+/// both "force_tet" and "require_hex_wedge") are pinned to close the regression
+/// window where:
+///   - a swap to `!(force_tet || require_hex_wedge)` (wrong semantics: would
+///     reject the legal "exactly one true" state) would pass on a name-and-op
+///     check alone;
+///   - a degenerate `!force_tet` would pass on a name-only check.
+///
+/// The test counts exactly ONE such constraint (`.filter(...).count() == 1`)
+/// rather than using `.any(...)` so a future duplicate addition is also caught.
+#[test]
+fn elastic_options_force_tet_and_require_hex_wedge_mutually_exclusive_constraint() {
+    let template = find_structure("ElasticOptions");
+
+    let count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            // Outer expression must be `!<operand>` (UnOp::Not).
+            let operand = match &c.expr.kind {
+                CompiledExprKind::UnOp { op, operand } if *op == UnOp::Not => operand,
+                _ => return false,
+            };
+            // Inner expression must be `<left> && <right>` (BinOp::And).
+            let (left, right) = match &operand.kind {
+                CompiledExprKind::BinOp { op, left, right } if *op == BinOp::And => {
+                    (left.as_ref(), right.as_ref())
+                }
+                _ => return false,
+            };
+            // Union of ValueRef names across both sides must include both
+            // "force_tet" and "require_hex_wedge" — allowing either operand
+            // order (AST does not normalize commutative &&).
+            let mut refs = collect_value_ref_members(left);
+            refs.extend(collect_value_ref_members(right));
+            refs.contains(&"force_tet") && refs.contains(&"require_hex_wedge")
+        })
+        .count();
+
+    assert_eq!(
+        count,
+        1,
+        "ElasticOptions should declare exactly 1 `constraint !(force_tet && require_hex_wedge)`; \
+         got {} matching constraints (full constraint list: {:?})",
+        count,
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ─── task-3044: ElasticResult non-negativity constraints ─────────────────────
 
 /// `ElasticResult` must declare non-negativity constraints on `iterations` and
