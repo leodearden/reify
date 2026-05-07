@@ -24,6 +24,14 @@ pub const OPTIMIZED_ANNOTATION: &str = "optimized";
 /// annotation name as a single source of truth across crates.
 pub const SOLVER_HINT_ANNOTATION: &str = "solver_hint";
 
+/// Canonical lowercase spelling of the `@shell` annotation name.
+///
+/// Marks an entity declaration as a thin-walled shell. The optional first
+/// argument is a numeric thickness (Length-typed in a future pass); when
+/// omitted, downstream consumers (T18 auto-classification dispatcher) are
+/// expected to derive thickness from medial-axis analysis.
+pub const SHELL_ANNOTATION: &str = "shell";
+
 /// Canonical lowercase spelling of the `@solid` annotation name.
 ///
 /// Marks an entity declaration as a solid body to bypass medial-axis extraction

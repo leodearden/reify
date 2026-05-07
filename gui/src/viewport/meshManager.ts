@@ -3,6 +3,7 @@ import {
   BufferAttribute,
   Mesh,
   MeshStandardMaterial,
+  MeshPhongMaterial,
   MeshBasicMaterial,
   Group,
   DoubleSide,
@@ -42,12 +43,28 @@ function colorForEntity(entityPath: string): Color {
   return new Color(ACCENT_PALETTE[hashEntityPath(entityPath)]);
 }
 
+/**
+ * Describes how to map per-vertex scalar data to vertex colours.
+ * `channel` names the key in `MeshData.scalar_channels` to read.
+ * `bake(scalars)` converts the scalar Float32Array to an interleaved
+ * RGB Float32Array of length vertex_count * 3 (one [R,G,B] per vertex).
+ */
+export interface MeshColorize {
+  channel: string;
+  bake: (scalars: Float32Array) => Float32Array;
+}
+
+export interface MeshManagerOptions {
+  colorize?: MeshColorize;
+}
+
 export interface MeshManagerContext {
   sync: (meshes: Record<string, MeshData>) => void;
   dispose: () => void;
   getSceneMeshes: () => Map<string, Mesh>;
   setVisibility: (entityPath: string, state: VisibilityState) => void;
   getGhostMeshes: () => Map<string, Mesh>;
+  setColorize: (opts: MeshColorize | null) => void;
 }
 
 /**
@@ -69,7 +86,14 @@ function validateMeshData(data: MeshData): boolean {
   return true;
 }
 
-export function createMeshManager(scene: Scene): MeshManagerContext {
+export function createMeshManager(scene: Scene, options?: MeshManagerOptions): MeshManagerContext {
+  // Active colorize config — captured at creation time and updatable via setColorize.
+  let colorize: MeshColorize | null = options?.colorize ?? null;
+
+  // Side-table: for each entity, the scalar_channels map at creation time.
+  // Kept so setColorize can re-bake without requiring a full geometry sync.
+  const meshScalarChannels = new Map<string, Record<string, Float32Array>>();
+
   const meshMap = new Map<string, Mesh>();
   const visibilityMap = new Map<string, VisibilityState>();
   const ghostMeshMap = new Map<string, Mesh>();
@@ -86,6 +110,19 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
   // This avoids a new Map allocation on every pointer-move raycast call.
   let sceneMeshCache: Map<string, Mesh> | null = null;
 
+  /**
+   * Returns the scalar Float32Array for the active colorize channel if:
+   *   - colorize is set, AND
+   *   - the mesh data exposes that channel with at least one value.
+   * Returns null otherwise.
+   */
+  function activeScalars(data: MeshData): Float32Array | null {
+    if (!colorize) return null;
+    const channel = data.scalar_channels?.[colorize.channel];
+    if (!channel || channel.length === 0) return null;
+    return channel;
+  }
+
   function createMeshFromData(entityPath: string, data: MeshData): Mesh | null {
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(data.vertices, 3));
@@ -96,10 +133,24 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       geometry.computeVertexNormals();
     }
 
-    const material = new MeshStandardMaterial({
-      color: colorForEntity(entityPath),
-      side: DoubleSide,
-    });
+    // If colorize is active and this mesh carries the channel, build a colour
+    // BufferAttribute and use MeshPhongMaterial with vertexColors.
+    const scalars = activeScalars(data);
+    let material: MeshStandardMaterial | MeshPhongMaterial;
+    if (scalars !== null && colorize !== null) {
+      const colors = colorize.bake(scalars);
+      geometry.setAttribute('color', new BufferAttribute(colors, 3));
+      material = new MeshPhongMaterial({
+        vertexColors: true,
+        flatShading: false,
+        side: DoubleSide,
+      });
+    } else {
+      material = new MeshStandardMaterial({
+        color: colorForEntity(entityPath),
+        side: DoubleSide,
+      });
+    }
 
     try {
       (geometry as any).computeBoundsTree();
@@ -108,6 +159,11 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       material.dispose();
       console.error(`Failed to build BVH for mesh '${entityPath}'`, err);
       return null;
+    }
+
+    // Store the scalar channels for later setColorize re-bake operations.
+    if (data.scalar_channels) {
+      meshScalarChannels.set(entityPath, data.scalar_channels);
     }
 
     const mesh = new Mesh(geometry, material);
@@ -160,6 +216,25 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     geometry.boundingSphere = null;
     geometry.boundingBox = null;
 
+    // Update the side-table scalar channels so setColorize picks up fresh data.
+    // Use mesh.name as the entity path (set to entityPath in createMeshFromData).
+    meshScalarChannels.set(mesh.name, data.scalar_channels ?? {});
+
+    // If colorize is active and this mesh already has a colour attribute, re-bake
+    // the colours in place with the new scalars.  Mirrors the setColorize mutation
+    // path; ensures that sync()→sync() updates (e.g. from G2 FEA sourcing) are
+    // reflected immediately without a full geometry resync or material swap.
+    if (colorize) {
+      const scalars = (data.scalar_channels ?? {})[colorize.channel];
+      const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
+      if (scalars && scalars.length > 0 && colorAttr) {
+        const newColors = colorize.bake(scalars);
+        colorAttr.array = newColors;
+        (colorAttr as { count: number }).count = newColors.length / 3;
+        colorAttr.needsUpdate = true;
+      }
+    }
+
     // Rebuild BVH for the updated geometry
     try {
       (geometry as any).computeBoundsTree();
@@ -205,8 +280,9 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
 
     (mesh.geometry as any).disposeBoundsTree();
     (mesh.geometry as BufferGeometry).dispose();
-    (mesh.material as MeshStandardMaterial).dispose();
+    (mesh.material as { dispose: () => void }).dispose();
     meshMap.delete(entityPath);
+    meshScalarChannels.delete(entityPath);
     visibilityMap.delete(entityPath);
   }
 
@@ -253,6 +329,48 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       } else if (state === 'ghost') {
         addGhostClone(entityPath, mesh);
       }
+    }
+  }
+
+  /**
+   * Update the active colorize config and re-bake colour BufferAttributes in place
+   * for every mesh that already has a `color` attribute (i.e. was created while a
+   * colorize channel was active).
+   *
+   * **Asymmetric behaviour:** the material type (`MeshPhongMaterial` vs.
+   * `MeshStandardMaterial`) is decided at mesh-creation time and is NOT changed
+   * mid-stream by this call.  Key consequences:
+   * - Meshes created while colorize was active keep their `MeshPhongMaterial`
+   *   even after `setColorize(null)`; meshes synced after that call use
+   *   `MeshStandardMaterial`.
+   * - Meshes created while colorize was null will never get a colour attribute
+   *   via `setColorize(opts)` alone; only meshes synced after the call will
+   *   use `MeshPhongMaterial`.
+   * Callers that need to flip all mesh materials uniformly must call `sync({})`
+   * to drop all meshes, then re-sync the full dataset.
+   *
+   * When `opts` is null the colorize state is cleared; existing colour buffers
+   * on already-phong meshes are left unchanged (material teardown is out of
+   * scope for this task).
+   */
+  function setColorize(opts: MeshColorize | null): void {
+    colorize = opts;
+    if (opts === null) return;
+
+    for (const [entityPath, mesh] of meshMap) {
+      const channels = meshScalarChannels.get(entityPath);
+      if (!channels) continue;
+      const scalars = channels[opts.channel];
+      if (!scalars || scalars.length === 0) continue;
+
+      const geometry = mesh.geometry as BufferGeometry;
+      const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
+      if (!colorAttr) continue; // mesh was created without colorize; skip
+
+      const newColors = opts.bake(scalars);
+      colorAttr.array = newColors;
+      (colorAttr as { count: number }).count = newColors.length / 3;
+      colorAttr.needsUpdate = true;
     }
   }
 
@@ -343,5 +461,5 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     return new Map(ghostMeshMap);
   }
 
-  return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes };
+  return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes, setColorize };
 }

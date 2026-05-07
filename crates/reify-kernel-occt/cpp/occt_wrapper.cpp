@@ -2651,6 +2651,8 @@ CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
         if (face.IsNull()) {
             throw std::runtime_error("curvature_at: face is null");
         }
+        // Existence check mirrors face_outward_unit_normal_at_uv; gives a
+        // clearer error than BRepAdaptor's null check.
         Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
         if (surf.IsNull()) {
             throw std::runtime_error(
@@ -2658,54 +2660,131 @@ CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
             );
         }
 
-        // NOTE: curvature properties are evaluated on the raw Geom_Surface
-        // obtained from BRep_Tool::Surface, while surface_normal_at uses
-        // BRepAdaptor_Surface::D1.  For faces with a non-identity BRep_TFace
-        // location (e.g. transformed or composed surfaces), these two
-        // abstractions can evaluate on slightly different geometric entities,
-        // so numerical agreement between the two APIs is not guaranteed on
-        // such faces.  For standard primitives (sphere, cylinder, plane)
-        // produced by BRepPrimAPI, the location is identity and both
-        // approaches agree numerically.
-        GeomLProp_SLProps props(surf, u, v, /*degree=*/2, /*resolution=*/1e-9);
-        if (!props.IsCurvatureDefined()) {
+        // Uses BRepAdaptor_Surface::D2 throughout — honours TopoLoc_Location
+        // consistently with surface_normal_at; curvature derived from
+        // first/second fundamental forms.
+        BRepAdaptor_Surface adaptor(face);
+        gp_Pnt p;
+        gp_Vec du, dv, duu, dvv, duv;
+        adaptor.D2(u, v, p, du, dv, duu, dvv, duv);
+
+        // First fundamental form: E = du·du, F = du·dv, G = dv·dv.
+        double E = du.Dot(du);
+        double F = du.Dot(dv);
+        double G = dv.Dot(dv);
+        double det_I = E * G - F * F;
+
+        // Orientation-aware outward unit normal — computed up-front so that
+        // L, M, N are relative to the outward normal, giving H, κ values with
+        // correct signs automatically (no post-hoc swap needed for REVERSED faces).
+        // n_mag = |du × dv| = sqrt(det_I); checking n_mag directly mirrors
+        // face_outward_unit_normal_at_uv and guards both degenerate-normal and
+        // degenerate-parametrization cases with a single consistent threshold
+        // (versus comparing the area² quantity det_I against a magnitude threshold).
+        gp_Vec n_raw = du.Crossed(dv);
+        double n_mag = n_raw.Magnitude();
+        if (n_mag < CPP_DIR_MAG_MIN) {
             throw std::runtime_error(
-                "curvature_at: curvature undefined at (u, v)"
+                "curvature_at: degenerate surface (zero normal)"
             );
         }
-
-        double K = props.GaussianCurvature();
-        double H = props.MeanCurvature();
-        double k_max_raw = props.MaxCurvature();
-        double k_min_raw = props.MinCurvature();
-        gp_Dir d_max, d_min;
-        props.CurvatureDirections(d_max, d_min);
-
-        // When the face orientation is REVERSED our outward normal is flipped,
-        // so mean curvature H and both principal curvatures change sign.
-        // Gaussian curvature K = κ₁·κ₂ is invariant (both flip → product is
-        // unchanged).  The tangent-plane *vectors* themselves are
-        // direction-of-the-normal independent, but the *labels* "min" vs
-        // "max" follow the curvature ordering — so once both curvatures flip
-        // sign, what was previously paired with d_max (the larger value)
-        // becomes the smaller (more negative) value, i.e. the new kappa_min;
-        // we therefore swap both the curvature pair and the direction pair so
-        // that (kappa_min, d_min) and (kappa_max, d_max) remain correctly
-        // associated with the post-orientation normal.
         if (face.Orientation() == TopAbs_REVERSED) {
-            H = -H;
-            k_max_raw = -k_max_raw;
-            k_min_raw = -k_min_raw;
-            std::swap(k_min_raw, k_max_raw);
-            std::swap(d_min, d_max);
+            n_raw.Reverse();
+        }
+        gp_Vec n(n_raw.X() / n_mag, n_raw.Y() / n_mag, n_raw.Z() / n_mag);
+
+        // Second fundamental form: L = n·duu, M = n·duv, N = n·dvv.
+        double L = n.Dot(duu);
+        double M_coeff = n.Dot(duv);
+        double N_coeff = n.Dot(dvv);
+
+        // Gaussian K and mean H from fundamental forms.
+        double K = (L * N_coeff - M_coeff * M_coeff) / det_I;
+        double H = (E * N_coeff - 2.0 * F * M_coeff + G * L) / (2.0 * det_I);
+
+        // Principal curvatures from κ² − 2Hκ + K = 0.
+        // Clamp discriminant to ≥ 0 for FP safety.
+        double discriminant = std::max(0.0, H * H - K);
+        double sqrt_disc = std::sqrt(discriminant);
+        double kappa_max = H + sqrt_disc;
+        double kappa_min = H - sqrt_disc;
+
+        // Principal directions.
+        // Umbilical (sqrt_disc below a relative threshold, covers sphere and planar):
+        //   emit du-normalised as d_max and n×du-normalised as d_min.
+        //   Both are unit length and orthogonal to n (tangent-plane property holds).
+        //   Snap kappa_min = kappa_max = H to eliminate FP noise from sqrt_disc.
+        // Non-umbilical: solve (II − κI)v = 0 in (du_t, dv_t) parameter space;
+        //   pick the row of (II − κI) with larger L1 norm, set (du_t, dv_t) perp
+        //   to that row, map dir_3D = du_t·du + dv_t·dv, unit-normalise.
+        //
+        // Relative threshold: sqrt_disc / max(|kappa|, 1e-14) < 1e-4.
+        // Empirical safety margins (r=5 sphere, |kappa|=0.2):
+        //   Unplaced sphere:      sqrt_disc/|kappa| ~ 1e-8  (FP noise in H²−K).
+        //   Placed (π/3 Y-rot):  sqrt_disc/|kappa| ~ 1e-7  (rotation adds FP noise).
+        // Both sit a factor ≥ 1000× below the 1e-4 threshold, giving comfortable margin.
+        // Non-umbilical cylinder: sqrt_disc/|kappa| ~ 0.1/0.2 = 0.5 >> 1e-4 — correctly
+        // routed to the eigenvalue solver.
+        // Planar face (H=K=0): floor 1e-14 catches exact zero discriminant.
+        const double curv_scale = std::max({ std::abs(kappa_max), std::abs(kappa_min), 1e-14 });
+        const bool is_umbilical = (sqrt_disc < curv_scale * 1e-4);
+
+        // du_unit is safe: n_mag >= CPP_DIR_MAG_MIN > 0 implies |du × dv| > 0,
+        // so du is non-zero.
+        gp_Vec du_unit = du.Normalized();
+
+        gp_Vec d_max, d_min;
+        if (is_umbilical) {
+            // Umbilical: any tangent direction is principal; emit orthonormal pair.
+            // Snap curvatures to H to eliminate FP noise from sqrt_disc perturbation.
+            kappa_min = H;
+            kappa_max = H;
+            d_max = du_unit;
+            d_min = n.Crossed(du_unit);  // unit: n perp du_unit, both unit
+        } else {
+            // Non-umbilical eigenvalue solver.
+            auto principal_dir = [&](double kappa) -> gp_Vec {
+                // Rows of (II − κI):
+                //   row0 = [L − κE,   M_coeff − κF]
+                //   row1 = [M_coeff − κF, N_coeff − κG]
+                double a = L - kappa * E;
+                double b = M_coeff - kappa * F;
+                double d = N_coeff - kappa * G;
+                // Kernel of this symmetric 2×2: perpendicular to the dominant row.
+                double du_t, dv_t;
+                if (std::abs(a) + std::abs(b) >= std::abs(b) + std::abs(d)) {
+                    // Dominant row0 [a, b]: kernel direction is [-b, a].
+                    du_t = -b;
+                    dv_t = a;
+                } else {
+                    // Dominant row1 [b, d]: kernel direction is [-d, b].
+                    du_t = -d;
+                    dv_t = b;
+                }
+                gp_Vec dir_3d = du * du_t + dv * dv_t;
+                double mag = dir_3d.Magnitude();
+                if (mag < CPP_DIR_MAG_MIN) {
+                    // Degenerate kernel extraction — fall back to du direction.
+                    return du_unit;
+                }
+                return gp_Vec(dir_3d.X() / mag, dir_3d.Y() / mag, dir_3d.Z() / mag);
+            };
+
+            d_max = principal_dir(kappa_max);
+            d_min = principal_dir(kappa_min);
+            // If both eigenvalue solves degenerated (both fell back to du_unit —
+            // numerically possible for a near-umbilical point that slipped past the
+            // umbilical guard), d_max and d_min would be parallel, violating the
+            // orthogonality contract. Repair: reconstruct d_min as n×d_max so
+            // orthogonality is preserved by construction regardless of fallback path.
+            if (d_max.Dot(d_min) > 1.0 - 1e-6) {
+                d_min = n.Crossed(d_max);
+            }
         }
 
-        double kappa_min = k_min_raw;
-        double kappa_max = k_max_raw;
-
-        Point3 dmin{ d_min.X(), d_min.Y(), d_min.Z() };
-        Point3 dmax{ d_max.X(), d_max.Y(), d_max.Z() };
-        return CurvatureProps{ K, H, kappa_min, kappa_max, dmin, dmax };
+        Point3 dmin_pt{ d_min.X(), d_min.Y(), d_min.Z() };
+        Point3 dmax_pt{ d_max.X(), d_max.Y(), d_max.Z() };
+        return CurvatureProps{ K, H, kappa_min, kappa_max, dmin_pt, dmax_pt };
     });
 }
 
@@ -3280,6 +3359,41 @@ std::unique_ptr<OcctShape> make_triangle_face(
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = face_builder.Face();
+        return result;
+    });
+}
+
+/// Apply a rotation+translation placement to `shape` using
+/// `BRepBuilderAPI_Transform(..., Standard_False)` — Copy=False encodes the
+/// transformation into `TopLoc_Location` rather than baking it into the
+/// underlying geometry. This is the critical difference from `translate_shape`
+/// and `rotate_shape` (which use Copy=True and bake the transform in).
+///
+/// Used only by placed-face integration tests to exercise the
+/// non-identity-location code path through `BRepAdaptor_Surface`.
+std::unique_ptr<OcctShape> apply_test_placement_for_test(
+    const OcctShape& shape,
+    double ax, double ay, double az, double angle_rad,
+    double dx, double dy, double dz
+) {
+    return wrap_occt_call("apply_test_placement_for_test", [&]() {
+        // Rotation around axis (ax,ay,az) through the origin.
+        gp_Ax1 rot_axis(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(ax, ay, az));
+        gp_Trsf rot;
+        rot.SetRotation(rot_axis, angle_rad);
+        // Translation by (dx,dy,dz).
+        gp_Trsf trans;
+        trans.SetTranslation(gp_Vec(dx, dy, dz));
+        // Compose: translation after rotation (world-frame: first rotate, then translate).
+        gp_Trsf composed = trans * rot;
+        // Copy=Standard_False: encode into TopLoc_Location, do NOT bake into geometry.
+        BRepBuilderAPI_Transform transform(shape.shape, composed, Standard_False);
+        transform.Build();
+        if (!transform.IsDone()) {
+            throw std::runtime_error("apply_test_placement_for_test: transform failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = transform.Shape();
         return result;
     });
 }

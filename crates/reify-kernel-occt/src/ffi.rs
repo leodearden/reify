@@ -618,9 +618,12 @@ pub mod ffi {
         /// Gaussian, mean, and principal curvatures at the parametric point
         /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
         ///
-        /// Uses `GeomLProp_SLProps(surf, u, v, degree=2, resolution=1e-9)`.
-        /// Sign convention for H and κ follows the outward normal (negated for
-        /// `TopAbs_REVERSED` faces); Gaussian K is invariant.
+        /// Uses `BRepAdaptor_Surface::D2` — same abstraction as `surface_normal_at`
+        /// — so both APIs agree in world frame on faces with non-identity
+        /// `TopoLoc_Location`. Curvature is derived from the first/second
+        /// fundamental forms with an orientation-aware outward normal; sign
+        /// convention for H and κ follows that normal (correct for both FORWARD
+        /// and REVERSED faces without a post-hoc swap). Gaussian K is invariant.
         ///
         /// Throws (surfaces as `Err`) if the shape is not a face, has no
         /// underlying surface, or curvature is undefined at `(u, v)`.
@@ -759,6 +762,16 @@ pub mod ffi {
 
         /// CompSolid wrapping one 10×10×10 mm box → TopAbs_COMPSOLID; type-guard passes.
         fn make_compsolid_for_test() -> Result<UniquePtr<OcctShape>>;
+
+        /// Apply rotation+translation using `BRepBuilderAPI_Transform(..., Copy=false)`,
+        /// encoding the transform into `TopLoc_Location` rather than baking it into
+        /// geometry. Used by placed-face integration tests to exercise the non-identity
+        /// location path through `BRepAdaptor_Surface`. See C++ header for full contract.
+        fn apply_test_placement_for_test(
+            shape: &OcctShape,
+            ax: f64, ay: f64, az: f64, angle_rad: f64,
+            dx: f64, dy: f64, dz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;

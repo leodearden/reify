@@ -145,6 +145,15 @@ structure def ElasticOptions {
     // Zero or negative would mean "never converge" and silently exhaust
     // `max_iter` on every solve.
     constraint cg_tolerance > 0
+    // `cg_tolerance` must be strictly less than 1: a value >= 1 makes the
+    // convergence test `||r||/||b|| < cg_tolerance` accept the very first
+    // residual (the un-preconditioned initial residual trivially satisfies
+    // `||r||/||b|| < 1` for any non-trivial rhs), i.e. CG declares success
+    // without doing any work. The cap is `< 1` (not `< 0.5`) so callers can
+    // still use loose first-pass tolerances like `0.1`, `0.5`, or `0.9`
+    // (see the cg_tolerance param comment above); only the meaningless
+    // "any residual passes" case is excluded. Same task-2544 convention.
+    constraint cg_tolerance < 1
     // `shell_threshold` is the thickness/extent ratio used by Auto-mode
     // auto-classification (PRD T17). A non-positive threshold would silently
     // prevent all classification: no body would ever satisfy
@@ -221,4 +230,18 @@ structure def ElasticResult {
     param max_von_mises : Pressure
     param converged : Bool
     param iterations : Int
+
+    // `iterations` is a CG iteration count — a negative value is impossible.
+    // Declaring the lower bound at the structure-def level makes the contract
+    // explicit in production code rather than relying solely on test coverage
+    // (task 2544 convention).
+    //
+    // Cross-structure invariant `iterations <= ElasticOptions.max_iter` is enforced
+    // by the runtime FEA solver — Reify constraints can only reference cells in the
+    // same `structure def` scope.
+    constraint iterations >= 0
+    // `max_von_mises` is the peak von-Mises equivalent stress — a Frobenius norm
+    // of the deviatoric stress tensor, hence a magnitude. Negative values are
+    // physically impossible. Same task-2544 rationale as above.
+    constraint max_von_mises >= 0
 }

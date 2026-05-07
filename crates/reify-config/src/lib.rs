@@ -111,11 +111,11 @@ pub const DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE: usize = 100_000;
 pub struct AutoTypeParamsConfig {
     /// Cap on the cross-product DFS depth before falling back to BFS.
     /// Validated `> 0` at parse time; `0` is rejected with
-    /// [`ManifestError::InvalidMaxDepth`].
+    /// [`ManifestError::InvalidAutoTypeParamConfig`].
     pub max_depth: usize,
     /// Cap on the total number of cross-product leaf assignments DFS will
     /// explore before falling back to BFS. Validated `> 0` at parse time;
-    /// `0` is rejected with [`ManifestError::InvalidMaxCrossProductSize`].
+    /// `0` is rejected with [`ManifestError::InvalidAutoTypeParamConfig`].
     pub max_cross_product_size: usize,
 }
 
@@ -173,12 +173,16 @@ impl Manifest {
         let auto_type_params = match raw.auto_type_params {
             Some(raw_atp) => {
                 if raw_atp.max_depth == 0 {
-                    return Err(ManifestError::InvalidMaxDepth(raw_atp.max_depth));
+                    return Err(ManifestError::InvalidAutoTypeParamConfig {
+                        field: stringify!(max_depth),
+                        value: raw_atp.max_depth,
+                    });
                 }
                 if raw_atp.max_cross_product_size == 0 {
-                    return Err(ManifestError::InvalidMaxCrossProductSize(
-                        raw_atp.max_cross_product_size,
-                    ));
+                    return Err(ManifestError::InvalidAutoTypeParamConfig {
+                        field: stringify!(max_cross_product_size),
+                        value: raw_atp.max_cross_product_size,
+                    });
                 }
                 AutoTypeParamsConfig {
                     max_depth: raw_atp.max_depth,
@@ -265,30 +269,22 @@ pub enum ManifestError {
     /// permission denied). The wrapped `io::Error` is exposed via
     /// [`std::error::Error::source`] so callers can introspect it.
     Io(std::io::Error),
-    /// `[auto_type_params].max_depth` was non-positive (i.e. `0`). Every
-    /// search must visit at least one parameter, so `0` is meaningless and
-    /// is rejected at parse time. The wrapped `usize` is the offending
-    /// value, surfaced verbatim in the rendered message.
-    InvalidMaxDepth(usize),
-    /// `[auto_type_params].max_cross_product_size` was non-positive (i.e.
-    /// `0`). Every search must visit at least one leaf assignment, so `0`
-    /// is meaningless (DFS would always fall back to BFS unconditionally
-    /// for any non-empty params slice) and is rejected at parse time. The
-    /// wrapped `usize` is the offending value, surfaced verbatim in the
-    /// rendered message. Mirrors `InvalidMaxDepth` for the task 2662
-    /// cross-product hard cap.
+    /// An `[auto_type_params]` knob was set to a non-positive value (i.e.
+    /// `0`). Every search must visit at least one parameter and at least one
+    /// leaf assignment, so `0` is meaningless for any knob in this table
+    /// and is rejected at parse time.
     ///
-    /// Forward-looking note (review suggestion #3, task 2662 amendment
-    /// pass): `InvalidMaxDepth` and `InvalidMaxCrossProductSize` carry the
-    /// same `(usize)` shape and the same "must be > 0" validation logic.
-    /// As more `[auto_type_params]` knobs land (cf. sibling tasks 2663 /
-    /// 2664), consider consolidating the family into a single variant
-    /// `InvalidAutoTypeParamConfig { field: &'static str, value: usize }`
-    /// to avoid combinatorial growth of error variants. Not done here
-    /// because the consolidation is a breaking change for any caller
-    /// pattern-matching on these variants and is best landed atomically
-    /// alongside the third knob, not unilaterally with the second.
-    InvalidMaxCrossProductSize(usize),
+    /// `field` is the manifest-schema name of the offending key (e.g.
+    /// `"max_depth"`, `"max_cross_product_size"`); `value` is the offending
+    /// input, surfaced verbatim in the rendered message. This single variant
+    /// subsumes the prior `InvalidMaxDepth` / `InvalidMaxCrossProductSize`
+    /// siblings and is designed to absorb future `[auto_type_params]` knobs
+    /// without combinatorial growth of error variants.
+    ///
+    /// Construction sites emit `field` via `stringify!(field_name)` — keeping
+    /// the label token adjacent to the struct-field access (`raw_atp.field_name`)
+    /// so that a field rename is immediately visible at both sites.
+    InvalidAutoTypeParamConfig { field: &'static str, value: usize },
 }
 
 impl fmt::Display for ManifestError {
@@ -314,15 +310,8 @@ impl fmt::Display for ManifestError {
             ManifestError::Io(err) => {
                 write!(f, "failed to read reify.toml: {}", err)
             }
-            ManifestError::InvalidMaxDepth(n) => {
-                write!(f, "auto_type_params.max_depth must be > 0; got {}", n)
-            }
-            ManifestError::InvalidMaxCrossProductSize(n) => {
-                write!(
-                    f,
-                    "auto_type_params.max_cross_product_size must be > 0; got {}",
-                    n
-                )
+            ManifestError::InvalidAutoTypeParamConfig { field, value } => {
+                write!(f, "auto_type_params.{} must be > 0; got {}", field, value)
             }
         }
     }

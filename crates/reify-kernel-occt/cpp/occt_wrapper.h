@@ -910,16 +910,20 @@ struct CurvatureProps;
 /// on `face`, plus the principal curvature direction tangent vectors.
 ///
 /// The shape MUST be a `TopoDS_Face`. Algorithm:
-///   (a) `GeomLProp_SLProps(surf, u, v, degree=2, resolution=1e-9)`,
-///   (b) reject if `IsCurvatureDefined()` is false,
-///   (c) extract K, H, κ_max, κ_min and direction vectors d_max, d_min,
-///   (d) for `TopAbs_REVERSED` faces: negate H, κ_max, κ_min (K invariant);
-///       then swap (κ_min, κ_max) and (d_min, d_max) together, since the
-///       sign flip reverses the ordering — what was the larger value paired
-///       with d_max is now the smaller (more negative) value, so it becomes
-///       the new κ_min/d_min and vice versa. The tangent-plane vectors
-///       themselves are unchanged; only their min/max *labels* swap so the
-///       (κ, direction) pairing remains correct under the new normal.
+///   (a) `BRepAdaptor_Surface::D2(u, v, ...)` — honours `TopoLoc_Location`
+///       consistently with `surface_normal_at` (same abstraction),
+///   (b) compute first fundamental form E, F, G; reject if det(I) is degenerate,
+///   (c) compute orientation-aware outward unit normal (flip for `TopAbs_REVERSED`),
+///   (d) compute second fundamental form L, M, N from the outward normal,
+///   (e) K = (LN − M²)/det(I), H = (EN − 2FM + GL) / (2·det(I)),
+///   (f) principal curvatures κ_max = H + √(H²−K), κ_min = H − √(H²−K)
+///       (discriminant clamped to ≥ 0 for FP safety),
+///   (g) principal directions via eigenvalue solver (non-umbilical) or
+///       du-normalised pair (umbilical fallback, covers sphere and planar faces).
+///
+/// Computing the orientation-aware normal up-front means K, H, and the
+/// principal curvatures carry correct signs for both FORWARD and REVERSED faces
+/// without a post-hoc swap — unlike the prior GeomLProp_SLProps path.
 ///
 /// Throws `std::runtime_error` if the shape is not a face, has no underlying
 /// surface, or curvature is undefined at `(u, v)` (e.g. at a singular point).
@@ -987,6 +991,22 @@ std::unique_ptr<OcctShape> make_vertex_for_test();
 /// Build a CompSolid containing one 10×10×10 mm box solid.
 /// The returned shape has TopAbs_ShapeType() == TopAbs_COMPSOLID.
 std::unique_ptr<OcctShape> make_compsolid_for_test();
+
+/// Apply a rotation+translation placement using `BRepBuilderAPI_Transform`
+/// with `Copy=Standard_False` — encoding the transform into `TopLoc_Location`
+/// rather than baking it into geometry (unlike `translate_shape`/`rotate_shape`
+/// which use `Copy=Standard_True`). The result has a non-identity location,
+/// exercising the `TopoLoc_Location`-aware path through `BRepAdaptor_Surface`.
+///
+/// Rotation is around axis `(ax, ay, az)` through the origin by `angle_rad`,
+/// followed by translation `(dx, dy, dz)`. Used only by placed-face integration
+/// tests verifying that `curvature_at` and `surface_normal_at` agree on faces
+/// with non-identity location.
+std::unique_ptr<OcctShape> apply_test_placement_for_test(
+    const OcctShape& shape,
+    double ax, double ay, double az, double angle_rad,
+    double dx, double dy, double dz
+);
 
 // --- Export ---
 

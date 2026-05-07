@@ -166,6 +166,21 @@ fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_ty
         .collect()
 }
 
+/// Assert that exactly one error diagnostic was emitted (anti-cascade pin).
+///
+/// Call this after verifying the *specific* diagnostic is present.  A second
+/// error here means `make_poison_literal` failed to suppress a cascading
+/// type-mismatch in the surrounding expression.
+fn assert_no_cascade(errors: &[&reify_types::Diagnostic]) {
+    assert_eq!(
+        errors.len(),
+        1,
+        "anti-cascade: expected exactly 1 error diagnostic, got {} (all errors: {:#?})",
+        errors.len(),
+        errors
+    );
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 /// Step-7: `self.<cluster>` resolves to a `Type::Union` of the per-arm
@@ -908,6 +923,10 @@ fn external_collection_sub_indexed_dot_cluster_dot_arm_specific_field_emits_diag
         matching.len(),
         errors
     );
+    // Anti-cascade pin (task 3046): `make_poison_literal` returns Type::Error
+    // from the missing-arm branch, which must suppress further type-mismatch
+    // errors in the surrounding expr.
+    assert_no_cascade(&errors);
 }
 
 /// Task 2871 step-4: `bolts[0].head.across_flats` emits exactly one error
@@ -996,4 +1015,8 @@ fn external_collection_sub_indexed_dot_cluster_dot_divergent_types_emits_diagnos
         matching.len(),
         errors
     );
+    // Anti-cascade pin (task 3046): `make_poison_literal` returns Type::Error
+    // from the divergent-types branch, which must suppress further type-mismatch
+    // errors in the surrounding expr.
+    assert_no_cascade(&errors);
 }

@@ -24,7 +24,7 @@ pub mod value;
 pub mod warm;
 
 pub use annotation::{
-    Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION,
+    Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SHELL_ANNOTATION,
     SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION, has_test_annotation,
 };
 pub use constraint::{
@@ -60,7 +60,7 @@ pub use hash::ContentHash;
 pub use identity::*;
 pub use node_traits::{NodeArchKind, NodeTraits};
 pub use persistent::PersistentMap;
-pub use provenance::SnapshotProvenance;
+pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ty::Type;
 pub use value::{

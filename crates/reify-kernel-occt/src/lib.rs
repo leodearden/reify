@@ -771,9 +771,13 @@ impl OcctKernel {
     /// Gaussian, mean, and principal curvatures at the parametric point
     /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
     ///
-    /// Uses `GeomLProp_SLProps`. Sign convention for `mean` and the principal
-    /// curvatures follows the outward normal (negated for `TopAbs_REVERSED`
-    /// faces); Gaussian curvature `K = κ₁·κ₂` is invariant.
+    /// Uses `BRepAdaptor_Surface::D2` — the same surface abstraction as
+    /// `surface_normal_at` — so both APIs honour `TopoLoc_Location` and agree
+    /// in world frame on faces with non-identity locations. Curvature is derived
+    /// from the first/second fundamental forms with an orientation-aware outward
+    /// normal; sign convention for `mean` and principal curvatures follows that
+    /// outward normal (correct for both FORWARD and REVERSED faces). Gaussian
+    /// curvature `K = κ₁·κ₂` is invariant.
     ///
     /// The return type is `Curvature` — a plain Rust struct with `f64` and
     /// `[f64; 3]` fields defined in both `has_occt` and `!has_occt` builds so
@@ -2612,6 +2616,39 @@ impl OcctKernel {
         let shape = ffi::ffi::make_compsolid_for_test()
             .expect("make_compsolid_for_test should succeed");
         let h = self.store(shape);
+        h.id
+    }
+
+    /// Apply a rotation+translation placement to `src_handle`'s shape using
+    /// `BRepBuilderAPI_Transform(..., Copy=false)`, encoding the transform into
+    /// `TopLoc_Location` rather than baking it into geometry.
+    ///
+    /// This produces a shape with a non-identity `TopLoc_Location`, which
+    /// exercises the location-aware evaluation path in `BRepAdaptor_Surface`.
+    /// Unlike the production `translate_shape`/`rotate_shape` FFI calls (which
+    /// use `Copy=true` and bake the transform), this fixture preserves the
+    /// non-identity location so it reaches the BRepAdaptor composition path.
+    ///
+    /// Used by placed-face integration tests to verify that `curvature_at` and
+    /// `surface_normal_at` agree after the BRepAdaptor unification.
+    #[allow(clippy::too_many_arguments)]
+    pub fn store_placed_for_test(
+        &mut self,
+        src_handle: GeometryHandleId,
+        ax: f64,
+        ay: f64,
+        az: f64,
+        angle_rad: f64,
+        dx: f64,
+        dy: f64,
+        dz: f64,
+    ) -> GeometryHandleId {
+        let src = self
+            .get_shape(src_handle)
+            .expect("store_placed_for_test: src_handle must be valid");
+        let placed = ffi::ffi::apply_test_placement_for_test(src, ax, ay, az, angle_rad, dx, dy, dz)
+            .expect("apply_test_placement_for_test should succeed");
+        let h = self.store(placed);
         h.id
     }
 }
