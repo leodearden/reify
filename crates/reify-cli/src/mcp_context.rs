@@ -446,8 +446,15 @@ impl ReifyToolContext for CliToolContext {
         // get_or_insert_with was previously used to preserve a prior load_file/open_file
         // selection, but that leaves active_file pointing at "a.ri" while compiled holds
         // b.ri's module — byte-span offsets from b's diagnostics would then be resolved
-        // against a's source, producing wrong line/column numbers.  Callers that need
-        // multi-file semantics must use open_file (which does not prune).
+        // against a's source, producing wrong line/column numbers.
+        //
+        // Asymmetry note: load_file and open_file do NOT retain-prune — they accumulate
+        // entries in state.files across successive calls.  The per-entry-point state-shape is:
+        //   • update_source(p) → files.keys() == {p}   (exactly one entry; pruned here)
+        //   • load_file(p)     → files.keys() ⊇ {p}    (prior entries kept)
+        //   • open_file(p)     → files.keys() ⊇ {p}    (prior entries kept)
+        // This asymmetry is intentional: extending load_file or open_file with the same
+        // retain() would be a separate decision requiring a multi-document consumer audit.
         state.active_file = Some(canonical.clone());
 
         Ok(UpdateResult {
@@ -1427,9 +1434,15 @@ mod tests {
         // Prior path must no longer be reachable via get_source.
         // ToolError::EngineError("file not open: …") formats as "engine error: file not open: …".
         let err = ctx.get_source(Some(BRACKET_PATH)).unwrap_err();
+        let err_str = err.to_string();
         assert!(
-            err.to_string().contains("not open"),
-            "get_source for the prior bracket.ri path must fail with 'not open'; got: {:?}",
+            err_str.contains("file not open"),
+            "get_source for the prior bracket.ri path must fail with 'file not open'; got: {:?}",
+            err
+        );
+        assert!(
+            err_str.contains("bracket.ri"),
+            "error message must mention the prior bracket.ri path; got: {:?}",
             err
         );
 
@@ -1453,11 +1466,61 @@ mod tests {
         );
 
         let err2 = ctx.get_source(Some(BRACKET_COMPILE_ERROR_PATH)).unwrap_err();
+        let err2_str = err2.to_string();
         assert!(
-            err2.to_string().contains("not open"),
-            "get_source for the prior bracket_compile_error.ri path must fail with 'not open'; \
+            err2_str.contains("file not open"),
+            "get_source for the prior bracket_compile_error.ri path must fail with 'file not open'; \
              got: {:?}",
             err2
+        );
+        assert!(
+            err2_str.contains("bracket_compile_error.ri"),
+            "error message must mention the prior bracket_compile_error.ri path; got: {:?}",
+            err2
+        );
+
+        // --- Phase 4: fresh_ctx → update_source(a) → update_source(b) ---
+        // Exercises the pure update_source pathway (no preceding load_file) — the
+        // most common MCP client path where the editor calls update_source directly
+        // without ever going through load_file.  Confirms the retain() bound holds
+        // even when state.files starts empty.
+        let ctx2 = fresh_ctx();
+
+        ctx2.update_source(BRACKET_PATH, &content_a)
+            .expect("update_source(a) on fresh ctx should succeed");
+        assert_eq!(
+            ctx2.get_open_files().unwrap().len(),
+            1,
+            "phase 4: exactly one file open after first update_source on fresh ctx"
+        );
+
+        ctx2.update_source(BRACKET_COMPILE_ERROR_PATH, &content_b)
+            .expect("update_source(b) after update_source(a) should succeed");
+
+        let open3 = ctx2.get_open_files().unwrap();
+        assert_eq!(
+            open3.len(),
+            1,
+            "phase 4: state.files must be pruned to 1 after update_source switch on fresh ctx"
+        );
+        assert!(
+            open3[0].path.ends_with("bracket_compile_error.ri"),
+            "phase 4: surviving entry must be bracket_compile_error.ri; got {:?}",
+            open3[0].path
+        );
+
+        let err3 = ctx2.get_source(Some(BRACKET_PATH)).unwrap_err();
+        let err3_str = err3.to_string();
+        assert!(
+            err3_str.contains("file not open"),
+            "phase 4: get_source for prior bracket.ri path must fail with 'file not open'; \
+             got: {:?}",
+            err3
+        );
+        assert!(
+            err3_str.contains("bracket.ri"),
+            "phase 4: error message must mention the prior bracket.ri path; got: {:?}",
+            err3
         );
     }
 }
