@@ -423,6 +423,10 @@ impl ReifyToolContext for CliToolContext {
         // (cells removed by the new module) are pruned inside eval().
         let mut state = self.lock_state();
         ensure_engine(&mut state).eval(&compiled);
+        // Drop entries for any previously-loaded file: state.files must reflect
+        // the same single canonical source as compiled and active_file.  See
+        // task 3100 and the loud-failure invariant landed in task 3054.
+        state.files.retain(|key, _| key == &canonical);
         if let Some(entry) = state.files.get_mut(&canonical) {
             entry.content = content.to_string();
             entry.dirty = true;
@@ -436,13 +440,21 @@ impl ReifyToolContext for CliToolContext {
             );
         }
         state.compiled = Some(compiled);
-        // Unconditional set: compiled, active_file, and the files-map source must always
-        // describe the same file.  get_or_insert_with was previously used to preserve a
-        // prior load_file/open_file selection, but that leaves active_file pointing at
-        // "a.ri" while compiled holds b.ri's module — byte-span offsets from b's
-        // diagnostics would then be resolved against a's source, producing wrong
-        // line/column numbers.  Callers that need to switch active files explicitly
-        // without recompiling should use open_file.
+        // After the retain() above, state.files contains at most one entry whose key
+        // matches `canonical`.  Combined with this unconditional set, compiled,
+        // active_file, and state.files always describe a single canonical source.
+        // get_or_insert_with was previously used to preserve a prior load_file/open_file
+        // selection, but that leaves active_file pointing at "a.ri" while compiled holds
+        // b.ri's module — byte-span offsets from b's diagnostics would then be resolved
+        // against a's source, producing wrong line/column numbers.
+        //
+        // Asymmetry note: load_file and open_file do NOT retain-prune — they accumulate
+        // entries in state.files across successive calls.  The per-entry-point state-shape is:
+        //   • update_source(p) → files.keys() == {p}   (exactly one entry; pruned here)
+        //   • load_file(p)     → files.keys() ⊇ {p}    (prior entries kept)
+        //   • open_file(p)     → files.keys() ⊇ {p}    (prior entries kept)
+        // This asymmetry is intentional: extending load_file or open_file with the same
+        // retain() would be a separate decision requiring a multi-document consumer audit.
         state.active_file = Some(canonical.clone());
 
         Ok(UpdateResult {
@@ -1354,6 +1366,161 @@ mod tests {
                 .any(|d| d.severity == Severity::Error.as_wire_str()),
             "at least one diagnostic must have severity == \"Error\" (PascalCase wire format); \
              bracket_compile_error.ri is known to produce a compile-time Error",
+        );
+    }
+
+    /// Regression guard: `update_source` must prune `state.files` to exactly the
+    /// new active canonical key on each call, so `get_open_files()` never returns
+    /// more than one entry across repeated file switches.
+    ///
+    /// Exercises the load_file → update_source(different_file) → update_source(back)
+    /// lifecycle introduced in task 3100.  Before the fix (`state.files.retain(…)`),
+    /// state.files accumulates one entry per unique path ever passed to update_source
+    /// or load_file, growing unboundedly and leaving stale entries reachable via
+    /// `get_source(Some(prior_path))`.
+    ///
+    /// Aligns with the loud-failure invariant from task 3054: `get_diagnostics` and
+    /// `get_source_location` already require `active_file ⊆ files.keys()`; this test
+    /// strengthens to `files.keys() == {active_file}` post-update_source.
+    ///
+    /// Path assertions use `ends_with` rather than exact equality or
+    /// `std::fs::canonicalize` — same flake-avoidance rationale as
+    /// `update_source_after_load_file_switches_active_file` (line 1271-1273): avoids
+    /// symlink / case-folding mismatches while remaining an independent oracle.
+    #[test]
+    fn update_source_drops_prior_files_map_entries() {
+        let ctx = fresh_ctx();
+
+        // Read fixture content upfront — we need it for the loop-guard switch-back.
+        let content_a =
+            std::fs::read_to_string(BRACKET_PATH).expect("bracket.ri fixture must be readable");
+        let content_b = std::fs::read_to_string(BRACKET_COMPILE_ERROR_PATH)
+            .expect("bracket_compile_error.ri fixture must be readable");
+
+        // --- Phase 1: load_file(a.ri) ---
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed for bracket.ri");
+
+        // Baseline: exactly one file open after load_file.
+        assert_eq!(
+            ctx.get_open_files().unwrap().len(),
+            1,
+            "baseline: exactly one file open after load_file"
+        );
+
+        // --- Phase 2: update_source(b.ri) — files-map must shrink/stay at 1 ---
+        let update = ctx
+            .update_source(BRACKET_COMPILE_ERROR_PATH, &content_b)
+            .expect("update_source should succeed for bracket_compile_error.ri");
+        assert!(update.success, "update_source must succeed for b.ri");
+
+        // Core bound assertion: state.files must not grow across the switch.
+        assert_eq!(
+            ctx.get_open_files().unwrap().len(),
+            1,
+            "state.files must be pruned to a single entry after update_source; \
+             prior bracket.ri entry must be dropped (not 2)"
+        );
+
+        // Independent oracle: the surviving entry names b.ri, not a.ri.
+        let open_files = ctx.get_open_files().unwrap();
+        assert!(
+            open_files[0].path.ends_with("bracket_compile_error.ri"),
+            "surviving open file must be bracket_compile_error.ri after update_source; \
+             got {:?}",
+            open_files[0].path
+        );
+
+        // Prior path must no longer be reachable via get_source.
+        // ToolError::EngineError("file not open: …") formats as "engine error: file not open: …".
+        let err = ctx.get_source(Some(BRACKET_PATH)).unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("file not open"),
+            "get_source for the prior bracket.ri path must fail with 'file not open'; got: {:?}",
+            err
+        );
+        assert!(
+            err_str.contains("bracket.ri"),
+            "error message must mention the prior bracket.ri path; got: {:?}",
+            err
+        );
+
+        // --- Phase 3: loop guard — update_source back to a.ri ---
+        let update2 = ctx
+            .update_source(BRACKET_PATH, &content_a)
+            .expect("update_source back to bracket.ri should succeed");
+        assert!(update2.success, "update_source back to bracket.ri must succeed");
+
+        assert_eq!(
+            ctx.get_open_files().unwrap().len(),
+            1,
+            "state.files must remain bounded after a second update_source switch back"
+        );
+
+        let open_files2 = ctx.get_open_files().unwrap();
+        assert!(
+            open_files2[0].path.ends_with("bracket.ri"),
+            "surviving open file must be bracket.ri after switching back; got {:?}",
+            open_files2[0].path
+        );
+
+        let err2 = ctx.get_source(Some(BRACKET_COMPILE_ERROR_PATH)).unwrap_err();
+        let err2_str = err2.to_string();
+        assert!(
+            err2_str.contains("file not open"),
+            "get_source for the prior bracket_compile_error.ri path must fail with 'file not open'; \
+             got: {:?}",
+            err2
+        );
+        assert!(
+            err2_str.contains("bracket_compile_error.ri"),
+            "error message must mention the prior bracket_compile_error.ri path; got: {:?}",
+            err2
+        );
+
+        // --- Phase 4: fresh_ctx → update_source(a) → update_source(b) ---
+        // Exercises the pure update_source pathway (no preceding load_file) — the
+        // most common MCP client path where the editor calls update_source directly
+        // without ever going through load_file.  Confirms the retain() bound holds
+        // even when state.files starts empty.
+        let ctx2 = fresh_ctx();
+
+        ctx2.update_source(BRACKET_PATH, &content_a)
+            .expect("update_source(a) on fresh ctx should succeed");
+        assert_eq!(
+            ctx2.get_open_files().unwrap().len(),
+            1,
+            "phase 4: exactly one file open after first update_source on fresh ctx"
+        );
+
+        ctx2.update_source(BRACKET_COMPILE_ERROR_PATH, &content_b)
+            .expect("update_source(b) after update_source(a) should succeed");
+
+        let open3 = ctx2.get_open_files().unwrap();
+        assert_eq!(
+            open3.len(),
+            1,
+            "phase 4: state.files must be pruned to 1 after update_source switch on fresh ctx"
+        );
+        assert!(
+            open3[0].path.ends_with("bracket_compile_error.ri"),
+            "phase 4: surviving entry must be bracket_compile_error.ri; got {:?}",
+            open3[0].path
+        );
+
+        let err3 = ctx2.get_source(Some(BRACKET_PATH)).unwrap_err();
+        let err3_str = err3.to_string();
+        assert!(
+            err3_str.contains("file not open"),
+            "phase 4: get_source for prior bracket.ri path must fail with 'file not open'; \
+             got: {:?}",
+            err3
+        );
+        assert!(
+            err3_str.contains("bracket.ri"),
+            "phase 4: error message must mention the prior bracket.ri path; got: {:?}",
+            err3
         );
     }
 }
