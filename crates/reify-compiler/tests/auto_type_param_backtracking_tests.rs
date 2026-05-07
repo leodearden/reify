@@ -2861,6 +2861,202 @@ structure def ORingSeal : Seal {
     );
 }
 
+/// Regression-pin: the **other** `AutoTypeParamNoCandidate` emission paths
+/// (Phase A empty pool on first param, Phase A empty pool on second param)
+/// MUST continue to go through `emit_no_candidate_zero_rejections` (v0.1
+/// zero-rejections form) and NOT the new v0.2
+/// `emit_no_feasible_cross_product_diagnostic` rich helper. The rich helper
+/// is gated to the cross-product `0 =>` arm only — Phase A failures keep
+/// their v0.1 single-param semantics because the per-param candidate vectors
+/// and `max_depth` are not in scope at those emission sites.
+///
+/// Pins, for both scenarios:
+/// - message matches the v0.1 form `"auto type parameter has no feasible candidates for bound '<X>'"`
+///   (Phase A first-param: `'Seal'`; Phase A second-param: `'Cooled'`)
+/// - message does NOT contain `"cross-product size"` (v0.2-only field)
+/// - message does NOT contain `"smallest infeasibility witness"` (v0.2-only field)
+/// - message does NOT contain `"depth:"` (v0.2-only field)
+///
+/// Should pass on first run — regression guard against a future change that
+/// accidentally routes a v0.1 emission site through the rich helper.
+#[test]
+fn dfs_other_no_candidate_emission_paths_unchanged_by_rich_format() {
+    // ─── Scenario 1: Phase A first-param empty pool ──────────────────────
+    // T's bound (Seal) has zero matching structures ⇒ Phase A returns Empty
+    // for the first param ⇒ orchestrator short-circuits with
+    // `emit_no_candidate_zero_rejections(&params[0].bounds, …)`.
+    {
+        let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+"#;
+        let module = parse_and_compile(source);
+        let (template_registry, trait_registry) = build_registries(&module);
+
+        let template = TopologyTemplateBuilder::new("Coupling").build();
+        let checker = MockConstraintChecker::new();
+        let functions: &[CompiledFunction] = &[];
+        let mut diagnostics = Vec::new();
+
+        let params = vec![
+            AutoTypeParam {
+                name: "T".to_string(),
+                bounds: vec!["Seal".to_string()], // zero structures ⇒ Empty
+                free: false,
+                use_site_span: SourceSpan::new(10, 20),
+            },
+            AutoTypeParam {
+                name: "U".to_string(),
+                bounds: vec!["Cooled".to_string()],
+                free: false,
+                use_site_span: SourceSpan::new(30, 40),
+            },
+        ];
+
+        let _outcome = resolve_auto_type_params_with_backtracking(
+            &params,
+            &template_registry,
+            &trait_registry,
+            &template,
+            &checker,
+            functions,
+            6,
+            usize::MAX,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Phase A first-param empty pool: exactly one diagnostic, got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::AutoTypeParamNoCandidate),
+            "Phase A first-param empty pool must emit AutoTypeParamNoCandidate"
+        );
+
+        // v0.1 zero-rejections message form.
+        let msg = &diagnostics[0].message;
+        assert_eq!(
+            msg,
+            "auto type parameter has no feasible candidates for bound 'Seal'",
+            "Phase A first-param empty pool MUST emit the v0.1 zero-rejections \
+             form (NOT the v0.2 rich cross-product form); got: {:?}",
+            msg
+        );
+        // Negative pins on v0.2 rich-format markers.
+        assert!(
+            !msg.contains("cross-product size"),
+            "Phase A v0.1 form must NOT contain 'cross-product size' (v0.2 rich-only); got: {:?}",
+            msg
+        );
+        assert!(
+            !msg.contains("smallest infeasibility witness"),
+            "Phase A v0.1 form must NOT contain 'smallest infeasibility witness' (v0.2 rich-only); got: {:?}",
+            msg
+        );
+        assert!(
+            !msg.contains("depth:"),
+            "Phase A v0.1 form must NOT contain 'depth:' (v0.2 rich-only); got: {:?}",
+            msg
+        );
+    }
+
+    // ─── Scenario 2: Phase A second-param empty pool ─────────────────────
+    // T's bound (Seal) has one matching structure ⇒ Phase A returns Found.
+    // U's bound (Cooled) has zero matching structures ⇒ Phase A returns
+    // Empty for the second param ⇒ orchestrator halts with
+    // `emit_no_candidate_zero_rejections(&params[1].bounds, …)`.
+    {
+        let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+"#;
+        let module = parse_and_compile(source);
+        let (template_registry, trait_registry) = build_registries(&module);
+
+        let template = TopologyTemplateBuilder::new("Coupling").build();
+        let checker = MockConstraintChecker::new();
+        let functions: &[CompiledFunction] = &[];
+        let mut diagnostics = Vec::new();
+
+        let params = vec![
+            AutoTypeParam {
+                name: "T".to_string(),
+                bounds: vec!["Seal".to_string()], // one structure ⇒ Found
+                free: false,
+                use_site_span: SourceSpan::new(10, 20),
+            },
+            AutoTypeParam {
+                name: "U".to_string(),
+                bounds: vec!["Cooled".to_string()], // zero structures ⇒ Empty
+                free: false,
+                use_site_span: SourceSpan::new(30, 40),
+            },
+        ];
+
+        let _outcome = resolve_auto_type_params_with_backtracking(
+            &params,
+            &template_registry,
+            &trait_registry,
+            &template,
+            &checker,
+            functions,
+            6,
+            usize::MAX,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Phase A second-param empty pool: exactly one diagnostic, got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::AutoTypeParamNoCandidate),
+            "Phase A second-param empty pool must emit AutoTypeParamNoCandidate"
+        );
+
+        // v0.1 zero-rejections message form (now mentions U's bound 'Cooled').
+        let msg = &diagnostics[0].message;
+        assert_eq!(
+            msg,
+            "auto type parameter has no feasible candidates for bound 'Cooled'",
+            "Phase A second-param empty pool MUST emit the v0.1 zero-rejections \
+             form (NOT the v0.2 rich cross-product form); got: {:?}",
+            msg
+        );
+        // Negative pins on v0.2 rich-format markers.
+        assert!(
+            !msg.contains("cross-product size"),
+            "Phase A v0.1 form must NOT contain 'cross-product size' (v0.2 rich-only); got: {:?}",
+            msg
+        );
+        assert!(
+            !msg.contains("smallest infeasibility witness"),
+            "Phase A v0.1 form must NOT contain 'smallest infeasibility witness' (v0.2 rich-only); got: {:?}",
+            msg
+        );
+        assert!(
+            !msg.contains("depth:"),
+            "Phase A v0.1 form must NOT contain 'depth:' (v0.2 rich-only); got: {:?}",
+            msg
+        );
+    }
+}
+
 /// Phase A halt parity for **Overflow** failures discovered on the SECOND
 /// param (not the first). Mirrors
 /// `dfs_phase_a_empty_pool_on_second_param_halts_against_second_param` for
