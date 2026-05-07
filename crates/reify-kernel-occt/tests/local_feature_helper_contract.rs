@@ -86,21 +86,24 @@ fn helper_panics_when_face_generated_parent_index_nonzero() {
     );
 }
 
-/// Verify the helper panics with a message containing "precondition violated"
-/// when `param_m` is non-positive (zero or negative).
+/// Verify the helper panics with a message containing "must be positive"
+/// when `param_m` is strictly negative.
 ///
-/// A zero or negative radius/distance would produce meaningless geometry
-/// (OCCT may reject it silently or return a trivial result), causing the
-/// volume assertions to fail with confusing messages rather than a clear
-/// precondition error. The lower-bound assertion fires at the very top of
+/// A negative radius/distance would produce meaningless geometry (OCCT may
+/// reject it silently or return a trivial result), causing the volume
+/// assertions to fail with confusing messages rather than a clear precondition
+/// error. The lower-bound assertion (`param_m > 0.0`) fires at the very top of
 /// `run_local_feature_reports_face_records`, before the box build and before
 /// the `op` closure is invoked — same trick as
 /// `helper_panics_when_param_m_exceeds_precondition`.
+///
+/// See also `helper_panics_when_param_m_zero` which covers the `0.0` boundary
+/// (the `>` vs `>=` distinction).
 #[test]
-#[should_panic(expected = "precondition violated")]
+#[should_panic(expected = "must be positive")]
 fn helper_panics_when_param_m_nonpositive() {
     let kernel = OcctKernelHandle::spawn();
-    // -1.0e-3 m is unambiguously non-positive.
+    // -1.0e-3 m is unambiguously negative.
     common::run_local_feature_reports_face_records(
         &kernel,
         -1.0e-3,
@@ -109,7 +112,24 @@ fn helper_panics_when_param_m_nonpositive() {
     );
 }
 
-/// Verify the helper panics with a message containing "precondition violated"
+/// Verify the helper panics with a message containing "must be positive"
+/// when `param_m` is exactly zero — the `>` vs `>=` boundary.
+///
+/// Zero is the most common off-by-one bug: a `>=` check would incorrectly
+/// admit `0.0`. This test ensures the assertion uses strict `>`.
+#[test]
+#[should_panic(expected = "must be positive")]
+fn helper_panics_when_param_m_zero() {
+    let kernel = OcctKernelHandle::spawn();
+    common::run_local_feature_reports_face_records(
+        &kernel,
+        0.0,
+        |_, _| panic!("op closure should not be reached when precondition fails"),
+        "test_op",
+    );
+}
+
+/// Verify the helper panics with a message containing "must be ≤"
 /// when `param_m` exceeds `BOX_SIDE_M * 0.1` (1 mm on a 10 mm cube).
 ///
 /// The precondition assertion fires at the very top of
@@ -118,11 +138,16 @@ fn helper_panics_when_param_m_nonpositive() {
 /// proves the assertion fires first: if a future regression moved the
 /// assertion below the closure dispatch, the closure-panic message
 /// ("op closure should not be reached") would surface instead of
-/// "precondition violated", and the `#[should_panic(expected = "precondition violated")]`
+/// "must be ≤", and the `#[should_panic(expected = "must be ≤")]`
 /// attribute would fail the test — same trick as
 /// `helper_panics_when_silent_drop_count_nonzero`.
+///
+/// See also `helper_panics_when_param_m_just_above_upper_boundary` which tests
+/// a value barely above the boundary (`1.0e-3 + 1.0e-10`) for additional
+/// boundary-region coverage; neither test proves that `1.0e-3` itself is
+/// admitted (that would require a positive-path OCCT test).
 #[test]
-#[should_panic(expected = "precondition violated")]
+#[should_panic(expected = "must be ≤")]
 fn helper_panics_when_param_m_exceeds_precondition() {
     let kernel = OcctKernelHandle::spawn();
     // 2.0e-3 m (2 mm) is clearly above the 1 mm threshold (BOX_SIDE_M * 0.1),
@@ -130,6 +155,32 @@ fn helper_panics_when_param_m_exceeds_precondition() {
     common::run_local_feature_reports_face_records(
         &kernel,
         2.0e-3,
+        |_, _| panic!("op closure should not be reached when precondition fails"),
+        "test_op",
+    );
+}
+
+/// Verify the helper panics with "must be ≤" for a value only infinitesimally
+/// above the `BOX_SIDE_M * 0.1 == 1.0e-3` boundary — complementing
+/// `helper_panics_when_param_m_exceeds_precondition` (which uses `2.0e-3`,
+/// unambiguously above the threshold) with boundary-region coverage.
+///
+/// Uses `1.0e-3 + 1.0e-10` to document that the effective threshold is
+/// exactly `1.0e-3`, not some nearby value.  The next representable f64 above
+/// `1.0e-3` is approximately `1.0e-3 + 2.2e-19`; adding `1.0e-10` is far
+/// more than one ULP so f64-rounding cannot collapse the test to the boundary.
+///
+/// Note: proving that `1.0e-3` *itself* is admitted (the `<=` vs `<` operator
+/// distinction) would require a non-panic positive-path test; this test only
+/// asserts that `1.0e-3 + ε` panics, which holds under both `<=` and `<`.
+#[test]
+#[should_panic(expected = "must be ≤")]
+fn helper_panics_when_param_m_just_above_upper_boundary() {
+    let kernel = OcctKernelHandle::spawn();
+    // 1.0e-3 + 1.0e-10 m is just above the 1 mm upper bound.
+    common::run_local_feature_reports_face_records(
+        &kernel,
+        1.0e-3 + 1.0e-10,
         |_, _| panic!("op closure should not be reached when precondition fails"),
         "test_op",
     );
