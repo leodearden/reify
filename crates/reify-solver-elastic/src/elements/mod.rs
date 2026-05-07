@@ -8,6 +8,7 @@
 //! tetrahedron** with vertices at `(0,0,0), (1,0,0), (0,1,0), (0,0,1)` in
 //! `(ξ, η, ζ)` coordinates. The reference-tet volume is `1/6`.
 
+pub mod mitc3_plus;
 pub mod tet_p1;
 pub mod tet_p2;
 

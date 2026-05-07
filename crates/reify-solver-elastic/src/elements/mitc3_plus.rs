@@ -20,6 +20,28 @@
 //! Transverse-shear strains are interpolated from values sampled at the
 //! three canonical edge-midpoint tying points A=(½,0), B=(0,½), C=(½,½).
 
+/// MITC3+ Reissner-Mindlin triangular shell element.
+///
+/// Three-node element on the reference triangle with vertices `(0,0)`,
+/// `(1,0)`, `(0,1)`. Each node carries 6 DOFs (3 displacements + 3
+/// rotations), totalling `N_DOFS = 18` per element.
+pub struct Mitc3Plus;
+
+impl Mitc3Plus {
+    /// Number of Lagrangian nodes.
+    pub const N_NODES: usize = 3;
+
+    /// DOFs per node (3 displacement + 3 rotation).
+    pub const N_DOFS_PER_NODE: usize = 6;
+
+    /// Total DOFs per element: `N_NODES × N_DOFS_PER_NODE = 18`.
+    pub const N_DOFS: usize = Self::N_NODES * Self::N_DOFS_PER_NODE;
+
+    /// Number of edge-midpoint tying points for the assumed transverse-shear
+    /// strain interpolation (A, B, C in Bathe & Lee 2014 notation).
+    pub const N_TYING_POINTS: usize = 3;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
