@@ -1969,6 +1969,41 @@ mod tests {
         );
     }
 
+    /// Parity contract: `resolve_type_name` correctly maps every entry in
+    /// `reify_types::NAMED_DIMENSIONS` and the special-cased `"Dimensionless"`.
+    ///
+    /// This test is written BEFORE the implementation is switched to use the shared table
+    /// (step 2), so it serves as a regression-protection contract that will catch any
+    /// silent divergence between the old match-arm implementation and the new table-driven
+    /// one. It is expected to pass against both implementations.
+    #[test]
+    fn resolve_type_name_round_trips_all_named_dimensions() {
+        for &(dim, name) in reify_types::NAMED_DIMENSIONS {
+            assert_eq!(
+                resolve_type_name(name),
+                Some(Type::Scalar { dimension: dim }),
+                "resolve_type_name({:?}) should return Some(Type::Scalar {{ dimension: {:?} }})",
+                name,
+                dim,
+            );
+        }
+        // Special-case fallback: "Dimensionless" is intentionally absent from NAMED_DIMENSIONS
+        // but must still resolve to Type::Scalar { dimension: DIMENSIONLESS }.
+        assert_eq!(
+            resolve_type_name("Dimensionless"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS
+            }),
+            "resolve_type_name(\"Dimensionless\") should return Some(Type::Scalar {{ dimension: DIMENSIONLESS }})"
+        );
+        // Negative case: an unknown name must return None (default arm does not over-match).
+        assert_eq!(
+            resolve_type_name("ThisIsNotADimension"),
+            None,
+            "resolve_type_name(\"ThisIsNotADimension\") should return None"
+        );
+    }
+
     #[test]
     fn solid_resolves_to_geometry() {
         assert_eq!(
