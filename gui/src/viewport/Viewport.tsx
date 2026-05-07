@@ -182,6 +182,25 @@ export function Viewport(props: ViewportProps) {
     // first open. Fire once when the first non-empty mesh state arrives.
     let hasAutoFit = false;
 
+    // Auto-enable FEA mode on first mesh arrival with non-empty scalar_channels.
+    // Guarded by feaModeStore presence; tryAutoEnable enforces one-shot semantics
+    // so the effect can fire on every mesh update safely.
+    if (props.feaModeStore) {
+      const feaStore = props.feaModeStore;
+      createEffect(() => {
+        const meshes = props.meshes;
+        for (const mesh of Object.values(meshes)) {
+          if (!mesh.scalar_channels) continue;
+          for (const [channel, scalars] of Object.entries(mesh.scalar_channels)) {
+            if (scalars.length > 0) {
+              feaStore.tryAutoEnable(channel);
+              return; // only need the first non-empty channel
+            }
+          }
+        }
+      });
+    }
+
     // Sync meshes reactively
     createEffect(() => {
       meshManager.sync(props.meshes);
