@@ -325,3 +325,47 @@ fn provenance_round_trips_all_five_fields_via_eval_builder() {
         "Gate 4 should preserve a valid tolerance of 50e-6 m"
     );
 }
+
+/// `CacheStore::imported_file_hash_changed` correctly handles the three-branch
+/// invalidation contract:
+///
+/// 1. **Cold start** — no prior recording → returns `true` (must re-read).
+/// 2. **Cache hit** — recorded hash matches new hash → returns `false`.
+/// 3. **Byte-different invalidation** — recorded hash ≠ new hash → returns `true`.
+///
+/// Cross-references `crates/reify-eval/src/cache.rs:348-374`, which documents
+/// the three-branch contract.  This test exercises the cross-crate vantage
+/// (`tests/` can reach the same public APIs as the production task-5 caller
+/// inside `elaborate_field`).
+#[test]
+fn cache_store_imported_file_hash_invalidates_on_byte_change() {
+    let h_a = ContentHash::of(b"vdb bytes A");
+    let h_b = ContentHash::of(b"vdb bytes B");
+    // Self-validate that the two hashes differ so the test is meaningful.
+    assert_ne!(h_a, h_b, "test requires two distinct content hashes");
+
+    let mut store = CacheStore::new();
+
+    // Branch 1: cold start — no prior recording.
+    assert!(
+        store.imported_file_hash_changed("p.vdb", h_a),
+        "cold start: imported_file_hash_changed must return true"
+    );
+    assert!(
+        store.get_imported_file_hash("p.vdb").is_none(),
+        "cold start: get_imported_file_hash must return None"
+    );
+
+    // Branch 2: cache hit after recording h_a.
+    store.record_imported_file_hash("p.vdb", h_a);
+    assert!(
+        !store.imported_file_hash_changed("p.vdb", h_a),
+        "cache hit: imported_file_hash_changed must return false when hash matches"
+    );
+
+    // Branch 3: byte-different invalidation (same path, different content).
+    assert!(
+        store.imported_file_hash_changed("p.vdb", h_b),
+        "byte-different invalidation: imported_file_hash_changed must return true when hash differs"
+    );
+}
