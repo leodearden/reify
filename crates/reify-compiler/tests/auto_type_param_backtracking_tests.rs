@@ -2638,25 +2638,31 @@ structure def WaterCooled : Cooled {
     );
 }
 
-// ─── >16 feasibles → NonUnique with elision count ───────────────────────────
+// ─── >NON_UNIQUE_DISPLAY_CAP feasibles → NonUnique with "more than N elided" marker ──
 
 /// Two `AutoTypeParam`s `[T:Seal (free), U:Cooled (free)]` with 5 candidates
 /// each (25 cross-product leaves). Default `MockConstraintChecker` (every leaf
-/// trivially feasible) → 25 feasibles.
+/// trivially feasible) → 25 feasibles, but free-mode now caps collection at
+/// `NON_UNIQUE_DISPLAY_CAP + 1` (= 17) so the exact total past the cap is
+/// unknown.
 ///
-/// With `NON_UNIQUE_DISPLAY_CAP` = 16, expected elision count =
-/// 25 - `NON_UNIQUE_DISPLAY_CAP` = 9.
+/// With the cap tightening (task 2663 Scope 2), the message form changes from
+/// the prior "(N more elided)" exact count to "(more than NON_UNIQUE_DISPLAY_CAP
+/// elided)" because we stop collecting after `NON_UNIQUE_DISPLAY_CAP + 1`
+/// feasibles. The diagnostic still renders exactly `NON_UNIQUE_DISPLAY_CAP` (16)
+/// witnesses; only the elision-count wording shifts to a coarse "more than"
+/// form.
 ///
 /// Pins:
 /// (a) `diagnostics.len() == 1`, code `AutoTypeParamNonUnique`, severity Warning
-/// (b) `message.contains("9 more elided")` — exact elision count substring
+/// (b) `message.contains("more than 16 elided")` — coarse elision marker (cap hit)
 /// (c) `message.contains("ORingSeal")` — lex-first T candidate present
 /// (d) `message.contains("AirCooled")` — lex-first U candidate present
 /// (e) `outcome.per_param.len() == 2`, each entry `Selected`
 /// (f) `outcome.per_param[0]` is `(T_name, Selected(lex-first-T))`
 /// (g) `outcome.substitution.len() == 2`
 #[test]
-fn dfs_free_mode_more_than_sixteen_feasibles_emits_non_unique_with_elision_count() {
+fn dfs_free_mode_more_than_cap_feasibles_emits_non_unique_with_more_than_cap_elision_marker() {
     // 5 Seal structures (alphabetical order matters for lex-first):
     //   ORingSeal < RubberSeal < SilicaSeal < TeflonSeal < UretheSeal
     // 5 Cooled structures:
@@ -2752,14 +2758,18 @@ structure def WaterCooled : Cooled {
         Severity::Warning,
         "AutoTypeParamNonUnique must be Warning severity"
     );
-    // (b) Exact elision count: 25 - NON_UNIQUE_DISPLAY_CAP.
-    let expected_elided = 25 - NON_UNIQUE_DISPLAY_CAP;
+    // (b) Coarse elision marker: with free-mode cap = NON_UNIQUE_DISPLAY_CAP + 1
+    // (= 17), the search collects exactly NON_UNIQUE_DISPLAY_CAP + 1 feasibles
+    // when the true total exceeds the cap (here 25 > 17). The exact total is
+    // unknown past the cap, so the elision wording shifts from "(N more elided)"
+    // to "(more than NON_UNIQUE_DISPLAY_CAP elided)".
+    let expected_marker = format!("more than {} elided", NON_UNIQUE_DISPLAY_CAP);
     assert!(
-        diagnostics[0].message.contains(&format!("{} more elided", expected_elided)),
-        "message must contain '{} more elided' (25 - NON_UNIQUE_DISPLAY_CAP({}) = {}); got: {:?}",
-        expected_elided,
+        diagnostics[0].message.contains(&expected_marker),
+        "message must contain '{}' (free-mode cap = NON_UNIQUE_DISPLAY_CAP({}) + 1, exact total \
+         past the cap is unknown); got: {:?}",
+        expected_marker,
         NON_UNIQUE_DISPLAY_CAP,
-        expected_elided,
         diagnostics[0].message
     );
     // (b2) Exactly NON_UNIQUE_DISPLAY_CAP witnesses are rendered — not more, not fewer.
