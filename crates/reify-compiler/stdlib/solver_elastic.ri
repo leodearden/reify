@@ -141,6 +141,19 @@ structure def ElasticOptions {
     // Zero or negative would mean "never converge" and silently exhaust
     // `max_iter` on every solve.
     constraint cg_tolerance > 0
+    // `shell_threshold` is the thickness/extent ratio used by Auto-mode
+    // auto-classification (PRD T17). A non-positive threshold would silently
+    // prevent all classification: no body would ever satisfy
+    // `thickness/extent < threshold`, so no body would be treated as
+    // shell-eligible. Mirrors the `cg_tolerance > 0` discipline.
+    constraint shell_threshold > 0
+    // `shell_branch_prune_ratio` is a length ratio for medial-axis spurious-
+    // branch removal: branches whose length is less than
+    // `ratio × local_thickness` are pruned (PRD T17 line 89). A non-positive
+    // ratio would silently disable all pruning (no branch is shorter than a
+    // non-positive length times thickness). Mirrors the `cg_tolerance > 0`
+    // discipline.
+    constraint shell_branch_prune_ratio > 0
 }
 
 // ── ElasticResult ────────────────────────────────────────────────────────────
