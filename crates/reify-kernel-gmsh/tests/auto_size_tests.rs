@@ -82,8 +82,12 @@ fn does_not_use_overall_bounding_box() {
     };
     let cfg = AutoSizeConfig::default();
     let size = auto_mesh_size_from_features(&mesh, cfg);
+    // Tolerance: Mesh::vertices is Vec<f32>, so values like 5.001 - 5.0 lose
+    // ~1e-7 of absolute precision in the f32 round-trip. 1e-6 absolute is
+    // safely above that floor while still 1000× tighter than the 1m bbox
+    // diagonal we're proving the heuristic does NOT use.
     assert!(
-        (size - 1e-3).abs() < 1e-9,
+        (size - 1e-3).abs() < 1e-6,
         "expected size ≈ 1e-3 (the 1mm sliver edge), NOT the 1m bbox diagonal; got {}",
         size
     );
