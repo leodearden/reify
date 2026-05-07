@@ -199,4 +199,78 @@ mod tests {
             "single ExtrudeSymmetric op must classify as SweptKind::Extrude with axis=+Z"
         );
     }
+
+    // ── Step-3: Revolve happy paths and degenerate-axis/angle rejection ────
+
+    #[test]
+    fn classify_swept_body_revolve_partial_angle_classifies() {
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(0),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            Some(SweptKind::Revolve {
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            }),
+            "partial-angle revolve with non-degenerate axis must classify as SweptKind::Revolve"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_revolve_full_2pi_classifies() {
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(0),
+            axis_origin: [1.0, 2.0, 3.0],
+            axis_dir: [0.0, 1.0, 0.0],
+            angle_rad: 2.0 * std::f64::consts::PI,
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            Some(SweptKind::Revolve {
+                axis_origin: [1.0, 2.0, 3.0],
+                axis_dir: [0.0, 1.0, 0.0],
+                angle_rad: 2.0 * std::f64::consts::PI,
+            }),
+            "full 2π revolve must still classify as SweptKind::Revolve (kernel handles full-revolution edge cases downstream)"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_revolve_degenerate_axis_returns_none() {
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(0),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 0.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "revolve with all-zero axis_dir must be rejected (degenerate axis)"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_revolve_degenerate_angle_returns_none() {
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(0),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: 0.0,
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "revolve with zero angle_rad must be rejected (degenerate angle)"
+        );
+    }
 }
