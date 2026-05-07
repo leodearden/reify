@@ -59,23 +59,6 @@ pub(crate) fn is_load_value(v: &Value) -> bool {
     }
 }
 
-/// Returns the acceleration dimension: m·s⁻² (LENGTH / TIME²).
-///
-/// Composed at runtime because `from_exps` is module-private in `dimension.rs`
-/// and `mul`/`div`/`pow` are not `const fn`. Replace with a named constant
-/// once `DimensionVector::ACCELERATION` is added to `reify-types`.
-pub(crate) fn acceleration_dim() -> DimensionVector {
-    DimensionVector::LENGTH.div(&DimensionVector::TIME.pow(2))
-}
-
-/// Returns the force-density dimension: N/m³ = kg·m⁻²·s⁻² (FORCE / VOLUME).
-///
-/// Composed at runtime for the same reason as `acceleration_dim`. Replace with
-/// `DimensionVector::FORCE_DENSITY` once that constant is added to `reify-types`.
-pub(crate) fn force_density_dim() -> DimensionVector {
-    DimensionVector::FORCE.div(&DimensionVector::VOLUME)
-}
-
 /// Evaluate a loads stdlib function by name.
 ///
 /// Returns `Some(Value)` for known function names (including
@@ -147,7 +130,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             if validate_selector_target(&args[0]).is_none() {
                 return Some(Value::Undef);
             }
-            if validate_dimensioned_vec3(&args[1], force_density_dim()).is_none() {
+            if validate_dimensioned_vec3(&args[1], DimensionVector::FORCE_DENSITY).is_none() {
                 return Some(Value::Undef);
             }
             make_kind_map(
@@ -159,7 +142,7 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
             )
         }
         "gravity" => {
-            let accel_dim = acceleration_dim();
+            let accel_dim = DimensionVector::ACCELERATION;
             match args.len() {
                 0 => {
                     // 0-arg form: Earth standard gravity in -Z direction.
@@ -861,11 +844,9 @@ mod tests {
 
     #[test]
     fn body_force_returns_map_with_correct_fields() {
-        use super::force_density_dim;
-
         let body = selector_stub("body_stub");
         // Weight-density of steel ≈ 7850 kg/m³ × 9.81 m/s² ≈ 77 kN/m³.
-        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], force_density_dim());
+        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], DimensionVector::FORCE_DENSITY);
 
         let result = eval_builtin("body_force", &[body.clone(), fd.clone()]);
 
@@ -888,16 +869,6 @@ mod tests {
             map.get(&Value::String("force_density".to_string())),
             Some(&fd),
             "force_density should round-trip"
-        );
-    }
-
-    #[test]
-    fn force_density_dim_equals_force_div_volume() {
-        use super::force_density_dim;
-        assert_eq!(
-            force_density_dim(),
-            DimensionVector::FORCE.div(&DimensionVector::VOLUME),
-            "force_density_dim() should equal FORCE / VOLUME"
         );
     }
 
@@ -924,8 +895,7 @@ mod tests {
 
     #[test]
     fn body_force_inf_component_returns_undef() {
-        use super::force_density_dim;
-        let inf_vec = make_scalar_vec3([f64::INFINITY, 0.0, 0.0], force_density_dim());
+        let inf_vec = make_scalar_vec3([f64::INFINITY, 0.0, 0.0], DimensionVector::FORCE_DENSITY);
         assert!(
             eval_builtin("body_force", &[selector_stub("body_stub"), inf_vec]).is_undef(),
             "Inf component → Undef"
@@ -934,8 +904,7 @@ mod tests {
 
     #[test]
     fn body_force_vec4_returns_undef() {
-        use super::force_density_dim;
-        let dim = force_density_dim();
+        let dim = DimensionVector::FORCE_DENSITY;
         let vec4 = Value::Vector(vec![
             Value::Scalar {
                 si_value: 0.0,
@@ -962,8 +931,7 @@ mod tests {
 
     #[test]
     fn body_force_selector_bool_returns_undef() {
-        use super::force_density_dim;
-        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], force_density_dim());
+        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], DimensionVector::FORCE_DENSITY);
         assert!(
             eval_builtin("body_force", &[Value::Bool(false), fd]).is_undef(),
             "selector = Bool → Undef"
@@ -985,8 +953,7 @@ mod tests {
 
     #[test]
     fn body_force_three_args_returns_undef() {
-        use super::force_density_dim;
-        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], force_density_dim());
+        let fd = make_scalar_vec3([0.0, 0.0, -77000.0], DimensionVector::FORCE_DENSITY);
         assert!(
             eval_builtin("body_force", &[selector_stub("body_stub"), fd.clone(), fd]).is_undef(),
             "3 args → Undef"
@@ -997,7 +964,7 @@ mod tests {
 
     #[test]
     fn gravity_zero_args_returns_earth_default_acceleration() {
-        use super::{EARTH_GRAVITY, acceleration_dim};
+        use super::EARTH_GRAVITY;
 
         let result = eval_builtin("gravity", &[]);
 
@@ -1017,7 +984,7 @@ mod tests {
             .expect("acceleration field must exist");
 
         // Verify dimension on first component.
-        let expected_dim = acceleration_dim();
+        let expected_dim = DimensionVector::ACCELERATION;
         assert_vector3_approx!(Vector, accel.clone(), [0.0, 0.0, -EARTH_GRAVITY]);
 
         // Also check dimension is correct.
@@ -1030,16 +997,6 @@ mod tests {
         } else {
             panic!("acceleration should be Value::Vector");
         }
-    }
-
-    #[test]
-    fn acceleration_dim_equals_length_div_time_squared() {
-        use super::acceleration_dim;
-        assert_eq!(
-            acceleration_dim(),
-            DimensionVector::LENGTH.div(&DimensionVector::TIME.pow(2)),
-            "acceleration_dim() should equal LENGTH / TIME²"
-        );
     }
 
     // ── gravity constructor: failure modes ────────────────────────────────────
@@ -1072,10 +1029,9 @@ mod tests {
 
     #[test]
     fn gravity_scalar_nan_returns_undef() {
-        use super::acceleration_dim;
         let bad = Value::Scalar {
             si_value: f64::NAN,
-            dimension: acceleration_dim(),
+            dimension: DimensionVector::ACCELERATION,
         };
         assert!(
             eval_builtin("gravity", &[bad]).is_undef(),
@@ -1095,8 +1051,7 @@ mod tests {
 
     #[test]
     fn gravity_vector2_acceleration_dim_returns_undef() {
-        use super::acceleration_dim;
-        let dim = acceleration_dim();
+        let dim = DimensionVector::ACCELERATION;
         let vec2 = Value::Vector(vec![
             Value::Scalar {
                 si_value: 0.0,
@@ -1115,8 +1070,7 @@ mod tests {
 
     #[test]
     fn gravity_vector3_inf_component_returns_undef() {
-        use super::acceleration_dim;
-        let bad = make_scalar_vec3([0.0, 0.0, f64::INFINITY], acceleration_dim());
+        let bad = make_scalar_vec3([0.0, 0.0, f64::INFINITY], DimensionVector::ACCELERATION);
         assert!(
             eval_builtin("gravity", &[bad]).is_undef(),
             "Vector3 with Inf → Undef"
@@ -1134,10 +1088,9 @@ mod tests {
 
     #[test]
     fn gravity_two_args_returns_undef() {
-        use super::acceleration_dim;
         let s = Value::Scalar {
             si_value: 9.81,
-            dimension: acceleration_dim(),
+            dimension: DimensionVector::ACCELERATION,
         };
         assert!(
             eval_builtin("gravity", &[s.clone(), s]).is_undef(),
@@ -1149,10 +1102,8 @@ mod tests {
 
     #[test]
     fn gravity_vector3_arg_round_trips_unchanged() {
-        use super::acceleration_dim;
-
         // Moon gravity in +X direction (sideways) to distinguish from the -Z sign-flip path.
-        let moon_gravity = make_scalar_vec3([1.62, 0.0, 0.0], acceleration_dim());
+        let moon_gravity = make_scalar_vec3([1.62, 0.0, 0.0], DimensionVector::ACCELERATION);
 
         let result = eval_builtin("gravity", std::slice::from_ref(&moon_gravity));
 
@@ -1182,12 +1133,10 @@ mod tests {
 
     #[test]
     fn gravity_scalar_arg_returns_neg_z_vector() {
-        use super::acceleration_dim;
-
         // Positive magnitude → acceleration in -Z direction.
         let mag = Value::Scalar {
             si_value: 9.81,
-            dimension: acceleration_dim(),
+            dimension: DimensionVector::ACCELERATION,
         };
 
         let result = eval_builtin("gravity", &[mag]);
@@ -1218,7 +1167,7 @@ mod tests {
     /// updated in `LOAD_KINDS` (or vice versa), this test will catch it.
     #[test]
     fn load_kinds_all_dispatched_by_eval_loads() {
-        use super::{LOAD_KINDS, acceleration_dim, eval_loads, force_density_dim, is_load_value};
+        use super::{LOAD_KINDS, eval_loads, is_load_value};
 
         let stub_selector = Value::Map({
             let mut m = BTreeMap::new();
@@ -1234,8 +1183,8 @@ mod tests {
             dimension: DimensionVector::PRESSURE,
         };
         let pressure_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::PRESSURE);
-        let fd_vec = make_scalar_vec3([1.0, 0.0, 0.0], force_density_dim());
-        let accel_vec = make_scalar_vec3([0.0, 0.0, -9.81], acceleration_dim());
+        let fd_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE_DENSITY);
+        let accel_vec = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::ACCELERATION);
 
         for kind in LOAD_KINDS {
             let result = match *kind {

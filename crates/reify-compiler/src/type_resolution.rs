@@ -601,6 +601,12 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Density" => Some(Type::Scalar {
             dimension: DimensionVector::MASS_DENSITY,
         }),
+        "Acceleration" => Some(Type::Scalar {
+            dimension: DimensionVector::ACCELERATION,
+        }),
+        "ForceDensity" => Some(Type::Scalar {
+            dimension: DimensionVector::FORCE_DENSITY,
+        }),
         "Dimensionless" => Some(Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         }),
@@ -1873,6 +1879,26 @@ mod tests {
             resolve_type_name("Density"),
             Some(Type::Scalar {
                 dimension: DimensionVector::MAGNETIC_FLUX_DENSITY
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_type_name_recognises_acceleration() {
+        assert_eq!(
+            resolve_type_name("Acceleration"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::ACCELERATION
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_type_name_recognises_force_density() {
+        assert_eq!(
+            resolve_type_name("ForceDensity"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::FORCE_DENSITY
             })
         );
     }

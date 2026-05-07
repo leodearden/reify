@@ -206,6 +206,13 @@ impl DimensionVector {
     /// `density: Density`.
     pub const MASS_DENSITY: DimensionVector =
         DimensionVector::from_exps(&[(0, -3), (1, 1)]);
+    /// Acceleration: m·s⁻² (LENGTH / TIME²)
+    pub const ACCELERATION: DimensionVector =
+        DimensionVector::from_exps(&[(0, 1), (2, -2)]);
+    /// Force density (force per unit volume): N/m³ = kg·m⁻²·s⁻² (FORCE / VOLUME,
+    /// equivalently PRESSURE / LENGTH)
+    pub const FORCE_DENSITY: DimensionVector =
+        DimensionVector::from_exps(&[(0, -2), (1, 1), (2, -2)]);
 
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 10];
@@ -356,8 +363,8 @@ pub const FORCE: DimensionVector = {
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
 /// special-cases `"Dimensionless" => DimensionVector::DIMENSIONLESS` as a separate fallback arm.
 ///
-/// The slice contains 32 entries, one per named singleton, in the same order as the
-/// original `canonical_name` match arms (LENGTH .. MASS_DENSITY).
+/// The slice contains 34 entries, one per named singleton, in the same order as the
+/// original `canonical_name` match arms (LENGTH .. FORCE_DENSITY).
 pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::LENGTH, "Length"),
     (DimensionVector::MASS, "Mass"),
@@ -391,6 +398,8 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::DYNAMIC_VISCOSITY, "DynamicViscosity"),
     (DimensionVector::MOMENT_OF_INERTIA, "MomentOfInertia"),
     (DimensionVector::MASS_DENSITY, "Density"),
+    (DimensionVector::ACCELERATION, "Acceleration"),
+    (DimensionVector::FORCE_DENSITY, "ForceDensity"),
 ];
 
 impl fmt::Display for DimensionVector {
@@ -1106,5 +1115,48 @@ mod tests {
             energy.content_hash(),
             "Torque and Energy content hashes must differ"
         );
+    }
+
+    #[test]
+    fn acceleration_has_m_per_s_squared_exponents() {
+        let a = DimensionVector::ACCELERATION;
+        assert_eq!(a, DimensionVector::from_exps(&[(0, 1), (2, -2)]));
+        assert_eq!(a.canonical_name(), Some("Acceleration"));
+    }
+
+    #[test]
+    fn acceleration_equals_length_div_time_squared() {
+        assert_eq!(
+            DimensionVector::ACCELERATION,
+            DimensionVector::LENGTH.div(&DimensionVector::TIME.pow(2))
+        );
+    }
+
+    #[test]
+    fn acceleration_is_distinct_from_length() {
+        assert_ne!(DimensionVector::ACCELERATION, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn force_density_has_kg_per_m_squared_per_s_squared_exponents() {
+        let fd = DimensionVector::FORCE_DENSITY;
+        assert_eq!(fd, DimensionVector::from_exps(&[(0, -2), (1, 1), (2, -2)]));
+        assert_eq!(fd.canonical_name(), Some("ForceDensity"));
+    }
+
+    #[test]
+    fn force_density_equals_force_div_volume() {
+        assert_eq!(
+            DimensionVector::FORCE_DENSITY,
+            DimensionVector::FORCE.div(&DimensionVector::VOLUME)
+        );
+    }
+
+    #[test]
+    fn force_density_is_distinct_from_pressure() {
+        // PRESSURE has slot 0 = -1; FORCE_DENSITY has slot 0 = -2.
+        // They share the same mass and time exponents; pin the length-slot
+        // distinction so future edits cannot silently collapse the two.
+        assert_ne!(DimensionVector::FORCE_DENSITY, DimensionVector::PRESSURE);
     }
 }
