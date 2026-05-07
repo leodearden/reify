@@ -1275,6 +1275,19 @@ impl Engine {
     /// queries today, so this is documented (not regressed) in scope; a
     /// follow-up task can either cache the table entries alongside the
     /// handle or skip the table reset for engines with non-empty cache.
+    ///
+    /// **Internal-consistency invariant** (amendment): on cache-hit the
+    /// helper `debug_assert!`s that neither `feature_tag_table` nor
+    /// `topology_attribute_table` already carries an entry for the cached
+    /// handle. Under the per-build reset contract above, that assertion
+    /// must always hold (the table was just reset and only earlier
+    /// realizations in the same build could have touched a different
+    /// handle). The assertion fires loudly during development if a future
+    /// refactor weakens the per-build reset or routes a cache-served
+    /// handle through a path that ALSO populates the tables — both of
+    /// which would silently regress attribute-query results for a cached
+    /// handle. Production builds skip the check entirely
+    /// (`debug_assertions` cfg).
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
@@ -1315,6 +1328,29 @@ impl Engine {
             && let Some(&cached_handle) =
                 realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol)
         {
+            // Internal-consistency invariant (amendment): the per-build
+            // reset of `feature_tag_table` / `topology_attribute_table` at
+            // the top of build() / build_snapshot() / tessellate_*()
+            // guarantees neither table can already carry an entry for the
+            // cached handle on a clean cache-hit path. If a future refactor
+            // weakens the reset or routes the cached handle through a path
+            // that ALSO populates the tables, this debug_assert fires loudly
+            // during development rather than silently regressing attribute-
+            // query results for cached handles.
+            debug_assert!(
+                feature_tag_table.lookup(cached_handle).is_none(),
+                "feature_tag_table already has an entry for cached handle \
+                 {:?} on cache-hit short-circuit — per-build reset invariant \
+                 violated",
+                cached_handle,
+            );
+            debug_assert!(
+                topology_attribute_table.lookup(cached_handle).is_none(),
+                "topology_attribute_table already has an entry for cached \
+                 handle {:?} on cache-hit short-circuit — per-build reset \
+                 invariant violated",
+                cached_handle,
+            );
             step_handles.push(cached_handle);
             named_steps.insert(name.to_string(), cached_handle);
             return;
