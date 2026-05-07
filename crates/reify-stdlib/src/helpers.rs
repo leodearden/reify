@@ -180,24 +180,34 @@ pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
     Value::Map(m)
 }
 
-/// Validate that `v` is a usable topology-selector target — i.e., not an
-/// obvious primitive.
+/// Validate that `v` is a usable topology-selector target.
 ///
 /// The topology-selector stdlib bindings (PRD `topology-selectors.md` task 5)
 /// have not yet landed — there is no `Value::Face` / `Value::Edge` / `Value::Body`
-/// variant today. This helper therefore only rejects obvious primitive
-/// non-selector values (`Value::Real`, `Value::Int`, `Value::Bool`, `Value::Undef`);
-/// any other shape (Map, List, String, Vector, Tensor, …) is accepted as an
-/// opaque pass-through. Full topology-kind validation belongs in the FEA
-/// evaluation pipeline (PRD task 16) when the engine resolves selectors against
-/// the kernel and can produce diagnostics with source spans.
+/// variant today. Until those land, only two placeholder shapes are accepted:
 ///
-/// Returns `Some(())` when the value is an acceptable selector, `None` when
-/// it is a primitive that cannot be a selector.
+/// - `Value::Map` — the canonical opaque-selector shape used by the existing
+///   stub fixtures (e.g. a Map with `kind: "face_stub"`).
+/// - `Value::String` — reserved for future named-selector sentinels, analogous
+///   to `pressure_load`'s `"normal"` direction sentinel.
+///
+/// Every other variant is rejected, including numeric primitives
+/// (`Real`/`Int`/`Bool`/`Undef`) and dimensioned containers
+/// (`Scalar`/`Complex`/`Vector`/`Tensor`/`Point`/`List`). The rejection of
+/// dimensioned containers in particular catches a real misuse class — e.g.
+/// the typo `point_load(force_vec, force_vec)` no longer silently embeds a
+/// force-dimensioned Vector under the `point` field.
+///
+/// Full topology-kind validation (face-vs-edge-vs-body distinction with
+/// source-span diagnostics) belongs in the FEA evaluation pipeline (PRD
+/// task 16) once the engine resolves selectors against the kernel.
+///
+/// Returns `Some(())` when the value is an acceptable selector placeholder,
+/// `None` otherwise.
 pub(crate) fn validate_selector_target(v: &Value) -> Option<()> {
     match v {
-        Value::Real(_) | Value::Int(_) | Value::Bool(_) | Value::Undef => None,
-        _ => Some(()),
+        Value::Map(_) | Value::String(_) => Some(()),
+        _ => None,
     }
 }
 
