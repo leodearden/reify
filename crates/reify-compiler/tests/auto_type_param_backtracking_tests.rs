@@ -4285,6 +4285,22 @@ structure def Hot2 : Hot {
          message must contain 'RubberSeal'; got: {:?}",
         diagnostics[0].message
     );
+    // Pins the optimization's actual trace: WITH backjumping, exactly 5 leaves
+    // are visited × 1 constraint per leaf = 5 id records.
+    //   Leaf 1 (ORingSeal, AirCooled, Hot1) → Violated → blame={T(0)} → backjump to T
+    //   → skips the entire ORingSeal sub-tree (leaves 2–4 under ORingSeal never visited)
+    //   Leaves 2–5 under RubberSeal → Satisfied (4 leaves)
+    // Without backjumping: all 8 leaves × 1 constraint = 8 id records.
+    // Assumes resolver evaluates ALL constraints per leaf (no within-leaf
+    // short-circuit). If that changes, update the expected count, not the
+    // backjumping logic.
+    assert_eq!(
+        checker.calls().len(),
+        5,
+        "WITH backjumping: 5 leaves visited × 1 constraint = 5 id records \
+         (vs 8 without backjumping); got: {:?}",
+        checker.calls().len()
+    );
 }
 
 /// Backjumping uses `max` over the **union** of all violated constraints' blame
@@ -4431,6 +4447,24 @@ structure def Hot2 : Hot {
         Some(DiagnosticCode::AutoTypeParamNonUnique),
         "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
         diagnostics[0].code
+    );
+    // Pins the optimization's actual trace: WITH max-over-union backjumping,
+    // exactly 7 leaves are visited × 2 constraints per leaf = 14 id records.
+    //   Leaf 1 (ORingSeal, AirCooled, Hot1) → Violated → conflict {T(0),U(1)} →
+    //     J = max{0,1} = 1 = U → BackjumpTo(U) → skips (ORingSeal, AirCooled, Hot2) only
+    //   Leaves 2–7 (ORingSeal WaterCooled + 4×RubberSeal) → Satisfied (6 leaves)
+    //   Total: 7 leaves × 2 constraints = 14 id records
+    // Without backjumping: 8 leaves × 2 constraints = 16 id records.
+    // With min-over-union (J=0=T, incorrect): 4 leaves × 2 constraints = 8 id records.
+    // Assumes resolver evaluates ALL constraints per leaf (no within-leaf
+    // short-circuit). If that changes, update the expected count, not the
+    // backjumping logic.
+    assert_eq!(
+        checker.calls().len(),
+        14,
+        "WITH max-over-union backjumping: 7 leaves × 2 constraints = 14 id records \
+         (vs 16 no-backjump, vs 8 min-over-union); got: {:?}",
+        checker.calls().len()
     );
 }
 
