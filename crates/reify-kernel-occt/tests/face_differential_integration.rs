@@ -902,12 +902,26 @@ fn curvature_at_on_placed_sphere_principal_directions_perpendicular_to_world_nor
 // NaN / Inf input rejection (validate_uv_finite guard)
 // ---------------------------------------------------------------------------
 
+/// Bad-input matrix shared by both NaN/Inf rejection tests.
+///
+/// Covers each axis individually (NaN-u, NaN-v, +Inf-u, −Inf-v) plus the
+/// "both bad" case (NaN, NaN). The `validate_uv_finite` helper short-circuits
+/// on the first non-finite component, so (NaN, NaN) is redundant from a
+/// *coverage* standpoint but makes the invariant explicit for readers.
+const NON_FINITE_UV: &[(f64, f64)] = &[
+    (f64::NAN, 0.0),
+    (0.0, f64::NAN),
+    (f64::INFINITY, 0.0),
+    (0.0, f64::NEG_INFINITY),
+    (f64::NAN, f64::NAN),
+];
+
 /// `surface_normal_at` rejects non-finite (u, v) inputs with
 /// `QueryError::QueryFailed` containing "must be finite".
 ///
 /// The guard must fire before the FFI call so that NaN/Inf parametric
-/// coordinates never reach the C++ wrapper. The four bad-input cases cover:
-/// NaN-u, NaN-v, +Inf-u, and -Inf-v — the full non-finite input matrix.
+/// coordinates never reach the C++ wrapper. The bad-input cases cover:
+/// NaN-u, NaN-v, +Inf-u, -Inf-v, and both-NaN — see [`NON_FINITE_UV`].
 #[test]
 fn surface_normal_at_rejects_non_finite_uv() {
     let (mut kernel, sphere_id) = sphere_kernel(5.0);
@@ -916,14 +930,7 @@ fn surface_normal_at_rejects_non_finite_uv() {
         .expect("extract_faces should succeed for sphere");
     let face = faces[0];
 
-    let bad_inputs: &[(f64, f64)] = &[
-        (f64::NAN, 0.0),
-        (0.0, f64::NAN),
-        (f64::INFINITY, 0.0),
-        (0.0, f64::NEG_INFINITY),
-    ];
-
-    for &(u, v) in bad_inputs {
+    for &(u, v) in NON_FINITE_UV {
         match kernel.surface_normal_at(face, u, v) {
             Err(QueryError::QueryFailed(msg)) => {
                 assert!(
@@ -953,14 +960,7 @@ fn curvature_at_rejects_non_finite_uv() {
         .expect("extract_faces should succeed for sphere");
     let face = faces[0];
 
-    let bad_inputs: &[(f64, f64)] = &[
-        (f64::NAN, 0.0),
-        (0.0, f64::NAN),
-        (f64::INFINITY, 0.0),
-        (0.0, f64::NEG_INFINITY),
-    ];
-
-    for &(u, v) in bad_inputs {
+    for &(u, v) in NON_FINITE_UV {
         match kernel.curvature_at(face, u, v) {
             Err(QueryError::QueryFailed(msg)) => {
                 assert!(
