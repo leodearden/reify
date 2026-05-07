@@ -41,50 +41,20 @@
 //! "read once at engine startup" contract structurally rather than relying
 //! on caller discipline — both [`crate::Engine::with_registered_kernel`] and
 //! the future dispatcher wiring share the cached map and the centralised
-//! tie-break helper [`pick_lexmin_kernel`].
+//! tie-break helper [`pick_lexmin_kernel`]. The `(Operation, ReprKind)`
+//! uniqueness diagnostic ([`warn_if_duplicate_op_repr_pairs`]) is also
+//! amortised behind the same OnceLock: it runs once inside the init closure
+//! alongside [`build_registry`] and never repeats, mirroring the existing
+//! duplicate-NAME walk.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Memoized BTreeMap of every static-collected [`KernelRegistration`], keyed
 /// by `name`. Allocated once on first call and never rebuilt.
 static REGISTRY: OnceLock<BTreeMap<String, &'static KernelRegistration>> = OnceLock::new();
-
-/// Once-shot gate around `collect_registry()`'s call to
-/// [`warn_if_duplicate_op_repr_pairs`]. Mirrors how the surrounding
-/// `REGISTRY: OnceLock` amortises [`build_registry`]'s duplicate-NAME
-/// walk: the (Operation, ReprKind) uniqueness verdict is stable across
-/// calls because descriptor function pointers are fixed at link time, so
-/// running the O(kernels × supports) HashMap walk on every
-/// `collect_registry()` invocation would burn CPU for no diagnostic
-/// benefit. Consumed via `compare_exchange(false, true)` so the gate
-/// flips exactly once per process; subsequent calls observe `Err` and
-/// short-circuit.
-static UNIQUENESS_CHECKED: AtomicBool = AtomicBool::new(false);
-
-/// Counter tracking how many times `collect_registry()`'s gated branch
-/// has actually invoked [`warn_if_duplicate_op_repr_pairs`]. Because the
-/// surrounding [`UNIQUENESS_CHECKED`] gate uses `compare_exchange(false,
-/// true)`, this counter transitions 0 → 1 at most once across all
-/// `collect_registry()` callers in the process — its monotonic upper
-/// bound IS the at-most-once contract.
-///
-/// Crucially the `fetch_add(1)` lives INSIDE the gated branch, NOT at
-/// the top of the helper itself. This means helper-direct tests (which
-/// call the helper with synthetic input to exercise the warn/panic
-/// paths) do NOT inflate the counter and cannot interfere with parallel
-/// `collect_registry()`-based tests reading it.
-///
-/// Exposed at module scope (not `pub(crate)`) so the inner `tests`
-/// module can read it via `super::UNIQUENESS_CHECK_INVOCATIONS`. Pins
-/// the once-shot contract structurally: see
-/// [`tests::collect_registry_runs_uniqueness_check_at_most_once_across_calls`]
-/// which snapshots before/after three `collect_registry()` calls and
-/// asserts `delta <= 1`.
-static UNIQUENESS_CHECK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Borrowed accessor over the memoized registry of [`KernelRegistration`]
 /// records.
@@ -111,8 +81,24 @@ static UNIQUENESS_CHECK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 /// and trips a `debug_assert!` (and emits a `tracing::warn!`) on collision so
 /// such misconfigurations surface loudly in dev/test rather than producing
 /// arbitrary kernel selection in release.
+///
+/// # Duplicate `(Operation, ReprKind)` detection
+///
+/// The OnceLock init closure also materialises owned [`CapabilityDescriptor`]s
+/// once and passes them to [`warn_if_duplicate_op_repr_pairs`], surfacing
+/// duplicate-(op, repr)-pair misconfigurations at startup via `tracing::warn!`
+/// (and `debug_assert!` in debug builds). This diagnostic runs exactly
+/// once per process, structurally guaranteed by the surrounding `OnceLock`.
 pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
-    REGISTRY.get_or_init(build_registry)
+    REGISTRY.get_or_init(|| {
+        let map = build_registry();
+        let descriptors: BTreeMap<String, CapabilityDescriptor> = map
+            .iter()
+            .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
+            .collect();
+        warn_if_duplicate_op_repr_pairs(&descriptors);
+        map
+    })
 }
 
 /// The lexicographically smallest [`KernelRegistration`] in the memoized
@@ -149,33 +135,17 @@ pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
 /// Internally delegates to the memoized [`registry`] accessor so the
 /// inventory walk is never repeated; the per-call cost is one descriptor
 /// invocation per registered kernel plus the surrounding `BTreeMap`
-/// allocation. The [`warn_if_duplicate_op_repr_pairs`] uniqueness check
-/// (an O(kernels × supports) `HashMap` walk) is gated behind
-/// `UNIQUENESS_CHECKED` so it runs at most once per process — mirroring
-/// how [`build_registry`]'s duplicate-NAME check is amortised behind the
-/// surrounding `REGISTRY: OnceLock`. The invocation count is exposed via
-/// `UNIQUENESS_CHECK_INVOCATIONS` (an `AtomicUsize` incremented inside the
-/// gated branch) so the at-most-once contract can be pinned by unit tests
-/// via a delta snapshot rather than by inspecting the `UNIQUENESS_CHECKED`
-/// flag (which would only prove "at least once" — the opposite direction of
-/// the contract). The result itself is not memoized by design: callers
-/// receive a fresh, mutable `BTreeMap` each call. Per the PRD's "read once
-/// at engine startup" contract, callers SHOULD NOT call this on the hot
-/// dispatch path; the once-flag enforces that intent structurally for the
-/// diagnostic walk while leaving the result allocation per-call.
+/// allocation. The [`warn_if_duplicate_op_repr_pairs`] uniqueness diagnostic
+/// runs once per process inside [`registry`]'s OnceLock initialisation, so
+/// callers of `collect_registry()` do not pay that cost. The result itself is
+/// not memoized by design: callers receive a fresh, mutable `BTreeMap` each
+/// call. Per the PRD's "read once at engine startup" contract, callers SHOULD
+/// NOT call this on the hot dispatch path.
 pub fn collect_registry() -> BTreeMap<String, CapabilityDescriptor> {
-    let result: BTreeMap<String, CapabilityDescriptor> = registry()
+    registry()
         .iter()
         .map(|(name, reg)| (name.clone(), (reg.descriptor)()))
-        .collect();
-    if UNIQUENESS_CHECKED
-        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-        .is_ok()
-    {
-        UNIQUENESS_CHECK_INVOCATIONS.fetch_add(1, Ordering::Relaxed);
-        warn_if_duplicate_op_repr_pairs(&result);
-    }
-    result
+        .collect()
 }
 
 /// Emit a structured tracing event recording which kernel was selected and how
