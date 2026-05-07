@@ -106,7 +106,8 @@ pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
     REGISTRY.get_or_init(|| {
         let map = build_registry();
         warn_if_duplicate_op_repr_pairs(
-            map.iter().map(|(name, reg)| (name.as_str(), (reg.descriptor)())),
+            map.iter()
+                .map(|(name, reg)| (name.as_str(), (reg.descriptor)())),
         );
         map
     })
@@ -872,5 +873,4 @@ mod tests {
              this pins the actual lex-min contract independently of any specific synthetic name",
         );
     }
-
 }

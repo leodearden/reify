@@ -75,7 +75,6 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
     graph.topology_fingerprint()
 }
 
-
 /// Classify a single value cell as [`ParameterClass::Dimensional`] or
 /// [`ParameterClass::Structural`].
 ///
@@ -353,7 +352,13 @@ mod tests {
         let g2 = g1.clone();
         let v1 = ValueMap::new();
         let mut v2 = ValueMap::new();
-        v2.insert(id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "loft".to_string() });
+        v2.insert(
+            id.clone(),
+            Value::Enum {
+                type_name: "Mode".to_string(),
+                variant: "loft".to_string(),
+            },
+        );
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
             "structural cell only in new_values must not be eligible"
@@ -384,7 +389,13 @@ mod tests {
         let g1 = graph_with_cell(&id, Type::Enum("Mode".to_string()));
         let g2 = g1.clone();
         let mut v1 = ValueMap::new();
-        v1.insert(id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "sketch".to_string() });
+        v1.insert(
+            id.clone(),
+            Value::Enum {
+                type_name: "Mode".to_string(),
+                variant: "sketch".to_string(),
+            },
+        );
         let v2 = ValueMap::new();
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
@@ -396,8 +407,8 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_shape_hash_differs_returns_false() {
-        use reify_types::{RealizationNodeId, ValueMap};
         use crate::graph::RealizationNodeData;
+        use reify_types::{RealizationNodeId, ValueMap};
 
         let id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&id, Type::length());
@@ -422,8 +433,8 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_shape_hash_differs_with_dimensional_value_diff_still_returns_false() {
-        use reify_types::{RealizationNodeId, Value, ValueMap};
         use crate::graph::RealizationNodeData;
+        use reify_types::{RealizationNodeId, Value, ValueMap};
 
         let width_id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&width_id, Type::length());
@@ -476,9 +487,21 @@ mod tests {
         let g1 = graph_with_cell(&id, Type::Enum("Mode".to_string()));
         let g2 = g1.clone();
         let mut v1 = ValueMap::new();
-        v1.insert(id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "sketch".to_string() });
+        v1.insert(
+            id.clone(),
+            Value::Enum {
+                type_name: "Mode".to_string(),
+                variant: "sketch".to_string(),
+            },
+        );
         let mut v2 = ValueMap::new();
-        v2.insert(id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "loft".to_string() }); // structural diff
+        v2.insert(
+            id.clone(),
+            Value::Enum {
+                type_name: "Mode".to_string(),
+                variant: "loft".to_string(),
+            },
+        ); // structural diff
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
             "a structural (Enum) diff must not be stage-A eligible"
@@ -556,10 +579,22 @@ mod tests {
         let g2 = g1.clone();
         let mut v1 = ValueMap::new();
         v1.insert(len_id.clone(), Value::length(0.05));
-        v1.insert(enum_id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "sketch".to_string() });
+        v1.insert(
+            enum_id.clone(),
+            Value::Enum {
+                type_name: "Mode".to_string(),
+                variant: "sketch".to_string(),
+            },
+        );
         let mut v2 = ValueMap::new();
         v2.insert(len_id.clone(), Value::length(0.10)); // dimensional diff
-        v2.insert(enum_id.clone(), Value::Enum { type_name: "Mode".to_string(), variant: "loft".to_string() }); // structural diff
+        v2.insert(
+            enum_id.clone(),
+            Value::Enum {
+                type_name: "Mode".to_string(),
+                variant: "loft".to_string(),
+            },
+        ); // structural diff
         assert!(
             !stage_a_eligible(&g1, &g2, &v1, &v2),
             "any structural diff must not be stage-A eligible, even alongside dimensional diffs"
@@ -601,8 +636,8 @@ mod tests {
 
     #[test]
     fn realization_graph_shape_hash_added_realization_diverges() {
-        use reify_types::RealizationNodeId;
         use crate::graph::RealizationNodeData;
+        use reify_types::RealizationNodeId;
 
         let id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&id, Type::length());

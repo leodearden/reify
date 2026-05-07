@@ -25,9 +25,7 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
-use reify_types::{
-    FIELD_ENTITY_PREFIX, DiagnosticCode, FieldSourceKind, Value, ValueCellId,
-};
+use reify_types::{DiagnosticCode, FIELD_ENTITY_PREFIX, FieldSourceKind, Value, ValueCellId};
 
 /// Embedded source fixture — an `imported` field in a minimal module.
 ///
@@ -73,7 +71,9 @@ fn imported_field_smoke_pins_v02_deferral_pipeline() {
     // so this test doesn't need updating if the wording changes.
     let errors = errors_only(&compiled);
     assert!(
-        errors.iter().any(|d| d.code == Some(DiagnosticCode::FieldImportedV02)),
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::FieldImportedV02)),
         "expected DiagnosticCode::FieldImportedV02, got: {:?}",
         errors.iter().map(|d| d.code).collect::<Vec<_>>()
     );
@@ -118,9 +118,6 @@ fn imported_field_smoke_pins_v02_deferral_pipeline() {
                 **lambda
             );
         }
-        other => panic!(
-            "expected Value::Field for imported field, got: {:?}",
-            other
-        ),
+        other => panic!("expected Value::Field for imported field, got: {:?}", other),
     }
 }

@@ -42,8 +42,8 @@ use reify_compiler::auto_type_param::{
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 use reify_types::{
-    CompiledExpr, CompiledFunction, DiagnosticCode, Satisfaction, SourceSpan, Type,
-    Value, ValueCellId,
+    CompiledExpr, CompiledFunction, DiagnosticCode, Satisfaction, SourceSpan, Type, Value,
+    ValueCellId,
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -130,12 +130,11 @@ structure def WaterCooled : Cooled {
     // Queue: leaf 1 and 2 (both ORingSeal leaves) are infeasible;
     //        leaf 3 (RubberSeal, AirCooled) is feasible.
     //        default Satisfied for remaining leaves.
-    let checker = MockConstraintChecker::new()
-        .with_call_queue(vec![
-            Satisfaction::Violated,
-            Satisfaction::Violated,
-            Satisfaction::Satisfied,
-        ]);
+    let checker = MockConstraintChecker::new().with_call_queue(vec![
+        Satisfaction::Violated,
+        Satisfaction::Violated,
+        Satisfaction::Satisfied,
+    ]);
 
     let functions: &[CompiledFunction] = &[];
     let mut diagnostics = Vec::new();
@@ -292,8 +291,14 @@ structure def WaterCooled : Cooled {
         outcome,
         MultiParamResolutionOutcome {
             per_param: vec![
-                ("T".to_string(), SelectionResult::Selected("RubberSeal".to_string())),
-                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+                (
+                    "T".to_string(),
+                    SelectionResult::Selected("RubberSeal".to_string())
+                ),
+                (
+                    "U".to_string(),
+                    SelectionResult::Selected("WaterCooled".to_string())
+                ),
             ],
             substitution: vec![
                 ("T".to_string(), "RubberSeal".to_string()),
@@ -383,8 +388,7 @@ structure def WeldedMount : Mounted {
 
     // Queue: leaf 1 (ORingSeal, AirCooled, BoltedMount) → Violated, blame T(0)
     //        → backjump to T; all subsequent leaves use default Satisfied.
-    let checker =
-        MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+    let checker = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
 
     let functions: &[CompiledFunction] = &[];
     let mut diagnostics = Vec::new();
@@ -541,8 +545,7 @@ structure def WeldedMount : Mounted {
 
     // Queue: leaf 1 (ORingSeal, AirCooled, BoltedMount) → Violated, blame U(1)
     //        → backjump to U; all subsequent leaves use default Satisfied.
-    let checker =
-        MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+    let checker = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
 
     let functions: &[CompiledFunction] = &[];
     let mut diagnostics = Vec::new();
@@ -618,4 +621,3 @@ structure def WeldedMount : Mounted {
         diagnostics[0].code
     );
 }
-
