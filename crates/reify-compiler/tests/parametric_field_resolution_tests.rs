@@ -166,6 +166,76 @@ fn field_real_real_resolves_to_typed_field() {
 }
 
 // ---------------------------------------------------------------------------
+// Positive tests — user-defined structure/trait names (task 3101 backfill)
+//
+// Exercises the `structure_names` / `trait_names` threading added in task 3088
+// through the `Field<D, C>` arm of `resolve_parameterized_builtin_type`.
+// The existing positive tests above cover only builtin domain/codomain types;
+// these two tests verify that user-declared struct and trait names resolve
+// correctly in each slot via `resolve_type_with_aliases`.
+// ---------------------------------------------------------------------------
+
+/// Fixture: user-declared structure as the domain of a Field type.
+///
+/// `structure def Foo {}` declares a named struct; `Field<Foo, Real>` places it
+/// in the domain slot to exercise `structure_names` threading.
+const USER_STRUCT_DOMAIN_SOURCE: &str = r#"
+structure def Foo {}
+structure def Body {
+    param f : Field<Foo, Real>
+}
+"#;
+
+/// `Field<Foo, Real>` where `Foo` is a user-declared struct must resolve to
+/// `Type::Field { domain: StructureRef("Foo"), codomain: Real }`.
+///
+/// Exercises `structure_names` threading: the domain `Foo` must resolve through
+/// `resolve_type_expr_with_aliases` → `resolve_type_with_aliases` →
+/// `Type::StructureRef("Foo")` (struct fallback branch in `resolve_type_with_aliases`).
+#[test]
+fn field_user_struct_domain_resolves_to_typed_field() {
+    assert_param_type(
+        USER_STRUCT_DOMAIN_SOURCE,
+        "Body",
+        "f",
+        &Type::Field {
+            domain: Box::new(Type::StructureRef("Foo".into())),
+            codomain: Box::new(Type::Real),
+        },
+    );
+}
+
+/// Fixture: user-declared trait as the codomain of a Field type.
+///
+/// `trait Bar {}` declares a named trait; `Field<Real, Bar>` places it in the
+/// codomain slot to exercise `trait_names` threading.
+const USER_TRAIT_CODOMAIN_SOURCE: &str = r#"
+trait Bar {}
+structure def Body {
+    param f : Field<Real, Bar>
+}
+"#;
+
+/// `Field<Real, Bar>` where `Bar` is a user-declared trait must resolve to
+/// `Type::Field { domain: Real, codomain: TraitObject("Bar") }`.
+///
+/// Exercises `trait_names` threading: the codomain `Bar` must resolve through
+/// `resolve_type_expr_with_aliases` → `resolve_type_with_aliases` →
+/// `Type::TraitObject("Bar")` (trait fallback branch at type_resolution.rs:663-664).
+#[test]
+fn field_user_trait_codomain_resolves_to_typed_field() {
+    assert_param_type(
+        USER_TRAIT_CODOMAIN_SOURCE,
+        "Body",
+        "f",
+        &Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::TraitObject("Bar".into())),
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Negative tests — arity mismatch, regression via fall-through (step 1)
 //
 // These tests exercise the EXISTING fall-through behaviour (`_ => return None`
