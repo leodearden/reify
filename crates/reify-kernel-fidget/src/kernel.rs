@@ -87,6 +87,28 @@ impl FidgetKernel {
         }
     }
 
+    /// Look up two handles, cloning the underlying Trees. Errors with
+    /// `InvalidReference(left)` first (left is checked before right) — the
+    /// stable contract pinned by
+    /// `fidget_kernel_execute_boolean_with_unknown_handle_returns_invalid_reference`.
+    fn lookup_pair(
+        &self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+    ) -> Result<(Tree, Tree), GeometryError> {
+        let a = self
+            .trees
+            .get(&left)
+            .ok_or(GeometryError::InvalidReference(left))?
+            .clone();
+        let b = self
+            .trees
+            .get(&right)
+            .ok_or(GeometryError::InvalidReference(right))?
+            .clone();
+        Ok((a, b))
+    }
+
     /// Build the SDF of a sphere of radius `r` centred at the origin:
     /// `sqrt(x² + y² + z²) − r`.
     fn sphere_tree(r: f64) -> Tree {
@@ -238,6 +260,23 @@ impl GeometryKernel for FidgetKernel {
                 let h = extract_f64(height)?;
                 let d = extract_f64(depth)?;
                 let tree = Self::box_tree(w, h, d);
+                Ok(self.insert_tree(tree))
+            }
+            GeometryOp::Union { left, right } => {
+                let (a, b) = self.lookup_pair(*left, *right)?;
+                let tree = a.min(b);
+                Ok(self.insert_tree(tree))
+            }
+            GeometryOp::Intersection { left, right } => {
+                let (a, b) = self.lookup_pair(*left, *right)?;
+                let tree = a.max(b);
+                Ok(self.insert_tree(tree))
+            }
+            GeometryOp::Difference { left, right } => {
+                // Difference (left − right) is `max(a, neg(b))` — the
+                // half-space outside `right` intersected with `left`.
+                let (a, b) = self.lookup_pair(*left, *right)?;
+                let tree = a.max(b.neg());
                 Ok(self.insert_tree(tree))
             }
             other => Err(GeometryError::OperationFailed(format!(
