@@ -142,9 +142,10 @@ fn helper_panics_when_param_m_zero() {
 /// attribute would fail the test — same trick as
 /// `helper_panics_when_silent_drop_count_nonzero`.
 ///
-/// See also `helper_panics_when_param_m_just_above_upper_boundary` which
-/// exercises the `<=` vs `<` boundary: `1.0e-3` is admitted while
-/// `1.0e-3 + ε` panics.
+/// See also `helper_panics_when_param_m_just_above_upper_boundary` which tests
+/// a value barely above the boundary (`1.0e-3 + 1.0e-10`) for additional
+/// boundary-region coverage; neither test proves that `1.0e-3` itself is
+/// admitted (that would require a positive-path OCCT test).
 #[test]
 #[should_panic(expected = "must be ≤")]
 fn helper_panics_when_param_m_exceeds_precondition() {
@@ -160,20 +161,23 @@ fn helper_panics_when_param_m_exceeds_precondition() {
 }
 
 /// Verify the helper panics with "must be ≤" for a value only infinitesimally
-/// above the `BOX_SIDE_M * 0.1 == 1.0e-3` boundary — the `<=` vs `<` distinction.
+/// above the `BOX_SIDE_M * 0.1 == 1.0e-3` boundary — complementing
+/// `helper_panics_when_param_m_exceeds_precondition` (which uses `2.0e-3`,
+/// unambiguously above the threshold) with boundary-region coverage.
 ///
-/// The boundary value `1.0e-3` itself is admitted (the check is `param_m <=
-/// BOX_SIDE_M * 0.1`), so this test uses `1.0e-3 + 1.0e-10` — a value that
-/// is unambiguously above the boundary yet close enough to document the
-/// one-ULP-style intent.  The next representable f64 above `1.0e-3` is
-/// approximately `1.0e-3 + 2.2e-19`; adding `1.0e-10` is far more than one
-/// ULP but is still small relative to the threshold.
+/// Uses `1.0e-3 + 1.0e-10` to document that the effective threshold is
+/// exactly `1.0e-3`, not some nearby value.  The next representable f64 above
+/// `1.0e-3` is approximately `1.0e-3 + 2.2e-19`; adding `1.0e-10` is far
+/// more than one ULP so f64-rounding cannot collapse the test to the boundary.
+///
+/// Note: proving that `1.0e-3` *itself* is admitted (the `<=` vs `<` operator
+/// distinction) would require a non-panic positive-path test; this test only
+/// asserts that `1.0e-3 + ε` panics, which holds under both `<=` and `<`.
 #[test]
 #[should_panic(expected = "must be ≤")]
 fn helper_panics_when_param_m_just_above_upper_boundary() {
     let kernel = OcctKernelHandle::spawn();
     // 1.0e-3 + 1.0e-10 m is just above the 1 mm upper bound.
-    // 1.0e-3 itself would NOT panic — the precondition is `<=`, not `<`.
     common::run_local_feature_reports_face_records(
         &kernel,
         1.0e-3 + 1.0e-10,
