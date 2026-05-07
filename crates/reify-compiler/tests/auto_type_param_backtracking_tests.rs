@@ -21,8 +21,6 @@
 //!
 //! # Out of scope (sibling tasks)
 //!
-//! - Cross-product hard cap at 100k assignments (task 2662).
-//! - Rich diagnostic format with smallest infeasibility witness (task 2663).
 //! - Comprehensive v0.1 BFS-failure scenario coverage (task 2664).
 //! - Type-substitution mechanics
 //!   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
@@ -33,10 +31,16 @@
 //! module. The `dfs_backjumps_*` and `dfs_no_blame_*` tests below pin task
 //! 2660's behavior.
 //!
+//! Task 2662 (cross-product hard cap at 100k assignments) and task 2663 (rich
+//! search-failure diagnostic format with smallest infeasibility witness +
+//! free-mode collection cap tightening) now land in this module. The
+//! `dfs_zero_feasible_diagnostic_*` and `dfs_free_mode_more_than_cap_*` tests
+//! below pin task 2663's behavior.
+//!
 //! The `auto(free)` cross-product NonUnique Warning enumeration (originally
 //! listed here as "task 2661's scope") now lands in this file — see
 //! `dfs_free_mode_two_feasible_cross_products_emits_non_unique_warning_and_picks_lex_first`,
-//! `dfs_free_mode_more_than_sixteen_feasibles_emits_non_unique_with_elision_count`,
+//! `dfs_free_mode_more_than_cap_feasibles_emits_non_unique_with_more_than_cap_elision_marker`,
 //! `dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker`,
 //! and `dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique`.
 
@@ -461,8 +465,10 @@ structure def WaterCooled : Cooled {
 ///
 /// Asserts exactly 2 witnesses (strict-mode cap, max_feasible_to_collect=2),
 /// no exact witness format, so this test stays decoupled from the
-/// witness-string formatting decision. Richer per-witness
-/// format with the smallest-infeasibility witness is task 2663's scope.
+/// witness-string formatting decision. (Task 2663 added the smallest-infeasibility
+/// witness format to the `0 =>` no-feasibles arm only — see
+/// `emit_no_feasible_cross_product_diagnostic`; this `Ambiguous` arm continues to
+/// render composite per-leaf witnesses via `render_witnesses`.)
 ///
 /// Pins:
 /// - `per_param.len() == 1` (single Ambiguous entry on the FIRST param's name)
@@ -624,7 +630,10 @@ structure def WaterCooled : Cooled {
 
     // (c) dropped — FQN content is already pinned by (a)/(b) above, and the
     //     strict-mode early-stop cap is pinned by witnesses.len() == 2 above.
-    //     Message-body witness format is left uncoupled for task 2663.
+    //     Message-body witness format remains uncoupled here: task 2663 added
+    //     the rich `0 =>` no-feasibles diagnostic via
+    //     `emit_no_feasible_cross_product_diagnostic`, but did NOT enrich the
+    //     ≥2-feasibles `Ambiguous` arm's per-leaf composite witnesses.
 }
 
 // ─── DFS Phase A overflow on first param halts before recursion ─────────────

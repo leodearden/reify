@@ -121,10 +121,11 @@
 //!
 //! Driving PRD: `docs/prds/v0_2/auto-resolution-backtracking.md`. The section
 //! header comment immediately above the function delineates the algorithm's
-//! scope and deferrals to sibling tasks 2662 (100k cap), 2663 (rich diagnostic
-//! format), and 2664 (BFS-failure test suite). Task 2661 (`auto(free)`
-//! cross-product NonUnique enumeration) and task 2660 (backjumping via the
-//! "rejected because" channel) now land in this module.
+//! scope and deferrals to sibling task 2664 (BFS-failure test suite). Tasks
+//! 2660 (backjumping via the "rejected because" channel), 2661 (`auto(free)`
+//! cross-product NonUnique enumeration), 2662 (100k cap), and 2663 (rich
+//! diagnostic format with smallest infeasibility witness + free-mode
+//! collection cap tightening) now land in this module.
 //!
 //! **Backjumping (task 2660):** `build_constraint_blame_map` builds a static
 //! `HashMap<ConstraintNodeId, BTreeSet<usize>>` mapping each constraint to the
@@ -1239,12 +1240,13 @@ fn emit_fallback_warning_and_delegate_to_bfs(
 ///
 /// # Out of scope (sibling tasks layered on top of this foundation)
 ///
-/// - Rich diagnostic format with smallest infeasibility witness — task 2663.
 /// - Comprehensive v0.1 BFS-failure scenario coverage — task 2664.
 ///
 /// Task 2660 (backjumping via the "rejected because" channel), task 2661
-/// (`auto(free)` cross-product NonUnique enumeration), and task 2662
-/// (cross-product hard cap with BFS fallback) now land in this module.
+/// (`auto(free)` cross-product NonUnique enumeration), task 2662
+/// (cross-product hard cap with BFS fallback), and task 2663 (rich
+/// search-failure diagnostic format with smallest infeasibility witness +
+/// free-mode collection cap tightening) now land in this module.
 /// - Type-substitution mechanics
 ///   (`Type::TypeParam(T)` → `Type::StructureRef(candidate)`) — separately
 ///   deferred per the PRD's "Constraint-feasibility incremental binding
@@ -1635,8 +1637,10 @@ pub fn resolve_auto_type_params_with_backtracking(
                      the sibling NonUnique branch (not any_strict) handles the all-free case"
                 );
                 // Compact per-leaf witness summaries: "T=ORingSeal,U=AirCooled".
-                // Richer formatting (with trait bounds, smallest witness, etc.)
-                // is deferred to task 2663.
+                // (Task 2663 added a rich smallest-infeasibility-witness format for
+                // the `0 =>` no-feasibles arm via `emit_no_feasible_cross_product_diagnostic`;
+                // the ≥2-feasibles strict-Ambiguous arm here continues to render the
+                // composite per-leaf witnesses via `render_witnesses`.)
                 let witnesses = render_witnesses(params, &feasible_assignments);
                 // Diagnostic: emit one AutoTypeParamAmbiguous (Error). The label
                 // anchors on params[0].use_site_span — same convention as v0.1
@@ -1755,7 +1759,10 @@ pub fn resolve_auto_type_params_with_backtracking(
 /// their selected candidate names and joined by `=`, then comma-joined across params.
 ///
 /// Used by both the strict-Ambiguous and all-free NonUnique emission sites so both
-/// share a single edit point for task 2663's richer-format work.
+/// share a single edit point. Task 2663 added the rich no-feasibles cross-product
+/// diagnostic via `emit_no_feasible_cross_product_diagnostic` (used by the `0 =>`
+/// arm and not this helper); per-leaf composite witnesses for the ≥2 feasibles
+/// arms continue to flow through this helper.
 fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<String> {
     leaves
         .iter()
