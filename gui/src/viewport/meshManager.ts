@@ -216,6 +216,25 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     geometry.boundingSphere = null;
     geometry.boundingBox = null;
 
+    // Update the side-table scalar channels so setColorize picks up fresh data.
+    // Use mesh.name as the entity path (set to entityPath in createMeshFromData).
+    meshScalarChannels.set(mesh.name, data.scalar_channels ?? {});
+
+    // If colorize is active and this mesh already has a colour attribute, re-bake
+    // the colours in place with the new scalars.  Mirrors the setColorize mutation
+    // path; ensures that sync()→sync() updates (e.g. from G2 FEA sourcing) are
+    // reflected immediately without a full geometry resync or material swap.
+    if (colorize) {
+      const scalars = (data.scalar_channels ?? {})[colorize.channel];
+      const colorAttr = geometry.getAttribute('color') as BufferAttribute | null;
+      if (scalars && scalars.length > 0 && colorAttr) {
+        const newColors = colorize.bake(scalars);
+        colorAttr.array = newColors;
+        (colorAttr as { count: number }).count = newColors.length / 3;
+        colorAttr.needsUpdate = true;
+      }
+    }
+
     // Rebuild BVH for the updated geometry
     try {
       (geometry as any).computeBoundsTree();
@@ -315,10 +334,24 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
 
   /**
    * Update the active colorize config and re-bake colour BufferAttributes in place
-   * for every mesh that carries the new channel. Does NOT swap materials mid-stream —
-   * the material was decided at mesh-creation time. When `opts` is null the colorize
-   * state is cleared; existing colour buffers are left unchanged (material teardown
-   * is out of scope for this task).
+   * for every mesh that already has a `color` attribute (i.e. was created while a
+   * colorize channel was active).
+   *
+   * **Asymmetric behaviour:** the material type (`MeshPhongMaterial` vs.
+   * `MeshStandardMaterial`) is decided at mesh-creation time and is NOT changed
+   * mid-stream by this call.  Key consequences:
+   * - Meshes created while colorize was active keep their `MeshPhongMaterial`
+   *   even after `setColorize(null)`; meshes synced after that call use
+   *   `MeshStandardMaterial`.
+   * - Meshes created while colorize was null will never get a colour attribute
+   *   via `setColorize(opts)` alone; only meshes synced after the call will
+   *   use `MeshPhongMaterial`.
+   * Callers that need to flip all mesh materials uniformly must call `sync({})`
+   * to drop all meshes, then re-sync the full dataset.
+   *
+   * When `opts` is null the colorize state is cleared; existing colour buffers
+   * on already-phong meshes are left unchanged (material teardown is out of
+   * scope for this task).
    */
   function setColorize(opts: MeshColorize | null): void {
     colorize = opts;

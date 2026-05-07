@@ -727,8 +727,9 @@ describe('meshManager', () => {
         },
       };
 
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn');
       manager.sync({ B: meshData });
+      expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
 
       const mesh = manager.getSceneMeshes().get('B')!;
@@ -948,6 +949,85 @@ describe('meshManager', () => {
       expect(Array.from(geom.attributes.color.array as Float32Array)).toEqual([
         0, 1, 0, 0, 2, 0, 0, 3, 0,
       ]);
+    });
+
+    it('(f) sync→sync: updateMeshGeometry refreshes scalar channels and re-bakes colour buffer', () => {
+      // This test guards suggestion-1: updateMeshGeometry must update meshScalarChannels
+      // and re-bake the colour attribute in place when colorize is active.
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: redBake },
+      });
+      vi.clearAllMocks();
+
+      // First sync: 3 vertices with vonMises [10, 20, 30]
+      const meshData1: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+      manager.sync({ A: meshData1 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const savedColorRef = geom.attributes.color;
+      expect(savedColorRef).toBeDefined();
+      // redBake([10, 20, 30]) = [10, 0, 0, 20, 0, 0, 30, 0, 0]
+      expect(Array.from(savedColorRef.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
+
+      vi.clearAllMocks();
+
+      // Second sync: same entity, updated vonMises [40, 50, 60]
+      const meshData2: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([40, 50, 60]) },
+      };
+      manager.sync({ A: meshData2 });
+
+      // Same buffer reference (in-place mutation, not a new attribute)
+      expect(geom.attributes.color).toBe(savedColorRef);
+      // Colour re-baked from updated vonMises: redBake([40, 50, 60]) = [40, 0, 0, 50, 0, 0, 60, 0, 0]
+      expect(Array.from(geom.attributes.color.array as Float32Array)).toEqual(
+        [40, 0, 0, 50, 0, 0, 60, 0, 0],
+      );
+      expect(geom.attributes.color.needsUpdate).toBe(true);
+      // No new geometry, mesh, or material created — update path only
+      expect(mockGeometries.length).toBe(1);
+      expect(mockMeshes.length).toBe(1);
+    });
+
+    it('(g) setColorize(null) clears colorize; subsequent setColorize re-bakes existing colour buffer', () => {
+      // Tests the asymmetric behaviour: meshes retain MeshPhongMaterial after
+      // setColorize(null) but their colour buffer can be re-baked by a subsequent call.
+      const { manager } = setupColorized();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const savedRef = geom.attributes.color;
+
+      // Toggle off — colorize state cleared
+      manager.setColorize(null);
+
+      // Toggle back on with a blue-ramp bake
+      const blueBake = (s: Float32Array) =>
+        new Float32Array([0, 0, s[0], 0, 0, s[1], 0, 0, s[2]]);
+
+      manager.setColorize({ channel: 'vonMises', bake: blueBake });
+
+      // Same buffer reference — material was chosen at creation time, not replaced
+      expect(geom.attributes.color).toBe(savedRef);
+      // blueBake([10, 20, 30]) = [0, 0, 10, 0, 0, 20, 0, 0, 30]
+      expect(Array.from(geom.attributes.color.array as Float32Array)).toEqual(
+        [0, 0, 10, 0, 0, 20, 0, 0, 30],
+      );
+      expect(geom.attributes.color.needsUpdate).toBe(true);
+      // No new geometry or materials — in-place update only
+      expect(mockPhongMaterials.length).toBe(1);
     });
   });
 

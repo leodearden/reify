@@ -21,9 +21,10 @@ export interface MeshData {
    * Same layout as `vertices` (`[x0, y0, z0, x1, y1, z1, ...]`). Absent for
    * non-FEA meshes; present but unused by the renderer until task G3 wires it
    * into the position buffer. Mirrors `displaced_positions: Option<Vec<f32>>`
-   * in the Rust `MeshData` struct (task 2959).
+   * in the Rust `MeshData` struct (task 2959). Absent (`undefined`) when the
+   * Rust side serializes `None` — never `null` on the wire.
    */
-  displaced_positions?: Float32Array | null;
+  displaced_positions?: Float32Array;
 }
 
 /** Wire-format mesh data as received from Tauri IPC (JSON number arrays). */
@@ -40,8 +41,9 @@ export interface RawMeshData {
   /**
    * Packed displaced vertex positions as raw number array from the IPC wire.
    * Absent when `displaced_positions` is `None` on the Rust side.
+   * The field is never sent as JSON `null`; it is either present (array) or absent.
    */
-  displaced_positions?: number[] | null;
+  displaced_positions?: number[];
 }
 
 /** Convert wire-format mesh data to typed arrays for WebGL consumption. */
@@ -59,10 +61,8 @@ export function convertRawMesh(raw: RawMeshData): MeshData {
     }
     result.scalar_channels = converted;
   }
-  if (raw.displaced_positions !== undefined) {
-    result.displaced_positions = raw.displaced_positions
-      ? new Float32Array(raw.displaced_positions)
-      : null;
+  if (raw.displaced_positions) {
+    result.displaced_positions = new Float32Array(raw.displaced_positions);
   }
   return result;
 }
