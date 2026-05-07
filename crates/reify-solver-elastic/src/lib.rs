@@ -52,6 +52,7 @@
 pub mod assembly;
 pub mod constitutive;
 pub mod elements;
+pub mod shell_assembly;
 
 pub use assembly::{ElementOrder, ElementStiffness, element_stiffness};
 pub use constitutive::IsotropicElastic;
