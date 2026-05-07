@@ -1589,6 +1589,11 @@ pub fn resolve_auto_type_params_with_backtracking(
 
     let mut current: Vec<String> = Vec::with_capacity(params.len());
     let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
+    // Return value discarded: at level 0 the DFS has already accumulated every
+    // feasible assignment into `feasible_assignments`. `Continue` and
+    // `EarlyTerminate` are observationally equivalent for a caller that reads
+    // only `feasible_assignments`, and `BackjumpTo(0)` is consumed by the
+    // `j == level` arm at level 0 — it cannot escape to this call site.
     let _ = dfs_search(
         0,
         &per_param_candidates,
