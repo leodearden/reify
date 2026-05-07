@@ -473,6 +473,91 @@ mod tests {
         }
     }
 
+    /// Sphere SDF must match the analytical formula to within 1e-5 at
+    /// canonical sample points (origin → −r, on-surface → 0, outside → +d).
+    #[test]
+    fn fidget_kernel_evaluate_sdf_at_sphere_matches_analytical() {
+        let mut kernel = FidgetKernel::new();
+        let sphere = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .expect("Sphere build");
+        let h = sphere.id;
+
+        let cases: &[(f32, f32, f32, f32)] = &[
+            (0.0, 0.0, 0.0, -1.0),
+            (1.0, 0.0, 0.0, 0.0),
+            (2.0, 0.0, 0.0, 1.0),
+            (0.5, 0.5, 0.5, (0.75_f32).sqrt() - 1.0),
+        ];
+        for &(x, y, z, expected) in cases {
+            let got = kernel
+                .evaluate_sdf_at(h, x, y, z)
+                .expect("eval must succeed");
+            assert!(
+                (got - expected).abs() < 1e-5,
+                "sphere SDF({x},{y},{z}): expected {expected}, got {got}",
+            );
+        }
+    }
+
+    /// Box SDF must match the analytical formula on canonical axis points
+    /// for the unit cube (full extents 2×2×2, half-extents 1).
+    #[test]
+    fn fidget_kernel_evaluate_sdf_at_box_matches_analytical() {
+        let mut kernel = FidgetKernel::new();
+        let cube = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(2.0),
+                height: Value::Real(2.0),
+                depth: Value::Real(2.0),
+            })
+            .expect("Box build");
+        let h = cube.id;
+
+        let cases: &[(f32, f32, f32, f32)] = &[
+            // origin: deepest interior point — distance to each face = 1
+            (0.0, 0.0, 0.0, -1.0),
+            // on +X face
+            (1.0, 0.0, 0.0, 0.0),
+            // 1 unit beyond +X face
+            (2.0, 0.0, 0.0, 1.0),
+            // on +Y face
+            (0.0, 1.0, 0.0, 0.0),
+            // on +Z face
+            (0.0, 0.0, 1.0, 0.0),
+        ];
+        for &(x, y, z, expected) in cases {
+            let got = kernel
+                .evaluate_sdf_at(h, x, y, z)
+                .expect("eval must succeed");
+            assert!(
+                (got - expected).abs() < 1e-5,
+                "box SDF({x},{y},{z}): expected {expected}, got {got}",
+            );
+        }
+    }
+
+    /// `evaluate_sdf_at` on an unknown handle must surface
+    /// `QueryError::QueryFailed` (not `QueryError::InvalidHandle` — the
+    /// trait's existing query path uses `QueryFailed` for invalid lookups,
+    /// staying within the established error vocabulary).
+    #[test]
+    fn fidget_kernel_evaluate_sdf_at_unknown_handle_returns_invalid_reference() {
+        let kernel = FidgetKernel::new();
+        let err = kernel
+            .evaluate_sdf_at(GeometryHandleId(999), 0.0, 0.0, 0.0)
+            .expect_err("unknown handle must error");
+        match err {
+            QueryError::QueryFailed(msg) => {
+                assert!(msg.contains("invalid"), "{msg:?}");
+                assert!(msg.contains("999"), "{msg:?}");
+            }
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+    }
+
     /// Pins the stable contract that the FIRST missing handle is the one
     /// named in `InvalidReference` — `left` is checked before `right`.
     #[test]
