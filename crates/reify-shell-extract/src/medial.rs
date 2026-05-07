@@ -191,7 +191,7 @@ impl std::error::Error for MedialError {}
 /// constants.
 pub fn compute_medial_mask(
     sdf: &SampledField,
-    _options: &MedialOptions,
+    options: &MedialOptions,
 ) -> Result<MedialMask, MedialError> {
     // (1) Reject non-3D inputs up front. The medial-axis test is
     // intrinsically 3D (walks the SDF gradient in 3-space).
@@ -226,7 +226,382 @@ pub fn compute_medial_mask(
 
     let spacing = [sdf.spacing[0], sdf.spacing[1], sdf.spacing[2]];
     let origin = [sdf.bounds_min[0], sdf.bounds_min[1], sdf.bounds_min[2]];
-    Ok(MedialMask::empty(spacing, origin))
+
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+
+    // Narrow band threshold uses the smallest axis spacing so that
+    // anisotropic grids still cover the full thickness band.
+    let min_spacing = spacing[0].min(spacing[1]).min(spacing[2]);
+    let band_width = options.narrow_band_half_width_voxels * min_spacing;
+
+    // Truncation distance for the bidirectional walk in absolute
+    // (world) units.
+    let max_walk_dist = options.max_thickness_voxels * min_spacing;
+    // Step size for the walk: 1/4 of the smallest voxel spacing keeps
+    // the sub-voxel zero-crossing refinement accurate while bounding
+    // the per-voxel work to ≈ 4 × max_thickness_voxels samples.
+    let walk_step = 0.25 * min_spacing;
+    let max_steps = ((max_walk_dist / walk_step).ceil() as usize).max(2);
+
+    let mut voxels: Vec<[i32; 3]> = Vec::new();
+
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                let phi = sample_at_index(sdf, [i, j, k]);
+
+                // (a) narrow-band filter
+                if phi.abs() > band_width {
+                    continue;
+                }
+
+                // (b) gradient at the voxel; reject degenerate
+                let grad = gradient_at_index(sdf, [i, j, k]);
+                let gnorm = (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt();
+                if gnorm < GRADIENT_EPSILON {
+                    continue;
+                }
+                let g = [grad[0] / gnorm, grad[1] / gnorm, grad[2] / gnorm];
+
+                // (c) bidirectional ray walk from the voxel's world
+                // coordinate in ±g, with sub-voxel zero-crossing
+                // refinement.
+                let world = world_at_index(sdf, [i, j, k]);
+                let Some((d_plus, d_minus, hit_plus, hit_minus)) =
+                    bidirectional_distances(sdf, world, g, max_steps, walk_step)
+                else {
+                    continue;
+                };
+
+                // (d) gradient at each surface hit; reject if either
+                // is degenerate (we cannot make a distinctness call
+                // without two well-defined normals).
+                let gp_raw = gradient_at_world(sdf, hit_plus);
+                let gm_raw = gradient_at_world(sdf, hit_minus);
+                let Some(gp) = normalize3(gp_raw) else { continue };
+                let Some(gm) = normalize3(gm_raw) else { continue };
+
+                // (e) gradient-discontinuity test: opposing-face
+                // hits have antiparallel normals (dot near -1).
+                if !surface_patches_distinct(gp, gm, options.normal_antiparallel_threshold) {
+                    continue;
+                }
+
+                // (f) bidirectional-distance equality.
+                let dmax = d_plus.max(d_minus);
+                if dmax <= 0.0 {
+                    continue;
+                }
+                // Defends against a long-walk-on-one-side / short-on-
+                // the-other ratio coincidence: if the sum exceeds the
+                // configured maximum thickness, treat the voxel as
+                // outside the band rather than letting two
+                // non-comparable walks pass the relative test.
+                if d_plus + d_minus > 2.0 * max_walk_dist {
+                    continue;
+                }
+                // Equality threshold combines two terms:
+                //  - relative `distance_tolerance × max(d⁺, d⁻)` — the
+                //    PRD's "~5%" rule, sharply discriminates centerline
+                //    voxels when the medial axis aligns with a voxel.
+                //  - absolute one-voxel slack `min_spacing` — handles
+                //    voxelized medial axes that fall *between* grid
+                //    points (the analytic medial of an axis-aligned
+                //    slab on an even-N grid lies on a half-voxel
+                //    boundary, so the two closest voxels see a
+                //    one-voxel asymmetry in d⁺/d⁻ that the strict
+                //    relative rule would reject). Equivalent to
+                //    requiring the bisecting midpoint of the two
+                //    surface hits to lie within `½(min_spacing +
+                //    distance_tolerance × max(d⁺, d⁻))` of the voxel
+                //    center along the gradient direction — i.e. inside
+                //    the voxel itself, with a small relative-error
+                //    cushion.
+                let abs_diff = (d_plus - d_minus).abs();
+                let equality_threshold = options.distance_tolerance * dmax + min_spacing;
+                if abs_diff < equality_threshold {
+                    voxels.push([i as i32, j as i32, k as i32]);
+                }
+            }
+        }
+    }
+
+    Ok(MedialMask {
+        spacing,
+        origin,
+        voxels,
+    })
+}
+
+/// Floor on `‖∇φ‖` below which the voxel's gradient is treated as
+/// degenerate and the voxel is skipped. Catches the central-difference
+/// zero at exact-medial points (where the SDF gradient is genuinely
+/// undefined) and at flat-interior voxels far from the surface.
+pub(crate) const GRADIENT_EPSILON: f64 = 1e-6;
+
+/// Look up `φ` at integer voxel indices `[i, j, k]`. Assumes
+/// row-major axis-0-outermost layout (matches
+/// [`SampledField::data`]).
+pub(crate) fn sample_at_index(sdf: &SampledField, idx: [usize; 3]) -> f64 {
+    let [i, j, k] = idx;
+    let nj = sdf.axis_grids[1].len();
+    let nk = sdf.axis_grids[2].len();
+    sdf.data[i * nj * nk + j * nk + k]
+}
+
+/// Convert integer voxel indices to world coordinates via
+/// `bounds_min[i] + idx[i] * spacing[i]`. Pulls from `axis_grids`
+/// (rather than re-computing from `bounds_min/spacing`) so the result
+/// stays consistent with whatever the SampledField producer chose
+/// (e.g. whether the axis grid is `linspace(min, max, n)` exactly or
+/// has been adjusted for floating-point tightening).
+pub(crate) fn world_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3] {
+    [
+        sdf.axis_grids[0][idx[0]],
+        sdf.axis_grids[1][idx[1]],
+        sdf.axis_grids[2][idx[2]],
+    ]
+}
+
+/// Trilinear interpolation of `φ` at a world coordinate. Returns
+/// `None` if the world coordinate falls outside the grid (callers
+/// treat that as a ray-walk failure, not an error).
+pub(crate) fn sample_at_world(sdf: &SampledField, world: [f64; 3]) -> Option<f64> {
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+    if nx == 0 || ny == 0 || nz == 0 {
+        return None;
+    }
+
+    // Convert world → fractional index via uniform linspace assumption.
+    // (Regular3D fields constructed by `OpenVdbGridSource → SampledField`
+    // have uniform axis spacing by construction.)
+    let fi = (world[0] - sdf.bounds_min[0]) / sdf.spacing[0];
+    let fj = (world[1] - sdf.bounds_min[1]) / sdf.spacing[1];
+    let fk = (world[2] - sdf.bounds_min[2]) / sdf.spacing[2];
+
+    if !fi.is_finite() || !fj.is_finite() || !fk.is_finite() {
+        return None;
+    }
+
+    if fi < 0.0 || fj < 0.0 || fk < 0.0 {
+        return None;
+    }
+    let imax = (nx as f64) - 1.0;
+    let jmax = (ny as f64) - 1.0;
+    let kmax = (nz as f64) - 1.0;
+    if fi > imax || fj > jmax || fk > kmax {
+        return None;
+    }
+
+    // Clamp to interior cell: each integer corner index is in [0, n-1]
+    // and the fractional offset in [0, 1].
+    let i0 = (fi.floor() as usize).min(nx - 1);
+    let j0 = (fj.floor() as usize).min(ny - 1);
+    let k0 = (fk.floor() as usize).min(nz - 1);
+    let i1 = (i0 + 1).min(nx - 1);
+    let j1 = (j0 + 1).min(ny - 1);
+    let k1 = (k0 + 1).min(nz - 1);
+    let tx = (fi - i0 as f64).clamp(0.0, 1.0);
+    let ty = (fj - j0 as f64).clamp(0.0, 1.0);
+    let tz = (fk - k0 as f64).clamp(0.0, 1.0);
+
+    let c000 = sample_at_index(sdf, [i0, j0, k0]);
+    let c100 = sample_at_index(sdf, [i1, j0, k0]);
+    let c010 = sample_at_index(sdf, [i0, j1, k0]);
+    let c110 = sample_at_index(sdf, [i1, j1, k0]);
+    let c001 = sample_at_index(sdf, [i0, j0, k1]);
+    let c101 = sample_at_index(sdf, [i1, j0, k1]);
+    let c011 = sample_at_index(sdf, [i0, j1, k1]);
+    let c111 = sample_at_index(sdf, [i1, j1, k1]);
+
+    let c00 = c000 * (1.0 - tx) + c100 * tx;
+    let c10 = c010 * (1.0 - tx) + c110 * tx;
+    let c01 = c001 * (1.0 - tx) + c101 * tx;
+    let c11 = c011 * (1.0 - tx) + c111 * tx;
+
+    let c0 = c00 * (1.0 - ty) + c10 * ty;
+    let c1 = c01 * (1.0 - ty) + c11 * ty;
+
+    Some(c0 * (1.0 - tz) + c1 * tz)
+}
+
+/// Central-difference gradient at integer voxel indices, falling
+/// back to forward/backward differences at boundaries. Returns the
+/// raw gradient (not normalized).
+pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3] {
+    let [i, j, k] = idx;
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+    let dx = sdf.spacing[0];
+    let dy = sdf.spacing[1];
+    let dz = sdf.spacing[2];
+
+    let gx = if nx == 1 {
+        0.0
+    } else if i == 0 {
+        (sample_at_index(sdf, [1, j, k]) - sample_at_index(sdf, [0, j, k])) / dx
+    } else if i == nx - 1 {
+        (sample_at_index(sdf, [nx - 1, j, k]) - sample_at_index(sdf, [nx - 2, j, k])) / dx
+    } else {
+        (sample_at_index(sdf, [i + 1, j, k]) - sample_at_index(sdf, [i - 1, j, k])) / (2.0 * dx)
+    };
+    let gy = if ny == 1 {
+        0.0
+    } else if j == 0 {
+        (sample_at_index(sdf, [i, 1, k]) - sample_at_index(sdf, [i, 0, k])) / dy
+    } else if j == ny - 1 {
+        (sample_at_index(sdf, [i, ny - 1, k]) - sample_at_index(sdf, [i, ny - 2, k])) / dy
+    } else {
+        (sample_at_index(sdf, [i, j + 1, k]) - sample_at_index(sdf, [i, j - 1, k])) / (2.0 * dy)
+    };
+    let gz = if nz == 1 {
+        0.0
+    } else if k == 0 {
+        (sample_at_index(sdf, [i, j, 1]) - sample_at_index(sdf, [i, j, 0])) / dz
+    } else if k == nz - 1 {
+        (sample_at_index(sdf, [i, j, nz - 1]) - sample_at_index(sdf, [i, j, nz - 2])) / dz
+    } else {
+        (sample_at_index(sdf, [i, j, k + 1]) - sample_at_index(sdf, [i, j, k - 1])) / (2.0 * dz)
+    };
+    [gx, gy, gz]
+}
+
+/// Gradient at a world coordinate via central finite differences over
+/// `sample_at_world`. Returns `[0, 0, 0]` (caller treats as degenerate)
+/// if either side falls outside the grid.
+pub(crate) fn gradient_at_world(sdf: &SampledField, world: [f64; 3]) -> [f64; 3] {
+    let dx = sdf.spacing[0];
+    let dy = sdf.spacing[1];
+    let dz = sdf.spacing[2];
+    let h = 0.5 * dx.min(dy).min(dz);
+
+    let gx = match (
+        sample_at_world(sdf, [world[0] + h, world[1], world[2]]),
+        sample_at_world(sdf, [world[0] - h, world[1], world[2]]),
+    ) {
+        (Some(p), Some(m)) => (p - m) / (2.0 * h),
+        _ => 0.0,
+    };
+    let gy = match (
+        sample_at_world(sdf, [world[0], world[1] + h, world[2]]),
+        sample_at_world(sdf, [world[0], world[1] - h, world[2]]),
+    ) {
+        (Some(p), Some(m)) => (p - m) / (2.0 * h),
+        _ => 0.0,
+    };
+    let gz = match (
+        sample_at_world(sdf, [world[0], world[1], world[2] + h]),
+        sample_at_world(sdf, [world[0], world[1], world[2] - h]),
+    ) {
+        (Some(p), Some(m)) => (p - m) / (2.0 * h),
+        _ => 0.0,
+    };
+    [gx, gy, gz]
+}
+
+/// Walk the SDF along `+gradient_unit` and `-gradient_unit` from
+/// `voxel_world`, find the zero-crossing distance and world location
+/// in each direction via linear sub-step interpolation, and return
+/// `(d_plus, d_minus, hit_plus, hit_minus)`. Returns `None` if either
+/// ray fails to find a zero crossing within `max_steps`.
+pub(crate) fn bidirectional_distances(
+    sdf: &SampledField,
+    voxel_world: [f64; 3],
+    gradient_unit: [f64; 3],
+    max_steps: usize,
+    step_size: f64,
+) -> Option<(f64, f64, [f64; 3], [f64; 3])> {
+    let plus = walk_to_zero(sdf, voxel_world, gradient_unit, max_steps, step_size)?;
+    let neg = [-gradient_unit[0], -gradient_unit[1], -gradient_unit[2]];
+    let minus = walk_to_zero(sdf, voxel_world, neg, max_steps, step_size)?;
+    Some((plus.0, minus.0, plus.1, minus.1))
+}
+
+/// Single-direction zero-crossing walk. Steps by `step_size` along
+/// `direction` (assumed unit) until the SDF sign changes, then
+/// linearly interpolates between the bracketing samples to recover the
+/// sub-voxel zero-crossing distance + world coordinate.
+fn walk_to_zero(
+    sdf: &SampledField,
+    start: [f64; 3],
+    direction: [f64; 3],
+    max_steps: usize,
+    step_size: f64,
+) -> Option<(f64, [f64; 3])> {
+    let phi0 = sample_at_world(sdf, start)?;
+    let mut prev_t = 0.0;
+    let mut prev_phi = phi0;
+    for s in 1..=max_steps {
+        let t = (s as f64) * step_size;
+        let p = [
+            start[0] + direction[0] * t,
+            start[1] + direction[1] * t,
+            start[2] + direction[2] * t,
+        ];
+        let phi = match sample_at_world(sdf, p) {
+            Some(v) => v,
+            // Stepped off the grid before crossing zero — caller
+            // treats the voxel as non-medial.
+            None => return None,
+        };
+        // Sign change (including landing exactly on zero) marks the
+        // bracketing pair. Linear interpolation between (prev_t, phi)
+        // and (t, phi) recovers the zero-crossing.
+        if prev_phi == 0.0 {
+            return Some((prev_t, point_at(start, direction, prev_t)));
+        }
+        if (prev_phi > 0.0 && phi <= 0.0) || (prev_phi < 0.0 && phi >= 0.0) {
+            let denom = phi - prev_phi;
+            // `denom == 0` would have been caught by the prev_phi
+            // checks above; defensively guard anyway.
+            if denom.abs() < 1e-30 {
+                return Some((t, p));
+            }
+            let alpha = -prev_phi / denom;
+            let t_zero = prev_t + alpha * (t - prev_t);
+            return Some((t_zero, point_at(start, direction, t_zero)));
+        }
+        prev_t = t;
+        prev_phi = phi;
+    }
+    None
+}
+
+fn point_at(start: [f64; 3], direction: [f64; 3], t: f64) -> [f64; 3] {
+    [
+        start[0] + direction[0] * t,
+        start[1] + direction[1] * t,
+        start[2] + direction[2] * t,
+    ]
+}
+
+/// Two surface-hit gradients are "distinct surface patches" iff their
+/// dot product is below `threshold` — i.e. the gradients are roughly
+/// antiparallel. The threshold defaults to `-0.5` (cos 120°): the
+/// gradient discontinuity at a medial axis manifests as opposing-face
+/// normals at the two hit points; the test rejects same-patch hits
+/// (dot near +1) and near-orthogonal hits (dot near 0).
+pub(crate) fn surface_patches_distinct(
+    g_plus: [f64; 3],
+    g_minus: [f64; 3],
+    threshold: f64,
+) -> bool {
+    let dot = g_plus[0] * g_minus[0] + g_plus[1] * g_minus[1] + g_plus[2] * g_minus[2];
+    dot < threshold
+}
+
+fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n < GRADIENT_EPSILON {
+        None
+    } else {
+        Some([v[0] / n, v[1] / n, v[2] / n])
+    }
 }
 
 #[cfg(test)]
