@@ -203,6 +203,15 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 /// Stable static label for a `GeometryOp` variant — used in error
 /// messages so the format string interpolates a stable token rather than
 /// the full `Debug` print.
+///
+/// # Contract
+///
+/// The catch-all error message in [`FidgetKernel::execute`] names
+/// (a) the rejected op, (b) the descriptor's claimed repr family
+/// (`Sdf`), and (c) the kernel's identity (`Fidget`) so operators
+/// reading the diagnostic can attribute the failure correctly. The
+/// `fidget_kernel_execute_unsupported_op_names_op_in_message` test
+/// pins this contract over `Fillet` and `Translate`.
 fn op_kind_name(op: &GeometryOp) -> &'static str {
     match op {
         GeometryOp::Box { .. } => "Box",
