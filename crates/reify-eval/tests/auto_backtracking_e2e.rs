@@ -884,3 +884,194 @@ structure def WaterCooled : Cooled {
         cap_warn.message
     );
 }
+
+// ─── Scenario 7: zero-feasible → rich search-failure diagnostic ───────────────
+
+/// Scenario: all cross-product leaves are globally infeasible; DFS emits the
+/// v0.2 rich `AutoTypeParamNoCandidate` search-failure diagnostic (task 2663).
+///
+/// Setup: 2×2 cross-product (Seal × Cooled, 2 candidates each), one
+/// constraint on the parameterized template, checker returns `Violated` for
+/// every leaf via `with_default(Violated)`.  Strict mode (free=false) on both
+/// params.
+///
+/// Pins all rich-format fields from task 2663 (mirroring
+/// `auto_type_param_backtracking_tests.rs:1910-2012` and
+/// `auto_type_param_backtracking_tests.rs:2033-2129`):
+///
+/// (a) `diagnostics.len() == 1`, code `AutoTypeParamNoCandidate`, severity Error
+/// (b) message contains `"[T, U]"` — parameter names in declared order
+/// (c) message contains `"T=2"` and `"U=2"` — per-param candidate counts
+/// (d) message contains `"cross-product size: 4"` — 2×2 size
+/// (e) message contains `"first-param prefix illustration"` — section header
+/// (f) message contains `"T=ORingSeal"` — lex-first T candidate (O < R)
+/// (g) message contains `"sub-tree size 2"` — 4/2 = 2 leaves per T prefix
+/// (h) message contains `"no specific conflict localized"` — anti-misreading
+///
+/// Plus outcome shape:
+/// (i) `per_param.len() == 1`, anchored on `params[0].name == "T"`
+/// (j) `per_param[0].1 == SelectionResult::NoCandidate`
+/// (k) `substitution.is_empty()`
+///
+/// Pins PRD §"Resolved design decisions" "Diagnostic format on search failure".
+#[test]
+fn bfs_fail_zero_feasible_dfs_emits_search_failure_diagnostic() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    // Template with one constraint so filter_feasible_candidates receives a
+    // non-empty constraint list and the mock's with_default(Violated) applies.
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    // All leaves infeasible: every check() call returns Violated.
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    // (a) Exactly one AutoTypeParamNoCandidate Error.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "zero-feasible DFS must emit exactly one diagnostic; got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "code must be AutoTypeParamNoCandidate; got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "AutoTypeParamNoCandidate must be Severity::Error; got: {:?}",
+        diagnostics[0].severity
+    );
+    // (b) Parameter list in declared order.
+    assert!(
+        diagnostics[0].message.contains("[T, U]"),
+        "rich format must contain parameter list '[T, U]'; got: {:?}",
+        diagnostics[0].message
+    );
+    // (c) Per-param candidate counts.
+    assert!(
+        diagnostics[0].message.contains("T=2"),
+        "rich format must contain per-param count 'T=2'; got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("U=2"),
+        "rich format must contain per-param count 'U=2'; got: {:?}",
+        diagnostics[0].message
+    );
+    // (d) Cross-product size.
+    assert!(
+        diagnostics[0].message.contains("cross-product size: 4"),
+        "rich format must contain 'cross-product size: 4' (2×2); got: {:?}",
+        diagnostics[0].message
+    );
+    // (e) First-param prefix illustration section header.
+    assert!(
+        diagnostics[0].message.contains("first-param prefix illustration"),
+        "rich format must contain 'first-param prefix illustration' header; \
+         got: {:?}",
+        diagnostics[0].message
+    );
+    // (f) Lex-first T candidate in the illustration (ORingSeal < RubberSeal).
+    assert!(
+        diagnostics[0].message.contains("T=ORingSeal"),
+        "illustration must name lex-first level-1 prefix 'T=ORingSeal'; \
+         got: {:?}",
+        diagnostics[0].message
+    );
+    // (g) Sub-tree size: cross_product_size / |params[0].candidates| = 4/2 = 2.
+    assert!(
+        diagnostics[0].message.contains("sub-tree size 2"),
+        "illustration must report 'sub-tree size 2' (4/2); got: {:?}",
+        diagnostics[0].message
+    );
+    // (h) Anti-misreading prose: no specific conflict localized.
+    assert!(
+        diagnostics[0].message.contains("no specific conflict localized"),
+        "rich format must include 'no specific conflict localized' disclaimer; \
+         got: {:?}",
+        diagnostics[0].message
+    );
+    // (i) per_param length 1, anchored on params[0].name.
+    assert_eq!(
+        outcome.per_param.len(),
+        1,
+        "zero-feasible outcome must have per_param length 1 (anchored on first \
+         param); got: {:?}",
+        outcome.per_param
+    );
+    assert_eq!(
+        outcome.per_param[0].0,
+        "T",
+        "per_param[0] must be anchored on params[0].name ('T'); got: {:?}",
+        outcome.per_param[0].0
+    );
+    // (j) SelectionResult::NoCandidate.
+    assert_eq!(
+        outcome.per_param[0].1,
+        SelectionResult::NoCandidate,
+        "per_param[0].1 must be SelectionResult::NoCandidate; got: {:?}",
+        outcome.per_param[0].1
+    );
+    // (k) substitution is empty.
+    assert!(
+        outcome.substitution.is_empty(),
+        "zero-feasible outcome must have empty substitution; got: {:?}",
+        outcome.substitution
+    );
+}
