@@ -56,6 +56,13 @@ use reify_types::{
     FIELD_ENTITY_PREFIX, DiagnosticCode, FieldSourceKind, ModulePath, Value, ValueCellId,
 };
 
+// ── Stratum B imports ─────────────────────────────────────────────────────
+use reify_kernel_openvdb::ingest::{
+    IngestError, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation, lower_to_sampled,
+    read_vdb_file,
+};
+use reify_types::Type;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Stratum A — End-to-end smoke
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,4 +190,91 @@ fn imported_field_smoke_pins_v02_deferral_pipeline() {
             other
         ),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stratum B — Diagnostic surface
+//
+// Pins cross-crate reachability of representative `IngestError` variants from
+// the eval-crate vantage.  Detailed per-variant coverage lives in
+// `crates/reify-kernel-openvdb/tests/ingest_tests.rs`; we deliberately do NOT
+// duplicate it here — only the three variants that map to the PRD's
+// "file-not-found, grid-not-in-file, unit mismatch, malformed file" taxonomy.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `read_vdb_file` returns `FfiNotImplemented` for any path in v0.2.
+///
+/// The v0.2 stub funnels both "file-not-found" and "grid-not-in-file" into
+/// `FfiNotImplemented` because the OpenVDB FFI that would distinguish them is
+/// deferred to a follow-up task.  This test pins the stub behaviour and
+/// confirms the path string is carried through so error messages can name it.
+#[test]
+fn read_vdb_file_returns_ffi_not_implemented_for_v02() {
+    let result = read_vdb_file("path/that/does/not/exist.vdb", "voxel", &Type::length());
+    assert!(
+        matches!(
+            &result,
+            Err(IngestError::FfiNotImplemented { path }) if path == "path/that/does/not/exist.vdb"
+        ),
+        "expected FfiNotImplemented with the original path, got: {:?}",
+        result
+    );
+}
+
+/// `lower_to_sampled` returns `UnitMismatch` when the grid declares units
+/// whose dimension does not match the codomain type.
+///
+/// Uses a 1D `Length`/Linear grid (same baseline as `ingest_tests.rs:24-50`)
+/// with `units = "Pa"` (Pressure dimension) against codomain `Type::length()`
+/// (Length dimension) to trigger the mismatch.
+#[test]
+fn lower_to_sampled_unit_mismatch_errors_clearly() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0, 2.0, 3.0],
+        units: Some("Pa".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+
+    let result = lower_to_sampled(&grid, "test_field", &Type::length());
+    assert!(
+        matches!(
+            &result,
+            Err(IngestError::UnitMismatch { found_unit, .. }) if found_unit == "Pa"
+        ),
+        "expected UnitMismatch with found_unit = \"Pa\", got: {:?}",
+        result
+    );
+}
+
+/// `lower_to_sampled` returns `DataShapeMismatch` when the data buffer is
+/// shorter than the axis-product requires.
+///
+/// Uses the same 1D baseline (`bounds=[0,3]`, `spacing=1` → 4 nodes) but
+/// provides only 2 data elements, which must produce
+/// `DataShapeMismatch { expected: 4, actual: 2, .. }`.
+#[test]
+fn lower_to_sampled_data_shape_mismatch_errors_clearly() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![3.0],
+        spacing: vec![1.0],
+        data: vec![0.0, 1.0], // only 2 elements, but 4 required
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+
+    let result = lower_to_sampled(&grid, "test_field", &Type::length());
+    assert!(
+        matches!(
+            &result,
+            Err(IngestError::DataShapeMismatch { expected: 4, actual: 2, .. })
+        ),
+        "expected DataShapeMismatch {{ expected: 4, actual: 2 }}, got: {:?}",
+        result
+    );
 }
