@@ -541,6 +541,48 @@ fn lower_to_sampled_degenerate_axis_returns_degenerate_axis() {
     }
 }
 
+/// Step-3058: `lower_to_sampled` rejects an axis grid with fewer than 2 nodes
+/// when spacing is larger than the bounds span (second distinct degenerate case).
+///
+/// Pre-flight pipeline for `bounds_min=[0.0]`, `bounds_max=[0.4]`, `spacing=[1.0]`:
+///   - AxisLengthMismatch: 1 == 1 ✓
+///   - EmptyGrid: 1 element ≠ 0 ✓
+///   - InvalidSpacing: 1.0 > 0 and finite ✓
+///   - InvalidBounds: 0.0 finite, 0.4 finite, 0.4 < 0.0 is false ✓
+///   - axis_grids: linspace_inclusive(0.0, 0.4, 1.0) → round(0.4/1.0) = 0 intervals → [0.0] (1 node)
+///   → NEW DegenerateAxis guard fires here
+#[test]
+fn lower_to_sampled_spacing_exceeds_span_returns_degenerate_axis() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![0.4],
+        spacing: vec![1.0],
+        data: vec![1.0],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "degenerate_spacing", &Type::length());
+    match result {
+        Err(IngestError::DegenerateAxis {
+            axis,
+            node_count,
+            bounds_min,
+            bounds_max,
+            spacing,
+        }) => {
+            assert_eq!(axis, 0);
+            assert_eq!(node_count, 1);
+            assert_eq!(bounds_min, 0.0);
+            assert_eq!(bounds_max, 0.4);
+            assert_eq!(spacing, 1.0);
+        }
+        other => panic!(
+            "expected Err(IngestError::DegenerateAxis {{ … }}), got {other:?}"
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Step-11 RED: read_vdb_file v0.2 stub contract
 // ---------------------------------------------------------------------------

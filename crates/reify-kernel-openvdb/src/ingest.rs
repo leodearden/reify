@@ -179,7 +179,8 @@ pub enum IngestError {
     DegenerateAxis {
         /// Index of the offending axis (0 = outermost).
         axis: usize,
-        /// Actual number of nodes produced (0 or 1).
+        /// Actual number of nodes produced (always 1 in current `linspace_inclusive`;
+        /// the guard is `< 2` for defense-in-depth).
         node_count: usize,
         /// `bounds_min[axis]` that produced the collapse.
         bounds_min: f64,
