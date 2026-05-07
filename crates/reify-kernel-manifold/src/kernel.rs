@@ -95,6 +95,21 @@ impl ManifoldKernel {
         }
     }
 
+    /// Look up a stored [`Manifold`] by handle, returning
+    /// [`GeometryError::InvalidReference`] when the id is not present.
+    ///
+    /// Mirrors `OcctKernel::get_shape` (`crates/reify-kernel-occt/src/lib.rs:516-523`).
+    /// Centralising the lookup in one helper keeps the InvalidReference
+    /// surface uniform across `execute`'s boolean arms — `tessellate`
+    /// surfaces the same shape via [`TessError::InvalidHandle`] (the
+    /// per-trait variant; `GeometryError` and `TessError` are sibling
+    /// error enums).
+    fn get_manifold(&self, id: GeometryHandleId) -> Result<&Manifold, GeometryError> {
+        self.shapes
+            .get(&id.0)
+            .ok_or(GeometryError::InvalidReference(id))
+    }
+
     /// Test-only ingestion path for `reify_types::Mesh` inputs.
     ///
     /// Widens the input mesh's f32 vertices to f64 (per Decision 4 in the
@@ -128,55 +143,25 @@ impl GeometryKernel for ManifoldKernel {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         match op {
             GeometryOp::Union { left, right } => {
-                // NOTE(step-9/step-10): the `.ok_or(OperationFailed(...))` here
-                // is the placeholder error path that step-9's RED test pins;
-                // step-10 introduces a centralized `get_manifold` helper that
-                // returns `GeometryError::InvalidReference` instead. Until
-                // step-10 lands, do NOT change this to InvalidReference — that
-                // would defeat the RED→GREEN sequence the plan prescribes.
-                let l = self.shapes.get(&left.0).ok_or_else(|| {
-                    GeometryError::OperationFailed(format!(
-                        "Manifold Union: left handle {left:?} not found"
-                    ))
-                })?;
-                let r = self.shapes.get(&right.0).ok_or_else(|| {
-                    GeometryError::OperationFailed(format!(
-                        "Manifold Union: right handle {right:?} not found"
-                    ))
-                })?;
+                let l = self.get_manifold(*left)?;
+                let r = self.get_manifold(*right)?;
                 let result = l.union(r);
                 Ok(self.store(result))
             }
             GeometryOp::Difference { left, right } => {
-                let l = self.shapes.get(&left.0).ok_or_else(|| {
-                    GeometryError::OperationFailed(format!(
-                        "Manifold Difference: left handle {left:?} not found"
-                    ))
-                })?;
-                let r = self.shapes.get(&right.0).ok_or_else(|| {
-                    GeometryError::OperationFailed(format!(
-                        "Manifold Difference: right handle {right:?} not found"
-                    ))
-                })?;
+                let l = self.get_manifold(*left)?;
+                let r = self.get_manifold(*right)?;
                 let result = l.difference(r);
                 Ok(self.store(result))
             }
             GeometryOp::Intersection { left, right } => {
-                let l = self.shapes.get(&left.0).ok_or_else(|| {
-                    GeometryError::OperationFailed(format!(
-                        "Manifold Intersection: left handle {left:?} not found"
-                    ))
-                })?;
-                let r = self.shapes.get(&right.0).ok_or_else(|| {
-                    GeometryError::OperationFailed(format!(
-                        "Manifold Intersection: right handle {right:?} not found"
-                    ))
-                })?;
+                let l = self.get_manifold(*left)?;
+                let r = self.get_manifold(*right)?;
                 let result = l.intersection(r);
                 Ok(self.store(result))
             }
-            // Other ops continue to return the stub error until later steps
-            // wire them in (e.g. tessellate is still stubbed).
+            // Non-boolean ops are out of scope for the v0.2 manifold
+            // adapter — see `STUB_MSG`.
             _ => Err(GeometryError::OperationFailed(STUB_MSG.into())),
         }
     }
