@@ -49,15 +49,55 @@ impl MedialMask {
 
 /// Tunable thresholds for the medial-axis test.
 ///
-/// Step-6 fleshes out the field set with documented constants. Step-2
-/// only needs a value-type with a `Default` impl so the public surface
-/// compiles and `compute_medial_mask` can accept `&MedialOptions`.
+/// Defaults are pinned to PRD-derived values
+/// (`docs/prds/v0_4/structural-analysis-shells.md` task T1). Each
+/// field documents its rationale; the
+/// [`medial_options_defaults_pin_empirical_constants`] regression
+/// test asserts the values do not drift.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MedialOptions {}
+pub struct MedialOptions {
+    /// Relative-distance equality tolerance for the bidirectional ray
+    /// walk: a voxel is medial only if `|d⁺ − d⁻| / max(d⁺, d⁻) <
+    /// distance_tolerance`. Default `0.05` matches the PRD's "~5%"
+    /// language (T1 step-2). Tightening this (e.g. `0.001`) culls
+    /// near-medial voxels and converges the mask towards the exact
+    /// medial axis at the cost of mask sparsity.
+    pub distance_tolerance: f64,
+    /// Narrow-band half-width measured in voxel-spacing units. Voxels
+    /// with `|φ(v)| > narrow_band_half_width_voxels × spacing` are
+    /// excluded from the inner loop, emulating OpenVDB's sparse
+    /// active-voxel iterator on top of a dense `SampledField`.
+    /// Default `3.0` covers the smallest medial axis at the PRD's
+    /// `thickness/3` voxel-size default (smallest medial slab is 3
+    /// voxels thick → half-width 1.5; 3 leaves headroom for
+    /// gradient-stencil sampling at the boundary voxels).
+    pub narrow_band_half_width_voxels: f64,
+    /// Surface-patch distinctness threshold on the dot product of the
+    /// SDF gradients sampled at the two surface-hit points. The
+    /// gradient at a surface point IS the outward normal; a voxel is
+    /// medial iff `g_a · g_b < normal_antiparallel_threshold`
+    /// (gradients are roughly antiparallel — the gradient
+    /// discontinuity at the medial axis itself). Default `-0.5`
+    /// (≈ cos 120°) accepts hits whose normals are at least
+    /// 60° beyond perpendicular, the empirical signature of "opposing
+    /// faces of a thin slab".
+    pub normal_antiparallel_threshold: f64,
+    /// Maximum bidirectional ray-walk distance in voxel-spacing units.
+    /// Truncates the walk if the gradient-direction ray fails to find
+    /// a zero crossing within this many voxels — guards against
+    /// runaway walks on degenerate gradients. Default `64.0` covers
+    /// thick (≪ 64-voxel half-thickness) solids.
+    pub max_thickness_voxels: f64,
+}
 
 impl Default for MedialOptions {
     fn default() -> Self {
-        Self {}
+        Self {
+            distance_tolerance: 0.05,
+            narrow_band_half_width_voxels: 3.0,
+            normal_antiparallel_threshold: -0.5,
+            max_thickness_voxels: 64.0,
+        }
     }
 }
 
