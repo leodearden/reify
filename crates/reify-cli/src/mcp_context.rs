@@ -1284,7 +1284,7 @@ mod tests {
         // case-folding flake risk noted in the comment above, while still providing
         // an assertion that is decoupled from the all_b coherence check below.
         assert!(
-            active_path.ends_with("bracket_compile_error.ri"),
+            active_path.ends_with("/bracket_compile_error.ri"),
             "active_file must point to b.ri after update_source(b.ri); got {:?}",
             active_path
         );
@@ -1297,16 +1297,11 @@ mod tests {
             !diags.is_empty(),
             "bracket_compile_error.ri should produce at least one diagnostic"
         );
-        // Independent diagnostic oracle: use ends_with("bracket_compile_error.ri")
-        // rather than comparing against active_path — both active_path and d.file_path
-        // are derived from state.active_file (get_source at mcp_context.rs:170-186;
-        // get_diagnostics at mcp_context.rs:213-216,238), so comparing them would be
-        // tautological and would not catch a regression where get_diagnostics wired
-        // file_path from a different source (per-diagnostic span, compiled-module path,
-        // etc.). Using the filename suffix as a third independent oracle ensures that
-        // every diagnostic genuinely carries b.ri's path, not just a.ri's.
+        // Independent diagnostic oracle: both `active_path` and `d.file_path` derive
+        // from `state.active_file`, so comparing them would be tautological — the
+        // filename suffix is a third independent oracle.
         assert!(
-            diags.iter().all(|d| d.file_path.ends_with("bracket_compile_error.ri")),
+            diags.iter().all(|d| d.file_path.ends_with("/bracket_compile_error.ri")),
             "all diagnostics must carry b.ri's path (ends_with bracket_compile_error.ri), got: {:?}",
             diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
         );
