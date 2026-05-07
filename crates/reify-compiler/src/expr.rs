@@ -1339,6 +1339,22 @@ pub(crate) fn compile_expr_guarded(
 
                 // For literal integer index, resolve directly to a scoped ValueRef
                 if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
+                    // Task 3045: guard non-finite / out-of-representable-range values first.
+                    // `*n as i64` silently saturates to i64::MAX for inputs like 1e20 or
+                    // any finite float ≥ 2^63, producing a bogus scoped ValueRef with no
+                    // diagnostic.  `>= i64::MAX as f64` uses `>=` because i64::MAX rounds
+                    // UP to the f64 value 2^63 (not representable exactly), so the
+                    // boundary must be included.  `!n.is_finite()` catches NaN and ±∞
+                    // before the `>=` comparison (NaN comparisons are always false).
+                    if !n.is_finite() || *n >= i64::MAX as f64 {
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(
+                                "collection index is out of range or non-finite",
+                            )
+                            .with_label(DiagnosticLabel::new(expr.span, "invalid index")),
+                        );
+                    }
                     if n.fract() != 0.0 || *n < 0.0 {
                         diagnostics.push(
                             Diagnostic::error(
