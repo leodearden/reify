@@ -74,6 +74,16 @@ pub const EDGES: [(usize, usize); 6] = [
 impl ReferenceElement for TetP2 {
     const N_NODES: usize = 10;
 
+    // `jacobian(...)` is inherited from the trait default: the formula
+    // `J_ij = Σ_k phys_nodes[k][i] · shape_grad_at(coord)[k][j]` is
+    // N-agnostic via the `Vec<[f64; 3]>` return type, so no per-element
+    // override is needed for P2. Callers must supply `phys_nodes` of
+    // length `N_NODES = 10` in canonical order (4 vertices in
+    // `(0,0,0), (1,0,0), (0,1,0), (0,0,1)` order followed by the 6
+    // edge-midpoint nodes in `EDGES` order). Verified by the
+    // `jacobian_uniform_scale_is_constant_with_correct_det` and
+    // `jacobian_p2_agrees_with_p1_for_affine_map` tests.
+
     /// Quadratic Lagrangian P2 shape functions evaluated at `coord`.
     ///
     /// Returned in canonical 10-node order: the 4 vertex shapes
