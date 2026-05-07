@@ -83,8 +83,8 @@ use std::sync::Arc;
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintNodeId, ConstraintSolver, ContentHash,
-    Diagnostic, FeatureTagTable, GeometryKernel, Mesh, OptimizationObjective, OptimizedImpl,
-    Satisfaction, TopologyAttributeTable, ValueCellId, ValueMap,
+    Diagnostic, FeatureTagTable, GeometryHandleId, GeometryKernel, Mesh, OptimizationObjective,
+    OptimizedImpl, Satisfaction, TopologyAttributeTable, ValueCellId, ValueMap,
 };
 
 use crate::cache::{CacheStore, NodeId};
@@ -487,6 +487,25 @@ pub struct Engine {
     /// `feature_tag_table` once the attribute path covers all selector
     /// vocabulary.
     topology_attribute_table: TopologyAttributeTable,
+    /// Per-engine realization cache keyed on `(entity_id, repr_kind, demanded_tol)`.
+    ///
+    /// Populated by `execute_realization_ops` after a fully-successful realization
+    /// when a demanded tolerance is available; consulted at the start of the same
+    /// helper to short-circuit kernel re-execution when a cached handle satisfies
+    /// the request under the partial-order rule (`cached_tol ≤ requested_tol`).
+    ///
+    /// Cache lifetime is engine-scoped: entries persist across successive `build()`
+    /// / `build_snapshot()` / `tessellate_realizations()` calls within a single
+    /// `Engine`. Initial wiring (task 2874) does NOT clear the cache on
+    /// `activate_purpose` / `deactivate_purpose` / `edit_param` / `edit_source` —
+    /// stale-handle hazards are mitigated by the partial-order rule, and finer-
+    /// grained invalidation is left for follow-up tasks.
+    ///
+    /// `#[allow(dead_code)]` is needed at the pre-1 commit boundary (the field
+    /// is initialised but not yet read — the read sites land in step-6 / step-8
+    /// of task 2874). The allow can be removed once those steps land.
+    #[allow(dead_code)]
+    realization_cache: crate::realization_cache::RealizationCache<GeometryHandleId>,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     ///

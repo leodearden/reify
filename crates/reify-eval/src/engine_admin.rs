@@ -165,6 +165,13 @@ impl Engine {
             // construction — task 2590 added the field + accessor as the
             // foundation; tasks 5-8 wire per-op auto-population.
             topology_attribute_table: TopologyAttributeTable::default(),
+            // Empty realization cache (task 2874). Populated by
+            // `execute_realization_ops` after fully-successful realizations
+            // when a demanded tolerance is available; consulted at the start
+            // of the helper to short-circuit kernel re-execution when a
+            // cached handle satisfies the request under the partial-order
+            // rule.
+            realization_cache: crate::realization_cache::RealizationCache::new(),
             // Only initialised in test / `test-instrumentation` builds; the
             // field is absent in production (see lib.rs and engine_eval.rs
             // for the matching cfg gates on the declaration and read site).
