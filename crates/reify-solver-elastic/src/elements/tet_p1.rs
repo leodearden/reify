@@ -22,8 +22,19 @@ impl ReferenceElement for TetP1 {
         vec![1.0 - xi - eta - zeta, xi, eta, zeta]
     }
 
+    /// P1 shape-function gradients in reference coordinates.
+    ///
+    /// The gradients are constant — independent of `coord` — because P1
+    /// shape functions are linear. Returned in the canonical row order
+    /// `[∇N_0, ∇N_1, ∇N_2, ∇N_3] = [(-1,-1,-1), (1,0,0), (0,1,0), (0,0,1)]`.
+    /// The argument is kept for trait-uniformity with `TetP2`.
     fn shape_grad_at(&self, _coord: ReferenceCoord) -> Vec<[f64; 3]> {
-        todo!("P1 shape-function gradients — task 2914 step-6")
+        vec![
+            [-1.0, -1.0, -1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
