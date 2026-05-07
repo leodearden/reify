@@ -2000,7 +2000,7 @@ struct LeafVerdict {
 /// - `j < K` → propagate (the backjump target is above this level).
 /// - `j == K` → consume: pop the current candidate and continue the sibling
 ///   loop (equivalent to ordinary backtrack at `K`).
-/// - `j > K` → unreachable (`debug_assert!`): the inner level at `K+1` would
+/// - `j > K` → unreachable (`unreachable!()`): the inner level at `K+1` would
 ///   have consumed `j == K+1` rather than propagating it, so `j > K` cannot
 ///   reach level `K` by induction.
 ///
@@ -2167,7 +2167,7 @@ fn compute_deepest_blame_level(
 /// - `BackjumpTo(j)` where `j < K` → pop, propagate (continue unwinding).
 /// - `BackjumpTo(j)` where `j == K` → pop, continue sibling loop (equivalent
 ///   to ordinary backtrack at K — the target reached its home level).
-/// - `BackjumpTo(j)` where `j > K` → `debug_assert!(false)`: the inner level
+/// - `BackjumpTo(j)` where `j > K` → `unreachable!()`: the inner level
 ///   at `K+1` would have consumed `j == K+1` or propagated `j < K+1`. `j > K`
 ///   is unreachable by induction.
 ///
@@ -2268,12 +2268,10 @@ fn dfs_search(
                     // Nothing to return; fall through to the next iteration.
                 } else {
                     // j > level: unreachable by induction (see function-level doc).
-                    debug_assert!(
-                        false,
+                    unreachable!(
                         "DfsControl::BackjumpTo({j}) arrived at level {level}: \
                          j > level is unreachable; inner level would have consumed j==level"
                     );
-                    // In release mode, treat as Continue (safe fallback: next sibling).
                 }
             }
         }
