@@ -46,6 +46,17 @@
 //! amortised behind the same OnceLock: it runs once inside the init closure
 //! alongside [`build_registry`] and never repeats, mirroring the existing
 //! duplicate-NAME walk.
+//!
+//! **Debug-build note:** `OnceLock::get_or_init` leaves the cell
+//! uninitialised if the init closure panics (per stdlib semantics). In debug
+//! builds, a duplicate `(Operation, ReprKind)` pair triggers a
+//! `debug_assert!` inside [`warn_if_duplicate_op_repr_pairs`], which panics
+//! and leaves the cell uninitialised. Every subsequent `registry()` call will
+//! re-run the closure, re-allocate the descriptor map, re-run the duplicate
+//! walk, and re-panic — emitting multiple WARN events rather than exactly
+//! one. This only occurs on an adapter misconfiguration (a programming error)
+//! in debug builds; release builds follow the WARN path without panicking and
+//! the OnceLock is populated normally.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
@@ -850,41 +861,27 @@ mod tests {
         );
     }
 
-    /// Public-API regression guard: `registry()` must emit no `WARN`-level
-    /// events at the `reify_eval::kernel_registry` target when called
-    /// repeatedly on the production registry (which contains no duplicate
-    /// `(Operation, ReprKind)` pairs).
+    /// Smoke check: repeated `registry()` calls do not introduce `WARN`-level
+    /// noise at the `reify_eval::kernel_registry` target.
     ///
-    /// # Structural contract pinned
+    /// `REGISTRY` is a process-global `OnceLock`; by the time this test runs,
+    /// the init closure may already have executed (driven by an earlier test).
+    /// All three calls here are therefore likely cache hits. What this test
+    /// actually verifies is the narrower property: the **cache-hit path**
+    /// produces no spurious WARN events. It does not (and cannot) observe
+    /// whether the init closure itself fired under the subscriber — that would
+    /// require injecting duplicates into the global OnceLock, which would
+    /// disrupt every other test in the binary.
     ///
-    /// This test pins the surviving structural contract via the public
-    /// `registry()` API only. It references no internal seam
-    /// (`UNIQUENESS_CHECKED`, `UNIQUENESS_CHECK_INVOCATIONS`, or any
-    /// `AtomicBool`/`AtomicUsize` counter). Any future re-org of the
-    /// internal once-per-process plumbing leaves this test unaffected as
-    /// long as `registry()` remains a public API.
-    ///
-    /// The once-per-process `(Operation, ReprKind)` uniqueness check is
-    /// structurally guaranteed by the `REGISTRY: OnceLock` — calling
-    /// `registry()` three times exercises the memoized path and confirms
-    /// no spurious WARN is emitted on repeated access.
-    ///
-    /// # Diagnostic contract for duplicate scenarios
-    ///
-    /// The diagnostic contract for duplicate `(Operation, ReprKind)` pair
-    /// scenarios is pinned by the unchanged helper-direct tests:
-    /// - `warn_if_duplicate_op_repr_pairs_panics_on_duplicate_pair` —
-    ///   debug-build panic on inter-kernel duplicate.
-    /// - `warn_if_duplicate_op_repr_pairs_always_emits_warn_on_duplicate` —
-    ///   operator-visibility WARN on inter-kernel duplicate, in all builds.
-    /// - `warn_if_duplicate_op_repr_pairs_always_emits_warn_on_intra_kernel_duplicate`
-    ///   — operator-visibility WARN on intra-kernel duplicate.
-    ///
-    /// This test is GREEN both before and after the OnceLock refactor:
-    /// production has no duplicates, so WARN count is zero whether or not
-    /// the uniqueness check runs.
+    /// The once-per-process `(Operation, ReprKind)` uniqueness contract is
+    /// structurally guaranteed by the surrounding `OnceLock` and needs no
+    /// unit-test pin (we don't unit-test stdlib). The diagnostic behavior on
+    /// duplicate inputs is pinned by the helper-direct tests
+    /// `warn_if_duplicate_op_repr_pairs_panics_on_duplicate_pair`,
+    /// `*_always_emits_warn_on_duplicate`, and
+    /// `*_always_emits_warn_on_intra_kernel_duplicate`.
     #[test]
-    fn registry_oncelock_init_emits_no_warn_on_clean_production_registry() {
+    fn registry_repeated_calls_emit_no_warn() {
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -903,10 +900,8 @@ mod tests {
         assert_eq!(
             warn_count.load(Ordering::Acquire),
             0,
-            "registry() must emit no WARN events at reify_eval::kernel_registry: \
-             the production registry must have no duplicate (Operation, ReprKind) \
-             pairs, and the OnceLock-driven uniqueness check must produce no \
-             spurious WARN on a clean registry",
+            "registry() must emit no WARN events at reify_eval::kernel_registry \
+             on repeated calls (cache-hit path must be noise-free)",
         );
     }
 }
