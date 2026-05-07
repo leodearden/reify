@@ -23,11 +23,15 @@
 //! 1. Compute the surface-mesh axis-aligned bounding box dimensions
 //!    `(Δx, Δy, Δz)`.
 //! 2. Pick the smallest of the three as the "thickness direction".
-//! 3. Project tet centroids onto that axis, sort the resulting 1-D scalars,
-//!    and count distinct discrete bins where the bin width is the average
-//!    tet edge length along that axis (approximated via the BBox span /
-//!    cube-root of tet count).
-//! 4. If the layer count is below `cfg.min_elements_through_thickness`,
+//! 3. Project tet corner-vertex extents onto that axis to estimate the
+//!    typical per-tet thinnest-axis span (average over all tets) — this is
+//!    the bin width for layer detection. Using a per-tet measurement (rather
+//!    than `thickness / cbrt(n_tets)`) avoids the isotropy assumption that
+//!    breaks for thin slabs where tets stack in the thinnest direction.
+//! 4. Project tet centroids onto the thinnest axis, sort the resulting 1-D
+//!    scalars, and count distinct layers — two consecutive sorted centroids
+//!    are different layers when their gap exceeds half the bin width.
+//! 5. If the layer count is below `cfg.min_elements_through_thickness`,
 //!    emit a single warning naming the count, the thickness, and a
 //!    suggested smaller `mesh_size`.
 
@@ -118,12 +122,15 @@ pub fn through_thickness_check(
     };
 
     let mut centroids: Vec<f64> = Vec::with_capacity(n_tets);
+    let mut tet_extents_sum = 0.0_f64;
     for tet in volume.tet_indices.chunks_exact(stride) {
         // Use only the first 4 corner indices for the centroid; for P2
         // tets, indices [4..10] are edge midpoints — including them would
         // bias the centroid and is not the geometric centroid Gmsh would
         // report.
         let mut sum = 0.0_f64;
+        let mut min_axis = f64::INFINITY;
+        let mut max_axis = f64::NEG_INFINITY;
         for &i in &tet[..4] {
             let off = i as usize * 3;
             let (x, y, z) = (
@@ -131,22 +138,29 @@ pub fn through_thickness_check(
                 volume.vertices[off + 1] as f64,
                 volume.vertices[off + 2] as f64,
             );
-            sum += pick_axis(x, y, z);
+            let projected = pick_axis(x, y, z);
+            sum += projected;
+            min_axis = min_axis.min(projected);
+            max_axis = max_axis.max(projected);
         }
         centroids.push(sum * 0.25);
+        tet_extents_sum += max_axis - min_axis;
     }
 
     centroids.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Bin width: thickness divided by an estimate of the per-axis tet
-    // count. We approximate per-axis tet count as cube-root of total tet
-    // count (assumes an isotropic mesh). This is intentionally simple for
-    // v0.3 — refinement to a true layer-detection algorithm is a v0.4+
-    // bookmark.
-    let per_axis_estimate = (n_tets as f64).cbrt();
-    // Floor at 1 to avoid zero/NaN bin widths on extremely sparse meshes.
-    let per_axis_estimate = per_axis_estimate.max(1.0);
-    let bin_width = (thickness / per_axis_estimate).max(thickness * 1e-9);
+    // Bin width: average per-tet extent along the thinnest axis. This is the
+    // typical "vertical reach" of a single tet in the thickness direction,
+    // so two centroids separated by more than half a bin width sit in
+    // distinct layers. Unlike a `thickness / cbrt(n_tets)` heuristic, this
+    // measurement is correct for *both* isotropic meshes and thin-slab
+    // meshes where tets stack along the thinnest axis. v0.4+ may refine this
+    // to a per-region clustering analysis once topology selectors carry face
+    // IDs into mesh metadata.
+    let avg_tet_extent = tet_extents_sum / (n_tets as f64);
+    // Floor to avoid zero/NaN on degenerate meshes (tets fully collapsed in
+    // the thinnest direction would otherwise produce a 0-width bin).
+    let bin_width = avg_tet_extent.max(thickness * 1e-9);
 
     // Count distinct bins by walking the sorted centroids and bumping the
     // count whenever the gap to the previous centroid exceeds half a bin.
