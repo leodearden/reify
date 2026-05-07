@@ -38,3 +38,6 @@ pub mod options;
 pub mod register;
 pub mod repair;
 pub mod through_thickness;
+
+pub use cache_key::volume_mesh_cache_key;
+pub use options::MeshingOptions;
