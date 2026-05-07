@@ -8,11 +8,15 @@
 //! so thread-count flips and `#deterministic` toggles don't defeat the cache
 //! for engineering-equivalent inputs.
 //!
-//! These tests pin the four key behaviours:
+//! These tests pin the six key behaviours:
 //!   (a) determinism — same inputs ⇒ same key
 //!   (b) sensitivity to surface_hash
 //!   (c) thread count is excluded from the key
 //!   (d) element_order changes the key
+//!   (e) `deterministic` flag is excluded from the key (mirrors threads)
+//!   (f) `mesh_size: None` and `mesh_size: Some(0.0)` produce DIFFERENT keys
+//!       (the presence-flag byte must disambiguate the two — both produce eight
+//!       zero payload bytes, so without the flag they would collide silently)
 
 use reify_kernel_gmsh::cache_key::volume_mesh_cache_key;
 use reify_kernel_gmsh::options::MeshingOptions;
@@ -94,5 +98,61 @@ fn element_order_changes_key() {
     assert_ne!(
         k_p1, k_p2,
         "P1 and P2 produce structurally distinct meshes; cache keys must differ"
+    );
+}
+
+/// `deterministic` is NOT in the cache key. Mirrors the thread-count exclusion
+/// — flipping `#deterministic` does not change the engineering identity of the
+/// mesh request, so the cache must still hit. A regression that started routing
+/// `deterministic` through the byte buffer would silently invalidate caches on
+/// every flag flip; this test pins the documented PRD invariant against that.
+#[test]
+fn deterministic_flag_is_excluded_from_key() {
+    let surface_hash = ContentHash::of_str("surface-mesh-blob-A");
+    let nondeterministic = MeshingOptions {
+        mesh_size: Some(0.5),
+        threads: Some(4),
+        deterministic: false,
+    };
+    let deterministic = MeshingOptions {
+        mesh_size: Some(0.5),
+        threads: Some(4),
+        deterministic: true,
+    };
+    let k_nd = volume_mesh_cache_key(surface_hash, &nondeterministic, ElementOrderTag::P1);
+    let k_d = volume_mesh_cache_key(surface_hash, &deterministic, ElementOrderTag::P1);
+    assert_eq!(
+        k_nd, k_d,
+        "options differing only in `deterministic` must produce identical keys \
+         (PRD: same answer to tolerance regardless of determinism flag)"
+    );
+}
+
+/// `mesh_size: None` and `mesh_size: Some(0.0)` must produce DIFFERENT keys.
+/// Both encode eight zero payload bytes in the value slot, so without the
+/// dedicated presence-flag byte (cache_key.rs byte 16) they would collide.
+/// A regression that dropped the flag byte would silently produce key
+/// equality between auto-sized and explicit-zero requests — this test pins
+/// the disambiguation against that.
+#[test]
+fn mesh_size_none_and_some_zero_produce_different_keys() {
+    let surface_hash = ContentHash::of_str("surface-mesh-blob-A");
+    let none_size = MeshingOptions {
+        mesh_size: None,
+        threads: None,
+        deterministic: false,
+    };
+    let some_zero = MeshingOptions {
+        mesh_size: Some(0.0),
+        threads: None,
+        deterministic: false,
+    };
+    let k_none = volume_mesh_cache_key(surface_hash, &none_size, ElementOrderTag::P1);
+    let k_some = volume_mesh_cache_key(surface_hash, &some_zero, ElementOrderTag::P1);
+    assert_ne!(
+        k_none, k_some,
+        "mesh_size: None and Some(0.0) must produce distinct keys; the \
+         presence-flag byte (cache_key.rs byte 16) disambiguates the two \
+         identical eight-byte payloads"
     );
 }
