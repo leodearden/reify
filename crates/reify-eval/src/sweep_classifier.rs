@@ -382,6 +382,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn classify_swept_body_revolve_normalizes_non_unit_axis_dir() {
+        // Why the 3-4-5 triple: `axis_dir = [3.0, 0.0, 4.0]` has Euclidean norm
+        // exactly 5.  After normalisation the expected components are
+        // [3/5, 0/5, 4/5] = [0.6, 0.0, 0.8] — a clean rational triple that
+        // exercises all three components nontrivially (no zero cancellation on
+        // axis[0] or axis[2]).
+        //
+        // Why tolerance assertions rather than
+        //   `assert_eq!(Some(SweptKind::Revolve { axis_dir: [0.6, 0.0, 0.8], … }))`
+        // 0.6 and 0.8 are not exactly representable in IEEE-754 f64; while
+        // `3.0_f64 / 5.0` and the literal `0.6_f64` round to the same nearest
+        // double on every target we support, depending on bit-equality is fragile
+        // and obscures the intent.  Componentwise tolerance assertions pin the
+        // actual semantic invariant — unit-length axis pointing in the right
+        // direction — and read as documentation.
+        //
+        // Contract parity: `SweptKind::Extrude.axis` is documented "Unit-length
+        // sweep axis in the realization frame".  `SweptKind::Revolve.axis_dir`
+        // should honour the same invariant so downstream mesh-morphing rotation
+        // math can rely on it across both variants without per-variant length
+        // checks.
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(0),
+            axis_origin: [1.0, 2.0, 3.0],
+            axis_dir: [3.0, 0.0, 4.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        let result = classify_swept_body(&ops, &handles);
+        match result {
+            Some(SweptKind::Revolve {
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            }) => {
+                // axis_origin and angle_rad must be propagated verbatim.
+                assert_eq!(
+                    axis_origin,
+                    [1.0, 2.0, 3.0],
+                    "axis_origin must be propagated verbatim"
+                );
+                assert!(
+                    (angle_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+                    "angle_rad must be propagated verbatim; got {angle_rad}"
+                );
+                // axis_dir must be unit-length after normalisation.
+                let norm: f64 = axis_dir.iter().map(|c| c * c).sum::<f64>().sqrt();
+                assert!(
+                    (norm - 1.0).abs() < 1e-12,
+                    "normalised axis_dir must be unit-length; got norm={norm}"
+                );
+                // Componentwise: expected [3/5, 0/5, 4/5] = [0.6, 0.0, 0.8].
+                assert!(
+                    (axis_dir[0] - 0.6).abs() < 1e-12,
+                    "axis_dir[0] must be ~0.6; got {}",
+                    axis_dir[0]
+                );
+                assert!(
+                    axis_dir[1].abs() < 1e-12,
+                    "axis_dir[1] must be ~0.0; got {}",
+                    axis_dir[1]
+                );
+                assert!(
+                    (axis_dir[2] - 0.8).abs() < 1e-12,
+                    "axis_dir[2] must be ~0.8; got {}",
+                    axis_dir[2]
+                );
+            }
+            other => panic!(
+                "expected Some(SweptKind::Revolve {{ ... }}) but got {other:?}"
+            ),
+        }
+    }
+
     // ── Step-5: Sweep / Loft path-source resolution and rejection ─────────
 
     #[test]
