@@ -181,6 +181,10 @@ pub fn shell_element_stiffness(
 ) -> ElementStiffness {
     use crate::elements::mitc3_plus::{Mitc3Plus, ShearStrain, TyingShears};
     assert!(thickness > 0.0, "shell_element_stiffness: thickness must be positive, got {thickness}");
+    // Element-size constants — avoid hard-coding 18/6/3 throughout.
+    const NDOF: usize = Mitc3Plus::N_DOFS;        // 18 total DOFs
+    const NDP:  usize = Mitc3Plus::N_DOFS_PER_NODE; // 6 DOFs per node
+    const NN:   usize = Mitc3Plus::N_NODES;        // 3 nodes
 
     let frame = build_shell_frame(nodes);
     let r = frame.r;   // rotation matrix: row i = local basis eᵢ in global coords
@@ -224,7 +228,7 @@ pub fn shell_element_stiffness(
     ];
 
     // --- 18×18 K_local (assembled in local frame) ---
-    let mut k_loc = [[0.0_f64; 18]; 18];
+    let mut k_loc = [[0.0_f64; NDOF]; NDOF];
 
     // ---- Membrane K (step 8) ----
     // B_m is 3×9 (rows: ε_xx, ε_yy, γ_xy; cols: u_x_0,u_y_0, u_x_1,u_y_1, u_x_2,u_y_2)
@@ -241,13 +245,13 @@ pub fn shell_element_stiffness(
         for i in 0..3 { for j in 0..3 { td[i][j] = t * d_pl[i][j]; } }
         td
     };
-    for ni in 0..3 {
-        for nj in 0..3 {
+    for ni in 0..NN {
+        for nj in 0..NN {
             // B_m columns for node i (2 cols) × B_m columns for node j (2 cols)
             // col offsets within the 9-col membrane sub-block: 2·n
-            // but in local K, DOF = 6·n + {0,1}
-            let doi = [6*ni, 6*ni+1]; // local DOF indices for (u_x, u_y) of node i
-            let doj = [6*nj, 6*nj+1];
+            // but in local K, DOF = NDP·n + {0,1}
+            let doi = [NDP*ni, NDP*ni+1]; // local DOF indices for (u_x, u_y) of node i
+            let doj = [NDP*nj, NDP*nj+1];
             // B_m sub-block for node i (3×2):
             let bmi = [[dn[ni][0], 0.0], [0.0, dn[ni][1]], [dn[ni][1], dn[ni][0]]];
             let bmj = [[dn[nj][0], 0.0], [0.0, dn[nj][1]], [dn[nj][1], dn[nj][0]]];
@@ -282,10 +286,10 @@ pub fn shell_element_stiffness(
         for i in 0..3 { for j in 0..3 { td[i][j] = factor * d_pl[i][j]; } }
         td
     };
-    for ni in 0..3 {
-        for nj in 0..3 {
-            let doi = [6*ni+3, 6*ni+4]; // θ_x, θ_y DOF indices for node i
-            let doj = [6*nj+3, 6*nj+4];
+    for ni in 0..NN {
+        for nj in 0..NN {
+            let doi = [NDP*ni+3, NDP*ni+4]; // θ_x, θ_y DOF indices for node i
+            let doj = [NDP*nj+3, NDP*nj+4];
             // B_b sub-block (3×2) for node i:
             let bbi = [[0.0, -dn[ni][0]], [dn[ni][1], 0.0], [dn[ni][0], -dn[ni][1]]];
             let bbj = [[0.0, -dn[nj][0]], [dn[nj][1], 0.0], [dn[nj][0], -dn[nj][1]]];
@@ -368,7 +372,7 @@ pub fn shell_element_stiffness(
     // handle the linearity differently: we propagate the whole B matrix.
 
     // B_cov[tp][component][dof]: covariant shear B-matrix at each tying point
-    let mut b_cov = [[[0.0_f64; 18]; 2]; 3]; // [tp][cov_component][dof]
+    let mut b_cov = [[[0.0_f64; NDOF]; 2]; 3]; // [tp][cov_component][dof]
     for (tp_idx, tp) in tying_pts.iter().enumerate() {
         // Use Mitc3Plus's canonical shape functions — single source of truth
         // for the reference-triangle layout (ξ, η) → [N_0, N_1, N_2].
@@ -376,10 +380,10 @@ pub fn shell_element_stiffness(
         // shape_grad_at returns the constant ∂N/∂ξ and ∂N/∂η for each node:
         // ∇N_0=(−1,−1), ∇N_1=(1,0), ∇N_2=(0,1)
         let dn_ref_tp = Mitc3Plus.shape_grad_at(tp.coord);
-        for node in 0..3 {
-            let dof_uz = 6 * node + 2;
-            let dof_tx = 6 * node + 3;
-            let dof_ty = 6 * node + 4;
+        for node in 0..NN {
+            let dof_uz = NDP * node + 2;
+            let dof_tx = NDP * node + 3;
+            let dof_ty = NDP * node + 4;
             // γ_ξζ contribution from this node: dn_ref[node][0]*u_z + N*θ_y
             b_cov[tp_idx][0][dof_uz] += dn_ref_tp[node][0];
             b_cov[tp_idx][0][dof_ty] += n_at_tp[node];
@@ -398,9 +402,9 @@ pub fn shell_element_stiffness(
     let qp_weight = 1.0 / 6.0; // each of A, B, C has weight 1/6 (sum=1/2=ref-tri area)
 
     for qp in tying_pts.iter() {
-        // Build projected covariant B_s at this quadrature point (2×18).
-        let mut b_s_cov_qp = [[0.0_f64; 18]; 2];
-        for dof in 0..18 {
+        // Build projected covariant B_s at this quadrature point (2×NDOF).
+        let mut b_s_cov_qp = [[0.0_f64; NDOF]; 2];
+        for dof in 0..NDOF {
             // For column `dof`, the covariant strain at each tying point is b_cov[tp][comp][dof].
             let sampled = TyingShears {
                 at_a: ShearStrain {
@@ -422,16 +426,16 @@ pub fn shell_element_stiffness(
         }
 
         // Convert covariant to physical: b_s_phys = J2⁻ᵀ · b_s_cov
-        let mut b_s_phys = [[0.0_f64; 18]; 2];
-        for dof in 0..18 {
+        let mut b_s_phys = [[0.0_f64; NDOF]; 2];
+        for dof in 0..NDOF {
             b_s_phys[0][dof] = inv_t[0][0]*b_s_cov_qp[0][dof] + inv_t[0][1]*b_s_cov_qp[1][dof];
             b_s_phys[1][dof] = inv_t[1][0]*b_s_cov_qp[0][dof] + inv_t[1][1]*b_s_cov_qp[1][dof];
         }
 
         // Accumulate K_s += B_sᵀ · (κ·G·t) · B_s · det2 · weight
         let scale = kappa_g * t * det2 * qp_weight;
-        for a in 0..18 {
-            for b in 0..18 {
+        for a in 0..NDOF {
+            for b in 0..NDOF {
                 let v = (b_s_phys[0][a] * b_s_phys[0][b]
                        + b_s_phys[1][a] * b_s_phys[1][b])
                       * scale;
@@ -445,8 +449,8 @@ pub fn shell_element_stiffness(
     // intrinsically symmetric in form, so the upper and lower entries
     // agree to within floating-point rounding. Averaging both triangles
     // (rather than discarding the lower) minimises the residual asymmetry.
-    for a in 0..18 {
-        for b in (a + 1)..18 {
+    for a in 0..NDOF {
+        for b in (a + 1)..NDOF {
             let m = 0.5 * (k_loc[a][b] + k_loc[b][a]);
             k_loc[a][b] = m;
             k_loc[b][a] = m;
@@ -454,11 +458,12 @@ pub fn shell_element_stiffness(
     }
 
     // ---- Local → Global rotation: K_global[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R ----
-    // T = blkdiag(R, R, R, R, R, R) — 6 blocks of 3×3, one per node's (u,θ) triples.
+    // T = blkdiag(R, R, R, R, R, R) — 2·NN blocks of 3×3 (two 3-DOF triples per node).
     // Apply Rᵀ on left, R on right, for each pair of 3-DOF blocks.
-    let mut k_glob = [[0.0_f64; 18]; 18];
-    for bi in 0..6 { // block row index
-        for bj in 0..6 { // block col index
+    let n_blocks = 2 * NN; // 6 = displacement triple + rotation triple per node
+    let mut k_glob = [[0.0_f64; NDOF]; NDOF];
+    for bi in 0..n_blocks { // block row index
+        for bj in 0..n_blocks { // block col index
             let row_off = 3 * bi;
             let col_off = 3 * bj;
             // Extract 3×3 sub-block from k_loc
@@ -480,10 +485,10 @@ pub fn shell_element_stiffness(
     }
 
     // Pack into ElementStiffness
-    let mut k_e = ElementStiffness::zeros(18);
-    for i in 0..18 {
-        for j in 0..18 {
-            k_e.data[i * 18 + j] = k_glob[i][j];
+    let mut k_e = ElementStiffness::zeros(NDOF);
+    for i in 0..NDOF {
+        for j in 0..NDOF {
+            k_e.data[i * NDOF + j] = k_glob[i][j];
         }
     }
     k_e
@@ -493,6 +498,7 @@ pub fn shell_element_stiffness(
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use crate::constitutive::IsotropicElastic;
+    use crate::elements::mitc3_plus::Mitc3Plus;
     use super::*;
 
     fn steel_like() -> IsotropicElastic {
@@ -509,10 +515,10 @@ mod tests {
     ];
 
     /// Compute K · u for an 18-DOF stiffness matrix.
-    fn matvec(k: &ElementStiffness, u: &[f64; 18]) -> [f64; 18] {
-        let mut out = [0.0_f64; 18];
-        for i in 0..18 {
-            for j in 0..18 {
+    fn matvec(k: &ElementStiffness, u: &[f64; Mitc3Plus::N_DOFS]) -> [f64; Mitc3Plus::N_DOFS] {
+        let mut out = [0.0_f64; Mitc3Plus::N_DOFS];
+        for i in 0..Mitc3Plus::N_DOFS {
+            for j in 0..Mitc3Plus::N_DOFS {
                 out[i] += k.get(i, j) * u[j];
             }
         }
@@ -533,8 +539,8 @@ mod tests {
     #[test]
     fn shell_element_stiffness_returns_18_by_18_for_unit_triangle() {
         let k = shell_element_stiffness(&UNIT_TRI, 0.05, &steel_like());
-        assert_eq!(k.n_dofs, 18);
-        assert_eq!(k.data.len(), 324);
+        assert_eq!(k.n_dofs, Mitc3Plus::N_DOFS);
+        assert_eq!(k.data.len(), Mitc3Plus::N_DOFS * Mitc3Plus::N_DOFS);
     }
 
     // --- Membrane patch test (step 7) ---
@@ -551,14 +557,15 @@ mod tests {
         let nodes = UNIT_TRI; // p0=(0,0,0), p1=(1,0,0), p2=(0,1,0)
         let k = shell_element_stiffness(&nodes, t, &mat);
 
-        // Build 18-DOF displacement vector: DOF layout 6·node + i
-        // u_x at node i => DOF 6·i+0; u_y at node i => DOF 6·i+1
-        let mut u = [0.0_f64; 18];
+        // Build 18-DOF displacement vector: DOF layout NDP·node + i
+        // u_x at node i => DOF NDP·i+0; u_y at node i => DOF NDP·i+1
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
         // node 0: x=0,y=0 → u_x=0, u_y=0
         // node 1: x=1,y=0 → u_x=a, u_y=0
-        u[6 * 1 + 0] = a * 1.0;
+        u[NDP * 1 + 0] = a * 1.0;
         // node 2: x=0,y=1 → u_x=0, u_y=b
-        u[6 * 2 + 1] = b * 1.0;
+        u[NDP * 2 + 1] = b * 1.0;
 
         let ku = matvec(&k, &u);
         let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
@@ -608,12 +615,12 @@ mod tests {
         // cancellation in the partition-of-unity sum scales with K_max, so an
         // absolute 1e-9 is too strict when E=200 GPa (K entries ~5e9).  Use
         // the same relative-scale pattern as the rotation null-space test.
-        let k_max = k.data.iter().copied().fold(0.0_f64, f64::max);
+        let k_max = k.data.iter().copied().fold(0.0_f64, |a, x| a.max(x.abs()));
         let tol = 1e-9 * k_max.max(1.0);
         for axis in 0..3 {
-            let mut u = [0.0_f64; 18];
-            for node in 0..3 {
-                u[6 * node + axis] = 1.0;
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                u[Mitc3Plus::N_DOFS_PER_NODE * node + axis] = 1.0;
             }
             let ku = matvec(&k, &u);
             assert!(
@@ -637,25 +644,26 @@ mod tests {
         // Displacement: u_i = ω × (x_i - c); rotation: θ_i = ω.
         let omega = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         for &w in &omega {
-            let mut u = [0.0_f64; 18];
-            for node in 0..3 {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
                 let dx = [nodes[node][0] - c[0], nodes[node][1] - c[1], nodes[node][2] - c[2]];
                 // u_i = ω × dx
                 let ux = w[1] * dx[2] - w[2] * dx[1];
                 let uy = w[2] * dx[0] - w[0] * dx[2];
                 let uz = w[0] * dx[1] - w[1] * dx[0];
-                u[6 * node + 0] = ux;
-                u[6 * node + 1] = uy;
-                u[6 * node + 2] = uz;
+                let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+                u[ndp * node + 0] = ux;
+                u[ndp * node + 1] = uy;
+                u[ndp * node + 2] = uz;
                 // θ_i = ω
-                u[6 * node + 3] = w[0];
-                u[6 * node + 4] = w[1];
-                u[6 * node + 5] = w[2];
+                u[ndp * node + 3] = w[0];
+                u[ndp * node + 4] = w[1];
+                u[ndp * node + 5] = w[2];
             }
             let ku = matvec(&k, &u);
             let norm_ku = linf(&ku);
             // Tolerance relative to max absolute entry of K × |u| components
-            let ku_scale = k.data.iter().copied().fold(0.0_f64, f64::max) * 1.0;
+            let ku_scale = k.data.iter().copied().fold(0.0_f64, |a, x| a.max(x.abs()));
             let tol = 1e-9 * ku_scale.max(1.0);
             assert!(
                 norm_ku < tol,
@@ -672,16 +680,17 @@ mod tests {
         let a = 0.01_f64;
         let b = -0.005_f64;
         let t = 0.05_f64;
-        let mut u = [0.0_f64; 18];
-        u[6 * 1 + 0] = a;
-        u[6 * 2 + 1] = b;
+        let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        u[ndp * 1 + 0] = a;
+        u[ndp * 2 + 1] = b;
 
         let k1 = shell_element_stiffness(&UNIT_TRI, t, &mat);
         let k2 = shell_element_stiffness(&UNIT_TRI, 2.0 * t, &mat);
         let ku1 = matvec(&k1, &u);
         let ku2 = matvec(&k2, &u);
 
-        for i in 0..18 {
+        for i in 0..Mitc3Plus::N_DOFS {
             let scale = ku1[i].abs().max(1.0);
             assert!(
                 (ku2[i] - 2.0 * ku1[i]).abs() < 1e-9 * scale,
@@ -697,15 +706,17 @@ mod tests {
         let mat = steel_like();
         let alpha = 0.003_f64;
         let t = 0.05_f64;
-        let mut u = [0.0_f64; 18];
-        for node in 0..3 { u[6 * node + 4] = alpha; }
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        for node in 0..Mitc3Plus::N_NODES {
+            u[Mitc3Plus::N_DOFS_PER_NODE * node + 4] = alpha;
+        }
 
         let k1 = shell_element_stiffness(&UNIT_TRI, t, &mat);
         let k2 = shell_element_stiffness(&UNIT_TRI, 2.0 * t, &mat);
         let ku1 = matvec(&k1, &u);
         let ku2 = matvec(&k2, &u);
 
-        for i in 0..18 {
+        for i in 0..Mitc3Plus::N_DOFS {
             let scale = ku1[i].abs().max(1.0);
             assert!(
                 (ku2[i] - 2.0 * ku1[i]).abs() < 1e-9 * scale,
@@ -725,9 +736,10 @@ mod tests {
         let t = 0.05_f64;
         let a = 0.01_f64;
         let b = -0.005_f64;
-        let mut u_orig = [0.0_f64; 18];
-        u_orig[6 * 1 + 0] = a;
-        u_orig[6 * 2 + 1] = b;
+        let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u_orig = [0.0_f64; Mitc3Plus::N_DOFS];
+        u_orig[ndp * 1 + 0] = a;
+        u_orig[ndp * 2 + 1] = b;
         let k_orig = shell_element_stiffness(&UNIT_TRI, t, &mat);
         let ku_orig = matvec(&k_orig, &u_orig);
         let u_k_orig: f64 = 0.5 * ku_orig.iter().zip(u_orig.iter()).map(|(a, b)| a * b).sum::<f64>();
@@ -753,10 +765,11 @@ mod tests {
         }
 
         // Rotate DOFs: each (u triple) and (θ triple) by Q
-        let mut u_rot = [0.0_f64; 18];
-        for node in 0..3 {
+        let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u_rot = [0.0_f64; Mitc3Plus::N_DOFS];
+        for node in 0..Mitc3Plus::N_NODES {
             for triple in 0..2 { // 0=displacements, 1=rotations
-                let off = 6 * node + 3 * triple;
+                let off = ndp * node + 3 * triple;
                 let v = [u_orig[off], u_orig[off+1], u_orig[off+2]];
                 for i in 0..3 {
                     u_rot[off + i] = q[i][0]*v[0] + q[i][1]*v[1] + q[i][2]*v[2];
@@ -787,9 +800,9 @@ mod tests {
         let alpha = 0.003_f64;
         let k = shell_element_stiffness(&UNIT_TRI, t, &mat);
 
-        let mut u = [0.0_f64; 18];
-        for node in 0..3 {
-            u[6 * node + 4] = alpha; // θ_y
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        for node in 0..Mitc3Plus::N_NODES {
+            u[Mitc3Plus::N_DOFS_PER_NODE * node + 4] = alpha; // θ_y
         }
 
         let ku = matvec(&k, &u);
@@ -822,10 +835,11 @@ mod tests {
         let alpha = 0.002_f64;
         let k = shell_element_stiffness(&UNIT_TRI, t, &mat);
 
-        let mut u = [0.0_f64; 18];
+        let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
         // node0 at x=0: θ_y = 0
         // node1 at x=1: θ_y = α
-        u[6 * 1 + 4] = alpha * 1.0;
+        u[ndp * 1 + 4] = alpha * 1.0;
         // node2 at x=0: θ_y = 0
 
         let ku = matvec(&k, &u);
