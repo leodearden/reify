@@ -1232,7 +1232,12 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 }
 
 /// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
-/// Tensor, Matrix, Scalar, Vector3, Point3) within a type alias RHS expression.
+/// Tensor, Matrix, Scalar, Vector3, Point3, Field) within a type alias RHS expression.
+///
+/// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
+/// `resolve_type_expr_with_aliases` — the full-type resolver, **not** the
+/// dimension-only resolver — because Field's domain and codomain are full Types
+/// (Point3, Vector3, Tensor, structures, etc.), not bare dimensions.
 ///
 /// Each type argument is resolved recursively via `resolve_type_expr_with_aliases`,
 /// which allows inner type args to be trait names (e.g. `Option<MyTrait>`).
@@ -1388,6 +1393,31 @@ pub(crate) fn resolve_parameterized_builtin_type(
                 trait_names,
             )?;
             Some(Type::matrix(m, n, quantity))
+        }
+        "Field" if type_args.len() == 2 => {
+            // Field<D, C>: full-type domain and codomain (Point3, Vector3, Tensor, etc.),
+            // not bare dimensions. Use resolve_type_expr_with_aliases (full-type resolver)
+            // rather than resolve_type_alias_expr_to_dimension. Mirrors Map's two-arg shape.
+            let domain = resolve_type_expr_with_aliases(
+                &type_args[0],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            let codomain = resolve_type_expr_with_aliases(
+                &type_args[1],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::Field {
+                domain: Box::new(domain),
+                codomain: Box::new(codomain),
+            })
         }
         // Name did not match any known builtin parametric pattern.
         // Early-return here so the debug_assert below never fires for the
