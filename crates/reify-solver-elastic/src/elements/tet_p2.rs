@@ -360,4 +360,96 @@ mod tests {
             1.0 / 60.0
         );
     }
+
+    /// Jacobian tolerance — slightly looser to accommodate the floating-
+    /// point cancellation in the 10-term `J_ij = Σ_k phys[k][i] · g[k][j]`
+    /// sum at non-trivial probe points.
+    const JAC_TOL: f64 = 1e-10;
+
+    /// Build a 10-node physical-node array for a uniformly scaled tet:
+    /// 4 vertices at `(0,0,0), (s,0,0), (0,s,0), (0,0,s)` and 6 edge
+    /// midpoints in the canonical Hughes/Gmsh edge ordering.
+    fn scaled_tet_phys_nodes(s: f64) -> [[f64; 3]; 10] {
+        let v: [[f64; 3]; 4] = [[0.0, 0.0, 0.0], [s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]];
+        let mid = |a: usize, b: usize| {
+            [
+                0.5 * (v[a][0] + v[b][0]),
+                0.5 * (v[a][1] + v[b][1]),
+                0.5 * (v[a][2] + v[b][2]),
+            ]
+        };
+        [
+            v[0],
+            v[1],
+            v[2],
+            v[3],
+            mid(0, 1),
+            mid(1, 2),
+            mid(2, 0),
+            mid(0, 3),
+            mid(1, 3),
+            mid(2, 3),
+        ]
+    }
+
+    #[test]
+    fn jacobian_uniform_scale_is_constant_with_correct_det() {
+        // Uniformly scaled (×2) tet: J should be diag(2,2,2) and det = 8
+        // at *every* reference point (straight-edge P2 → constant
+        // Jacobian).
+        let phys = scaled_tet_phys_nodes(2.0);
+        let probes = [
+            ReferenceCoord::new(0.25, 0.25, 0.25), // centroid
+            ReferenceCoord::new(0.5, 0.0, 0.0),    // edge (0,1) midpoint
+            ReferenceCoord::new(0.1, 0.2, 0.15),   // interior probe
+        ];
+        for p in probes {
+            let j = TetP2.jacobian(&phys, p);
+            for i in 0..3 {
+                for k in 0..3 {
+                    let expected = if i == k { 2.0 } else { 0.0 };
+                    assert!(
+                        (j.matrix[i][k] - expected).abs() < JAC_TOL,
+                        "J({:?})[{i}][{k}] = {} expected {}",
+                        p,
+                        j.matrix[i][k],
+                        expected,
+                    );
+                }
+            }
+            assert!(
+                (j.det - 8.0).abs() < JAC_TOL,
+                "det J({:?}) = {}, expected 8",
+                p,
+                j.det,
+            );
+        }
+    }
+
+    #[test]
+    fn jacobian_p2_agrees_with_p1_for_affine_map() {
+        // For an affine map (straight-edge P2), the Jacobian is independent
+        // of the edge-node coordinates and matches P1's Jacobian on the same
+        // 4 vertices.
+        use crate::elements::tet_p1::TetP1;
+
+        let phys_p2 = scaled_tet_phys_nodes(2.0);
+        let phys_p1: [[f64; 3]; 4] = [phys_p2[0], phys_p2[1], phys_p2[2], phys_p2[3]];
+
+        let coord = ReferenceCoord::new(0.25, 0.25, 0.25);
+        let j_p2 = TetP2.jacobian(&phys_p2, coord);
+        let j_p1 = TetP1.jacobian(&phys_p1, coord);
+
+        for i in 0..3 {
+            for k in 0..3 {
+                assert!(
+                    (j_p2.matrix[i][k] - j_p1.matrix[i][k]).abs() < JAC_TOL,
+                    "P2 J[{i}][{k}] = {} disagrees with P1 J[{i}][{k}] = {}",
+                    j_p2.matrix[i][k],
+                    j_p1.matrix[i][k],
+                );
+            }
+        }
+        assert!((j_p2.det - j_p1.det).abs() < JAC_TOL);
+    }
 }
