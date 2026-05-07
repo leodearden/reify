@@ -693,24 +693,44 @@ mod tests {
     }
 
     #[test]
-    fn envelope_max_tied_finites_preserve_input_data() {
-        // Two cases with identical finite data. The reduction must
-        // produce exactly the input data — no NaN sentinel injection,
-        // no spurious mutation. This pins the "tie -> first-occurrence
-        // wins" branch (strict `is_gt`/`is_lt`): if the comparison were
-        // accidentally weakened to `is_ge`/`is_le`, the result would
-        // still be bit-for-bit equal here (since both inputs are equal),
-        // but the test guards against more catastrophic regressions
-        // (initialise-to-NaN bug, off-by-one in the inner loop, etc.).
+    fn envelope_max_signed_zero_pins_total_cmp_adoption() {
+        // Pins three observable properties of envelope_reduce (find_max path):
+        //   1. `total_cmp` adoption: under `partial_cmp`, ±0.0 compare as
+        //      Equal, so a `partial_cmp + is_gt` regression always picks
+        //      case_a and a `partial_cmp + is_ge` regression always picks
+        //      case_b — both yield mixed-sign outputs that fail this test.
+        //   2. First-finite-init (weakly): a regression that *replaces* the
+        //      accumulator with each successive case AND skips the comparison
+        //      leg would bleed case_b's signs through at indices where it
+        //      differs — but a "wrong-seed-then-still-compare" regression
+        //      passes, because the comparison leg resolves the correct sign
+        //      regardless. Robust first-occurrence pinning requires
+        //      case-identity output; see the TODO below.
+        //   3. Comparison direction (`v.total_cmp(out)` for max): a swapped
+        //      direction would apply find_min semantics and yield -0.0 everywhere.
+        //
+        // What this does NOT pin:
+        //   - Strict (`is_gt`) vs non-strict (`is_ge`) tie-break — under
+        //     `total_cmp`, +0.0 and -0.0 are distinct (total_cmp returns Less /
+        //     Greater), so there is no actual tie here.
+        //   - Strong first-occurrence-wins coverage: with these fixtures the
+        //     comparison leg alone resolves the correct sign, so most wrong-seed
+        //     regressions still pass. Both the seed-direction invariant and the
+        //     strict-tie-break invariant are observable only via a future
+        //     case-identity-returning reduction (envelope_argmax).
+        // TODO(envelope_argmax): add tests that assert *which case* the extremum
+        //   came from (not just its value) to pin first-finite-init and strict
+        //   tie-break robustly. This is deferred to the envelope_argmax task.
         let axis = vec![0.0, 1.0, 2.0];
-        let data = vec![1.0, 5.0, 3.0];
+        // case_a[i] and case_b[i] have opposite signs.
+        // Under total_cmp:  +0.0 > -0.0, so envelope_max must pick +0.0 at every index.
         let case_a = wrap_sampled_field(
-            make_sampled_1d("a", axis.clone(), data.clone()),
+            make_sampled_1d("a", axis.clone(), vec![0.0, -0.0, 0.0]),
             Type::Real,
             Type::Real,
         );
         let case_b = wrap_sampled_field(
-            make_sampled_1d("b", axis.clone(), data.clone()),
+            make_sampled_1d("b", axis.clone(), vec![-0.0, 0.0, -0.0]),
             Type::Real,
             Type::Real,
         );
@@ -718,7 +738,53 @@ mod tests {
 
         let result = eval_fea("envelope_max", &[map]).unwrap();
         let sf = extract_sampled(&result);
-        assert_eq!(sf.data, data);
+
+        let pos_zero_bits = 0.0_f64.to_bits();
+        for (i, &v) in sf.data.iter().enumerate() {
+            assert_eq!(
+                v.to_bits(),
+                pos_zero_bits,
+                "index {i}: expected +0.0 (total_cmp max), got bit pattern {:064b}",
+                v.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_min_signed_zero_pins_total_cmp_adoption() {
+        // Mirrors envelope_max_signed_zero_pins_total_cmp_adoption for the
+        // find_min path.  Under total_cmp:  -0.0 < +0.0, so envelope_min
+        // must pick -0.0 at every index.
+        //
+        // Pins: total_cmp adoption and comparison direction for the min path.
+        // First-finite-init is only weakly covered (see the max variant above
+        // for the detailed reasoning and the shared TODO(envelope_argmax)).
+        // Does NOT pin strict vs non-strict tie-break (same reasoning).
+        let axis = vec![0.0, 1.0, 2.0];
+        let case_a = wrap_sampled_field(
+            make_sampled_1d("a", axis.clone(), vec![0.0, -0.0, 0.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_b = wrap_sampled_field(
+            make_sampled_1d("b", axis.clone(), vec![-0.0, 0.0, -0.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
+
+        let result = eval_fea("envelope_min", &[map]).unwrap();
+        let sf = extract_sampled(&result);
+
+        let neg_zero_bits = (-0.0_f64).to_bits();
+        for (i, &v) in sf.data.iter().enumerate() {
+            assert_eq!(
+                v.to_bits(),
+                neg_zero_bits,
+                "index {i}: expected -0.0 (total_cmp min), got bit pattern {:064b}",
+                v.to_bits()
+            );
+        }
     }
 
     // ── empty-Map edge ──────────────────────────────────────────────────────
@@ -835,35 +901,57 @@ mod tests {
     // Each branch of the argument-shape contract gets its own focused test
     // so a regression points directly at the failing rejection path rather
     // than reporting a generic bundled-test failure.
+    //
+    // Helpers below are parametric on `name` ("envelope_max" / "envelope_min")
+    // so each #[test] shell is a one-liner and a regression bisects directly
+    // to the failing branch.
+
+    fn assert_zero_args_returns_undef(name: &str) {
+        assert!(eval_fea(name, &[]).unwrap().is_undef());
+    }
 
     #[test]
     fn envelope_max_zero_args_returns_undef() {
         // arity must be exactly 1 (Map<String, Field>).
-        assert!(eval_fea("envelope_max", &[]).unwrap().is_undef());
+        assert_zero_args_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_zero_args_returns_undef() {
+        assert_zero_args_returns_undef("envelope_min");
+    }
+
+    fn assert_two_args_returns_undef(name: &str) {
+        let map = make_envelope_map(&[]);
+        let extra = Value::Real(1.0);
+        assert!(eval_fea(name, &[map, extra]).unwrap().is_undef());
     }
 
     #[test]
     fn envelope_max_two_args_returns_undef() {
-        let map = make_envelope_map(&[]);
-        let extra = Value::Real(1.0);
-        assert!(
-            eval_fea("envelope_max", &[map, extra])
-                .unwrap()
-                .is_undef()
-        );
+        assert_two_args_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_two_args_returns_undef() {
+        assert_two_args_returns_undef("envelope_min");
+    }
+
+    fn assert_non_map_arg_returns_undef(name: &str) {
+        assert!(eval_fea(name, &[Value::Real(1.0)]).unwrap().is_undef());
     }
 
     #[test]
     fn envelope_max_non_map_arg_returns_undef() {
-        assert!(
-            eval_fea("envelope_max", &[Value::Real(1.0)])
-                .unwrap()
-                .is_undef()
-        );
+        assert_non_map_arg_returns_undef("envelope_max");
     }
 
     #[test]
-    fn envelope_max_map_with_non_field_value_returns_undef() {
+    fn envelope_min_non_map_arg_returns_undef() {
+        assert_non_map_arg_returns_undef("envelope_min");
+    }
+
+    fn assert_map_with_non_field_value_returns_undef(name: &str) {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis, vec![1.0, 2.0, 3.0]),
@@ -873,15 +961,20 @@ mod tests {
         let mut bad_map = BTreeMap::new();
         bad_map.insert(Value::String("a".to_string()), case_a);
         bad_map.insert(Value::String("b".to_string()), Value::Real(7.0));
-        assert!(
-            eval_fea("envelope_max", &[Value::Map(bad_map)])
-                .unwrap()
-                .is_undef()
-        );
+        assert!(eval_fea(name, &[Value::Map(bad_map)]).unwrap().is_undef());
     }
 
     #[test]
-    fn envelope_max_analytical_source_returns_undef() {
+    fn envelope_max_map_with_non_field_value_returns_undef() {
+        assert_map_with_non_field_value_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_map_with_non_field_value_returns_undef() {
+        assert_map_with_non_field_value_returns_undef("envelope_min");
+    }
+
+    fn assert_analytical_source_returns_undef(name: &str) {
         // Field with FieldSourceKind::Analytical (source != Sampled) → Undef.
         // The source check rejects before any lambda extraction, so we
         // don't need a real lambda body.
@@ -898,11 +991,20 @@ mod tests {
             lambda: Arc::new(Value::Undef),
         };
         let map = make_envelope_map(&[("a", case_a), ("b", analytical)]);
-        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
+        assert!(eval_fea(name, &[map]).unwrap().is_undef());
     }
 
     #[test]
-    fn envelope_max_sampled_source_with_non_sampledfield_lambda_returns_undef() {
+    fn envelope_max_analytical_source_returns_undef() {
+        assert_analytical_source_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_analytical_source_returns_undef() {
+        assert_analytical_source_returns_undef("envelope_min");
+    }
+
+    fn assert_sampled_with_non_sampledfield_lambda_returns_undef(name: &str) {
         // Defensive check — a Sampled-source Field whose lambda is NOT a
         // SampledField rejects to Undef. Mirrors the defensive arms in
         // field_reductions.rs:96-99 ("a Sampled source must carry a
@@ -920,7 +1022,17 @@ mod tests {
             lambda: Arc::new(Value::Undef),
         };
         let map = make_envelope_map(&[("a", case_a), ("b", degenerate_sampled)]);
-        assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
+        assert!(eval_fea(name, &[map]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_max_sampled_source_with_non_sampledfield_lambda_returns_undef() {
+        assert_sampled_with_non_sampledfield_lambda_returns_undef("envelope_max");
+    }
+
+    #[test]
+    fn envelope_min_sampled_source_with_non_sampledfield_lambda_returns_undef() {
+        assert_sampled_with_non_sampledfield_lambda_returns_undef("envelope_min");
     }
 
     // ── FEA-realistic 3-D Point3 / Pressure shape ──────────────────────────
