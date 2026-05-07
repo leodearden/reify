@@ -21,6 +21,18 @@ buckets:
 | `blocked-field-in-param` | The spec'd type is `Field<X, Y>` in a `param` position; a resolver arm for `Field` exists at `type_resolution.rs:1397` but the existing TODO comment (solver_elastic.ri:243-254) claims it is restricted to `field def`. | File a follow-up task to investigate and either tighten or extend. |
 | `structural-contract` | `Real` is intentionally dimension-agnostic — the runtime builtins produce correctly-dimensioned values but the trait itself must not participate in dimension checking. Tightening would BREAK the contract. | Record rationale only; no follow-up task. |
 
+### Inline annotation policy
+
+Only `genuine-dimensionless` sites receive a trailing `// dimensionless` inline
+comment directly on their `param` line. **`tightenable-now` sites are intentionally
+not annotated inline** — they are tracked in this audit document and in each module's
+file-header pointer block (which names the specific follow-up task). Inline markers
+on tightenable-now sites would clutter param lines that will be refactored (type
+changed and annotation removed) in the follow-up tasks, making the diff harder to
+review. Readers scanning a `.ri` file and wondering why an un-annotated `param X :
+Real` site in `Material {}` is not annotated can consult the per-module file header
+and this document.
+
 ### Resolver capability reference
 
 Named scalar types available today (`type_resolution.rs:471-622`,
