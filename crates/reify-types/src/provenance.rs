@@ -1,6 +1,36 @@
 use std::collections::HashSet;
 
+use crate::hash::ContentHash;
 use crate::identity::{SnapshotId, ValueCellId};
+
+/// Provenance record for a field imported from an external file.
+///
+/// Created when the evaluation engine ingests an external volumetric field
+/// (e.g. an OpenVDB grid) via an `Input` occurrence. This struct captures the
+/// five pieces of information that the resolved design records for each import
+/// event — see `docs/prds/v0_2/imported-field-source.md` ("Resolved design
+/// decisions" → "Provenance via Input occurrence") and arch §14.5.
+///
+/// All five fields are `pub` so downstream crates (task 5 call site, tests)
+/// can read them via direct field access without needing getters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldImportProvenance {
+    /// Absolute or relative file path of the source file.
+    pub path: String,
+    /// Format name of the source file (e.g. `"OpenVDB"`, `"STEP"`).
+    pub format: String,
+    /// XXH3-128 content hash of the raw file bytes at ingestion time, used
+    /// for cache-invalidation (see `reify_types::ContentHash`).
+    pub content_hash: ContentHash,
+    /// Unix epoch seconds at which the file was ingested (caller-supplied so
+    /// the builder stays a pure function — no `SystemTime::now()` inside).
+    pub ingestion_timestamp_secs: u64,
+    /// Declared tolerance in SI units (metres) from the `Input` occurrence's
+    /// `param tolerance : Length = …` declaration, after the Gate 4 filter
+    /// (`is_finite() && >= 0.0`). `None` when no declaration is present or
+    /// when the declared value is malformed (NaN / ±Inf / negative).
+    pub declared_tolerance_si: Option<f64>,
+}
 
 /// Tracks how a snapshot was created, enabling provenance chains
 /// for undo/redo and change auditing.
