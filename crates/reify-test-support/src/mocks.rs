@@ -1353,6 +1353,75 @@ mod tests {
         assert_eq!(r3[0].satisfaction, Satisfaction::Satisfied);
     }
 
+    /// Pins the call-tracking observability contract for `MockConstraintChecker`.
+    ///
+    /// Four sub-contracts verified here:
+    /// (a) `calls()` is empty before any `check()` call.
+    /// (b) After a `check()` with two constraints, `calls()` contains both ids
+    ///     in input order.
+    /// (c) `calls_handle()` returns the same `Arc<Mutex<Vec>>` that is updated
+    ///     by subsequent `check()` calls — i.e. grabbing a handle before boxing
+    ///     the mock still allows inspection after the move.
+    /// (d) BOTH the call-queue branch (first pop from FIFO queue) AND the
+    ///     per-id/default fallback branch push ids — because the two backjumping
+    ///     tests use a one-element queue and leaves 2..N flow through the
+    ///     fallback.
+    ///
+    /// This test fails to compile until step 2 lands (`calls()` and
+    /// `calls_handle()` do not exist on `MockConstraintChecker` yet).
+    #[test]
+    fn mock_constraint_checker_records_calls_handle_per_constraint_id() {
+        let id_a = ConstraintNodeId::new("S", 0);
+        let id_b = ConstraintNodeId::new("S", 1);
+        let checker = MockConstraintChecker::new();
+
+        // (a) No calls yet.
+        assert!(checker.calls().is_empty(), "no calls yet");
+
+        // (b) Multi-constraint input: two distinct ids.
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(id_a.clone(), &expr), (id_b.clone(), &expr)]),
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let _ = checker.check(&input);
+        let calls = checker.calls();
+        assert_eq!(calls.len(), 2, "two constraints → two call records");
+        assert_eq!(calls[0], id_a, "first id recorded first");
+        assert_eq!(calls[1], id_b, "second id recorded second");
+
+        // (c) calls_handle() returns the same Arc that updates on subsequent checks.
+        let handle = checker.calls_handle();
+        let _ = checker.check(&input);
+        assert_eq!(
+            handle.lock().unwrap().len(),
+            4,
+            "second check adds 2 more ids; handle must reflect live updates"
+        );
+
+        // (d) Queue branch also records ids.
+        // Fresh checker with a one-element queue: first check hits queue
+        // (Violated applied to both ids), second check falls through to
+        // default (Satisfied). Both checks must record their ids.
+        let fresh = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+        let _ = fresh.check(&input); // queue branch
+        let _ = fresh.check(&input); // fallback branch
+        let fresh_calls = fresh.calls();
+        assert_eq!(
+            fresh_calls.len(),
+            4,
+            "queue branch (2 ids) + fallback branch (2 ids) = 4 total records"
+        );
+        assert_eq!(fresh_calls[0], id_a, "queue branch: first id");
+        assert_eq!(fresh_calls[1], id_b, "queue branch: second id");
+        assert_eq!(fresh_calls[2], id_a, "fallback branch: first id");
+        assert_eq!(fresh_calls[3], id_b, "fallback branch: second id");
+    }
+
     // step-7 (Task 273 — @optimized plumbing): failing tests for MockOptimizedImpl.
     //
     // MockOptimizedImpl mirrors MockConstraintChecker but also records every
