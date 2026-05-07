@@ -2673,15 +2673,14 @@ CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
         double F = du.Dot(dv);
         double G = dv.Dot(dv);
         double det_I = E * G - F * F;
-        if (det_I < CPP_DIR_MAG_MIN) {
-            throw std::runtime_error(
-                "curvature_at: curvature undefined at (u, v)"
-            );
-        }
 
         // Orientation-aware outward unit normal — computed up-front so that
         // L, M, N are relative to the outward normal, giving H, κ values with
         // correct signs automatically (no post-hoc swap needed for REVERSED faces).
+        // n_mag = |du × dv| = sqrt(det_I); checking n_mag directly mirrors
+        // face_outward_unit_normal_at_uv and guards both degenerate-normal and
+        // degenerate-parametrization cases with a single consistent threshold
+        // (versus comparing the area² quantity det_I against a magnitude threshold).
         gp_Vec n_raw = du.Crossed(dv);
         double n_mag = n_raw.Magnitude();
         if (n_mag < CPP_DIR_MAG_MIN) {
@@ -2719,15 +2718,19 @@ CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
         //   pick the row of (II − κI) with larger L1 norm, set (du_t, dv_t) perp
         //   to that row, map dir_3D = du_t·du + dv_t·dv, unit-normalise.
         //
-        // Relative threshold: sqrt_disc / max(|kappa|, 1e-14) < 1e-6.
-        // Covers the sphere case where the FP discriminant is ~2–3e-9 with
-        // |kappa| ~0.2 (ratio ~1e-8 < 1e-6). Non-umbilical cylinder:
-        // sqrt_disc/|kappa| ~0.1/0.2 = 0.5 >> 1e-6 correctly uses the solver.
+        // Relative threshold: sqrt_disc / max(|kappa|, 1e-14) < 1e-4.
+        // Empirical safety margins (r=5 sphere, |kappa|=0.2):
+        //   Unplaced sphere:      sqrt_disc/|kappa| ~ 1e-8  (FP noise in H²−K).
+        //   Placed (π/3 Y-rot):  sqrt_disc/|kappa| ~ 1e-7  (rotation adds FP noise).
+        // Both sit a factor ≥ 1000× below the 1e-4 threshold, giving comfortable margin.
+        // Non-umbilical cylinder: sqrt_disc/|kappa| ~ 0.1/0.2 = 0.5 >> 1e-4 — correctly
+        // routed to the eigenvalue solver.
         // Planar face (H=K=0): floor 1e-14 catches exact zero discriminant.
         const double curv_scale = std::max({ std::abs(kappa_max), std::abs(kappa_min), 1e-14 });
-        const bool is_umbilical = (sqrt_disc < curv_scale * 1e-6);
+        const bool is_umbilical = (sqrt_disc < curv_scale * 1e-4);
 
-        // du_unit is safe: det_I >= CPP_DIR_MAG_MIN > 0 implies |du| > 0.
+        // du_unit is safe: n_mag >= CPP_DIR_MAG_MIN > 0 implies |du × dv| > 0,
+        // so du is non-zero.
         gp_Vec du_unit = du.Normalized();
 
         gp_Vec d_max, d_min;
@@ -2769,6 +2772,14 @@ CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
 
             d_max = principal_dir(kappa_max);
             d_min = principal_dir(kappa_min);
+            // If both eigenvalue solves degenerated (both fell back to du_unit —
+            // numerically possible for a near-umbilical point that slipped past the
+            // umbilical guard), d_max and d_min would be parallel, violating the
+            // orthogonality contract. Repair: reconstruct d_min as n×d_max so
+            // orthogonality is preserved by construction regardless of fallback path.
+            if (d_max.Dot(d_min) > 1.0 - 1e-6) {
+                d_min = n.Crossed(d_max);
+            }
         }
 
         Point3 dmin_pt{ d_min.X(), d_min.Y(), d_min.Z() };

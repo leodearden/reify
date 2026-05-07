@@ -897,3 +897,165 @@ fn curvature_at_on_placed_sphere_principal_directions_perpendicular_to_world_nor
         "placed sphere dir_max not in tangent plane: dot(dir_max, n) = {dot_max_n}"
     );
 }
+
+/// Cross-API agreement on a placed (non-identity-location) REVERSED face.
+///
+/// Covers the quadrant missing from the other placed tests: REVERSED orientation
+/// combined with a non-identity `TopLoc_Location`. The existing
+/// `curvature_at_on_reversed_inner_cylinder_face_pairs_directions_with_min_max`
+/// exercises REVERSED on an identity-location face; the placed tests above cover
+/// FORWARD orientation only.
+///
+/// Construction: hollow cylinder (outer R=10, inner r=5) placed with a rotation
+/// around the Y-axis by π/4 and translation (3, −2, 5) via `store_placed_for_test`
+/// (Copy=false → TopLoc_Location, not baked). The inner cylindrical face retains
+/// `TopAbs_REVERSED` topology; its outward normal points toward the axis.
+///
+/// The rotated cylinder axis (world-frame image of Z under Y-rotation by π/4):
+///   `rotated_axis = (sin(π/4), 0, cos(π/4)) ≈ (0.707, 0, 0.707)`.
+///
+/// Asserts on the inner cylindrical face at (u=π/2, v=5):
+///   (a) K = 0 (developable),
+///   (b) H = +0.1 = +1/(2r) (positive because REVERSED → normal toward axis),
+///   (c) κ_min = 0 (axial),  κ_max = +0.2 = +1/r (circumferential),
+///   (d) dir_min (paired with κ_min=0) has |dir_min · rotated_axis| ≈ 1,
+///       confirming the axial direction tracks the ROTATED (world-frame) axis,
+///   (e) both principal directions lie in the tangent plane and are unit/orthogonal.
+#[test]
+fn curvature_at_on_placed_reversed_inner_cylinder_face_pairs_directions_with_rotated_axis() {
+    use reify_kernel_occt::Curvature;
+
+    let r_inner = 5.0_f64;
+    let mut kernel = OcctKernel::new();
+    let outer = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(10.0),
+            height: Value::Real(10.0),
+        })
+        .expect("outer cylinder creation should succeed");
+    let inner = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(r_inner),
+            height: Value::Real(10.0),
+        })
+        .expect("inner cylinder creation should succeed");
+    let hollow = kernel
+        .execute(&GeometryOp::Difference {
+            left: outer.id,
+            right: inner.id,
+        })
+        .expect("hollow-cylinder difference should succeed");
+
+    // Rotate around Y-axis by π/4, then translate to (3, -2, 5). Copy=false.
+    let placed = kernel.store_placed_for_test(
+        hollow.id,
+        0.0, 1.0, 0.0, // rotation axis: Y
+        PI / 4.0,       // rotation angle
+        3.0, -2.0, 5.0, // translation
+    );
+
+    let faces = kernel
+        .extract_faces(placed)
+        .expect("extract_faces should succeed for placed hollow cylinder");
+
+    // The rotated cylinder axis is the world-frame image of (0,0,1) under
+    // Y-rotation by π/4: (sin(π/4), 0, cos(π/4)).
+    let rot_axis = [(PI / 4.0).sin(), 0.0_f64, (PI / 4.0).cos()];
+
+    // Locate the inner cylindrical face: at (u=π/2, v=5), its effective outward
+    // normal points toward the axis — n[1] < -0.5 (Y component unchanged by
+    // Y-axis rotation) — and the face is curved (|n[2]| < 0.5 rules out caps
+    // whose world-frame normals have |n_z| ≈ cos(π/4) ≈ 0.707 after rotation).
+    let inner_side = faces
+        .iter()
+        .copied()
+        .find(|&f| {
+            kernel
+                .surface_normal_at(f, PI / 2.0, 5.0)
+                .is_ok_and(|n| n[2].abs() < 0.5 && n[1] < -0.5)
+        })
+        .expect(
+            "placed hollow cylinder should have an inner cylindrical face whose \
+             outward normal at (π/2, 5) points inward (n[1] < -0.5)",
+        );
+
+    let c: Curvature = kernel
+        .curvature_at(inner_side, PI / 2.0, 5.0)
+        .expect("curvature_at should succeed for the placed inner cylindrical face");
+
+    let tol = 1e-6;
+
+    // (a–c) Intrinsic curvature values — same as the unplaced inner face.
+    assert!(
+        c.gaussian.abs() < tol,
+        "placed reversed cylinder K: expected 0, got {}",
+        c.gaussian
+    );
+    assert!(
+        (c.mean - 0.1).abs() < tol,
+        "placed reversed cylinder H: expected +0.1, got {}",
+        c.mean
+    );
+    assert!(
+        c.kappa_min.abs() < tol,
+        "placed reversed cylinder κ_min: expected 0, got {}",
+        c.kappa_min
+    );
+    assert!(
+        (c.kappa_max - 0.2).abs() < tol,
+        "placed reversed cylinder κ_max: expected +0.2, got {}",
+        c.kappa_max
+    );
+
+    // (d) dir_min (paired with κ_min=0, axial) must align with the ROTATED axis —
+    //     not world Z. This is the key check for REVERSED + non-identity location.
+    let dot_axial = c.dir_min[0] * rot_axis[0]
+        + c.dir_min[1] * rot_axis[1]
+        + c.dir_min[2] * rot_axis[2];
+    assert!(
+        (dot_axial.abs() - 1.0).abs() < tol,
+        "placed reversed cylinder dir_min (κ_min=0) should align with rotated axis \
+         ({:.4}, 0, {:.4}), got dir_min = {:?}, |dot| = {dot_axial:.9}",
+        (PI / 4.0).sin(),
+        (PI / 4.0).cos(),
+        c.dir_min
+    );
+
+    // (e) Both principal directions lie in the tangent plane.
+    let n = kernel
+        .surface_normal_at(inner_side, PI / 2.0, 5.0)
+        .expect("surface_normal_at should succeed on placed inner cylindrical face");
+    let dot_min_n = c.dir_min[0] * n[0] + c.dir_min[1] * n[1] + c.dir_min[2] * n[2];
+    let dot_max_n = c.dir_max[0] * n[0] + c.dir_max[1] * n[1] + c.dir_max[2] * n[2];
+    assert!(
+        dot_min_n.abs() < tol,
+        "placed reversed cylinder dir_min not in tangent plane: dot(dir_min, n) = {dot_min_n}"
+    );
+    assert!(
+        dot_max_n.abs() < tol,
+        "placed reversed cylinder dir_max not in tangent plane: dot(dir_max, n) = {dot_max_n}"
+    );
+
+    // (e) Unit length and mutually orthogonal.
+    let dmin_mag_sq = c.dir_min[0] * c.dir_min[0]
+        + c.dir_min[1] * c.dir_min[1]
+        + c.dir_min[2] * c.dir_min[2];
+    let dmax_mag_sq = c.dir_max[0] * c.dir_max[0]
+        + c.dir_max[1] * c.dir_max[1]
+        + c.dir_max[2] * c.dir_max[2];
+    assert!(
+        (dmin_mag_sq - 1.0).abs() < 1e-9,
+        "placed reversed cylinder dir_min not unit length: |dir_min|² = {dmin_mag_sq}"
+    );
+    assert!(
+        (dmax_mag_sq - 1.0).abs() < 1e-9,
+        "placed reversed cylinder dir_max not unit length: |dir_max|² = {dmax_mag_sq}"
+    );
+    let dot_dirs = c.dir_min[0] * c.dir_max[0]
+        + c.dir_min[1] * c.dir_max[1]
+        + c.dir_min[2] * c.dir_max[2];
+    assert!(
+        dot_dirs.abs() < 1e-9,
+        "placed reversed cylinder dir_min and dir_max should be orthogonal: dot = {dot_dirs}"
+    );
+}
