@@ -4025,6 +4025,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-kernel-gmsh"
+version = "0.1.0"
+dependencies = [
+ "inventory",
+ "reify-eval",
+ "reify-test-support",
+ "reify-types",
+]
+
+[[package]]
 name = "reify-kernel-manifold"
 version = "0.1.0"
 dependencies = [
