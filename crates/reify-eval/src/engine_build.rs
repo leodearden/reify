@@ -775,6 +775,36 @@ impl Engine {
             map
         };
 
+        // Task 2874 step-12: precompute per-realization tessellation budget
+        // by routing the per-output demanded tolerance — falling back to the
+        // module-level `#precision` pragma when no per-output demand exists —
+        // through `compute_realization_tolerance_budget` against the
+        // inventory-collected kernel registry. The result is the budgeted
+        // tolerance we hand to `kernel.tessellate(handle, budget)`. Done
+        // BEFORE `self.check(module)` for the same reason as `demanded_tols`:
+        // `check()` clears tolerance scope. Mirrored in `tessellate_snapshot`.
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let registry: BTreeMap<String, &CapabilityDescriptor> = registry_owned
+            .iter()
+            .map(|(k, v)| (k.clone(), v))
+            .collect();
+        let tessellation_budgets: HashMap<(String, String), f64> = {
+            let mut map: HashMap<(String, String), f64> = HashMap::new();
+            for t in &module.templates {
+                for r in &t.realizations {
+                    let key = (t.name.clone(), r.id.entity.clone());
+                    let req_tol = demanded_tols
+                        .get(&key)
+                        .copied()
+                        .flatten()
+                        .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
+                    let budget = self.compute_realization_tolerance_budget(&registry, req_tol);
+                    map.insert(key, budget);
+                }
+            }
+            map
+        };
+
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
         diagnostics.extend(tolerance_diagnostics);
@@ -799,6 +829,7 @@ impl Engine {
             &mut self.topology_attribute_table,
             &mut self.realization_cache,
             &demanded_tols,
+            &tessellation_budgets,
         );
 
         TessellateResult {
@@ -819,6 +850,16 @@ impl Engine {
     /// `CompiledModule::default_tolerance` by `apply_module_pragmas`) through
     /// to the kernel. Falls back to [`Self::DEFAULT_TESSELLATION_TOLERANCE`]
     /// when the pragma is absent or was malformed.
+    ///
+    /// **Role since task 2874 step-12**: this remains the module-pragma
+    /// fallback that the per-realization budget pipeline consults when no
+    /// per-output demanded tolerance exists. The active fallback chain at
+    /// the `kernel.tessellate` call site is now:
+    /// `demanded_tolerance_for_output(template_name, entity)` →
+    /// `active_tolerance_for(entity)` → `effective_tessellation_tolerance(module)`.
+    /// The first available entry feeds
+    /// [`Self::compute_realization_tolerance_budget`], and the budget is
+    /// what `kernel.tessellate(handle, budget)` ultimately receives.
     fn effective_tessellation_tolerance(module: &CompiledModule) -> f64 {
         module
             .default_tolerance
@@ -906,6 +947,18 @@ impl Engine {
     /// `realization_cache` is the engine's per-build cache that
     /// `execute_realization_ops` populates on success and (post step-8) will
     /// consult on entry.
+    ///
+    /// `tessellation_budgets` maps `(template_name, realization_entity)` → `f64`
+    /// and is precomputed by the caller via
+    /// [`Engine::compute_realization_tolerance_budget`] against the inventory-
+    /// collected kernel registry (task 2874 step-12). The map carries the
+    /// budgeted tolerance — the demanded tolerance routed through the
+    /// dispatcher's per-stage allocation primitive, with fallback to
+    /// [`Self::effective_tessellation_tolerance`] when no per-output demand
+    /// exists — that this helper hands to `kernel.tessellate(handle, budget)`.
+    /// Missing keys (which should not happen because the caller iterates the
+    /// same `module.templates` × `realizations` product) fall back to the
+    /// module-pragma default.
     #[allow(clippy::too_many_arguments)]
     fn tessellate_from_values(
         geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
@@ -918,6 +971,7 @@ impl Engine {
         topology_attribute_table: &mut TopologyAttributeTable,
         realization_cache: &mut RealizationCache<GeometryHandleId>,
         demanded_tols: &HashMap<(String, String), Option<f64>>,
+        tessellation_budgets: &HashMap<(String, String), f64>,
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
@@ -969,9 +1023,20 @@ impl Engine {
                 // Tessellate this realization's final handle (if any new handles were produced)
                 if step_handles.len() > handle_start {
                     let last_handle = step_handles[step_handles.len() - 1];
-                    match kernel
-                        .tessellate(last_handle, Self::effective_tessellation_tolerance(module))
-                    {
+                    // Task 2874 step-12: forward the per-realization tessellation
+                    // budget (precomputed by the caller via
+                    // `Engine::compute_realization_tolerance_budget`) to the
+                    // kernel instead of the unconditional module-pragma
+                    // default. The map key matches the same
+                    // (template_name, entity) coordinate as `demanded_tols`;
+                    // missing entries (caller-side bug — should not happen)
+                    // fall back to the module pragma so we still produce a
+                    // mesh rather than panicking.
+                    let budget = tessellation_budgets
+                        .get(&(template.name.clone(), realization.id.entity.clone()))
+                        .copied()
+                        .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
+                    match kernel.tessellate(last_handle, budget) {
                         Ok(mesh) => {
                             meshes.push((realization.id.to_string(), mesh));
                         }
@@ -1542,6 +1607,29 @@ impl Engine {
             }
             map
         };
+        // Task 2874 step-12: precompute per-realization tessellation budget.
+        // See `tessellate_realizations` for the budget-routing rationale.
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let registry: BTreeMap<String, &CapabilityDescriptor> = registry_owned
+            .iter()
+            .map(|(k, v)| (k.clone(), v))
+            .collect();
+        let tessellation_budgets: HashMap<(String, String), f64> = {
+            let mut map: HashMap<(String, String), f64> = HashMap::new();
+            for t in &module.templates {
+                for r in &t.realizations {
+                    let key = (t.name.clone(), r.id.entity.clone());
+                    let req_tol = demanded_tols
+                        .get(&key)
+                        .copied()
+                        .flatten()
+                        .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
+                    let budget = self.compute_realization_tolerance_budget(&registry, req_tol);
+                    map.insert(key, budget);
+                }
+            }
+            map
+        };
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         let meshes = Self::tessellate_from_values(
@@ -1555,6 +1643,7 @@ impl Engine {
             &mut self.topology_attribute_table,
             &mut self.realization_cache,
             &demanded_tols,
+            &tessellation_budgets,
         );
 
         Some(TessellateResult {
