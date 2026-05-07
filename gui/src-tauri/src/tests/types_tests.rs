@@ -948,3 +948,92 @@ fn mesh_data_empty_scalar_channels_omitted_from_wire() {
         "empty scalar_channels must be omitted from the wire"
     );
 }
+
+// --- scalar_channels NaN/Inf rejection tests (task 2959, step-3) ---
+
+/// `serialize_finite_f32_map` must reject NaN values in a channel with an error
+/// message containing both the channel key ("vonMises") and "non-finite f32 value".
+#[test]
+fn serialize_finite_f32_map_nan_causes_error_with_channel_key() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![f32::NAN]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: channels,
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite f32 value"),
+        "expected 'non-finite f32 value' in: {msg}"
+    );
+    assert!(
+        msg.contains("vonMises"),
+        "expected channel key 'vonMises' in error message: {msg}"
+    );
+}
+
+/// `serialize_finite_f32_map` must reject +Inf values with a message containing
+/// both the channel key and "non-finite f32 value".
+#[test]
+fn serialize_finite_f32_map_infinity_causes_error_with_channel_key() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![f32::INFINITY]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: channels,
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite f32 value"),
+        "expected 'non-finite f32 value' in: {msg}"
+    );
+    assert!(
+        msg.contains("vonMises"),
+        "expected channel key 'vonMises' in error message: {msg}"
+    );
+}
+
+/// `serialize_finite_f32_map` must reject -Inf values with a message containing
+/// both the channel key and "non-finite f32 value".
+#[test]
+fn serialize_finite_f32_map_neg_infinity_causes_error_with_channel_key() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![f32::NEG_INFINITY]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: channels,
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite f32 value"),
+        "expected 'non-finite f32 value' in: {msg}"
+    );
+    assert!(
+        msg.contains("vonMises"),
+        "expected channel key 'vonMises' in error message: {msg}"
+    );
+}
