@@ -49,6 +49,21 @@ impl ShellReferenceCoord {
 pub struct Mitc3Plus;
 
 impl Mitc3Plus {
+    /// Cubic bubble enrichment at `coord`.
+    ///
+    /// Returns `f_b(ξ, η) = ξ · η · (1 − ξ − η)`.
+    ///
+    /// This is the "+" in MITC3+ (Bathe & Lee 2014): the deviatoric bubble
+    /// enriches only the rotation field, not the displacement field.  It
+    /// vanishes on every edge of the reference triangle — on the edge `η=0`
+    /// the `η` factor is zero; on `ξ=0` the `ξ` factor is zero; on
+    /// `ξ+η=1` the `(1−ξ−η)` factor is zero — so the enrichment does not
+    /// introduce additional DOFs at nodes or edges.
+    pub fn bubble_at(&self, coord: ShellReferenceCoord) -> f64 {
+        let ShellReferenceCoord { xi, eta } = coord;
+        xi * eta * (1.0 - xi - eta)
+    }
+
     /// Shape-function gradients in reference coordinates at `coord`.
     ///
     /// Returns `[∇N_0, ∇N_1, ∇N_2]` where each gradient is
