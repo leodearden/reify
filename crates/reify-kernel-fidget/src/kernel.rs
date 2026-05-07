@@ -1,44 +1,133 @@
-//! Stub `FidgetKernel` — all operations return descriptive errors.
+//! `FidgetKernel` — Tree-backed SDF kernel wired to fidget 0.4's pure-Rust JIT.
 //!
-//! # Design templates
+//! Each successful `execute(...)` call allocates a fresh
+//! [`GeometryHandleId`] and stores a symbolic [`fidget::context::Tree`]
+//! against it. SDF point evaluation goes through
+//! [`FidgetKernel::evaluate_sdf_at`] which builds a `JitShape` per call
+//! (a per-handle `JitShape` cache is a non-breaking optimisation for a
+//! follow-up task; see step-10's design note in plan.json).
 //!
-//! `crates/reify-kernel-occt/src/stubs.rs` — `OcctKernel` stub pattern
-//! (`_private: ()` field, `new()` constructor, all-error trait impl).
-//! `crates/reify-test-support/src/mocks.rs` — `FailingMockGeometryKernel`.
+//! Storing the symbolic `Tree` (not a compiled `JitShape`) keeps the kernel
+//! cheap for Boolean composition: Union/Difference/Intersection are
+//! Tree-level ops (`min`/`max` on the symbolic graph) and never need to
+//! JIT-compile the operands.
 //!
 //! # v0.2 scope
 //!
-//! Real Fidget Rust JIT FFI is deferred to a follow-up task. This stub exists
-//! so the `inventory::submit!` in `register.rs` has a factory that compiles.
-//! When the follow-up task lands, the factory can switch to the real impl
-//! behind `cfg(has_fidget)` without changing the registration shape.
+//! Wired in this task:
+//! - `execute(Sphere)` and `execute(Box)` — SDF primitives needed to build
+//!   test inputs. Kernel-only; not added to `CapabilityDescriptor` per the
+//!   task spec (descriptor side is unchanged).
+//! - `execute(Union | Difference | Intersection)` — the three SDF Booleans
+//!   the descriptor already claims.
+//! - `evaluate_sdf_at(handle, x, y, z)` — JIT-compiled point evaluation
+//!   (arch §10.8 "JIT compilation as the production-performance deliverable").
+//!
+//! Deferred (named follow-up tasks):
+//! - `tessellate` (SDF→Mesh feature-preserving meshing — arch §10.8 / lib.rs).
+//! - `query` / `export` on Sdf reps (require meshing first).
+//!
+//! # Design templates
+//!
+//! `crates/reify-kernel-occt/src/lib.rs:140-143` — `extract_f64` helper
+//! pattern for `Value` → `f64` conversion at the GeometryOp boundary.
+
+use std::collections::BTreeMap;
+
+use fidget::context::Tree;
+use fidget::shape::EzShape;
 
 use reify_types::{
     BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
 };
 
-const STUB_MSG: &str = "Fidget SDF kernel not yet implemented; \
-    reify-kernel-fidget is a registration-only scaffold for the v0.2 multi-kernel system \
-    (see docs/prds/v0_2/multi-kernel.md). Real Fidget Rust JIT FFI is a follow-up.";
-
-/// Stub Fidget kernel — all operations return descriptive errors.
+/// Tree-backed Fidget SDF kernel.
 ///
-/// The `_private: ()` field prevents external struct-literal construction;
-/// callers must go through [`Self::new`] or [`Self::default`].
-/// Matches the OCCT stub pattern in
-/// `crates/reify-kernel-occt/src/stubs.rs:25-27`.
+/// Internal handle ids start at `1` and increment per allocation; `0` and
+/// `u64::MAX` (the [`GeometryHandleId::INVALID`] sentinel) are never returned.
 ///
-/// Trivially `Send + Sync` (no interior mutability, no raw pointers — no
-/// `unsafe impl` needed; the auto-derived impls fire).
+/// `Tree` is `Send + Sync` (it wraps `Arc<TreeOp>`), `BTreeMap<K, V>` is
+/// auto-`Send + Sync` when `K` and `V` are, and `u64` is trivially both —
+/// so `FidgetKernel` is `Send + Sync` without any `unsafe impl`.
 pub struct FidgetKernel {
-    _private: (),
+    trees: BTreeMap<GeometryHandleId, Tree>,
+    /// Next handle id to hand out. Starts at `1`; INVALID = `u64::MAX`
+    /// is structurally unreachable since we'd OOM on `BTreeMap` insertion
+    /// long before reaching it.
+    next_id: u64,
 }
 
 impl FidgetKernel {
-    /// Construct a new stub `FidgetKernel`.
+    /// Construct a new `FidgetKernel` with no allocated handles.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self {
+            trees: BTreeMap::new(),
+            next_id: 1,
+        }
+    }
+
+    /// Allocate a fresh handle id (post-increment).
+    fn allocate_id(&mut self) -> GeometryHandleId {
+        let id = GeometryHandleId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
+    /// Insert a Tree against a fresh id and return the corresponding
+    /// [`GeometryHandle`] with `BRepKind::Solid` repr (the closest
+    /// fine-grained classifier for "implicit-surface-defined solid";
+    /// see plan.json design decisions).
+    fn insert_tree(&mut self, tree: Tree) -> GeometryHandle {
+        let id = self.allocate_id();
+        self.trees.insert(id, tree);
+        GeometryHandle {
+            id,
+            repr: BRepKind::Solid,
+        }
+    }
+
+    /// Build the SDF of a sphere of radius `r` centred at the origin:
+    /// `sqrt(x² + y² + z²) − r`.
+    fn sphere_tree(r: f64) -> Tree {
+        let x = Tree::x();
+        let y = Tree::y();
+        let z = Tree::z();
+        // (x² + y² + z²).sqrt() − r
+        let r_sq = x.square() + y.square() + z.square();
+        r_sq.sqrt() - r
+    }
+
+    /// Public SDF evaluation entry point.
+    ///
+    /// Builds a `JitShape::from(tree.clone())`, requests a
+    /// `ez_point_tape()`, and runs `eval(&tape, x, y, z)`. Per-call JIT
+    /// compilation is acceptable for v0.2 — a `Mutex<HashMap<GeometryHandleId,
+    /// JitShape>>` cache layer is a non-breaking optimisation later.
+    ///
+    /// `f32` mirrors fidget's native float width; reify's `f64` callers
+    /// should cast at the boundary.
+    pub fn evaluate_sdf_at(
+        &self,
+        handle: GeometryHandleId,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> Result<f32, QueryError> {
+        let tree = self.trees.get(&handle).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "Fidget SDF kernel: invalid handle {} (no Tree registered)",
+                handle.0
+            ))
+        })?;
+
+        let shape = fidget::jit::JitShape::from(tree.clone());
+        let mut eval = fidget::jit::JitShape::new_point_eval();
+        let tape = shape.ez_point_tape();
+        let (value, _trace) = eval
+            .eval(&tape, x, y, z)
+            .map_err(|e| QueryError::QueryFailed(format!("Fidget SDF eval failed: {e}")))?;
+        Ok(value)
     }
 }
 
@@ -48,13 +137,75 @@ impl Default for FidgetKernel {
     }
 }
 
+/// Extract an `f64` from a `Value` (Int/Real/Scalar). Mirrors the OCCT
+/// adapter's `extract_f64` (`crates/reify-kernel-occt/src/lib.rs:140-143`).
+fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
+    v.as_f64()
+        .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
+}
+
+/// Stable static label for a `GeometryOp` variant — used in error
+/// messages so the format string interpolates a stable token rather than
+/// the full `Debug` print.
+fn op_kind_name(op: &GeometryOp) -> &'static str {
+    match op {
+        GeometryOp::Box { .. } => "Box",
+        GeometryOp::Cylinder { .. } => "Cylinder",
+        GeometryOp::Sphere { .. } => "Sphere",
+        GeometryOp::Tube { .. } => "Tube",
+        GeometryOp::Union { .. } => "Union",
+        GeometryOp::Difference { .. } => "Difference",
+        GeometryOp::Intersection { .. } => "Intersection",
+        GeometryOp::Fillet { .. } => "Fillet",
+        GeometryOp::Chamfer { .. } => "Chamfer",
+        GeometryOp::Translate { .. } => "Translate",
+        GeometryOp::Rotate { .. } => "Rotate",
+        GeometryOp::Scale { .. } => "Scale",
+        GeometryOp::RotateAround { .. } => "RotateAround",
+        GeometryOp::LinearPattern { .. } => "LinearPattern",
+        GeometryOp::CircularPattern { .. } => "CircularPattern",
+        GeometryOp::Mirror { .. } => "Mirror",
+        GeometryOp::LinearPattern2D { .. } => "LinearPattern2D",
+        GeometryOp::ArbitraryPattern { .. } => "ArbitraryPattern",
+        GeometryOp::Loft { .. } => "Loft",
+        GeometryOp::Extrude { .. } => "Extrude",
+        GeometryOp::Revolve { .. } => "Revolve",
+        GeometryOp::Sweep { .. } => "Sweep",
+        GeometryOp::Pipe { .. } => "Pipe",
+        GeometryOp::ExtrudeSymmetric { .. } => "ExtrudeSymmetric",
+        GeometryOp::SweepGuided { .. } => "SweepGuided",
+        GeometryOp::LoftGuided { .. } => "LoftGuided",
+        GeometryOp::LineSegment { .. } => "LineSegment",
+        GeometryOp::Arc { .. } => "Arc",
+        GeometryOp::Helix { .. } => "Helix",
+        GeometryOp::InterpCurve { .. } => "InterpCurve",
+        GeometryOp::BezierCurve { .. } => "BezierCurve",
+        GeometryOp::NurbsCurve { .. } => "NurbsCurve",
+        GeometryOp::Draft { .. } => "Draft",
+        GeometryOp::Thicken { .. } => "Thicken",
+        GeometryOp::Shell { .. } => "Shell",
+    }
+}
+
 impl GeometryKernel for FidgetKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        Err(GeometryError::OperationFailed(STUB_MSG.into()))
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        match op {
+            GeometryOp::Sphere { radius } => {
+                let r = extract_f64(radius)?;
+                let tree = Self::sphere_tree(r);
+                Ok(self.insert_tree(tree))
+            }
+            other => Err(GeometryError::OperationFailed(format!(
+                "Fidget SDF kernel: {} not yet supported on Sdf representation",
+                op_kind_name(other)
+            ))),
+        }
     }
 
     fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Err(QueryError::QueryFailed(STUB_MSG.into()))
+        Err(QueryError::QueryFailed(
+            "Fidget SDF kernel: queries not yet supported on Sdf representation".into(),
+        ))
     }
 
     fn export(
@@ -63,11 +214,18 @@ impl GeometryKernel for FidgetKernel {
         _format: ExportFormat,
         _writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        Err(ExportError::FormatError(STUB_MSG.into()))
+        Err(ExportError::FormatError(
+            "Fidget SDF kernel: export not yet supported on Sdf representation".into(),
+        ))
     }
 
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-        Err(TessError::TessellationFailed(STUB_MSG.into()))
+        Err(TessError::TessellationFailed(
+            "Fidget SDF kernel: SDF→Mesh feature-preserving meshing is the v0.2 \
+             follow-up named in arch §10.8 / docs/prds/v0_2/multi-kernel.md \
+             (deferred from this task by design)"
+                .into(),
+        ))
     }
     // extract_edges, extract_faces, execute_with_history, query_many all use
     // the trait defaults — they error in the standard "not supported" fashion.
