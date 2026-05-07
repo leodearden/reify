@@ -32,5 +32,32 @@
 //! iterate the mask voxels regardless of underlying storage. When the
 //! OpenVDB FFI lands, the storage backing can be swapped behind the same
 //! public API without changing T2/T3/T4 callers.
+//!
+//! # Re-export smoke test
+//!
+//! ```
+//! use reify_shell_extract::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
+//! use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+//! use std::sync::atomic::AtomicBool;
+//!
+//! // Trivial 1×1×1 grid with a single voxel at SDF = +1.0 — entirely outside
+//! // any reasonable narrow band, so the mask must be empty.
+//! let sdf = SampledField {
+//!     name: "smoke".to_string(),
+//!     kind: SampledGridKind::Regular3D,
+//!     bounds_min: vec![0.0, 0.0, 0.0],
+//!     bounds_max: vec![0.0, 0.0, 0.0],
+//!     spacing: vec![1.0, 1.0, 1.0],
+//!     axis_grids: vec![vec![0.0], vec![0.0], vec![0.0]],
+//!     interpolation: InterpolationKind::Linear,
+//!     data: vec![1.0],
+//!     oob_emitted: AtomicBool::new(false),
+//! };
+//! let mask: MedialMask = compute_medial_mask(&sdf, &MedialOptions::default()).unwrap();
+//! assert!(mask.voxels.is_empty());
+//! let _: MedialError = MedialError::EmptyAxisGrid { axis: 0 };
+//! ```
 
 pub mod medial;
+
+pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
