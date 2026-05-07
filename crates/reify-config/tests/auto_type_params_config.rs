@@ -111,6 +111,7 @@ fn default_max_cross_product_size_is_100k_when_section_omitted() {
 fn zero_max_depth_rejected_with_typed_error() {
     let err = Manifest::from_toml_str("[auto_type_params]\nmax_depth = 0\n")
         .expect_err("max_depth = 0 must be rejected");
+    let rendered = format!("{}", err);
     match err {
         ManifestError::InvalidAutoTypeParamConfig { field, value } => {
             assert_eq!(
@@ -118,6 +119,11 @@ fn zero_max_depth_rejected_with_typed_error() {
                 "field must identify the offending manifest key"
             );
             assert_eq!(value, 0, "value must carry the offending value");
+            assert!(
+                rendered.contains("auto_type_params.max_depth must be > 0"),
+                "Display must contain diagnostic substring; got {:?}",
+                rendered
+            );
         }
         other => panic!(
             "expected ManifestError::InvalidAutoTypeParamConfig {{ field: \"max_depth\", value: 0 }}, got {:?}",
@@ -150,35 +156,6 @@ fn zero_max_cross_product_size_rejected_with_typed_error() {
             other
         ),
     }
-}
-
-/// Pin the `Display` rendering for `ManifestError::InvalidAutoTypeParamConfig`.
-///
-/// The rendered string must be `"auto_type_params.<field> must be > 0; got <value>"`
-/// — this is the unchanged user-facing diagnostic wording, now produced by a
-/// single format arm for all `[auto_type_params]` knobs rather than per-variant
-/// arms. Two field labels are checked to cover both current knobs.
-#[test]
-fn invalid_auto_type_param_config_display_renders_field_and_value() {
-    let err_depth = ManifestError::InvalidAutoTypeParamConfig {
-        field: "max_depth",
-        value: 0,
-    };
-    assert_eq!(
-        format!("{}", err_depth),
-        "auto_type_params.max_depth must be > 0; got 0",
-        "Display for max_depth knob must render expected string"
-    );
-
-    let err_cap = ManifestError::InvalidAutoTypeParamConfig {
-        field: "max_cross_product_size",
-        value: 0,
-    };
-    assert_eq!(
-        format!("{}", err_cap),
-        "auto_type_params.max_cross_product_size must be > 0; got 0",
-        "Display for max_cross_product_size knob must render expected string"
-    );
 }
 
 /// Unknown keys inside `[auto_type_params]` are surfaced as

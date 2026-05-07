@@ -174,13 +174,13 @@ impl Manifest {
             Some(raw_atp) => {
                 if raw_atp.max_depth == 0 {
                     return Err(ManifestError::InvalidAutoTypeParamConfig {
-                        field: "max_depth",
+                        field: stringify!(max_depth),
                         value: raw_atp.max_depth,
                     });
                 }
                 if raw_atp.max_cross_product_size == 0 {
                     return Err(ManifestError::InvalidAutoTypeParamConfig {
-                        field: "max_cross_product_size",
+                        field: stringify!(max_cross_product_size),
                         value: raw_atp.max_cross_product_size,
                     });
                 }
@@ -280,6 +280,10 @@ pub enum ManifestError {
     /// subsumes the prior `InvalidMaxDepth` / `InvalidMaxCrossProductSize`
     /// siblings and is designed to absorb future `[auto_type_params]` knobs
     /// without combinatorial growth of error variants.
+    ///
+    /// Construction sites emit `field` via `stringify!(field_name)` — keeping
+    /// the label token adjacent to the struct-field access (`raw_atp.field_name`)
+    /// so that a field rename is immediately visible at both sites.
     InvalidAutoTypeParamConfig { field: &'static str, value: usize },
 }
 
