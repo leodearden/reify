@@ -465,6 +465,37 @@ mod tests {
         assert_ok_handle(result, "Intersection");
     }
 
+    /// RED for step-9 of task 3093: pins that `execute(GeometryOp::Union
+    /// { left, right })` with handles unknown to the kernel returns
+    /// `Err(GeometryError::InvalidReference(_))`.
+    ///
+    /// Currently fails because the Union arm propagates a generic
+    /// `OperationFailed("…not found")` (per the placeholder in step-2).
+    /// Step-10 introduces a centralised `get_manifold` helper that returns
+    /// `InvalidReference(id)` and wires all three boolean arms +
+    /// `tessellate` to use it.
+    ///
+    /// Match-on-variant rather than equality because `GeometryError` does
+    /// not derive `PartialEq`. Either the left or right id may be the
+    /// surfaced one — the test accepts whichever the impl looks up first.
+    #[test]
+    fn execute_union_with_unknown_handle_returns_invalid_reference() {
+        let mut kernel = ManifoldKernel::new();
+        let result = kernel.execute(&GeometryOp::Union {
+            left: GeometryHandleId(99),
+            right: GeometryHandleId(100),
+        });
+
+        match result {
+            Err(GeometryError::InvalidReference(GeometryHandleId(99)))
+            | Err(GeometryError::InvalidReference(GeometryHandleId(100))) => {}
+            other => panic!(
+                "execute(Union) with unknown handles must return \
+                 Err(GeometryError::InvalidReference(99 or 100)); got {other:?}"
+            ),
+        }
+    }
+
     /// RED for step-7 of task 3093: pins that `tessellate(handle, 0.0)`
     /// over a stored Union result returns a non-empty `Mesh` whose index
     /// count is a multiple of three.
