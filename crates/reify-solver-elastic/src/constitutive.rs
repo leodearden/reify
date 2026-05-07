@@ -6,6 +6,95 @@
 //! with **engineering shear strain** (`γ = 2ε`); see [`IsotropicElastic`] for
 //! the convention details.
 
+/// Isotropic linear-elastic constitutive law parameterised by Young's
+/// modulus `E` and Poisson's ratio `ν`.
+///
+/// # Voigt convention
+///
+/// The 6×6 matrix returned by [`IsotropicElastic::d_matrix`] maps a
+/// **Voigt strain vector with engineering shear** to a Voigt stress vector,
+///
+/// ```text
+/// ε = [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]ᵀ          (γ_ij = 2 ε_ij)
+/// σ = [σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]ᵀ
+/// σ = D · ε
+/// ```
+///
+/// Because shear strain enters as the engineering quantity `γ = 2ε`, the
+/// shear-block diagonal of `D` is the shear modulus `μ = G = E / (2(1+ν))`
+/// directly — **without** the additional factor of 2 that appears when
+/// using tensorial shear strain. Consumers that build the
+/// strain-displacement matrix `B` must match this convention by placing
+/// `(∂N/∂y, ∂N/∂x, 0)` (no halving) in the row corresponding to `γ_xy`.
+///
+/// # Lamé form
+///
+/// Internally the D matrix is written in Lamé form. With
+/// `factor = E / ((1+ν)(1−2ν))`,
+///
+/// ```text
+/// λ      = factor · ν                  (Lamé first parameter)
+/// 2μ     = factor · (1 − 2ν)           (twice the shear modulus)
+/// μ      = factor · (1 − 2ν) / 2       (shear modulus G)
+/// ```
+///
+/// then
+///
+/// ```text
+/// D = [ λ+2μ   λ     λ     0   0   0
+///       λ      λ+2μ  λ     0   0   0
+///       λ      λ     λ+2μ  0   0   0
+///       0      0     0     μ   0   0
+///       0      0     0     0   μ   0
+///       0      0     0     0   0   μ ]
+/// ```
+///
+/// # Preconditions
+///
+/// `0 ≤ ν < 0.5`. The strict upper bound excludes the incompressible limit
+/// where `factor` blows up; this matches the stdlib `ElasticMaterial`
+/// constraint at `crates/reify-compiler/stdlib/materials_fea.ri:97-103`.
+/// `youngs_modulus` should be positive (any consistent units — the D matrix
+/// is linear in `E`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IsotropicElastic {
+    /// Young's modulus `E` (any consistent unit; the D matrix is linear in `E`).
+    pub youngs_modulus: f64,
+    /// Poisson's ratio `ν`. Must satisfy `0 ≤ ν < 0.5`.
+    pub poisson_ratio: f64,
+}
+
+impl IsotropicElastic {
+    /// Return the 6×6 elasticity matrix `D` in engineering-strain Voigt form.
+    ///
+    /// See the type-level documentation for the Voigt component order
+    /// (`[ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]`) and the rationale for the
+    /// shear-block diagonal being `μ = G` (not `2G`).
+    pub fn d_matrix(&self) -> [[f64; 6]; 6] {
+        let e = self.youngs_modulus;
+        let nu = self.poisson_ratio;
+        let factor = e / ((1.0 + nu) * (1.0 - 2.0 * nu));
+        let lambda = factor * nu;
+        let two_mu = factor * (1.0 - 2.0 * nu);
+        let mu = 0.5 * two_mu;
+        let lambda_plus_two_mu = lambda + two_mu;
+
+        let mut d = [[0.0_f64; 6]; 6];
+        // Normal-stress block (rows/cols 0..3).
+        for i in 0..3 {
+            for j in 0..3 {
+                d[i][j] = if i == j { lambda_plus_two_mu } else { lambda };
+            }
+        }
+        // Shear-stress block (rows/cols 3..6) — diagonal μ, off-diagonal 0.
+        for k in 3..6 {
+            d[k][k] = mu;
+        }
+        // Off-diagonal blocks are zero (initialised that way).
+        d
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
