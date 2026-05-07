@@ -55,14 +55,14 @@ enum ElementOrder { P1, P2 }
 //   Auto — auto-classify by `shell_threshold` (thickness/extent ratio):
 //           bodies whose thickness/extent < threshold are meshed with shell
 //           elements, others as 3-D solids. This is the default, matching
-//           the PRD's "auto-classification by default" (line 60).
+//           the PRD's "auto-classification by default"
+//           (§"Resolved design decisions", structural-analysis-shells.md).
 //   On   — always force shell formulation for every body; overrides the
 //           ratio check.
 // Variant order [Off, Auto, On] is canonical ("never / default / always");
-// pinned by `shell_force_enum_has_off_auto_on_variants_in_canonical_order`
-// in solver_elastic_tests.rs to make future re-orderings deliberate rather
-// than silent ABI/tag-encoding changes. Mirrors the ElementOrder [P1, P2]
-// discipline.
+// pinned by a canonical-order test in the elastic-solver test suite to make
+// future re-orderings deliberate rather than silent ABI/tag-encoding changes.
+// Mirrors the ElementOrder [P1, P2] discipline.
 // PRD reference: docs/prds/v0_4/structural-analysis-shells.md (T17,
 // "shell_force off/auto/on tri-state").
 enum ShellForce { Off, Auto, On }
@@ -99,10 +99,13 @@ enum ShellForce { Off, Auto, On }
 //                            pins the count.
 //   shell_threshold        — thickness/extent ratio below which a body is
 //                            classified as shell-eligible (Auto mode).
-//                            Default 0.2 (PRD T17 line 63). Non-positive
-//                            values would silently prevent all auto-
-//                            classification; enforced by `constraint
-//                            shell_threshold > 0`.
+//                            Default 0.2 (PRD T17, §"Resolved design
+//                            decisions", structural-analysis-shells.md).
+//                            Must be in (0, 1): non-positive would prevent
+//                            all auto-classification; ≥ 1 would classify
+//                            every body as shell-eligible. Enforced by
+//                            `constraint shell_threshold > 0` and
+//                            `constraint shell_threshold < 1`.
 //   shell_voxel_size       — voxel resolution for medial-axis extraction.
 //                            `none` (default) means the runtime solver derives
 //                            thickness/3 of the thinnest shell-eligible feature
@@ -110,11 +113,12 @@ enum ShellForce { Off, Auto, On }
 //                            for reproducibility.
 //   shell_branch_prune_ratio — medial-axis spurious-branch pruning threshold
 //                            (branch removed if length < ratio × local
-//                            thickness). Default 1.0 is an empirical
-//                            placeholder per PRD T17 line 89; PRD T3
-//                            (pruning impl) will revise it. Non-positive
-//                            values would silently disable pruning; enforced
-//                            by `constraint shell_branch_prune_ratio > 0`.
+//                            thickness). Default 1.01 is an empirical
+//                            placeholder (PRD T17, §"Open design questions"
+//                            → "Medial-extraction edge-pruning threshold";
+//                            PRD T3 will revise). Non-positive values would
+//                            silently disable pruning; enforced by
+//                            `constraint shell_branch_prune_ratio > 0`.
 //   shell_force            — off/auto/on tri-state forcing. `Auto` (default)
 //                            classifies by `shell_threshold`; `Off` forces
 //                            3-D solid formulation for all bodies; `On`
@@ -149,10 +153,11 @@ structure def ElasticOptions {
     constraint shell_threshold > 0
     // `shell_branch_prune_ratio` is a length ratio for medial-axis spurious-
     // branch removal: branches whose length is less than
-    // `ratio × local_thickness` are pruned (PRD T17 line 89). A non-positive
-    // ratio would silently disable all pruning (no branch is shorter than a
-    // non-positive length times thickness). Mirrors the `cg_tolerance > 0`
-    // discipline.
+    // `ratio × local_thickness` are pruned (PRD T17, §"Open design
+    // questions" → "Medial-extraction edge-pruning threshold"). A non-
+    // positive ratio would silently disable all pruning (no branch is shorter
+    // than a non-positive length times thickness). Mirrors the
+    // `cg_tolerance > 0` discipline.
     constraint shell_branch_prune_ratio > 0
 }
 

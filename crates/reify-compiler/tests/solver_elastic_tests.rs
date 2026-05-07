@@ -357,12 +357,17 @@ fn elastic_options_param_defaults_match_spec() {
 /// canonical default declared in PRD T17
 /// (`docs/prds/v0_4/structural-analysis-shells.md`):
 ///
-///   shell_threshold        = 0.2          (PRD line 63; thickness/extent ratio)
+///   shell_threshold        = 0.2          (PRD T17, §"Resolved design decisions"
+///                                          → classification rule;
+///                                          thickness/extent ratio)
 ///   shell_voxel_size       = none         (solver derives thickness/3 at runtime;
 ///                                          PRD T1/T2/T18)
-///   shell_branch_prune_ratio = 1.0        (empirical placeholder per PRD line 89;
-///                                          PRD T3 will revise once extractor exists)
-///   shell_force            = ShellForce.Auto  (PRD line 60 "auto-classification
+///   shell_branch_prune_ratio = 1.01       (empirical placeholder; PRD T17,
+///                                          §"Open design questions" →
+///                                          "Medial-extraction edge-pruning
+///                                          threshold"; PRD T3 will revise)
+///   shell_force            = ShellForce.Auto  (PRD T17, §"Resolved design
+///                                              decisions"; "auto-classification
 ///                                              by default")
 ///
 /// `0.2` and `1.0` are asserted with strict equality — same IEEE-754
