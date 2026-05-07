@@ -1000,6 +1000,12 @@ mod tests {
     /// duplicate handles flow through to the matching loop where they may produce silent
     /// overwrite or `UnmappedElement`. Callers must not rely on debug-mode panics for
     /// input validation.
+    //
+    // NOTE: This test is gated `#[cfg(not(debug_assertions))]` and therefore only
+    // compiles when the test binary is built without debug_assertions — i.e. via
+    // `cargo test --release`. It is silently skipped by a plain `cargo test` (dev
+    // profile, debug_assertions = true). Verify it runs in CI by confirming a
+    // dedicated `cargo test --release -p reify-eval` step exists in the pipeline.
     #[cfg(not(debug_assertions))]
     #[test]
     fn match_one_kind_does_not_panic_on_duplicate_handles_in_release() {
@@ -1013,7 +1019,9 @@ mod tests {
         new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
         new_table.record(h(30), attr(Role::Cap(CapKind::Bottom), 0, None));
         // h(10) appears twice — would panic in debug; must not panic in release.
-        let _result = stage_b_eligible(
+        // In the matching loop the second h(10) finds h(20) already consumed and
+        // h(30) with a non-matching attribute, so it returns UnmappedElement.
+        let result = stage_b_eligible(
             &old_table,
             &new_table,
             &[h(10), h(10)],
@@ -1023,7 +1031,20 @@ mod tests {
             &[],
             &[],
         );
-        // Reaching here without panic is the contract being verified.
+        // Pin the observed release-mode outcome: the second duplicate handle is
+        // unmapped (the first consumed h(20), leaving no Cap(Top) match for the
+        // second). This is tighter than a no-panic check and catches a regression
+        // where a plain `assert!` is reintroduced (which would panic before reaching
+        // the matching loop, changing the failure mode).
+        assert_eq!(
+            result,
+            Err(BijectionFailure::UnmappedElement {
+                kind: SubShapeKind::Face,
+                side: SubShapeSide::Old,
+                handle: h(10),
+            }),
+            "expected UnmappedElement for the second duplicate handle in release mode"
+        );
     }
 
     // step-15: vertex_to_vertex is always empty in v0.2
