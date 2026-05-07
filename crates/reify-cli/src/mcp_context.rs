@@ -344,6 +344,14 @@ impl ReifyToolContext for CliToolContext {
         Ok(SelectionInfo::default())
     }
 
+    /// Returns `Err` (not `Ok` with a sentinel) when `compiled` or `active_file` is
+    /// absent.  This differs from `get_diagnostics`, which returns `Ok(vec![])` for
+    /// the same states.  The asymmetry is intentional: `get_diagnostics` has a
+    /// natural "nothing to report" empty-vec value, while `get_source_location`
+    /// returns a single `SourceLocationInfo` with no natural empty equivalent — an
+    /// absent active file is a caller error that deserves a visible `Err`.  Callers
+    /// that want to distinguish "not ready" from "entity not found" can inspect the
+    /// error message; both arms use `ToolError::EngineError`.
     fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
         let state = self.lock_state();
         let compiled = state
@@ -423,7 +431,14 @@ impl ReifyToolContext for CliToolContext {
             );
         }
         state.compiled = Some(compiled);
-        state.active_file.get_or_insert_with(|| canonical.clone());
+        // Unconditional set: compiled, active_file, and the files-map source must always
+        // describe the same file.  get_or_insert_with was previously used to preserve a
+        // prior load_file/open_file selection, but that leaves active_file pointing at
+        // "a.ri" while compiled holds b.ri's module — byte-span offsets from b's
+        // diagnostics would then be resolved against a's source, producing wrong
+        // line/column numbers.  Callers that need to switch active files explicitly
+        // without recompiling should use open_file.
+        state.active_file = Some(canonical.clone());
 
         Ok(UpdateResult {
             success: true,
@@ -1157,15 +1172,73 @@ mod tests {
             !diags.is_empty(),
             "bracket_compile_error.ri should produce at least one diagnostic"
         );
-        let expected_path = std::fs::canonicalize(BRACKET_COMPILE_ERROR_PATH)
-            .expect("fixture path must be canonicalizable")
-            .to_string_lossy()
-            .to_string();
+        // Use get_source(None) to read back the exact path update_source stored,
+        // rather than re-deriving it via std::fs::canonicalize — which may produce a
+        // different normalisation (symlink trees, macOS case-folding, etc.) and make
+        // the test flaky.
+        let expected_path = ctx
+            .get_source(None)
+            .expect("active_file should be set after update_source")
+            .file_path;
         let has_matching_path = diags.iter().any(|d| d.file_path == expected_path);
         assert!(
             has_matching_path,
             "at least one diagnostic must have file_path={:?}; got {:?}",
             expected_path,
+            diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Regression guard: when `load_file("a.ri")` is followed by
+    /// `update_source("b.ri", ...)`, `active_file` must switch to b.ri so that
+    /// `get_diagnostics` returns spans against b's source — not a's.
+    ///
+    /// Before the amendment that replaced `get_or_insert_with` with an unconditional
+    /// set, `active_file` would remain "a.ri" after the `update_source` call even
+    /// though `compiled` had been replaced by b's module.  Any diagnostic whose
+    /// label spans index into b's source bytes would then be resolved against a's
+    /// source, producing wrong line/column numbers (or panics on out-of-range spans).
+    #[test]
+    fn update_source_after_load_file_switches_active_file() {
+        let ctx = fresh_ctx();
+        // Step 1: load a.ri (bracket.ri — parse- and compile-clean).
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed for bracket.ri");
+
+        // Step 2: update_source with b.ri (bracket_compile_error.ri — has diagnostics).
+        let source =
+            std::fs::read_to_string(BRACKET_COMPILE_ERROR_PATH).expect("fixture must be readable");
+        let update = ctx
+            .update_source(BRACKET_COMPILE_ERROR_PATH, &source)
+            .expect("update_source should succeed for bracket_compile_error.ri");
+        assert!(update.success, "update_source must succeed so compiled=Some is set");
+
+        // active_file must have switched to b.ri.
+        let active_path = ctx
+            .get_source(None)
+            .expect("active_file should be set")
+            .file_path;
+        let b_canonical = std::fs::canonicalize(BRACKET_COMPILE_ERROR_PATH)
+            .expect("fixture must be canonicalizable")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(
+            active_path, b_canonical,
+            "active_file must point to the last-updated file (b.ri), not the previously loaded a.ri"
+        );
+
+        // Diagnostics must be for b.ri (bracket_compile_error has at least one Error).
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should return Ok");
+        assert!(
+            !diags.is_empty(),
+            "bracket_compile_error.ri should produce at least one diagnostic"
+        );
+        let all_b = diags.iter().all(|d| d.file_path == b_canonical);
+        assert!(
+            all_b,
+            "all diagnostics must carry b.ri's file_path, got: {:?}",
             diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
         );
     }
