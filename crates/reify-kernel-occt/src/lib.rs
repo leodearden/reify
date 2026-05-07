@@ -2485,6 +2485,34 @@ impl OcctKernel {
 /// real isolation comes from the cfg gate above.
 #[cfg(all(has_occt, feature = "test-fixtures"))]
 impl OcctKernel {
+    /// Outward unit normal at the centroid of `face` as a typed `[f64; 3]`.
+    ///
+    /// Test-side counterpart to `kernel.query(GeometryQuery::FaceNormal(id))`
+    /// that bypasses the `Value::String` JSON encoding. Useful for tests that
+    /// filter faces by their outward-normal direction (e.g. cylinder cap vs.
+    /// side) without coupling to the FaceNormal JSON shape.
+    ///
+    /// Calls the same `query_face_normal` FFI as the production query path,
+    /// so semantics (REVERSED-aware outward direction, unit length, centroid
+    /// sampling) are identical.
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, or yields a degenerate normal.
+    pub fn face_outward_unit_normal_for_test(
+        &self,
+        face: GeometryHandleId,
+    ) -> Result<[f64; 3], QueryError> {
+        let s = self
+            .get_shape(face)
+            .map_err(|_| QueryError::InvalidHandle(face))?;
+        let p = ffi::ffi::query_face_normal(s)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok([p.x, p.y, p.z])
+    }
+
     /// Create a circle face at the given z-height via the OCCT FFI and store
     /// it in the kernel, returning its `GeometryHandleId`.
     ///
