@@ -459,4 +459,20 @@ mod tests {
         }
         assert!((j_p2.det - j_p1.det).abs() < JAC_TOL);
     }
+
+    /// Exercises the trait-default `jacobian` length precondition via TetP2
+    /// (N_NODES = 10).  Passing P1's 4-vertex layout catches a regression
+    /// where a future P2 `jacobian` override forgets the precondition check.
+    #[test]
+    #[should_panic(expected = "phys_nodes.len() must equal Self::N_NODES")]
+    fn jacobian_panics_on_p1_sized_phys_nodes_for_p2() {
+        // 4 nodes instead of 10 — the canonical P1 reference vertices
+        let phys: &[[f64; 3]] = &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        TetP2.jacobian(phys, ReferenceCoord::new(0.25, 0.25, 0.25));
+    }
 }

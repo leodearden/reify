@@ -210,6 +210,11 @@ mod tests {
             "swapped node ordering must yield a negative det (got {})",
             j.det
         );
+        assert!(
+            (j.det - (-1.0)).abs() < TOL,
+            "swapped node ordering must yield det = -1 exactly (got {})",
+            j.det,
+        );
     }
 
     #[test]
@@ -224,6 +229,32 @@ mod tests {
         for (k, s) in sum.iter().enumerate() {
             assert!(s.abs() < TOL, "Σ_i ∇N_i[{k}] = {s}, expected 0");
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "phys_nodes.len() must equal Self::N_NODES")]
+    fn jacobian_panics_on_too_short_phys_nodes() {
+        // 3 nodes instead of 4 — one row short
+        let phys: &[[f64; 3]] = &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        TetP1.jacobian(phys, ReferenceCoord::new(0.25, 0.25, 0.25));
+    }
+
+    #[test]
+    #[should_panic(expected = "phys_nodes.len() must equal Self::N_NODES")]
+    fn jacobian_panics_on_too_long_phys_nodes() {
+        // 5 nodes instead of 4 — one row extra (duplicate of first)
+        let phys: &[[f64; 3]] = &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+        ];
+        TetP1.jacobian(phys, ReferenceCoord::new(0.25, 0.25, 0.25));
     }
 
     #[test]

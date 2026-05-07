@@ -70,7 +70,7 @@ enum ShellForce { Off, Auto, On }
 // ── ElasticOptions ───────────────────────────────────────────────────────────
 
 // `ElasticOptions` is the configuration object passed to the FEA solver.
-// All nine params have sensible defaults so a bare `ElasticOptions()`
+// All eleven params have sensible defaults so a bare `ElasticOptions()`
 // instantiation compiles and yields the standard solver setup; callers
 // override individual fields at construction (e.g.,
 // `ElasticOptions(element_order: ElementOrder.P2, max_iter: 5000)`).
@@ -101,9 +101,14 @@ enum ShellForce { Off, Auto, On }
 //                            classified as shell-eligible (Auto mode).
 //                            Default 0.2 (PRD T17, §"Resolved design
 //                            decisions", structural-analysis-shells.md).
-//                            Must be in (0, 1): non-positive would prevent
-//                            all auto-classification; ≥ 1 would classify
-//                            every body as shell-eligible. Enforced by
+//                            Must be in (0, 1): non-positive prevents all
+//                            auto-classification; > 1 silently defeats Auto
+//                            mode (every body classifies as shell-eligible);
+//                            exactly 1.0 is a knife-edge (only affects
+//                            perfect-cube/sphere bodies where thickness ==
+//                            max_extent — edge case, not recommended).
+//                            Strict `< 1` cap excludes both > 1 and == 1.0
+//                            under one rule (esc-3030-68). Enforced by
 //                            `constraint shell_threshold > 0` and
 //                            `constraint shell_threshold < 1`.
 //   shell_voxel_size       — voxel resolution for medial-axis extraction.
@@ -119,11 +124,41 @@ enum ShellForce { Off, Auto, On }
 //                            PRD T3 will revise). Non-positive values would
 //                            silently disable pruning; enforced by
 //                            `constraint shell_branch_prune_ratio > 0`.
+//                            TODO(parser-quirk, esc-3030-68): the default is
+//                            1.01, NOT 1.0 — do not "normalize" it back to
+//                            1.0. Whole-number Real literals like `1.0` are
+//                            stored as `Int(1)` due to a tokenizer quirk: the
+//                            lexer reads `1` as an Int token, then `.0` as a
+//                            member-access that resolves to nothing, so `1.0`
+//                            silently re-types the field as Int. The 1.01 value
+//                            was chosen specifically to exercise the Real parser
+//                            path and avoid this bug. Cross-ref: the
+//                            `elastic_options_shell_param_defaults_match_spec`
+//                            test docstring documents the same quirk. PRD T3
+//                            will revise the empirical default; until then,
+//                            any change must keep the value non-integer.
 //   shell_force            — off/auto/on tri-state forcing. `Auto` (default)
 //                            classifies by `shell_threshold`; `Off` forces
 //                            3-D solid formulation for all bodies; `On`
 //                            forces shell formulation for all bodies.
 //                            See `ShellForce` enum doc.
+//   force_tet              — when `true`, disables hex/wedge promotion entirely
+//                            and forces a pure tetrahedral mesh. Default `false`
+//                            (promotion is automatic when detection succeeds).
+//                            Useful for debugging or A/B accuracy studies at
+//                            equal DOF count. PRD `docs/prds/v0_3/hex-wedge-
+//                            meshing.md` task #9, §"Two opposing escape hatches".
+//                            Mutual exclusion: `!(force_tet && require_hex_wedge)`
+//                            is enforced by a structure-level constraint.
+//   require_hex_wedge      — when `true`, upgrades any tet fall-back to a hard
+//                            error ("tell me if my geometry doesn't qualify").
+//                            Default `false` (fall-back to tets is silent).
+//                            Designed for thin-body performance-tuning workflows
+//                            where the caller needs confirmation that hex/wedge
+//                            elements were actually generated. PRD `docs/prds/
+//                            v0_3/hex-wedge-meshing.md` task #9, §"Two opposing
+//                            escape hatches". Mutual exclusion: same constraint
+//                            as `force_tet` above.
 structure def ElasticOptions {
     param element_order : ElementOrder = ElementOrder.P1
     param mesh_size : Option<Length> = none
@@ -132,8 +167,11 @@ structure def ElasticOptions {
     param threads : Option<Int> = none
     param shell_threshold : Real = 0.2
     param shell_voxel_size : Option<Length> = none
+    // NOTE(parser-quirk, esc-3030-68): do NOT normalize to 1.0 — see doc above.
     param shell_branch_prune_ratio : Real = 1.01
     param shell_force : ShellForce = ShellForce.Auto
+    param force_tet : Bool = false
+    param require_hex_wedge : Bool = false
 
     // A non-positive `max_iter` would let the solver exit before doing any
     // work; declaring the lower bound at the structure-def level makes the
@@ -160,13 +198,20 @@ structure def ElasticOptions {
     // `thickness/extent < threshold`, so no body would be treated as
     // shell-eligible. Mirrors the `cg_tolerance > 0` discipline.
     constraint shell_threshold > 0
-    // `shell_threshold` also has a natural upper bound of 1: the ratio
-    // `thickness/extent` is in [0, 1] for any non-degenerate body (thickness
-    // is always ≤ the body's maximum extent), so a threshold ≥ 1 would
-    // classify every body as shell-eligible regardless of its actual shape,
-    // silently defeating the purpose of Auto mode. The constraint prevents
-    // this silent misuse. PRD T17, §"Resolved design decisions",
-    // structural-analysis-shells.md (classification rule).
+    // `shell_threshold` also has a natural upper bound strictly below 1.
+    // `thickness/extent` ∈ [0, 1] for any non-degenerate body (thickness is
+    // always ≤ maximum extent). Two distinct hazard zones:
+    //   threshold > 1  — silently defeats Auto mode: every body satisfies
+    //                    `thickness/extent < threshold` regardless of shape,
+    //                    so every body is classified shell-eligible. This
+    //                    inverts the predicate's polarity and is catastrophic.
+    //   threshold == 1 — knife-edge: only perfect-cube or perfect-sphere
+    //                    bodies (where thickness == max_extent exactly) are
+    //                    affected. Not catastrophic for Auto mode in practice,
+    //                    but a degenerate and unexpected configuration.
+    // The strict `< 1` cap excludes both hazard zones under one rule —
+    // conservative but unambiguous (esc-3030-68). PRD T17, §"Resolved design
+    // decisions", structural-analysis-shells.md (classification rule).
     constraint shell_threshold < 1
     // `shell_branch_prune_ratio` is a length ratio for medial-axis spurious-
     // branch removal: branches whose length is less than
@@ -176,6 +221,17 @@ structure def ElasticOptions {
     // than a non-positive length times thickness). Mirrors the
     // `cg_tolerance > 0` discipline.
     constraint shell_branch_prune_ratio > 0
+    // `force_tet` and `require_hex_wedge` are opposing escape hatches: the
+    // former disables hex/wedge promotion entirely; the latter upgrades any
+    // tet fall-back to a hard error. Setting both true is a contradiction —
+    // flag it as a validation error at construction time. Encoded as
+    // `!(force_tet && require_hex_wedge)` rather than the De Morgan
+    // equivalent `!force_tet || !require_hex_wedge` because the negated-
+    // conjunction form directly matches the spec language ("not both true").
+    // PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #9, §"Two opposing
+    // escape hatches"; same task-2544 explicit-contract convention as the
+    // positivity/upper-bound constraints above.
+    constraint !(force_tet && require_hex_wedge)
 }
 
 // ── ElasticResult ────────────────────────────────────────────────────────────

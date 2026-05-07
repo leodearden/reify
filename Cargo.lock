@@ -3919,6 +3919,7 @@ dependencies = [
  "argmin-math",
  "ndarray 0.16.1",
  "pkg-config",
+ "reify-compiler",
  "reify-expr",
  "reify-stdlib",
  "reify-test-support",
@@ -4017,6 +4018,16 @@ name = "reify-kernel-fidget"
 version = "0.1.0"
 dependencies = [
  "fidget",
+ "inventory",
+ "reify-eval",
+ "reify-test-support",
+ "reify-types",
+]
+
+[[package]]
+name = "reify-kernel-gmsh"
+version = "0.1.0"
+dependencies = [
  "inventory",
  "reify-eval",
  "reify-test-support",

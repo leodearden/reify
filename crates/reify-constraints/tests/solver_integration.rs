@@ -2,12 +2,28 @@
 //!
 //! Tests the solver through the ConstraintSolver trait object interface,
 //! using reify-test-support helpers for expression construction.
+//!
+//! # Auto type-param backtracking integration (task 2664)
+//!
+//! The bottom section (`// ── auto type-param backtracking integration ──`)
+//! adds two cross-crate wiring smoke tests that prove
+//! `&SimpleConstraintChecker as &dyn ConstraintChecker` from this crate
+//! plugs into `resolve_auto_type_params_with_backtracking` from `reify-compiler`
+//! without issue, and that BFS-fallback paths work through the production
+//! checker (not only via `MockConstraintChecker`).
 
-use reify_constraints::DimensionalSolver;
+use std::collections::HashMap;
+
+use reify_compiler::auto_type_param::{
+    AutoTypeParam, SelectionResult, resolve_auto_type_params_with_backtracking,
+};
+use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
+use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, BinOp, ConstraintSolver, DiagnosticCode, DimensionVector, OptimizationObjective,
-    ResolutionProblem, SolveResult, Type, Value, ValueMap,
+    AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, DiagnosticCode,
+    DimensionVector, OptimizationObjective, ResolutionProblem, Severity, SolveResult, SourceSpan,
+    Type, Value, ValueMap,
 };
 
 #[test]
@@ -1813,4 +1829,299 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
             other
         ),
     }
+}
+
+// ── auto type-param backtracking integration (task 2664) ──────────────────────
+//
+// Two smoke tests proving the cross-crate trait-object wiring between
+// `reify-constraints` (provides `SimpleConstraintChecker`) and
+// `reify-compiler` (provides `resolve_auto_type_params_with_backtracking`).
+//
+// These tests are complementary to `crates/reify-eval/tests/auto_backtracking_e2e.rs`
+// (which uses `MockConstraintChecker`).  Here the production checker is used
+// as a cross-crate dispatch wiring smoke test: `Bool(true)` evaluates to
+// `Satisfied` uniformly, so per-leaf verdicts are not differentiated — these
+// tests do not exercise production expression evaluation logic.
+
+/// Build the `(template_registry, trait_registry)` pair from a compiled module.
+///
+/// Mirrors the same helper in `crates/reify-eval/tests/auto_backtracking_e2e.rs`
+/// and `crates/reify-compiler/tests/auto_type_param_backtracking_tests.rs`.
+fn build_atp_registries(
+    module: &CompiledModule,
+) -> (
+    HashMap<String, &TopologyTemplate>,
+    HashMap<String, &CompiledTrait>,
+) {
+    let template_registry: HashMap<String, &TopologyTemplate> = module
+        .templates
+        .iter()
+        .map(|t| (t.name.clone(), t))
+        .collect();
+    let trait_registry: HashMap<String, &CompiledTrait> = module
+        .trait_defs
+        .iter()
+        .map(|t| (t.name.clone(), t))
+        .collect();
+    (template_registry, trait_registry)
+}
+
+/// Cross-crate wiring smoke test: `SimpleConstraintChecker` drives DFS to the
+/// lex-first globally-feasible leaf.
+///
+/// Scenario: 2 Seal candidates × 2 Cooled candidates (4-leaf cross-product),
+/// `free=true` on both params.  The parameterized template carries one
+/// `CompiledExpr::literal(Bool(true))` constraint; `SimpleConstraintChecker`
+/// evaluates `Bool(true)` to `Satisfaction::Satisfied` uniformly regardless of
+/// the empty `ValueMap` passed at each leaf.  All 4 leaves are feasible, so
+/// DFS picks the lex-first `(ORingSeal, AirCooled)` and emits a single
+/// `AutoTypeParamNonUnique` Warning.
+///
+/// Cross-crate trait-object dispatch wiring smoke test: proves that
+/// `&SimpleConstraintChecker as &dyn ConstraintChecker` from `reify-constraints`
+/// is dispatchable into `resolve_auto_type_params_with_backtracking` from
+/// `reify-compiler` without panic.  Per-leaf verdicts are uniform
+/// (`Bool(true)` → `Satisfied`); production expression evaluation logic is not
+/// exercised here.
+#[test]
+fn auto_type_param_dfs_with_simple_constraint_checker_resolves_lex_first() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_atp_registries(&module);
+
+    // Literal Bool(true): SimpleConstraintChecker evaluates to Satisfied for
+    // every leaf regardless of the empty ValueMap.
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    // Production checker — no mock, no scripted queue.
+    let checker = SimpleConstraintChecker;
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,           // max_depth: 2 params ≤ 6 → DFS runs, no depth-bound fallback
+        usize::MAX,  // no cross-product cap
+        &mut diagnostics,
+    );
+
+    // Lex-first cross-product: "O"ringSeal < "R"ubberSeal; "A"irCooled < "W"aterCooled.
+    assert_eq!(
+        outcome.substitution,
+        vec![
+            ("T".to_string(), "ORingSeal".to_string()),
+            ("U".to_string(), "AirCooled".to_string()),
+        ],
+        "DFS with SimpleConstraintChecker (all-Satisfied) must pick lex-first leaf \
+         (ORingSeal, AirCooled); got: {:?}",
+        outcome.substitution
+    );
+    assert_eq!(
+        outcome.per_param.len(),
+        2,
+        "per_param must have 2 entries (both params resolved); got: {:?}",
+        outcome.per_param
+    );
+    assert!(
+        matches!(&outcome.per_param[0].1, SelectionResult::Selected(n) if n == "ORingSeal"),
+        "T must be Selected(ORingSeal); got: {:?}",
+        outcome.per_param[0]
+    );
+    assert!(
+        matches!(&outcome.per_param[1].1, SelectionResult::Selected(n) if n == "AirCooled"),
+        "U must be Selected(AirCooled); got: {:?}",
+        outcome.per_param[1]
+    );
+    // 4 all-feasible leaves in free mode → exactly one NonUnique Warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "4 all-feasible leaves in free mode must produce exactly 1 NonUnique Warning; \
+         got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNonUnique),
+        "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamNonUnique must be Severity::Warning; got: {:?}",
+        diagnostics[0].severity
+    );
+}
+
+/// Cross-crate BFS-fallback smoke test: `SimpleConstraintChecker` drives the
+/// depth-bound fallback path.
+///
+/// Scenario: 2 params (`max_depth = 1`), `params.len() (=2) > max_depth (=1)`,
+/// so the depth-bound branch fires before DFS recurses.  The algorithm emits a
+/// `AutoTypeParamDepthBoundExceeded` Warning and delegates to v0.1 BFS through
+/// the same `&dyn ConstraintChecker`.  The BFS fixture uses 1 candidate per
+/// trait so BFS produces clean `Selected` outcomes with zero BFS diagnostics —
+/// the only diagnostic in the output is the depth-bound warning itself.
+///
+/// Cross-crate BFS-fallback wiring smoke test: proves the depth-bound fallback
+/// path also dispatches correctly through `&dyn ConstraintChecker` from
+/// `reify-constraints`.  Per-leaf verdicts are uniform (no constraints on the
+/// template); production expression evaluation logic is not exercised here.
+///
+/// Pins PRD §"Resolved design decisions" "Default depth bound: 6 parameters"
+/// (task 2662 companion).
+#[test]
+fn auto_type_param_dfs_with_simple_constraint_checker_falls_back_to_bfs_above_depth_bound() {
+    // One Seal + one Cooled candidate: BFS yields clean Selected × 2 with zero
+    // BFS diagnostics, so the only diagnostic emitted is the depth-bound warning.
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_atp_registries(&module);
+
+    let template = TopologyTemplateBuilder::new("Bearing").build();
+    let checker = SimpleConstraintChecker;
+    let functions: &[CompiledFunction] = &[];
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    // max_depth=1: params.len()==2 > 1 → depth-bound fallback fires.
+    let mut diagnostics = Vec::new();
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        1,           // max_depth=1; 2 params > 1 → fallback
+        usize::MAX,  // no cross-product cap
+        &mut diagnostics,
+    );
+
+    // BFS with 1 candidate per trait + no constraints → Selected for both.
+    assert_eq!(
+        outcome.per_param.len(),
+        2,
+        "BFS-fallback outcome must have per_param length 2; got: {:?}",
+        outcome.per_param
+    );
+    assert!(
+        matches!(&outcome.per_param[0].1, SelectionResult::Selected(n) if n == "ORingSeal"),
+        "T must be Selected(ORingSeal) from BFS; got: {:?}",
+        outcome.per_param[0]
+    );
+    assert!(
+        matches!(&outcome.per_param[1].1, SelectionResult::Selected(n) if n == "AirCooled"),
+        "U must be Selected(AirCooled) from BFS; got: {:?}",
+        outcome.per_param[1]
+    );
+    assert_eq!(
+        outcome.substitution,
+        vec![
+            ("T".to_string(), "ORingSeal".to_string()),
+            ("U".to_string(), "AirCooled".to_string()),
+        ],
+        "BFS substitution must be [(T, ORingSeal), (U, AirCooled)]; got: {:?}",
+        outcome.substitution
+    );
+    // Exactly one diagnostic: the depth-bound warning.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "DFS above max_depth must emit exactly one DepthBoundExceeded Warning \
+         (BFS adds zero with 1-candidate-per-param); got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded),
+        "diagnostic code must be AutoTypeParamDepthBoundExceeded; got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Warning,
+        "AutoTypeParamDepthBoundExceeded must be Severity::Warning; got: {:?}",
+        diagnostics[0].severity
+    );
+    // Message must cite the param count and the max_depth value via the
+    // canonical format produced at auto_type_param.rs:1346:
+    // "... {n} auto-type-params declared, max_depth = {m}; ..."
+    assert!(
+        diagnostics[0].message.contains("2 auto-type-params declared"),
+        "depth-bound message must contain '2 auto-type-params declared'; got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("max_depth = 1"),
+        "depth-bound message must contain 'max_depth = 1'; got: {:?}",
+        diagnostics[0].message
+    );
 }

@@ -1232,7 +1232,12 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 }
 
 /// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
-/// Tensor, Matrix, Scalar, Vector3, Point3) within a type alias RHS expression.
+/// Tensor, Matrix, Scalar, Vector3, Point3, Field) within a type alias RHS expression.
+///
+/// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
+/// `resolve_type_expr_with_aliases` — the full-type resolver, **not** the
+/// dimension-only resolver — because Field's domain and codomain are full Types
+/// (Point3, Vector3, Tensor, structures, etc.), not bare dimensions.
 ///
 /// Each type argument is resolved recursively via `resolve_type_expr_with_aliases`,
 /// which allows inner type args to be trait names (e.g. `Option<MyTrait>`).
@@ -1389,6 +1394,31 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::matrix(m, n, quantity))
         }
+        "Field" if type_args.len() == 2 => {
+            // Field<D, C>: full-type domain and codomain (Point3, Vector3, Tensor, etc.),
+            // not bare dimensions. Use resolve_type_expr_with_aliases (full-type resolver)
+            // rather than resolve_type_alias_expr_to_dimension. Mirrors Map's two-arg shape.
+            let domain = resolve_type_expr_with_aliases(
+                &type_args[0],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            let codomain = resolve_type_expr_with_aliases(
+                &type_args[1],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::Field {
+                domain: Box::new(domain),
+                codomain: Box::new(codomain),
+            })
+        }
         // Name did not match any known builtin parametric pattern.
         // Early-return here so the debug_assert below never fires for the
         // unmatched case: the assert only needs to hold when a named arm ran.
@@ -1442,7 +1472,11 @@ fn expect_integer_literal_type_arg(
 /// alias-DFS resolver is correct for this context.
 ///
 /// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Scalar<Q>`, `Vector3<Q>`,
-/// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`.
+/// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`, `Field<D,C>`.
+///
+/// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
+/// `resolve_type_alias_expr_with_subst` — the full-type resolver with substitutions,
+/// **not** the dimension-only resolver — because Field's args are full Types.
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
     type_args: &[reify_syntax::TypeExpr],
@@ -1551,6 +1585,28 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 depth,
             )?;
             Some(Type::matrix(m, n, quantity))
+        }
+        "Field" if type_args.len() == 2 => {
+            // Field<D, C>: full-type domain and codomain. Mirrors the non-subst variant
+            // (resolve_parameterized_builtin_type) but threads `subst` and `depth`.
+            let domain = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            let codomain = resolve_type_alias_expr_with_subst(
+                &type_args[1],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Field {
+                domain: Box::new(domain),
+                codomain: Box::new(codomain),
+            })
         }
         _ => None,
     }

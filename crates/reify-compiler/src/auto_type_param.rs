@@ -1813,20 +1813,6 @@ fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<Str
         .collect()
 }
 
-// ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
-
-// Returns `true` iff any constraint in `constraints_template` is `Satisfied::Violated`
-// according to `checker`.
-//
-// # Semantics
-//
-// - Returns `true` iff at least one [`reify_types::ConstraintResult`] has
-//   `satisfaction == `[`reify_types::Satisfaction::Violated`]`.
-//   Feasibility is the **negation** of this predicate.
-// - [`reify_types::Satisfaction::Indeterminate`] does **NOT** cause a `true` return.
-//   Architecture §2.5 monotonic-feasible rule: undef does not falsify — only
-//   `Violated` makes a leaf infeasible.
-// - The borrowed-slice signature lets callers (especially the DFS hot path)
 // ─── Static blame extraction (task 2660) ─────────────────────────────────────
 
 /// Recursively collect every `Type::TypeParam(name)` string buried in a type.

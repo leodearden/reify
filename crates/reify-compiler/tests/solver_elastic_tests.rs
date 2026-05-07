@@ -162,7 +162,7 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 // ─── step-5: ElasticOptions param shape ──────────────────────────────────────
 
 /// `ElasticOptions` is the FEA solver-input knob structure. It must declare
-/// exactly nine params with the canonical names and types:
+/// exactly eleven params with the canonical names and types:
 ///
 ///   - `element_order          : ElementOrder`   (selects P1 / P2 elements)
 ///   - `mesh_size              : Option<Length>`  (none = solver derives from tolerance)
@@ -176,6 +176,10 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 ///   - `shell_branch_prune_ratio : Real`          (medial-axis spurious-branch pruning
 ///     threshold; empirical placeholder)
 ///   - `shell_force            : ShellForce`      (off/auto/on tri-state forcing)
+///   - `force_tet              : Bool`            (disable hex/wedge promotion entirely;
+///     default false; PRD hex-wedge-meshing.md task #9)
+///   - `require_hex_wedge      : Bool`            (upgrade tet fall-back to hard error;
+///     default false; PRD hex-wedge-meshing.md task #9)
 ///
 /// `mesh_size`, `threads`, and `shell_voxel_size` are encoded as `Option<T> = none`
 /// rather than PRD-style sentinels (e.g., `auto`, `num_cpus::get()`) because the
@@ -190,8 +194,8 @@ fn elastic_options_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        9,
-        "ElasticOptions should have exactly 9 param cells, got: {:?}",
+        11,
+        "ElasticOptions should have exactly 11 param cells, got: {:?}",
         names
     );
 
@@ -215,6 +219,8 @@ fn elastic_options_struct_has_correct_param_shape() {
         ),
         ("shell_branch_prune_ratio", Type::Real),
         ("shell_force", Type::Enum("ShellForce".to_string())),
+        ("force_tet", Type::Bool),
+        ("require_hex_wedge", Type::Bool),
     ];
 
     for (member, expected_ty) in expected {
@@ -253,11 +259,15 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
 /// Each `ElasticOptions` param must carry the canonical default declared in
 /// the PRD (with the encoding adjustments documented in the file header):
 ///
-///   element_order = ElementOrder.P1
-///   mesh_size     = none
-///   max_iter      = 1000
-///   cg_tolerance  = 0.000001
-///   threads       = none
+///   element_order    = ElementOrder.P1
+///   mesh_size        = none
+///   max_iter         = 1000
+///   cg_tolerance     = 0.000001
+///   threads          = none
+///   force_tet        = false   (PRD hex-wedge-meshing.md task #9, §"Two opposing
+///                               escape hatches")
+///   require_hex_wedge = false  (PRD hex-wedge-meshing.md task #9, §"Two opposing
+///                               escape hatches")
 ///
 /// The defaults pin the standard solver setup so a bare `ElasticOptions()`
 /// instantiation compiles. `0.000001` is asserted with a 1e-9 tolerance to
@@ -351,6 +361,38 @@ fn elastic_options_param_defaults_match_spec() {
         "threads default's result_type should be Option<Int>, got: {:?}",
         threads_default.result_type
     );
+
+    // force_tet = false (PRD docs/prds/v0_3/hex-wedge-meshing.md task #9,
+    // §"Two opposing escape hatches"; default false preserves the
+    // "promotion is automatic when detection succeeds" policy)
+    let force_tet_default = require_default(template, "force_tet");
+    match &force_tet_default.kind {
+        CompiledExprKind::Literal(Value::Bool(v)) => assert!(
+            !v,
+            "force_tet default should be false, got: {}",
+            v
+        ),
+        other => panic!(
+            "force_tet default should be Literal(Value::Bool(false)), got: {:?}",
+            other
+        ),
+    }
+
+    // require_hex_wedge = false (PRD docs/prds/v0_3/hex-wedge-meshing.md task #9,
+    // §"Two opposing escape hatches"; default false preserves the
+    // "promotion is automatic when detection succeeds" policy)
+    let require_hex_wedge_default = require_default(template, "require_hex_wedge");
+    match &require_hex_wedge_default.kind {
+        CompiledExprKind::Literal(Value::Bool(v)) => assert!(
+            !v,
+            "require_hex_wedge default should be false, got: {}",
+            v
+        ),
+        other => panic!(
+            "require_hex_wedge default should be Literal(Value::Bool(false)), got: {:?}",
+            other
+        ),
+    }
 }
 
 // ─── step-5 (shell params): ElasticOptions shell defaults ────────────────────
@@ -658,6 +700,75 @@ fn elastic_options_constrains_shell_threshold_below_one() {
         matched,
         "ElasticOptions should declare `constraint shell_threshold < 1`; \
          got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── task-2990: ElasticOptions force_tet / require_hex_wedge mutual-exclusion ──
+
+/// `ElasticOptions` must declare a mutual-exclusion constraint preventing
+/// `force_tet` and `require_hex_wedge` from both being `true`:
+///
+///   constraint !(force_tet && require_hex_wedge)
+///
+/// `force_tet` and `require_hex_wedge` are opposing escape hatches (PRD
+/// `docs/prds/v0_3/hex-wedge-meshing.md` task #9, §"Two opposing escape
+/// hatches"): `force_tet` disables hex/wedge promotion entirely; `require_hex_wedge`
+/// upgrades any tet fall-back to a hard error. Setting both `true` is a
+/// contradiction — the constraint flags it as a validation error at construction
+/// time, following the task-2544 convention: "the contract in production code is
+/// made explicit rather than relying solely on test coverage."
+///
+/// Both the **operator chain** (UnOp::Not over BinOp::And) and the **operand
+/// identity** (union of collect_value_ref_members across both sides must contain
+/// both "force_tet" and "require_hex_wedge") are pinned to close the regression
+/// window where:
+///   - a swap to `!(force_tet || require_hex_wedge)` (wrong semantics: would
+///     reject the legal "exactly one true" state) would pass on a name-and-op
+///     check alone;
+///   - a degenerate `!force_tet` would pass on a name-only check.
+///
+/// The test counts exactly ONE such constraint (`.filter(...).count() == 1`)
+/// rather than using `.any(...)` so a future duplicate addition is also caught.
+#[test]
+fn elastic_options_force_tet_and_require_hex_wedge_mutually_exclusive_constraint() {
+    let template = find_structure("ElasticOptions");
+
+    let count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            // Outer expression must be `!<operand>` (UnOp::Not).
+            let operand = match &c.expr.kind {
+                CompiledExprKind::UnOp { op, operand } if *op == UnOp::Not => operand,
+                _ => return false,
+            };
+            // Inner expression must be `<left> && <right>` (BinOp::And).
+            let (left, right) = match &operand.kind {
+                CompiledExprKind::BinOp { op, left, right } if *op == BinOp::And => {
+                    (left.as_ref(), right.as_ref())
+                }
+                _ => return false,
+            };
+            // Union of ValueRef names across both sides must include both
+            // "force_tet" and "require_hex_wedge" — allowing either operand
+            // order (AST does not normalize commutative &&).
+            let mut refs = collect_value_ref_members(left);
+            refs.extend(collect_value_ref_members(right));
+            refs.contains(&"force_tet") && refs.contains(&"require_hex_wedge")
+        })
+        .count();
+
+    assert_eq!(
+        count,
+        1,
+        "ElasticOptions should declare exactly 1 `constraint !(force_tet && require_hex_wedge)`; \
+         got {} matching constraints (full constraint list: {:?})",
+        count,
         template
             .constraints
             .iter()

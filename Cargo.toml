@@ -11,6 +11,7 @@ members = [
     "crates/reify-doc-build",
     "crates/reify-geometry",
     "crates/reify-kernel-fidget",
+    "crates/reify-kernel-gmsh",
     "crates/reify-kernel-manifold",
     "crates/reify-kernel-occt",
     "crates/reify-kernel-openvdb",
@@ -42,6 +43,7 @@ reify-doc = { path = "crates/reify-doc" }
 reify-doc-build = { path = "crates/reify-doc-build" }
 reify-geometry = { path = "crates/reify-geometry" }
 reify-kernel-fidget = { path = "crates/reify-kernel-fidget" }
+reify-kernel-gmsh = { path = "crates/reify-kernel-gmsh" }
 reify-kernel-manifold = { path = "crates/reify-kernel-manifold" }
 reify-kernel-occt = { path = "crates/reify-kernel-occt" }
 reify-kernel-openvdb = { path = "crates/reify-kernel-openvdb" }

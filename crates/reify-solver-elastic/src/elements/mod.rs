@@ -148,13 +148,18 @@ pub trait ReferenceElement {
     ///   in canonical Hughes/Gmsh order `(0,1), (1,2), (2,0), (0,3),
     ///   (1,3), (2,3)`.
     fn jacobian(&self, phys_nodes: &[[f64; 3]], ref_coord: ReferenceCoord) -> Jacobian {
-        debug_assert_eq!(
+        // Intentionally unconditional (`assert_eq!`, not `debug_assert_eq!`):
+        // the public contract is explicit in every build profile per the
+        // project's contract-explicitness convention (see Task 2544).  The
+        // cost is two `usize` comparisons against the 9·N flop Jacobian loop
+        // that follows — negligible relative to that work.
+        assert_eq!(
             phys_nodes.len(),
             Self::N_NODES,
             "phys_nodes.len() must equal Self::N_NODES",
         );
         let grads = self.shape_grad_at(ref_coord);
-        debug_assert_eq!(
+        assert_eq!(
             grads.len(),
             Self::N_NODES,
             "shape_grad_at must return N_NODES rows",

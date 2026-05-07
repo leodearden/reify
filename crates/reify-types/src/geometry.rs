@@ -77,12 +77,17 @@ pub enum BRepKind {
 /// (Solid / Shell / Wire / Compound / Edge / Face) used by the OCCT kernel.
 ///
 /// `Ord` / `PartialOrd` are derived (in declaration order: BRep < Mesh < Sdf
-/// < Voxel) so the dispatcher can seed its BFS frontier in a deterministic
-/// order via `BTreeSet<ReprKind>` even when the caller passes
+/// < Voxel < VolumeMesh) so the dispatcher can seed its BFS frontier in a
+/// deterministic order via `BTreeSet<ReprKind>` even when the caller passes
 /// `&HashSet<ReprKind>` of `available` reprs. Without this, the seeding loop
 /// would inherit HashMap salt order and selection across multi-seed cases
 /// would depend on hashing rather than the registered kernel set, breaking
 /// the PRD's "Selection deterministic" contract.
+///
+/// `VolumeMesh` is appended last in the v0.3 extension so the existing
+/// `BRep < Mesh < Sdf < Voxel` ordering stays unchanged for callers that
+/// pass legacy four-variant `available` sets — kernel selection on the
+/// surface-mesh path remains bit-identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReprKind {
     /// Boundary-representation solid (OCCT / OpenCASCADE B-rep kernel).
@@ -93,6 +98,11 @@ pub enum ReprKind {
     Sdf,
     /// Volumetric voxel grid (e.g. OpenVDB).
     Voxel,
+    /// Volumetric tetrahedral mesh (e.g. Gmsh HXT). Distinct from [`ReprKind::Mesh`]
+    /// (boundary-only triangulation) — `VolumeMesh` carries interior tet
+    /// elements for FEA assembly. Produced by the v0.3 surface→volume
+    /// meshing pipeline (`reify-kernel-gmsh`).
+    VolumeMesh,
 }
 
 /// Multi-kernel operation classifier.
@@ -750,6 +760,58 @@ pub struct Mesh {
     /// Triangle indices, flat [i0, i1, i2, i3, i4, i5, ...].
     pub indices: Vec<u32>,
     /// Optional vertex normals, flat like vertices.
+    pub normals: Option<Vec<f32>>,
+}
+
+/// FEA element-order discriminator for a tet-based [`VolumeMesh`].
+///
+/// `P1` tetrahedra carry 4 corner nodes per element (linear shape functions,
+/// 4 indices in `tet_indices` per element). `P2` tetrahedra carry 10 nodes
+/// per element — 4 corners plus 6 edge midpoints in Gmsh's canonical local
+/// ordering (quadratic shape functions, 10 indices per element).
+///
+/// Used both as an explicit field on [`VolumeMesh`] and as one of the inputs
+/// to the volume-mesh cache key (`reify_kernel_gmsh::cache_key`), so changing
+/// element order between two otherwise-identical mesh requests produces a
+/// distinct cache entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElementOrderTag {
+    /// 4-node tetrahedral element (linear shape functions).
+    P1,
+    /// 10-node tetrahedral element (quadratic shape functions; 4 corners +
+    /// 6 edge midpoints in Gmsh canonical order).
+    P2,
+}
+
+/// Volumetric tetrahedral mesh produced by the v0.3 surface→volume meshing
+/// pipeline (e.g. Gmsh HXT).
+///
+/// Mirrors [`Mesh`]'s field shape (`vertices: Vec<f32>` flat XYZ triples,
+/// optional flat `normals`) so existing helpers that walk vertex positions
+/// can share code. The structural difference is `tet_indices`: a flat array
+/// of **4 indices per element for P1** (one tet = 4 corner indices), or
+/// **10 indices per element for P2** (4 corner + 6 edge-midpoint indices in
+/// Gmsh's canonical local ordering). Distinct from `Mesh::indices` (3
+/// indices per surface triangle).
+///
+/// `element_order` tags the per-element arity so downstream consumers
+/// (`reify-solver-elastic` for FEA stiffness assembly, future GUI volume
+/// renderers) can read the index stride without round-tripping through a
+/// separate metadata channel.
+#[derive(Debug, Clone)]
+pub struct VolumeMesh {
+    /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
+    pub vertices: Vec<f32>,
+    /// Tet element indices: 4 per element for P1, 10 per element for P2
+    /// (4 corner + 6 edge midpoints in Gmsh canonical order).
+    pub tet_indices: Vec<u32>,
+    /// Element order discriminator (P1 = 4 nodes/elem, P2 = 10 nodes/elem).
+    pub element_order: ElementOrderTag,
+    /// Optional per-vertex normals (flat, same layout as `vertices`); seldom
+    /// populated for volume meshes since interior nodes have no canonical
+    /// surface-normal direction, but kept here as an `Option` so a future
+    /// boundary-extraction step can carry surface normals through without
+    /// changing the type's shape.
     pub normals: Option<Vec<f32>>,
 }
 
@@ -3718,8 +3780,9 @@ mod tests {
         }
     }
 
-    /// Verify that the new multi-kernel `ReprKind` (BRep | Mesh | Sdf | Voxel) has
-    /// `Hash + Eq + Copy + Debug` and that all four variants are pairwise distinct.
+    /// Verify that the v0.3 multi-kernel `ReprKind` (BRep | Mesh | Sdf | Voxel |
+    /// VolumeMesh) has `Hash + Eq + Copy + Debug` and that all five variants are
+    /// pairwise distinct.
     ///
     /// The compile-time `match` arm at the end proves exhaustiveness — any future
     /// variant addition will cause a compile error here, prompting the developer to
@@ -3732,9 +3795,10 @@ mod tests {
             ReprKind::Mesh,
             ReprKind::Sdf,
             ReprKind::Voxel,
+            ReprKind::VolumeMesh,
         ];
 
-        // All four variants are pairwise distinct (6 pairs).
+        // All five variants are pairwise distinct (10 pairs).
         for i in 0..variants.len() {
             for j in 0..variants.len() {
                 if i != j {
@@ -3743,12 +3807,12 @@ mod tests {
             }
         }
 
-        // All four variants survive a HashMap round-trip (requires Hash + Eq + Copy).
+        // All five variants survive a HashMap round-trip (requires Hash + Eq + Copy).
         let mut map: HashMap<ReprKind, u32> = HashMap::new();
         for (idx, v) in variants.iter().enumerate() {
             map.insert(*v, idx as u32); // *v requires Copy
         }
-        assert_eq!(map.len(), 4, "all 4 ReprKind variants must be stored as distinct keys");
+        assert_eq!(map.len(), 5, "all 5 ReprKind variants must be stored as distinct keys");
         for (idx, v) in variants.iter().enumerate() {
             assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
         }
@@ -3761,6 +3825,7 @@ mod tests {
             ReprKind::Mesh => {}
             ReprKind::Sdf => {}
             ReprKind::Voxel => {}
+            ReprKind::VolumeMesh => {}
         }
     }
 
@@ -3819,11 +3884,12 @@ mod tests {
             Operation::CurveInterpCurve,
             Operation::CurveBezierCurve,
             Operation::CurveNurbsCurve,
-            // Convert (4 — one per ReprKind)
+            // Convert (5 — one per ReprKind)
             Operation::Convert { from: ReprKind::BRep },
             Operation::Convert { from: ReprKind::Mesh },
             Operation::Convert { from: ReprKind::Sdf },
             Operation::Convert { from: ReprKind::Voxel },
+            Operation::Convert { from: ReprKind::VolumeMesh },
         ];
 
         // (No count-pinning assertion: the compile-time exhaustive `match`
@@ -4020,5 +4086,75 @@ mod tests {
              enforces PRD line 70 'Fidget/OpenVDB selectors fall through to computed selectors' \
              without per-kernel opt-out code",
         );
+    }
+
+    /// Verify the v0.3 `VolumeMesh` struct and `ElementOrderTag` enum round-trip
+    /// through both P1 (4-node tetrahedron) and P2 (10-node tetrahedron) element
+    /// orders, and that `Clone` + `Debug` derives are intact so the type can be
+    /// stored in `RealizationCache<VolumeMesh>` and logged through tracing.
+    ///
+    /// The struct is the surface→volume meshing pipeline's output payload —
+    /// `reify-solver-elastic` (sibling task #2914) reads it to assemble FEA
+    /// stiffness matrices, so the field shape and element-order discriminator
+    /// are part of the public API contract.
+    #[test]
+    fn volume_mesh_struct_round_trip_with_p1_and_p2_element_order_tags() {
+        // P1 tetrahedron: 4 corner vertices, 4 indices per element.
+        let p1_mesh = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+                0.0, 0.0, 1.0, // v3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        assert_eq!(
+            p1_mesh.vertices.len(),
+            12,
+            "P1 tet has 4 vertices × 3 floats = 12 flat coordinates"
+        );
+        assert_eq!(
+            p1_mesh.tet_indices.len(),
+            4,
+            "P1 tet has 4 corner indices (one tetrahedron)"
+        );
+        assert_eq!(p1_mesh.element_order, ElementOrderTag::P1);
+
+        // P2 tetrahedron: 4 corner + 6 edge-midpoint vertices = 10 nodes per element.
+        let p2_mesh = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, // v0 (corner)
+                1.0, 0.0, 0.0, // v1 (corner)
+                0.0, 1.0, 0.0, // v2 (corner)
+                0.0, 0.0, 1.0, // v3 (corner)
+                0.5, 0.0, 0.0, // v4 (mid 0-1)
+                0.5, 0.5, 0.0, // v5 (mid 1-2)
+                0.0, 0.5, 0.0, // v6 (mid 0-2)
+                0.0, 0.0, 0.5, // v7 (mid 0-3)
+                0.5, 0.0, 0.5, // v8 (mid 1-3)
+                0.0, 0.5, 0.5, // v9 (mid 2-3)
+            ],
+            tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            element_order: ElementOrderTag::P2,
+            normals: None,
+        };
+        assert_eq!(
+            p2_mesh.tet_indices.len(),
+            10,
+            "P2 tet has 10 indices per element (4 corner + 6 edge midpoints, Gmsh canonical order)"
+        );
+        assert_ne!(
+            ElementOrderTag::P1,
+            ElementOrderTag::P2,
+            "P1 and P2 are distinct discriminants"
+        );
+
+        // Clone + Debug derives are part of the public surface so the type can
+        // be stored in caches and logged through tracing.
+        let cloned = p1_mesh.clone();
+        let _ = format!("{:?}", cloned);
     }
 }
