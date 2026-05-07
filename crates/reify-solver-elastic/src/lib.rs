@@ -53,4 +53,5 @@ pub mod elements;
 
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, tet_p1::TetP1, tet_p2::TetP2,
+    mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
 };
