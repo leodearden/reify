@@ -102,22 +102,22 @@ describe('LUT shape and spot-check values', () => {
     }
   });
 
-  it('viridisLut entry 0 matches matplotlib reference (0.267004, 0.004874, 0.329415) within 1e-3', () => {
-    expect(viridisLut[0]).toBeCloseTo(0.267004, 2);
-    expect(viridisLut[1]).toBeCloseTo(0.004874, 2);
-    expect(viridisLut[2]).toBeCloseTo(0.329415, 2);
+  it('viridisLut entry 0 matches matplotlib reference (0.267004, 0.004874, 0.329415) within 1e-5', () => {
+    expect(viridisLut[0]).toBeCloseTo(0.267004, 5);
+    expect(viridisLut[1]).toBeCloseTo(0.004874, 5);
+    expect(viridisLut[2]).toBeCloseTo(0.329415, 5);
   });
 
-  it('viridisLut entry 255 matches matplotlib reference (0.993248, 0.906157, 0.143936) within 1e-3', () => {
-    expect(viridisLut[255 * 3 + 0]).toBeCloseTo(0.993248, 2);
-    expect(viridisLut[255 * 3 + 1]).toBeCloseTo(0.906157, 2);
-    expect(viridisLut[255 * 3 + 2]).toBeCloseTo(0.143936, 2);
+  it('viridisLut entry 255 matches matplotlib reference (0.993248, 0.906157, 0.143936) within 1e-5', () => {
+    expect(viridisLut[255 * 3 + 0]).toBeCloseTo(0.993248, 5);
+    expect(viridisLut[255 * 3 + 1]).toBeCloseTo(0.906157, 5);
+    expect(viridisLut[255 * 3 + 2]).toBeCloseTo(0.143936, 5);
   });
 
-  it('magmaLut entry 0 matches matplotlib reference (0.001462, 0.000466, 0.013866) within 1e-3', () => {
-    expect(magmaLut[0]).toBeCloseTo(0.001462, 2);
-    expect(magmaLut[1]).toBeCloseTo(0.000466, 2);
-    expect(magmaLut[2]).toBeCloseTo(0.013866, 2);
+  it('magmaLut entry 0 matches matplotlib reference (0.001462, 0.000466, 0.013866) within 1e-5', () => {
+    expect(magmaLut[0]).toBeCloseTo(0.001462, 5);
+    expect(magmaLut[1]).toBeCloseTo(0.000466, 5);
+    expect(magmaLut[2]).toBeCloseTo(0.013866, 5);
   });
 
   it('rainbowLut entry 0 starts blue (R≈0, B≈1)', () => {
