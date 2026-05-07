@@ -443,9 +443,12 @@ mod tests {
                     [1.0, 2.0, 3.0],
                     "axis_origin must be propagated verbatim"
                 );
-                assert!(
-                    (angle_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
-                    "angle_rad must be propagated verbatim; got {angle_rad}"
+                // `angle_rad` is stored without modification — assert bit-exact
+                // equality rather than tolerance, since no arithmetic is applied.
+                assert_eq!(
+                    angle_rad,
+                    std::f64::consts::FRAC_PI_2,
+                    "angle_rad must be propagated verbatim"
                 );
                 // axis_dir must be unit-length after normalisation.
                 let norm: f64 = axis_dir.iter().map(|c| c * c).sum::<f64>().sqrt();
@@ -467,6 +470,115 @@ mod tests {
                 assert!(
                     (axis_dir[2] - 0.8).abs() < 1e-12,
                     "axis_dir[2] must be ~0.8; got {}",
+                    axis_dir[2]
+                );
+            }
+            other => panic!("expected Some(SweptKind::Revolve {{ ... }}) but got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_swept_body_revolve_normalizes_negative_component_axis_dir() {
+        // Sign-preservation check: `axis_dir = [-3.0, 0.0, -4.0]` has the same
+        // Euclidean norm as [3.0, 0.0, 4.0] (norm = 5), so the normalised result
+        // must be [-0.6, 0.0, -0.8].  This confirms the normalisation divides each
+        // component by the scalar norm rather than clamping or taking an absolute
+        // value — a rotation axis with reversed sign points in the opposite direction,
+        // which is semantically different and must not be silently flipped.
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(0),
+            axis_origin: [1.0, 2.0, 3.0],
+            axis_dir: [-3.0, 0.0, -4.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        let result = classify_swept_body(&ops, &handles);
+        match result {
+            Some(SweptKind::Revolve {
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            }) => {
+                assert_eq!(
+                    axis_origin,
+                    [1.0, 2.0, 3.0],
+                    "axis_origin must be propagated verbatim"
+                );
+                assert_eq!(
+                    angle_rad,
+                    std::f64::consts::FRAC_PI_2,
+                    "angle_rad must be propagated verbatim"
+                );
+                let norm: f64 = axis_dir.iter().map(|c| c * c).sum::<f64>().sqrt();
+                assert!(
+                    (norm - 1.0).abs() < 1e-12,
+                    "normalised axis_dir must be unit-length; got norm={norm}"
+                );
+                // Expected: [-3/5, 0/5, -4/5] = [-0.6, 0.0, -0.8].
+                assert!(
+                    (axis_dir[0] - (-0.6)).abs() < 1e-12,
+                    "axis_dir[0] must be ~-0.6; got {}",
+                    axis_dir[0]
+                );
+                assert!(
+                    axis_dir[1].abs() < 1e-12,
+                    "axis_dir[1] must be ~0.0; got {}",
+                    axis_dir[1]
+                );
+                assert!(
+                    (axis_dir[2] - (-0.8)).abs() < 1e-12,
+                    "axis_dir[2] must be ~-0.8; got {}",
+                    axis_dir[2]
+                );
+            }
+            other => panic!("expected Some(SweptKind::Revolve {{ ... }}) but got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_swept_body_revolve_preserves_already_unit_axis_dir() {
+        // Idempotence check: when `axis_dir` is already unit-length (norm = 1.0
+        // exactly), the normalisation step `v / sqrt(v·v)` is IEEE-754 bit-exact
+        // idempotent for standard-unit vectors such as [0.0, 0.0, 1.0].
+        // This test explicitly exercises the normalisation code path with a
+        // unit-length input and verifies that the output is still unit-length
+        // to 1e-12 and matches the input componentwise.  It ensures a future
+        // refactor of the normalisation logic cannot accidentally perturb
+        // already-normalised axes.
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(0),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::PI,
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        let result = classify_swept_body(&ops, &handles);
+        match result {
+            Some(SweptKind::Revolve {
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            }) => {
+                assert_eq!(axis_origin, [0.0, 0.0, 0.0], "axis_origin must be propagated verbatim");
+                assert_eq!(angle_rad, std::f64::consts::PI, "angle_rad must be propagated verbatim");
+                let norm: f64 = axis_dir.iter().map(|c| c * c).sum::<f64>().sqrt();
+                assert!(
+                    (norm - 1.0).abs() < 1e-12,
+                    "already-unit axis_dir must remain unit-length; got norm={norm}"
+                );
+                assert!(
+                    axis_dir[0].abs() < 1e-12,
+                    "axis_dir[0] must remain ~0.0; got {}",
+                    axis_dir[0]
+                );
+                assert!(
+                    axis_dir[1].abs() < 1e-12,
+                    "axis_dir[1] must remain ~0.0; got {}",
+                    axis_dir[1]
+                );
+                assert!(
+                    (axis_dir[2] - 1.0).abs() < 1e-12,
+                    "axis_dir[2] must remain ~1.0; got {}",
                     axis_dir[2]
                 );
             }
