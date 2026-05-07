@@ -198,6 +198,14 @@ pub fn assert_local_feature_history_well_formed(
 /// `kernel.chamfer_with_history` with the given box id and parameter.
 /// `op_name` is used in all failure messages (e.g. `"fillet"` or `"chamfer"`).
 ///
+/// # Preconditions
+///
+/// `param_m` must be small relative to `BOX_SIDE_M` (i.e. `param_m <= BOX_SIDE_M * 0.1`,
+/// or ≤ 1 mm on a 10 mm cube).  The 90%-of-original volume lower-bound assertion
+/// (assertion block (a)) is only valid for small parameter values; a large radius or
+/// distance would remove more than 10% of the box's material and cause a spurious
+/// failure.
+///
 /// # Panics
 ///
 /// Panics with a descriptive message if any assertion fails.
@@ -222,7 +230,7 @@ pub fn run_local_feature_reports_face_records<F>(
 
     let (result_id, history) = op(box_handle.id, param_m).unwrap_or_else(|e| {
         panic!(
-            "{op_name}_with_history should succeed for a 10mm box with {param_m:.4e}m {op_name}: {e:?}"
+            "{op_name}_with_history({param_m:.4e} m) should succeed for a 10mm box: {e:?}"
         )
     });
 
@@ -244,7 +252,8 @@ pub fn run_local_feature_reports_face_records<F>(
         "{op_name} volume must be strictly less than the original ({op_name} removes material): \
          got {vol_si}, original {orig_vol}"
     );
-    // Allow up to 10% material removal for a small 1mm op on a 10mm cube.
+    // Allow up to 10% material removal; precondition: param_m <= BOX_SIDE_M * 0.1
+    // (≤ 1 mm on a 10 mm cube) — see function-level precondition doc.
     assert!(
         vol_si >= 0.9 * orig_vol,
         "{op_name} volume should be at least 90% of original: got {vol_si}, original {orig_vol}"
