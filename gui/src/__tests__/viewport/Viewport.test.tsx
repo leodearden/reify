@@ -740,3 +740,118 @@ describe('Viewport FEA wiring', () => {
     expect(setColorizeOrder).toBeLessThan(rebuildOrder);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FEA auto-enable (step-25 — RED)
+// Verifies that:
+//   (a) first mesh arrival with non-empty scalar_channels triggers tryAutoEnable
+//   (b) after user disable, subsequent scalar-channel mesh does NOT re-enable
+//   (c) meshes with no scalar_channels or empty channels do NOT trigger auto-enable
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport FEA auto-enable', () => {
+  it('(a) first mesh with non-empty scalar_channels auto-enables and sets channel', () => {
+    const store = createFeaModeStore();
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+
+    render(() => <Viewport meshes={meshes()} viewportId="test-vp" feaModeStore={store as any} />);
+
+    // No meshes yet — should not be auto-enabled
+    expect(store.state.enabled).toBe(false);
+    expect(store.state.autoEnabledOnce).toBe(false);
+
+    // Deliver first mesh with a non-empty scalar channel
+    setMeshes({
+      'bracket': {
+        entity_path: 'bracket',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: { vonMises: new Float32Array([0.5]) },
+      },
+    });
+
+    // tryAutoEnable should have fired: enabled true, channel 'vonMises'
+    expect(store.state.enabled).toBe(true);
+    expect(store.state.autoEnabledOnce).toBe(true);
+    expect(store.state.channel).toBe('vonMises');
+  });
+
+  it('(b) tryAutoEnable does NOT re-enable after user manually disables (one-shot sticky)', () => {
+    const store = createFeaModeStore();
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+
+    render(() => <Viewport meshes={meshes()} viewportId="test-vp" feaModeStore={store as any} />);
+
+    // First auto-enable
+    setMeshes({
+      'bracket': {
+        entity_path: 'bracket',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: { vonMises: new Float32Array([0.5]) },
+      },
+    });
+    expect(store.state.enabled).toBe(true);
+
+    // User manually disables
+    store.setEnabled(false);
+    expect(store.state.enabled).toBe(false);
+
+    // Subsequent mesh update with scalar_channels — should NOT re-enable
+    setMeshes({
+      'bracket2': {
+        entity_path: 'bracket2',
+        vertices: new Float32Array([1, 1, 1]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: { vonMises: new Float32Array([0.9]) },
+      },
+    });
+
+    // autoEnabledOnce sticky — user disable preserved
+    expect(store.state.enabled).toBe(false);
+  });
+
+  it('(c) mesh without scalar_channels does NOT trigger auto-enable', () => {
+    const store = createFeaModeStore();
+
+    render(() => <Viewport
+      meshes={{
+        'bracket': {
+          entity_path: 'bracket',
+          vertices: new Float32Array([0, 0, 0]),
+          indices: new Uint32Array([0]),
+          normals: null,
+          // No scalar_channels field
+        },
+      }}
+      viewportId="test-vp"
+      feaModeStore={store as any}
+    />);
+
+    expect(store.state.enabled).toBe(false);
+    expect(store.state.autoEnabledOnce).toBe(false);
+  });
+
+  it('(c2) mesh with all-empty scalar_channels does NOT trigger auto-enable', () => {
+    const store = createFeaModeStore();
+
+    render(() => <Viewport
+      meshes={{
+        'bracket': {
+          entity_path: 'bracket',
+          vertices: new Float32Array([0, 0, 0]),
+          indices: new Uint32Array([0]),
+          normals: null,
+          scalar_channels: { vonMises: new Float32Array(0) }, // Empty array
+        },
+      }}
+      viewportId="test-vp"
+      feaModeStore={store as any}
+    />);
+
+    expect(store.state.enabled).toBe(false);
+    expect(store.state.autoEnabledOnce).toBe(false);
+  });
+});
