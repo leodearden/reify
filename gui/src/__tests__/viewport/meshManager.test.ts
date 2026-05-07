@@ -3,11 +3,12 @@ import type { MeshStandardMaterial } from 'three';
 import type { MeshData } from '../../types';
 
 // Track all created mocks.
-// mockBasicMaterials uses vi.hoisted so it is initialized before the async
-// vi.mock factory runs (async factories run before module-level const declarations).
-// The argument `makeMockMeshBasicMaterial(mockBasicMaterials)` is evaluated eagerly
-// at factory-execution time, so the array must already exist at that point.
+// mockBasicMaterials and mockPhongMaterials use vi.hoisted so they are initialized
+// before the async vi.mock factory runs (async factories run before module-level
+// const declarations). The arguments are evaluated eagerly at factory-execution time,
+// so the arrays must already exist at that point.
 const mockBasicMaterials = vi.hoisted<any[]>(() => []);
+const mockPhongMaterials = vi.hoisted<any[]>(() => []);
 // These arrays do NOT need vi.hoisted: each is only referenced by a class
 // constructor closure (captured by reference, dereferenced at construction time
 // rather than during factory execution), so plain const declarations are fine.
@@ -24,8 +25,9 @@ const mockGroupAdd = vi.fn();
 const mockGroupRemove = vi.fn();
 
 vi.mock('three', async () => {
-  const { makeMockMeshBasicMaterial } = await import('./mocks/threeMocks');
+  const { makeMockMeshBasicMaterial, makeMockMeshPhongMaterial } = await import('./mocks/threeMocks');
   const MockMeshBasicMaterial = makeMockMeshBasicMaterial(mockBasicMaterials);
+  const MockMeshPhongMaterial = makeMockMeshPhongMaterial(mockPhongMaterials);
 
   class MockBufferGeometry {
     attributes: Record<string, any> = {};
@@ -117,6 +119,7 @@ vi.mock('three', async () => {
     BufferGeometry: MockBufferGeometry,
     BufferAttribute: MockBufferAttribute,
     MeshStandardMaterial: MockMeshStandardMaterial,
+    MeshPhongMaterial: MockMeshPhongMaterial,
     MeshBasicMaterial: MockMeshBasicMaterial,
     Mesh: MockMesh,
     Group: MockGroup,
@@ -142,6 +145,7 @@ beforeEach(() => {
   mockMaterials.length = 0;
   mockMeshes.length = 0;
   mockBasicMaterials.length = 0;
+  mockPhongMaterials.length = 0;
   mockGroups.length = 0;
 });
 
@@ -730,6 +734,100 @@ describe('meshManager', () => {
       expect(mesh).toBeDefined();
 
       // No color attribute — scalar_channels are ignored when colorize is unset
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+    });
+  });
+
+  describe('colorize path (C-02)', () => {
+    const sentinelBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+    it('headline: mesh with matching scalar_channel uses MeshPhongMaterial with vertexColors', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+      manager.sync({ A: meshData });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(mesh).toBeDefined();
+
+      // (a) material is a phong material, not a standard material
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(false);
+
+      // (b) phong material options
+      const mat = mesh.material as any;
+      expect(mat.vertexColors).toBe(true);
+      expect(mat.flatShading).toBe(false);
+      expect(mat.side).toBe(2); // DoubleSide
+
+      // (c) geometry has color attribute with baked scalars
+      const colorAttr = (mesh.geometry as any).attributes.color;
+      expect(colorAttr).toBeDefined();
+      expect(colorAttr.itemSize).toBe(3);
+      expect(Array.from(colorAttr.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
+    });
+
+    it('channel-presence gate: mesh missing the colorize channel falls back to MeshStandardMaterial', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      // Only has displacement_magnitude, NOT vonMises
+      const meshData: MeshData = {
+        entity_path: 'B',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { displacement_magnitude: new Float32Array([0.1, 0.2, 0.3]) },
+      };
+      manager.sync({ B: meshData });
+
+      const mesh = manager.getSceneMeshes().get('B')!;
+      expect(mesh).toBeDefined();
+
+      // Falls back to standard material — channel not present
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(false);
+
+      // No color attribute
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+    });
+
+    it('mesh with no scalar_channels at all falls back to MeshStandardMaterial', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      const meshData: MeshData = {
+        entity_path: 'C',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        // no scalar_channels field
+      };
+      manager.sync({ C: meshData });
+
+      const mesh = manager.getSceneMeshes().get('C')!;
+      expect(mesh).toBeDefined();
+
+      // Falls back to standard material — no scalar_channels
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(false);
       expect((mesh.geometry as any).attributes.color).toBeUndefined();
     });
   });
