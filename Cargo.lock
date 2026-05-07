@@ -4094,6 +4094,7 @@ dependencies = [
  "cxx-build",
  "inventory",
  "reify-eval",
+ "reify-expr",
  "reify-test-support",
  "reify-types",
  "tempfile",

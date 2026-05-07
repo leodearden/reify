@@ -25,5 +25,6 @@ cc = "1"
 # the production library stays free of the eval dependency.
 [dev-dependencies]
 reify-eval.workspace = true
+reify-expr.workspace = true
 reify-test-support.workspace = true
 tempfile.workspace = true
