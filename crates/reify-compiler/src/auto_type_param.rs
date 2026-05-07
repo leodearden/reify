@@ -388,7 +388,7 @@ fn emit_no_feasible_cross_product_diagnostic(
     params: &[AutoTypeParam],
     per_param_candidates: &[Vec<String>],
     cross_product_size: usize,
-    _max_depth: usize,
+    max_depth: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
@@ -397,6 +397,7 @@ fn emit_no_feasible_cross_product_diagnostic(
         .zip(per_param_candidates.iter())
         .map(|(p, candidates)| format!("{}={}", p.name, candidates.len()))
         .collect();
+    let depth = params.len();
 
     // Smallest infeasibility witness: the lex-first level-1 prefix.
     //
@@ -421,6 +422,7 @@ fn emit_no_feasible_cross_product_diagnostic(
         "auto type-parameter cross-product search found no feasible assignment for parameters [{names}]: \
          candidates per parameter: {counts}; \
          cross-product size: {size}; \
+         depth: {depth} (max_depth = {max_depth}); \
          smallest infeasibility witness: {witness_param_name}={witness_fqn} rules out all {ruled_out} downstream assignments",
         names = param_names.join(", "),
         counts = per_param_counts.join(", "),
