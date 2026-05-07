@@ -899,26 +899,34 @@ mod tests {
         }
     }
 
-    /// Sphere `φ = |p| − 5` on a 16×16×16 grid: the analytic medial
-    /// axis is a single point at the grid center. The algorithm uses
-    /// per-voxel registration (a voxel V is medial iff `d⁺(V) ≈ d⁻(V)`),
-    /// which has a known limitation on point-medial geometries on
-    /// even-N grids: no voxel sits exactly at origin, so for every
-    /// in-band voxel V at distance `|V|>0` from origin,
-    /// `abs_diff = 2|V|` exceeds the equality threshold by construction.
-    /// The exact-center voxel (odd-N grids only) has degenerate
-    /// gradient and is skipped by the `GRADIENT_EPSILON` filter. The
-    /// expected outcome is therefore the SAME as for the thick-block
-    /// test (step-11): mask is **empty OR** contains only voxels
-    /// within ~2 voxels of the grid center.
+    /// Sphere `φ = |p| − 5` on a 16×16×16 grid — **negative-signal-only**
+    /// regression check.
     ///
-    /// What this test still validates is the **negative** signature: no
-    /// far-from-center voxels (band-shell ring, face-adjacent
-    /// false positives) appear in the mask. That is the actual
-    /// regression risk for the bidirectional-walk + distinctness
-    /// pipeline on radial geometry.
+    /// The analytic medial axis of a sphere is a single point at the
+    /// grid center, but per-voxel registration (a voxel V is medial iff
+    /// `d⁺(V) ≈ d⁻(V)`) cannot reliably tag it on this fixture: on an
+    /// even-N grid no voxel sits exactly at origin, so every in-band
+    /// voxel V at distance `|V| > 0` from origin sees
+    /// `abs_diff = 2|V|` and fails the equality test by construction;
+    /// the exact-center voxel that would clear it (odd-N grids only)
+    /// has degenerate gradient and is skipped by the
+    /// `GRADIENT_EPSILON` filter. An algorithm that always returned
+    /// an empty mask would therefore PASS this test trivially —
+    /// non-emptiness is intentionally NOT asserted.
+    ///
+    /// What this test DOES catch is the **negative** signature: no
+    /// band-shell ring, no face-adjacent or far-from-center false
+    /// positives appear in the mask. That is the real regression
+    /// risk for the bidirectional-walk + distinctness pipeline on
+    /// radial geometry — a relaxed distinctness check would let the
+    /// band-shell voxels (where the bidirectional walk hits the same
+    /// surface patch on both sides with poorly-defined gradient at
+    /// the medial) leak into the mask. Positive verification of the
+    /// algorithm's mediality decision lives in
+    /// [`compute_medial_mask_flags_slab_centerline_voxels`] (slab
+    /// fixture, plane-medial, voxel-aligned).
     #[test]
-    fn compute_medial_mask_on_sphere_is_empty_or_centered() {
+    fn compute_medial_mask_on_sphere_admits_no_far_voxels() {
         let n = 16usize;
         let sdf = sphere_sdf_3d(5.0, n);
         let mask = compute_medial_mask(&sdf, &MedialOptions::default())
@@ -1097,21 +1105,31 @@ mod tests {
         }
     }
 
-    /// Thick block `φ = max(|p_i|) − 6` on a 16×16×16 grid: the analytic
-    /// medial axis is a single point at the cube centroid (origin). The
-    /// deep interior (`|φ| ≫ 3`) is excluded by the narrow-band filter,
-    /// and the band-shell voxels (`|φ| ≤ 3`) lie near a single face/edge/
-    /// corner so their bidirectional ray walks are profoundly asymmetric
-    /// (`d⁺ ≈ 0.5` vs `d⁻ ≈ 11.5` on a face, which fails the relative
-    /// equality test by a wide margin).
+    /// Thick block `φ = max(|p_i|) − 6` on a 16×16×16 grid —
+    /// **negative-signal-only** regression check.
     ///
-    /// Asserts: mask is **empty OR** contains only voxels within 1 voxel
-    /// of the cube centroid (Euclidean index distance ≤ √3 ≈ 1.732).
-    /// Crucially, NO face-adjacent or near-corner voxels appear in the
-    /// mask — those are the false-positive risk for an under-defended
-    /// distinctness check.
+    /// The analytic medial axis is a single point at the cube
+    /// centroid (origin). The deep interior (`|φ| ≫ 3`) is excluded
+    /// by the narrow-band filter, and the band-shell voxels
+    /// (`|φ| ≤ 3`) lie near a single face/edge/corner so their
+    /// bidirectional ray walks are profoundly asymmetric
+    /// (`d⁺ ≈ 0.5` vs `d⁻ ≈ 11.5` on a face, which fails the relative
+    /// equality test by a wide margin). Per-voxel registration cannot
+    /// reliably tag the centroid on an even-N grid (no voxel at exact
+    /// origin); an algorithm that always returned an empty mask would
+    /// PASS this test trivially — non-emptiness is intentionally NOT
+    /// asserted.
+    ///
+    /// What this test DOES catch is the **negative** signature: NO
+    /// face-adjacent or near-corner voxels appear in the mask. Those
+    /// are the false-positive risk for an under-defended distinctness
+    /// check (a relaxed `normal_antiparallel_threshold` would admit
+    /// same-face hits at the band shell and produce a face-adjacent
+    /// ring of false positives). Positive verification of the
+    /// algorithm's mediality decision lives in
+    /// [`compute_medial_mask_flags_slab_centerline_voxels`].
     #[test]
-    fn compute_medial_mask_on_thick_block_is_empty_or_centroid_only() {
+    fn compute_medial_mask_on_thick_block_admits_no_face_voxels() {
         let n = 16usize;
         let sdf = thick_block_sdf_3d(6.0, n);
         let mask = compute_medial_mask(&sdf, &MedialOptions::default())
