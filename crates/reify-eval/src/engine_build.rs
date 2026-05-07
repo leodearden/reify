@@ -867,7 +867,11 @@ impl Engine {
         // pair is fed to `classify_swept_body` for Phase A swept-body
         // classification (task 2982). Cleared on rollback alongside
         // `step_handles.truncate(handle_start)` below.
-        let mut realization_ops: Vec<GeometryOp> = Vec::new();
+        //
+        // Pre-sized to `operations.len()` so `Vec` growth never reallocates on
+        // the build hot path. Each successful op contributes exactly one entry,
+        // so this is the upper bound on capacity needed.
+        let mut realization_ops: Vec<GeometryOp> = Vec::with_capacity(operations.len());
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -881,10 +885,6 @@ impl Engine {
             match geom_op {
                 Ok(geom_op) => match kernel.execute_with_history(&geom_op) {
                     Ok((handle, attribute_history)) => {
-                        // Capture the compiled op parallel to step_handles for
-                        // post-loop classification (task 2982). Cleared on
-                        // rollback below.
-                        realization_ops.push(geom_op.clone());
                         // Record the parallel-array feature tag for this handle.
                         if let Some(&tag) = feature_tags.get(op_idx) {
                             feature_tag_table.record(handle.id, tag);
@@ -981,6 +981,12 @@ impl Engine {
                             }
                         }
                         step_handles.push(handle.id);
+                        // Capture the compiled op parallel to step_handles for
+                        // post-loop classification (task 2982). Cleared on
+                        // rollback below. Pushed last in this arm so all the
+                        // earlier `&geom_op` borrows above have already
+                        // released — we move ownership rather than cloning.
+                        realization_ops.push(geom_op);
                     }
                     Err(e) => {
                         let err_msg = format!("geometry error: {}", e);
