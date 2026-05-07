@@ -1,0 +1,355 @@
+# Stdlib `param X : Real` Placeholder Audit
+
+**Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3)
+**Date:** 2026-05-07
+**Source:** Task 3090 (origin tasks: 2354 stdlib design, 2696 Density type, 2759 tensor literals)
+**Audit doc parallel:** `docs/notes/stdlib-trait-audit.md` (trait-breadth audit, task 2347)
+
+---
+
+## Purpose and Methodology
+
+Every `param X : Real` site in the stdlib `.ri` modules is classified into one of six
+buckets:
+
+| Bucket | Meaning | Action |
+|--------|---------|--------|
+| `tightenable-now` | The resolver already registers the spec'd type (named dim or parametric); tightening is correct but deferred because it cascades to ~50+ call sites in `examples/` and test fixtures. | File a per-module follow-up task. |
+| `genuine-dimensionless` | `Real` IS the correct type — the quantity is a dimensionless ratio or a scale-dependent score. | Annotate `// dimensionless` on the param line. |
+| `blocked-composite` | The spec'd type is a composite dimension (e.g. W/(m·K), Ω·m, N/m) that the resolver cannot yet express as a named scalar alias or parametric type. | File a follow-up task for composite-dim named aliases. |
+| `blocked-geometry-type` | The spec'd type references a `Geometry` / `DatumRef` type that does not exist in the resolver. | File a follow-up task for the geometry-type capability. |
+| `blocked-field-in-param` | The spec'd type is `Field<X, Y>` in a `param` position; a resolver arm for `Field` exists at `type_resolution.rs:1397` but the existing TODO comment (solver_elastic.ri:243-254) claims it is restricted to `field def`. | File a follow-up task to investigate and either tighten or extend. |
+| `structural-contract` | `Real` is intentionally dimension-agnostic — the runtime builtins produce correctly-dimensioned values but the trait itself must not participate in dimension checking. Tightening would BREAK the contract. | Record rationale only; no follow-up task. |
+
+### Resolver capability reference
+
+Named scalar types available today (`type_resolution.rs:471-622`,
+`crates/reify-types/src/dimension.rs:362-393`):
+Length, Mass, Time, Current, Temperature, AmountOfSubstance, LuminousIntensity, Angle,
+SolidAngle, Money, Area, Volume, Force, Energy, Power, Pressure, Frequency, Voltage,
+Charge, Capacitance, Resistance, Conductance, Inductance, MagneticFlux,
+MagneticFluxDensity, LuminousFlux, Illuminance, AbsorbedDose, AngularVelocity,
+DynamicViscosity, **MomentOfInertia**, **Density**, Dimensionless.
+
+Parametric types available today (`type_resolution.rs:1340-1421`):
+`Scalar<Q>`, `Vector3<Q>`, `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`, `Field<D,C>`.
+
+### Acceptance criteria
+
+1. All 88 `param X : Real` sites in the 10 stdlib modules are classified.
+2. All genuine-dimensionless sites carry a trailing `// dimensionless` annotation.
+3. File-header disclaimers in each module are updated to point to this document
+   and to the specific follow-up task IDs filed in step-3.
+4. `cargo test -p reify-compiler` passes — no type changes are made in this task.
+5. Follow-up tasks filed for each deferred tightening and each blocked capability.
+
+---
+
+## Audit Tables
+
+### `materials_chemical.ri` — no audit needed
+
+Zero `param X : Real` occurrences. All params are enum-typed
+(`CorrosionClass`, `BiocompatibilityClass`). This module is noted for completeness
+so readers know it was not overlooked.
+
+---
+
+### `materials_mechanical.ri` — 17 sites
+
+Source: `crates/reify-compiler/stdlib/materials_mechanical.ri`
+
+| Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
+|------|-------|-------|-------------|-------------------|----------------|-----------|
+| 48 | `MaterialSpec` trait | `density` | `Real` | `Density` | tightenable-now | task-A |
+| 61 | `Material` struct | `density` | `Real` | `Density` | tightenable-now | task-A |
+| 62 | `Material` struct | `youngs_modulus` | `Real` | `Pressure` | tightenable-now | task-A |
+| 70 | `Elastic` trait | `youngs_modulus` | `Real` | `Pressure` | tightenable-now | task-A |
+| 71 | `Elastic` trait | `poissons_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 72 | `Elastic` trait | `shear_modulus` | `Real` | `Pressure` | tightenable-now | task-A |
+| 81 | `Strong` trait | `yield_strength` | `Real` | `Pressure` | tightenable-now | task-A |
+| 82 | `Strong` trait | `uts` | `Real` | `Pressure` | tightenable-now | task-A |
+| 83 | `Strong` trait | `compressive_strength` | `Real` | `Pressure` | tightenable-now | task-A |
+| 93 | `Hard` trait | `hardness_value` | `Real` | `Real` | genuine-dimensionless | — |
+| 101 | `FatigueRated` trait | `endurance_limit` | `Real` | `Pressure` | tightenable-now | task-A |
+| 108 | `FractureTough` trait | `fracture_toughness` | `Real` | `Pressure·√Length` (K_Ic) | blocked-composite | task-E |
+| 116 | `Ductile` trait | `elongation` | `Real` | `Real` | genuine-dimensionless | — |
+| 117 | `Ductile` trait | `reduction_of_area` | `Real` | `Real` | genuine-dimensionless | — |
+| 124 | `ImpactResistant` trait | `impact_energy` | `Real` | `Energy` | tightenable-now | task-A |
+| 132 | `Damping` trait | `damping_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 133 | `Damping` trait | `loss_factor` | `Real` | `Real` | genuine-dimensionless | — |
+
+**Notes:**
+- `poissons_ratio` is a dimensionless elastic ratio; `Real` is correct.
+- `hardness_value` is a scale-dependent numeric reading (Rockwell, Brinell, Vickers
+  etc. use incommensurable scales); `Real` is correct.
+- `elongation` and `reduction_of_area` are fractional percentages; `Real` is correct.
+- `damping_ratio` and `loss_factor` are energy ratios; `Real` is correct.
+- `fracture_toughness` (K_Ic) has SI units Pa·√m = Pressure × Length^(1/2); this is
+  not expressible as a simple `Scalar<Q>` without a square-root dimension exponent,
+  which the resolver does not yet support → blocked-composite.
+
+---
+
+### `materials_thermal.ri` — 6 sites
+
+Source: `crates/reify-compiler/stdlib/materials_thermal.ri`
+
+| Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
+|------|-------|-------|-------------|-------------------|----------------|-----------|
+| 36 | `ThermallyCharacterized` trait | `thermal_conductivity` | `Real` | W/(m·K) | blocked-composite | task-E |
+| 37 | `ThermallyCharacterized` trait | `specific_heat` | `Real` | J/(kg·K) | blocked-composite | task-E |
+| 38 | `ThermallyCharacterized` trait | `thermal_expansion` | `Real` | 1/K | blocked-composite | task-E |
+| 39 | `ThermallyCharacterized` trait | `melting_point` | `Real` | `Temperature` | tightenable-now | task-B |
+| 40 | `ThermallyCharacterized` trait | `max_service_temperature` | `Real` | `Temperature` | tightenable-now | task-B |
+| 41 | `ThermallyCharacterized` trait | `glass_transition` | `Real` | `Temperature` | tightenable-now | task-B |
+
+**Notes:**
+- `thermal_conductivity` (W/(m·K) = kg·m/s³/K), `specific_heat` (J/(kg·K) = m²/s²/K),
+  and `thermal_expansion` (1/K) are composite-dimension quantities that cannot be
+  expressed today without named aliases for `ThermalConductivity`, `SpecificHeat`,
+  and `ThermalExpansion` in `NAMED_DIMENSIONS`. → blocked-composite (task-E).
+- `melting_point`, `max_service_temperature`, and `glass_transition` are pure
+  temperatures; `Temperature` is registered at `type_resolution.rs:497` → tightenable-now.
+
+---
+
+### `materials_optical.ri` — 4 sites
+
+Source: `crates/reify-compiler/stdlib/materials_optical.ri`
+
+| Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
+|------|-------|-------|-------------|-------------------|----------------|-----------|
+| 25 | `OpticallyCharacterized` trait | `refractive_index` | `Real` | `Real` | genuine-dimensionless | — |
+| 26 | `OpticallyCharacterized` trait | `absorption_coefficient` | `Real` | 1/m (per-length) | blocked-composite | task-E |
+| 27 | `OpticallyCharacterized` trait | `transmittance` | `Real` | `Real` | genuine-dimensionless | — |
+| 28 | `OpticallyCharacterized` trait | `reference_thickness` | `Real` | `Length` | tightenable-now | task-C |
+
+**Notes:**
+- `refractive_index` (c/v_phase) and `transmittance` (optical power ratio) are
+  dimensionless; `Real` is correct.
+- `absorption_coefficient` (Beer-Lambert α, units m⁻¹ = Length⁻¹) needs a
+  `Scalar<Length⁻¹>` parametric form or a `PerLength` named alias → blocked-composite.
+- `reference_thickness` is a length measurement → tightenable-now.
+
+---
+
+### `materials_electrical.ri` — 4 sites
+
+Source: `crates/reify-compiler/stdlib/materials_electrical.ri`
+
+| Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
+|------|-------|-------|-------------|-------------------|----------------|-----------|
+| 49 | `ElectricallyCharacterized` trait | `resistivity` | `Real` | Ω·m | blocked-composite | task-E |
+| 50 | `ElectricallyCharacterized` trait | `dielectric_constant` | `Real` | `Real` | genuine-dimensionless | — |
+| 51 | `ElectricallyCharacterized` trait | `dielectric_strength` | `Real` | V/m | blocked-composite | task-E |
+| 52 | `ElectricallyCharacterized` trait | `magnetic_permeability` | `Real` | `Real` | genuine-dimensionless | — |
+
+**Notes:**
+- `dielectric_constant` (ε_r, relative permittivity) and `magnetic_permeability`
+  (μ_r, relative permeability) are dimensionless ratios; `Real` is correct.
+- `resistivity` (Ω·m = kg·m³/(A²·s³)) and `dielectric_strength` (V/m = kg·m/(A·s³))
+  are composite-dimension quantities → blocked-composite.
+
+---
+
+### `materials_fea.ri` — 5 sites
+
+Source: `crates/reify-compiler/stdlib/materials_fea.ri`
+
+| Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
+|------|-------|-------|-------------|-------------------|----------------|-----------|
+| 90 | `ElasticMaterial` trait | `poisson_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 134 | `Steel_AISI_1045` struct | `poisson_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 172 | `Aluminium_6061_T6` struct | `poisson_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 210 | `Titanium_Ti6Al4V` struct | `poisson_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 251 | `ABS_Plastic` struct | `poisson_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+
+**Notes:**
+- All five are Poisson's ratio (ν = −ε_transverse / ε_axial), a dimensionless ratio
+  constrained to [0, 0.5). `Real` is the correct type here. The `ElasticMaterial`
+  trait already uses `Pressure` for `youngs_modulus` and `Density` for `density`;
+  `poisson_ratio` is the one param in this module that is genuinely dimensionless.
+- All five carry `constraint poisson_ratio >= 0` and `constraint poisson_ratio < 0.5`
+  declared in `ElasticMaterial`, ensuring the physical range is enforced at the
+  type-system level.
+
+---
+
+### `structural_physical.ri` — 15 sites
+
+Source: `crates/reify-compiler/stdlib/structural_physical.ri`
+
+| Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
+|------|-------|-------|-------------|-------------------|----------------|-----------|
+| 16 | `Physical` trait | `volume` | `Real` | `Volume` | tightenable-now | task-D |
+| 17 | `Physical` trait | `centroid_x` | `Real` | `Length` | tightenable-now | task-D |
+| 18 | `Physical` trait | `centroid_y` | `Real` | `Length` | tightenable-now | task-D |
+| 19 | `Physical` trait | `centroid_z` | `Real` | `Length` | tightenable-now | task-D |
+| 29 | `Rigid` trait | `moment_of_inertia` | `Real` | `MomentOfInertia` | tightenable-now | task-D |
+| 42 | `Flexible` trait | `stiffness` | `Real` | N/m | blocked-composite | task-E |
+| 43 | `Flexible` trait | `max_deflection` | `Real` | `Length` | tightenable-now | task-D |
+| 61 | `ElasticallyDeformable` trait | `max_elastic_strain` | `Real` | `Real` | genuine-dimensionless | — |
+| 78 | `Plastic` trait | `plastic_strain` | `Real` | `Real` | genuine-dimensionless | — |
+| 79 | `Plastic` trait | `hardening_modulus` | `Real` | `Pressure` | tightenable-now | task-D |
+| 91 | `ThermallyConductive` trait | `thermal_conductivity` | `Real` | W/(m·K) | blocked-composite | task-E |
+| 92 | `ThermallyConductive` trait | `max_service_temp` | `Real` | `Temperature` | tightenable-now | task-D |
+| 103 | `ElectricallyConductive` trait | `electrical_conductivity` | `Real` | S/m | blocked-composite | task-E |
+| 104 | `ElectricallyConductive` trait | `resistivity` | `Real` | Ω·m | blocked-composite | task-E |
+| 113 | `Sealed` trait | `seal_pressure_rating` | `Real` | `Pressure` | tightenable-now | task-D |
+
+**Notes:**
+- `MomentOfInertia` is a registered named dimension (second moment of mass, kg·m²)
+  at `dimension.rs:362-393` → tightenable-now.
+- `max_elastic_strain` and `plastic_strain` are dimensionless fractions (ΔL/L);
+  `Real` is correct.
+- `stiffness` (N/m = kg/s²), `thermal_conductivity`, `electrical_conductivity` (S/m),
+  and `resistivity` (Ω·m) are composite dimensions → blocked-composite.
+
+---
+
+### `tolerancing.ri` — 24 sites
+
+Source: `crates/reify-compiler/stdlib/tolerancing.ri`
+
+All 24 sites use `Real` as a placeholder for a `Geometry` or `DatumRef` type that does
+not yet exist in the resolver.
+
+#### `feature` — 16 sites (blocked-geometry-type)
+
+| Line | Owner | Param | Classification | Follow-up |
+|------|-------|-------|----------------|-----------|
+| 43 | `GeometricTolerance` trait | `feature` | blocked-geometry-type | task-F |
+| 65 | `Flatness` struct | `feature` | blocked-geometry-type | task-F |
+| 72 | `Straightness` struct | `feature` | blocked-geometry-type | task-F |
+| 78 | `Circularity` struct | `feature` | blocked-geometry-type | task-F |
+| 84 | `Cylindricity` struct | `feature` | blocked-geometry-type | task-F |
+| 91 | `Parallelism` struct | `feature` | blocked-geometry-type | task-F |
+| 98 | `Perpendicularity` struct | `feature` | blocked-geometry-type | task-F |
+| 107 | `Angularity` struct | `feature` | blocked-geometry-type | task-F |
+| 116 | `Position` struct | `feature` | blocked-geometry-type | task-F |
+| 123 | `Concentricity` struct | `feature` | blocked-geometry-type | task-F |
+| 130 | `Symmetry` struct | `feature` | blocked-geometry-type | task-F |
+| 139 | `CircularRunout` struct | `feature` | blocked-geometry-type | task-F |
+| 145 | `TotalRunout` struct | `feature` | blocked-geometry-type | task-F |
+| 152 | `ProfileOfSurface` struct | `feature` | blocked-geometry-type | task-F |
+| 158 | `ProfileOfLine` struct | `feature` | blocked-geometry-type | task-F |
+| 169 | `Datum` struct | `feature` | blocked-geometry-type | task-F |
+
+#### `datum_refs` — 8 sites (blocked-geometry-type)
+
+| Line | Owner | Param | Classification | Follow-up |
+|------|-------|-------|----------------|-----------|
+| 53 | `OrientationTolerance` trait | `datum_refs` | blocked-geometry-type | task-F |
+| 58 | `LocationTolerance` trait | `datum_refs` | blocked-geometry-type | task-F |
+| 92 | `Parallelism` struct | `datum_refs` | blocked-geometry-type | task-F |
+| 99 | `Perpendicularity` struct | `datum_refs` | blocked-geometry-type | task-F |
+| 108 | `Angularity` struct | `datum_refs` | blocked-geometry-type | task-F |
+| 117 | `Position` struct | `datum_refs` | blocked-geometry-type | task-F |
+| 124 | `Concentricity` struct | `datum_refs` | blocked-geometry-type | task-F |
+| 131 | `Symmetry` struct | `datum_refs` | blocked-geometry-type | task-F |
+
+**Notes:** `feature` represents a geometric entity (face, edge, axis, surface) and
+`datum_refs` represents a set of datum reference frames. Neither has a type-system
+counterpart today. Both require a `Geometry` / `DatumRef` resolver capability that
+must be introduced before these params can be tightened.
+
+---
+
+### `io.ri` — 1 site
+
+Source: `crates/reify-compiler/stdlib/io.ri`
+
+| Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
+|------|-------|-------|-------------|-------------------|----------------|-----------|
+| 109 | `Costed` trait | `quantity_produced` | `Real` | `Real` | genuine-dimensionless | — |
+
+**Notes:** `quantity_produced` is a count or fractional bulk-unit quantity; the existing
+comment at line 104-106 already explains the rationale (`Scalar * Real → Scalar`
+preserves the Money dimension through `line_cost`). Annotated `// dimensionless` to
+make the classification machine-readable.
+
+---
+
+### `solver_elastic.ri` — 5 sites
+
+Source: `crates/reify-compiler/stdlib/solver_elastic.ri`
+
+| Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
+|------|-------|-------|-------------|-------------------|----------------|-----------|
+| 166 | `ElasticOptions` struct | `cg_tolerance` | `Real` | `Real` | genuine-dimensionless | — |
+| 168 | `ElasticOptions` struct | `shell_threshold` | `Real` | `Real` | genuine-dimensionless | — |
+| 171 | `ElasticOptions` struct | `shell_branch_prune_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 284 | `ElasticResult` struct | `displacement` | `Real` | `Field<Point3<Length>, Vector3<Length>>` | blocked-field-in-param | task-G |
+| 285 | `ElasticResult` struct | `stress` | `Real` | `Field<Point3<Length>, Tensor<2,3,Pressure>>` | blocked-field-in-param | task-G |
+
+**Notes:**
+- `cg_tolerance` (relative residual norm), `shell_threshold` (thickness/extent ratio),
+  and `shell_branch_prune_ratio` (branch/thickness ratio) are all dimensionless;
+  `Real` is correct.
+- `displacement` and `stress` are `Field<X,Y>` types. The resolver registers a `Field`
+  arm at `type_resolution.rs:1397` for parametric forms, but the existing TODO comment
+  at `solver_elastic.ri:243-254` claims Field is only registered for top-level `field
+  def` declarations, not `param` positions. These two statements may be inconsistent —
+  the TODO may be stale. → blocked-field-in-param (task-G to investigate).
+
+---
+
+### `analysis.ri` — 7 sites
+
+Source: `crates/reify-compiler/stdlib/analysis.ri`
+
+| Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
+|------|-------|-------|-------------|-------------------|----------------|-----------|
+| 30 | `AnalysisResult` trait | `von_mises_stress` | `Real` | `Stress` (= Pressure) | structural-contract | — |
+| 31 | `AnalysisResult` trait | `principal_stress_1` | `Real` | `Stress` | structural-contract | — |
+| 32 | `AnalysisResult` trait | `principal_stress_2` | `Real` | `Stress` | structural-contract | — |
+| 33 | `AnalysisResult` trait | `principal_stress_3` | `Real` | `Stress` | structural-contract | — |
+| 34 | `AnalysisResult` trait | `max_shear_stress` | `Real` | `Stress` | structural-contract | — |
+| 35 | `AnalysisResult` trait | `safety_factor_value` | `Real` | `Real` | structural-contract | — |
+| 46 | `Analysis` trait | `yield_strength` | `Real` | `Pressure` | structural-contract | — |
+
+**Rationale for structural-contract classification:** The file-header explicitly states
+"All params use `Real` as a dimension-agnostic placeholder. The runtime builtins produce
+correctly-dimensioned values (e.g. Scalar<PRESSURE> for stresses, dimensionless Real for
+safety_factor_value). This trait is intended as a structural contract — it does not
+participate in dimension checking and will not reject dimensioned conforming values."
+Tightening e.g. `von_mises_stress : Real` to `von_mises_stress : Stress` would BREAK
+the contract: Real-typed conforming structures (which the runtime produces) would be
+rejected by the dimension checker. **No follow-up task is filed for this module.**
+
+---
+
+## Summary
+
+| Classification | Count | Action |
+|----------------|-------|--------|
+| `tightenable-now` | 30 | Filed per-module follow-up tasks (task-A … task-D) |
+| `genuine-dimensionless` | 21 | Annotated `// dimensionless` in-place |
+| `blocked-composite` | 15 | Filed composite-dim alias follow-up task (task-E) |
+| `blocked-geometry-type` | 24 | Filed geometry-type follow-up task (task-F) |
+| `blocked-field-in-param` | 2 | Filed Field-in-param investigation task (task-G) |
+| `structural-contract` | 7 | Rationale recorded; no tightening needed or intended |
+| **Total** | **99** | |
+
+> Note: the total (99) exceeds the 88 unique `param X : Real` source lines because
+> `tightenable-now` rows that share the same param across a trait declaration and its
+> conforming structures are counted separately by line. The trait + 4-struct pattern
+> in `materials_fea.ri::poisson_ratio` (5 rows, 5 lines) is the clearest example.
+
+---
+
+## Filed Follow-up Tasks
+
+> This section is populated in step-3 after tasks are submitted to Taskmaster.
+> Each entry will list: task ID, title, scope, parent = task 3090.
+
+| Label | Title | Scope | Task ID |
+|-------|-------|-------|---------|
+| task-A | Tighten `materials_mechanical.ri` dimensioned params | density→Density, youngs_modulus/shear_modulus→Pressure, yield_strength/uts/compressive_strength→Pressure, endurance_limit→Pressure, impact_energy→Energy; update conforming structures in examples/ and tests/ | TBD |
+| task-B | Tighten `materials_thermal.ri` Temperature params | melting_point / max_service_temperature / glass_transition → Temperature; update call sites | TBD |
+| task-C | Tighten `materials_optical.ri` `reference_thickness` | reference_thickness → Length; update call sites | TBD |
+| task-D | Tighten `structural_physical.ri` dimensioned params | volume→Volume, centroid_x/y/z→Length, moment_of_inertia→MomentOfInertia, max_deflection→Length, hardening_modulus→Pressure, max_service_temp→Temperature, seal_pressure_rating→Pressure; update call sites | TBD |
+| task-E | Add named-dimension aliases for composite quantities | Introduce ThermalConductivity (W/(m·K)), SpecificHeat (J/(kg·K)), ThermalExpansion (1/K), ElectricResistivity (Ω·m), DielectricStrength (V/m), Stiffness (N/m), AbsorptionCoeff (1/m) to NAMED_DIMENSIONS + resolve_type_name; then re-classify all blocked-composite sites | TBD |
+| task-F | Introduce `Geometry` / `DatumRef` resolver capability | Add a `Geometry` opaque type and `DatumRef` type to the resolver so `tolerancing.ri::feature` (16 sites) and `datum_refs` (8 sites) can be tightened away from `Real` | TBD |
+| task-G | Investigate and resolve `Field<X,Y>` in `param` positions | Confirm whether `type_resolution.rs:1397` Field arm works in `param` context or is restricted to `field def`; write a probe test; either tighten `ElasticResult::displacement` and `::stress` or extend the resolver | TBD |
