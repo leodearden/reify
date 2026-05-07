@@ -41,6 +41,7 @@ pub mod tolerance_bucket;
 pub mod tolerance_budget;
 pub mod tolerance_combine;
 pub(crate) mod tolerance_format;
+pub mod tolerance_gate;
 pub mod tolerance_promise;
 pub(crate) mod tolerance_scope;
 pub mod morph_stage_b;
