@@ -1,12 +1,42 @@
 //! FEA support (boundary-condition) constructors for the stdlib.
 //!
-//! Provides `FixedSupport`, `DisplacementSupport`, and `RollerSupport`
-//! constructors.  Each returns a `Value::Map` with a `kind` discriminator
-//! field, matching the loads/joints constructor pattern.
+//! Provides `FixedSupport`, `PinnedSupport`, `DisplacementSupport`, and
+//! `RollerSupport` constructors.  Each returns a `Value::Map` with a `kind`
+//! discriminator field, matching the loads/joints constructor pattern.
 //!
 //! Selector-target validation is delegated to
 //! [`crate::helpers::validate_selector_target`] (see that helper's doc-comment
 //! for the rationale on why opaque pass-through is currently the right policy).
+//!
+//! ## BC framework (v0.4 shell-aware contract — PRD T15)
+//!
+//! The following contracts apply at solver time (task T8 — shell BC
+//! application).  At constructor time (this module) the selector target is an
+//! opaque pass-through because topology selectors are not yet distinguishable
+//! by entity kind; see `helpers::validate_selector_target` and PRD task 16.
+//!
+//! * **`FixedSupport` on a shell entity** — the solver (T8) automatically
+//!   clamps all 6 DOFs: 3 translational + 3 rotational.  This is the
+//!   shell-specific extension relative to tet behaviour.
+//!
+//! * **`PinnedSupport` on a shell entity** — explicit-pin opt-out from the
+//!   rotational auto-clamp.  Constrains translational DOFs only (3-DOF pin),
+//!   leaving rotational DOFs free.  Use `PinnedSupport` when the physical BC
+//!   is a pin joint rather than a rigid wall attachment.
+//!
+//! * **`FixedSupport` on a tet entity** — unchanged semantics (3 translational
+//!   DOFs constrained; tet elements carry no rotational DOFs).
+//!
+//! * **`PinnedSupport` on a tet entity** — semantically equivalent to
+//!   `FixedSupport` on a tet (both constrain the same 3 translational DOFs).
+//!   The solver (T8) is responsible for emitting a diagnostic warning when
+//!   `PinnedSupport` is applied to a tet target, because the distinction is
+//!   meaningful only for shell elements.
+//!
+//! Selector-target type-compatibility (shell-vs-tet detection) is a
+//! solver-side concern at the time of writing.  See
+//! `docs/prds/v0_4/structural-analysis-shells.md` § "BC framework" for the
+//! full design rationale.
 
 use reify_types::{DimensionVector, Value};
 
@@ -26,7 +56,7 @@ use crate::helpers::{
 /// will wire this up when it lands.
 #[allow(dead_code)]
 pub(crate) const SUPPORT_KINDS: &[&str] =
-    &["fixed_support", "displacement_support", "roller_support"];
+    &["fixed_support", "pinned_support", "displacement_support", "roller_support"];
 
 /// Returns `true` if `v` is a support `Value::Map` produced by this module —
 /// i.e., a Map with a `kind` field whose value is one of `SUPPORT_KINDS`.
@@ -58,6 +88,15 @@ pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             make_kind_map("fixed_support", vec![("target", args[0].clone())])
+        }
+        "PinnedSupport" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            if validate_selector_target(&args[0]).is_none() {
+                return Some(Value::Undef);
+            }
+            make_kind_map("pinned_support", vec![("target", args[0].clone())])
         }
         "DisplacementSupport" => {
             if args.len() != 2 {
@@ -184,6 +223,82 @@ mod tests {
     fn fixed_support_undef_target_returns_undef() {
         assert!(
             eval_builtin("FixedSupport", &[Value::Undef]).is_undef(),
+            "Undef target should return Undef"
+        );
+    }
+
+    // ── PinnedSupport constructor: happy path ─────────────────────────────────
+
+    #[test]
+    fn pinned_support_returns_map_with_correct_fields() {
+        let selector = point_selector_stub();
+
+        let result = eval_builtin("PinnedSupport", &[selector.clone()]);
+
+        let map = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("pinned_support".to_string())),
+            "kind field should be 'pinned_support'"
+        );
+        assert_eq!(
+            map.get(&Value::String("target".to_string())),
+            Some(&selector),
+            "target field should round-trip the selector input"
+        );
+    }
+
+    // ── PinnedSupport constructor: failure modes ──────────────────────────────
+
+    #[test]
+    fn pinned_support_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("PinnedSupport", &[]).is_undef(),
+            "zero args should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_two_args_returns_undef() {
+        assert!(
+            eval_builtin("PinnedSupport", &[point_selector_stub(), point_selector_stub()])
+                .is_undef(),
+            "two args should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_real_target_returns_undef() {
+        assert!(
+            eval_builtin("PinnedSupport", &[Value::Real(1.0)]).is_undef(),
+            "Real target should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_int_target_returns_undef() {
+        assert!(
+            eval_builtin("PinnedSupport", &[Value::Int(7)]).is_undef(),
+            "Int target should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_bool_target_returns_undef() {
+        assert!(
+            eval_builtin("PinnedSupport", &[Value::Bool(true)]).is_undef(),
+            "Bool target should return Undef"
+        );
+    }
+
+    #[test]
+    fn pinned_support_undef_target_returns_undef() {
+        assert!(
+            eval_builtin("PinnedSupport", &[Value::Undef]).is_undef(),
             "Undef target should return Undef"
         );
     }
@@ -485,11 +600,21 @@ mod tests {
     // ── Discoverability surface ───────────────────────────────────────────────
 
     #[test]
-    fn support_kinds_lists_all_three_in_canonical_order() {
+    fn support_kinds_lists_all_four_in_canonical_order() {
         use super::SUPPORT_KINDS;
         assert_eq!(
             SUPPORT_KINDS,
-            &["fixed_support", "displacement_support", "roller_support"]
+            &["fixed_support", "pinned_support", "displacement_support", "roller_support"]
+        );
+    }
+
+    #[test]
+    fn is_support_value_recognises_pinned_support() {
+        use super::is_support_value;
+        let v = eval_builtin("PinnedSupport", &[point_selector_stub()]);
+        assert!(
+            is_support_value(&v),
+            "is_support_value should recognize PinnedSupport result"
         );
     }
 
@@ -604,6 +729,7 @@ mod tests {
             // still guards both the SUPPORT_KINDS list and the dispatch arms.
             let result = match *kind {
                 "fixed_support" => eval_supports("FixedSupport", &[stub_selector.clone()]),
+                "pinned_support" => eval_supports("PinnedSupport", &[stub_selector.clone()]),
                 "displacement_support" => {
                     eval_supports("DisplacementSupport", &[stub_selector.clone(), length_vec.clone()])
                 }
