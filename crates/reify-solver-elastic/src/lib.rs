@@ -49,6 +49,8 @@
 //! let _: &[TyingPoint] = Mitc3Plus.tying_points();
 //! ```
 
+pub mod assembly;
+pub mod constitutive;
 pub mod elements;
 
 pub use elements::{
