@@ -60,7 +60,7 @@ pub use hash::ContentHash;
 pub use identity::*;
 pub use node_traits::{NodeArchKind, NodeTraits};
 pub use persistent::PersistentMap;
-pub use provenance::SnapshotProvenance;
+pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ty::Type;
 pub use value::{
