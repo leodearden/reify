@@ -1283,12 +1283,12 @@ pub(crate) fn compile_expr_guarded(
                     clusters.iter().find(|(g, _)| &g.name == group_name)
                 && let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind
             {
-                if !n.is_finite() || *n > i64::MAX as f64 || n.fract() != 0.0 || *n < 0.0 {
+                if !n.is_finite() || *n >= i64::MAX as f64 || n.fract() != 0.0 || *n < 0.0 {
                     // Non-finite, out-of-range, fractional, or negative index — delegate to
                     // the existing indexed-access branch for a consistent error message.
-                    // The is_finite / MAX guards prevent silent saturation for huge floats
-                    // (e.g. 1e20 would otherwise cast to i64::MAX producing a nonsensical
-                    // scoped entity like "Driver.bolts[9223372036854775807]").
+                    // `>= i64::MAX as f64` (not `>`) is required because i64::MAX cannot be
+                    // represented exactly in f64; it rounds UP to 2^63, so `n = 2^63`
+                    // satisfies `n > i64::MAX as f64 == false` and would silently saturate.
                 } else {
                     let i = *n as i64;
                     let scoped_entity =
