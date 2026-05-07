@@ -194,6 +194,90 @@ fn surface_normal_at_non_face_shape_returns_query_failed_with_not_a_face() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// face_outward_unit_normal_for_test — typed centroid normal
+// ---------------------------------------------------------------------------
+
+/// `face_outward_unit_normal_for_test` returns a unit outward normal as a
+/// typed `[f64; 3]` and agrees numerically with `kernel.query(FaceNormal)`.
+///
+/// Cross-check assertion (c) is the contract that the typed test helper
+/// does not drift from the JSON-encoded production query path. After this
+/// test, the `serde_json` dependency disappears from every other test in
+/// this file (see step-5's removal of `parse_face_normal{,_z}`).
+#[test]
+fn face_outward_unit_normal_for_test_returns_unit_outward_normal_for_sphere_face() {
+    let (mut kernel, sphere_id) = sphere_kernel(5.0);
+    let faces = kernel
+        .extract_faces(sphere_id)
+        .expect("extract_faces should succeed for sphere");
+    let face = faces[0];
+
+    let n = kernel
+        .face_outward_unit_normal_for_test(face)
+        .expect("face_outward_unit_normal_for_test should succeed for sphere face");
+
+    // (a) Result is [f64; 3] — implied by the type signature; no runtime check.
+
+    // (b) Unit length.
+    let mag_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+    assert!(
+        (mag_sq - 1.0).abs() < 1e-9,
+        "face_outward_unit_normal_for_test sphere: |n|² = {mag_sq}, expected 1.0"
+    );
+
+    // (c) Agrees with JSON-encoded query path within float tolerance.
+    let json = match kernel.query(&GeometryQuery::FaceNormal(face)) {
+        Ok(Value::String(s)) => s,
+        other => panic!("FaceNormal returned unexpected value: {other:?}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&json)
+        .unwrap_or_else(|e| panic!("FaceNormal JSON parse failed: {e}; raw = {json:?}"));
+    let from_json = [
+        v["x"].as_f64().expect("FaceNormal JSON missing 'x'"),
+        v["y"].as_f64().expect("FaceNormal JSON missing 'y'"),
+        v["z"].as_f64().expect("FaceNormal JSON missing 'z'"),
+    ];
+    for i in 0..3 {
+        assert!(
+            (n[i] - from_json[i]).abs() < 1e-9,
+            "typed helper component {i} = {} disagrees with JSON-encoded path = {}",
+            n[i],
+            from_json[i]
+        );
+    }
+}
+
+#[test]
+fn face_outward_unit_normal_for_test_unknown_handle_returns_invalid_handle() {
+    let (kernel, _) = sphere_kernel(5.0);
+    let unknown = GeometryHandleId(9999);
+    match kernel.face_outward_unit_normal_for_test(unknown) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
+}
+
+#[test]
+fn face_outward_unit_normal_for_test_non_face_shape_returns_query_failed_with_not_a_face() {
+    let (kernel, cyl_id) = cylinder_kernel(5.0, 10.0);
+    // cyl_id is the solid handle, not a face.
+    match kernel.face_outward_unit_normal_for_test(cyl_id) {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("not a face"),
+                "expected error containing 'not a face', got: {msg}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed(\"...not a face...\")) for solid handle, got {other:?}"
+        ),
+    }
+}
+
 /// Cross-API agreement: `surface_normal_at` at the centroid's (u, v) agrees
 /// in direction with `query_face_normal` at the centroid (dot product ≈ 1).
 ///
