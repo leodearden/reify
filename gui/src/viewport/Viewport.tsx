@@ -5,7 +5,9 @@ import { createScene } from './scene';
 import { createControls } from './controls';
 import { createMeshManager } from './meshManager';
 import { createSelection } from './selection';
-import type { ViewportStore, CameraState } from '../stores';
+import { FeaModeToolbar } from './FeaModeToolbar';
+import { bakeColours } from './colormap';
+import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
 
 export interface ViewportProps {
   /**
@@ -41,6 +43,15 @@ export interface ViewportProps {
    * To swap the store, unmount and remount the `<Viewport>`.
    */
   viewportStore?: ViewportStore;
+  /**
+   * Optional FEA-mode store. When provided, renders a `<FeaModeToolbar>`
+   * overlay and bridges store state changes into the meshManager colorize
+   * pipeline. When absent, no FEA UI is rendered (existing behaviour).
+   *
+   * **Captured at mount** — captured once inside `onMount`. Swap by
+   * unmounting and remounting the `<Viewport>`.
+   */
+  feaModeStore?: FeaModeStore;
 }
 
 export function Viewport(props: ViewportProps) {
@@ -133,6 +144,30 @@ export function Viewport(props: ViewportProps) {
     controls.controls.addEventListener('change', requestRender);
     // 'end' fires once per interaction (pointerup/touchend) — correct granularity for persistence
     controls.controls.addEventListener('end', persistCamera);
+
+    // Bridge FEA-mode store → meshManager colorize pipeline.
+    // Captured once at mount; the store reference must not change for the component lifetime.
+    // Track-then-act pattern: reads all reactive dependencies (enabled/channel/palette/range)
+    // at the top of the effect so any change to any of them rebuilds the bake closure.
+    if (props.feaModeStore) {
+      const feaStore = props.feaModeStore;
+      createEffect(() => {
+        const enabled = feaStore.state.enabled;
+        const channel = feaStore.state.channel;
+        const palette = feaStore.state.palette;
+        const range = feaStore.state.range;
+        if (enabled) {
+          meshManager.setColorize({
+            channel,
+            bake: (scalars: Float32Array) => bakeColours(scalars, range, palette),
+          });
+        } else {
+          meshManager.setColorize(null);
+          meshManager.rebuildMaterials();
+        }
+        requestRender();
+      });
+    }
 
     // Sync grid/axes visibility
     createEffect(() => {
@@ -316,6 +351,16 @@ export function Viewport(props: ViewportProps) {
         >
           Evaluating...
         </div>
+      </Show>
+
+      {/* FEA-mode toolbar — top-right overlay, only when feaModeStore is provided */}
+      <Show when={props.feaModeStore}>
+        <FeaModeToolbar
+          store={props.feaModeStore!}
+          onLockCurrent={() => {
+            // TODO: compute min/max from active mesh scalar channels (follow-up task)
+          }}
+        />
       </Show>
 
       {/* Grid toggle button */}
