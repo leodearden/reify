@@ -35,6 +35,11 @@ export interface FeaModeStore {
   setRange(r: Range): boolean;
   /** Lock range to explicit bounds with a provenance label. Returns false if either bound is non-finite. */
   lockCurrent(min: number, max: number, source?: string): boolean;
+  /**
+   * Auto-enable once (one-shot). If `autoEnabledOnce` is already true, returns false
+   * and does nothing — ensures user disable is sticky.
+   */
+  tryAutoEnable(channel?: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,5 +91,17 @@ export function createFeaModeStore(): FeaModeStore {
     return true;
   }
 
-  return { state, setEnabled, setChannel, setPalette, setRange, lockCurrent };
+  function tryAutoEnable(channel?: string): boolean {
+    if (state.autoEnabledOnce) {
+      return false;
+    }
+    setState('autoEnabledOnce', true);
+    setState('enabled', true);
+    if (channel !== undefined) {
+      setState('channel', channel);
+    }
+    return true;
+  }
+
+  return { state, setEnabled, setChannel, setPalette, setRange, lockCurrent, tryAutoEnable };
 }
