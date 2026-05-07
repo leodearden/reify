@@ -25,7 +25,7 @@ use std::sync::atomic::AtomicBool;
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
-    InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Type, Value, ValueCellId,
+    InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Type, Value,
     ValueMap,
 };
 
@@ -637,22 +637,6 @@ fn argmin_sampled_field_3d_length_domain_returns_point3_at_min_index() {
 
 // ── Step 15: non-Sampled source kinds return Value::Undef ───────────────────
 
-/// Build a trivial `Value::Lambda` body that returns the supplied tensor.
-fn make_value_lambda(
-    params: Vec<(&str, ValueCellId)>,
-    body: CompiledExpr,
-    captures: ValueMap,
-) -> Value {
-    Value::Lambda {
-        params: params
-            .into_iter()
-            .map(|(n, id)| (n.to_string(), id))
-            .collect(),
-        body: Box::new(body),
-        captures,
-    }
-}
-
 /// Build a `Value::Field` / `Type::Field` pair with an explicit source kind.
 /// Lifted from `field_analysis_tests.rs::make_field_with_source`.
 fn make_field_with_source(
@@ -674,14 +658,11 @@ fn make_field_with_source(
     (field, field_type)
 }
 
-/// Build a constant-Real-codomain analytical field over a `Type::Real` domain.
-/// The lambda body returns `Value::Real(42.0)` regardless of input — none of
-/// the deferred-path tests sample the field, only check the dispatch outcome.
+/// Build a constant-Real-codomain field over a `Type::Real` domain.
+/// The lambda slot carries `Value::Undef` — none of the deferred-path tests
+/// sample the field, only check the dispatch outcome (mirrors the Imported case).
 fn make_constant_real_analytical_field(source: FieldSourceKind) -> (Value, Type) {
-    let x_id = ValueCellId::new("$lambda0.f", "x");
-    let body = CompiledExpr::literal(Value::Real(42.0), Type::Real);
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-    make_field_with_source(Type::Real, Type::Real, source, lambda)
+    make_field_with_source(Type::Real, Type::Real, source, Value::Undef)
 }
 
 /// Helper: assert all four field reductions return `Value::Undef` on a field
