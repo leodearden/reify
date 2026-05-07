@@ -29,6 +29,8 @@
 //! use reify_solver_elastic::{
 //!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2,
 //!     Mitc3Plus, ShellReferenceCoord, TyingPoint,
+//!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
+//!     IsotropicElastic,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -47,6 +49,16 @@
 //! assert_eq!(Mitc3Plus::N_TYING_POINTS, 3);
 //! let _ = ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0);
 //! let _: &[TyingPoint] = Mitc3Plus.tying_points();
+//!
+//! // Shell-assembly smoke tests (T6).
+//! let nodes = [[0.0_f64; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+//! let frame: ShellFrame = build_shell_frame(&nodes);
+//! assert!((frame.area - 0.5).abs() < 1e-12, "area = {}", frame.area);
+//! let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
+//! let _d = plane_stress_d(&mat);
+//! let k = shell_element_stiffness(&nodes, 0.05, &mat);
+//! assert_eq!(k.n_dofs, 18);
+//! assert_eq!(k.data.len(), 324);
 //! ```
 
 pub mod assembly;
@@ -60,3 +72,4 @@ pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, tet_p1::TetP1, tet_p2::TetP2,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
 };
+pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
