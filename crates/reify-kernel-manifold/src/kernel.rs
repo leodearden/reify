@@ -378,6 +378,31 @@ mod tests {
         assert_ok_handle(result, "Difference");
     }
 
+    /// RED for step-5 of task 3093: pins that
+    /// `execute(GeometryOp::Intersection)` over two overlapping stored
+    /// unit cubes returns `Ok(GeometryHandle { .. })`.
+    ///
+    /// Cubes overlap by 0.5 in x so the intersection has non-empty volume.
+    /// We deliberately do NOT pin the geometric volume here (that's a
+    /// query, exercised separately) — only the structural handle-return
+    /// contract. Currently fails because the `Intersection` arm of
+    /// `execute` returns the stub error; step-6 wires it to
+    /// `Manifold::intersection`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn intersection_of_two_overlapping_cubes_returns_ok_handle_with_nonempty_volume() {
+        let mut kernel = ManifoldKernel::new();
+        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
+        let r = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
+
+        let result = kernel.execute(&GeometryOp::Intersection {
+            left: l,
+            right: r,
+        });
+
+        assert_ok_handle(result, "Intersection");
+    }
+
     /// PRD docs/prds/v0_2/persistent-naming-v2.md line 70: ManifoldKernel is
     /// the first concrete impl of `KernelAttributeHook`. This test pins the
     /// "ManifoldKernel opts into the hook AND is reachable through the
