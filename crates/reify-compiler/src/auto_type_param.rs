@@ -398,11 +398,30 @@ fn emit_no_feasible_cross_product_diagnostic(
         .map(|(p, candidates)| format!("{}={}", p.name, candidates.len()))
         .collect();
 
+    // Smallest infeasibility witness: the lex-first level-1 prefix.
+    //
+    // Backjumping (task 2660) guarantees that when DFS exits with zero
+    // feasibles, the entire cross-product is infeasible. Therefore EVERY
+    // level-1 prefix has an all-infeasible descendant sub-tree, and the
+    // witness is the lex-first level-1 prefix:
+    // `(params[0].name, per_param_candidates[0][0])` with ruled-out count
+    // `cross_product_size / per_param_candidates[0].len()`.
+    //
+    // (This branch is only entered when params.len() >= 2 — the single-param
+    // case short-circuits via the `params.len() == 1` branch in
+    // `resolve_auto_type_params_with_backtracking` and never reaches the
+    // `0 =>` arm. Both per_param_candidates and per_param_candidates[0] are
+    // therefore non-empty.)
+    let witness_param_name = &params[0].name;
+    let witness_fqn = &per_param_candidates[0][0];
+    let ruled_out = cross_product_size / per_param_candidates[0].len();
+
     let (_joined_bounds, label_message) = render_auto_type_param_label(&params[0].bounds);
     let message = format!(
         "auto type-parameter cross-product search found no feasible assignment for parameters [{names}]: \
          candidates per parameter: {counts}; \
-         cross-product size: {size}",
+         cross-product size: {size}; \
+         smallest infeasibility witness: {witness_param_name}={witness_fqn} rules out all {ruled_out} downstream assignments",
         names = param_names.join(", "),
         counts = per_param_counts.join(", "),
         size = cross_product_size,
