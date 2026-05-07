@@ -7,8 +7,8 @@ use reify_compiler::CompiledModule;
 use reify_types::{
     AttributeHistory, CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat,
     FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId, GeometryKernel,
-    GeometryOp, LoftOpHistoryRecords, Mesh, RealizationNodeId, SourceSpan, SweepOpHistoryRecords,
-    TopologyAttributeTable, ValueMap, VersionId,
+    GeometryOp, LoftOpHistoryRecords, Mesh, RealizationNodeId, ReprKind, SourceSpan,
+    SweepOpHistoryRecords, TopologyAttributeTable, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -16,6 +16,7 @@ use crate::deps::DependencyTrace;
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
+use crate::realization_cache::RealizationCache;
 use crate::topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes,
@@ -875,6 +876,20 @@ impl Engine {
     /// caller is responsible for the cache + journal writes because the
     /// realization NodeId, cache, and journal are not threaded into this
     /// helper — see `Engine::mark_realization_failed` for the wire site.
+    ///
+    /// **`demanded_tol` + `realization_cache`** (task 2874, step-6 wiring): the
+    /// caller pre-computes the demanded tolerance for the realization via
+    /// [`Engine::demanded_tolerance_for_output`] (with fallback to
+    /// [`Engine::active_tolerance_for`]) and threads it in alongside a mutable
+    /// borrow of [`Engine::realization_cache`]. After a fully-successful
+    /// realization (the `step_handles[handle_start..].last()` branch that
+    /// records `named_steps`), if `demanded_tol` is `Some(t)` the helper
+    /// inserts `(realization_id.entity, ReprKind::BRep, t, last_handle)` into
+    /// the cache. When `demanded_tol` is `None` (no demand contributor exists
+    /// for this realization) no cache entry is written — preserving the
+    /// historical "no tolerance contract → no caching" semantics. Step-8
+    /// extends this with the symmetric cache-hit short-circuit at the top of
+    /// the helper.
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
@@ -892,6 +907,8 @@ impl Engine {
         realization_name: Option<&str>,
         realization_span: SourceSpan,
         kernel_error_out: &mut Option<ErrorRef>,
+        realization_cache: &mut RealizationCache<GeometryHandleId>,
+        demanded_tol: Option<f64>,
     ) {
         let handle_start = step_handles.len();
         let mut had_failure = false;
@@ -1040,18 +1057,33 @@ impl Engine {
             had_failure || step_handles.len().saturating_sub(handle_start) < operations.len();
         if rolled_back {
             step_handles.truncate(handle_start);
-        } else if let Some(name) = realization_name {
-            // Record name → final handle only after a fully successful realization.
-            // Insertion happens AFTER the rollback check so failed realizations
-            // never leave a stale entry that would let later realizations resolve
-            // a name whose geometry was never successfully produced.
+        } else {
+            // Fully-successful realization. Record `name → final_handle`
+            // (post-rollback to avoid stale `named_steps` entries) and
+            // populate the per-engine `RealizationCache` with the terminal
+            // handle keyed on `(entity_id, ReprKind::BRep, demanded_tol)`
+            // when a demanded tolerance was threaded in (task 2874, step-6).
             //
             // Use `step_handles[handle_start..]` rather than `step_handles.last()` so
             // that an empty-ops realization (operations.len() == 0) contributes nothing
-            // to named_steps instead of incorrectly inheriting the final handle of
-            // the previous realization.
+            // to named_steps / cache instead of incorrectly inheriting the final
+            // handle of the previous realization.
             if let Some(&last) = step_handles[handle_start..].last() {
-                named_steps.insert(name.to_string(), last);
+                if let Some(name) = realization_name {
+                    named_steps.insert(name.to_string(), last);
+                }
+                if let Some(tol) = demanded_tol {
+                    // Tolerance bucket's partial-order rule may reject this
+                    // insert if a tighter or equal entry is already cached;
+                    // either way the post-condition "a satisfying entry
+                    // exists at `(entity, BRep, tol)`" holds.
+                    realization_cache.insert(
+                        &realization_id.entity,
+                        ReprKind::BRep,
+                        tol,
+                        last,
+                    );
+                }
             }
         }
     }
