@@ -1,23 +1,18 @@
 // Split from lib.rs (task 2032) — build methods.
 
-use std::collections::HashMap;
-#[cfg(any(test, feature = "test-instrumentation"))]
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use reify_compiler::CompiledModule;
-#[cfg(any(test, feature = "test-instrumentation"))]
-use reify_types::{CapabilityDescriptor, Operation};
 use reify_types::{
-    AttributeHistory, CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat,
-    FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId, GeometryKernel,
-    GeometryOp, LoftOpHistoryRecords, Mesh, RealizationNodeId, ReprKind, SourceSpan,
-    SweepOpHistoryRecords, TopologyAttributeTable, ValueMap, VersionId,
+    AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic, DiagnosticLabel,
+    ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId,
+    GeometryKernel, GeometryOp, LoftOpHistoryRecords, Mesh, Operation, RealizationNodeId,
+    ReprKind, SourceSpan, SweepOpHistoryRecords, TopologyAttributeTable, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::DependencyTrace;
-#[cfg(any(test, feature = "test-instrumentation"))]
 use crate::dispatcher::{dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
@@ -830,9 +825,8 @@ impl Engine {
             .unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE)
     }
 
-    /// Test-instrumentation accessor — compute the per-realization
-    /// tolerance budget by routing `demanded_tol` through the dispatcher's
-    /// per-stage allocation primitive.
+    /// Compute the per-realization tolerance budget by routing `demanded_tol`
+    /// through the dispatcher's per-stage allocation primitive.
     ///
     /// Synthesises a [`crate::dispatcher::DispatchPlan`] via
     /// [`dispatch`]`(registry, Operation::BooleanUnion, ReprKind::BRep,
@@ -858,25 +852,20 @@ impl Engine {
     /// across that future, only the triple's source becomes
     /// `RealizationDecl`-derived rather than hard-coded.
     ///
-    /// **Step-12** wires this into the production `tessellate_from_values`
-    /// call path via [`crate::kernel_registry::collect_registry`]; the
-    /// `cfg`-gate on this accessor is dropped at that point so the
-    /// production path can call it without a feature toggle. Step-12 also
-    /// replaces the `Self::effective_tessellation_tolerance(module)`
-    /// argument to `kernel.tessellate(...)` with a per-realization budget
-    /// computed via this helper, threading per-output demanded tolerances
-    /// into the kernel-tessellation call site.
+    /// **Production wiring** (task 2874 step-12): `tessellate_from_values`
+    /// calls this via [`crate::kernel_registry::collect_registry`] to
+    /// compute the per-realization budget passed to
+    /// `kernel.tessellate(handle, budget)`. The integration test
+    /// `tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget`
+    /// in `tests/tolerance_wiring_e2e.rs` pins that the demanded tolerance
+    /// flows through the helper to the kernel rather than being replaced
+    /// by the `effective_tessellation_tolerance(module)` module-pragma
+    /// fallback.
     ///
-    /// **Cfg-gate rationale** (mirroring [`crate::Engine::realization_cache`]
-    /// /`feature_tag_table` precedent): pre-step-12 there is no production
-    /// caller, so exposing the helper publicly would leak an unstable
-    /// surface. The `any(test, feature = "test-instrumentation")` gate
-    /// matches the integration-test build configuration in
-    /// `crates/reify-eval/Cargo.toml:21` (the self-dev-dep that enables
-    /// `test-instrumentation`), so external integration tests in
-    /// `crates/reify-eval/tests/` can call this accessor without taking a
-    /// `pub` dependency on the helper.
-    #[cfg(any(test, feature = "test-instrumentation"))]
+    /// `&self` is taken for forward compatibility (the future
+    /// `RealizationDecl`-driven variant will read realization metadata
+    /// from `self`) but is currently unused.
+    #[allow(clippy::unused_self)]
     pub fn compute_realization_tolerance_budget(
         &self,
         registry: &BTreeMap<String, &CapabilityDescriptor>,
