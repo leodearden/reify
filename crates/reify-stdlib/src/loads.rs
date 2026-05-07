@@ -61,19 +61,18 @@ pub(crate) fn is_load_value(v: &Value) -> bool {
 
 /// Returns the acceleration dimension: m·s⁻² (LENGTH / TIME²).
 ///
-/// Composed at runtime because `from_exps` is module-private in `dimension.rs`
-/// and `mul`/`div`/`pow` are not `const fn`. Replace with a named constant
-/// once `DimensionVector::ACCELERATION` is added to `reify-types`.
+/// Thin wrapper around `DimensionVector::ACCELERATION` kept for ergonomic
+/// access from this module's helpers and tests.
 pub(crate) fn acceleration_dim() -> DimensionVector {
-    DimensionVector::LENGTH.div(&DimensionVector::TIME.pow(2))
+    DimensionVector::ACCELERATION
 }
 
 /// Returns the force-density dimension: N/m³ = kg·m⁻²·s⁻² (FORCE / VOLUME).
 ///
-/// Composed at runtime for the same reason as `acceleration_dim`. Replace with
-/// `DimensionVector::FORCE_DENSITY` once that constant is added to `reify-types`.
+/// Thin wrapper around `DimensionVector::FORCE_DENSITY` kept for ergonomic
+/// access from this module's helpers and tests.
 pub(crate) fn force_density_dim() -> DimensionVector {
-    DimensionVector::FORCE.div(&DimensionVector::VOLUME)
+    DimensionVector::FORCE_DENSITY
 }
 
 /// Evaluate a loads stdlib function by name.
