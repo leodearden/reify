@@ -1890,6 +1890,127 @@ structure def WaterCooled : Cooled {
     );
 }
 
+// ─── v0.2 rich diagnostic format — `0 =>` arm cross-product no-feasible ────
+
+/// Two strict `AutoTypeParam`s `[T:Seal, U:Cooled]` (2 candidates each, 4
+/// cross-product leaves) with a top-level always-Violated constraint. The
+/// constraint checker's default Violated rules out every leaf. The DFS exits
+/// with `feasible_assignments.is_empty()` and the `0 =>` arm emits the v0.2
+/// rich diagnostic.
+///
+/// Pins the **parameter list + per-param counts + cross-product size** fields
+/// of the rich format (task 2663):
+/// (a) `diagnostics.len() == 1`, code `AutoTypeParamNoCandidate`, severity Error
+/// (b) message contains `"[T, U]"` — parameter names in declared order
+/// (c) message contains `"T=2"` and `"U=2"` — per-param candidate counts
+/// (d) message contains `"cross-product size: 4"` — cross-product size
+///
+/// Companion tests (later steps) pin the witness, depth context, and
+/// `Diagnostic::candidates` field.
+#[test]
+fn dfs_zero_feasible_diagnostic_includes_parameter_list_and_counts() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let _outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    // (a) Exactly one AutoTypeParamNoCandidate Error.
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "`0 =>` arm must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "`0 =>` arm diagnostic must be AutoTypeParamNoCandidate, got: {:?}",
+        diagnostics[0].code
+    );
+    assert_eq!(
+        diagnostics[0].severity,
+        Severity::Error,
+        "AutoTypeParamNoCandidate must be Error severity"
+    );
+    // (b) Parameter list `[T, U]` in declared order.
+    assert!(
+        diagnostics[0].message.contains("[T, U]"),
+        "rich format must contain parameter list '[T, U]' in declared order; got: {:?}",
+        diagnostics[0].message
+    );
+    // (c) Per-param candidate counts.
+    assert!(
+        diagnostics[0].message.contains("T=2"),
+        "rich format must contain per-param count 'T=2'; got: {:?}",
+        diagnostics[0].message
+    );
+    assert!(
+        diagnostics[0].message.contains("U=2"),
+        "rich format must contain per-param count 'U=2'; got: {:?}",
+        diagnostics[0].message
+    );
+    // (d) Cross-product size.
+    assert!(
+        diagnostics[0].message.contains("cross-product size: 4"),
+        "rich format must contain 'cross-product size: 4' (2 × 2); got: {:?}",
+        diagnostics[0].message
+    );
+}
+
 /// Multi-param strict-mode scenario where exactly one of the four cross-product
 /// leaves is feasible. Exercises the `1 =>` arm via the strict path: with
 /// `max_feasible_to_collect = 2` (strict mode), the search runs all four
