@@ -908,6 +908,32 @@ mod tests {
         );
     }
 
+    // step-3 (task 3055): duplicate new handles → should panic in debug builds
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "new slice passed to match_one_kind contains duplicate GeometryHandleId")]
+    fn match_one_kind_panics_in_debug_on_duplicate_new_face_handles() {
+        // old_table: two attributes under h(10)/h(11); new_table: one attribute
+        // under h(20). Both sides are attributed so the imported pre-pass is
+        // bypassed and execution reaches the precondition site.
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(h(11), attr(Role::Cap(CapKind::Bottom), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        // h(20) appears twice in new_faces — contract violation
+        let _ = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10), h(11)],
+            &[h(20), h(20)],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+    }
+
     // step-15: vertex_to_vertex is always empty in v0.2
     /// Behaviour guard: even when old_vertices and new_vertices are non-empty and
     /// both carry attributes in their respective tables, `vertex_to_vertex` must
