@@ -49,6 +49,8 @@ fn mesh_data_serializes_with_expected_fields() {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         indices: vec![0, 1, 2],
         normals: Some(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
     assert_eq!(v["entity_path"], json!("Bracket.body"));
@@ -532,6 +534,8 @@ fn serialize_finite_f32_vec_all_finite_values_round_trip() {
         vertices: vec![1.5, -2.25, 3.0],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
     let arr = v["vertices"].as_array().unwrap();
@@ -550,6 +554,8 @@ fn serialize_finite_f32_vec_empty_vec_serializes_to_empty_array() {
         vertices: vec![],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
     let arr = v["vertices"].as_array().unwrap();
@@ -563,6 +569,8 @@ fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
         vertices: vec![f32::NAN],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -577,6 +585,8 @@ fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
         vertices: vec![f32::INFINITY],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -591,6 +601,8 @@ fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_in
         vertices: vec![f32::NEG_INFINITY],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -607,6 +619,8 @@ fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
         vertices: vec![0.0, 0.0, 0.0],
         indices: vec![0],
         normals: Some(vec![0.0, 0.0, f32::NAN]),
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -630,6 +644,8 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
         vertices: vec![1.0, 2.0, f32::NAN],
         indices: vec![],
         normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
@@ -879,4 +895,328 @@ fn joint_descriptor_optional_fields_serialize_as_null() {
     assert!(v["axis"].is_null(), "axis should be null when None");
     assert!(v["driving_param_cell_id"].is_null(), "driving_param_cell_id should be null when None");
     assert!(v["current_value_si"].is_null(), "current_value_si should be null when None");
+}
+
+// --- scalar_channels IPC wire tests (task 2959, step-1) ---
+
+/// A `MeshData` with a populated `scalar_channels` map serializes to a JSON
+/// object with the expected channel keys and values, and round-trips through
+/// `serde_json::to_value` / `from_value` preserving the map contents.
+#[test]
+fn mesh_data_scalar_channels_round_trips() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![10.0_f32, 20.0, 30.0]);
+
+    let mesh = MeshData {
+        entity_path: "Test.body".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        displaced_positions: None,
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+
+    // (a) JSON must contain a scalar_channels object with key "vonMises"
+    let sc = v.get("scalar_channels").expect("scalar_channels must be present");
+    assert!(sc.is_object(), "scalar_channels must be a JSON object");
+    let arr = sc["vonMises"].as_array().expect("vonMises must be an array");
+    assert_eq!(arr.len(), 3, "vonMises array must have 3 elements");
+    assert_eq!(arr[0].as_f64().unwrap(), 10.0);
+    assert_eq!(arr[1].as_f64().unwrap(), 20.0);
+    assert_eq!(arr[2].as_f64().unwrap(), 30.0);
+
+    // (b) Deserializing back yields the same struct
+    let back: MeshData = serde_json::from_value(v).expect("deserialize should succeed");
+    assert_eq!(back.entity_path, "Test.body");
+    assert_eq!(back.scalar_channels.get("vonMises").unwrap(), &vec![10.0_f32, 20.0, 30.0]);
+}
+
+/// A `MeshData` with an empty `scalar_channels` HashMap must omit the field
+/// entirely from the serialized JSON (validates `skip_serializing_if = "HashMap::is_empty"`).
+#[test]
+fn mesh_data_empty_scalar_channels_omitted_from_wire() {
+    use std::collections::HashMap;
+
+    let mesh = MeshData {
+        entity_path: "Test.body".to_string(),
+        vertices: vec![],
+        indices: vec![],
+        normals: None,
+        scalar_channels: HashMap::new(),
+        displaced_positions: None,
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+
+    // Empty scalar_channels must not appear in the wire format
+    assert!(
+        v.get("scalar_channels").is_none(),
+        "empty scalar_channels must be omitted from the wire"
+    );
+}
+
+// --- scalar_channels NaN/Inf rejection tests (task 2959, step-3) ---
+
+/// `serialize_finite_f32_map` must reject NaN values in a channel with an error
+/// message containing both the channel key ("vonMises") and "non-finite f32 value".
+#[test]
+fn serialize_finite_f32_map_nan_causes_error_with_channel_key() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![f32::NAN]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: channels,
+        displaced_positions: None,
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite f32 value"),
+        "expected 'non-finite f32 value' in: {msg}"
+    );
+    assert!(
+        msg.contains("vonMises"),
+        "expected channel key 'vonMises' in error message: {msg}"
+    );
+}
+
+/// `serialize_finite_f32_map` must reject +Inf values with a message containing
+/// both the channel key and "non-finite f32 value".
+#[test]
+fn serialize_finite_f32_map_infinity_causes_error_with_channel_key() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![f32::INFINITY]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: channels,
+        displaced_positions: None,
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite f32 value"),
+        "expected 'non-finite f32 value' in: {msg}"
+    );
+    assert!(
+        msg.contains("vonMises"),
+        "expected channel key 'vonMises' in error message: {msg}"
+    );
+}
+
+/// `serialize_finite_f32_map` must reject -Inf values with a message containing
+/// both the channel key and "non-finite f32 value".
+#[test]
+fn serialize_finite_f32_map_neg_infinity_causes_error_with_channel_key() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![f32::NEG_INFINITY]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: channels,
+        displaced_positions: None,
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite f32 value"),
+        "expected 'non-finite f32 value' in: {msg}"
+    );
+    assert!(
+        msg.contains("vonMises"),
+        "expected channel key 'vonMises' in error message: {msg}"
+    );
+}
+
+// --- displaced_positions IPC wire tests (task 2959, step-5) ---
+
+/// (a) A `MeshData` with `displaced_positions: Some(vec![...])` serializes to
+/// JSON with a 3-element `"displaced_positions"` array.
+#[test]
+fn mesh_data_displaced_positions_some_serializes_to_array() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+    let arr = v.get("displaced_positions").expect("displaced_positions must be present");
+    let arr = arr.as_array().expect("displaced_positions must be an array");
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0].as_f64().unwrap(), 1.0);
+    assert_eq!(arr[1].as_f64().unwrap(), 2.0);
+    assert_eq!(arr[2].as_f64().unwrap(), 3.0);
+}
+
+/// (b) `displaced_positions: None` must be omitted from the wire
+/// (validates `skip_serializing_if = "Option::is_none"`).
+#[test]
+fn mesh_data_displaced_positions_none_omitted_from_wire() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![],
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: None,
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+    assert!(
+        v.get("displaced_positions").is_none(),
+        "displaced_positions: None must be omitted from the wire"
+    );
+}
+
+/// (c) Round-trip: `Some(vec![1.0, 2.0, 3.0])` survives serde serialize/deserialize.
+#[test]
+fn mesh_data_displaced_positions_round_trips() {
+    let mesh = MeshData {
+        entity_path: "dp-test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+    let back: MeshData = serde_json::from_value(v).expect("deserialize should succeed");
+    assert_eq!(back.displaced_positions, Some(vec![1.0_f32, 2.0, 3.0]));
+}
+
+/// (d) NaN in a `Some(...)` displaced_positions triggers a serialization error
+/// mentioning "non-finite f32" — reusing the existing serialize_finite_f32_vec_opt semantics.
+///
+/// Note: displaced_positions must have the same length as vertices (length contract).
+/// Use a matching-length vector so the length check passes and the NaN check fires.
+#[test]
+fn mesh_data_displaced_positions_nan_causes_error() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],   // 1 vertex → 3 floats
+        indices: vec![],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: Some(vec![f32::NAN, 0.0, 0.0]),  // 3 floats, length matches
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in error message: {msg}"
+    );
+}
+
+// --- MeshData length contract tests (amendment, suggestion 3) ---
+
+/// Serializing a MeshData whose scalar_channels entry has a different length
+/// than the vertex count must return `Err` with the channel name and "vertex count"
+/// in the error message.  This pins the length contract ("contract in production
+/// code rather than relying on test coverage", task 2544).
+#[test]
+fn meshdata_rejects_scalar_channel_with_wrong_length() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    // 3-vertex mesh (9 floats), but vonMises has only 2 values
+    channels.insert("vonMises".to_string(), vec![10.0_f32, 20.0]);
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        displaced_positions: None,
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("vonMises"),
+        "expected channel name 'vonMises' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("vertex count"),
+        "expected 'vertex count' in error message: {msg}"
+    );
+}
+
+/// Serializing a MeshData whose displaced_positions length differs from vertices
+/// length must return `Err` mentioning both "displaced_positions" and "vertices".
+#[test]
+fn meshdata_rejects_displaced_positions_with_wrong_length() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 9 floats
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        displaced_positions: Some(vec![0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.6]), // 6 floats ≠ 9
+    };
+
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("displaced_positions"),
+        "expected 'displaced_positions' in error message: {msg}"
+    );
+    assert!(
+        msg.contains("vertices"),
+        "expected 'vertices' in error message: {msg}"
+    );
+}
+
+/// Positive case: a correct-length scalar_channels entry serializes successfully.
+#[test]
+fn meshdata_accepts_matching_scalar_channel_length() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![10.0_f32, 20.0, 30.0]); // 3 values = 3 vertices
+
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        displaced_positions: None,
+    };
+
+    let v = serde_json::to_value(&mesh).expect("should serialize successfully");
+    assert_eq!(
+        v["scalar_channels"]["vonMises"].as_array().unwrap().len(),
+        3,
+        "vonMises must have 3 elements"
+    );
 }

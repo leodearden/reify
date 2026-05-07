@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { MeshStandardMaterial } from 'three';
-import type { MeshData } from '../../types';
+import type { MeshData, RawMeshData } from '../../types';
 
 // Track all created mocks.
-// mockBasicMaterials uses vi.hoisted so it is initialized before the async
-// vi.mock factory runs (async factories run before module-level const declarations).
-// The argument `makeMockMeshBasicMaterial(mockBasicMaterials)` is evaluated eagerly
-// at factory-execution time, so the array must already exist at that point.
+// mockBasicMaterials and mockPhongMaterials use vi.hoisted so they are initialized
+// before the async vi.mock factory runs (async factories run before module-level
+// const declarations). The arguments are evaluated eagerly at factory-execution time,
+// so the arrays must already exist at that point.
 const mockBasicMaterials = vi.hoisted<any[]>(() => []);
+const mockPhongMaterials = vi.hoisted<any[]>(() => []);
 // These arrays do NOT need vi.hoisted: each is only referenced by a class
 // constructor closure (captured by reference, dereferenced at construction time
 // rather than during factory execution), so plain const declarations are fine.
@@ -24,8 +25,9 @@ const mockGroupAdd = vi.fn();
 const mockGroupRemove = vi.fn();
 
 vi.mock('three', async () => {
-  const { makeMockMeshBasicMaterial } = await import('./mocks/threeMocks');
+  const { makeMockMeshBasicMaterial, makeMockMeshPhongMaterial } = await import('./mocks/threeMocks');
   const MockMeshBasicMaterial = makeMockMeshBasicMaterial(mockBasicMaterials);
+  const MockMeshPhongMaterial = makeMockMeshPhongMaterial(mockPhongMaterials);
 
   class MockBufferGeometry {
     attributes: Record<string, any> = {};
@@ -117,6 +119,7 @@ vi.mock('three', async () => {
     BufferGeometry: MockBufferGeometry,
     BufferAttribute: MockBufferAttribute,
     MeshStandardMaterial: MockMeshStandardMaterial,
+    MeshPhongMaterial: MockMeshPhongMaterial,
     MeshBasicMaterial: MockMeshBasicMaterial,
     Mesh: MockMesh,
     Group: MockGroup,
@@ -134,6 +137,7 @@ vi.mock('three-mesh-bvh', () => ({
 }));
 
 import { createMeshManager } from '../../viewport/meshManager';
+import { convertRawMesh } from '../../types';
 import { Scene } from 'three';
 
 beforeEach(() => {
@@ -142,6 +146,7 @@ beforeEach(() => {
   mockMaterials.length = 0;
   mockMeshes.length = 0;
   mockBasicMaterials.length = 0;
+  mockPhongMaterials.length = 0;
   mockGroups.length = 0;
 });
 
@@ -686,6 +691,423 @@ describe('meshManager', () => {
     expect((mesh.geometry as any).dispose).toHaveBeenCalledTimes(1);
   });
 
+  describe('scalar_channels backwards-compat (C-01)', () => {
+    it('createMeshManager without colorize option: mesh with scalar_channels still uses MeshStandardMaterial', () => {
+      const { manager } = setup();
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+
+      manager.sync({ A: meshData });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(mesh).toBeDefined();
+
+      // Material should be in mockMaterials (MeshStandardMaterial), not a phong material
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+
+      // Geometry must have NO 'color' attribute
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+    });
+
+    it('createMeshManager without colorize option: mesh with multiple scalar_channels has no color attribute', () => {
+      const { manager } = setup();
+      const meshData: MeshData = {
+        entity_path: 'B',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: null,
+        scalar_channels: {
+          vonMises: new Float32Array([10, 20, 30]),
+          displacement_magnitude: new Float32Array([0.1, 0.2, 0.3]),
+        },
+      };
+
+      const warnSpy = vi.spyOn(console, 'warn');
+      manager.sync({ B: meshData });
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+
+      const mesh = manager.getSceneMeshes().get('B')!;
+      expect(mesh).toBeDefined();
+
+      // No color attribute — scalar_channels are ignored when colorize is unset
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+    });
+  });
+
+  describe('colorize path (C-02)', () => {
+    const sentinelBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+    it('headline: mesh with matching scalar_channel uses MeshPhongMaterial with vertexColors', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+      manager.sync({ A: meshData });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(mesh).toBeDefined();
+
+      // (a) material is a phong material, not a standard material
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(false);
+
+      // (b) phong material options
+      const mat = mesh.material as any;
+      expect(mat.vertexColors).toBe(true);
+      expect(mat.flatShading).toBe(false);
+      expect(mat.side).toBe(2); // DoubleSide
+
+      // (c) geometry has color attribute with baked scalars
+      const colorAttr = (mesh.geometry as any).attributes.color;
+      expect(colorAttr).toBeDefined();
+      expect(colorAttr.itemSize).toBe(3);
+      expect(Array.from(colorAttr.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
+    });
+
+    it('channel-presence gate: mesh missing the colorize channel falls back to MeshStandardMaterial', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      // Only has displacement_magnitude, NOT vonMises
+      const meshData: MeshData = {
+        entity_path: 'B',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { displacement_magnitude: new Float32Array([0.1, 0.2, 0.3]) },
+      };
+      manager.sync({ B: meshData });
+
+      const mesh = manager.getSceneMeshes().get('B')!;
+      expect(mesh).toBeDefined();
+
+      // Falls back to standard material — channel not present
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(false);
+
+      // No color attribute
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+    });
+
+    it('mesh with no scalar_channels at all falls back to MeshStandardMaterial', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      const meshData: MeshData = {
+        entity_path: 'C',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        // no scalar_channels field
+      };
+      manager.sync({ C: meshData });
+
+      const mesh = manager.getSceneMeshes().get('C')!;
+      expect(mesh).toBeDefined();
+
+      // Falls back to standard material — no scalar_channels
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(false);
+      expect((mesh.geometry as any).attributes.color).toBeUndefined();
+    });
+  });
+
+  describe('setColorize in-place mutation (C-03)', () => {
+    const redBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+    const greenBake = (s: Float32Array) =>
+      new Float32Array([0, s[0], 0, 0, s[1], 0, 0, s[2], 0]);
+
+    function setupColorized() {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: redBake },
+      });
+      vi.clearAllMocks();
+
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+      manager.sync({ A: meshData });
+      vi.clearAllMocks();
+
+      return { scene, manager };
+    }
+
+    it('(a) setColorize reuses the same color BufferAttribute reference', () => {
+      const { manager } = setupColorized();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const savedRef = geom.attributes.color;
+      expect(savedRef).toBeDefined();
+
+      manager.setColorize({ channel: 'vonMises', bake: greenBake });
+
+      // Same BufferAttribute object (identity check)
+      expect(geom.attributes.color).toBe(savedRef);
+    });
+
+    it('(b) setColorize updates the color array to the new bake output', () => {
+      const { manager } = setupColorized();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+
+      manager.setColorize({ channel: 'vonMises', bake: greenBake });
+
+      const colorAttr = geom.attributes.color;
+      // greenBake([10,20,30]) = [0,10,0, 0,20,0, 0,30,0]
+      expect(Array.from(colorAttr.array as Float32Array)).toEqual([0, 10, 0, 0, 20, 0, 0, 30, 0]);
+    });
+
+    it('(c) setColorize sets needsUpdate = true on the color attribute', () => {
+      const { manager } = setupColorized();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const colorAttr = geom.attributes.color;
+      colorAttr.needsUpdate = false; // explicitly reset
+
+      manager.setColorize({ channel: 'vonMises', bake: greenBake });
+
+      expect(colorAttr.needsUpdate).toBe(true);
+    });
+
+    it('(d) setColorize does NOT create new geometry, meshes, or materials', () => {
+      const { manager } = setupColorized();
+
+      const geomCountBefore = mockGeometries.length;
+      const meshCountBefore = mockMeshes.length;
+      const phongCountBefore = mockPhongMaterials.length;
+
+      manager.setColorize({ channel: 'vonMises', bake: greenBake });
+
+      expect(mockGeometries.length).toBe(geomCountBefore);
+      expect(mockMeshes.length).toBe(meshCountBefore);
+      expect(mockPhongMaterials.length).toBe(phongCountBefore);
+    });
+
+    it('(e) setColorize with a different channel name re-bakes from the new channel scalars', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: redBake },
+      });
+      vi.clearAllMocks();
+
+      // Mesh exposes BOTH channels
+      const meshData: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: {
+          vonMises: new Float32Array([10, 20, 30]),
+          displacement_magnitude: new Float32Array([1, 2, 3]),
+        },
+      };
+      manager.sync({ A: meshData });
+      vi.clearAllMocks();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const savedRef = geom.attributes.color;
+
+      // Switch to the other channel; bake function for the new channel:
+      // greenBake([1, 2, 3]) = [0, 1, 0, 0, 2, 0, 0, 3, 0]
+      manager.setColorize({ channel: 'displacement_magnitude', bake: greenBake });
+
+      // Same buffer reference (in-place)
+      expect(geom.attributes.color).toBe(savedRef);
+      // Array rebaked from displacement_magnitude scalars
+      expect(Array.from(geom.attributes.color.array as Float32Array)).toEqual([
+        0, 1, 0, 0, 2, 0, 0, 3, 0,
+      ]);
+    });
+
+    it('(f) sync→sync: updateMeshGeometry refreshes scalar channels and re-bakes colour buffer', () => {
+      // This test guards suggestion-1: updateMeshGeometry must update meshScalarChannels
+      // and re-bake the colour attribute in place when colorize is active.
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: redBake },
+      });
+      vi.clearAllMocks();
+
+      // First sync: 3 vertices with vonMises [10, 20, 30]
+      const meshData1: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+      manager.sync({ A: meshData1 });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const savedColorRef = geom.attributes.color;
+      expect(savedColorRef).toBeDefined();
+      // redBake([10, 20, 30]) = [10, 0, 0, 20, 0, 0, 30, 0, 0]
+      expect(Array.from(savedColorRef.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
+
+      vi.clearAllMocks();
+
+      // Second sync: same entity, updated vonMises [40, 50, 60]
+      const meshData2: MeshData = {
+        entity_path: 'A',
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([40, 50, 60]) },
+      };
+      manager.sync({ A: meshData2 });
+
+      // Same buffer reference (in-place mutation, not a new attribute)
+      expect(geom.attributes.color).toBe(savedColorRef);
+      // Colour re-baked from updated vonMises: redBake([40, 50, 60]) = [40, 0, 0, 50, 0, 0, 60, 0, 0]
+      expect(Array.from(geom.attributes.color.array as Float32Array)).toEqual(
+        [40, 0, 0, 50, 0, 0, 60, 0, 0],
+      );
+      expect(geom.attributes.color.needsUpdate).toBe(true);
+      // No new geometry, mesh, or material created — update path only
+      expect(mockGeometries.length).toBe(1);
+      expect(mockMeshes.length).toBe(1);
+    });
+
+    it('(g) setColorize(null) clears colorize; subsequent setColorize re-bakes existing colour buffer', () => {
+      // Tests the asymmetric behaviour: meshes retain MeshPhongMaterial after
+      // setColorize(null) but their colour buffer can be re-baked by a subsequent call.
+      const { manager } = setupColorized();
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      const savedRef = geom.attributes.color;
+
+      // Toggle off — colorize state cleared
+      manager.setColorize(null);
+
+      // Toggle back on with a blue-ramp bake
+      const blueBake = (s: Float32Array) =>
+        new Float32Array([0, 0, s[0], 0, 0, s[1], 0, 0, s[2]]);
+
+      manager.setColorize({ channel: 'vonMises', bake: blueBake });
+
+      // Same buffer reference — material was chosen at creation time, not replaced
+      expect(geom.attributes.color).toBe(savedRef);
+      // blueBake([10, 20, 30]) = [0, 0, 10, 0, 0, 20, 0, 0, 30]
+      expect(Array.from(geom.attributes.color.array as Float32Array)).toEqual(
+        [0, 0, 10, 0, 0, 20, 0, 0, 30],
+      );
+      expect(geom.attributes.color.needsUpdate).toBe(true);
+      // No new geometry or materials — in-place update only
+      expect(mockPhongMaterials.length).toBe(1);
+    });
+  });
+
+  describe('colorize material disposal (C-04)', () => {
+    const sentinelBake = (s: Float32Array) =>
+      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+    function makeColorizedMeshData(entityPath: string): MeshData {
+      return {
+        entity_path: entityPath,
+        vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint32Array([0, 1, 2]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+      };
+    }
+
+    it('(a) dispose() on a manager with a colorized mesh calls dispose() on the MeshPhongMaterial', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({ A: makeColorizedMeshData('A') });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const mat = mesh.material as any;
+
+      // Verify the material is a phong material
+      expect(mockPhongMaterials.some((m: any) => m === mat)).toBe(true);
+      expect(mat.dispose).not.toHaveBeenCalled();
+
+      manager.dispose();
+
+      // Material dispose must have been called (no resource leak)
+      expect(mat.dispose).toHaveBeenCalled();
+    });
+
+    it('(b) sync() removing a colorized mesh disposes its MeshPhongMaterial', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({ A: makeColorizedMeshData('A'), B: makeColorizedMeshData('B') });
+
+      const meshA = manager.getSceneMeshes().get('A')!;
+      const matA = meshA.material as any;
+      expect(mockPhongMaterials.some((m: any) => m === matA)).toBe(true);
+
+      // Remove A by syncing without it
+      manager.sync({ B: makeColorizedMeshData('B') });
+
+      expect(matA.dispose).toHaveBeenCalled();
+    });
+
+    it('(c) MeshPhongMaterial disposal does not affect the remaining mesh', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({ A: makeColorizedMeshData('A'), B: makeColorizedMeshData('B') });
+
+      const meshB = manager.getSceneMeshes().get('B')!;
+      const matB = meshB.material as any;
+
+      // Remove A
+      manager.sync({ B: makeColorizedMeshData('B') });
+
+      // B's material should NOT have been disposed
+      expect(matB.dispose).not.toHaveBeenCalled();
+      // B is still in the scene
+      expect(manager.getSceneMeshes().has('B')).toBe(true);
+    });
+  });
+
   describe('ghost visibility', () => {
     // Helper: create manager, add one mesh, then reset mock call history so tests
     // start with zero recorded call counts.
@@ -1118,6 +1540,65 @@ describe('meshManager', () => {
       const ghostMap5: Map<string, any> = (manager as any).getGhostMeshes();
       expect(ghostMap5.has('A')).toBe(true);
       expect(ghostMap5.size).toBe(1);
+    });
+  });
+
+  describe('end-to-end pipeline: RawMeshData → convertRawMesh → meshManager (E2E-01)', () => {
+    it('full IPC→TS→meshManager pipeline produces phong material and colour buffer', () => {
+      // Construct a RawMeshData JSON literal that mimics what the Rust serializer emits.
+      // (3 vertices: a right-angle triangle in the XY plane)
+      const raw: RawMeshData = {
+        entity_path: 'B',
+        vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        indices: [0, 1, 2],
+        normals: null,
+        scalar_channels: { vonMises: [10, 20, 30] },
+        displaced_positions: [0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0],
+      };
+
+      // Step 1: convert raw payload → typed MeshData
+      const converted = convertRawMesh(raw);
+
+      // Verify conversion preserved scalar_channels as Float32Array
+      expect(converted.scalar_channels).toBeDefined();
+      expect(converted.scalar_channels!.vonMises).toBeInstanceOf(Float32Array);
+      expect(Array.from(converted.scalar_channels!.vonMises)).toEqual([10, 20, 30]);
+
+      // Verify displaced_positions was converted
+      expect(converted.displaced_positions).toBeInstanceOf(Float32Array);
+
+      // Step 2: feed through meshManager with colorize
+      const sentinelBake = (s: Float32Array) =>
+        new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: sentinelBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({ B: converted });
+
+      const mesh = manager.getSceneMeshes().get('B')!;
+      expect(mesh).toBeDefined();
+
+      // Material is MeshPhongMaterial with vertexColors
+      expect(mockPhongMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      const mat = mesh.material as any;
+      expect(mat.vertexColors).toBe(true);
+      expect(mat.flatShading).toBe(false);
+      expect(mat.side).toBe(2); // DoubleSide
+
+      // Geometry has color attribute baked by sentinelBake([10, 20, 30])
+      const colorAttr = (mesh.geometry as any).attributes.color;
+      expect(colorAttr).toBeDefined();
+      expect(colorAttr.itemSize).toBe(3);
+      expect(Array.from(colorAttr.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
+
+      // displaced_positions field is preserved in converted MeshData but NOT applied
+      // to the position buffer (that is task G3 work).
+      const posAttr = (mesh.geometry as any).attributes.position;
+      expect(Array.from(posAttr.array as Float32Array)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     });
   });
 });

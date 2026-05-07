@@ -40,3 +40,34 @@ export function makeMockMeshBasicMaterial(instances: any[]) {
     }
   };
 }
+
+/**
+ * Factory that returns a MockMeshPhongMaterial class bound to a caller-supplied
+ * tracking array. Mirrors makeMockMeshBasicMaterial. Captures vertexColors,
+ * flatShading, and side so tests can assert on these options.
+ *
+ * Usage inside an async vi.mock factory:
+ *
+ *   const mockPhongMaterials: any[] = vi.hoisted(() => []);
+ *   vi.mock('three', async () => {
+ *     const { makeMockMeshPhongMaterial } = await import('./mocks/threeMocks');
+ *     return { MeshPhongMaterial: makeMockMeshPhongMaterial(mockPhongMaterials), ... };
+ *   });
+ *
+ *   beforeEach(() => { mockPhongMaterials.length = 0; });
+ */
+export function makeMockMeshPhongMaterial(instances: any[]) {
+  return class MockMeshPhongMaterial {
+    vertexColors: boolean;
+    flatShading: boolean;
+    side: any;
+    dispose = vi.fn();
+
+    constructor(opts?: any) {
+      this.vertexColors = opts?.vertexColors ?? false;
+      this.flatShading = opts?.flatShading ?? true;
+      this.side = opts?.side;
+      instances.push(this);
+    }
+  };
+}

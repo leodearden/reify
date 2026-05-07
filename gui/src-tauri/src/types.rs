@@ -41,6 +41,41 @@ where
     seq.end()
 }
 
+/// Custom serializer for `HashMap<String, Vec<f32>>` that rejects non-finite values.
+///
+/// Mirrors [`serialize_finite_f32_vec`] but operates on a map of named scalar
+/// channels.  Each channel's values are validated element-by-element; the
+/// channel key is included in the error message for diagnostics.
+///
+/// # Note
+///
+/// Same partial-output caveat as [`serialize_finite_f32_vec`] — with in-memory
+/// serializers like `serde_json::to_value` the partial map is simply dropped on
+/// `Err`.  Callers using streaming serializers must discard partial output on
+/// error.
+fn serialize_finite_f32_map<S>(
+    map: &HashMap<String, Vec<f32>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut smap = serializer.serialize_map(Some(map.len()))?;
+    for (key, values) in map {
+        // Validate all values in this channel before writing the entry.
+        for &v in values {
+            if !v.is_finite() {
+                return Err(S::Error::custom(format!(
+                    "non-finite f32 value ({v}) in scalar channel '{key}'"
+                )));
+            }
+        }
+        smap.serialize_entry(key, values)?;
+    }
+    smap.end()
+}
+
 /// Custom serializer for `Option<Vec<f32>>` that rejects non-finite values.
 ///
 /// Mirrors [`serialize_finite_f32_vec`] but handles the `None` case
@@ -72,15 +107,141 @@ pub struct GuiState {
     pub tessellation_diagnostics: Vec<DiagnosticInfo>,
 }
 
+// ---------------------------------------------------------------------------
+// Newtype wrappers used by the manual `Serialize` impl for `MeshData` below.
+// These delegate to the private finite-value serialization helpers without
+// requiring those helpers to be public.
+// ---------------------------------------------------------------------------
+
+struct FiniteF32Slice<'a>(&'a [f32]);
+struct FiniteF32SliceOpt<'a>(&'a Option<Vec<f32>>);
+struct FiniteF32MapRef<'a>(&'a HashMap<String, Vec<f32>>);
+
+impl<'a> serde::Serialize for FiniteF32Slice<'a> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        serialize_finite_f32_vec(self.0, s)
+    }
+}
+
+impl<'a> serde::Serialize for FiniteF32SliceOpt<'a> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        serialize_finite_f32_vec_opt(self.0, s)
+    }
+}
+
+impl<'a> serde::Serialize for FiniteF32MapRef<'a> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        serialize_finite_f32_map(self.0, s)
+    }
+}
+
 /// Tessellated mesh for 3D display.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// # Serialization
+///
+/// `Serialize` is implemented manually (not derived) so that the following
+/// contracts can be enforced at serialization time with a `S::Error::custom`
+/// error — before any partial output is written to the wire:
+///
+/// - Each entry in `scalar_channels` must have exactly `vertices.len() / 3`
+///   values (one per vertex).  A mismatched entry is a programming error in
+///   the kernel-side FEA sourcing task (G2) that would produce silent
+///   wrong-length colour buffers on the frontend.
+/// - `displaced_positions`, when `Some`, must have the same length as
+///   `vertices` (same flat XYZ layout).
+///
+/// See project convention: *"contract in production code rather than relying
+/// on test coverage"* (task 2544).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MeshData {
     pub entity_path: String,
-    #[serde(serialize_with = "serialize_finite_f32_vec")]
     pub vertices: Vec<f32>,
     pub indices: Vec<u32>,
-    #[serde(serialize_with = "serialize_finite_f32_vec_opt")]
     pub normals: Option<Vec<f32>>,
+    /// Per-vertex scalar attribute channels (e.g. `"vonMises"` stress).
+    ///
+    /// Each entry maps a channel name to a flat `Vec<f32>` of length
+    /// `vertex_count` (`vertices.len() / 3`).  Omitted from the wire when
+    /// empty so non-FEA meshes stay compact.  Populated by the kernel-side
+    /// FEA sourcing task (G2); plumbed here so the IPC contract is established
+    /// without churning the wire format later.
+    ///
+    /// **Contract:** `values.len() == vertices.len() / 3` for each entry —
+    /// enforced at serialization time.
+    #[serde(default)]
+    pub scalar_channels: HashMap<String, Vec<f32>>,
+    /// Packed displaced vertex positions produced by the FEA deformation field.
+    ///
+    /// Same layout as `vertices` (`[x0, y0, z0, x1, y1, z1, ...]`).  Omitted
+    /// from the wire when `None` so non-FEA meshes stay compact.  Wiring into
+    /// the rendered position buffer is deferred to task G3 (FEA-mode UI);
+    /// pinning the field now lets G3 land without re-touching the IPC contract.
+    ///
+    /// **Contract:** `len() == vertices.len()` when `Some` — enforced at
+    /// serialization time.
+    #[serde(default)]
+    pub displaced_positions: Option<Vec<f32>>,
+}
+
+impl serde::Serialize for MeshData {
+    /// Validate length contracts then serialize fields using finite-value guards.
+    ///
+    /// Returns `Err` (via `S::Error::custom`) if:
+    /// - any `scalar_channels` entry length ≠ `vertices.len() / 3`, or
+    /// - `displaced_positions` length ≠ `vertices.len()` (when `Some`), or
+    /// - any f32 value is non-finite (NaN / ±Inf).
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let vertex_count = self.vertices.len() / 3;
+
+        // Contract: each scalar channel must be exactly vertex_count values long.
+        for (channel, values) in &self.scalar_channels {
+            if values.len() != vertex_count {
+                return Err(S::Error::custom(format!(
+                    "scalar channel '{channel}' has length {} but vertex count is {vertex_count}",
+                    values.len()
+                )));
+            }
+        }
+
+        // Contract: displaced_positions must have the same length as vertices.
+        if let Some(displaced) = &self.displaced_positions
+            && displaced.len() != self.vertices.len()
+        {
+            return Err(S::Error::custom(format!(
+                "displaced_positions has length {} but expected {} (vertices.len())",
+                displaced.len(),
+                self.vertices.len()
+            )));
+        }
+
+        // entity_path, vertices, indices, normals are always serialized.
+        // scalar_channels is omitted when empty; displaced_positions when None.
+        let mut field_count = 4usize;
+        if !self.scalar_channels.is_empty() {
+            field_count += 1;
+        }
+        if self.displaced_positions.is_some() {
+            field_count += 1;
+        }
+
+        let mut s = serializer.serialize_struct("MeshData", field_count)?;
+        s.serialize_field("entity_path", &self.entity_path)?;
+        s.serialize_field("vertices", &FiniteF32Slice(&self.vertices))?;
+        s.serialize_field("indices", &self.indices)?;
+        s.serialize_field("normals", &FiniteF32SliceOpt(&self.normals))?;
+        if !self.scalar_channels.is_empty() {
+            s.serialize_field("scalar_channels", &FiniteF32MapRef(&self.scalar_channels))?;
+        }
+        if self.displaced_positions.is_some() {
+            s.serialize_field("displaced_positions", &FiniteF32SliceOpt(&self.displaced_positions))?;
+        }
+        s.end()
+    }
 }
 
 /// A value cell (param, let, or auto) for the property editor.
