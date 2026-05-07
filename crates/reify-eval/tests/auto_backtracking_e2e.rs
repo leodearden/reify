@@ -73,7 +73,7 @@ fn build_registries(
     (template_registry, trait_registry)
 }
 
-// ─── Scenario 1: 2-param lex-first conflict (PRD §"Background" para 3) ───────
+// ─── Scenario 1: 2-param lex-first conflict (PRD §"Background" para 3) ──────
 
 /// Scenario: 2 coupled auto-params, lex-first conflict.
 ///
@@ -194,5 +194,122 @@ structure def WaterCooled : Cooled {
         matches!(&outcome.per_param[1].1, SelectionResult::Selected(n) if n == "AirCooled"),
         "U must be Selected(AirCooled) (lex-first feasible U under RubberSeal); got: {:?}",
         outcome.per_param[1]
+    );
+}
+
+// ─── Scenario 2: only last leaf feasible (maximum-distance backtrack) ─────────
+
+/// Scenario: 2 coupled auto-params, only the last cross-product leaf is
+/// globally feasible.  BFS picks `(ORingSeal, AirCooled)` — the lex-first
+/// per-param combination — but every leaf except `(RubberSeal, WaterCooled)`
+/// is infeasible.  DFS must exhaust all 4 leaves in declared order and find
+/// the unique global solution at the deepest lex position.
+///
+/// Queue: `[Violated, Violated, Violated, Satisfied]`
+///   - pop 1: `(ORingSeal, AirCooled)` → infeasible
+///   - pop 2: `(ORingSeal, WaterCooled)` → infeasible
+///   - pop 3: `(RubberSeal, AirCooled)` → infeasible
+///   - pop 4: `(RubberSeal, WaterCooled)` → feasible (unique leaf)
+///
+/// With strict mode (free=false) and exactly 1 feasible leaf, DFS produces
+/// `Selected` for both params and emits zero Warning diagnostics (no
+/// Ambiguous, no NonUnique).  Pins the maximum-distance backtrack path.
+///
+/// Pins PRD §"Background" para 3 (maximum-distance case).
+#[test]
+fn bfs_fails_2_param_only_last_leaf_feasible_dfs_finds_it() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    // Queue makes only the 4th leaf (RubberSeal, WaterCooled) feasible.
+    let checker = MockConstraintChecker::new().with_call_queue(vec![
+        Satisfaction::Violated,
+        Satisfaction::Violated,
+        Satisfaction::Violated,
+        Satisfaction::Satisfied,
+    ]);
+
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    // Strict mode (free=false) on both params: a single feasible leaf must
+    // produce Selected (not Ambiguous) with zero Warning diagnostics.
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ];
+
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    // DFS must exhaust all 4 leaves and find (RubberSeal, WaterCooled) as the
+    // unique globally feasible leaf.
+    assert_eq!(
+        outcome,
+        MultiParamResolutionOutcome {
+            per_param: vec![
+                ("T".to_string(), SelectionResult::Selected("RubberSeal".to_string())),
+                ("U".to_string(), SelectionResult::Selected("WaterCooled".to_string())),
+            ],
+            substitution: vec![
+                ("T".to_string(), "RubberSeal".to_string()),
+                ("U".to_string(), "WaterCooled".to_string()),
+            ],
+        },
+        "DFS must find (RubberSeal, WaterCooled) as the unique globally feasible leaf \
+         after exhausting all 3 infeasible leaves; got: {:?}",
+        outcome
+    );
+    // Single feasible leaf in strict mode → no Ambiguous error, no NonUnique
+    // warning — zero diagnostics.
+    assert!(
+        diagnostics.is_empty(),
+        "strict mode with exactly one feasible leaf must emit zero diagnostics; \
+         got: {:?}",
+        diagnostics
     );
 }
