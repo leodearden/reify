@@ -7,8 +7,8 @@ use reify_compiler::CompiledModule;
 use reify_types::{
     AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic, DiagnosticLabel,
     ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId,
-    GeometryKernel, GeometryOp, LoftOpHistoryRecords, Mesh, Operation, RealizationNodeId,
-    ReprKind, SourceSpan, SweepOpHistoryRecords, TopologyAttributeTable, ValueMap, VersionId,
+    GeometryKernel, GeometryOp, LoftOpHistoryRecords, Mesh, Operation, RealizationNodeId, ReprKind,
+    SourceSpan, SweepOpHistoryRecords, TopologyAttributeTable, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
@@ -375,6 +375,17 @@ impl Engine {
     /// module realizations using the geometry kernel. This is the incremental
     /// companion to build(): after edit_param() updates values, call
     /// build_snapshot() to get updated geometry without a cold restart.
+    ///
+    /// # Tolerance wiring (task 2874)
+    ///
+    /// `build_snapshot` mirrors [`Self::build`] across all four production-
+    /// wiring contracts (imported-tolerance-promise diagnostics, per-realization
+    /// demanded tolerance, per-stage tolerance budget, `RealizationCache`
+    /// populate/consult) — see [`Self::build`] for the full description. The
+    /// only placement difference: because `build_snapshot` does NOT call
+    /// `eval()` (it operates on the existing snapshot), the diagnostic-emission
+    /// helper runs AFTER `check_constraints_against_templates` rather than
+    /// before, since there is no eval-side scope clear to defend against.
     pub fn build_snapshot(
         &mut self,
         module: &CompiledModule,
@@ -548,6 +559,45 @@ impl Engine {
     }
 
     /// Full build: evaluate, check constraints, produce geometry.
+    ///
+    /// # Tolerance wiring (task 2874)
+    ///
+    /// `build` (alongside [`Self::build_snapshot`] and
+    /// [`Self::tessellate_realizations`]) participates in four production-
+    /// wiring contracts that route the demanded-tolerance subsystem from
+    /// authoring-time templates to kernel-time realization:
+    ///
+    /// 1. **Imported-tolerance-promise diagnostics** — invokes
+    ///    [`Self::emit_imported_tolerance_promise_diagnostics_for_module`]
+    ///    AFTER `eval()` (and BEFORE `check()` clears tolerance scope) so
+    ///    `BuildResult.diagnostics` carries every
+    ///    `ImportedTolerancePromiseInsufficient` /
+    ///    `InputTolerancePromiseIsZero` warning derivable from the active
+    ///    purpose bindings.
+    /// 2. **Per-realization demanded tolerance** — precomputes
+    ///    `(template_name, entity) → Option<f64>` via the
+    ///    [`Engine::demanded_tolerance_for_output`] →
+    ///    [`Engine::active_tolerance_for`] priority chain BEFORE `check()`
+    ///    so the eval-side scope clear cannot strand the tolerance-routing
+    ///    surface from the realization loop.
+    /// 3. **Per-stage tolerance budget** — routes the demanded tolerance
+    ///    through [`Engine::compute_realization_tolerance_budget`] against
+    ///    [`crate::kernel_registry::collect_registry`] so multi-kernel
+    ///    chain dispatch (when v0.3 adapters land) splits the budget across
+    ///    representation conversions; with the v0.2 occt-only inventory the
+    ///    budget passes through unchanged.
+    /// 4. **`RealizationCache` populate/consult** — `execute_realization_ops`
+    ///    consults `realization_cache` at the top of the helper for an
+    ///    `(entity, ReprKind::BRep, demanded_tol)` hit (cache short-circuits
+    ///    kernel re-execution under the partial-order rule
+    ///    `cached_tol ≤ requested_tol`) and, on a cache miss, populates the
+    ///    same key with the terminal handle after a fully-successful
+    ///    realization. Cache lifetime is engine-scoped — entries persist
+    ///    across `build` / `build_snapshot` / `tessellate_realizations`.
+    ///
+    /// All four contracts are pinned end-to-end by
+    /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
+    /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
         // Task 2874: emit imported-tolerance-promise diagnostics
         // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
@@ -743,6 +793,21 @@ impl Engine {
     ///
     /// When no geometry kernel is configured, returns empty meshes with no
     /// error diagnostics (matching the pattern in [`build()`]).
+    ///
+    /// # Tolerance wiring (task 2874)
+    ///
+    /// `tessellate_realizations` mirrors [`Self::build`] across all four
+    /// production-wiring contracts — see that method's docstring for the
+    /// full description. The integration smoke
+    /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
+    /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs` pins all four
+    /// axes (diagnostic emission, demanded-tolerance routing,
+    /// per-stage budget, RealizationCache population) on this surface
+    /// simultaneously. The single difference vs. `build`: this surface
+    /// applies the budget at the `kernel.tessellate(handle, budget)` call
+    /// site (the per-output budgeted tolerance directly drives the
+    /// tessellation precision), whereas `build` applies it at the
+    /// realization-cache key.
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
         // Task 2874: emit imported-tolerance-promise diagnostics BEFORE
         // `self.check(module)` for the same reason as `build` — see that
@@ -784,10 +849,8 @@ impl Engine {
         // BEFORE `self.check(module)` for the same reason as `demanded_tols`:
         // `check()` clears tolerance scope. Mirrored in `tessellate_snapshot`.
         let registry_owned = crate::kernel_registry::collect_registry();
-        let registry: BTreeMap<String, &CapabilityDescriptor> = registry_owned
-            .iter()
-            .map(|(k, v)| (k.clone(), v))
-            .collect();
+        let registry: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         let tessellation_budgets: HashMap<(String, String), f64> = {
             let mut map: HashMap<(String, String), f64> = HashMap::new();
             for t in &module.templates {
@@ -1141,6 +1204,7 @@ impl Engine {
     ///     (idempotent: the entry already exists, and re-inserting at the
     ///     same `(entity, repr, tol)` key would be a no-op under the
     ///     partial-order semantics).
+    ///
     /// `realization_name = None` paths (anonymous realizations) bypass the
     /// short-circuit so the named_steps write is never skipped where it
     /// otherwise would not happen — anonymous realizations are not part of
@@ -1199,14 +1263,13 @@ impl Engine {
         // "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`),
         // so a tighter request automatically misses a looser cached entry
         // (see step-13's pin).
-        if let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
-            if let Some(&cached_handle) =
+        if let (Some(tol), Some(name)) = (demanded_tol, realization_name)
+            && let Some(&cached_handle) =
                 realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol)
-            {
-                step_handles.push(cached_handle);
-                named_steps.insert(name.to_string(), cached_handle);
-                return;
-            }
+        {
+            step_handles.push(cached_handle);
+            named_steps.insert(name.to_string(), cached_handle);
+            return;
         }
 
         let mut had_failure = false;
@@ -1221,91 +1284,92 @@ impl Engine {
                 diagnostics,
             );
             match geom_op {
-                Ok(geom_op) => match kernel.execute_with_history(&geom_op) {
-                    Ok((handle, attribute_history)) => {
-                        // Record the parallel-array feature tag for this handle.
-                        if let Some(&tag) = feature_tags.get(op_idx) {
-                            feature_tag_table.record(handle.id, tag);
-                        }
-                        // v0.2 persistent-naming-v2 (PRD task 6, #2574): seed
-                        // per-face/per-edge `TopologyAttribute` records for
-                        // primitive constructors (Box / Cylinder / Sphere).
-                        // Non-primitive variants are no-ops at zero kernel
-                        // cost — `seed_primitive_attributes_for_handle` skips
-                        // the extract_* calls entirely for them. A seeding
-                        // failure (e.g. extract_faces / FaceNormal query
-                        // error) emits a Warning diagnostic and continues:
-                        // attribute seeding is auxiliary metadata, not
-                        // primary geometry, so it must not regress the
-                        // realization to Failed when only the metadata path
-                        // breaks. Per-task design decision recorded in
-                        // .task/plan.json.
-                        let feature_id = FeatureId::from(realization_id);
-                        if let Err(e) = seed_primitive_attributes_for_handle(
-                            topology_attribute_table,
-                            kernel,
-                            handle.id,
-                            &feature_id,
-                            &geom_op,
-                        ) {
-                            diagnostics.push(Diagnostic::warning(format!(
+                Ok(geom_op) => {
+                    match kernel.execute_with_history(&geom_op) {
+                        Ok((handle, attribute_history)) => {
+                            // Record the parallel-array feature tag for this handle.
+                            if let Some(&tag) = feature_tags.get(op_idx) {
+                                feature_tag_table.record(handle.id, tag);
+                            }
+                            // v0.2 persistent-naming-v2 (PRD task 6, #2574): seed
+                            // per-face/per-edge `TopologyAttribute` records for
+                            // primitive constructors (Box / Cylinder / Sphere).
+                            // Non-primitive variants are no-ops at zero kernel
+                            // cost — `seed_primitive_attributes_for_handle` skips
+                            // the extract_* calls entirely for them. A seeding
+                            // failure (e.g. extract_faces / FaceNormal query
+                            // error) emits a Warning diagnostic and continues:
+                            // attribute seeding is auxiliary metadata, not
+                            // primary geometry, so it must not regress the
+                            // realization to Failed when only the metadata path
+                            // breaks. Per-task design decision recorded in
+                            // .task/plan.json.
+                            let feature_id = FeatureId::from(realization_id);
+                            if let Err(e) = seed_primitive_attributes_for_handle(
+                                topology_attribute_table,
+                                kernel,
+                                handle.id,
+                                &feature_id,
+                                &geom_op,
+                            ) {
+                                diagnostics.push(Diagnostic::warning(format!(
                                 "topology-attribute seeding failed for {realization_id} op {op_idx}: {e}"
                             )));
-                        }
-                        // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
-                        // attribute population for sweep ops (extrude / revolve).
-                        // Mirrors the seeding warning idiom above — a failure
-                        // here is auxiliary-metadata-only and must not regress
-                        // the realization to Failed. Non-attributable ops
-                        // return `AttributeHistory::None` from the default
-                        // `GeometryKernel::execute_with_history` impl, so this
-                        // match is a no-op for them.
-                        if let Err(e) = populate_attribute_history(
-                            topology_attribute_table,
-                            kernel,
-                            &feature_id,
-                            &geom_op,
-                            handle.id,
-                            &attribute_history,
-                        ) {
-                            diagnostics.push(Diagnostic::warning(format!(
+                            }
+                            // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
+                            // attribute population for sweep ops (extrude / revolve).
+                            // Mirrors the seeding warning idiom above — a failure
+                            // here is auxiliary-metadata-only and must not regress
+                            // the realization to Failed. Non-attributable ops
+                            // return `AttributeHistory::None` from the default
+                            // `GeometryKernel::execute_with_history` impl, so this
+                            // match is a no-op for them.
+                            if let Err(e) = populate_attribute_history(
+                                topology_attribute_table,
+                                kernel,
+                                &feature_id,
+                                &geom_op,
+                                handle.id,
+                                &attribute_history,
+                            ) {
+                                diagnostics.push(Diagnostic::warning(format!(
                                 "topology-attribute attribute history population failed for {realization_id} op {op_idx}: {e}"
                             )));
-                        }
-                        // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
-                        // propagation for non-BRep kernels.  Runs immediately after
-                        // `populate_attribute_history` (BRep-first ordering per design
-                        // decision: OCCT-native population writes first; the hook is the
-                        // non-BRep path that returns `FellThrough` for OCCT shapes — a
-                        // near-zero-cost no-op — and routes to `propagate_attributes` for
-                        // kernels that advertise a hook).  Skipped entirely when
-                        // `parent_handles_for_op` returns an empty slice (primitives,
-                        // curve constructors, Pipe) so vacuous hook calls are never made.
-                        //
-                        // Mutual-exclusion contract: a kernel MUST NOT both return a
-                        // non-`None` `AttributeHistory` from `execute_with_history` AND
-                        // advertise an `attribute_hook()` for the same op.  The engine
-                        // invokes both paths unconditionally for every parent-having op;
-                        // if both populate the same `(feature_id, handle)` slots, the
-                        // second write wins silently.  This contract is currently only
-                        // enforced by convention: OCCT's `attribute_hook()` returns
-                        // `None`, and Manifold's `execute_with_history` always returns
-                        // `AttributeHistory::None` — the two paths are cleanly disjoint
-                        // for all kernels that exist today.
-                        let parent_handles = parent_handles_for_op(&geom_op);
-                        if !parent_handles.is_empty() {
-                            // All three Ok variants (Propagated / Discarded /
-                            // FellThrough) are intentionally swallowed: the hook
-                            // emits its own tracing::warn! on Discarded; the
-                            // dispatcher emits tracing::debug! when the kernel does
-                            // not advertise a hook (None → FellThrough); a hook that
-                            // itself returns Ok(FellThrough) is passed through
-                            // silently; and Propagated is the success case.  Only
-                            // Err(QueryError) needs user-facing visibility (mirrors
-                            // the populate_attribute_history failure idiom above and
-                            // the task-2574 "auxiliary metadata MUST NOT regress
-                            // Failed" convention).
-                            if let Err(e) = crate::kernel_attribute_hook::propagate_via_kernel_attribute_hook(
+                            }
+                            // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
+                            // propagation for non-BRep kernels.  Runs immediately after
+                            // `populate_attribute_history` (BRep-first ordering per design
+                            // decision: OCCT-native population writes first; the hook is the
+                            // non-BRep path that returns `FellThrough` for OCCT shapes — a
+                            // near-zero-cost no-op — and routes to `propagate_attributes` for
+                            // kernels that advertise a hook).  Skipped entirely when
+                            // `parent_handles_for_op` returns an empty slice (primitives,
+                            // curve constructors, Pipe) so vacuous hook calls are never made.
+                            //
+                            // Mutual-exclusion contract: a kernel MUST NOT both return a
+                            // non-`None` `AttributeHistory` from `execute_with_history` AND
+                            // advertise an `attribute_hook()` for the same op.  The engine
+                            // invokes both paths unconditionally for every parent-having op;
+                            // if both populate the same `(feature_id, handle)` slots, the
+                            // second write wins silently.  This contract is currently only
+                            // enforced by convention: OCCT's `attribute_hook()` returns
+                            // `None`, and Manifold's `execute_with_history` always returns
+                            // `AttributeHistory::None` — the two paths are cleanly disjoint
+                            // for all kernels that exist today.
+                            let parent_handles = parent_handles_for_op(&geom_op);
+                            if !parent_handles.is_empty() {
+                                // All three Ok variants (Propagated / Discarded /
+                                // FellThrough) are intentionally swallowed: the hook
+                                // emits its own tracing::warn! on Discarded; the
+                                // dispatcher emits tracing::debug! when the kernel does
+                                // not advertise a hook (None → FellThrough); a hook that
+                                // itself returns Ok(FellThrough) is passed through
+                                // silently; and Propagated is the success case.  Only
+                                // Err(QueryError) needs user-facing visibility (mirrors
+                                // the populate_attribute_history failure idiom above and
+                                // the task-2574 "auxiliary metadata MUST NOT regress
+                                // Failed" convention).
+                                if let Err(e) = crate::kernel_attribute_hook::propagate_via_kernel_attribute_hook(
                                 &*kernel,
                                 topology_attribute_table,
                                 &geom_op,
@@ -1317,26 +1381,27 @@ impl Engine {
                                     "kernel attribute hook propagation failed for {realization_id} op {op_idx}: {e}"
                                 )));
                             }
+                            }
+                            step_handles.push(handle.id);
                         }
-                        step_handles.push(handle.id);
-                    }
-                    Err(e) => {
-                        let err_msg = format!("geometry error: {}", e);
-                        diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
-                            DiagnosticLabel::new(realization_span, "in this realization"),
-                        ));
-                        // Arch §9.1 lines 868–877: surface the kernel error to the
-                        // caller so the realization NodeId can be marked Failed in
-                        // the eval cache and a single EventKind::Failed event emitted.
-                        // First-error-wins inside a single realization: if a later
-                        // call into this helper somehow triggers another kernel error
-                        // (it won't — we `break` immediately), the first one is kept.
-                        if kernel_error_out.is_none() {
-                            *kernel_error_out = Some(ErrorRef::new(err_msg));
+                        Err(e) => {
+                            let err_msg = format!("geometry error: {}", e);
+                            diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                                DiagnosticLabel::new(realization_span, "in this realization"),
+                            ));
+                            // Arch §9.1 lines 868–877: surface the kernel error to the
+                            // caller so the realization NodeId can be marked Failed in
+                            // the eval cache and a single EventKind::Failed event emitted.
+                            // First-error-wins inside a single realization: if a later
+                            // call into this helper somehow triggers another kernel error
+                            // (it won't — we `break` immediately), the first one is kept.
+                            if kernel_error_out.is_none() {
+                                *kernel_error_out = Some(ErrorRef::new(err_msg));
+                            }
+                            break;
                         }
-                        break;
                     }
-                },
+                }
                 Err(err) => {
                     diagnostics.push(
                         Diagnostic::error(format!("failed to compile geometry operation: {}", err))
@@ -1375,12 +1440,7 @@ impl Engine {
                     // insert if a tighter or equal entry is already cached;
                     // either way the post-condition "a satisfying entry
                     // exists at `(entity, BRep, tol)`" holds.
-                    realization_cache.insert(
-                        &realization_id.entity,
-                        ReprKind::BRep,
-                        tol,
-                        last,
-                    );
+                    realization_cache.insert(&realization_id.entity, ReprKind::BRep, tol, last);
                 }
             }
         }
@@ -1610,10 +1670,8 @@ impl Engine {
         // Task 2874 step-12: precompute per-realization tessellation budget.
         // See `tessellate_realizations` for the budget-routing rationale.
         let registry_owned = crate::kernel_registry::collect_registry();
-        let registry: BTreeMap<String, &CapabilityDescriptor> = registry_owned
-            .iter()
-            .map(|(k, v)| (k.clone(), v))
-            .collect();
+        let registry: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         let tessellation_budgets: HashMap<(String, String), f64> = {
             let mut map: HashMap<(String, String), f64> = HashMap::new();
             for t in &module.templates {
@@ -2897,8 +2955,12 @@ mod tests {
             // ── Curve constructors ────────────────────────────────────────────
             Case {
                 op: GeometryOp::LineSegment {
-                    x1: 0.0, y1: 0.0, z1: 0.0,
-                    x2: 1.0, y2: 0.0, z2: 0.0,
+                    x1: 0.0,
+                    y1: 0.0,
+                    z1: 0.0,
+                    x2: 1.0,
+                    y2: 0.0,
+                    z2: 0.0,
                 },
                 expected: vec![],
                 label: "LineSegment → empty (curve constructor, no parents)",
@@ -3059,7 +3121,11 @@ mod tests {
                         GeometryHandleId(12),
                     ],
                 },
-                expected: vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+                expected: vec![
+                    GeometryHandleId(10),
+                    GeometryHandleId(11),
+                    GeometryHandleId(12),
+                ],
                 label: "Loft → all profiles in input order (multi-profile, ordering preserved)",
             },
             Case {
@@ -3071,7 +3137,11 @@ mod tests {
                     ],
                     guides: vec![GeometryHandleId(30), GeometryHandleId(31)],
                 },
-                expected: vec![GeometryHandleId(20), GeometryHandleId(21), GeometryHandleId(22)],
+                expected: vec![
+                    GeometryHandleId(20),
+                    GeometryHandleId(21),
+                    GeometryHandleId(22),
+                ],
                 // Most error-prone exclusion: a regression that appended guides to
                 // the parent list would be silently missed without this case.
                 label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",

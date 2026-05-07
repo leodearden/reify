@@ -2054,7 +2054,10 @@ structure S {
         .get(&ValueCellId::new("S", "xmax"))
         .unwrap_or_else(|| panic!("'S.xmax' not found in eval result values"));
     match xmax {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::LENGTH,
@@ -2076,7 +2079,10 @@ structure S {
         .get(&ValueCellId::new("S", "xmin"))
         .unwrap_or_else(|| panic!("'S.xmin' not found in eval result values"));
     match xmin {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::LENGTH,

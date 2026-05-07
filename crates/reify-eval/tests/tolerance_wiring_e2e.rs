@@ -1,8 +1,8 @@
 //! End-to-end engine-level integration tests for task 2874 — exercises the
 //! production-wired tolerance subsystem: dispatcher emission of import-promise
-//! + zero-promise diagnostics on `build()`, `RealizationCache` population /
-//! short-circuit keyed on demanded tolerance, and `per_stage_tolerance_for_plan`
-//! consumption from the realization loop.
+//! and zero-promise diagnostics on `build()`, `RealizationCache` population
+//! and short-circuit keyed on demanded tolerance, and
+//! `per_stage_tolerance_for_plan` consumption from the realization loop.
 //!
 //! Imports use the established test fixture surface
 //! (`reify_test_support::{make_engine, step_input_template, step_output_template,
@@ -10,22 +10,22 @@
 //! Per-step tests are added by the subsequent TDD steps.
 
 #[allow(unused_imports)]
+use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+#[allow(unused_imports)]
+use reify_eval::{
+    DispatchPlan, dispatch, per_stage_tolerance_for_plan, tolerance_budget::per_stage_tolerance,
+};
+#[allow(unused_imports)]
 use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
 #[allow(unused_imports)]
 use reify_test_support::{
-    make_engine, manufacturing_purpose, mm, my_design_template, step_input_template,
-    step_output_template, MockConstraintChecker, MockGeometryKernel,
+    MockConstraintChecker, MockGeometryKernel, make_engine, manufacturing_purpose, mm,
+    my_design_template, step_input_template, step_output_template,
 };
-#[allow(unused_imports)]
-use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 #[allow(unused_imports)]
 use reify_types::{
     CapabilityDescriptor, CompiledExpr, DiagnosticCode, ExportFormat, ModulePath, Operation,
     ReprKind, Severity, Type,
-};
-#[allow(unused_imports)]
-use reify_eval::{
-    dispatch, per_stage_tolerance_for_plan, tolerance_budget::per_stage_tolerance, DispatchPlan,
 };
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
@@ -332,7 +332,8 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
     let _build2 = engine.build(&module, ExportFormat::Step);
     let ops_after_second = ops_handle.lock().unwrap().len();
     assert_eq!(
-        ops_after_second, ops_after_first,
+        ops_after_second,
+        ops_after_first,
         "expected second build() to be served entirely from RealizationCache \
          (cache hit at (MyDesign, BRep, 1e-6) populated by the first build); \
          got ops_after_first={}, ops_after_second={} — kernel was invoked \
@@ -416,8 +417,7 @@ fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
          default 0.0001 indicates the per-stage budget pipeline is bypassed \
          and effective_tessellation_tolerance is forwarded instead). Full \
          recorded tolerances: {:?}",
-        recorded[0],
-        recorded,
+        recorded[0], recorded,
     );
 }
 
@@ -629,9 +629,9 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
 /// Step-15 (final integration smoke; pins all four wiring axes
 /// simultaneously against `Engine::tessellate_realizations`).
 ///
-/// Single test that builds the canonical fixture — `step_input_template(50µm)`
-/// + `step_output_template(1µm)` + `MyDesign` realization (one Box primitive op)
-/// + `manufacturing_purpose("manufacturing", 1µm)` — runs
+/// Single test that builds the canonical fixture (`step_input_template(50µm)`,
+/// `step_output_template(1µm)`, `MyDesign` realization with one Box primitive
+/// op, and `manufacturing_purpose("manufacturing", 1µm)`), runs
 /// `engine.tessellate_realizations(&module)`, and asserts ALL FOUR
 /// production-wiring contracts hold simultaneously:
 ///
@@ -744,8 +744,7 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
          default 0.0001 indicates the per-stage budget pipeline is bypassed \
          and effective_tessellation_tolerance is forwarded instead). Full \
          recorded tolerances: {:?}",
-        recorded_tols[0],
-        recorded_tols,
+        recorded_tols[0], recorded_tols,
     );
 
     // ── Axis 3: RealizationCache populated at the demanded tolerance ──

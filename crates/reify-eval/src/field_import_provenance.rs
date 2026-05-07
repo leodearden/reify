@@ -106,8 +106,7 @@ mod tests {
         assert_eq!(r.declared_tolerance_si, None, "+Inf should be filtered");
 
         // Gate 4 rejects -Inf (c)
-        let r =
-            build_field_import_provenance("p", "f", any_hash, Some(f64::NEG_INFINITY), 0);
+        let r = build_field_import_provenance("p", "f", any_hash, Some(f64::NEG_INFINITY), 0);
         assert_eq!(r.declared_tolerance_si, None, "-Inf should be filtered");
 
         // Gate 4 rejects negative finite (d)
@@ -121,7 +120,11 @@ mod tests {
 
         // Typical valid case (f)
         let r = build_field_import_provenance("p", "f", any_hash, Some(50e-6), 0);
-        assert_eq!(r.declared_tolerance_si, Some(50e-6), "valid positive should be kept");
+        assert_eq!(
+            r.declared_tolerance_si,
+            Some(50e-6),
+            "valid positive should be kept"
+        );
     }
 
     #[test]

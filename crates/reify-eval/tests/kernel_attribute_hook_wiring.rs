@@ -215,7 +215,9 @@ fn wiring_test_module() -> reify_compiler::CompiledModule {
 fn engine_build_invokes_kernel_attribute_hook_for_parent_having_ops_and_skips_primitives() {
     let module = wiring_test_module();
     let calls: Arc<Mutex<Vec<RecordedCall>>> = Arc::new(Mutex::new(Vec::new()));
-    let kernel = HookKernel::new(RecordingHookStub { calls: Arc::clone(&calls) });
+    let kernel = HookKernel::new(RecordingHookStub {
+        calls: Arc::clone(&calls),
+    });
     let mut engine = reify_eval::Engine::new(
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
@@ -286,8 +288,8 @@ fn engine_build_invokes_kernel_attribute_hook_for_parent_having_ops_and_skips_pr
 /// **Red step**: fails until the `Err(e) →  Diagnostic::warning(...)` arm
 /// is wired in `Engine::execute_realization_ops` (step-6).
 #[test]
-fn engine_build_kernel_attribute_hook_query_error_surfaces_diagnostic_warning_without_failing_realization(
-) {
+fn engine_build_kernel_attribute_hook_query_error_surfaces_diagnostic_warning_without_failing_realization()
+ {
     let module = wiring_test_module();
     let kernel = HookKernel::new(FailingHookStub);
     let mut engine = reify_eval::Engine::new(
@@ -354,10 +356,7 @@ impl KernelAttributeHook for OrderingHookStub {
         _result_handle: GeometryHandleId,
         _splitting_feature_id: &FeatureId,
     ) -> Result<KernelAttributeOutcome, QueryError> {
-        self.event_log
-            .lock()
-            .unwrap()
-            .push("propagate_attributes");
+        self.event_log.lock().unwrap().push("propagate_attributes");
         Ok(KernelAttributeOutcome::Propagated)
     }
 }
@@ -518,13 +517,10 @@ fn engine_build_kernel_attribute_hook_respects_brep_first_ordering() {
     let log = event_log.lock().unwrap().clone();
 
     // Both paths must have fired — if either is absent the test setup is wrong.
-    let extract_pos = log
-        .iter()
-        .position(|&e| e == "extract_faces")
-        .expect(
-            "BRep population must call kernel.extract_faces for Extrude ops; \
+    let extract_pos = log.iter().position(|&e| e == "extract_faces").expect(
+        "BRep population must call kernel.extract_faces for Extrude ops; \
              got event log: {log:?}",
-        );
+    );
     let hook_pos = log
         .iter()
         .position(|&e| e == "propagate_attributes")

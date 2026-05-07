@@ -259,9 +259,7 @@ pub(crate) fn emit_kernel_selection(name: &str, total: usize) {
 /// Iteration-order determinism is preserved by the outer `BTreeMap` iteration
 /// (lexicographic on kernel name) and the inner `Vec` order (`supports`
 /// insertion order); `HashMap` only stores the lookup, not the iteration order.
-pub(crate) fn warn_if_duplicate_op_repr_pairs(
-    registered: &BTreeMap<String, CapabilityDescriptor>,
-) {
+pub(crate) fn warn_if_duplicate_op_repr_pairs(registered: &BTreeMap<String, CapabilityDescriptor>) {
     let mut seen: HashMap<(Operation, ReprKind), &str> = HashMap::new();
     for (name, descriptor) in registered {
         for &(op, repr) in &descriptor.supports {

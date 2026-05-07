@@ -669,9 +669,7 @@ pub(crate) fn elaborate_field(
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
 #[allow(dead_code, reason = "wired into elaborate_field by PRD task 5")]
-pub(crate) fn hash_imported_file_content(
-    path: &str,
-) -> std::io::Result<reify_types::ContentHash> {
+pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_types::ContentHash> {
     // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
     // allocation per call.  If `ContentHash` (or `xxhash_rust::xxh3`) later exposes an
@@ -2900,8 +2898,8 @@ mod invariant_tests {
 /// the `TempDir` guard's `Drop` impl removes the directory unconditionally.
 #[cfg(test)]
 mod imported_file_hash_tests {
-    use std::fs;
     use reify_types::ContentHash;
+    use std::fs;
 
     use super::hash_imported_file_content;
 
@@ -2938,10 +2936,10 @@ mod imported_file_hash_tests {
         fs::write(&path1, bytes).expect("write file_a");
         fs::write(&path2, bytes).expect("write file_b");
 
-        let hash1 = hash_imported_file_content(path1.to_str().expect("path1 utf8"))
-            .expect("hash file_a");
-        let hash2 = hash_imported_file_content(path2.to_str().expect("path2 utf8"))
-            .expect("hash file_b");
+        let hash1 =
+            hash_imported_file_content(path1.to_str().expect("path1 utf8")).expect("hash file_a");
+        let hash2 =
+            hash_imported_file_content(path2.to_str().expect("path2 utf8")).expect("hash file_b");
         assert_eq!(
             hash1, hash2,
             "path-independence: same content at different paths must yield the same ContentHash"

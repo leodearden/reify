@@ -35,8 +35,9 @@ pub mod realization_cache;
 pub mod snapshot;
 pub mod source_location;
 pub use source_location::resolve_entity_source_location;
-pub mod test_runner;
 pub mod field_import_provenance;
+pub mod morph_stage_b;
+pub mod test_runner;
 pub mod tolerance_bucket;
 pub mod tolerance_budget;
 pub mod tolerance_combine;
@@ -44,14 +45,13 @@ pub(crate) mod tolerance_format;
 pub mod tolerance_gate;
 pub mod tolerance_promise;
 pub(crate) mod tolerance_scope;
-pub mod morph_stage_b;
 pub use morph_stage_b::{
-    stage_b_eligible, BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind,
-    SubShapeSide,
+    BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind, SubShapeSide,
+    stage_b_eligible,
 };
 pub mod structural_classifier;
 pub use structural_classifier::{
-    classify_cell, realization_graph_shape_hash, stage_a_eligible, ParameterClass,
+    ParameterClass, classify_cell, realization_graph_shape_hash, stage_a_eligible,
 };
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
