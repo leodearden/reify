@@ -924,4 +924,89 @@ mod tests {
         assert_eq!(normal_antiparallel_threshold, -0.5);
         assert_eq!(max_thickness_voxels, 64.0);
     }
+
+    /// Build an analytic thick-block Regular3D `SampledField` representing
+    /// `φ(p) = max(|p_x|, |p_y|, |p_z|) - half_size` (Chebyshev-distance
+    /// SDF approximation) over a `voxel_count³` grid centered on the
+    /// origin with unit voxel spacing. Sufficient for the medial-mask
+    /// test because it preserves the "deep interior is far from the
+    /// surface" property that drives the narrow-band filter; the exact
+    /// Euclidean-distance SDF would only differ near corners/edges where
+    /// the mask should be empty regardless.
+    fn thick_block_sdf_3d(half_size_voxels: f64, voxel_count: usize) -> SampledField {
+        assert!(voxel_count >= 2, "thick block grid needs ≥ 2 voxels per axis");
+        let n = voxel_count;
+        let spacing: f64 = 1.0;
+        let half_extent = (n as f64 - 1.0) / 2.0;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+
+        let axis_grid: Vec<f64> = (0..n)
+            .map(|i| bounds_min + (i as f64) * spacing)
+            .collect();
+        // Row-major flat layout: data[i*n*n + j*n + k] at index (i,j,k).
+        let mut data = Vec::with_capacity(n * n * n);
+        for &x in &axis_grid {
+            for &y in &axis_grid {
+                for &z in &axis_grid {
+                    let m = x.abs().max(y.abs()).max(z.abs());
+                    data.push(m - half_size_voxels);
+                }
+            }
+        }
+        SampledField {
+            name: format!("thick-block-3d-h{half_size_voxels}-n{voxel_count}"),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![spacing, spacing, spacing],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Thick block `φ = max(|p_i|) − 6` on a 16×16×16 grid: the analytic
+    /// medial axis is a single point at the cube centroid (origin). The
+    /// deep interior (`|φ| ≫ 3`) is excluded by the narrow-band filter,
+    /// and the band-shell voxels (`|φ| ≤ 3`) lie near a single face/edge/
+    /// corner so their bidirectional ray walks are profoundly asymmetric
+    /// (`d⁺ ≈ 0.5` vs `d⁻ ≈ 11.5` on a face, which fails the relative
+    /// equality test by a wide margin).
+    ///
+    /// Asserts: mask is **empty OR** contains only voxels within 1 voxel
+    /// of the cube centroid (Euclidean index distance ≤ √3 ≈ 1.732).
+    /// Crucially, NO face-adjacent or near-corner voxels appear in the
+    /// mask — those are the false-positive risk for an under-defended
+    /// distinctness check.
+    #[test]
+    fn compute_medial_mask_on_thick_block_is_empty_or_centroid_only() {
+        let n = 16usize;
+        let sdf = thick_block_sdf_3d(6.0, n);
+        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect("thick block compute succeeds");
+
+        // The grid centroid for n=16 lies between indices 7 and 8 on
+        // each axis (no voxel sits exactly at origin); a "within 1
+        // voxel of the centroid" cluster fits inside Euclidean radius
+        // √3 ≈ 1.732 in index space (the 8 corner voxels of the
+        // central cell).
+        let center = (n as f64 - 1.0) / 2.0;
+        for &[i, j, k] in &mask.voxels {
+            let di = (i as f64) - center;
+            let dj = (j as f64) - center;
+            let dk = (k as f64) - center;
+            let dist = (di * di + dj * dj + dk * dk).sqrt();
+            assert!(
+                dist <= 1.8,
+                "thick-block medial voxel ({i},{j},{k}) is too far from \
+                 grid center (dist={dist:.3} voxels; cap=1.8). The medial \
+                 axis of a thick block is its centroid; far-from-center \
+                 voxels are false positives — likely from an under-defended \
+                 surface-patch distinctness check accepting same-face \
+                 hits at the band shell."
+            );
+        }
+    }
 }
