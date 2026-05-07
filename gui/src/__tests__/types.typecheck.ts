@@ -35,6 +35,18 @@ const meshNoNormals: MeshData = {
   normals: null,
 };
 
+// --- MeshData with optional scalar_channels and displaced_positions (task 2959) ---
+// (a) Both new optional fields populated — asserts they are accepted as MeshData.
+const meshWithScalars: MeshData = {
+  entity_path: 'FEA.body',
+  vertices: new Float32Array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+  indices: new Uint32Array([0, 1, 2]),
+  normals: null,
+  scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+  displaced_positions: new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]),
+};
+void meshWithScalars;
+
 // --- RawMeshData (wire format from Tauri IPC) ---
 const rawMesh: RawMeshData = {
   entity_path: 'Bracket.body',
@@ -42,6 +54,27 @@ const rawMesh: RawMeshData = {
   indices: [0, 1, 2],
   normals: [0.0, 0.0, 1.0],
 };
+
+// --- RawMeshData with optional scalar_channels and displaced_positions (task 2959) ---
+// (b) Both new fields populated in the raw wire type.
+const rawMeshWithScalars: RawMeshData = {
+  entity_path: 'FEA.body',
+  vertices: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+  indices: [0, 1, 2],
+  normals: null,
+  scalar_channels: { vonMises: [10, 20, 30] },
+  displaced_positions: [0, 0, 0, 1, 1, 1, 2, 2, 2],
+};
+void rawMeshWithScalars;
+
+// (c) RawMeshData omitting both new fields — asserts they remain optional.
+const rawMeshWithoutScalars: RawMeshData = {
+  entity_path: 'Plain.body',
+  vertices: [0.0, 1.0, 2.0],
+  indices: [0, 1, 2],
+  normals: null,
+};
+void rawMeshWithoutScalars;
 
 // --- convertRawMesh ---
 const converted: MeshData = convertRawMesh(rawMesh);
