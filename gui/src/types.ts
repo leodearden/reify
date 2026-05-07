@@ -9,6 +9,21 @@ export interface MeshData {
   vertices: Float32Array;
   indices: Uint32Array;
   normals: Float32Array | null;
+  /**
+   * Per-vertex scalar attribute channels (e.g. `"vonMises"` stress).
+   * Mirrors `scalar_channels: HashMap<String, Vec<f32>>` in the Rust
+   * `MeshData` struct (task 2959). Absent for non-FEA meshes (field omitted
+   * from the wire when the map is empty).
+   */
+  scalar_channels?: Record<string, Float32Array>;
+  /**
+   * Packed displaced vertex positions produced by the FEA deformation field.
+   * Same layout as `vertices` (`[x0, y0, z0, x1, y1, z1, ...]`). Absent for
+   * non-FEA meshes; present but unused by the renderer until task G3 wires it
+   * into the position buffer. Mirrors `displaced_positions: Option<Vec<f32>>`
+   * in the Rust `MeshData` struct (task 2959).
+   */
+  displaced_positions?: Float32Array | null;
 }
 
 /** Wire-format mesh data as received from Tauri IPC (JSON number arrays). */
@@ -17,16 +32,39 @@ export interface RawMeshData {
   vertices: number[];
   indices: number[];
   normals: number[] | null;
+  /**
+   * Per-vertex scalar attribute channels as raw number arrays from the IPC wire.
+   * Absent when the Rust backend serializes an empty map (`skip_serializing_if`).
+   */
+  scalar_channels?: Record<string, number[]>;
+  /**
+   * Packed displaced vertex positions as raw number array from the IPC wire.
+   * Absent when `displaced_positions` is `None` on the Rust side.
+   */
+  displaced_positions?: number[] | null;
 }
 
 /** Convert wire-format mesh data to typed arrays for WebGL consumption. */
 export function convertRawMesh(raw: RawMeshData): MeshData {
-  return {
+  const result: MeshData = {
     entity_path: raw.entity_path,
     vertices: new Float32Array(raw.vertices),
     indices: new Uint32Array(raw.indices),
     normals: raw.normals ? new Float32Array(raw.normals) : null,
   };
+  if (raw.scalar_channels !== undefined) {
+    const converted: Record<string, Float32Array> = {};
+    for (const [key, values] of Object.entries(raw.scalar_channels)) {
+      converted[key] = new Float32Array(values);
+    }
+    result.scalar_channels = converted;
+  }
+  if (raw.displaced_positions !== undefined) {
+    result.displaced_positions = raw.displaced_positions
+      ? new Float32Array(raw.displaced_positions)
+      : null;
+  }
+  return result;
 }
 
 /** A parameter or computed value from the evaluation engine. */

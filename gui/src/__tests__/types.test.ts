@@ -3,6 +3,7 @@
  * Task 2959: verify the new optional scalar_channels and displaced_positions
  * fields are correctly converted from number[] → Float32Array.
  */
+import { describe, it, expect } from 'vitest';
 import { convertRawMesh } from '../types';
 import type { RawMeshData } from '../types';
 
@@ -56,13 +57,11 @@ describe('convertRawMesh', () => {
       vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
       indices: [0, 1, 2],
       normals: null,
-      displaced_positions: [0.1, 0.2, 0.3, 1.1, 1.2, 1.3, 2.1, 2.2, 2.3],
+      displaced_positions: [1, 2, 3, 4, 5, 6, 7, 8, 9],
     };
     const mesh = convertRawMesh(raw);
     expect(mesh.displaced_positions).toBeInstanceOf(Float32Array);
-    expect(Array.from(mesh.displaced_positions!)).toEqual([
-      0.1, 0.2, 0.3, 1.1, 1.2, 1.3, 2.1, 2.2, 2.3,
-    ]);
+    expect(Array.from(mesh.displaced_positions!)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   it('leaves displaced_positions undefined when absent from raw payload', () => {
@@ -84,7 +83,7 @@ describe('convertRawMesh', () => {
       indices: [0, 1, 2],
       normals: null,
       scalar_channels: { vonMises: [10, 20, 30] },
-      displaced_positions: [0.1, 0.0, 0.0, 0.2, 0.0, 0.0, 0.3, 0.0, 0.0],
+      displaced_positions: [1, 0, 0, 2, 0, 0, 3, 0, 0],
     };
     const mesh = convertRawMesh(raw);
     expect(mesh.scalar_channels!['vonMises']).toBeInstanceOf(Float32Array);
