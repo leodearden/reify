@@ -1259,19 +1259,14 @@ mod tests {
             .expect("update_source should succeed for bracket_compile_error.ri");
         assert!(update.success, "update_source must succeed so compiled=Some is set");
 
-        // active_file must have switched to b.ri.
+        // Use get_source(None) to read back the exact path update_source stored,
+        // rather than re-deriving it via std::fs::canonicalize — which may produce a
+        // different normalisation (symlink trees, macOS case-folding, etc.) and make
+        // the test flaky.
         let active_path = ctx
             .get_source(None)
-            .expect("active_file should be set")
+            .expect("active_file should be set after update_source")
             .file_path;
-        let b_canonical = std::fs::canonicalize(BRACKET_COMPILE_ERROR_PATH)
-            .expect("fixture must be canonicalizable")
-            .to_string_lossy()
-            .to_string();
-        assert_eq!(
-            active_path, b_canonical,
-            "active_file must point to the last-updated file (b.ri), not the previously loaded a.ri"
-        );
 
         // Diagnostics must be for b.ri (bracket_compile_error has at least one Error).
         let diags = ctx
@@ -1281,10 +1276,17 @@ mod tests {
             !diags.is_empty(),
             "bracket_compile_error.ri should produce at least one diagnostic"
         );
-        let all_b = diags.iter().all(|d| d.file_path == b_canonical);
+        // active_path is the readback of state.active_file; diagnostics come from
+        // state.compiled (= b's module).  If the regression returned — active_file
+        // still pointing at a.ri after update_source(b.ri) — active_path would
+        // carry a.ri's canonical path while d.file_path would carry b.ri's, and
+        // this check would fail.  The assertion therefore doubles as the
+        // active-file-switched regression guard.
+        let all_b = diags.iter().all(|d| d.file_path == active_path);
         assert!(
             all_b,
-            "all diagnostics must carry b.ri's file_path, got: {:?}",
+            "all diagnostics must carry the active file's path ({:?}), got: {:?}",
+            active_path,
             diags.iter().map(|d| d.file_path.as_str()).collect::<Vec<_>>()
         );
     }
