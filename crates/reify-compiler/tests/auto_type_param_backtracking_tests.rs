@@ -2416,6 +2416,124 @@ structure def WaterCooled : Cooled {
     );
 }
 
+/// Same 2x2 all-leaves-infeasible setup as the parameter-list/counts test.
+/// Pins the **`Diagnostic::candidates` field shape** (task 2663) for the
+/// `0 =>` arm rich diagnostic.
+///
+/// The structured field carries the smallest infeasibility witness's FQN list
+/// in declared parameter order (length 1 for the level-1 witness — every
+/// auto-type-param multi-param diagnostic that emits via the cross-product
+/// `0 =>` arm collapses to a level-1 witness post-backjumping). Mirrors the
+/// `AutoTypeParamAmbiguous` multi-param coherent-assignment convention pinned
+/// in `crates/reify-types/src/diagnostics.rs:510-521`.
+///
+/// Pins:
+/// (a) `diagnostics[0].candidates == vec!["ORingSeal"]` — exactly the
+///     witness's FQN list in declared parameter order.
+/// (b) `!candidates[0].contains('=')` — guards against a regression that
+///     routes the human-readable composite witness `"T=ORingSeal"` through
+///     `with_candidates`, which would violate the FQN-only invariant pinned
+///     at `diagnostics.rs:884-903`.
+/// (c) `!candidates[0].contains(',')` — same regression guard against
+///     comma-joined param=fqn pairs being routed through the structured field.
+#[test]
+fn dfs_zero_feasible_diagnostic_carries_witness_fqns_in_candidates_field() {
+    let source = r#"
+trait Seal {}
+trait Cooled {}
+
+structure def ORingSeal : Seal {
+    param diameter : Real = 10.0
+}
+
+structure def RubberSeal : Seal {
+    param thickness : Real = 2.0
+}
+
+structure def AirCooled : Cooled {
+    param flow_rate : Real = 5.0
+}
+
+structure def WaterCooled : Cooled {
+    param flow_rate : Real = 12.0
+}
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+
+    let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let template = TopologyTemplateBuilder::new("Coupling")
+        .constraint("Coupling", 0, None, expr)
+        .build();
+
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
+    let functions: &[CompiledFunction] = &[];
+    let mut diagnostics = Vec::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 20),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(30, 40),
+        },
+    ];
+
+    let _outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "`0 =>` arm must emit exactly one diagnostic, got: {:?}",
+        diagnostics
+    );
+
+    // (a) Candidates field carries the witness's FQN list in declared order.
+    //     Level-1 witness ⇒ length-1 list with the lex-first FQN.
+    assert_eq!(
+        diagnostics[0].candidates,
+        vec!["ORingSeal".to_string()],
+        "Diagnostic::candidates must carry the witness's FQN list in declared \
+         parameter order (length 1 for level-1 witness, lex-first FQN); got: {:?}",
+        diagnostics[0].candidates
+    );
+
+    // (b) FQN-only invariant: no `=` separator (would indicate `T=ORingSeal`
+    //     composite leaked into the structured field).
+    assert!(
+        !diagnostics[0].candidates[0].contains('='),
+        "FQN-only invariant: candidates entries must not contain '=' \
+         (composite `T=fqn` rendering belongs in the human-readable message only); \
+         got: {:?}",
+        diagnostics[0].candidates[0]
+    );
+
+    // (c) FQN-only invariant: no `,` separator (would indicate comma-joined
+    //     pairs leaked into the structured field).
+    assert!(
+        !diagnostics[0].candidates[0].contains(','),
+        "FQN-only invariant: candidates entries must not contain ',' \
+         (each FQN is a single bare entry, never a comma-joined pair); got: {:?}",
+        diagnostics[0].candidates[0]
+    );
+}
+
 /// Multi-param strict-mode scenario where exactly one of the four cross-product
 /// leaves is feasible. Exercises the `1 =>` arm via the strict path: with
 /// `max_feasible_to_collect = 2` (strict mode), the search runs all four
