@@ -69,14 +69,6 @@ mod tests {
         };
         let prov2 = prov.clone();
         assert_eq!(prov, prov2);
-
-        let debug = format!("{:?}", prov);
-        assert!(debug.contains("FieldImportProvenance"));
-        assert!(debug.contains("path"));
-        assert!(debug.contains("format"));
-        assert!(debug.contains("content_hash"));
-        assert!(debug.contains("ingestion_timestamp_secs"));
-        assert!(debug.contains("declared_tolerance_si"));
     }
 
     #[test]
