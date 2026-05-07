@@ -160,6 +160,25 @@ fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError
 }
 
 #[cfg(has_occt)]
+/// Validate that `u` and `v` are both finite (not NaN and not ±Inf).
+///
+/// This is the shared NaN/Inf rejection idiom for surface differential FFI
+/// primitives (`surface_normal_at`, `curvature_at`). The check runs at the
+/// Rust FFI boundary so the C++ wrapper never receives non-finite parametric
+/// inputs — OCCT may silently produce nonsensical output for NaN/Inf inputs
+/// rather than reporting a structured error, so we reject upfront.
+///
+/// Returns `QueryError::QueryFailed` if either component is non-finite.
+fn validate_uv_finite(u: f64, v: f64) -> Result<(), QueryError> {
+    if !u.is_finite() || !v.is_finite() {
+        return Err(QueryError::QueryFailed(format!(
+            "(u, v) must be finite (got u={u}, v={v})"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(has_occt)]
 /// Tolerance for the pipe start-tangent +Z check.
 ///
 /// The guard is symmetric: `|t.z - 1| < PIPE_START_TANGENT_Z_EPSILON`.
@@ -752,8 +771,9 @@ impl OcctKernel {
     /// # Errors
     ///
     /// - `QueryError::InvalidHandle` — if the handle is unknown.
-    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
-    ///   underlying surface, yields a degenerate normal, or any OCCT call fails.
+    /// - `QueryError::QueryFailed` — if `(u, v)` contains NaN or ±Inf, if the
+    ///   shape is not a face, has no underlying surface, yields a degenerate
+    ///   normal, or any OCCT call fails.
     pub fn surface_normal_at(
         &self,
         handle: GeometryHandleId,
@@ -763,6 +783,7 @@ impl OcctKernel {
         let s = self
             .get_shape(handle)
             .map_err(|_| QueryError::InvalidHandle(handle))?;
+        validate_uv_finite(u, v)?;
         let p = ffi::ffi::surface_normal_at(s, u, v)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
@@ -786,9 +807,9 @@ impl OcctKernel {
     /// # Errors
     ///
     /// - `QueryError::InvalidHandle` — if the handle is unknown.
-    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
-    ///   underlying surface, curvature is undefined at `(u, v)`, or any OCCT
-    ///   call fails.
+    /// - `QueryError::QueryFailed` — if `(u, v)` contains NaN or ±Inf, if the
+    ///   shape is not a face, has no underlying surface, curvature is undefined
+    ///   at `(u, v)`, or any OCCT call fails.
     pub fn curvature_at(
         &self,
         handle: GeometryHandleId,
@@ -798,6 +819,7 @@ impl OcctKernel {
         let s = self
             .get_shape(handle)
             .map_err(|_| QueryError::InvalidHandle(handle))?;
+        validate_uv_finite(u, v)?;
         let c = ffi::ffi::curvature_at(s, u, v)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok(Curvature {
