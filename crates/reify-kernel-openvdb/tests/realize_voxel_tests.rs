@@ -119,21 +119,17 @@ fn realize_voxel_from_thin_slab_mesh_returns_handle_with_expected_active_count()
 
     assert!(count > 0, "active voxel count must be non-zero");
 
-    // Plausibility check: narrow-band surface voxels.
-    // Surface area of the slab = 2*(10*10 + 10*1 + 10*1) mm² = 240 mm²
-    // In voxels (0.1mm each): 240/0.01 = 24_000 surface voxels per face.
-    // Total band ~ surface_voxels * 2 * half_width = 24_000 * 6 = 144_000.
-    // Allow 0.5..1.5× tolerance for discretization effects.
-    let voxel_size_sq = voxel_size * voxel_size;
-    let surface_area_mm2 = 2.0 * (10.0 * 10.0 + 10.0 * 1.0 + 10.0 * 1.0_f64);
-    let surface_voxels = surface_area_mm2 / voxel_size_sq;
-    let expected_approx = surface_voxels * 2.0 * half_width;
-    let lower = (expected_approx * 0.2) as usize;
-    let upper = (expected_approx * 3.0) as usize;
+    // Empirical reference (captured 2026-05-07 with libopenvdb 13.0.0, voxel_size=0.1mm,
+    // half_width=3.0): 119_366 active voxels.
+    // Tightened to ±5% per task done criterion.
+    const EMPIRICAL_COUNT: usize = 119_366;
+    let lower = (EMPIRICAL_COUNT as f64 * 0.95) as usize;
+    let upper = (EMPIRICAL_COUNT as f64 * 1.05) as usize;
 
     assert!(
         count >= lower && count <= upper,
-        "active voxel count {count} outside plausible band [{lower}, {upper}]"
+        "active voxel count {count} outside ±5% of empirical reference \
+         [{lower}, {upper}] (empirical={EMPIRICAL_COUNT})"
     );
 }
 

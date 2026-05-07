@@ -65,14 +65,13 @@ std::unique_ptr<OpenVdbGridHandle> mesh_to_volume_ffi(
     openvdb::math::Transform::Ptr xform =
         openvdb::math::Transform::createLinearTransform(voxel_size);
 
-    // Quads vector (empty — we only supply triangles).
-    std::vector<openvdb::Vec4I> quads;
-
-    openvdb::FloatGrid::Ptr grid = openvdb::tools::meshToVolume<openvdb::FloatGrid>(
-        openvdb::tools::QuadAndTriangleDataAdapter<openvdb::Vec3I, openvdb::Vec4I>(
-            triangles, quads),
+    // meshToLevelSet handles the world→index-space conversion internally.
+    // It accepts world-space Vec3s points directly, unlike the lower-level
+    // meshToVolume which expects index-space points from the mesh adapter.
+    openvdb::FloatGrid::Ptr grid = openvdb::tools::meshToLevelSet<openvdb::FloatGrid>(
         *xform,
-        static_cast<float>(half_width_voxels),
+        points,
+        triangles,
         static_cast<float>(half_width_voxels));
 
     if (!grid) {
