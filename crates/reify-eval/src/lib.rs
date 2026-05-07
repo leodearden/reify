@@ -54,6 +54,7 @@ pub use structural_classifier::{
     classify_cell, realization_graph_shape_hash, stage_a_eligible, ParameterClass,
 };
 pub mod sweep_classifier;
+pub use sweep_classifier::{classify_swept_body, SweptKind};
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
