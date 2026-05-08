@@ -392,6 +392,47 @@ mod tests {
     use super::*;
     use crate::mid_surface::MidSurfaceMesh;
 
+    // ── Step 9: no-prune baseline test ───────────────────────────────────────
+
+    /// Single equilateral-ish triangle with large edges and thin local thickness:
+    /// `branch_length / local_thickness ≫ default ratio` → no triangles pruned.
+    ///
+    /// Exercises the full topology + ratio plumbing on benign input (one
+    /// triangle has 3 boundary edges, all boundary, so it IS a tip; but its
+    /// ratio is well above the threshold so it survives).
+    ///
+    /// A single isolated triangle has all 3 of its edges as boundary edges
+    /// (each edge is incident to exactly 1 triangle), so it satisfies ≥ 2
+    /// boundary edges and IS a tip.  The test verifies that the ratio guard
+    /// prevents removal when `branch_length / local_thickness ≫ 1.0`.
+    #[test]
+    fn prune_branches_no_prune_when_all_branches_above_threshold() {
+        // Equilateral triangle with edge length ≈ 10, thickness = 1.0.
+        // branch_length ≈ 10, local_thickness = 1.0 → ratio ≈ 10 ≫ default 1.0.
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [5.0, 8.660_254_037_844_386, 0.0], // equilateral apex
+            ],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![1.0, 1.0, 1.0],
+        };
+        let result = prune_branches(&mesh, &PruneOptions::default())
+            .expect("valid mesh should not error");
+        assert_eq!(result.mesh.triangles.len(), 1, "triangle must survive");
+        assert_eq!(result.mesh.vertices.len(), 3, "all vertices must survive");
+        assert_eq!(
+            result.metrics.pruned_triangle_count, 0,
+            "no triangles pruned"
+        );
+        assert_eq!(result.metrics.pruned_vertex_count, 0, "no vertices pruned");
+        assert!(
+            result.metrics.iterations <= 1,
+            "at most one pass needed to settle"
+        );
+    }
+
     // ── Step 7: input-mesh validation tests ──────────────────────────────────
 
     /// `prune_branches` rejects a mesh where `thickness.len() != vertices.len()`.
