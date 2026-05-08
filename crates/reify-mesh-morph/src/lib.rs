@@ -5,9 +5,11 @@
 
 pub mod eligibility;
 pub mod options;
+pub mod types;
 
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
-pub use options::MorphOptions;
+pub use options::{MorphFailure, MorphOptions};
+pub use types::{BRep, InversionDetails, MetricsBreached};
 
 /// Re-exported so consumers can pattern-match `Reason::BijectionFailure(_)`
 /// without depending on `reify-eval` directly.

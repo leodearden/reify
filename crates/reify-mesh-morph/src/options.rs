@@ -4,6 +4,55 @@
 //! (`docs/prds/v0_3/mesh-morphing.md`): the consumer-neutral public API
 //! surface for the morph engine.
 
+use crate::eligibility::Reason;
+use crate::types::{InversionDetails, MetricsBreached};
+
+// ── MorphFailure ──────────────────────────────────────────────────────────────
+
+/// Structured failure result from [`crate::morph`].
+///
+/// Four variants covering the full failure-mode taxonomy in PRD
+/// `docs/prds/v0_3/mesh-morphing.md` §"Failure-mode visibility":
+///
+/// | Variant | Produced by |
+/// |---------|-------------|
+/// | `Ineligible` | PRD task #3 eligibility predicate (already shipped) |
+/// | `QualityHardFail` | PRD task #9 quality-check pass |
+/// | `QualitySoftFail` | PRD task #9 quality-check pass |
+/// | `SolverError` | PRD task #7 elastic-solve kernel |
+///
+/// The exhaustive contract test in `options::tests` acts as a compile-fence:
+/// adding, removing, or renaming a variant breaks the test immediately.
+#[derive(Debug, Clone)]
+pub enum MorphFailure {
+    /// The edit was rejected by the eligibility predicate (task #3).
+    ///
+    /// Mirrors `eligibility::Eligibility::Ineligible`. The full structured
+    /// [`Reason`] is preserved so callers can route failure-mode counters
+    /// (PRD task #11) without re-running eligibility.
+    Ineligible(Reason),
+
+    /// One or more output elements have a negative Jacobian (hard inversion).
+    ///
+    /// Produced by the quality-check pass in PRD task #9. The payload
+    /// identifies the first offending element.
+    QualityHardFail(InversionDetails),
+
+    /// Soft quality thresholds were breached but no hard inversion occurred.
+    ///
+    /// Produced by the quality-check pass in PRD task #9. The payload
+    /// records which of the [`crate::MorphOptions`] thresholds tripped.
+    QualitySoftFail(MetricsBreached),
+
+    /// The elastic-solve kernel failed (e.g. singular stiffness matrix).
+    ///
+    /// Produced by PRD task #7's `solve_elastic_static` integration.
+    /// The payload is a free-form message until task #7 lands a structured
+    /// kernel-error type; upgrading to `SolverError(reify_solver_elastic::SolverError)`
+    /// is a focused one-line diff at that point.
+    SolverError(String),
+}
+
 // ── MorphOptions ──────────────────────────────────────────────────────────────
 
 /// Tunable parameters for the mesh-morphing pipeline.
