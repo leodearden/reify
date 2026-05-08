@@ -8,6 +8,8 @@
 //! Selection logic (Laplacian vs. elasticity morph) lives in PRD task #10's
 //! engine integration; this module delivers only the smoother kernel.
 
+use std::collections::BTreeSet;
+
 use reify_types::{ElementOrderTag, VolumeMesh};
 
 // ── LaplacianFailure ──────────────────────────────────────────────────────────
@@ -105,7 +107,7 @@ pub fn laplacian_smooth(
 
     // Boundary classification — node is "boundary" iff it appears in
     // prescribed_positions. Materialised as a Vec<bool> for O(1) lookup
-    // inside future iteration loops.
+    // inside the iteration loop.
     let mut is_boundary = vec![false; vertex_count];
     for (node_idx, position) in prescribed_positions {
         let i = *node_idx as usize;
@@ -113,7 +115,54 @@ pub fn laplacian_smooth(
         current[i] = *position;
     }
 
-    let _ = iterations; // step-12+ will introduce the iteration loop.
+    // Build node→neighbours adjacency from the P1 tet index buffer. Each tet
+    // contributes 6 unordered topological edges (4 corners → C(4,2) = 6).
+    // BTreeSet for deterministic iteration order — same load-bearing reason
+    // BoundaryAssociation uses BTreeMap (FEA warm-start bit-stability).
+    let mut adjacency: Vec<BTreeSet<u32>> = vec![BTreeSet::new(); vertex_count];
+    for tet in old_mesh.tet_indices.chunks_exact(4) {
+        // Each unordered pair (i, j) inserts j into adjacency[i] and i into
+        // adjacency[j]. Skip the diagonal (i == j) — degenerate tets where a
+        // node repeats would otherwise self-link.
+        for &i in tet {
+            for &j in tet {
+                if i != j && (i as usize) < vertex_count {
+                    adjacency[i as usize].insert(j);
+                }
+            }
+        }
+    }
+
+    // Jacobi double-buffer: each iteration reads exclusively from `current`
+    // and writes exclusively to `next`. In-place mutation would convert
+    // this into Gauss-Seidel and make the result depend on traversal order.
+    let mut next: Vec<[f64; 3]> = vec![[0.0; 3]; vertex_count];
+    let _ = iterations; // step-14 wraps the body below in a 0..iterations loop.
+    {
+        for i in 0..vertex_count {
+            if is_boundary[i] {
+                next[i] = current[i];
+                continue;
+            }
+            let neighbours = &adjacency[i];
+            if neighbours.is_empty() {
+                // No neighbours → orphan; carry forward unchanged so 0/0
+                // doesn't inject NaN. Test pinned in step-15.
+                next[i] = current[i];
+                continue;
+            }
+            let mut sum = [0.0_f64; 3];
+            for &j in neighbours {
+                let p = current[j as usize];
+                sum[0] += p[0];
+                sum[1] += p[1];
+                sum[2] += p[2];
+            }
+            let n = neighbours.len() as f64;
+            next[i] = [sum[0] / n, sum[1] / n, sum[2] / n];
+        }
+        std::mem::swap(&mut current, &mut next);
+    }
 
     // f64 → f32 narrowing at the write boundary, restoring the canonical
     // [x0,y0,z0,x1,…] flat layout.
