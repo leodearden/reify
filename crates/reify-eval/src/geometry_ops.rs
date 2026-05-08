@@ -1904,6 +1904,15 @@ fn dispatch_surface_angle(
             si_value,
             dimension,
         }) => {
+            debug_assert!(
+                dimension == reify_types::DimensionVector::ANGLE
+                    || dimension == reify_types::DimensionVector::DIMENSIONLESS,
+                "dispatch_surface_angle: expected ANGLE- or DIMENSIONLESS-dimensioned Scalar, \
+                 got dimension {:?} (si_value={}); kernel cell type is Type::angle() per \
+                 compile-time wiring",
+                dimension,
+                si_value
+            );
             if dimension != reify_types::DimensionVector::ANGLE
                 && dimension != reify_types::DimensionVector::DIMENSIONLESS
             {
