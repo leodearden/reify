@@ -724,13 +724,15 @@ fn elastic_options_constrains_shell_threshold_below_one() {
 /// made explicit rather than relying solely on test coverage."
 ///
 /// Both the **operator chain** (UnOp::Not over BinOp::And) and the **operand
-/// identity** (union of collect_value_ref_members across both sides must contain
-/// both "force_tet" and "require_hex_wedge") are pinned to close the regression
-/// window where:
+/// identity** (each child of the And must be a bare `CompiledExprKind::ValueRef`
+/// — no UnOp/BinOp wrapping) are pinned to close two regression windows:
 ///   - a swap to `!(force_tet || require_hex_wedge)` (wrong semantics: would
 ///     reject the legal "exactly one true" state) would pass on a name-and-op
 ///     check alone;
-///   - a degenerate `!force_tet` would pass on a name-only check.
+///   - a regression to `!(!force_tet && !require_hex_wedge)` (semantically
+///     `force_tet || require_hex_wedge`, same wrong semantics one negation
+///     deeper) would pass a `collect_value_ref_members` union check because
+///     that helper recurses into UnOp — direct ValueRef matching rejects it.
 ///
 /// The test counts exactly ONE such constraint (`.filter(...).count() == 1`)
 /// rather than using `.any(...)` so a future duplicate addition is also caught.
@@ -754,12 +756,22 @@ fn elastic_options_force_tet_and_require_hex_wedge_mutually_exclusive_constraint
                 }
                 _ => return false,
             };
-            // Union of ValueRef names across both sides must include both
-            // "force_tet" and "require_hex_wedge" — allowing either operand
-            // order (AST does not normalize commutative &&).
-            let mut refs = collect_value_ref_members(left);
-            refs.extend(collect_value_ref_members(right));
-            refs.contains(&"force_tet") && refs.contains(&"require_hex_wedge")
+            // Each child of the And must be a direct ValueRef — no UnOp/BinOp
+            // wrapping — so that `!(!force_tet && !require_hex_wedge)` is
+            // rejected. Either operand order is accepted (AST does not
+            // normalize commutative &&).
+            let left_name = match &left.kind {
+                CompiledExprKind::ValueRef(cell_id) => cell_id.member.as_str(),
+                _ => return false,
+            };
+            let right_name = match &right.kind {
+                CompiledExprKind::ValueRef(cell_id) => cell_id.member.as_str(),
+                _ => return false,
+            };
+            matches!(
+                (left_name, right_name),
+                ("force_tet", "require_hex_wedge") | ("require_hex_wedge", "force_tet")
+            )
         })
         .count();
 
