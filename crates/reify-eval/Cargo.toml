@@ -11,6 +11,7 @@ reify-expr.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
 bincode.workspace = true
+bytemuck.workspace = true
 inventory.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
