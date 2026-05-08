@@ -251,17 +251,18 @@ pub fn quality_check(
         }
 
         if sj < 0.0 {
-            // First inverted element wins for HardFail.
-            if hard_fail.is_none() {
-                hard_fail = Some(InversionDetails {
-                    element_index: elem_idx,
-                    jacobian: sj,
-                });
-                // First inverted element wins — exit the loop; soft-fail
-                // bookkeeping after this point would be discarded by the
-                // early-return at the HardFail check below anyway.
-                break;
-            }
+            // First inverted element wins for HardFail. The `break` below
+            // ensures the loop cannot reach a second inversion, so the
+            // `is_none()` guard was dead-defensive. The debug_assert! makes
+            // the invariant explicit without runtime cost in release builds.
+            debug_assert!(hard_fail.is_none());
+            hard_fail = Some(InversionDetails {
+                element_index: elem_idx,
+                jacobian: sj,
+            });
+            // Exit the loop — soft-fail bookkeeping after this point would
+            // be discarded by the early-return at the HardFail check below.
+            break;
         }
 
         // Aspect-ratio increase comparison (only when connectivity matches).
@@ -297,8 +298,10 @@ pub fn quality_check(
             //   field is awkward for serialization (JSON/MessagePack lack standard
             //   +inf encoding). A degenerate morphed tet also typically trips the
             //   min-scaled-J floor or HardFail, so the AR signal is redundant.
-            if source_ar > 0.0 && source_ar.is_finite() && !source_ar.is_nan()
-                && morphed_ar.is_finite()
+            // is_finite() already excludes NaN, so the redundant !is_nan() check
+            // is dropped. Order: is_finite() first short-circuits the > 0.0 compare
+            // on the rare NaN/Inf input.
+            if source_ar.is_finite() && source_ar > 0.0 && morphed_ar.is_finite()
             {
                 let ratio = morphed_ar / source_ar;
                 if ratio > max_ar_ratio {
