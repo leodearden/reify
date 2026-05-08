@@ -392,6 +392,36 @@ mod tests {
     use super::*;
     use crate::mid_surface::MidSurfaceMesh;
 
+    // ── Step 3: defaults-pin test ─────────────────────────────────────────────
+
+    /// Pin `PruneOptions::default()` struct shape via pattern destructuring.
+    ///
+    /// The full-field destructure is a compile-time field-rename guard: if any
+    /// field is renamed or removed, this test fails at compile time rather than
+    /// silently passing with stale bindings.
+    ///
+    /// Asserts `shell_branch_prune_ratio == 1.0` (PRD §89 conservative default)
+    /// and `max_prune_iterations == 8` (chain-collapse bound doubled for safety).
+    ///
+    /// Mirrors `mesher_options_defaults_pin_empirical_constants` (mesher.rs)
+    /// and `mid_surface_options_defaults_pin_empirical_constants` (mid_surface.rs).
+    #[test]
+    fn prune_options_defaults_pin_empirical_constants() {
+        // All fields named explicitly — compile error on any field rename.
+        let PruneOptions {
+            shell_branch_prune_ratio,
+            max_prune_iterations,
+        } = PruneOptions::default();
+        assert_eq!(
+            shell_branch_prune_ratio, 1.0,
+            "shell_branch_prune_ratio default must be 1.0 (PRD §89 conservative threshold)"
+        );
+        assert_eq!(
+            max_prune_iterations, 8,
+            "max_prune_iterations default must be 8 (chain-collapse bound)"
+        );
+    }
+
     // ── Step 1: smoke test ────────────────────────────────────────────────────
 
     /// Public-surface compile-test: all public types are reachable from
