@@ -3743,26 +3743,31 @@ structure def WaterCooled : Cooled {
         diagnostics[0].message
     );
     // (b2) Exactly NON_UNIQUE_DISPLAY_CAP witnesses are rendered — not more, not fewer.
-    // Count `; T=` separators: witnesses are joined by `"; "` so inter-witness
-    // separators = (witness count - 1).  With NON_UNIQUE_DISPLAY_CAP displayed witnesses
-    // the separator count is NON_UNIQUE_DISPLAY_CAP - 1.  (The
-    // `selected lexicographically-first '...'` suffix also contains `T=` but is preceded
-    // by `; selected`, not `; T=`, so it is not counted here.)
+    // Extract the witnesses section by splitting on structural delimiters that are
+    // intrinsic to the diagnostic format and independent of param-name spelling:
+    //   - prefix delimiter `"assignments: "` bounds the start of the witnesses_join section.
+    //   - elision delimiter `"; ("` bounds the end (the parenthesised elision marker starts
+    //     with `(more than … feasibles exist; rest elided)`).
+    // Witnesses produced by render_witnesses use only `=` and `,` separators (no `;` or `(`),
+    // so `"; ("` is unambiguous — it cannot appear inside a witness.
     {
-        let sep_count = diagnostics[0]
-            .message
-            .matches("; T=")
-            .count();
+        let msg = &diagnostics[0].message;
+        let witnesses_section = msg
+            .split_once("assignments: ")
+            .expect("diagnostic message must contain 'assignments: ' prefix")
+            .1
+            .split_once("; (")
+            .expect("diagnostic message must contain '; (' elision-marker boundary")
+            .0;
+        let witness_count = witnesses_section.split("; ").count();
         assert_eq!(
-            sep_count,
-            NON_UNIQUE_DISPLAY_CAP - 1,
-            "message must contain exactly {} '; T=' separators (== NON_UNIQUE_DISPLAY_CAP-1 \
-             inter-witness separators for {} displayed witnesses), \
-             got {} — a regression here means the display window was not applied; message: {:?}",
-            NON_UNIQUE_DISPLAY_CAP - 1,
+            witness_count,
             NON_UNIQUE_DISPLAY_CAP,
-            sep_count,
-            diagnostics[0].message
+            "expected exactly {} witnesses rendered (display window not applied); \
+             witnesses section: {:?}; full message: {:?}",
+            NON_UNIQUE_DISPLAY_CAP,
+            witnesses_section,
+            msg
         );
     }
     // (c) Lex-first T candidate appears in the message.
