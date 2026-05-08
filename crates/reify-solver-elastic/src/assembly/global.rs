@@ -889,11 +889,12 @@ mod tests {
     ///
     /// # Why N = 137 (prime)
     ///
-    /// 137 is prime. For every thread count `t` in the sweep, `ceil(137 / t)`
-    /// produces a tail chunk strictly smaller than the leading chunks. This
-    /// means partition-edge effects (shared-DOF sums that land on a chunk
-    /// boundary) are exercised for every `t` — unlike with 4 elements, where
-    /// thread counts 1, 2, 4 all evenly tile the slice. Explicit chunk shapes:
+    /// 137 is prime. For every thread count `t > 1` in the sweep, `ceil(137 / t)`
+    /// produces a tail chunk strictly smaller than the leading chunks; `t = 1`
+    /// is included as a no-partition baseline. This means partition-edge effects
+    /// (shared-DOF sums that land on a chunk boundary) are exercised for every
+    /// `t > 1` — unlike with 4 elements, where thread counts 1, 2, 4 all evenly
+    /// tile the slice. Explicit chunk shapes:
     ///
     /// - threads=1 → 1 chunk of 137
     /// - threads=2 → chunks (69, 68)
@@ -925,7 +926,7 @@ mod tests {
     /// This test fills that gap with a workload where uneven partitioning
     /// actually occurs for every thread count in the sweep.
     #[test]
-    fn parallel_mode_chain_mesh_tolerance_equivalent_across_thread_counts() {
+    fn parallel_mode_chain_mesh_tolerance_equivalent_to_deterministic_across_thread_counts() {
         const N_ELEMENTS: usize = 137;
         let n_nodes = N_ELEMENTS + 3; // 140
 
@@ -952,6 +953,12 @@ mod tests {
 
         let dim = 3 * n_nodes;
 
+        // Track the worst-offending (threads, i, j) pair across the full sweep so
+        // the failure message names the entry with the largest |Δ|/tol ratio, not
+        // merely the first one encountered in row-major order.
+        let mut worst: Option<(usize, usize, usize, f64, f64, f64, f64)> = None;
+        // slot layout: (threads, i, j, p, d, delta, tol)
+
         for threads in [1_usize, 2, 3, 5, 7, 8] {
             let par = assemble_global_stiffness(
                 n_nodes,
@@ -964,13 +971,24 @@ mod tests {
                     let p = read(&par, i, j);
                     let tol = 1e-12 * d.abs().max(1.0);
                     let delta = (p - d).abs();
-                    assert!(
-                        delta < tol,
-                        "threads={threads} K_par[{i}][{j}] = {p} but K_det[{i}][{j}] = {d}; \
-                         |Δ| = {delta} ≥ tol = {tol}",
-                    );
+                    if delta >= tol {
+                        let is_worse = worst
+                            .as_ref()
+                            .map_or(true, |&(_, _, _, _, _, wd, wt)| delta / tol > wd / wt);
+                        if is_worse {
+                            worst = Some((threads, i, j, p, d, delta, tol));
+                        }
+                    }
                 }
             }
+        }
+        if let Some((threads, i, j, p, d, delta, tol)) = worst {
+            panic!(
+                "worst-offender across sweep: threads={threads} K_par[{i}][{j}] = {p} \
+                 but K_det[{i}][{j}] = {d}; |Δ| = {delta} ≥ tol = {tol} \
+                 (ratio = {:.1}×)",
+                delta / tol
+            );
         }
     }
 
