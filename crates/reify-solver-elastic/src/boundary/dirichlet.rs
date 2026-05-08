@@ -84,7 +84,12 @@ pub struct DirichletBc {
 ///
 /// Row-elimination zeros both row `i` and column `i`, so symmetric K stays
 /// symmetric.  Setting the diagonal to `1.0` keeps K positive-definite on the
-/// constrained block.  See the module-level doc for the SPD proof sketch.
+/// constrained block.  The unconstrained block is the original SPD submatrix
+/// with rows/cols `i` deleted — still SPD by Cauchy interlacing.
+/// The `multiple_bcs_preserve_k_symmetry_within_fp_tolerance` test is the
+/// regression pin for this invariant: any refactor that accidentally zeros
+/// only the row or only the column will produce a visibly asymmetric K on the
+/// two-element shared-face mesh and trip the tolerance check.
 ///
 /// # Order-independence
 ///
