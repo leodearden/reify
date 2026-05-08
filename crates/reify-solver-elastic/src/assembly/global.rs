@@ -78,16 +78,71 @@ pub enum AssemblyMode {
 /// dense `(a, b, α, β)` block of `9 · k_e.n_local²` triplets, and faer's
 /// CSR builder sums duplicates that share a `(row, col)` pair.
 ///
+/// # Panics
+///
+/// - `AssemblyMode::Parallel { threads: 0 }` — auto-fallback to
+///   single-threaded would silently mask caller bugs (e.g. a misread config
+///   defaulting `threads` to 0); the panic surfaces them at the call site.
+///   The "tiny problems run single-threaded" policy lives in the
+///   `ElasticOptions` resolution layer (PRD task #16), not in this primitive.
+/// - `connectivity.len() * 3 != k_e.n_dofs` for any element — the per-element
+///   DOF count must agree with the connectivity, otherwise the
+///   `(3·conn[a]+α, 3·conn[b]+β)` mapping is ill-defined. The panic message
+///   names the offending element id.
+/// - `connectivity[i] >= n_nodes` for any element — out-of-range global node
+///   ID would translate to an out-of-range DOF row/col index. The panic
+///   message names the offending element id and node id.
+///
 /// See [`AssemblyMode`] for the iteration / merge contract per mode.
 pub fn assemble_global_stiffness(
     n_nodes: usize,
     elements: &[AssemblyElement<'_>],
     mode: AssemblyMode,
 ) -> SparseRowMat<usize, f64> {
-    // Mode-specific dispatch: per-element contract checks (connectivity
-    // length, node-ID range) and `Parallel { threads: 0 }` validation
-    // land in step-8's GREEN. The deterministic arm here exercises the
-    // shared `emit_element_triplets` scatter primitive in slice order.
+    // Public-surface contract checks. Unconditional `assert!` (not
+    // `debug_assert!`) per the project's Task-2544 contract-explicitness
+    // convention, mirrored in `assembly/mod.rs::element_stiffness` and
+    // `elements/mod.rs::ReferenceElement::jacobian`.
+    //
+    // Threads check first, before per-element checks: a `Parallel { threads: 0 }`
+    // call with an empty `elements` slice should still panic, surfacing the
+    // caller bug regardless of mesh size.
+    if let AssemblyMode::Parallel { threads } = mode {
+        assert!(
+            threads != 0,
+            "AssemblyMode::Parallel {{ threads: 0 }} is invalid: \
+             auto-fallback to single-threaded would silently mask \
+             caller bugs (e.g. a misread config defaulting threads to 0). \
+             Pass threads >= 1, or use AssemblyMode::Deterministic for \
+             single-threaded slice-order accumulation.",
+        );
+    }
+    for element in elements {
+        assert_eq!(
+            element.connectivity.len() * 3,
+            element.k_e.n_dofs,
+            "AssemblyElement {{ id: {} }} has connectivity.len() = {} \
+             but k_e.n_dofs = {}; expected connectivity.len() * 3 == k_e.n_dofs",
+            element.id,
+            element.connectivity.len(),
+            element.k_e.n_dofs,
+        );
+        for &node in element.connectivity {
+            assert!(
+                node < n_nodes,
+                "AssemblyElement {{ id: {} }} references node {} \
+                 but n_nodes = {} (valid range is 0..{})",
+                element.id,
+                node,
+                n_nodes,
+                n_nodes,
+            );
+        }
+    }
+
+    // Mode-specific dispatch. The deterministic arm exercises the shared
+    // `emit_element_triplets` scatter primitive in slice order; the
+    // parallel arm's partition-and-merge implementation lands in step-12.
     let triplets: Vec<Triplet<usize, usize, f64>> = match mode {
         AssemblyMode::Deterministic => {
             let mut acc = Vec::new();
