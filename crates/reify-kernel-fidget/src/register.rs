@@ -76,6 +76,8 @@ inventory::submit! {
 ///
 /// Must equal `KernelId::Fidget.to_string()` (`"fidget"`) so the project-pin
 /// lookup in `reify-config` matches the registered adapter at runtime.
+/// Enforced by
+/// `crates/reify-config/tests/kernel_name_consistency.rs::fidget_kernel_name_const_matches_kernel_id_display`.
 ///
 /// # Lex-min note
 ///
