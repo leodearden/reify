@@ -224,6 +224,78 @@ mod tests {
         }
     }
 
+    // ── Step-5a: regular unit tet identity morph → Pass ──────────────────────
+
+    #[test]
+    fn quality_check_with_regular_unit_tet_identity_morph_returns_pass() {
+        // Canonical right-handed unit tet — all quality metrics well within
+        // defaults. min scaled J ≈ 0.707 >> 0.15 threshold.
+        #[rustfmt::skip]
+        let vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ];
+        let tet_indices = vec![0u32, 1, 2, 3];
+        let mesh = VolumeMesh {
+            vertices,
+            tet_indices,
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let opts = MorphOptions::default();
+        assert_eq!(quality_check(&mesh, &mesh, &opts), QualityVerdict::Pass);
+    }
+
+    // ── Step-5b: near-degenerate tet → SoftFail(min_scaled_jacobian=Some) ────
+
+    #[test]
+    fn quality_check_with_near_degenerate_tet_returns_soft_fail_with_min_scaled_jacobian_populated(
+    ) {
+        // Three nearly-coplanar edges: nodes 0,1,2 form a nearly degenerate
+        // triangle (node 2 very close to the line 0-1), node 3 is also nearly
+        // coplanar. The min corner scaled Jacobian will be << 0.15.
+        //
+        // Vertices: (0,0,0), (1,0,0), (0.5,1e-3,0), (0.5,0.5e-3,1e-3)
+        // These four points are nearly coplanar so the volume is tiny relative
+        // to edge lengths → scaled J << 0.15.
+        #[rustfmt::skip]
+        let vertices: Vec<f32> = vec![
+            0.0,   0.0,   0.0,
+            1.0,   0.0,   0.0,
+            0.5,   1e-3,  0.0,
+            0.5,   0.5e-3, 1e-3,
+        ];
+        let tet_indices = vec![0u32, 1, 2, 3];
+        let morphed = VolumeMesh {
+            vertices: vertices.clone(),
+            tet_indices: tet_indices.clone(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let source = VolumeMesh {
+            vertices,
+            tet_indices,
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let opts = MorphOptions::default(); // quality_floor_min_scaled_jacobian = 0.15
+        let result = quality_check(&morphed, &source, &opts);
+        match result {
+            QualityVerdict::SoftFail(ref metrics) => {
+                let observed = metrics
+                    .min_scaled_jacobian
+                    .expect("min_scaled_jacobian should be Some");
+                assert!(
+                    observed < 0.15,
+                    "expected observed < 0.15, got {observed}"
+                );
+            }
+            other => panic!("expected SoftFail, got: {other:?}"),
+        }
+    }
+
     // ── Compile fence: exhaustive variant match (no wildcard arm) ─────────────
     //
     // Adding, removing, or renaming any QualityVerdict variant breaks
