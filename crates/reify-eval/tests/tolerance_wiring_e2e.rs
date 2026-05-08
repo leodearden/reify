@@ -346,59 +346,6 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
     );
 }
 
-/// Amendment pin: documents the API footgun where repeated `build()` calls
-/// without an explicit `activate_purpose(...)` between them silently
-/// cache-miss because `build()` internally calls `eval()` which clears
-/// `active_purpose_bindings`.
-///
-/// This test is `#[ignore]`d because it demonstrates a known limitation
-/// rather than a regression: the cache short-circuit *would* work if
-/// `active_purpose_bindings` survived `eval()`, but today it does not.
-/// The reviewer's amendment explicitly called for either fixing the gap
-/// (preserve bindings across eval — broader change beyond this task's
-/// scope) or documenting the workaround prominently. The companion
-/// docstring in `Engine::activate_purpose` carries the workaround; this
-/// test pins the gap so a future task that closes it can simply remove
-/// the `#[ignore]` and the pin guards the fix.
-#[test]
-#[ignore = "documents known limitation: build() internally clears active_purpose_bindings via eval(); see Engine::activate_purpose docstring"]
-fn repeated_build_calls_without_re_activate_purpose_still_short_circuits() {
-    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_repeated_build_short_circuits_without_reactivation".to_string(),
-    ]))
-    .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization())
-    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
-    .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_handle = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-
-    let _eval = engine.eval(&module);
-    engine.activate_purpose("manufacturing", "MyDesign");
-
-    let _build1 = engine.build(&module, ExportFormat::Step);
-    let ops_after_first = ops_handle.lock().unwrap().len();
-
-    // NOTE: NO re-activation between builds. Today this means the second
-    // build observes empty `active_purpose_bindings` (cleared by the
-    // first build's internal eval()), so `demanded_tol = None` and the
-    // cache short-circuit is bypassed.
-    let _build2 = engine.build(&module, ExportFormat::Step);
-    let ops_after_second = ops_handle.lock().unwrap().len();
-
-    assert_eq!(
-        ops_after_second,
-        ops_after_first,
-        "expected the cache short-circuit to fire across consecutive build() \
-         calls without an explicit re-activate_purpose. When this assertion \
-         passes (i.e. the gap is closed by a follow-up task that preserves \
-         `active_purpose_bindings` across eval()), un-ignore this test.",
-    );
-}
-
 /// Step-11 (failing initially; passes once step-12 wires
 /// `Engine::compute_realization_tolerance_budget(...)` into the
 /// `kernel.tessellate(...)` call site inside `tessellate_from_values`).
