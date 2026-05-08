@@ -854,7 +854,16 @@ impl Engine {
         // by the test pair listed above plus
         // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
         // (step-19).
-        self.realization_cache = crate::realization_cache::RealizationCache::new();
+        //
+        // **Single-source the reset (task 2874 step-22)**: both auto-
+        // invalidation hooks (this one and the parallel `edit_source` reset)
+        // delegate to `Engine::clear_realization_cache` (engine_admin.rs)
+        // so the reset semantics are defined in exactly one place. The
+        // public mutator is the same primitive a production caller would
+        // invoke for out-of-band cache invalidation — see
+        // `clear_realization_cache_public_api_resets_cache_for_production_callers`
+        // in `tests/tolerance_wiring_e2e.rs`.
+        self.clear_realization_cache();
         // Reset the test-instrumentation diff snapshot. The "most recent
         // edit_source call" invariant on `Engine::last_diff_value_cells()`
         // is enforced rather than documented — a subsequent edit_param
@@ -1946,7 +1955,16 @@ impl Engine {
         // by the test pair listed above plus
         // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
         // (step-17).
-        self.realization_cache = crate::realization_cache::RealizationCache::new();
+        //
+        // **Single-source the reset (task 2874 step-22)**: both auto-
+        // invalidation hooks (this one and the parallel `edit_param` reset)
+        // delegate to `Engine::clear_realization_cache` (engine_admin.rs)
+        // so the reset semantics are defined in exactly one place. The
+        // public mutator is the same primitive a production caller would
+        // invoke for out-of-band cache invalidation — see
+        // `clear_realization_cache_public_api_resets_cache_for_production_callers`
+        // in `tests/tolerance_wiring_e2e.rs`.
+        self.clear_realization_cache();
         // Disjoint-field borrow: Rust's NLL tracks this borrow as touching only
         // the `eval_state` field (not all of `self`), so later mutable borrows
         // of sibling fields — `self.param_overrides.retain(...)` and

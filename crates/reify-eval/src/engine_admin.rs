@@ -229,6 +229,53 @@ impl Engine {
         &self.realization_cache
     }
 
+    /// Flush the per-engine [`RealizationCache`](crate::realization_cache::RealizationCache),
+    /// dropping every cached `(entity_id, repr_kind, demanded_tol) →
+    /// GeometryHandleId` entry.
+    ///
+    /// **Production escape hatch (task 2874, step-22).** Gives callers
+    /// explicit control over cache invalidation when they know an external
+    /// event has rendered cached `GeometryHandleId`s stale — for example,
+    /// swapping the geometry kernel via test seams, or an upstream module
+    /// reload that did not flow through `edit_source` (e.g. a CLI workflow
+    /// that constructs a fresh `CompiledModule` and feeds it in via a
+    /// non-`edit_source` path).
+    ///
+    /// **Most callers do NOT need to call this manually.** Both
+    /// [`Engine::edit_param`](crate::Engine::edit_param) and
+    /// [`Engine::edit_source`](crate::Engine::edit_source) already invoke
+    /// the same reset internally near function entry (the auto-invalidation
+    /// hook points pinned by tests
+    /// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+    /// and `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
+    /// in `tests/tolerance_wiring_e2e.rs`). This method is the escape hatch
+    /// for scenarios that fall OUTSIDE those hook points; it is NOT a
+    /// required pre-`build_snapshot` step.
+    ///
+    /// **Shape**: takes `&mut self`, returns nothing, idempotent on an
+    /// already-empty cache. Mirrors the precedent set by
+    /// [`Engine::clear_param_overrides`](Self::clear_param_overrides) — no
+    /// cfg gate, no return value, single-purpose mutator. The READ-side
+    /// accessor [`Engine::realization_cache`](Self::realization_cache)
+    /// keeps its `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// gate (cache contents are kernel-internal `GeometryHandleId` values
+    /// that should not leak into the production surface), but the
+    /// WRITE-side mutator is unconditionally available so production
+    /// callers can satisfy the cache-invalidation contract that the
+    /// `Engine::realization_cache` field's docstring documents.
+    ///
+    /// **What this method does NOT touch**: `eval_state`, `snapshot`,
+    /// `cache`, `journal`, `feature_tag_table`, `topology_attribute_table`,
+    /// `param_overrides`, registered solvers/kernels, or any other engine
+    /// state. The reset is single-purpose: only `realization_cache` is
+    /// reseat to a fresh [`RealizationCache::new()`](crate::realization_cache::RealizationCache::new).
+    ///
+    /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
+    /// in `tests/tolerance_wiring_e2e.rs`.
+    pub fn clear_realization_cache(&mut self) {
+        self.realization_cache = crate::realization_cache::RealizationCache::new();
+    }
+
     /// Construct an Engine with the embedded stdlib as its prelude.
     ///
     /// This is the standard constructor for production use. For tests that

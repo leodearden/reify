@@ -510,11 +510,22 @@ pub struct Engine {
     /// entire cache is flushed on every edit regardless of whether the
     /// edited cell participates in any realization's input cone.
     ///
+    /// **Public escape hatch (task 2874, step-22)**: production callers can
+    /// also flush the cache explicitly via
+    /// [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
+    /// (engine_admin.rs) for scenarios where the auto-invalidation hook
+    /// points (`edit_param`, `edit_source`) do not fire — for example,
+    /// kernel swaps via test seams or upstream module reloads that bypass
+    /// `edit_source`. Both auto-invalidation hooks delegate to that public
+    /// mutator so the reset semantics are single-sourced.
+    ///
     /// Pinned end-to-end by:
     /// - `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
     ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_param`).
     /// - `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
     ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_source`).
+    /// - `clear_realization_cache_public_api_resets_cache_for_production_callers`
+    ///   in `tests/tolerance_wiring_e2e.rs` (covers the public mutator).
     ///
     /// **Scope of the partial-order rule (amendment correction)**: the
     /// `cached_tol ≤ requested_tol` ordering ONLY mitigates *tolerance-driven*
