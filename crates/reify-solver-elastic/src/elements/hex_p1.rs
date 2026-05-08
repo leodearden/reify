@@ -380,4 +380,148 @@ mod tests {
             );
         }
     }
+
+    // ── jacobian tests ───────────────────────────────────────────────────────
+
+    const JAC_TOL: f64 = 1e-10;
+
+    /// Build physical-node array by mapping each canonical reference cube
+    /// vertex `(ξ_i, η_i, ζ_i)` through `transform`.
+    fn cube_phys_nodes(transform: impl Fn([f64; 3]) -> [f64; 3]) -> [[f64; 3]; 8] {
+        let mut nodes = [[0.0_f64; 3]; 8];
+        for (i, s) in VERTEX_SIGNS.iter().enumerate() {
+            nodes[i] = transform([s[0], s[1], s[2]]);
+        }
+        nodes
+    }
+
+    #[test]
+    fn jacobian_is_identity_for_reference_cube_phys_nodes() {
+        // Physical nodes = reference-cube corners ⇒ J = I, det = 1.
+        let phys = cube_phys_nodes(|v| v);
+        for probe in [
+            ReferenceCoord::new(0.0, 0.0, 0.0),
+            ReferenceCoord::new(0.3, -0.4, 0.2),
+        ] {
+            let j = HexP1.jacobian(&phys, probe);
+            for row in 0..3 {
+                for col in 0..3 {
+                    let expected = if row == col { 1.0_f64 } else { 0.0_f64 };
+                    assert!(
+                        (j.matrix[row][col] - expected).abs() < JAC_TOL,
+                        "J[{row}][{col}] = {}, expected {}",
+                        j.matrix[row][col],
+                        expected,
+                    );
+                }
+            }
+            assert!((j.det - 1.0).abs() < JAC_TOL, "det J = {}, expected 1.0", j.det);
+        }
+    }
+
+    #[test]
+    fn jacobian_uniform_scale_is_constant_with_correct_det() {
+        // Scale by s = 2: phys nodes at 2·(±1,±1,±1) ⇒ J = 2·I, det = 8.
+        let s = 2.0_f64;
+        let phys = cube_phys_nodes(|v| [s * v[0], s * v[1], s * v[2]]);
+        for probe in [
+            ReferenceCoord::new(0.0, 0.0, 0.0),
+            ReferenceCoord::new(-0.5, 0.3, 0.7),
+        ] {
+            let j = HexP1.jacobian(&phys, probe);
+            for row in 0..3 {
+                for col in 0..3 {
+                    let expected = if row == col { s } else { 0.0_f64 };
+                    assert!(
+                        (j.matrix[row][col] - expected).abs() < JAC_TOL,
+                        "J[{row}][{col}] = {}, expected {}",
+                        j.matrix[row][col],
+                        expected,
+                    );
+                }
+            }
+            assert!((j.det - s.powi(3)).abs() < JAC_TOL, "det J = {}, expected {}", j.det, s.powi(3));
+        }
+    }
+
+    #[test]
+    fn jacobian_translation_only_yields_identity() {
+        // Translate by (a, b, c): J = I (translation has zero Jacobian contribution).
+        let (a, b, c) = (1.5_f64, -0.7, 2.0);
+        let phys = cube_phys_nodes(|v| [v[0] + a, v[1] + b, v[2] + c]);
+        let j = HexP1.jacobian(&phys, ReferenceCoord::new(0.0, 0.0, 0.0));
+        for row in 0..3 {
+            for col in 0..3 {
+                let expected = if row == col { 1.0_f64 } else { 0.0_f64 };
+                assert!(
+                    (j.matrix[row][col] - expected).abs() < JAC_TOL,
+                    "translated J[{row}][{col}] = {}, expected {}",
+                    j.matrix[row][col],
+                    expected,
+                );
+            }
+        }
+        assert!((j.det - 1.0).abs() < JAC_TOL);
+    }
+
+    #[test]
+    fn jacobian_45_degree_rotation_in_xz_plane_yields_constant_rotation_matrix_det_one() {
+        // Rotate by θ = π/4 in the xz-plane:
+        // R = [[cos θ, 0, sin θ], [0, 1, 0], [-sin θ, 0, cos θ]].
+        // For a straight-edge hex the Jacobian is constant and equals R.
+        let theta = std::f64::consts::FRAC_PI_4;
+        let (c, s) = (theta.cos(), theta.sin());
+        // Rotation matrix R:
+        //   [c  0  s]
+        //   [0  1  0]
+        //   [-s 0  c]
+        let rotate = |v: [f64; 3]| [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]];
+        let phys = cube_phys_nodes(rotate);
+
+        // Expected J = R (constant for all reference probes on a straight-edge hex).
+        let r = [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]];
+
+        for probe in [
+            ReferenceCoord::new(0.0, 0.0, 0.0),
+            ReferenceCoord::new(0.3, -0.4, 0.2),
+            ReferenceCoord::new(-0.7, 0.5, -0.1),
+        ] {
+            let j = HexP1.jacobian(&phys, probe);
+            for row in 0..3 {
+                for col in 0..3 {
+                    assert!(
+                        (j.matrix[row][col] - r[row][col]).abs() < JAC_TOL,
+                        "rotated J[{row}][{col}] = {}, expected {}",
+                        j.matrix[row][col],
+                        r[row][col],
+                    );
+                }
+            }
+            assert!(
+                (j.det - 1.0).abs() < JAC_TOL,
+                "det J of rotation = {}, expected 1.0",
+                j.det,
+            );
+        }
+    }
+
+    #[test]
+    fn jacobian_negative_det_for_swapped_node_ordering() {
+        // Swap v_0 (-1,-1,-1) and v_6 (+1,+1,+1) — diagonally opposite
+        // vertices that differ in ALL three coordinate signs.  This creates
+        // a "twisted" hex that is inside-out, producing det J < 0.
+        //
+        // Note: swapping adjacent nodes (e.g. v_0 ↔ v_1) that differ in
+        // only one coordinate gives det J = 1/2 > 0 for the bilinear hex8
+        // (unlike for linear tets where any node swap negates the det).
+        // Only opposite-corner swaps reverse orientation.
+        let mut phys = cube_phys_nodes(|v| v);
+        phys.swap(0, 6);
+        let j = HexP1.jacobian(&phys, ReferenceCoord::new(0.0, 0.0, 0.0));
+        assert!(
+            j.det < 0.0,
+            "opposite-corner swap must yield det J < 0 (got {})",
+            j.det,
+        );
+    }
 }
