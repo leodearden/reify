@@ -1,6 +1,92 @@
-// Step-1 scaffolding: the trait + struct land in step-2; this file currently
-// holds only the test module so the build can record a RED iteration before
-// the implementation appears.
+//! Cross-session persistent cache for `ComputeNode` value types.
+//!
+//! See `docs/prds/v0_3/persistent-fea-cache.md` for the full PRD. This module
+//! defines the opt-in [`PersistentlyCacheable`] trait that value types must
+//! implement to participate in the on-disk persistent cache, and provides the
+//! first concrete impl: [`ElasticResult`], the linear-elastostatic FEA solver
+//! output container.
+//!
+//! # Co-location rationale
+//!
+//! The Rust `ElasticResult` struct is co-located with the trait here rather
+//! than living in `reify-stdlib::fea` (as the task description initially
+//! suggested) because `reify-stdlib` cannot depend on `reify-eval` — the
+//! reverse edge (`reify-eval -> reify-expr -> reify-stdlib`) already exists,
+//! so adding `reify-stdlib -> reify-eval` would form a cycle. The orphan rule
+//! then forces either the trait or the impl into `reify-eval`; co-locating
+//! both here is the smallest blast-radius option. Recorded as escalation
+//! `esc-2969-65` for steward visibility.
+//!
+//! # Encoding strategy
+//!
+//! The trait is intentionally NOT object-safe: `serialize_to_writer` and
+//! `deserialize_from_reader` use `impl Write` / `impl Read` generics so the
+//! cache layer can monomorphise the zstd Encoder/Decoder paths for each
+//! concrete writer/reader. The cache keys on concrete types per entry, so
+//! static dispatch is sufficient.
+
+use std::io::{self, Read, Write};
+
+/// Opt-in trait for `ComputeNode` output value types that may be persisted
+/// across sessions in the on-disk cache.
+///
+/// Implementations are responsible for byte-deterministic, round-trip-stable
+/// encoding of their state. The cache layer dispatches on the concrete type
+/// per cache key, so this trait is **not** object-safe.
+pub trait PersistentlyCacheable: Sized {
+    /// Serialize `self` to `w`. Encoding must be byte-deterministic for any
+    /// given value (re-serializing a deserialized value must yield the
+    /// identical byte sequence).
+    fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()>;
+
+    /// Deserialize a value of `Self` from `r`. The inverse of
+    /// [`serialize_to_writer`](Self::serialize_to_writer); a round-trip must
+    /// preserve every field bit-exactly (including NaN payloads and signed
+    /// zeros for any `f64` fields).
+    fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self>;
+
+    /// On-disk-layout version. Bumped when the encoding format changes,
+    /// independently of any `engine_version_hash` (which invalidates result
+    /// semantics rather than the wire format).
+    fn format_version(&self) -> u32;
+
+    /// Solve time in milliseconds, exposed to the cache layer for
+    /// cost-weighted LRU eviction.
+    fn solve_time_ms(&self) -> u64;
+}
+
+/// Linear-elastostatic FEA solver output container.
+///
+/// Field set is fixed by the PRD: per-DOF displacement and stress arrays,
+/// a `max_von_mises` scalar summary, a `converged` flag, an `iterations`
+/// count, and a `solve_time_ms` cost metric for cache eviction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElasticResult {
+    pub displacement: Vec<f64>,
+    pub stress: Vec<f64>,
+    pub max_von_mises: f64,
+    pub converged: bool,
+    pub iterations: u32,
+    pub solve_time_ms: u64,
+}
+
+impl PersistentlyCacheable for ElasticResult {
+    fn serialize_to_writer(&self, _w: &mut impl Write) -> io::Result<()> {
+        unimplemented!("step-4")
+    }
+
+    fn deserialize_from_reader(_r: &mut impl Read) -> io::Result<Self> {
+        unimplemented!("step-4")
+    }
+
+    fn format_version(&self) -> u32 {
+        1
+    }
+
+    fn solve_time_ms(&self) -> u64 {
+        self.solve_time_ms
+    }
+}
 
 #[cfg(test)]
 mod tests {
