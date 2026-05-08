@@ -92,6 +92,7 @@
 
 pub mod medial;
 pub mod mid_surface;
+pub mod segmentation;
 
 pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
 pub use mid_surface::{
