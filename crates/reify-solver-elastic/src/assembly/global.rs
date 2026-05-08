@@ -142,7 +142,8 @@ pub fn assemble_global_stiffness(
 
     // Mode-specific dispatch. The deterministic arm exercises the shared
     // `emit_element_triplets` scatter primitive in slice order; the
-    // parallel arm's partition-and-merge implementation lands in step-12.
+    // parallel arm partitions into `threads` chunks via
+    // `std::thread::scope` and merges per-thread Vecs in spawn order.
     let triplets: Vec<Triplet<usize, usize, f64>> = match mode {
         AssemblyMode::Deterministic => {
             let mut acc = Vec::new();
@@ -151,16 +152,52 @@ pub fn assemble_global_stiffness(
             }
             acc
         }
-        AssemblyMode::Parallel { threads: _ } => {
-            // Parallel partitioning + merge lands in step-12. For now
-            // route through deterministic to keep the public surface
-            // honest; tests touching the parallel arm specifically are
-            // gated on step-11.
-            let mut acc = Vec::new();
-            for element in elements {
-                emit_element_triplets(element, &mut acc);
-            }
-            acc
+        AssemblyMode::Parallel { threads } => {
+            // Partition `elements` into `threads` chunks via
+            // `chunks(div_ceil(...))`, so chunk i goes to thread i with
+            // at most one short tail chunk. `.max(1)` clamps the chunk
+            // size: `[].chunks(0)` would panic, but `[].chunks(1)`
+            // yields zero chunks ⇒ zero spawned threads ⇒ empty triplet
+            // Vec, the right behavior for the empty-elements case.
+            //
+            // When `elements.len() < threads`, only `elements.len()`
+            // threads spawn (one per non-empty chunk); the requested
+            // `threads` count is an upper bound, not a lower bound.
+            //
+            // Determinism contract: the merge order is the thread-spawn
+            // order, which is also the chunk order in `elements`.
+            // Reordering the spawn loop, switching to a non-stable chunk
+            // dispatch (e.g. work-stealing), or joining handles in any
+            // order other than spawn order would break the
+            // fixed-thread-count bit-stability contract that
+            // `parallel_mode_bit_equal_to_deterministic_on_disjoint_mesh`
+            // (step-11) and the back-to-back determinism check in
+            // step-13 pin. See PRD `docs/prds/v0_3/structural-analysis-fea.md`
+            // task #9 for the user-facing contract.
+            let chunk_size = elements.len().div_ceil(threads).max(1);
+            std::thread::scope(|s| {
+                let mut handles = Vec::with_capacity(threads);
+                for chunk in elements.chunks(chunk_size) {
+                    handles.push(s.spawn(move || {
+                        let mut local: Vec<Triplet<usize, usize, f64>> = Vec::new();
+                        for element in chunk {
+                            emit_element_triplets(element, &mut local);
+                        }
+                        local
+                    }));
+                }
+                let mut acc: Vec<Triplet<usize, usize, f64>> = Vec::new();
+                for h in handles {
+                    // Joining in handle-vector order = spawn order =
+                    // chunk-iteration order in `elements`. A worker
+                    // panic propagates via `expect`; per the project's
+                    // contract-explicitness convention, we surface the
+                    // worker panic at the caller rather than swallowing
+                    // it into a generic error.
+                    acc.extend(h.join().expect("global-assembly worker thread panicked"));
+                }
+                acc
+            })
         }
     };
     // faer 0.24's `try_new_from_triplets` **sums duplicate `(row, col)`
