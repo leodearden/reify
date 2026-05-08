@@ -2115,6 +2115,121 @@ describe('App Ctrl+O open file', () => {
   });
 });
 
+describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
+  const newPath = '/user/chosen/new.ri';
+  const newContent = '// New design\n';
+
+  function setupHappyPathMocks() {
+    vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: newPath, content: newContent });
+    vi.mocked(bridge.openFileEngine).mockResolvedValue({
+      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
+    });
+  }
+
+  it('Ctrl+N happy path: calls pickSavePath, saveFile, openFile, openFileEngine in order', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+
+    fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
+    });
+    await waitFor(() => {
+      expect(bridge.saveFile).toHaveBeenCalledWith(newPath, newContent);
+    });
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith(newPath);
+    });
+    await waitFor(() => {
+      expect(bridge.openFileEngine).toHaveBeenCalledWith(newPath);
+    });
+  });
+
+  it('File→New menu click: calls the same bridge sequence', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+
+    fireEvent.click(screen.getByText('File'));
+    const newItem = screen.getAllByRole('menuitem').find((el) => el.textContent?.includes('New'));
+    expect(newItem).toBeTruthy();
+    fireEvent.click(newItem!);
+
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
+    });
+    await waitFor(() => {
+      expect(bridge.saveFile).toHaveBeenCalledWith(newPath, newContent);
+    });
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith(newPath);
+    });
+  });
+
+  it('cancel: pickSavePath returns null → saveFile and openFile not called', async () => {
+    vi.mocked(bridge.pickSavePath).mockResolvedValue(null);
+    await renderAndWaitForReady();
+
+    fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+
+    await waitFor(() => {
+      expect(bridge.pickSavePath).toHaveBeenCalled();
+    });
+    await flushMacrotasks();
+
+    expect(bridge.saveFile).not.toHaveBeenCalled();
+    expect(bridge.openFile).not.toHaveBeenCalled();
+    expect(bridge.openFileEngine).not.toHaveBeenCalled();
+  });
+
+  it('error: pickSavePath rejects → shows "New file failed" toast, saveFile not called', async () => {
+    await withSuppressedRejections(async () => {
+      vi.mocked(bridge.pickSavePath).mockRejectedValue(new Error('Plugin not registered'));
+      await renderAndWaitForReady();
+
+      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+
+      await waitFor(() => {
+        expect(screen.getByText(/New file failed/)).toBeTruthy();
+      });
+      expect(bridge.saveFile).not.toHaveBeenCalled();
+    });
+  });
+
+  it('error: saveFile rejects → shows "New file failed" toast with error message, openFile not called', async () => {
+    await withSuppressedRejections(async () => {
+      vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
+      vi.mocked(bridge.saveFile).mockRejectedValue(new Error('disk full'));
+      await renderAndWaitForReady();
+
+      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+
+      await waitFor(() => {
+        expect(screen.getByText(/New file failed/)).toBeTruthy();
+      });
+      await waitFor(() => {
+        expect(screen.getByText(/disk full/)).toBeTruthy();
+      });
+      expect(bridge.openFile).not.toHaveBeenCalled();
+    });
+  });
+
+  it('editor store integration: after successful new-file flow, openFiles contains new path', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+
+    await waitFor(() => {
+      const paths = capturedEditorStore.state.openFiles.map((f: any) => f.path);
+      expect(paths).toContain(newPath);
+    });
+  });
+});
+
 describe('App end-to-end toast integration', () => {
   it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
     await withSuppressedRejections(async () => {
