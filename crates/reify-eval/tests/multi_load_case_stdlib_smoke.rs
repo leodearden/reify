@@ -82,6 +82,41 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("SmokeFixture.{name} not found in eval result"))
 }
 
+/// Regression guard: asserts that the `std/fea/multi_case` module is
+/// registered by the stdlib loader with zero Error-severity compile
+/// diagnostics.
+///
+/// The accessor smoke test (`multi_load_case_stdlib_smoke_e2e`) constructs the
+/// `MultiCaseResult` runtime shape via raw map literals, bypassing the struct
+/// constructor path. As a result it would still pass even if the loader
+/// silently swallowed a compile error from `fea_multi_case.ri`. This test
+/// closes that gap by inspecting the registered module directly — matching the
+/// approach in `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`.
+#[test]
+fn multi_load_case_stdlib_module_registers_without_errors() {
+    let stdlib = reify_compiler::stdlib_loader::load_stdlib();
+    let module = stdlib
+        .iter()
+        .find(|m| m.path.to_string() == "std/fea/multi_case")
+        .expect(
+            "std/fea/multi_case must be registered by the stdlib loader; \
+             check that fea_multi_case.ri is included in the embedded-source \
+             list and registered in stdlib_loader.rs",
+        );
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "std/fea/multi_case should have no Error-severity compile diagnostics; \
+         got: {errors:?}"
+    );
+}
+
 /// Smoke test: compile and eval the fixture source; assert all three accessor
 /// bindings have their expected values.
 #[test]
