@@ -1624,20 +1624,43 @@ fn kernel_distance(
     }
 }
 
-// ── Topology-selector dispatch (task 2324) ──────────────────────────────────
+// ── Topology-selector dispatch (tasks 2324, 2699) ────────────────────────────
 //
 // `try_eval_topology_selector` is the kernel-aware eval-time dispatch for the
-// stdlib helpers `closest_point`, `on`, and `angle_between_surfaces` (PRD
-// `docs/prds/topology-selectors.md` §3.9). Sibling to
-// `try_eval_conformance_query` and `try_eval_kinematic_query` — same
-// arg-shape / fall-through contract.
+// topology-selector helper family (PRD `docs/prds/topology-selectors.md`
+// §3.9). Sibling to `try_eval_conformance_query` and
+// `try_eval_kinematic_query` — same arg-shape / fall-through contract.
 //
-// Helper-name → kernel-query mapping:
+// ── Which names get eval dispatch here (task 2324) ──────────────────────────
+//
+// The per-name `match` at step (2) below is the SOURCE OF TRUTH for which
+// helpers get a kernel-routed `Value` payload — NOT the compile-time recogniser
+// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` in `reify_compiler::units` (which is the
+// broader classification list).
+//
+// Currently dispatched:
 //   `closest_point(point, geometry)` → `GeometryQuery::ClosestPointOnShape`
 //   `on(point, geometry)`            → `GeometryQuery::PointOnShape`
 //   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
 //
-// Arg-shape contract:
+// ── Which names are compile-time typed but NOT eval-dispatched (task 2699) ──
+//
+// Task 2699 added 11 names to `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` and
+// `topology_selector_result_type`, wiring their compile-time cell types.
+// They fall through the `_ => return None` arm at step (2) below, so the
+// cell stays at the `Value::Undef` set by the regular eval path.
+// `value_type_kind_matches` accepts `Value::Undef` for any type
+// (`reify_eval::lib:196`), so the cell typechecks until task 2691 wires
+// the actual dispatch arms here:
+//   `edges` / `faces`                       → List<Geometry>  (task 2691)
+//   `edges_by_length` / `faces_by_area`     → List<Geometry>  (task 2691)
+//   `faces_by_normal` / `edges_parallel_to` → List<Geometry>  (task 2691)
+//   `edges_at_height`                       → List<Geometry>  (task 2691)
+//   `adjacent_faces` / `shared_edges`       → List<Geometry>  (task 2691)
+//   `center_of_mass`                        → Point3<Length>  (task 2691)
+//   `moment_of_inertia`                     → Tensor<2,3,MI>  (task 2691)
+//
+// Arg-shape contract (applies to all dispatched names):
 //   - Both args must be `ValueRef`s — literal / inline-call shapes fall
 //     through to `None` so the cell stays at its compiled default
 //     (`Value::Undef`). Pinned by the
