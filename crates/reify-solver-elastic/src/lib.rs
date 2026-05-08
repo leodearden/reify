@@ -97,6 +97,7 @@
 //! ```
 
 pub mod assembly;
+pub mod boundary;
 pub mod constitutive;
 pub mod elements;
 pub mod shell_assembly;
