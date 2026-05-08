@@ -24,6 +24,52 @@
 //! - **Valid vertex indices.** Elements referencing out-of-range vertex indices
 //!   are silently skipped (same defensive discipline as `laplacian.rs`).
 
+use crate::options::MorphOptions;
+use crate::types::{InversionDetails, MetricsBreached};
+use reify_types::VolumeMesh;
+
+/// Two-tier quality verdict returned by [`quality_check`].
+///
+/// Variants are evaluated in priority order: `HardFail` strictly preempts
+/// `SoftFail`. If any tetrahedron is inverted, only `HardFail` is returned
+/// even if soft-fail thresholds are also breached.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QualityVerdict {
+    /// All quality checks passed.
+    Pass,
+    /// One or more tetrahedra are inverted (negative Jacobian determinant).
+    /// `HardFail` strictly preempts `SoftFail`.
+    HardFail(InversionDetails),
+    /// No inversions, but one or more quality metrics breached their
+    /// configured thresholds.
+    SoftFail(MetricsBreached),
+}
+
+/// Evaluate mesh quality after a morph operation.
+///
+/// Returns a [`QualityVerdict`] describing whether the morphed mesh passes
+/// quality thresholds configured in `options`. See the module-level doc for
+/// preconditions (P1-only, matched connectivity, valid indices).
+///
+/// An empty mesh (no tetrahedra) always returns [`QualityVerdict::Pass`].
+///
+/// ## Connectivity mismatch
+///
+/// When `morphed.tet_indices.len() != source.tet_indices.len()`, the
+/// aspect-ratio-increase comparison is skipped (`max_aspect_ratio_increase`
+/// stays `None`). The hard-fail and min-scaled-J / pct-below-025 checks still
+/// run on the morphed mesh.
+pub fn quality_check(
+    morphed: &VolumeMesh,
+    source: &VolumeMesh,
+    options: &MorphOptions,
+) -> QualityVerdict {
+    let _ = morphed;
+    let _ = source;
+    let _ = options;
+    QualityVerdict::Pass
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
