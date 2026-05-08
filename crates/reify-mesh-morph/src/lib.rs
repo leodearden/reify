@@ -10,6 +10,7 @@
 
 pub mod boundary;
 pub mod eligibility;
+pub mod laplacian;
 pub mod options;
 pub mod types;
 
