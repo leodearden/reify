@@ -772,6 +772,45 @@ mod tests {
         );
     }
 
+    /// When NO registered kernel claims any BRep pair, `pick_lexmin_brep_kernel_in`
+    /// must fall back to the lex-min of all registered kernels.
+    ///
+    /// Constructs a synthetic BTreeMap with two Mesh-only entries:
+    /// `"__0_mesh"` and `"__1_mesh"`.  No BRep-capable entry exists, so the
+    /// BRep filter produces no match.  The fallback should select `"__0_mesh"`
+    /// (lex-min of the full map).
+    ///
+    /// This test is RED before step-4 impl: the current helper has no fallback,
+    /// so it returns `None` instead of the expected lex-min value.
+    #[test]
+    fn pick_lexmin_brep_kernel_in_falls_back_to_lex_min_when_no_brep_kernel() {
+        let mut map: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        map.insert(
+            "__0_mesh".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+            },
+        );
+        map.insert(
+            "__1_mesh".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanDifference, ReprKind::Mesh)],
+            },
+        );
+
+        let result = pick_lexmin_brep_kernel_in(&map, |d: &CapabilityDescriptor| d.clone());
+
+        // __0_mesh is lex-min; expect fallback to return its descriptor.
+        let expected = map.get("__0_mesh").expect("__0_mesh must be in the map");
+        assert_eq!(
+            result.map(|d| &d.supports),
+            Some(&expected.supports),
+            "pick_lexmin_brep_kernel_in must fall back to lex-min (__0_mesh) \
+             when no entry claims a BRep pair; got None instead of the expected \
+             fallback (step-4 impl adds .or_else(|| registered.values().next()))",
+        );
+    }
+
     /// The Operator-visibility contract table on `emit_kernel_selection`
     /// declares `total == 0` emits no event.
     /// The `debug_assert!(total >= 1, …)` enforces this structurally: callers
