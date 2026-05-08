@@ -618,4 +618,174 @@ mod tests {
              to opt into smoothing rather than silently hiding quality bugs)"
         );
     }
+
+    // ── Step 5: options-validation tests ─────────────────────────────────────
+
+    /// `mesh_mid_surface` rejects invalid `merge_tolerance` values.
+    ///
+    /// Each test uses an empty mesh so the validation order matters: options
+    /// must be checked *before* the empty-mesh short-circuit.
+    #[test]
+    fn mesh_mid_surface_rejects_invalid_merge_tolerance() {
+        let empty = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+
+        // Negative tolerance
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { merge_tolerance: -1.0, ..MesherOptions::default() },
+        )
+        .expect_err("negative merge_tolerance must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMergeTolerance { value } if value == -1.0),
+            "expected InvalidMergeTolerance(-1.0), got {err:?}"
+        );
+
+        // Zero tolerance
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { merge_tolerance: 0.0, ..MesherOptions::default() },
+        )
+        .expect_err("zero merge_tolerance must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMergeTolerance { value } if value == 0.0),
+            "expected InvalidMergeTolerance(0.0), got {err:?}"
+        );
+
+        // NaN tolerance
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { merge_tolerance: f64::NAN, ..MesherOptions::default() },
+        )
+        .expect_err("NaN merge_tolerance must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMergeTolerance { value } if value.is_nan()),
+            "expected InvalidMergeTolerance(NaN), got {err:?}"
+        );
+
+        // +Infinity tolerance
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { merge_tolerance: f64::INFINITY, ..MesherOptions::default() },
+        )
+        .expect_err("+Inf merge_tolerance must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMergeTolerance { value } if value.is_infinite()),
+            "expected InvalidMergeTolerance(+Inf), got {err:?}"
+        );
+    }
+
+    /// `mesh_mid_surface` rejects `min_aspect_ratio` outside `(0.0, 1.0]`.
+    #[test]
+    fn mesh_mid_surface_rejects_invalid_min_aspect_ratio() {
+        let empty = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+
+        // Zero
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { min_aspect_ratio: 0.0, ..MesherOptions::default() },
+        )
+        .expect_err("min_aspect_ratio = 0.0 must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMinAspectRatio { value } if value == 0.0),
+            "expected InvalidMinAspectRatio(0.0), got {err:?}"
+        );
+
+        // Negative
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { min_aspect_ratio: -0.5, ..MesherOptions::default() },
+        )
+        .expect_err("negative min_aspect_ratio must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMinAspectRatio { value } if value == -0.5),
+            "expected InvalidMinAspectRatio(-0.5), got {err:?}"
+        );
+
+        // Above 1.0
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { min_aspect_ratio: 1.001, ..MesherOptions::default() },
+        )
+        .expect_err("min_aspect_ratio > 1.0 must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMinAspectRatio { value } if value == 1.001),
+            "expected InvalidMinAspectRatio(1.001), got {err:?}"
+        );
+
+        // Exactly 1.0 is valid (equilateral-only gate)
+        mesh_mid_surface(
+            &empty,
+            &MesherOptions { min_aspect_ratio: 1.0, ..MesherOptions::default() },
+        )
+        .expect("min_aspect_ratio = 1.0 must be accepted (exactly at upper bound)");
+    }
+
+    /// `mesh_mid_surface` rejects `min_angle_degrees` outside `(0.0, 60.0)`.
+    #[test]
+    fn mesh_mid_surface_rejects_invalid_min_angle_degrees() {
+        let empty = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+
+        // Zero
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { min_angle_degrees: 0.0, ..MesherOptions::default() },
+        )
+        .expect_err("min_angle_degrees = 0.0 must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMinAngleDegrees { value } if value == 0.0),
+            "expected InvalidMinAngleDegrees(0.0), got {err:?}"
+        );
+
+        // Negative
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { min_angle_degrees: -10.0, ..MesherOptions::default() },
+        )
+        .expect_err("negative min_angle_degrees must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMinAngleDegrees { value } if value == -10.0),
+            "expected InvalidMinAngleDegrees(-10.0), got {err:?}"
+        );
+
+        // Exactly 60.0 (equilateral upper bound, excluded)
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { min_angle_degrees: 60.0, ..MesherOptions::default() },
+        )
+        .expect_err("min_angle_degrees = 60.0 must be rejected (equilateral upper bound, excluded)");
+        assert!(
+            matches!(err, MesherError::InvalidMinAngleDegrees { value } if value == 60.0),
+            "expected InvalidMinAngleDegrees(60.0), got {err:?}"
+        );
+
+        // Above 60.0
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { min_angle_degrees: 90.0, ..MesherOptions::default() },
+        )
+        .expect_err("min_angle_degrees > 60.0 must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMinAngleDegrees { value } if value == 90.0),
+            "expected InvalidMinAngleDegrees(90.0), got {err:?}"
+        );
+
+        // A small positive value is valid
+        mesh_mid_surface(
+            &empty,
+            &MesherOptions { min_angle_degrees: 0.001, ..MesherOptions::default() },
+        )
+        .expect("min_angle_degrees = 0.001 must be accepted");
+    }
 }
