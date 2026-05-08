@@ -284,20 +284,37 @@ mod tests {
             [-1.0, -1.0,  1.0], [ 1.0, -1.0,  1.0],
             [-1.0,  1.0,  1.0], [ 1.0,  1.0,  1.0],
         ];
+        // Verify each of the 8 sign-patterns is covered by exactly one qp.
+        // Using a `seen` bitfield guarantees no duplicate coverage (a degenerate
+        // rule where all 8 points land on the same vertex would fail here even if
+        // every point passes the `any(...)` check above).
+        let mut seen = [false; 8];
         for (i, qp) in qps.iter().enumerate() {
             let c = qp.coord;
-            // Find a matching sign pattern by absolute-difference search.
-            let found = expected_signs.iter().any(|s| {
-                (c.xi   - s[0] * g).abs() < QUAD_TOL &&
-                (c.eta  - s[1] * g).abs() < QUAD_TOL &&
-                (c.zeta - s[2] * g).abs() < QUAD_TOL
-            });
+            let idx = expected_signs
+                .iter()
+                .position(|s| {
+                    (c.xi   - s[0] * g).abs() < QUAD_TOL &&
+                    (c.eta  - s[1] * g).abs() < QUAD_TOL &&
+                    (c.zeta - s[2] * g).abs() < QUAD_TOL
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "qp[{i}] = ({}, {}, {}) does not match any ±1/√3 sign-pattern",
+                        c.xi, c.eta, c.zeta,
+                    )
+                });
             assert!(
-                found,
-                "qp[{i}] = ({}, {}, {}) does not match any ±1/√3 sign-pattern",
-                c.xi, c.eta, c.zeta,
+                !seen[idx],
+                "sign-pattern {:?} (index {idx}) matched more than once; second match at qp[{i}]",
+                expected_signs[idx],
             );
+            seen[idx] = true;
         }
+        assert!(
+            seen.iter().all(|&x| x),
+            "not all 8 ±1/√3 sign-patterns were covered by the quadrature rule",
+        );
     }
 
     #[test]
@@ -348,8 +365,11 @@ mod tests {
     #[test]
     fn quad_rule_integrates_xi_squared_eta_squared_zeta_squared_exactly() {
         // ∫_{[-1,1]³} ξ²η²ζ² dV = (2/3)³ = 8/27.
-        // Verifies the rule is exact for the highest-degree monomial in
-        // the trilinear Bᵀ D B stiffness integrand.
+        // Verifies the rule is exact when every axis is at its degree-2 limit —
+        // a strictly harder integrand than any monomial that actually appears in
+        // BᵀDB on a constant-Jacobian hex (each B = ∇N component is bilinear in
+        // only the two axes orthogonal to its differentiation axis, so no BᵀDB
+        // monomial reaches degree 2 on all three axes simultaneously).
         let i: f64 = HexP1
             .quad_points()
             .iter()
