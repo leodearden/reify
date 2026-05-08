@@ -174,6 +174,19 @@ pub enum MesherError {
         /// The total number of vertices in the mesh.
         vertices_len: usize,
     },
+    /// A vertex coordinate in `mesh.vertices` is non-finite (`NaN`, `+Inf`, or
+    /// `-Inf`). Non-finite coordinates silently corrupt the dedup hash:
+    /// `NaN` casts to `0` (all NaN vertices collapse into the origin bin) and
+    /// `±Inf` saturates to `i64::MIN`/`i64::MAX` (all infinite vertices
+    /// merge into the same boundary bin). Both failure modes produce incorrect
+    /// mesh topology without any runtime error.
+    NonFiniteVertex {
+        /// Zero-based index of the vertex in `mesh.vertices` whose coordinate
+        /// is non-finite.
+        vertex_index: usize,
+        /// The specific non-finite coordinate value (`NaN`, `+Inf`, or `-Inf`).
+        coord: f64,
+    },
     /// One or more triangles failed the quality gate after `remesh_iterations`
     /// rounds of smoothing. Carries the full quality metrics and the
     /// de-duplicated mesh so callers can inspect failing triangles, drive
@@ -229,6 +242,13 @@ impl std::fmt::Display for MesherError {
                 f,
                 "triangle {triangle_index} references vertex index {vertex_index} \
                  which is out of range (mesh has {vertices_len} vertices)"
+            ),
+            MesherError::NonFiniteVertex { vertex_index, coord } => write!(
+                f,
+                "vertex {vertex_index} contains non-finite coordinate {coord}; \
+                 vertex coordinates must be finite (NaN silently collapses into \
+                 the dedup origin bin; ±Inf saturates to i64 boundary bins, \
+                 merging unrelated vertices and corrupting mesh topology)"
             ),
             MesherError::QualityBelowThreshold {
                 metrics,
@@ -394,6 +414,7 @@ fn triangle_min_angle_degrees(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3]) -> f64 {
 /// | [`MesherError::InvalidMinAspectRatio`] | `min_aspect_ratio ∉ (0, 1]` |
 /// | [`MesherError::InvalidMinAngleDegrees`] | `min_angle_degrees ∉ (0, 60)` |
 /// | [`MesherError::InconsistentInputMesh`] | `thickness.len() ≠ vertices.len()` |
+/// | [`MesherError::NonFiniteVertex`] | any vertex coordinate is `NaN` or `±Inf` |
 /// | [`MesherError::OutOfRangeTriangleIndex`] | any triangle index ≥ `vertices.len()` |
 /// | [`MesherError::QualityBelowThreshold`] | quality gate fails after all remesh iterations |
 ///
@@ -448,6 +469,19 @@ pub fn mesh_mid_surface(
             vertices_len: mesh.vertices.len(),
             thickness_len: mesh.thickness.len(),
         });
+    }
+    // After confirming parallel-array lengths match, scan for non-finite vertex
+    // coordinates.  Non-finite coords would silently corrupt bin keys in
+    // `dedup_vertices` (NaN→0, ±Inf→i64 extremes) before any other check fires.
+    for (vi, v) in mesh.vertices.iter().enumerate() {
+        for &c in v.iter() {
+            if !c.is_finite() {
+                return Err(MesherError::NonFiniteVertex {
+                    vertex_index: vi,
+                    coord: c,
+                });
+            }
+        }
     }
     for (tri_idx, tri) in mesh.triangles.iter().enumerate() {
         for &vi in tri.iter() {
@@ -612,7 +646,7 @@ mod tests {
         assert_eq!(result.metrics.vertex_count, 0, "empty input → 0 vertices");
         assert_eq!(result.remesh_iterations, 0, "no remeshing on empty input");
 
-        // Compile probes: all six error variants are publicly named and constructible.
+        // Compile probes: all error variants are publicly named and constructible.
         let _: MesherError = MesherError::InvalidMergeTolerance { value: 0.0 };
         let _: MesherError = MesherError::InvalidMinAspectRatio { value: 0.0 };
         let _: MesherError = MesherError::InvalidMinAngleDegrees { value: 0.0 };
@@ -620,6 +654,7 @@ mod tests {
             vertices_len: 0,
             thickness_len: 0,
         };
+        let _: MesherError = MesherError::NonFiniteVertex { vertex_index: 0, coord: 0.0 };
         let _: MesherError = MesherError::OutOfRangeTriangleIndex {
             triangle_index: 0,
             vertex_index: 0,
