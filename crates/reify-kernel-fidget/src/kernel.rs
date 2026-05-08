@@ -139,6 +139,12 @@ impl FidgetKernel {
     ///
     /// The first term measures distance outside the box; the second term
     /// measures depth inside the box (negative).
+    ///
+    /// # Precondition
+    ///
+    /// Callers must pass finite positive extents (`w`, `h`, `d` all satisfy
+    /// `value.is_finite() && value > 0.0`). Input validation is enforced at
+    /// the `execute(Box)` boundary before this method is called.
     fn box_tree(w: f64, h: f64, d: f64) -> Tree {
         let bx = w * 0.5;
         let by = h * 0.5;
@@ -337,6 +343,14 @@ impl GeometryKernel for FidgetKernel {
                 let w = extract_f64(width)?;
                 let h = extract_f64(height)?;
                 let d = extract_f64(depth)?;
+                // Combined check matches OCCT's single-message convention
+                // (`crates/reify-kernel-occt/src/lib.rs:1497-1507`) so the
+                // error string is byte-identical across kernels.
+                if !(w.is_finite() && w > 0.0 && h.is_finite() && h > 0.0 && d.is_finite() && d > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "box dimensions must be finite positive values".into(),
+                    ));
+                }
                 let tree = Self::box_tree(w, h, d);
                 Ok(self.insert_tree(tree))
             }
