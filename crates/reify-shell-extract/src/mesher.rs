@@ -1353,6 +1353,49 @@ mod tests {
         );
     }
 
+    // ── task-3194 step-7: empty-triangle metrics invariant pin ────────────────
+
+    /// When `mesh.vertices` is non-empty but `mesh.triangles` is empty, the
+    /// de-duplication step runs but the quality-metrics loop iterates zero
+    /// times.  The sentinel values `worst_aspect_ratio` and `worst_min_angle`
+    /// are initialised to `f64::INFINITY` and must remain `INFINITY` in the
+    /// returned metrics.
+    ///
+    /// This test pins the invariant that the upcoming `debug_assert!` canary
+    /// (step-8) will encode. Removing or changing the sentinel initialisation
+    /// without a pin would let a future regression slip through silently.
+    #[test]
+    fn mesh_mid_surface_metrics_are_infinity_when_no_triangles_to_iterate() {
+        // 1 vertex, no triangles: passes all validation (consistent lengths,
+        // no non-finite values, no out-of-range indices), reaches dedup, then
+        // the triangle loop iterates zero times.
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0]],
+            triangles: vec![],
+            thickness: vec![1.0],
+        };
+        let opts = MesherOptions::default();
+
+        let result = mesh_mid_surface(&mesh, &opts)
+            .expect("non-empty vertices with empty triangles must return Ok");
+
+        assert_eq!(result.metrics.triangle_count, 0, "no triangles → triangle_count = 0");
+        assert_eq!(result.metrics.failed_triangle_count, 0, "no triangles → no failures");
+        assert!(
+            result.metrics.min_aspect_ratio.is_infinite(),
+            "empty triangle list → min_aspect_ratio must be f64::INFINITY (sentinel), \
+             got {}",
+            result.metrics.min_aspect_ratio
+        );
+        assert!(
+            result.metrics.min_angle_degrees.is_infinite(),
+            "empty triangle list → min_angle_degrees must be f64::INFINITY (sentinel), \
+             got {}",
+            result.metrics.min_angle_degrees
+        );
+        assert_eq!(result.remesh_iterations, 0, "no remeshing on empty triangle list");
+    }
+
     // ── task-3194 step-3: NonFiniteVertex rejection ───────────────────────────
 
     /// `mesh_mid_surface` rejects meshes with non-finite vertex coordinates.
