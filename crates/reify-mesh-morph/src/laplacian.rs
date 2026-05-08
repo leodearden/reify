@@ -48,6 +48,17 @@ pub enum LaplacianFailure {
 ///   task #10) reads [`crate::MorphOptions::laplacian_iterations`] and passes
 ///   it in (5–10 typical, default 8).
 ///
+/// ## Element-order restriction
+///
+/// Only [`ElementOrderTag::P1`] is supported. P2 tets carry corner + edge-
+/// midnode adjacency rules (corner-corner + corner-midnode edges; midnode-
+/// midnode are *not* topologically adjacent), so naively treating "all 10
+/// nodes in a tet are pairwise neighbours" would smear interior smoothing
+/// across non-adjacent nodes. PRD task #6 doesn't specify P2 support; engine
+/// integration (PRD task #10) gates on `element_order == P1` for this fast
+/// path and falls through to the elasticity morph otherwise. P2 input
+/// returns [`LaplacianFailure::UnsupportedElementOrder`].
+///
 /// ## Failure modes
 ///
 /// See [`LaplacianFailure`].
@@ -56,6 +67,11 @@ pub fn laplacian_smooth(
     prescribed_positions: &[(u32, [f64; 3])],
     iterations: u32,
 ) -> Result<VolumeMesh, LaplacianFailure> {
+    if old_mesh.element_order != ElementOrderTag::P1 {
+        return Err(LaplacianFailure::UnsupportedElementOrder(
+            old_mesh.element_order,
+        ));
+    }
     let _ = prescribed_positions;
     let _ = iterations;
     Ok(old_mesh.clone())
