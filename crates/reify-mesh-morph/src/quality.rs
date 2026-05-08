@@ -27,6 +27,33 @@
 use crate::options::MorphOptions;
 use crate::types::{InversionDetails, MetricsBreached};
 use reify_types::VolumeMesh;
+use std::f64::consts::SQRT_2;
+
+// ── Geometry helpers ─────────────────────────────────────────────────────────
+
+#[inline]
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+#[inline]
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+#[inline]
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[inline]
+fn norm(a: [f64; 3]) -> f64 {
+    dot(a, a).sqrt()
+}
 
 /// Two-tier quality verdict returned by [`quality_check`].
 ///
@@ -64,9 +91,64 @@ pub fn quality_check(
     source: &VolumeMesh,
     options: &MorphOptions,
 ) -> QualityVerdict {
-    let _ = morphed;
     let _ = source;
     let _ = options;
+
+    let vertex_count = morphed.vertices.len() / 3;
+
+    // First pass: scan morphed mesh for inversions.
+    let mut hard_fail: Option<InversionDetails> = None;
+
+    for (elem_idx, chunk) in morphed.tet_indices.chunks_exact(4).enumerate() {
+        // Read 4 corner positions, widening f32 → f64 at the read boundary.
+        let idx = [
+            chunk[0] as usize,
+            chunk[1] as usize,
+            chunk[2] as usize,
+            chunk[3] as usize,
+        ];
+        // Skip elements with out-of-range indices (defensive; same discipline
+        // as laplacian.rs:141-149).
+        if idx.iter().any(|&i| i >= vertex_count) {
+            continue;
+        }
+        let p: [[f64; 3]; 4] = std::array::from_fn(|k| {
+            let base = idx[k] * 3;
+            [
+                morphed.vertices[base] as f64,
+                morphed.vertices[base + 1] as f64,
+                morphed.vertices[base + 2] as f64,
+            ]
+        });
+
+        // Corner-0 Jacobian det = (p1-p0) · ((p2-p0) × (p3-p0)).
+        let e1 = sub(p[1], p[0]);
+        let e2 = sub(p[2], p[0]);
+        let e3 = sub(p[3], p[0]);
+        let det = dot(e1, cross(e2, e3));
+
+        if det < 0.0 {
+            // Compute corner-0 scaled Jacobian as a placeholder.
+            let product = norm(e1) * norm(e2) * norm(e3);
+            let jacobian = if product > 0.0 {
+                det * SQRT_2 / product
+            } else {
+                0.0
+            };
+            // First inverted element wins.
+            if hard_fail.is_none() {
+                hard_fail = Some(InversionDetails {
+                    element_index: elem_idx,
+                    jacobian,
+                });
+            }
+        }
+    }
+
+    if let Some(details) = hard_fail {
+        return QualityVerdict::HardFail(details);
+    }
+
     QualityVerdict::Pass
 }
 
