@@ -450,13 +450,16 @@ impl ReifyToolContext for CliToolContext {
         // b.ri's module — byte-span offsets from b's diagnostics would then be resolved
         // against a's source, producing wrong line/column numbers.
         //
-        // Asymmetry note: load_file and open_file do NOT retain-prune — they accumulate
-        // entries in state.files across successive calls.  The per-entry-point state-shape is:
-        //   • update_source(p) → files.keys() == {p}   (exactly one entry; pruned here)
-        //   • load_file(p)     → files.keys() ⊇ {p}    (prior entries kept)
-        //   • open_file(p)     → files.keys() ⊇ {p}    (prior entries kept)
-        // This asymmetry is intentional: extending load_file or open_file with the same
-        // retain() would be a separate decision requiring a multi-document consumer audit.
+        // Uniform singleton invariant (task 3183 — multi-document consumer audit):
+        // All three state-mutating entry points now maintain state.files.keys() == {p}
+        // via a retain(|key, _| key == &p) call immediately before their insert:
+        //   • update_source(p) → files.keys() == {p}   (retain here, line ~429)
+        //   • load_file(p)     → files.keys() == {p}   (retain added by task 3183)
+        //   • open_file(p)     → files.keys() == {p}   (retain added by task 3183)
+        // The prior asymmetry (load_file/open_file accumulated; update_source pruned)
+        // was resolved by task 3183.  Future multi-document support requires lifting
+        // the single-compiled / single-active_file engine assumption alongside this
+        // invariant — that is strictly out of scope for an audit task.
         state.active_file = Some(canonical.clone());
 
         Ok(UpdateResult {
