@@ -32,8 +32,8 @@
 use std::collections::HashSet;
 
 use reify_types::{
-    EdgeCurveKind, FaceSurfaceKind, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError,
-    Value,
+    EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryQuery,
+    QueryError, TopologyAttributeTable, Value,
 };
 
 use crate::topology_selectors::{
@@ -586,4 +586,87 @@ pub fn edges_by_curve_kind<K: GeometryKernel + ?Sized>(
 /// Pure-Rust, no kernel dependency — `O(n)` clone of the slice.
 pub fn geom_universal(handles: &[GeometryHandleId]) -> Vec<GeometryHandleId> {
     handles.to_vec()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// History-based selectors (PRD line 80)
+//
+// `created_by_feature(feature_id)` returns candidates whose `feature_id` is
+// the topology entity's origin feature (`qCreatedBy` in OnShape). It is the
+// inverse mapping of `FeatureTagTable::record` — given a feature, surface
+// the entities it produced.
+//
+// `split_by_feature(feature_id)` returns candidates whose `mod_history`
+// contains the feature anywhere (any-position match, not just the most
+// recent entry). Aligns with OnShape's `qSplitBy` and the FreeCAD-RealThunder
+// `;:M2`/`;:G3` postfix model — a child of multiple sequential splits should
+// match a query for any of its splitting ancestors.
+//
+// Both selectors are pure-Rust readers over `TopologyAttributeTable`; they
+// take a `&TopologyAttributeTable` and `&[GeometryHandleId]` (mirroring
+// `resolve_unique_by_attribute`'s discipline) and never touch the kernel.
+// Order discipline: candidate-input order with dedup-on-first-seen.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Return the subset of `candidates` whose origin feature (per
+/// `TopologyAttribute::feature_id`) equals `feature_id`.
+///
+/// Implements PRD line 80's `created_by(feature_id)` slot, mirroring
+/// OnShape's `qCreatedBy(feature_id)`. Walks `candidates` once, looking
+/// each handle up in `table`; a handle whose entry is missing or whose
+/// feature does not match is silently skipped (no panic, no error).
+///
+/// Order discipline: candidate-input order, dedup-on-first-seen.
+/// O(|candidates|) — single pass with a `HashSet` for dedup.
+pub fn created_by_feature(
+    table: &TopologyAttributeTable,
+    candidates: &[GeometryHandleId],
+    feature_id: &FeatureId,
+) -> Vec<GeometryHandleId> {
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
+    let mut out: Vec<GeometryHandleId> = Vec::new();
+    for id in candidates {
+        if let Some(attr) = table.lookup(*id) {
+            if &attr.feature_id == feature_id && seen.insert(*id) {
+                out.push(*id);
+            }
+        }
+    }
+    out
+}
+
+/// Return the subset of `candidates` whose `mod_history` contains
+/// `feature_id` at **any position** (not just the most recent entry).
+///
+/// Implements PRD line 80's `split_by(feature_id)` slot, mirroring
+/// OnShape's `qSplitBy(feature_id)`. A handle whose attribute has no
+/// `mod_history` (e.g. an entity unaffected by any split operation) is
+/// trivially excluded; an entity that was split by F3 then later split
+/// by F4 matches **both** `split_by_feature(F3)` and `split_by_feature(F4)`.
+///
+/// Any-position match (rather than leaf-only) is the OnShape baseline
+/// (PRD line 81): a child of multiple sequential splits should remain
+/// queryable by every splitting ancestor. The check is `O(history depth)`
+/// per candidate; designs stay shallow in practice (PRD line 141).
+///
+/// Order discipline: candidate-input order, dedup-on-first-seen.
+pub fn split_by_feature(
+    table: &TopologyAttributeTable,
+    candidates: &[GeometryHandleId],
+    feature_id: &FeatureId,
+) -> Vec<GeometryHandleId> {
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
+    let mut out: Vec<GeometryHandleId> = Vec::new();
+    for id in candidates {
+        if let Some(attr) = table.lookup(*id) {
+            let matches = attr
+                .mod_history
+                .iter()
+                .any(|entry| &entry.splitting_feature_id == feature_id);
+            if matches && seen.insert(*id) {
+                out.push(*id);
+            }
+        }
+    }
+    out
 }
