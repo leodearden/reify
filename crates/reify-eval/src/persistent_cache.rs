@@ -565,7 +565,7 @@ mod tests {
         // allocation, so it remains stable on memory-constrained CI runners.
         let just_above_limit = MAX_F64_ELEMENTS + 1;
         let err = check_f64_vec_len("test", just_above_limit)
-            .expect_err("value above 1<<24 must be rejected");
+            .expect_err("value above MAX_F64_ELEMENTS must be rejected");
         assert_eq!(
             err.kind(),
             io::ErrorKind::InvalidData,
