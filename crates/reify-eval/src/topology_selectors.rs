@@ -581,8 +581,9 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
 /// whose `source_span` and `step_kind` are copied from `parent_tag` and whose
 /// `sub_index` is `i as u32`.
 ///
-/// **Axis validation happens before extraction:** if `axis` is the zero vector
-/// or contains a non-finite component, the function returns a
+/// **Both tolerance and axis are validated before extraction:** if
+/// `angular_tol_rad` is out of range or non-finite, or if `axis` is the zero
+/// vector or contains a non-finite component, the function returns a
 /// `QueryError::QueryFailed` immediately, before calling `extract_edges` or
 /// touching `table`. This matches the baseline's "fail before kernel touch"
 /// contract.
@@ -599,7 +600,13 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
 ///
 /// # Errors
 ///
-/// Same as [`edges_parallel_to`].
+/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
+///   outside the valid range `[0, π/2]`. Fires before any kernel touch or
+///   table mutation.
+/// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
+///   contains a non-finite component. Fires before any kernel touch or table
+///   mutation.
+/// - Otherwise same as [`edges_parallel_to`].
 pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     table: &mut FeatureTagTable,
@@ -608,9 +615,17 @@ pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    // Axis validation happens BEFORE extract_edges / table mutation:
-    // "fail before kernel touch" contract pinned by
-    // edges_parallel_to_with_tags_zero_axis_errors_before_table_mutation.
+    // Tolerance validation is FIRST — before axis normalization, extract_edges,
+    // and table mutation. "Fail before kernel touch" contract pinned by
+    // edges_parallel_to_with_tags_*_errors_before_table_mutation tests.
+    if !angular_tol_rad.is_finite()
+        || !(0.0..=std::f64::consts::FRAC_PI_2).contains(&angular_tol_rad)
+    {
+        return Err(QueryError::QueryFailed(format!(
+            "edges_parallel_to_with_tags: angular_tol_rad must be finite and in [0, π/2] (got {})",
+            angular_tol_rad
+        )));
+    }
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "edges_parallel_to_with_tags: axis direction must be non-zero and finite".into(),
