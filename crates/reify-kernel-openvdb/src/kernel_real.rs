@@ -181,13 +181,15 @@ impl OpenVdbKernel {
     /// written by [`Self::write_vdb_grid`] back into a handle they can pass
     /// to `active_voxel_count` / `sample_sdf_at`.
     ///
-    /// The method is always-public (not cfg-gated) because integration tests
-    /// compile the lib without `cfg(test)` set, so a `#[cfg(test)]` gate
-    /// would hide it from `tests/*.rs`. The name `_for_test` signals the
-    /// intended usage.
+    /// Gated behind the `test-fixtures` Cargo feature so the test-only API
+    /// surface does not leak into production builds. The integration tests
+    /// in `tests/*.rs` activate the feature via the self-dev-dep in
+    /// `Cargo.toml`. Mirrors the pattern at
+    /// `crates/reify-kernel-occt/src/lib.rs`'s `store_*_for_test` family.
     ///
     /// Returns `Err(GeometryError::OperationFailed)` if the file can't be
     /// opened, the grid is absent, or the grid isn't a `FloatGrid`.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn open_vdb_grid_for_test(
         &mut self,
         path: &Path,

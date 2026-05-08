@@ -28,6 +28,17 @@ build = "build.rs"
 # this feature — the gate is `cfg(any(has_openvdb, feature = "stub_register"))`.
 stub_register = []
 
+# Pure compile-gate for integration-test-only entry points such as
+# `OpenVdbKernel::open_vdb_grid_for_test`. Hidden in production builds so
+# the test-only API surface does not leak into the public crate. Mirrors
+# the pattern at `crates/reify-kernel-occt/Cargo.toml`'s `test-fixtures`
+# (which gates the OCCT `store_*_for_test` family).
+#
+# Activated for integration tests via the self-dev-dep below — `cfg(test)`
+# alone is not sufficient because `tests/*.rs` are separate compilation
+# units that do NOT inherit the parent crate's `cfg(test)`.
+test-fixtures = []
+
 [dependencies]
 reify-types.workspace = true
 inventory.workspace = true
@@ -50,11 +61,12 @@ reify-eval.workspace = true
 reify-expr.workspace = true
 reify-test-support.workspace = true
 tempfile.workspace = true
-# Self-dev-dep: activates `stub_register` for all integration test binaries
-# in `tests/` (which are separate compilation units — they do NOT inherit
-# `cfg(test)` from the parent crate, so `cfg(test)` alone cannot reach the
-# gated `inventory::submit!`).  Same pattern used by:
+# Self-dev-dep: activates `stub_register` AND `test-fixtures` for all
+# integration test binaries in `tests/` (which are separate compilation
+# units — they do NOT inherit `cfg(test)` from the parent crate, so
+# `cfg(test)` alone cannot reach the gated `inventory::submit!` or
+# `open_vdb_grid_for_test`).  Same pattern used by:
 #   crates/reify-kernel-manifold/Cargo.toml:51
 #   crates/reify-eval/Cargo.toml:21         (test-instrumentation)
 #   crates/reify-kernel-occt/Cargo.toml:27  (test-fixtures)
-reify-kernel-openvdb = { path = ".", features = ["stub_register"] }
+reify-kernel-openvdb = { path = ".", features = ["stub_register", "test-fixtures"] }
