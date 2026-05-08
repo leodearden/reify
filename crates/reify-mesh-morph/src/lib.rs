@@ -7,6 +7,15 @@
 //!
 //! The [`boundary`] module implements the surface-node → Dirichlet-BC
 //! translation step that gates the elasticity morph (PRD task #7).
+//!
+//! ## PRD task #6 — Laplacian quick-pass — laplacian module
+//!
+//! The [`laplacian`] module implements the constrained Laplacian smoother
+//! used as the cheap fast path for trivially small parameter changes —
+//! surface nodes pinned to `prescribed_positions` (produced by
+//! [`compute_dirichlet_bcs`]), interior nodes iteratively averaged with
+//! their topological neighbours via Jacobi iteration. Engine wiring (PRD
+//! task #10) selects between this smoother and the elasticity morph.
 
 pub mod boundary;
 pub mod eligibility;
@@ -19,6 +28,7 @@ pub use boundary::{
     compute_dirichlet_bcs,
 };
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
+pub use laplacian::{LaplacianFailure, laplacian_smooth};
 pub use options::{MorphFailure, MorphOptions};
 pub use types::{BRep, InversionDetails, MetricsBreached, SolverErrorPayload};
 
