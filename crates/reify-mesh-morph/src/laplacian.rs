@@ -42,10 +42,19 @@ pub enum LaplacianFailure {
 ///
 /// ## Parameters
 ///
-/// - `old_mesh` — the current tetrahedral mesh.
+/// - `old_mesh` — the current tetrahedral mesh. `old_mesh.tet_indices` must
+///   reference only valid vertex indices (`< old_mesh.vertices.len() / 3`)
+///   and be a length-multiple of 4 (P1 tet stride). The same mesh-validity
+///   precondition `boundary.rs::compute_dirichlet_bcs` delegates to its
+///   caller; out-of-range entries in `tet_indices` are silently skipped
+///   when building the adjacency graph rather than reported as failures.
 /// - `prescribed_positions` — `(node_index, new_position)` pairs identifying
 ///   "boundary" nodes pinned to their projected targets. The natural producer
-///   is [`crate::compute_dirichlet_bcs`] (PRD task #5).
+///   is [`crate::compute_dirichlet_bcs`] (PRD task #5), which emits each node
+///   exactly once via its `BTreeMap`-backed `BoundaryAssociation`. If a node
+///   index appears more than once in the slice, the last entry wins (the
+///   boundary mask and pinned position are overwritten on subsequent
+///   occurrences); duplicates are not reported as a failure.
 /// - `iterations` — number of Jacobi smoothing passes. Engine wiring (PRD
 ///   task #10) reads [`crate::MorphOptions::laplacian_iterations`] and passes
 ///   it in (5–10 typical, default 8).
@@ -123,10 +132,18 @@ pub fn laplacian_smooth(
     for tet in old_mesh.tet_indices.chunks_exact(4) {
         // Each unordered pair (i, j) inserts j into adjacency[i] and i into
         // adjacency[j]. Skip the diagonal (i == j) — degenerate tets where a
-        // node repeats would otherwise self-link.
+        // node repeats would otherwise self-link. Out-of-range indices on
+        // either side are silently dropped: storing an out-of-range j would
+        // panic on `current[j as usize]` inside the iteration loop. The
+        // doc-comment delegates the "tet_indices reference valid vertices"
+        // precondition to the caller, so we defensively guard rather than
+        // returning a failure here.
         for &i in tet {
             for &j in tet {
-                if i != j && (i as usize) < vertex_count {
+                if i != j
+                    && (i as usize) < vertex_count
+                    && (j as usize) < vertex_count
+                {
                     adjacency[i as usize].insert(j);
                 }
             }
