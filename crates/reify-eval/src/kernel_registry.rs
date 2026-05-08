@@ -117,14 +117,91 @@ pub fn registry() -> &'static BTreeMap<String, &'static KernelRegistration> {
 /// registry, or `None` if no adapter has submitted one (e.g. stub-mode build
 /// with `cfg(has_occt)` off).
 ///
-/// Centralises the "lex-min on `name`" tie-break used by
+/// Centralises the "lex-min on `name`" tie-break used historically by
 /// [`crate::Engine::with_registered_kernel`] (and, in v0.3+, by any
 /// dispatcher selection that wants the same fallback ordering). Routing
 /// every caller through this helper guarantees the tie-break invariant lives
 /// in one place — a future change (e.g. environment-variable-driven default
 /// selection) would only need to update this function.
+///
+/// **Engine construction should prefer [`pick_lexmin_brep_kernel`]** which
+/// applies a BRep-capability filter first so a Mesh-only kernel registered
+/// under a lex-smaller name (e.g. `"manifold" < "occt"`) cannot silently win
+/// the pick when a BRep-capable kernel is also registered.  This function
+/// retains its existing pure lex-min contract for v0.3 dispatcher reuse and
+/// any other caller that explicitly wants the lex-min regardless of capability.
 pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
     registry().values().next().copied()
+}
+
+/// Returns the lex-smallest BRep-capable registered kernel, or falls back to
+/// lex-min overall when no registered kernel claims any BRep pair.
+///
+/// Returns `None` on an empty registry (preserving the stub-mode "no kernel
+/// registered" semantics used by [`crate::Engine::with_registered_kernel`]).
+///
+/// # Why prefer this over [`pick_lexmin_kernel`] for engine construction
+///
+/// `pick_lexmin_kernel` does a pure name-order walk — whichever kernel name
+/// sorts first lexicographically wins.  If both `"manifold"` (Mesh-only
+/// stub) and `"occt"` (full BRep) are linked into the same binary,
+/// `"manifold" < "occt"` so `pick_lexmin_kernel` silently routes every BRep
+/// operation through the Manifold stub, which returns `OperationFailed`.
+/// This function prevents that by filtering for BRep capability first.
+///
+/// # Fallback semantics
+///
+/// When no registered kernel claims any `(_, ReprKind::BRep)` pair (e.g. a
+/// hypothetical Mesh-only build), the function falls back to the pure lex-min
+/// of all registered kernels rather than returning `None`.  A Mesh-only build
+/// still wants *some* kernel; refusing to pick one would degrade further than
+/// the current `pick_lexmin_kernel` behaviour.  The fallback chain is:
+/// `find(brep) → values().next()`.
+///
+/// # Consumer
+///
+/// [`crate::Engine::with_registered_kernel`] uses this function (task 3224).
+/// The generic helper [`pick_lexmin_brep_kernel_in`] contains the testable
+/// filter-and-fallback logic.
+pub fn pick_lexmin_brep_kernel() -> Option<&'static KernelRegistration> {
+    pick_lexmin_brep_kernel_in(registry(), |reg| (reg.descriptor)()).copied()
+}
+
+/// Generic BRep-preferring lex-min helper over a caller-supplied map.
+///
+/// Returns the lex-smallest entry in `registered` whose descriptor (as
+/// returned by `descriptor_of`) claims at least one `(_, ReprKind::BRep)`
+/// pair.  Falls back to the lex-smallest entry overall when no entry claims
+/// any BRep pair.  Returns `None` when `registered` is empty.
+///
+/// # Why a generic helper is extracted
+///
+/// `registry()` is a `BTreeMap<String, &'static KernelRegistration>` whose
+/// descriptor is obtained by calling `(reg.descriptor)()`.  Lifting the
+/// filter-and-fallback logic into a generic `pick_lexmin_brep_kernel_in<V>`
+/// lets unit tests drive it with a synthetic
+/// `BTreeMap<String, CapabilityDescriptor>` and a plain `|d| d.clone()`
+/// descriptor closure — covering the three behavioral cases (BRep wins,
+/// no-BRep falls back to lex-min, empty returns None) without registering
+/// additional `cfg(test)` synthetics that would shift the global lex-min and
+/// force coordinated edits to existing tests.
+///
+/// Mirrors the extraction pattern used for [`emit_kernel_selection`] and
+/// [`warn_if_duplicate_op_repr_pairs`].
+///
+/// # Caller
+///
+/// [`pick_lexmin_brep_kernel`] is the only production caller.
+pub(crate) fn pick_lexmin_brep_kernel_in<V>(
+    registered: &BTreeMap<String, V>,
+    descriptor_of: impl Fn(&V) -> CapabilityDescriptor,
+) -> Option<&V> {
+    registered.values().find(|v| {
+        descriptor_of(v)
+            .supports
+            .iter()
+            .any(|(_, r)| *r == ReprKind::BRep)
+    })
 }
 
 /// Iterate the static linker-collected set of [`KernelRegistration`] records
