@@ -1418,4 +1418,122 @@ mod tests {
             .expect_err("empty-axis-grid input must be rejected");
         assert_eq!(err, MedialError::EmptyAxisGrid { axis: 0 });
     }
+
+    /// Helper: build a 2×2×2 Regular3D SampledField with the given
+    /// per-axis spacing and bounds overrides. Used by the
+    /// `InvalidAxisGeometry` test family so each test only specifies
+    /// the one value it wants to violate.
+    fn geometry_test_field(
+        spacing: [f64; 3],
+        bounds_min: [f64; 3],
+        bounds_max: [f64; 3],
+    ) -> SampledField {
+        SampledField {
+            name: "test-geom".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: bounds_min.to_vec(),
+            bounds_max: bounds_max.to_vec(),
+            spacing: spacing.to_vec(),
+            axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.0; 8],
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// RED — zero spacing on axis 0 must return `InvalidAxisGeometry`.
+    /// `spacing[0] = 0.0` makes `sample_at_world` divide by zero and
+    /// return NaN, which the `is_finite()` guard silently discards as
+    /// OOB. The new check rejects it up front with a typed error.
+    #[test]
+    fn compute_medial_mask_rejects_zero_spacing() {
+        let sdf = geometry_test_field(
+            [0.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("zero spacing must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: 0.0,
+                bounds_min: 0.0,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// RED — negative spacing on axis 0 must return `InvalidAxisGeometry`.
+    /// `spacing[0] = -1.0` flips index direction in trilinear
+    /// interpolation, producing silent geometric nonsense.
+    #[test]
+    fn compute_medial_mask_rejects_negative_spacing() {
+        let sdf = geometry_test_field(
+            [-1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("negative spacing must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: -1.0,
+                bounds_min: 0.0,
+                bounds_max: 1.0,
+            }
+        );
+    }
+
+    /// RED — NaN spacing on axis 0 must return `InvalidAxisGeometry`.
+    /// Uses pattern-match + `is_nan()` because `f64::NAN != f64::NAN`
+    /// under IEEE-754 defeats `assert_eq!` on the derived `PartialEq`.
+    #[test]
+    fn compute_medial_mask_rejects_nan_spacing() {
+        let sdf = geometry_test_field(
+            [f64::NAN, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("NaN spacing must be rejected");
+        match err {
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing,
+                ..
+            } if spacing.is_nan() => {}
+            other => panic!(
+                "expected InvalidAxisGeometry {{ axis: 0, spacing: NaN, .. }}, got {other:?}"
+            ),
+        }
+    }
+
+    /// RED — inverted bounds on axis 0 (`bounds_min > bounds_max`)
+    /// must return `InvalidAxisGeometry`. The `world_at_index` and
+    /// `sample_at_world` helpers produce geometrically nonsensical
+    /// results for inverted bounds; the `is_finite` guard then masks
+    /// the corruption as silent OOB.
+    #[test]
+    fn compute_medial_mask_rejects_inverted_bounds() {
+        let sdf = geometry_test_field(
+            [1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0], // bounds_min[0] > bounds_max[0]
+            [0.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("inverted bounds must be rejected");
+        assert_eq!(
+            err,
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                spacing: 1.0,
+                bounds_min: 1.0,
+                bounds_max: 0.0,
+            }
+        );
+    }
 }
