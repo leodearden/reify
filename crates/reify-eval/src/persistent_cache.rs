@@ -29,6 +29,12 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+/// On-disk-layout version for [`ElasticResult`]. Bump when the encoding
+/// format changes (separate from `engine_version_hash`, which invalidates
+/// result semantics rather than the wire format). Starting at 1 follows the
+/// Reify convention that 0 means "uninitialised / unknown".
+const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
+
 /// Compact bincode-encoded prefix that precedes the raw f64 byte slabs in the
 /// zstd-wrapped body. `max_von_mises` is stored as its `u64` bit pattern
 /// (NOT as `f64`) so NaN payloads, signaling-NaN bits, and signed zeros
@@ -139,7 +145,7 @@ impl PersistentlyCacheable for ElasticResult {
     }
 
     fn format_version(&self) -> u32 {
-        1
+        ELASTIC_RESULT_FORMAT_VERSION
     }
 
     fn solve_time_ms(&self) -> u64 {
