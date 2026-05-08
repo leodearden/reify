@@ -11,20 +11,20 @@ const mockSceneAdd = vi.fn();
 const mockSceneChildren: any[] = [];
 const mockCameraAdd = vi.fn();
 
-function makeMockPosition() {
-  const pos = {
+function makeMockVector3() {
+  const v = {
     x: 0, y: 0, z: 0,
     set: vi.fn((x: number, y: number, z: number) => {
-      pos.x = x; pos.y = y; pos.z = z;
+      v.x = x; v.y = y; v.z = z;
     }),
     distanceTo: vi.fn((target: any) => {
-      const dx = pos.x - target.x;
-      const dy = pos.y - target.y;
-      const dz = pos.z - target.z;
+      const dx = v.x - target.x;
+      const dy = v.y - target.y;
+      const dz = v.z - target.z;
       return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }),
   };
-  return pos;
+  return v;
 }
 
 vi.mock('three', () => {
@@ -39,11 +39,8 @@ vi.mock('three', () => {
     aspect: number;
     near: number;
     far: number;
-    position = makeMockPosition();
-    up = (() => {
-      const u = { x: 0, y: 1, z: 0, set: vi.fn((x: number, y: number, z: number) => { u.x = x; u.y = y; u.z = z; }) };
-      return u;
-    })();
+    position = makeMockVector3();
+    up = makeMockVector3();
     updateProjectionMatrix = vi.fn();
     add = mockCameraAdd;
     constructor(fov: number, aspect: number, near: number, far: number) {
@@ -292,6 +289,8 @@ describe('createScene', () => {
   it('rotates GridHelper onto the XY plane (rotation.x = π/2) so the grid is the floor under Z-up', () => {
     const result = setup();
     expect(result.grid.rotation.x).toBeCloseTo(Math.PI / 2);
+    expect(result.grid.rotation.y).toBe(0);
+    expect(result.grid.rotation.z).toBe(0);
   });
 
   it('adjustClipping with empty bounds is a no-op (V-11)', () => {
