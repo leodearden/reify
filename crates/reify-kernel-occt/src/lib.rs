@@ -2407,6 +2407,33 @@ impl OcctKernel {
                 })?;
                 Ok(Value::Int(parent.0 as i64))
             }
+            GeometryQuery::ClosestPointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+            } => {
+                // Reuse the direct-method wrapper for InvalidHandle / QueryFailed
+                // surfacing, then re-encode the [f64; 3] as JSON-Point3 so the wire
+                // format matches Centroid / FaceNormal / EdgeTangent — the
+                // eval-side dispatcher reuses `parse_xyz_value` on this string.
+                let [x, y, z] = self.closest_point_on_shape(*handle, *px, *py, *pz)?;
+                Ok(Value::String(format!(
+                    "{{\"x\":{x},\"y\":{y},\"z\":{z}}}"
+                )))
+            }
+            GeometryQuery::PointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => self
+                .point_on_shape(*handle, *px, *py, *pz, *tolerance)
+                .map(Value::Bool),
+            GeometryQuery::SurfaceAngle { face_a, face_b } => self
+                .surface_angle(*face_a, *face_b)
+                .map(Value::Real),
         }
     }
 
