@@ -392,6 +392,54 @@ mod tests {
     use super::*;
     use crate::mid_surface::MidSurfaceMesh;
 
+    // ── Step 11: prune-spike test ─────────────────────────────────────────────
+
+    /// Two-triangle fixture: body survives, spike is pruned.
+    ///
+    /// Topology:
+    /// - `[0,1,2]` — body (tall, thin vertices, ratio ≫ 1.0 → survives).
+    /// - `[0,1,3]` — spike (stubby, thick vertex, ratio ≪ 1.0 → pruned).
+    ///
+    /// Shared edge is `(0,1)` with length 0.5.
+    /// Spike branch_length = 0.5, local_thickness ≈ 4.0, ratio ≈ 0.125 < 1.0 → removed.
+    /// Body branch_length ≈ 10.0, local_thickness = 1.0, ratio ≈ 10 ≫ 1.0 → retained.
+    #[test]
+    fn prune_branches_removes_short_spike_triangle() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],   // v0, thickness 1.0
+                [0.5, 0.0, 0.0],   // v1, thickness 1.0 — shared edge (0,1) = 0.5
+                [0.25, 10.0, 0.0], // v2, thickness 1.0 — body apex (tall, not pruned)
+                [0.25, -0.1, 0.0], // v3, thickness 10.0 — spike apex (short, high t)
+            ],
+            triangles: vec![
+                [0, 1, 2], // body: longest edge ≈10.0, local_t=1.0 → ratio≈10 → survives
+                [0, 1, 3], // spike: longest edge=0.5, local_t≈4.0 → ratio≈0.125 → pruned
+            ],
+            thickness: vec![1.0, 1.0, 1.0, 10.0],
+        };
+        let result = prune_branches(&mesh, &PruneOptions::default())
+            .expect("valid mesh should not error");
+        assert_eq!(
+            result.metrics.pruned_triangle_count, 1,
+            "exactly one triangle (the spike) must be pruned"
+        );
+        assert_eq!(
+            result.mesh.triangles.len(), 1,
+            "one triangle must survive (the body)"
+        );
+        // The surviving triangle's vertices must be a subset of the original body triangle.
+        // After compaction v3 is gone; v0, v1, v2 survive (possibly re-indexed).
+        assert_eq!(
+            result.mesh.vertices.len(), 3,
+            "three vertices survive (body triangle)"
+        );
+        assert!(
+            result.metrics.iterations >= 1,
+            "at least one iteration ran"
+        );
+    }
+
     // ── Step 9: no-prune baseline test ───────────────────────────────────────
 
     /// Single equilateral-ish triangle with large edges and thin local thickness:
