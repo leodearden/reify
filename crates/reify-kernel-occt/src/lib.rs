@@ -2358,6 +2358,25 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::String(name))
             }
+            GeometryQuery::AncestorFacesOfEdge { shape, edge_index } => {
+                let s = self
+                    .get_shape(*shape)
+                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let idx_u32: u32 = (*edge_index).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "ancestor_faces_of_edge: edge_index {} exceeds u32::MAX",
+                        edge_index
+                    ))
+                })?;
+                let parents = ffi::ffi::ancestor_faces_of_edge(s, idx_u32)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::List(
+                    parents
+                        .into_iter()
+                        .map(|i| Value::Int(i as i64))
+                        .collect(),
+                ))
+            }
         }
     }
 

@@ -815,3 +815,110 @@ pub fn adjacent_to_face<K: GeometryKernel + ?Sized>(
     }
     Ok(out)
 }
+
+/// Return the subset of `extract_faces(parent)` that own `edge_handle`
+/// (i.e. are face-ancestors of the edge in topology terms).
+///
+/// Implements PRD line 81's `ancestors(edge)` slot. Issues exactly one
+/// `extract_edges` call (to recover the canonical edge list / edge_index
+/// mapping), one `extract_faces` call (to map index → handle for the
+/// reply), and one `AncestorFacesOfEdge` query (which under OCCT walks
+/// the cached `edge_face_map`).
+///
+/// For a manifold solid every edge has exactly two ancestor faces, but
+/// the kernel does not enforce this — degenerate / seam / non-manifold
+/// edges may surface 1 or > 2.
+///
+/// # Errors
+///
+/// - Propagates any error from `extract_edges` / `extract_faces`.
+/// - Returns `QueryError::QueryFailed("… not a child of parent (was extract_edges(parent) called?)")`
+///   if `edge_handle` does not appear in `extract_edges(parent)`.
+/// - Propagates any error from the `AncestorFacesOfEdge` query.
+/// - Returns `QueryError::QueryFailed` on a malformed `AncestorFacesOfEdge`
+///   payload (non-`Value::List`, non-`Value::Int` element, or an index
+///   outside the `extract_faces` range).
+pub fn ancestor_faces_of_edge<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    parent: GeometryHandleId,
+    edge_handle: GeometryHandleId,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let edges = kernel.extract_edges(parent)?;
+    let edge_index = edges.iter().position(|id| *id == edge_handle).ok_or_else(|| {
+        QueryError::QueryFailed(format!(
+            "ancestor_faces_of_edge: edge {edge_handle:?} is not a child of parent {parent:?} (was extract_edges(parent) called?)"
+        ))
+    })?;
+    // Faces are needed to map the kernel's integer indices back to
+    // `GeometryHandleId`s; do this before issuing the kernel query so any
+    // extraction error surfaces ahead of the FFI roundtrip.
+    let faces = kernel.extract_faces(parent)?;
+    let value = kernel.query(&GeometryQuery::AncestorFacesOfEdge {
+        shape: parent,
+        edge_index,
+    })?;
+    let indices = match &value {
+        Value::List(items) => items,
+        other => {
+            return Err(QueryError::QueryFailed(format!(
+                "ancestor_faces_of_edge: expected Value::List from AncestorFacesOfEdge, got {other:?}"
+            )));
+        }
+    };
+    let mut out: Vec<GeometryHandleId> = Vec::with_capacity(indices.len());
+    for item in indices {
+        let idx = match item {
+            Value::Int(i) => *i,
+            other => {
+                return Err(QueryError::QueryFailed(format!(
+                    "ancestor_faces_of_edge: expected Value::Int element in AncestorFacesOfEdge list, got {other:?}"
+                )));
+            }
+        };
+        let usize_idx: usize = idx.try_into().map_err(|_| {
+            QueryError::QueryFailed(format!(
+                "ancestor_faces_of_edge: AncestorFacesOfEdge returned negative index {idx}"
+            ))
+        })?;
+        let parent_face = *faces.get(usize_idx).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "ancestor_faces_of_edge: AncestorFacesOfEdge index {usize_idx} is out of range for extract_faces(parent) (len = {})",
+                faces.len()
+            ))
+        })?;
+        out.push(parent_face);
+    }
+    Ok(out)
+}
+
+/// Return every face of `parent` other than `face_handle`, preserving
+/// canonical `extract_faces` order.
+///
+/// Implements PRD line 81's `siblings(face)` slot. Pure-Rust composition
+/// of `extract_faces(parent)` and [`except`]: returns the canonical face
+/// list with `face_handle` removed (single occurrence per the
+/// dedup-on-first-seen discipline).
+///
+/// Symmetric with [`adjacent_to_face`] in error shape: a `face_handle`
+/// not present in `extract_faces(parent)` errors with
+/// `"not a child of parent"` rather than silently returning the full
+/// face list.
+///
+/// # Errors
+///
+/// - Propagates any error from `extract_faces`.
+/// - Returns `QueryError::QueryFailed("… not a child of parent (was extract_faces(parent) called?)")`
+///   if `face_handle` does not appear in `extract_faces(parent)`.
+pub fn siblings_of_face<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    parent: GeometryHandleId,
+    face_handle: GeometryHandleId,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let faces = kernel.extract_faces(parent)?;
+    if !faces.iter().any(|id| *id == face_handle) {
+        return Err(QueryError::QueryFailed(format!(
+            "siblings_of_face: face {face_handle:?} is not a child of parent {parent:?} (was extract_faces(parent) called?)"
+        )));
+    }
+    Ok(except(&faces, &[face_handle]))
+}

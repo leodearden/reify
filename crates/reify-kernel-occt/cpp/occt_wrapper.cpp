@@ -3638,6 +3638,57 @@ rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, 
     }
 }
 
+rust::Vec<uint32_t> ancestor_faces_of_edge(const OcctShape& shape, uint32_t edge_index) {
+    try {
+        // Use the lazy cached edge / face maps (1-based IndexedMap,
+        // deduplicates by IsSame). Converts 1-based OCCT indices to 0-based
+        // for callers — same convention as adjacent_faces / shared_edges.
+        const TopTools_IndexedMapOfShape& edge_map = shape.edge_map();
+        const TopTools_IndexedMapOfShape& face_map = shape.face_map();
+
+        const uint32_t edge_count = static_cast<uint32_t>(edge_map.Extent());
+        if (edge_index >= edge_count) {
+            std::string msg = "ancestor_faces_of_edge: edge index "
+                + std::to_string(edge_index)
+                + " out of range; shape has "
+                + std::to_string(edge_count)
+                + " edges";
+            throw std::runtime_error(msg);
+        }
+
+        // Use the lazy cached edge -> faces incidence map.
+        const TopTools_IndexedDataMapOfShapeListOfShape& edge_face_map = shape.edge_face_map();
+
+        const TopoDS_Shape& target_edge =
+            edge_map.FindKey(static_cast<Standard_Integer>(edge_index + 1));
+
+        std::set<uint32_t> result;
+        if (edge_face_map.Contains(target_edge)) {
+            const TopTools_ListOfShape& parents = edge_face_map.FindFromKey(target_edge);
+            for (TopTools_ListIteratorOfListOfShape it(parents); it.More(); it.Next()) {
+                const TopoDS_Shape& parent_face = it.Value();
+                Standard_Integer one_based = face_map.FindIndex(parent_face);
+                if (one_based < 1) {
+                    continue;
+                }
+                result.insert(static_cast<uint32_t>(one_based - 1));
+            }
+        }
+
+        rust::Vec<uint32_t> out;
+        for (uint32_t i : result) {
+            out.push_back(i);
+        }
+        return out;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT ancestor_faces_of_edge: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT ancestor_faces_of_edge: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT ancestor_faces_of_edge: unknown C++ exception");
+    }
+}
+
 // --- Topology extractors (task 318) ---
 //
 // `get_edges` and `get_faces` materialize the unique sub-shapes of the given

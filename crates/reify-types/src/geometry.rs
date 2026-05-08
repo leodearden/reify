@@ -769,6 +769,22 @@ pub enum GeometryQuery {
     /// Powers PRD line 78's `%Line`/`%Circle`/… geometry-type filters
     /// via `selector_vocabulary_v2::edges_by_curve_kind`.
     EdgeCurveKind(GeometryHandleId),
+    /// List the faces that own a given edge of a solid (the edge's "ancestor"
+    /// faces in topology terms).
+    ///
+    /// `edge_index` is the 0-based index into the shape's edge enumeration
+    /// (canonical `TopExp::MapShapes(.., TopAbs_EDGE, ..)` order — same as
+    /// `extract_edges`). Returns a `Value::List` of `Value::Int` global face
+    /// indices into the canonical face enumeration. For a manifold solid every
+    /// edge has exactly two ancestor faces, but the kernel does not enforce
+    /// this — degenerate edges may surface 1 or > 2.
+    ///
+    /// Powers PRD line 81's `ancestors(edge)` topological walk via
+    /// `selector_vocabulary_v2::ancestor_faces_of_edge`.
+    AncestorFacesOfEdge {
+        shape: GeometryHandleId,
+        edge_index: usize,
+    },
 }
 
 /// Geometric kind of a face's underlying surface, matching OCCT's

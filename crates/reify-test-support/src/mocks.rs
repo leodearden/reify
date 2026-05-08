@@ -491,6 +491,11 @@ enum QueryKey {
         shape: GeometryHandleId,
         face_index: usize,
     },
+    /// AncestorFacesOfEdge keys the handle + 0-based edge index.
+    AncestorFacesOfEdge {
+        shape: GeometryHandleId,
+        edge_index: usize,
+    },
     /// SharedEdges keys the handle + both 0-based face indices.
     SharedEdges {
         shape: GeometryHandleId,
@@ -576,6 +581,12 @@ impl QueryKey {
                 shape: *shape,
                 face_index: *face_index,
             },
+            GeometryQuery::AncestorFacesOfEdge { shape, edge_index } => {
+                QueryKey::AncestorFacesOfEdge {
+                    shape: *shape,
+                    edge_index: *edge_index,
+                }
+            }
             GeometryQuery::SharedEdges {
                 shape,
                 face_a,
@@ -909,6 +920,31 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure an `AncestorFacesOfEdge` query result for a specific (parent
+    /// shape, 0-based edge index) pair.
+    ///
+    /// The `value` should be a `Value::List(Vec<Value::Int>)` of global
+    /// face indices into the same canonical TopExp_Explorer order returned
+    /// by `extract_faces(parent)`. Decoded by the
+    /// `selector_vocabulary_v2::ancestor_faces_of_edge` selector, which
+    /// maps each integer index back to a `GeometryHandleId` via the
+    /// canonical extract_faces list.
+    pub fn with_ancestor_faces_result(
+        mut self,
+        parent: GeometryHandleId,
+        edge_index: usize,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::AncestorFacesOfEdge {
+                shape: parent,
+                edge_index,
+            },
+            value,
+        );
+        self
+    }
+
     /// Get the operations received so far.
     pub fn operations(&self) -> Vec<GeometryOpRecord> {
         self.operations.lock().unwrap().clone()
@@ -993,6 +1029,7 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::Distance { from, .. } => from,
             GeometryQuery::MomentOfInertia { handle, .. } => handle,
             GeometryQuery::AdjacentFaces { shape, .. } => shape,
+            GeometryQuery::AncestorFacesOfEdge { shape, .. } => shape,
             GeometryQuery::SharedEdges { shape, .. } => shape,
             GeometryQuery::IsWatertight(id) => id,
             GeometryQuery::IsManifold(id) => id,

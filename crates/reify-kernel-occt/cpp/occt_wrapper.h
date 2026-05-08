@@ -836,6 +836,18 @@ rust::Vec<uint32_t> adjacent_faces(const OcctShape& shape, uint32_t face_index);
 /// out of range.
 rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, uint32_t face_b_index);
 
+/// Return the 0-based global indices of faces that own the edge at `edge_index`
+/// (the "ancestor faces" in topology terms). Uses the cached `edge_face_map()`
+/// to look up the parent faces of the edge in O(1) (amortised), then maps each
+/// parent back through `face_map().FindIndex()` for the canonical 0-based view.
+/// Indices follow the canonical `TopExp::MapShapes(..., TopAbs_FACE, ...)`
+/// order. Deduplicated; returned in ascending order. For a manifold solid every
+/// edge has exactly two ancestor faces, but the kernel does not enforce this —
+/// a degenerate or seam edge may surface 1 (e.g. a closed cylinder seam) or
+/// > 2 (non-manifold).
+/// Throws std::runtime_error if `edge_index` is out of range.
+rust::Vec<uint32_t> ancestor_faces_of_edge(const OcctShape& shape, uint32_t edge_index);
+
 /// Return the unique edges of `shape` as an OcctShapeVec, in canonical
 /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` order (deduplicated by
 /// `TopoDS_Shape::IsSame`). Reuses the cached `edge_map()`.

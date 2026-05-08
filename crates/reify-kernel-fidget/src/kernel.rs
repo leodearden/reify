@@ -228,6 +228,7 @@ fn query_kind_name(q: &GeometryQuery) -> &'static str {
         GeometryQuery::Distance { .. } => "Distance",
         GeometryQuery::MomentOfInertia { .. } => "MomentOfInertia",
         GeometryQuery::AdjacentFaces { .. } => "AdjacentFaces",
+        GeometryQuery::AncestorFacesOfEdge { .. } => "AncestorFacesOfEdge",
         GeometryQuery::SharedEdges { .. } => "SharedEdges",
         GeometryQuery::IsWatertight(_) => "IsWatertight",
         GeometryQuery::IsManifold(_) => "IsManifold",

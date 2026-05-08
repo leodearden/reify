@@ -715,6 +715,16 @@ pub mod ffi {
             face_b_index: u32,
         ) -> Result<Vec<u32>>;
 
+        /// Faces that own the edge at `edge_index` (0-based, TopExp order
+        /// for both inputs and outputs). For a manifold solid every edge has
+        /// exactly two ancestor faces; degenerate / non-manifold edges may
+        /// surface 1 or > 2. Deduplicated; returned ascending. Errors if
+        /// `edge_index` is out of range.
+        fn ancestor_faces_of_edge(
+            shape: &OcctShape,
+            edge_index: u32,
+        ) -> Result<Vec<u32>>;
+
         /// Classify the underlying surface of a face by its OCCT
         /// `BRepAdaptor_Surface::GetType()` (`GeomAbs_*`) result. Returns a
         /// canonical surface-kind name string (`"Plane"` / `"Cylinder"` /
