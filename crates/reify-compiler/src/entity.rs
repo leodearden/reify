@@ -427,9 +427,20 @@ pub(crate) fn compile_entity(
     // compile_match_arm_decl_group (pass 2) to suppress cluster registration
     // when the collision was already diagnosed in the pre-pass. (task 2375, step-10)
     let mut clusters_with_outside_collision: HashSet<String> = HashSet::new();
-    // Span recorded for every regular Sub/Param/Let at pre-pass time, keyed by
-    // decl name. Used to supply the second DiagnosticLabel when a collision is
-    // detected in either direction (task 2375).
+    // Span recorded for every top-level `MemberDecl::Param`, `MemberDecl::Let`,
+    // and `MemberDecl::Sub` at pre-pass time, keyed by decl name. Used to supply
+    // the second DiagnosticLabel when a collision is detected in either direction
+    // (task 2375). First-decl-wins: `entry().or_insert()` is used at all three
+    // write sites so a duplicate decl name never silently moves the anchor span.
+    //
+    // SCOPE NOTE (task 2877, option b): This map intentionally covers ONLY the
+    // three top-level member kinds above. Names registered through
+    // `register_guarded_names` (guards.rs:128) for `MemberDecl::GuardedGroup`
+    // children are NOT tracked here, so a `where g { param head … } else { … }`
+    // whose name matches a match-cluster's logical name will not produce a
+    // collision diagnostic. This is intentional scoping — extending coverage to
+    // guarded-group children requires plumbing additional state into
+    // `register_guarded_names` and is left for a future task (option a).
     let mut outside_decl_spans: HashMap<String, SourceSpan> = HashMap::new();
     for member in structure.members {
         match member {
