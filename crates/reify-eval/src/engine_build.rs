@@ -1044,8 +1044,7 @@ impl Engine {
                     .copied()
                     .flatten()
                     .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
-                let budget =
-                    self.compute_realization_tolerance_budget(&registry_borrowed, req_tol);
+                let budget = self.compute_realization_tolerance_budget(&registry_borrowed, req_tol);
                 map.insert(key, budget);
             }
         }
@@ -1315,7 +1314,20 @@ impl Engine {
         step_handles: &mut Vec<GeometryHandleId>,
         diagnostics: &mut Vec<Diagnostic>,
         named_steps: &mut HashMap<String, GeometryHandleId>,
+        // Precondition (cache-hit invariant): on entry this table must be
+        // either empty (post-build reset) or populated only by EARLIER
+        // realizations in the same build. The cache-hit short-circuit's
+        // `debug_assert!(feature_tag_table.lookup(cached_handle).is_none())`
+        // depends on this — a caller that runs `execute_realization_ops`
+        // twice without re-resetting the table OR routes a cached handle
+        // through a path that also populates the table will spuriously
+        // trip the assert. See the "Internal-consistency invariant"
+        // section in the long block above for rationale.
         feature_tag_table: &mut FeatureTagTable,
+        // Precondition (cache-hit invariant): same contract as
+        // `feature_tag_table` — must be empty or populated only by
+        // earlier realizations in this build. The cache-hit
+        // short-circuit's `debug_assert!` on this table depends on it.
         topology_attribute_table: &mut TopologyAttributeTable,
         realization_id: &RealizationNodeId,
         realization_name: Option<&str>,
