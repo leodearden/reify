@@ -108,6 +108,22 @@ pub fn assemble_global_stiffness(
             acc
         }
     };
+    // faer 0.24's `try_new_from_triplets` **sums duplicate `(row, col)`
+    // entries in encounter order**. We rely on this contract: when two
+    // (or more) elements share a DOF pair, each element emits its own
+    // triplet, and the accumulated `K_global[i][j]` is the sum of all
+    // contributions in slice-iteration order. Verified by faer's own
+    // `test_from_indices` (sparse/mod.rs:280-326), which asserts
+    // `mat.val() == &[1.0 + 3.0, ..., 6.0 + 7.0]` after seeding two
+    // duplicate `(0,0)` and `(3,3)` triplets — the assertion uses the
+    // unevaluated `1.0 + 3.0` form, which is bit-exact for those values
+    // but documents the encounter-order sum contract.
+    //
+    // If a future faer version regresses this (e.g. overwrites instead of
+    // summing), the fix is to switch the local helper to a pre-merge pass
+    // that sums in a `BTreeMap<(row, col), f64>` keyed by the canonical
+    // `(row, col)` order. step-5's `two_p1_elements_sharing_face_*` test
+    // would surface the regression.
     SparseRowMat::try_new_from_triplets(3 * n_nodes, 3 * n_nodes, &triplets)
         .expect("triplets within declared 3*n_nodes dims (per-element bounds enforced upstream)")
 }
