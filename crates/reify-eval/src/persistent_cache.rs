@@ -356,29 +356,13 @@ mod tests {
         assert_eq!(decoded, original);
     }
 
-    #[test]
-    fn elastic_result_deserialize_from_truncated_reader_returns_io_error() {
-        // Serialize a valid ElasticResult, then halve the encoded byte
-        // sequence and try to deserialize. The call must return `Err(io::Error)`
-        // — not panic, and not surface bincode/zstd's native error types
-        // through the public API. A short input may fault inside
-        // zstd::Decoder::new (frame header), bincode header decode, or the
-        // raw f64 slab `read_exact`; all three paths must propagate as
-        // `io::Error` (the trait method's signature). Pinning is via
-        // `unwrap_err()` rather than `unwrap()` so a regression that switches
-        // any path to a panic surfaces here as a test panic, not a silent
-        // pass.
-        let original = make_sample_result();
-        let mut buf: Vec<u8> = Vec::new();
-        original.serialize_to_writer(&mut buf).unwrap();
-        let truncated = &buf[..buf.len() / 2];
-        let result = ElasticResult::deserialize_from_reader(&mut &truncated[..]);
-        let err = result.expect_err("deserialize from truncated input must return Err");
-        // The exact ErrorKind depends on which decode stage faults
-        // (UnexpectedEof from `read_exact`, or InvalidData / Other from
-        // zstd's frame parser or bincode's header decode). Accept any of
-        // the plausible kinds so this test stays stable across zstd / bincode
-        // patch bumps; what matters is "not a panic" and "Err, not Ok".
+    /// Acceptable error kinds from a malformed/truncated input. The exact
+    /// kind depends on which decode stage faults — `UnexpectedEof` from a
+    /// short `read_exact`, `InvalidData` from zstd's frame parser or the
+    /// bound check, `Other` for wrapped bincode errors. We accept any of
+    /// these so the test stays stable across zstd / bincode patch bumps;
+    /// what matters is "not a panic" and "Err, not Ok".
+    fn assert_decode_error(label: &str, err: &io::Error) {
         let kind = err.kind();
         assert!(
             matches!(
@@ -387,10 +371,60 @@ mod tests {
                     | io::ErrorKind::InvalidData
                     | io::ErrorKind::Other
             ),
-            "unexpected io::ErrorKind from truncated read: {:?} (full error: {:?})",
-            kind,
-            err,
+            "{label}: unexpected io::ErrorKind {kind:?} (full error: {err:?})"
         );
+    }
+
+    #[test]
+    fn elastic_result_deserialize_from_truncated_reader_returns_io_error() {
+        // Truncating a valid encoded buffer at different offsets exercises
+        // distinct decode stages:
+        //   * 0 bytes        → zstd::Decoder::new fails at frame magic
+        //   * 1, 4 bytes     → partial frame magic / header
+        //   * len/4, len/2   → mid-bincode-header or mid-slab depending
+        //                      on the encoded layout
+        //   * len-1          → one byte short of the final block
+        // Every offset must surface `Err(io::Error)` panic-free; pin via
+        // `expect_err` rather than `unwrap()` so a regression that switches
+        // any path to a panic surfaces as a test panic.
+        let original = make_sample_result();
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let len = buf.len();
+        let truncation_points: [usize; 6] = [0, 1, 4, len / 4, len / 2, len - 1];
+        for &n in &truncation_points {
+            let truncated = &buf[..n];
+            let label = format!("truncation @ {n}/{len} bytes");
+            let err = ElasticResult::deserialize_from_reader(&mut &truncated[..])
+                .expect_err(&format!("{label}: must return Err"));
+            assert_decode_error(&label, &err);
+        }
+    }
+
+    #[test]
+    fn elastic_result_deserialize_from_random_bytes_returns_io_error() {
+        // Random bytes (not a valid zstd frame, not a valid bincode payload)
+        // must not be silently accepted. The most likely failure mode is
+        // zstd::Decoder::new rejecting the missing/wrong frame magic, but a
+        // garbage stream that happens to start with a valid magic must still
+        // fail downstream — the test uses bytes that begin with the zstd
+        // magic (0x28 0xB5 0x2F 0xFD) followed by junk so we exercise the
+        // "decoder accepts magic, then bincode/slab decode chokes" path too.
+        let zstd_magic_then_garbage = [
+            0x28, 0xB5, 0x2F, 0xFD, // valid zstd frame magic
+            0xDE, 0xAD, 0xBE, 0xEF, // junk
+            0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        ];
+        let err = ElasticResult::deserialize_from_reader(&mut &zstd_magic_then_garbage[..])
+            .expect_err("zstd-magic + garbage must not silently decode");
+        assert_decode_error("zstd-magic + garbage", &err);
+
+        // Pure random bytes (no valid magic) — most likely faults at
+        // zstd::Decoder::new with InvalidData / Other.
+        let pure_garbage = [0xDEu8, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
+        let err = ElasticResult::deserialize_from_reader(&mut &pure_garbage[..])
+            .expect_err("pure-garbage bytes must not decode");
+        assert_decode_error("pure garbage", &err);
     }
 
     /// Helper used by the oversize-length and (later) garbage-bytes tests:
