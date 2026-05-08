@@ -36,11 +36,10 @@ pub const LINSPACE_MAX_INTERVALS: usize = 10_000_000;
 /// small to keep the cap-boundary tests fast (< 1 µs instead of ~500 ms for
 /// the 10 M allocation).
 ///
-/// The three tests that reference this constant legitimately are
-/// `cap_boundary_just_under`, `cap_boundary_just_over`, and
-/// `cap_excessive_n_intervals_is_finite_when_just_over_cap`.  All three
-/// treat `LINSPACE_MAX_INTERVALS` as a **symbolic boundary value** — they
-/// never compare it to the literal `10_000_000` or depend on its magnitude.
+/// The `cap_boundary_*` tests in `mod tests` at the bottom of this file are
+/// the legitimate consumers — they treat `LINSPACE_MAX_INTERVALS` as a
+/// **symbolic boundary value** and never compare it to the literal
+/// `10_000_000` or depend on its magnitude.
 ///
 /// **If you add a new `reify-types` test that references `LINSPACE_MAX_INTERVALS`
 /// by name, you MUST follow one of these patterns:**
