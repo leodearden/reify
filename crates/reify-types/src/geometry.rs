@@ -4777,4 +4777,79 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn geometry_query_kind_name_returns_stable_token_per_variant() {
+        // Every GeometryQuery variant must produce a stable token via kind_name().
+        // Tokens are the variant names verbatim — any rename breaks this test
+        // visibly (compile-time exhaustiveness + runtime string check).
+        let cases: &[(&str, GeometryQuery)] = &[
+            ("Volume", GeometryQuery::Volume(GeometryHandleId(1))),
+            ("SurfaceArea", GeometryQuery::SurfaceArea(GeometryHandleId(1))),
+            ("Centroid", GeometryQuery::Centroid(GeometryHandleId(1))),
+            ("BoundingBox", GeometryQuery::BoundingBox(GeometryHandleId(1))),
+            ("Distance", GeometryQuery::Distance {
+                from: GeometryHandleId(1),
+                to: GeometryHandleId(2),
+            }),
+            ("MomentOfInertia", GeometryQuery::MomentOfInertia {
+                handle: GeometryHandleId(1),
+                axis: [0.0, 0.0, 1.0],
+            }),
+            ("AdjacentFaces", GeometryQuery::AdjacentFaces {
+                shape: GeometryHandleId(1),
+                face_index: 0,
+            }),
+            ("AncestorFacesOfEdge", GeometryQuery::AncestorFacesOfEdge {
+                shape: GeometryHandleId(1),
+                edge_index: 0,
+            }),
+            ("SharedEdges", GeometryQuery::SharedEdges {
+                shape: GeometryHandleId(1),
+                face_a: 0,
+                face_b: 1,
+            }),
+            ("IsWatertight", GeometryQuery::IsWatertight(GeometryHandleId(1))),
+            ("IsManifold", GeometryQuery::IsManifold(GeometryHandleId(1))),
+            ("IsOrientable", GeometryQuery::IsOrientable(GeometryHandleId(1))),
+            ("CenterOfMass", GeometryQuery::CenterOfMass {
+                handle: GeometryHandleId(1),
+                density: 1000.0,
+            }),
+            ("InertiaTensor", GeometryQuery::InertiaTensor {
+                handle: GeometryHandleId(1),
+                density: 1000.0,
+            }),
+            ("EdgeLength", GeometryQuery::EdgeLength(GeometryHandleId(1))),
+            ("EdgeTangent", GeometryQuery::EdgeTangent(GeometryHandleId(1))),
+            ("FaceNormal", GeometryQuery::FaceNormal(GeometryHandleId(1))),
+            ("FaceSurfaceKind", GeometryQuery::FaceSurfaceKind(GeometryHandleId(1))),
+            ("EdgeCurveKind", GeometryQuery::EdgeCurveKind(GeometryHandleId(1))),
+            ("OwnerBody", GeometryQuery::OwnerBody(GeometryHandleId(1))),
+            ("ClosestPointOnShape", GeometryQuery::ClosestPointOnShape {
+                handle: GeometryHandleId(1),
+                px: 0.0,
+                py: 0.0,
+                pz: 0.0,
+            }),
+            ("PointOnShape", GeometryQuery::PointOnShape {
+                handle: GeometryHandleId(1),
+                px: 0.0,
+                py: 0.0,
+                pz: 0.0,
+                tolerance: 1e-7,
+            }),
+            ("SurfaceAngle", GeometryQuery::SurfaceAngle {
+                face_a: GeometryHandleId(1),
+                face_b: GeometryHandleId(2),
+            }),
+        ];
+        for (expected, q) in cases {
+            assert_eq!(
+                q.kind_name(),
+                *expected,
+                "kind_name() mismatch for GeometryQuery::{expected}"
+            );
+        }
+    }
 }
