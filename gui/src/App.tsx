@@ -497,6 +497,11 @@ const App: Component = () => {
     });
   }
 
+  function confirmDiscardIfDirty(): boolean {
+    if (editorStore.state.dirtyFiles.length === 0) return true;
+    return window.confirm('You have unsaved changes. Discard them?');
+  }
+
   async function handleOpen() {
     try {
       const path = await pickOpenPath();
@@ -510,6 +515,7 @@ const App: Component = () => {
   }
 
   async function handleNew() {
+    if (!confirmDiscardIfDirty()) return;
     try {
       const path = await pickSavePath('untitled.ri', 'ri');
       if (!path) return;
