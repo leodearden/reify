@@ -2282,4 +2282,81 @@ mod tests {
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
         assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
     }
+
+    // ── linear_combine Pressure codomain preservation ────────────────────────
+
+    #[test]
+    fn linear_combine_pressure_codomain_stress_preserves_dimension() {
+        // Both cases have Pressure-codomain stress. The combined result must:
+        //   1. propagate codomain_type = Type::Scalar { PRESSURE } (not coerce to Real)
+        //   2. produce correct weighted data
+        //   3. compute max_von_mises over the combined Pressure-valued data
+        let axis = vec![0.0, 1.0];
+        let pressure = Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        };
+
+        let a_disp = wrap_sampled_field(
+            make_sampled_1d("da", axis.clone(), vec![1.0, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_disp = wrap_sampled_field(
+            make_sampled_1d("db", axis.clone(), vec![1.0, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+
+        let a_stress = wrap_sampled_field(
+            make_sampled_1d("sa", axis.clone(), vec![100e6, 250e6]),
+            Type::Real,
+            pressure.clone(),
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_1d("sb", axis.clone(), vec![150e6, 200e6]),
+            Type::Real,
+            pressure.clone(),
+        );
+
+        let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(b_disp, b_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        wm.insert(Value::String("B".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap();
+        assert!(!result.is_undef());
+
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        // Stress field must preserve Pressure codomain_type.
+        let stress_field = result_map
+            .get(&Value::String("stress".to_string()))
+            .expect("result must have 'stress' key");
+        match stress_field {
+            Value::Field { codomain_type, .. } => {
+                assert_eq!(*codomain_type, pressure, "codomain_type must be Pressure");
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+
+        // Combined stress data: [100e6+150e6, 250e6+200e6] = [250e6, 450e6].
+        let stress_sf = extract_sampled(stress_field);
+        assert!(
+            approx_eq_slice(&stress_sf.data, &[250e6, 450e6], 1.0),
+            "stress data mismatch: {:?}",
+            stress_sf.data
+        );
+
+        // max_von_mises = 450e6.
+        match result_map.get(&Value::String("max_von_mises".to_string())).unwrap() {
+            Value::Real(v) => assert!((v - 450e6).abs() <= 1.0, "max_von_mises: {}", v),
+            other => panic!("expected Real, got {:?}", other),
+        }
+    }
 }
