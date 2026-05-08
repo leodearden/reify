@@ -174,6 +174,18 @@ pub enum MesherError {
         /// The total number of vertices in the mesh.
         vertices_len: usize,
     },
+    /// A thickness entry in `mesh.thickness` is non-finite (`NaN`, `+Inf`, or
+    /// `-Inf`). Non-finite thickness values would poison the per-vertex averaged
+    /// thickness during duplicate-vertex merging in `dedup_vertices`, propagating
+    /// a `NaN`/`±Inf` thickness to the output mesh and downstream FEA stiffness
+    /// assembly without any diagnostic.
+    NonFiniteThickness {
+        /// Zero-based index into `mesh.thickness` (also the corresponding index
+        /// in `mesh.vertices`) whose thickness value is non-finite.
+        vertex_index: usize,
+        /// The specific non-finite thickness value (`NaN`, `+Inf`, or `-Inf`).
+        value: f64,
+    },
     /// A vertex coordinate in `mesh.vertices` is non-finite (`NaN`, `+Inf`, or
     /// `-Inf`). Non-finite coordinates silently corrupt the dedup hash:
     /// `NaN` casts to `0` (all NaN vertices collapse into the origin bin) and
@@ -242,6 +254,13 @@ impl std::fmt::Display for MesherError {
                 f,
                 "triangle {triangle_index} references vertex index {vertex_index} \
                  which is out of range (mesh has {vertices_len} vertices)"
+            ),
+            MesherError::NonFiniteThickness { vertex_index, value } => write!(
+                f,
+                "thickness[{vertex_index}] is non-finite ({value}); thickness values \
+                 must be finite (NaN/±Inf would poison averaged thickness on \
+                 duplicate-vertex merges and propagate to downstream FEA stiffness \
+                 matrix assembly)"
             ),
             MesherError::NonFiniteVertex { vertex_index, coord } => write!(
                 f,
@@ -415,6 +434,7 @@ fn triangle_min_angle_degrees(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3]) -> f64 {
 /// | [`MesherError::InvalidMinAngleDegrees`] | `min_angle_degrees ∉ (0, 60)` |
 /// | [`MesherError::InconsistentInputMesh`] | `thickness.len() ≠ vertices.len()` |
 /// | [`MesherError::NonFiniteVertex`] | any vertex coordinate is `NaN` or `±Inf` |
+/// | [`MesherError::NonFiniteThickness`] | any thickness entry is `NaN` or `±Inf` |
 /// | [`MesherError::OutOfRangeTriangleIndex`] | any triangle index ≥ `vertices.len()` |
 /// | [`MesherError::QualityBelowThreshold`] | quality gate fails after all remesh iterations |
 ///
@@ -481,6 +501,17 @@ pub fn mesh_mid_surface(
                     coord: c,
                 });
             }
+        }
+    }
+    // Scan for non-finite thickness values.  A NaN/±Inf thickness would survive
+    // the dedup merge step (averaging propagates NaN), poisoning the output mesh
+    // and downstream FEA stiffness assembly without any diagnostic.
+    for (vi, &t) in mesh.thickness.iter().enumerate() {
+        if !t.is_finite() {
+            return Err(MesherError::NonFiniteThickness {
+                vertex_index: vi,
+                value: t,
+            });
         }
     }
     for (tri_idx, tri) in mesh.triangles.iter().enumerate() {
@@ -655,6 +686,7 @@ mod tests {
             thickness_len: 0,
         };
         let _: MesherError = MesherError::NonFiniteVertex { vertex_index: 0, coord: 0.0 };
+        let _: MesherError = MesherError::NonFiniteThickness { vertex_index: 0, value: 0.0 };
         let _: MesherError = MesherError::OutOfRangeTriangleIndex {
             triangle_index: 0,
             vertex_index: 0,
