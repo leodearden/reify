@@ -596,6 +596,101 @@ mod tests {
         }
     }
 
+    /// Parallel mode is tolerance-equivalent to deterministic mode on a
+    /// shared-DOF mesh, and bit-stable across back-to-back invocations at
+    /// a fixed thread count.
+    ///
+    /// Mesh: 4 tets fanning around central node 0 (`n_nodes = 13`,
+    /// connectivity `[0,1,2,3]`, `[0,4,5,6]`, `[0,7,8,9]`, `[0,10,11,12]`).
+    /// Node 0 is shared across all 4 elements ⇒ the (0..3, 0..3) DOF block
+    /// receives a 4-way summation, surfacing any FP non-associativity that
+    /// a different parallel summation order would introduce.
+    ///
+    /// Two assertions:
+    /// 1. **Tolerance-equivalence**: for every `(i, j)`,
+    ///    `|K_par[i][j] − K_det[i][j]| < 1e-12 * max(1, |K_det[i][j]|)`.
+    ///    Strict bit-equality is not required across modes (different
+    ///    summation order can perturb the LSB). Our implementation
+    ///    happens to merge in slice order so bit-equality holds today,
+    ///    but the test pins the tolerance contract — the PRD only
+    ///    requires the FP delta be far below physical tolerance.
+    /// 2. **Fixed-thread-count bit-stability**: two back-to-back
+    ///    invocations with `Parallel { threads: 4 }` on the same input
+    ///    produce bit-identical output. This is the determinism contract
+    ///    the PRD pins: at a fixed thread count, the assembly is
+    ///    reproducible bit-for-bit.
+    #[test]
+    fn parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh() {
+        let mat = dimensionless_steel_like();
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        assert_eq!(k_e.n_dofs, 12);
+
+        // 4 tets fanning around central node 0.
+        let conns: [[usize; 4]; 4] = [
+            [0, 1, 2, 3],
+            [0, 4, 5, 6],
+            [0, 7, 8, 9],
+            [0, 10, 11, 12],
+        ];
+        let n_nodes = 13;
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| AssemblyElement {
+                id: i,
+                connectivity: c,
+                k_e: &k_e,
+            })
+            .collect();
+
+        let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        let par_a = assemble_global_stiffness(
+            n_nodes,
+            &elements,
+            AssemblyMode::Parallel { threads: 4 },
+        );
+        let par_b = assemble_global_stiffness(
+            n_nodes,
+            &elements,
+            AssemblyMode::Parallel { threads: 4 },
+        );
+
+        let dim = 3 * n_nodes;
+        assert_eq!(det.nrows(), dim);
+        assert_eq!(par_a.nrows(), dim);
+
+        for i in 0..dim {
+            for j in 0..dim {
+                let d = read(&det, i, j);
+                let pa = read(&par_a, i, j);
+                let pb = read(&par_b, i, j);
+
+                // (1) Tolerance-equivalence: parallel ≈ deterministic
+                // within a relative-or-absolute tolerance of 1e-12. The
+                // "max(1, |d|)" form covers both the small-magnitude
+                // (absolute) and large-magnitude (relative) regimes
+                // without a special-case branch.
+                let tol = 1e-12 * d.abs().max(1.0);
+                let delta = (pa - d).abs();
+                assert!(
+                    delta < tol,
+                    "K_par[{i}][{j}] = {pa} but K_det[{i}][{j}] = {d}; \
+                     |Δ| = {delta} ≥ tol = {tol}",
+                );
+
+                // (2) Fixed-thread-count bit-stability: par_a == par_b
+                // bit-for-bit. This is the determinism contract the PRD
+                // pins.
+                assert_eq!(
+                    pa.to_bits(),
+                    pb.to_bits(),
+                    "back-to-back Parallel {{ threads: 4 }} not bit-stable at \
+                     [{i}][{j}]: par_a={pa}, par_b={pb}",
+                );
+            }
+        }
+    }
+
     /// Single P2 element with identity connectivity `[0..10]` → K_global
     /// equals K_e bit-for-bit at every entry.
     ///
