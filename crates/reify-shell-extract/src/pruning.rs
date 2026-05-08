@@ -1419,67 +1419,97 @@ mod tests {
     // Discriminates between bit-exact dedup (`[u64; 3]` `to_bits()`) and
     // quantised dedup (`[i64; 3]` `(coord * inv_tol).round()`).
     //
-    // With bit-exact dedup, vertices whose coordinates differ by `1e-12`
-    // get different canonical keys and are treated as separate vertices.
-    // With quantised dedup at default `grid_alignment_tolerance = 1e-9`,
-    // `(1e-12 * 1e9).round() = 0.001.round() = 0`, which is the same key
-    // as `0.0`, so near-tolerance jitter is collapsed into the same canonical
-    // index — three orders of magnitude of safety margin.
+    // Topology: body B shares one edge with each of two tall permanent
+    // neighbours N1 and N2 via jittered vertex positions (offset 1e-12).
+    //
+    //   - Quantised dedup: jittered shared-edge vertices collapse to the same
+    //     canonical key → B's two shared edges both become internal → B has
+    //     only 1 boundary edge → NOT a tip → never pruned.  N1 and N2 are
+    //     tips (2 boundary edges each) but ratio ≈ 10 → survive.  All 3
+    //     triangles survive, pruned_count == 0.
+    //
+    //   - Bit-exact dedup (the regression): jittered vertices get distinct
+    //     keys → all 9 edges appear with incidence 1 → B has 3 boundary
+    //     edges → IS a tip, ratio = 0.2 < 1.0 → B pruned.  Only N1 and N2
+    //     survive (triangles.len() == 2, pruned_count == 1).
+    //
+    // The 2-triangle topology used in the original test could not discriminate
+    // because with only one shared edge the body always has ≥ 2 boundary edges
+    // and is therefore always a tip in both dedup modes.  The 3-triangle
+    // topology here gives B exactly 1 boundary edge when both shared edges are
+    // recognised, crossing the `boundary_count < 2` threshold.
+    //
+    // `(1e-12 * 1e9).round() = 0.001.round() = 0` — three orders of safety
+    // margin between jitter and `grid_alignment_tolerance = 1e-9`.
     //
     // See the COUPLING NOTE block in `prune_branches` (above the canonical-
     // index map) for the T2→T3 shared-edge contract this test exercises.
 
-    /// Quantised dedup merges spike-side shared-edge vertices even when they
-    /// carry a near-tolerance jitter (`1e-12`) relative to the body-side
-    /// positions.
+    /// Quantised dedup keeps body triangle B alive by recognising its two
+    /// shared edges even when neighbour-side vertices carry a near-tolerance
+    /// jitter (`1e-12`).
     ///
-    /// Layout (mirrors `prune_branches_handles_duplicate_vertex_positions`):
-    ///   body  = [v0, v1, v2] where v0=[0,0,0], v1=[0.5,0,0], v2=[0.25,10,0]
-    ///   spike = [v3, v4, v5] where v3=[0+1e-12,0,0], v4=[0.5+1e-12,0,0],
-    ///                              v5=[0.25,-0.1,0]
-    /// v3 ≈ v0 and v4 ≈ v1 with jitter `1e-12`.
+    /// Layout — 3 triangles, 9 vertices:
+    ///   B  = [v0,v1,v2] thickness=5 → local_t=5, branch_length=1 → ratio=0.2<1.
+    ///   N1 = [v3,v4,v5] v3≈v0, v4≈v1 (jitter=1e-12); v5 far apex.
+    ///                    thickness=1 → local_t=1, branch_length≈10 → ratio≈10>1.
+    ///   N2 = [v6,v7,v8] v6≈v0, v7≈v2 (jitter=1e-12); v8 far apex.
+    ///                    thickness=1 → local_t=1, branch_length≈10 → ratio≈10>1.
     ///
     /// With `grid_alignment_tolerance = 1e-9` (default):
-    ///   - Quantised dedup collapses {v0,v3} and {v1,v4} to the same key →
-    ///     shared edge (v0,v1)~(v3,v4) has incidence 2 (internal).
-    ///   - Spike has 2 boundary edges → is a tip; ratio≈0.125 < 1.0 → pruned.
-    ///   - Body has 2 boundary edges → is a tip; ratio≈10 >> 1.0 → survives.
+    ///   - {v0,v3,v6} collapse; {v1,v4} collapse; {v2,v7} collapse.
+    ///   - Edges (v0,v1) and (v0,v2) each have incidence 2 → internal.
+    ///   - B has 1 boundary edge (v1,v2) → NOT a tip → NOT pruned.
+    ///   - N1, N2: tips (2 boundary edges), ratio≈10 → NOT pruned.
+    ///   - All 3 triangles survive; pruned_count == 0.  ← asserted
     ///
-    /// This validates that quantised dedup correctly handles the jitter between
-    /// T2's shared-edge midpoints, which are bit-exact today but may diverge
-    /// by small amounts (≤ `grid_alignment_tolerance`) in future T2 variants.
+    /// Without quantised dedup (bit-exact regression):
+    ///   - Jittered vertices get distinct keys → B has 3 boundary edges → IS tip.
+    ///   - B ratio = 0.2 < 1.0 → B pruned; triangles.len() == 2.  ← test FAILS
     #[test]
     fn prune_branches_quantised_dedup_merges_within_tolerance_jittered_vertices() {
         const JITTER: f64 = 1e-12; // 3 orders of magnitude below default tol 1e-9
+        // B: small flat triangle, ratio=0.2<1 — pruned if classified as a tip.
+        // N1 shares a jittered copy of B's edge (v0-v1); N2 shares B's (v0-v2).
+        // Quantised dedup collapses jitter → both shared edges become internal
+        // → B has only 1 boundary edge → NOT a tip → NOT pruned.
         let mesh = MidSurfaceMesh {
             vertices: vec![
-                [0.0, 0.0, 0.0],          // v0 — body side of shared edge
-                [0.5, 0.0, 0.0],          // v1 — body side of shared edge
-                [0.25, 10.0, 0.0],        // v2 — body apex (tall → ratio ≫ 1)
-                [0.0 + JITTER, 0.0, 0.0], // v3 ≈ v0 (jittered spike side)
-                [0.5 + JITTER, 0.0, 0.0], // v4 ≈ v1 (jittered spike side)
-                [0.25, -0.1, 0.0],        // v5 — spike apex
+                [0.0, 0.0, 0.0],                    // v0 — B vertex 0
+                [1.0, 0.0, 0.0],                    // v1 — B vertex 1
+                [0.5, 0.8, 0.0],                    // v2 — B vertex 2
+                [JITTER, 0.0, 0.0],                 // v3 ≈ v0 — N1 base (edge v0-v1)
+                [1.0 + JITTER, 0.0, 0.0],           // v4 ≈ v1 — N1 base
+                [0.5, -10.0, 0.0],                  // v5 — N1 far apex (ratio≈10)
+                [JITTER, 0.0, 0.0],                 // v6 ≈ v0 — N2 base (edge v0-v2)
+                [0.5 + JITTER, 0.8 + JITTER, 0.0], // v7 ≈ v2 — N2 base
+                [-10.0, 0.4, 0.0],                  // v8 — N2 far apex (ratio≈10)
             ],
-            triangles: vec![[0, 1, 2], [3, 4, 5]],
-            // spike apex has thickness 10 → local_t ≈ 4 → ratio ≈ 0.125 < 1.0 → pruned
-            thickness: vec![1.0, 1.0, 1.0, 1.0, 1.0, 10.0],
+            triangles: vec![[0, 1, 2], [3, 4, 5], [6, 7, 8]],
+            // B: thickness 5 → local_t=5, ratio=1/5=0.2<1 (prunable tip).
+            // N1, N2: thickness 1 → local_t=1, ratio≈10>1 (survive as tips).
+            thickness: vec![5.0, 5.0, 5.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
         };
 
         let result = prune_branches(&mesh, &PruneOptions::default())
             .expect("jittered-vertex mesh should not error");
 
-        // Spike [3,4,5]: shared edge must be recognized as internal; spike has
-        // 2 boundary edges → tip; branch_length≈0.5, local_t≈4 → ratio≈0.125 <
-        // 1.0 → pruned.
+        // With quantised dedup: B's edges (v0,v1) and (v0,v2) each get
+        // incidence 2 → B has 1 boundary edge → NOT a tip → NOT pruned.
+        // N1 and N2 are tips but ratio ≈ 10 → also NOT pruned.
+        //
+        // Regression (bit-exact dedup): all 9 edges get incidence 1 → B has
+        // 3 boundary edges → IS tip, ratio 0.2 < 1.0 → B pruned; these
+        // assertions would fail (pruned_count=1, triangles.len()=2).
         assert_eq!(
-            result.metrics.pruned_triangle_count, 1,
-            "spike triangle must be pruned (shared-edge recognized via quantised dedup)"
+            result.metrics.pruned_triangle_count, 0,
+            "no triangle pruned: B is not a tip (1 boundary edge via quantised dedup), \
+             N1/N2 survive as tips with ratio≈10"
         );
-
-        // Body [0,1,2]: branch_length≈10, local_t=1.0 → ratio≈10 ≫ 1.0 → survives.
         assert_eq!(
-            result.mesh.triangles.len(), 1,
-            "body triangle must survive (ratio >> prune_ratio)"
+            result.mesh.triangles.len(), 3,
+            "all 3 triangles survive; len==2 would indicate B was wrongly \
+             classified as a tip (regression to bit-exact dedup)"
         );
 
         // Parallel-array invariant.
@@ -1491,7 +1521,7 @@ mod tests {
 
         assert!(
             result.metrics.converged,
-            "jittered-vertex fixture must converge naturally"
+            "fixture converges naturally (no pruning occurs)"
         );
     }
 }
