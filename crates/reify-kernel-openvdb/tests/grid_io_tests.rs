@@ -12,9 +12,11 @@
 /// 4. Re-opening the same file via `open_vdb_grid_for_test` gives an
 ///    active-voxel-count that matches the original exactly.
 ///
-/// **RED**: fails at step 5 because `read_vdb_file` currently returns
-/// `IngestError::FfiNotImplemented` instead of `Ok(IngestOutcome)`.
-/// Step-8 GREEN replaces the stub body with the real FFI read path.
+/// Regression guard: ensures the round-trip pipeline (write_vdb_grid →
+/// read_vdb_file → lower_to_sampled) preserves grid kind, densified-buffer
+/// presence, non-degenerate bounds, per-axis spacing, structural span/spacing
+/// alignment, and active-voxel count under the canonical isotropic FloatGrid
+/// contract.
 #[cfg(has_openvdb)]
 #[test]
 fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
@@ -78,9 +80,6 @@ fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
 
     // ---------------------------------------------------------------------------
     // Step 5: Read back via read_vdb_file.
-    //
-    // RED: this call currently returns Err(IngestError::FfiNotImplemented)
-    // and the test panics here. Step-8 GREEN replaces the stub body.
     // ---------------------------------------------------------------------------
     let path_str = vdb_path.to_str().expect("temp path must be valid UTF-8");
     let outcome = read_vdb_file(path_str, "level_set", &Type::Real)
@@ -244,11 +243,12 @@ fn slab_mesh() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
 /// the workspace-wide row-major-axis-0-outermost convention used by
 /// `interp::interpolate_3d` and `engine_eval::build_sampled_field`.
 ///
-/// **RED**: with the current `grid_densify_to_buffer` Z-outermost loop, the
-/// interior probe at (5, 5, 0.5) returns a saturated POSITIVE value because
-/// the buffer is read as X-outermost while it was filled Z-outermost — i.e.
-/// the X and Z indices are transposed. After step-12 swaps the C++ loop
-/// order, this test transitions GREEN.
+/// Regression guard: if `grid_densify_to_buffer` ever reverts to Z-outermost
+/// (or any non-X-outermost ordering), the interior probe at (5, 5, 0.5) is
+/// read at the buffer position implied by (X=0.5, Y=5, Z=5), which is well
+/// outside the slab's actual Z extent (~[−1, 2]) and produces a saturated
+/// POSITIVE band-limit value — flipping the sign of `interior.value` and
+/// failing the negative-SDF assertion below.
 #[cfg(has_openvdb)]
 #[test]
 fn vdb_round_trip_data_layout_is_axis0_x_outermost() {
