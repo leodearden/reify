@@ -1893,7 +1893,27 @@ fn dispatch_surface_angle(
         // Some mock kernels store the angle as an angle-dimensioned Scalar
         // — accept either form so the dispatch is kernel-implementation
         // agnostic (mirrors `kernel_distance`'s Real|Scalar leniency).
-        Ok(reify_types::Value::Scalar { si_value, .. }) => {
+        // Bind `dimension` (not `..`) so a wrong-dimensioned Scalar (e.g.
+        // LENGTH) is caught rather than silently reinterpreted as radians.
+        // Mirrors `resolve_point3_length_arg`'s tightened LENGTH check
+        // introduced in commit 8c464177db (task 2324): debug_assert FIRST,
+        // then if-fall-through in release. DIMENSIONLESS is accepted alongside
+        // ANGLE because some mock kernels store raw radian values without a
+        // dimension tag.
+        Ok(reify_types::Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            if dimension != reify_types::DimensionVector::ANGLE
+                && dimension != reify_types::DimensionVector::DIMENSIONLESS
+            {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{} kernel returned wrong-dimensioned Scalar \
+                     (dimension={:?}, si_value={}); treating as undefined",
+                    helper_name, dimension, si_value
+                )));
+                return Some(reify_types::Value::Undef);
+            }
             Some(reify_types::Value::angle(si_value))
         }
         Ok(other) => {
