@@ -594,6 +594,17 @@ impl ReifyToolContext for CliToolContext {
             engine.clear_param_overrides();
             engine.eval(&compiled);
             state.compiled = Some(compiled);
+        } else {
+            // parse failed or non-.ri file — compiled no longer reflects active_file.
+            // Clear it so get_diagnostics() / get_source_location() do not resolve
+            // byte-spans from a prior module against the new file's source
+            // (wrong line/column numbers).  Task 3183 review: the retain() added
+            // above prunes state.files to {abs_path}; without clearing compiled, a
+            // stale CompiledModule from the prior file would remain while state.files
+            // no longer contains that file's source — the same mismatch that
+            // update_source's parse-fail-no-mutation rule (lines ~409-416) prevents
+            // for inline edits.
+            state.compiled = None;
         }
 
         Ok(OpenFileInfo {
@@ -656,6 +667,8 @@ mod tests {
     const BRACKET_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
     const BRACKET_COMPILE_ERROR_PATH: &str =
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket_compile_error.ri");
+    const BRACKET_PARSE_ERROR_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket_parse_error.ri");
 
     /// Obviously-nonsense Reify source: a single top-level `{` with no matching
     /// close brace.  No token in the Reify grammar begins a top-level declaration
@@ -1717,6 +1730,60 @@ mod tests {
             err2_str.contains("bracket_compile_error.ri"),
             "error message must mention the prior bracket_compile_error.ri path; got: {:?}",
             err2
+        );
+    }
+
+    /// Regression: when `open_file` opens a parse-failing .ri file after a
+    /// successful prior load, `state.compiled` must be cleared — NOT left as a
+    /// stale pointer to the previous module.
+    ///
+    /// Pre-fix, the retain() added in task 3183 pruned `state.files` to the new
+    /// path but left `state.compiled` intact, so `get_diagnostics()` would attempt
+    /// to resolve byte-spans from the prior module against the new file's source —
+    /// producing wrong line/column numbers.  Setting `state.compiled = None` on the
+    /// non-pipeline path keeps (active_file, files, compiled) mutually consistent.
+    #[test]
+    fn open_file_parse_error_clears_compiled() {
+        let ctx = fresh_ctx();
+
+        // Open a valid .ri file so that state.compiled is populated.
+        ctx.open_file(BRACKET_PATH)
+            .expect("open_file should succeed for bracket.ri");
+
+        let open_files_1 = ctx.get_open_files().unwrap();
+        assert_eq!(
+            open_files_1.len(),
+            1,
+            "sanity: one file open after bracket.ri"
+        );
+
+        // Open a parse-failing .ri file — open_file should still succeed (the file
+        // is registered), but compiled must be cleared.
+        ctx.open_file(BRACKET_PARSE_ERROR_PATH)
+            .expect("open_file should succeed (registers file) for bracket_parse_error.ri");
+
+        let open_files_2 = ctx.get_open_files().unwrap();
+        assert_eq!(
+            open_files_2.len(),
+            1,
+            "one file open after bracket_parse_error.ri"
+        );
+        assert!(
+            open_files_2[0].path.ends_with("bracket_parse_error.ri"),
+            "active file must be bracket_parse_error.ri; got {:?}",
+            open_files_2[0].path
+        );
+
+        // Core assertion: get_diagnostics() must return an empty Vec — NOT
+        // diagnostics from the prior bracket.ri module resolved against
+        // bracket_parse_error.ri's source (which would produce wrong line/columns).
+        let diagnostics = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should succeed after open_file(parse_error.ri)");
+        assert!(
+            diagnostics.is_empty(),
+            "get_diagnostics() must be empty after opening a parse-failing .ri: \
+             compiled must be cleared to prevent stale-span resolution; got {diagnostics:?}"
         );
     }
 }
