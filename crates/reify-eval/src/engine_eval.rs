@@ -854,17 +854,33 @@ fn build_sampled_field(
     for i in 0..bounds_min.len() {
         match linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i]) {
             Ok(g) => axis_grids.push(g),
-            Err(LinspaceError::Excessive { .. }) | Err(LinspaceError::Overflow) => {
+            Err(LinspaceError::Excessive { n_intervals }) => {
                 push_invalid_config(
                     ctx,
                     format!(
-                        "sampled field '{name}': axis {i} requires too many grid nodes \
-                         (bounds_min={} bounds_max={} spacing={} exceeds the {} interval cap); \
+                        "sampled field '{name}': axis {i} requires {n_intervals} grid intervals, \
+                         exceeds the {} interval cap \
+                         (bounds_min={} bounds_max={} spacing={}); \
+                         reduce the span or increase the spacing",
+                        reify_types::sampled::LINSPACE_MAX_INTERVALS,
+                        bounds_min[i],
+                        bounds_max[i],
+                        spacing[i],
+                    ),
+                );
+                return None;
+            }
+            Err(LinspaceError::Overflow) => {
+                push_invalid_config(
+                    ctx,
+                    format!(
+                        "sampled field '{name}': axis {i} requires more intervals than usize \
+                         can represent \
+                         (bounds_min={} bounds_max={} spacing={}); \
                          reduce the span or increase the spacing",
                         bounds_min[i],
                         bounds_max[i],
                         spacing[i],
-                        reify_types::sampled::LINSPACE_MAX_INTERVALS,
                     ),
                 );
                 return None;
