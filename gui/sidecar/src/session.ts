@@ -11,6 +11,12 @@ export interface SessionConfig {
 }
 
 /**
+ * Diagnostic log prefix used by the proc.on('error') handler for non-ABORT spawn errors.
+ * Exported so tests can reference it without hardcoding the string literal.
+ */
+export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
+
+/**
  * Manages a Claude Code SDK session, dispatching inbound messages
  * and emitting outbound messages via the onOutput callback.
  *
@@ -177,7 +183,7 @@ export class SidecarSession {
     // Mirrors the orphan-stream-error convention used by proc.stdin?.on('error', ...) below.
     proc.on('error', (err: Error & { code?: string }) => {
       if (err.code !== 'ABORT_ERR') {
-        console.error('[sidecar] spawned claude error:', err);
+        console.error(SPAWN_ERROR_LOG_PREFIX, err);
       }
     });
 
