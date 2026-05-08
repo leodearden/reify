@@ -29,6 +29,52 @@ use crate::types::{InversionDetails, MetricsBreached};
 use reify_types::VolumeMesh;
 use std::f64::consts::SQRT_2;
 
+// ── Jacobian helpers ─────────────────────────────────────────────────────────
+
+/// Per-corner cyclic edge-index table for VERDICT-style scaled Jacobian.
+///
+/// At corner k, take edges to the other 3 corners in the order given by
+/// `CORNER_EDGE_INDICES[k]`. This ordering is chosen so that the determinant
+/// `det(e_a, e_b, e_c)` is positive for a right-handed (non-inverted) tet.
+///
+/// Verified on the canonical unit tet `(0,0,0),(1,0,0),(0,1,0),(0,0,1)`:
+/// each corner determinant = +1.
+const CORNER_EDGE_INDICES: [[usize; 3]; 4] = [
+    [1, 2, 3], // corner 0
+    [0, 3, 2], // corner 1
+    [0, 1, 3], // corner 2
+    [0, 2, 1], // corner 3
+];
+
+/// Compute the VERDICT-style per-element scaled Jacobian for a tetrahedron.
+///
+/// At each of the 4 corners k, the formula is
+/// `scaled_J_k = det(e_a, e_b, e_c) * sqrt(2) / (||e_a|| * ||e_b|| * ||e_c||)`
+/// where `(a, b, c)` are the edge indices from [`CORNER_EDGE_INDICES`].
+/// Returns the minimum over all 4 corners (initialised to `f64::INFINITY`).
+///
+/// Returns 0.0 for a degenerate corner (zero-length edge product).
+fn element_scaled_jacobian(nodes: &[[f64; 3]; 4]) -> f64 {
+    let mut min_j = f64::INFINITY;
+    for k in 0..4 {
+        let [a, b, c] = CORNER_EDGE_INDICES[k];
+        let ea = sub(nodes[a], nodes[k]);
+        let eb = sub(nodes[b], nodes[k]);
+        let ec = sub(nodes[c], nodes[k]);
+        let det = dot(ea, cross(eb, ec));
+        let product = norm(ea) * norm(eb) * norm(ec);
+        let sj = if product > 0.0 {
+            det * SQRT_2 / product
+        } else {
+            0.0
+        };
+        if sj < min_j {
+            min_j = sj;
+        }
+    }
+    min_j
+}
+
 // ── Geometry helpers ─────────────────────────────────────────────────────────
 
 #[inline]
@@ -92,12 +138,12 @@ pub fn quality_check(
     options: &MorphOptions,
 ) -> QualityVerdict {
     let _ = source;
-    let _ = options;
 
     let vertex_count = morphed.vertices.len() / 3;
 
-    // First pass: scan morphed mesh for inversions.
+    // Single pass over morphed elements: track inversions and soft-fail metrics.
     let mut hard_fail: Option<InversionDetails> = None;
+    let mut global_min_scaled_j = f64::INFINITY;
 
     for (elem_idx, chunk) in morphed.tet_indices.chunks_exact(4).enumerate() {
         // Read 4 corner positions, widening f32 → f64 at the read boundary.
@@ -121,25 +167,18 @@ pub fn quality_check(
             ]
         });
 
-        // Corner-0 Jacobian det = (p1-p0) · ((p2-p0) × (p3-p0)).
-        let e1 = sub(p[1], p[0]);
-        let e2 = sub(p[2], p[0]);
-        let e3 = sub(p[3], p[0]);
-        let det = dot(e1, cross(e2, e3));
+        // Use element_scaled_jacobian (per-element min over 4 corners).
+        let sj = element_scaled_jacobian(&p);
+        if sj < global_min_scaled_j {
+            global_min_scaled_j = sj;
+        }
 
-        if det < 0.0 {
-            // Compute corner-0 scaled Jacobian as a placeholder.
-            let product = norm(e1) * norm(e2) * norm(e3);
-            let jacobian = if product > 0.0 {
-                det * SQRT_2 / product
-            } else {
-                0.0
-            };
-            // First inverted element wins.
+        if sj < 0.0 {
+            // First inverted element wins for HardFail.
             if hard_fail.is_none() {
                 hard_fail = Some(InversionDetails {
                     element_index: elem_idx,
-                    jacobian,
+                    jacobian: sj,
                 });
             }
         }
@@ -149,7 +188,29 @@ pub fn quality_check(
         return QualityVerdict::HardFail(details);
     }
 
-    QualityVerdict::Pass
+    // No inversions — evaluate soft-fail thresholds.
+    let min_scaled_jacobian = if global_min_scaled_j.is_finite()
+        && global_min_scaled_j < options.quality_floor_min_scaled_jacobian
+    {
+        Some(global_min_scaled_j)
+    } else {
+        None
+    };
+
+    let metrics = MetricsBreached {
+        min_scaled_jacobian,
+        pct_below_025: None,
+        max_aspect_ratio_increase: None,
+    };
+
+    if metrics.min_scaled_jacobian.is_some()
+        || metrics.pct_below_025.is_some()
+        || metrics.max_aspect_ratio_increase.is_some()
+    {
+        QualityVerdict::SoftFail(metrics)
+    } else {
+        QualityVerdict::Pass
+    }
 }
 
 #[cfg(test)]
