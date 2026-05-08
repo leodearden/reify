@@ -615,7 +615,18 @@ mod tests {
             normals: None,
         };
 
-        let opts = MorphOptions::default(); // quality_aspect_ratio_increase_max = 2.0
+        // Disable min_scaled_jacobian and pct_below_025 checks so this test
+        // isolates the aspect-ratio-increase threshold.
+        //
+        // The morphed tet (node 3 at z=5) has scaled J ≈ 0.054 at corner 3
+        // (far from the base plane), which would trip the 0.15 floor if left
+        // at default. Setting floor to 0.0 means only a strictly-negative
+        // observed J fires (impossible for a non-inverted tet that reaches
+        // the SoftFail branch). pct threshold > 1.0 is also unreachable.
+        let mut opts = MorphOptions::default();
+        opts.quality_floor_min_scaled_jacobian = 0.0;
+        opts.quality_floor_pct_below_025 = 1.01;
+        // quality_aspect_ratio_increase_max stays at 2.0 (default).
 
         let result = quality_check(&morphed, &source, &opts);
         match &result {
