@@ -40,8 +40,18 @@ use serde::{Deserialize, Serialize};
 /// accompanied by a bump of this constant in the same commit; otherwise cache
 /// entries written under the previous `bincode` major will silently decode as
 /// garbage. The same logic applies to `zstd`'s frame-format major (currently
-/// the 0.13.x line). Pinned by `elastic_result_format_version_is_one`.
+/// the 0.13.x line). Cross-checked by `elastic_result_format_version_is_one`,
+/// which forces any FORMAT_VERSION bump to be deliberate; the bincode/zstd
+/// major is held by the `=1.3` / `0.13` pins in `Cargo.toml`.
 const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
+
+// Compile-time sentinel: `bincode::ErrorKind` is part of the public bincode
+// 1.x API but does not exist in bincode 2.x (which ships an entirely different
+// error model). If the `=1.3` pin in `Cargo.toml` is ever relaxed past the
+// 1.x major and the resolver picks up a 2.x release, this alias will fail to
+// compile — a secondary tripwire alongside the doc-level contract above.
+#[allow(dead_code)]
+type _BincodeV1Sentinel = bincode::ErrorKind;
 
 /// Upper bound on `Vec<f64>` length accepted from a serialized header during
 /// [`ElasticResult::deserialize_from_reader`]. A corrupted or tampered cache
