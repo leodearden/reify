@@ -11,7 +11,7 @@
 
 use reify_eval::selector_vocabulary_v2::{
     Axis, ExtremalSense, complement, edges_perpendicular_to, except, extremal_by_bbox,
-    faces_perpendicular_to, intersect, union,
+    extremal_by_centroid, faces_perpendicular_to, intersect, union,
 };
 use reify_test_support::MockGeometryKernel;
 use reify_types::{GeometryHandleId, QueryError, Value};
@@ -571,6 +571,124 @@ fn extremal_by_bbox_empty_candidates_returns_empty() {
     let candidates: Vec<GeometryHandleId> = vec![];
     let result = extremal_by_bbox(&mut kernel, &candidates, Axis::Z, ExtremalSense::Max, 1e-6)
         .expect("extremal_by_bbox on empty candidates should succeed");
+    assert!(
+        result.is_empty(),
+        "empty candidate slice yields empty cluster"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// extremal_by_centroid — `>>axis` extremal selector by Centroid (PRD line 77)
+//
+// Centroid-based counterpart of `extremal_by_bbox`. Differs from the
+// bbox version on non-flat faces: the centroid of a curved face can lie
+// inside the bbox interior even though the bbox extent reaches further.
+// PRD lines 76-77 list `>` (by-bounds) and `>>` (by-center) as distinct
+// selectors precisely to cover this divergence.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Helper to format a centroid JSON payload in the kernel's canonical
+/// `{"x":..,"y":..,"z":..}` encoding.
+fn xyz_json(p: [f64; 3]) -> Value {
+    Value::String(format!(
+        "{{\"x\":{},\"y\":{},\"z\":{}}}",
+        p[0], p[1], p[2]
+    ))
+}
+
+#[test]
+fn extremal_by_centroid_unique_max_along_y_returns_single_face() {
+    // Stage four faces with centroid Y values 0.0, 5e-3, 5e-3, 10e-3.
+    // With Axis::Y / Max / tol=1e-6 the unique top is the 10e-3 face.
+    let f1 = GeometryHandleId(2);
+    let f2 = GeometryHandleId(3);
+    let f3 = GeometryHandleId(4);
+    let f4 = GeometryHandleId(5);
+    let candidates = vec![f1, f2, f3, f4];
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_centroid_result(f1, xyz_json([0.0, 0.0, 0.0]))
+        .with_centroid_result(f2, xyz_json([0.0, 0.005, 0.0]))
+        .with_centroid_result(f3, xyz_json([0.0, 0.005, 0.0]))
+        .with_centroid_result(f4, xyz_json([0.0, 0.010, 0.0]));
+
+    let result =
+        extremal_by_centroid(&mut kernel, &candidates, Axis::Y, ExtremalSense::Max, 1e-6)
+            .expect("extremal_by_centroid should succeed for unique max");
+    assert_eq!(
+        result,
+        vec![f4],
+        "unique centroid-y max (tol=1e-6) is the 10e-3 face"
+    );
+}
+
+#[test]
+fn extremal_by_centroid_min_sense_returns_tied_cluster_in_input_order() {
+    // Stage four faces with centroid Y values 0.0, 5e-3, 5e-3, 10e-3.
+    // With Min sense and tol=1e-3 the cluster around the global min (0.0)
+    // captures both 0.0 and 5e-3 (their absolute difference is 5e-3 ≪ 1e-3? NO).
+    // Re-check: |0.005 - 0.0| = 5e-3 > 1e-3 → 5e-3 is OUT. Reset fixture.
+    //
+    // Use centroid Y values 0.0, 5e-4, 5e-4, 10e-3 so the cluster around
+    // the global min (0.0) at tol=1e-3 captures both 0.0 and 5e-4 (twice).
+    // Dedup-on-first-seen yields [f1, f2] (the two distinct handles whose
+    // centroid Y is within 1e-3 of 0.0), in input order.
+    let f1 = GeometryHandleId(2);
+    let f2 = GeometryHandleId(3);
+    let f3 = GeometryHandleId(4);
+    let f4 = GeometryHandleId(5);
+    let candidates = vec![f1, f2, f3, f4];
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_centroid_result(f1, xyz_json([0.0, 0.0, 0.0]))
+        .with_centroid_result(f2, xyz_json([0.0, 0.0005, 0.0]))
+        .with_centroid_result(f3, xyz_json([0.0, 0.0005, 0.0]))
+        .with_centroid_result(f4, xyz_json([0.0, 0.010, 0.0]));
+
+    let result =
+        extremal_by_centroid(&mut kernel, &candidates, Axis::Y, ExtremalSense::Min, 1e-3)
+            .expect("extremal_by_centroid should succeed for tie cluster");
+    assert_eq!(
+        result,
+        vec![f1, f2, f3],
+        "Min cluster (tol=1e-3 around 0.0) captures the three near-zero faces in input order"
+    );
+}
+
+#[test]
+fn extremal_by_centroid_distinguishes_by_axis() {
+    // Two faces whose centroids tie on Y but differ on X — Axis::X must
+    // pick the larger-X face; Axis::Y must return both as a tie cluster.
+    let f1 = GeometryHandleId(2);
+    let f2 = GeometryHandleId(3);
+    let candidates = vec![f1, f2];
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_centroid_result(f1, xyz_json([0.0, 0.005, 0.0]))
+        .with_centroid_result(f2, xyz_json([0.010, 0.005, 0.0]));
+
+    let max_x =
+        extremal_by_centroid(&mut kernel, &candidates, Axis::X, ExtremalSense::Max, 1e-6)
+            .expect("extremal_by_centroid X/Max should succeed");
+    assert_eq!(max_x, vec![f2], "Max along X picks the f2 (x=0.010)");
+
+    let max_y =
+        extremal_by_centroid(&mut kernel, &candidates, Axis::Y, ExtremalSense::Max, 1e-6)
+            .expect("extremal_by_centroid Y/Max should succeed");
+    assert_eq!(
+        max_y,
+        vec![f1, f2],
+        "tied Y centroids both qualify as the global max in input order"
+    );
+}
+
+#[test]
+fn extremal_by_centroid_empty_candidates_returns_empty() {
+    let mut kernel = MockGeometryKernel::new();
+    let candidates: Vec<GeometryHandleId> = vec![];
+    let result =
+        extremal_by_centroid(&mut kernel, &candidates, Axis::Z, ExtremalSense::Max, 1e-6)
+            .expect("extremal_by_centroid on empty candidates should succeed");
     assert!(
         result.is_empty(),
         "empty candidate slice yields empty cluster"
