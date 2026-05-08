@@ -394,9 +394,10 @@ pub(crate) fn compile_expr_guarded(
             } else if value.is_finite() && *value == (*value as i64) as f64 {
                 CompiledExpr::literal(Value::Int(*value as i64), Type::Int)
             } else {
-                // Defensive: a non-real-flagged literal whose f64 isn't a clean
-                // integer (overflow / NaN / infinity from a parser edge case).
-                // This branch is unreachable for grammar-conforming input.
+                // Reached when an integer-form token's f64 value isn't a clean i64
+                // (overflow past 2^63, e.g. `100000000000000000000`, or NaN/Inf from
+                // a hypothetical parser edge case). Falls back to Real to avoid a
+                // saturated `as i64` cast.
                 CompiledExpr::literal(Value::Real(*value), Type::Real)
             }
         }

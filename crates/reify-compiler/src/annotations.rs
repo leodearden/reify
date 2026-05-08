@@ -14,10 +14,19 @@ pub(crate) fn lower_annotations(
                 .filter_map(|expr| {
                     use reify_syntax::ExprKind;
                     match &expr.kind {
-                        ExprKind::NumberLiteral { value, .. } => {
-                            if *value == value.floor() && value.abs() < i64::MAX as f64 {
+                        ExprKind::NumberLiteral { value, is_real } => {
+                            // Mirror the same Int/Real classification used in expr.rs:
+                            // the AST `is_real` flag (set by the parser when the token
+                            // contains `.`, `e`, or `E`) drives the branch; the overflow
+                            // guard only applies for bare-integer tokens whose f64 value
+                            // isn't a clean i64 (e.g. `100000000000000000000`).
+                            if *is_real {
+                                Some(reify_types::AnnotationArg::Real(*value))
+                            } else if value.is_finite() && *value == (*value as i64) as f64 {
                                 Some(reify_types::AnnotationArg::Int(*value as i64))
                             } else {
+                                // Integer-form token whose f64 isn't a clean i64 (overflow
+                                // past 2^63). Falls back to Real to avoid a saturated cast.
                                 Some(reify_types::AnnotationArg::Real(*value))
                             }
                         }

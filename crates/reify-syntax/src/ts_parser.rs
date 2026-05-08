@@ -2420,6 +2420,11 @@ impl<'a> Lowering<'a> {
     fn lower_number_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let text = self.node_text(node);
         let value: f64 = text.parse().ok()?;
+        // Classify as Real when the token contains the fractional or exponent part of
+        // the grammar's `number_literal` rule: `\d+(\.\d+)?([eE][+-]?\d+)?`
+        // (tree-sitter-reify/grammar.js).  This scan must stay in sync with that regex —
+        // if the grammar gains new number-literal forms (e.g. hex floats, `_` separators),
+        // update both the grammar and this classification.
         let is_real = text.contains('.') || text.contains('e') || text.contains('E');
         Some(Expr {
             kind: ExprKind::NumberLiteral { value, is_real },
