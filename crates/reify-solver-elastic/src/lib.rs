@@ -3,9 +3,10 @@
 //! # PRD reference
 //!
 //! `docs/prds/v0_3/structural-analysis-fea.md` task #7. This crate ships
-//! the reference-element primitives (P1 and P2 tetrahedra: shape functions,
-//! gradients, Gauss quadrature, reference→physical Jacobian) used by the
-//! later assembly/CG/etc. tasks (PRD tasks #8–#15).
+//! the reference-element primitives (P1/P2 tetrahedra and P1 hex: shape
+//! functions, gradients, Gauss quadrature, reference→physical Jacobian)
+//! used by the later assembly/CG/etc. tasks (PRD tasks #8–#15).
+//! P1 hex shipped per `docs/prds/v0_3/hex-wedge-meshing.md` task #2.
 //!
 //! # v0.3 scope
 //!
@@ -27,7 +28,7 @@
 //!
 //! ```
 //! use reify_solver_elastic::{
-//!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2,
+//!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2, HexP1,
 //!     Mitc3Plus, ShellReferenceCoord, TyingPoint,
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
 //!     IsotropicElastic,
@@ -37,8 +38,11 @@
 //!
 //! let _: TetP1 = TetP1;
 //! let _: TetP2 = TetP2;
+//! let _: HexP1 = HexP1;
 //! assert_eq!(<TetP1 as ReferenceElement>::N_NODES, 4);
 //! assert_eq!(<TetP2 as ReferenceElement>::N_NODES, 10);
+//! assert_eq!(<HexP1 as ReferenceElement>::N_NODES, 8);
+//! assert_eq!(HexP1.quad_points().len(), 8);
 //! let _ = QuadraturePoint {
 //!     coord: ReferenceCoord::new(0.25, 0.25, 0.25),
 //!     weight: 1.0 / 6.0,
@@ -104,7 +108,8 @@ pub use assembly::{
 };
 pub use constitutive::IsotropicElastic;
 pub use elements::{
-    Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, tet_p1::TetP1, tet_p2::TetP2,
+    Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
+    tet_p1::TetP1, tet_p2::TetP2, hex_p1::HexP1,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
 };
 pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
