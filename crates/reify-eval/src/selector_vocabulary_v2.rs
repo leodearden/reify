@@ -922,3 +922,44 @@ pub fn siblings_of_face<K: GeometryKernel + ?Sized>(
     }
     Ok(except(&faces, &[face_handle]))
 }
+
+/// Recover the parent body handle of a sub-shape produced by
+/// [`reify_types::GeometryKernel::extract_edges`] /
+/// [`reify_types::GeometryKernel::extract_faces`].
+///
+/// Implements PRD line 81's `owner_body(sub)` topological walk. The
+/// kernel records the parent on every `extract_*` call (the OCCT kernel
+/// keeps a `parent_handle` map; the mock kernel routes through
+/// `with_owner_body_result`), so any sub-handle can answer "what solid
+/// did I come from?" without re-extraction.
+///
+/// Pure read — takes `&K` rather than `&mut K`. No allocation, no
+/// extra-call: a single [`GeometryQuery::OwnerBody`] dispatch.
+///
+/// # Errors
+///
+/// - Propagates any error from the `OwnerBody` query (in particular,
+///   the OCCT kernel returns `QueryError::QueryFailed("owner_body: …
+///   has no recorded parent …")` when the handle was not produced by
+///   `extract_edges` / `extract_faces`).
+/// - Returns `QueryError::QueryFailed` on a malformed `OwnerBody`
+///   payload (non-`Value::Int`, or a negative integer).
+pub fn owner_body_of<K: GeometryKernel + ?Sized>(
+    kernel: &K,
+    sub_handle: GeometryHandleId,
+) -> Result<GeometryHandleId, QueryError> {
+    let value = kernel.query(&GeometryQuery::OwnerBody(sub_handle))?;
+    match value {
+        Value::Int(i) => {
+            let parent_id_u64: u64 = i.try_into().map_err(|_| {
+                QueryError::QueryFailed(format!(
+                    "owner_body_of: kernel returned negative parent id {i}"
+                ))
+            })?;
+            Ok(GeometryHandleId(parent_id_u64))
+        }
+        other => Err(QueryError::QueryFailed(format!(
+            "owner_body_of: expected Value::Int from OwnerBody, got {other:?}"
+        ))),
+    }
+}

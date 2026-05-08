@@ -525,6 +525,10 @@ enum QueryKey {
     FaceSurfaceKind(GeometryHandleId),
     /// EdgeCurveKind keys the (single) edge handle.
     EdgeCurveKind(GeometryHandleId),
+    /// OwnerBody keys the (single) child sub-handle (the `extract_*`
+    /// product). The stored `Value` should be a `Value::Int` carrying the
+    /// parent body's `GeometryHandleId.0`.
+    OwnerBody(GeometryHandleId),
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -622,6 +626,9 @@ impl QueryKey {
             // hashed by handle alone (no extra params).
             GeometryQuery::FaceSurfaceKind(id) => QueryKey::FaceSurfaceKind(*id),
             GeometryQuery::EdgeCurveKind(id) => QueryKey::EdgeCurveKind(*id),
+            // Owner-body provenance from task 2658 (PRD line 81); hashed by
+            // the child sub-handle alone.
+            GeometryQuery::OwnerBody(id) => QueryKey::OwnerBody(*id),
         }
     }
 }
@@ -945,6 +952,45 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure an `OwnerBody` query result for a specific child sub-handle,
+    /// using the canonical encoding `Value::Int(parent.0 as i64)`.
+    ///
+    /// Pre-stages the answer that the OCCT kernel produces by recording a
+    /// `parent_handle: HashMap<…>` entry inside `extract_edges` /
+    /// `extract_faces`. Decoded by the
+    /// `selector_vocabulary_v2::owner_body_of` selector via a `Value::Int`
+    /// → `GeometryHandleId` round-trip.
+    ///
+    /// For tests that need to stage a non-`Value::Int` payload (e.g. the
+    /// defence-in-depth "expected Value::Int, got …" branch of the
+    /// selector), use [`Self::with_owner_body_value`] instead.
+    pub fn with_owner_body_result(
+        mut self,
+        child: GeometryHandleId,
+        parent: GeometryHandleId,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::OwnerBody(child),
+            Value::Int(parent.0 as i64),
+        );
+        self
+    }
+
+    /// Lower-level variant of [`Self::with_owner_body_result`] — stage a raw
+    /// [`Value`] for an `OwnerBody` query keyed by the child handle.
+    ///
+    /// Mainly useful for defence-in-depth tests asserting the selector
+    /// returns `QueryError::QueryFailed` on a non-`Value::Int` payload
+    /// (e.g. a `Value::String` from a hypothetical future kernel).
+    pub fn with_owner_body_value(
+        mut self,
+        child: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(QueryKey::OwnerBody(child), value);
+        self
+    }
+
     /// Get the operations received so far.
     pub fn operations(&self) -> Vec<GeometryOpRecord> {
         self.operations.lock().unwrap().clone()
@@ -1020,6 +1066,18 @@ impl GeometryKernel for MockGeometryKernel {
             return Ok(value.clone());
         }
 
+        // OwnerBody is special: an unstaged child handle has no recorded
+        // parent, and we mirror the OcctKernel error shape so the v2
+        // selector vocabulary can match on a stable diagnostic regardless
+        // of which kernel is in play (mock or OCCT). Without this short
+        // circuit, the generic fallback below would return a "no mock
+        // result for …" message that the test contract does not match.
+        if let GeometryQuery::OwnerBody(id) = query {
+            return Err(QueryError::QueryFailed(format!(
+                "owner_body: handle {id:?} has no recorded parent (was extract_edges / extract_faces called?)"
+            )));
+        }
+
         // Fall back to generic handle-only map
         let handle_id = match query {
             GeometryQuery::Volume(id) => id,
@@ -1041,6 +1099,11 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::FaceNormal(id) => id,
             GeometryQuery::FaceSurfaceKind(id) => id,
             GeometryQuery::EdgeCurveKind(id) => id,
+            // OwnerBody is handled above the generic fallback because its
+            // miss path produces a domain-specific error message. The
+            // exhaustiveness guard retains this arm so a future kernel
+            // change is forced to revisit the dispatch table.
+            GeometryQuery::OwnerBody(id) => id,
         };
 
         self.queries
