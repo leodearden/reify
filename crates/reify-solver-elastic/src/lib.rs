@@ -32,6 +32,7 @@
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
 //!     IsotropicElastic,
 //!     ShellStress,
+//!     ShellElementStress, shell_element_frame, shell_element_stress,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -68,6 +69,20 @@
 //! assert_eq!(ss.top, field, "homogeneous: top must equal input");
 //! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
 //! assert_eq!(ss.bottom, field, "homogeneous: bottom must equal input");
+//!
+//! // T7 smoke tests: shell_element_frame orthonormality + shell_element_stress zero-DOF regression.
+//! let frame_mat: [[f64; 3]; 3] = shell_element_frame(&nodes);
+//! // Each row of the local-to-global rotation matrix must have unit norm.
+//! let row0_norm_sq = frame_mat[0][0]*frame_mat[0][0]
+//!     + frame_mat[0][1]*frame_mat[0][1]
+//!     + frame_mat[0][2]*frame_mat[0][2];
+//! assert!((row0_norm_sq - 1.0).abs() < 1e-12,
+//!     "frame_mat row 0 norm² = {row0_norm_sq}, expected 1.0");
+//! // Zero DOFs → all stress components must be exactly 0.0 (regression guard).
+//! let ses: ShellElementStress = shell_element_stress(&nodes, 0.05, &mat, &[0.0_f64; 18]);
+//! assert_eq!(ses.top[0][0], 0.0, "zero-DOF top σ_xx must be 0.0");
+//! assert_eq!(ses.mid[0][0], 0.0, "zero-DOF mid σ_xx must be 0.0");
+//! assert_eq!(ses.bottom[0][0], 0.0, "zero-DOF bottom σ_xx must be 0.0");
 //! ```
 
 pub mod assembly;
