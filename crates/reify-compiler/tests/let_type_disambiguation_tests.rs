@@ -313,15 +313,15 @@ structure S : HasX {
 
 /// Pins the Int→Real widening carve-out that justifies `type_compatible`
 /// (rather than `implicitly_converts_to`) at the annotation cross-check site
-/// in `conformance.rs` — see the in-code comment near that call (~line 508-518).
+/// in `conformance.rs` — see the in-code comment near that call.
 ///
-/// Rationale: whole-number literals like `5.0` / `42` are parsed as `Int`
-/// (documented parser quirk, `reify-parser/src/literals.rs`). Without the
-/// widening carve-out, `let x : Real = 42` would emit a spurious type-mismatch
-/// diagnostic even though Int values are usable wherever Real is expected.
+/// Rationale: integer-form literals (no `.`/`e`/`E` in source text) lower as
+/// `Type::Int` (see `expr.rs:388-395`). Without the widening carve-out,
+/// `let x : Real = 42` would emit a spurious type-mismatch diagnostic even
+/// though Int values are usable wherever Real is expected.
 ///
 /// The neighbouring mismatch test (`annotated_let_expr_type_mismatch_emits_diagnostic`)
-/// relies on both the parser quirk AND the Length/Real cross-dimension
+/// relies on both the Int-lowering behaviour AND the Length/Real cross-dimension
 /// incompatibility to trigger; it does not exercise the widening relation.
 /// The happy-path test (`annotated_let_injected_cell_uses_annotation_type`)
 /// uses `5mm` (already Scalar<Length>) which similarly bypasses widening.
