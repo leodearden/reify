@@ -1270,4 +1270,74 @@ mod tests {
             result.metrics.min_angle_degrees
         );
     }
+
+    // ── task-3194 step-1: subnormal merge_tolerance rejection ─────────────────
+
+    /// `mesh_mid_surface` rejects subnormal `merge_tolerance` values where
+    /// `1.0 / merge_tolerance` overflows to `+inf`.
+    ///
+    /// Subnormal (denormal) positive values pass the current `> 0.0 &&
+    /// is_finite()` gate but produce `inv_tol = +inf` in `dedup_vertices`,
+    /// which makes every bin key saturate to `i64::MIN` or `i64::MAX` —
+    /// silently collapsing all vertices into two boundary bins regardless of
+    /// their actual positions.
+    ///
+    /// Test values chosen:
+    /// - `f64::MIN_POSITIVE / 4.0` = `2^-1024`: a subnormal where
+    ///   `1.0 / x = 2^1024 > f64::MAX` → overflows to `+inf`.
+    /// - `5e-324`: the smallest positive denormal (`2^-1074`); reciprocal
+    ///   is `2^1074 ≫ f64::MAX` → `+inf`.
+    #[test]
+    fn mesh_mid_surface_rejects_subnormal_merge_tolerance() {
+        let empty = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+
+        // `f64::MIN_POSITIVE / 4.0` = 2^-1024 — subnormal, 1/x overflows to +inf.
+        let subnormal_a = f64::MIN_POSITIVE / 4.0;
+        assert!(!subnormal_a.is_subnormal() || subnormal_a.is_sign_positive(),
+            "test setup: subnormal_a should be a positive subnormal");
+        assert!(
+            !( 1.0_f64 / subnormal_a ).is_finite(),
+            "test setup: 1.0 / subnormal_a must be +inf for this test to be meaningful"
+        );
+        let err = mesh_mid_surface(
+            &empty,
+            &MesherOptions { merge_tolerance: subnormal_a, ..MesherOptions::default() },
+        )
+        .expect_err("subnormal merge_tolerance (f64::MIN_POSITIVE/4) must be rejected");
+        assert!(
+            matches!(err, MesherError::InvalidMergeTolerance { value } if value == subnormal_a),
+            "expected InvalidMergeTolerance({subnormal_a}), got {err:?}"
+        );
+
+        // `5e-324` ≈ 2^-1074 — the smallest positive denormal; reciprocal is +inf.
+        let subnormal_b = 5e-324_f64;
+        assert!(
+            !( 1.0_f64 / subnormal_b ).is_finite(),
+            "test setup: 1.0 / 5e-324 must be +inf"
+        );
+        let err2 = mesh_mid_surface(
+            &empty,
+            &MesherOptions { merge_tolerance: subnormal_b, ..MesherOptions::default() },
+        )
+        .expect_err("subnormal merge_tolerance (5e-324) must be rejected");
+        assert!(
+            matches!(err2, MesherError::InvalidMergeTolerance { value } if value == subnormal_b),
+            "expected InvalidMergeTolerance(5e-324), got {err2:?}"
+        );
+
+        // `f64::MIN_POSITIVE` itself must still be ACCEPTED (its reciprocal is finite).
+        assert!(
+            ( 1.0_f64 / f64::MIN_POSITIVE ).is_finite(),
+            "test setup: 1.0 / f64::MIN_POSITIVE must be finite"
+        );
+        mesh_mid_surface(
+            &empty,
+            &MesherOptions { merge_tolerance: f64::MIN_POSITIVE, ..MesherOptions::default() },
+        )
+        .expect("f64::MIN_POSITIVE is the smallest normal positive — must still be accepted");
+    }
 }
