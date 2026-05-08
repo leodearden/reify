@@ -1652,6 +1652,48 @@ mod tests {
         }
     }
 
+    /// Contract test: `precompute_gradient_grid` must return a flat Vec
+    /// whose entry at `i*ny*nz + j*nz + k` equals
+    /// `gradient_at_index(sdf, [i, j, k])` exactly (bit-for-bit, not
+    /// approximately).
+    ///
+    /// **Why exact equality?** The cache MUST be a faithful precomputation,
+    /// not a numerically-different approximation. If the cached gradient
+    /// differs from the inline `gradient_at_index` call — even by a single
+    /// ULP — the parallel medial-mask impl would make different
+    /// inclusion/exclusion decisions than the serial reference, silently
+    /// changing the medial mask. The helper is a verbatim hoist of the
+    /// same computation, so exact `==` is the correct invariant.
+    #[test]
+    fn precompute_gradient_grid_matches_gradient_at_index_on_slab() {
+        let n = 16usize;
+        let sdf = slab_sdf_3d(3.0, n);
+        let ny = sdf.axis_grids[1].len();
+        let nz = sdf.axis_grids[2].len();
+
+        let grid = precompute_gradient_grid(&sdf);
+
+        assert_eq!(
+            grid.len(),
+            n * ny * nz,
+            "gradient grid length must be nx*ny*nz"
+        );
+
+        for i in 0..n {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let expected = gradient_at_index(&sdf, [i, j, k]);
+                    let got = grid[i * ny * nz + j * nz + k];
+                    assert_eq!(
+                        got, expected,
+                        "gradient mismatch at ({i},{j},{k}): \
+                         cache={got:?}, inline={expected:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// RED — inverted bounds on axis 0 (`bounds_min > bounds_max`)
     /// must return `InvalidAxisGeometry`. The `world_at_index` and
     /// `sample_at_world` helpers produce geometrically nonsensical
