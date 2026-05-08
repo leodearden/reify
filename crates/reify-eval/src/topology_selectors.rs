@@ -94,7 +94,7 @@ fn check_query_many_len(
 /// kernel and is callable from `&self`/`&K` contexts. Callers that hold
 /// `&mut K` (needed for the preceding `extract_edges`/`extract_faces` call)
 /// compile unchanged because `&mut K` coerces to `&K` automatically.
-fn query_per_subshape<K: GeometryKernel + ?Sized, F>(
+pub(crate) fn query_per_subshape<K: GeometryKernel + ?Sized, F>(
     kernel: &K,
     ids: &[GeometryHandleId],
     selector: &'static str,
@@ -122,7 +122,7 @@ where
 ///
 /// `id` is supplied so predicate-side error messages can name the offending
 /// sub-shape; predicates that don't need it may use `_id`.
-fn filter_by_value<K, Q, F>(
+pub(crate) fn filter_by_value<K, Q, F>(
     kernel: &K,
     ids: &[GeometryHandleId],
     selector_label: &'static str,
@@ -334,7 +334,7 @@ pub fn faces_by_area_with_tags<K: GeometryKernel + ?Sized>(
 ///
 /// Returns `QueryError::QueryFailed` on any deviation from the expected
 /// shape (non-string Value, malformed JSON, missing numeric fields).
-fn parse_xyz_value(value: &Value, query_label: &str) -> Result<[f64; 3], QueryError> {
+pub(crate) fn parse_xyz_value(value: &Value, query_label: &str) -> Result<[f64; 3], QueryError> {
     let s = match value {
         Value::String(s) => s,
         other => {
@@ -358,7 +358,7 @@ fn parse_xyz_value(value: &Value, query_label: &str) -> Result<[f64; 3], QueryEr
 /// into `[x, y, z]`. Returns `None` on any structural deviation. Used
 /// internally by the filter selectors to read the kernel's Point3 JSON
 /// without taking on a serde_json dependency.
-fn parse_xyz_json(s: &str) -> Option<[f64; 3]> {
+pub(crate) fn parse_xyz_json(s: &str) -> Option<[f64; 3]> {
     let mut x: Option<f64> = None;
     let mut y: Option<f64> = None;
     let mut z: Option<f64> = None;
@@ -390,7 +390,7 @@ fn parse_xyz_json(s: &str) -> Option<[f64; 3]> {
 /// missing colon between key and value, or a value that fails to parse
 /// as `f64`. The kernel never emits nested objects or string values for
 /// the payloads consumed here, so a naive comma-split is safe.
-fn parse_flat_number_object<F>(s: &str, mut on_pair: F) -> Option<()>
+pub(crate) fn parse_flat_number_object<F>(s: &str, mut on_pair: F) -> Option<()>
 where
     F: FnMut(&str, f64) -> bool,
 {
@@ -417,7 +417,7 @@ where
 /// The `!mag.is_finite()` guard rejects NaN and ±∞ inputs before they
 /// poison downstream `acos` / `clamp` arithmetic — `mag < f64::EPSILON`
 /// alone does not catch NaN (any comparison with NaN is false).
-fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
+pub(crate) fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
     let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if !mag.is_finite() || mag < f64::EPSILON {
         return None;
@@ -426,7 +426,7 @@ fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
 }
 
 /// Dot product of two 3-vectors.
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+pub(crate) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
@@ -762,7 +762,7 @@ pub fn resolve_unique_by_tag(
 ///
 /// Returns `QueryError::QueryFailed` on any deviation from the expected
 /// shape (non-string Value, malformed JSON, missing zmin/zmax fields).
-fn parse_bbox_z_extents(value: &Value) -> Result<(f64, f64), QueryError> {
+pub(crate) fn parse_bbox_z_extents(value: &Value) -> Result<(f64, f64), QueryError> {
     let s = match value {
         Value::String(s) => s,
         other => {
@@ -781,7 +781,7 @@ fn parse_bbox_z_extents(value: &Value) -> Result<(f64, f64), QueryError> {
 /// Parse `{"xmin":NUMBER,...,"zmax":NUMBER}` (with arbitrary whitespace)
 /// for the `zmin` and `zmax` keys, ignoring the other axis extents.
 /// Returns `None` on any structural deviation.
-fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
+pub(crate) fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
     let mut zmin: Option<f64> = None;
     let mut zmax: Option<f64> = None;
     parse_flat_number_object(s, |key, num| match key {
