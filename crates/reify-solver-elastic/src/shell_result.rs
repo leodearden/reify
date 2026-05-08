@@ -12,7 +12,40 @@
 // these fields from the MITC3+ kernel and wiring the `to_global(stress,
 // frame)` dispatch helper.
 
+use crate::shell_assembly::build_shell_frame;
 use reify_types::Value;
+
+/// Returns the local-to-global rotation matrix for a three-node MITC3+ shell element.
+///
+/// # Convention
+///
+/// The returned 3×3 matrix is the *local-to-global* rotation:
+/// - `result[i][j]` is the j-th global component of the i-th local basis vector.
+/// - A local-frame displacement vector `v_local` maps to global via `v_global = frame · v_local`.
+/// - A local-frame rank-2 stress tensor maps to global via `σ_global = frame · σ_local · frameᵀ`.
+///
+/// This is the **transpose** of [`crate::shell_assembly::build_shell_frame`]`.r`, which stores
+/// the *global-to-local* rotation (rows = local basis vectors in global coordinates,
+/// so `R · v_global = v_local`).  Transposing gives the local-to-global direction:
+/// `result[i][j] = frame.r[j][i]`.
+///
+/// # Relation to `ElasticResult.frame`
+///
+/// Matches the `ElasticResult.frame` local-to-global convention documented in
+/// `crates/reify-compiler/stdlib/solver_elastic.ri:276–294`.  The future
+/// `to_global(stress, frame)` helper (T18-T20) can use this directly as
+/// `σ_global = frame · σ_local · frameᵀ` without any transpose step at the call site.
+pub fn shell_element_frame(nodes: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let r = build_shell_frame(nodes).r;
+    // Transpose: result[i][j] = r[j][i].
+    let mut result = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            result[i][j] = r[j][i];
+        }
+    }
+    result
+}
 
 /// Structured shell stress result carrying per-integration-layer stress
 /// channels.
@@ -60,7 +93,6 @@ impl ShellStress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell_assembly::build_shell_frame;
     use reify_types::Value;
 
     /// `shell_element_frame(nodes)` must return the transpose of `build_shell_frame(nodes).r`.
