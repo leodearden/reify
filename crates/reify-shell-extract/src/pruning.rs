@@ -65,6 +65,38 @@ pub struct PruneOptions {
     /// bound for safety.  Mirrors `MesherOptions::max_remesh_iterations`
     /// (also a `u32` bound). Documented as v0.4 empirical default.
     pub max_prune_iterations: u32,
+
+    /// Spatial-hash bin width for the canonical-vertex dedup step that
+    /// recognises shared-edge midpoints emitted by T2 (`extract_mid_surface`).
+    ///
+    /// Two vertices whose coordinates all round to the same integer grid at
+    /// this tolerance are merged into a single canonical index; edges between
+    /// such merged vertices are counted as interior (incidence ≥ 2), not as
+    /// boundary edges.  This is the **T2→T3 shared-edge contract**: T2 must
+    /// emit shared-edge midpoints whose coordinates agree within this
+    /// tolerance, or T3 will mis-classify those edges as boundary edges and
+    /// spuriously prune the mesh body.
+    ///
+    /// Must be strictly positive and finite.
+    ///
+    /// **Rationale.** Default `1e-9` is effectively bit-exact for the internal
+    /// producer pipeline: binary-MC emits midpoints from identical axis-grid
+    /// lookups, so adjacent-cell shared edges produce bit-exact duplicates
+    /// (minimum vertex separation `0.5 × min_spacing`, orders of magnitude
+    /// larger than `1e-9`).  The default simultaneously admits float jitter
+    /// from any future T2 variant that uses value-weighted interpolation,
+    /// provided coordinates stay within `1e-9`.
+    ///
+    /// **Cross-references.**
+    /// - `MidSurfaceOptions::grid_alignment_tolerance` (T2's matching default
+    ///   `1e-9`): the two defaults are intentionally equal so callers who
+    ///   loosen T2 can loosen T3 by the same amount.
+    /// - `MesherOptions::merge_tolerance` (mesher.rs): the same
+    ///   `(coord * inv_tol).round() as i64` dedup pattern with default `1e-9`.
+    ///   Pruning's canonical-dedup is structurally identical — the precedent
+    ///   establishes the documented NaN/±Inf saturation semantics shared by
+    ///   both paths (see the COUPLING NOTE in `prune_branches`).
+    pub grid_alignment_tolerance: f64,
 }
 
 impl Default for PruneOptions {
@@ -78,6 +110,11 @@ impl Default for PruneOptions {
             // v0.4 empirical default — ample for chain-collapse (length-17 chain
             // collapses in ≤ ⌊log₂ 17⌋ = 4 rounds; doubled for safety).
             max_prune_iterations: 8,
+            // Matches MidSurfaceOptions::grid_alignment_tolerance and
+            // MesherOptions::merge_tolerance (both 1e-9).  Effectively bit-exact
+            // for the internal T2 pipeline; admits float jitter from future T2
+            // variants.  See field doc for the T2→T3 shared-edge contract.
+            grid_alignment_tolerance: 1e-9,
         }
     }
 }
