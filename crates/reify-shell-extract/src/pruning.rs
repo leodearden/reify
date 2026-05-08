@@ -98,6 +98,12 @@ pub struct PruneMetrics {
     /// this occurs when there are no tip triangles, or when all tip
     /// triangles clear the ratio threshold.
     pub iterations: u32,
+    /// `true` when the loop terminated naturally (a round saw `any_pruned ==
+    /// false` and exited via the `break`), meaning no prunable tips remained.
+    /// `false` when `max_prune_iterations` was hit while the final round was
+    /// still actively pruning — callers should treat `false` as a signal that
+    /// residual prunable tips may remain in the output mesh.
+    pub converged: bool,
 }
 
 /// Output of a successful [`prune_branches`] call.
@@ -240,6 +246,7 @@ pub fn prune_branches(
                 pruned_triangle_count: 0,
                 pruned_vertex_count: 0,
                 iterations: 0,
+                converged: true,
             },
         });
     }
@@ -287,6 +294,7 @@ pub fn prune_branches(
             .collect()
     };
 
+    let mut converged = false;
     for _ in 0..options.max_prune_iterations {
         // Build edge → incident-triangle count map using canonical indices.
         // Key: sorted canonical vertex pair [u32; 2]; value: incident count.
@@ -361,6 +369,7 @@ pub fn prune_branches(
         }
 
         if !any_pruned {
+            converged = true;
             break;
         }
 
@@ -421,6 +430,7 @@ pub fn prune_branches(
             pruned_triangle_count: total_pruned,
             pruned_vertex_count,
             iterations,
+            converged,
         },
     })
 }
