@@ -897,6 +897,35 @@ Point3 query_face_normal(const OcctShape& shape);
 /// Returns radians in `[0, π]`.
 double surface_angle(const OcctShape& face_a, const OcctShape& face_b);
 
+/// Classify the underlying surface of a face by its OCCT
+/// `BRepAdaptor_Surface::GetType()` (`GeomAbs_*`) result.
+///
+/// Returns a canonical surface-kind name string consumed by
+/// `reify_types::FaceSurfaceKind::try_from_str` on the Rust side:
+/// `"Plane"`, `"Cylinder"`, `"Cone"`, `"Sphere"`, `"Torus"`,
+/// `"BezierSurface"`, `"BSplineSurface"`, `"OffsetSurface"`, or
+/// `"Other"`. `GeomAbs_SurfaceOfRevolution` /
+/// `GeomAbs_SurfaceOfExtrusion` (and any future GeomAbs variant) are
+/// reported as `"Other"` because the typed Rust enum intentionally
+/// omits them per PRD line 78's `%Plane`/`%Cylinder`/`%Cone`/`%Sphere`/
+/// `%Torus` vocabulary.
+///
+/// Throws `std::runtime_error` if `shape` is not a `TopAbs_FACE`.
+rust::String face_surface_kind(const OcctShape& shape);
+
+/// Classify the underlying curve of an edge by its OCCT
+/// `BRepAdaptor_Curve::GetType()` (`GeomAbs_*`) result.
+///
+/// Returns a canonical curve-kind name string consumed by
+/// `reify_types::EdgeCurveKind::try_from_str` on the Rust side:
+/// `"Line"`, `"Circle"`, `"Ellipse"`, `"Hyperbola"`, `"Parabola"`,
+/// `"BezierCurve"`, `"BSplineCurve"`, `"OffsetCurve"`, or `"Other"`.
+/// `GeomAbs_OtherCurve` and any future GeomAbs variant fall through
+/// to `"Other"`.
+///
+/// Throws `std::runtime_error` if `shape` is not a `TopAbs_EDGE`.
+rust::String edge_curve_kind(const OcctShape& shape);
+
 /// Unit outward normal at the parametric point `(u, v)` on `face`.
 ///
 /// The shape MUST be a `TopoDS_Face`. Algorithm:

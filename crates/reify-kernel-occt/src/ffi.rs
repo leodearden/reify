@@ -715,6 +715,24 @@ pub mod ffi {
             face_b_index: u32,
         ) -> Result<Vec<u32>>;
 
+        /// Classify the underlying surface of a face by its OCCT
+        /// `BRepAdaptor_Surface::GetType()` (`GeomAbs_*`) result. Returns a
+        /// canonical surface-kind name string (`"Plane"` / `"Cylinder"` /
+        /// `"Cone"` / `"Sphere"` / `"Torus"` / `"BezierSurface"` /
+        /// `"BSplineSurface"` / `"OffsetSurface"` / `"Other"`) decoded by
+        /// `reify_types::FaceSurfaceKind::try_from_str` on the Rust side.
+        /// Errors if `shape` is not a `TopAbs_FACE`.
+        fn face_surface_kind(shape: &OcctShape) -> Result<String>;
+
+        /// Classify the underlying curve of an edge by its OCCT
+        /// `BRepAdaptor_Curve::GetType()` (`GeomAbs_*`) result. Returns a
+        /// canonical curve-kind name string (`"Line"` / `"Circle"` /
+        /// `"Ellipse"` / `"Hyperbola"` / `"Parabola"` / `"BezierCurve"` /
+        /// `"BSplineCurve"` / `"OffsetCurve"` / `"Other"`) decoded by
+        /// `reify_types::EdgeCurveKind::try_from_str` on the Rust side.
+        /// Errors if `shape` is not a `TopAbs_EDGE`.
+        fn edge_curve_kind(shape: &OcctShape) -> Result<String>;
+
         /// Materialize the unique edges of `shape` into an OcctShapeVec
         /// (canonical TopExp::MapShapes order, deduplicated by IsSame).
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
