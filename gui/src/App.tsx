@@ -497,6 +497,12 @@ const App: Component = () => {
     });
   }
 
+  // Guard for File→New and File→Open: returns true when it is safe to proceed.
+  // We check ALL dirty files rather than just the active tab because loadPathIntoStores
+  // replaces the full engine state (initFromState), view state, and current path — any
+  // open buffer with unsaved edits is effectively unreachable after the switch.
+  // TODO(ux): replace window.confirm with a Tauri async dialog (bridge.ask / custom
+  //   modal) once the rest of the confirmation UI migrates away from native prompts.
   function confirmDiscardIfDirty(): boolean {
     if (editorStore.state.dirtyFiles.length === 0) return true;
     return window.confirm('You have unsaved changes. Discard them?');

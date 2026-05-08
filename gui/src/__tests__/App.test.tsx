@@ -2093,7 +2093,7 @@ describe('App Ctrl+O open file', () => {
     });
 
     // Mock pickOpenPath to return a path
-    vi.mocked((bridge as any).pickOpenPath).mockResolvedValue('/project/other.ri');
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/project/other.ri');
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
 
     render(() => <App />);
@@ -2106,7 +2106,7 @@ describe('App Ctrl+O open file', () => {
 
     // Should call pickOpenPath, then openFile with the returned path
     await waitFor(() => {
-      expect((bridge as any).pickOpenPath).toHaveBeenCalled();
+      expect(bridge.pickOpenPath).toHaveBeenCalled();
     });
 
     await waitFor(() => {
@@ -2117,7 +2117,7 @@ describe('App Ctrl+O open file', () => {
 
 describe('App handleOpen dirty-check confirmation', () => {
   function setupHappyPathMocks() {
-    vi.mocked((bridge as any).pickOpenPath).mockResolvedValue('/project/other.ri');
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/project/other.ri');
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
     vi.mocked(bridge.openFileEngine).mockResolvedValue({
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
@@ -2135,7 +2135,7 @@ describe('App handleOpen dirty-check confirmation', () => {
       fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
       await flushMacrotasks();
       expect(confirmSpy).toHaveBeenCalledTimes(1);
-      expect((bridge as any).pickOpenPath).not.toHaveBeenCalled();
+      expect(bridge.pickOpenPath).not.toHaveBeenCalled();
       expect(bridge.openFile).not.toHaveBeenCalled();
       expect(bridge.openFileEngine).not.toHaveBeenCalled();
     } finally {
@@ -2153,7 +2153,7 @@ describe('App handleOpen dirty-check confirmation', () => {
     try {
       fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
       await waitFor(() => {
-        expect((bridge as any).pickOpenPath).toHaveBeenCalled();
+        expect(bridge.pickOpenPath).toHaveBeenCalled();
       });
       await waitFor(() => {
         expect(bridge.openFile).toHaveBeenCalledWith('/project/other.ri');
@@ -2172,7 +2172,7 @@ describe('App handleOpen dirty-check confirmation', () => {
     try {
       fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
       await waitFor(() => {
-        expect((bridge as any).pickOpenPath).toHaveBeenCalled();
+        expect(bridge.pickOpenPath).toHaveBeenCalled();
       });
       expect(confirmSpy).not.toHaveBeenCalled();
     } finally {
