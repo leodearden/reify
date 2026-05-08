@@ -675,6 +675,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn classify_swept_body_revolve_just_below_tolerance_returns_none() {
+        // Boundary test (complementary to `…_just_above_tolerance_classifies`):
+        // for `axis_dir = [tol * 0.5, 0.0, 0.0]`:
+        //
+        //   axis_norm_sq = (tol * 0.5)² = 0.25 · tol²
+        //
+        // Since `0.25 · tol² < tol²` is TRUE, the degeneracy guard IS triggered
+        // and `classify_swept_body` must return `None`.
+        //
+        // Why this matters even though the all-zero-axis test already exists:
+        // `classify_swept_body_revolve_degenerate_axis_returns_none` exercises an
+        // *exactly*-zero axis (`[0, 0, 0]`), which trivially satisfies the guard.
+        // This test pins the *threshold edge*: a nearly-but-not-quite-zero axis
+        // whose norm is just below `tol`.  A faulty implementation that uses the
+        // wrong comparison (e.g. `if axis_norm_sq < tol` instead of `< tol²`)
+        // would have `0.25 · tol² < tol` be FALSE for the tiny value of `tol`
+        // (1e-12), and would incorrectly *accept* this input instead of
+        // rejecting it.  Together with `…_just_above_tolerance_classifies`, this
+        // test pins both sides of the threshold.
+        //
+        // Why `0.5`? It gives `norm_sq = 0.25 · tol²`, unambiguously below `tol²`
+        // with comfortable margin.
+        //
+        // Why `angle_rad = FRAC_PI_2`? Same isolation argument as the just-above
+        // test: isolates the axis-threshold from the independent angle-threshold
+        // guard so any unexpected non-`None` result is unambiguously attributable
+        // to the axis guard.
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(0),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [REVOLVE_DEGENERATE_TOLERANCE * 0.5, 0.0, 0.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            None,
+            "axis_dir norm just below REVOLVE_DEGENERATE_TOLERANCE must be rejected as degenerate"
+        );
+    }
+
     // ── Step-5: Sweep / Loft path-source resolution and rejection ─────────
 
     #[test]
