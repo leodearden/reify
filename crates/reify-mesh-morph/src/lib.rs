@@ -276,4 +276,32 @@ mod tests {
         let _: LaplacianFailure =
             LaplacianFailure::UnsupportedElementOrder(reify_types::ElementOrderTag::P2);
     };
+
+    // ── Step-12: lib re-exports make quality module public surface accessible ──
+
+    // Compile fence: verifies quality_check and QualityVerdict are accessible
+    // from the crate root, pins the quality_check signature, and exhaustively
+    // mentions all three QualityVerdict variant constructors.
+    // Same discipline as the boundary and laplacian fences above.
+    const _: fn() = || {
+        use crate::{QualityVerdict, quality_check};
+        let _fn_ref: fn(
+            &reify_types::VolumeMesh,
+            &reify_types::VolumeMesh,
+            &MorphOptions,
+        ) -> QualityVerdict = quality_check;
+        // Variant mentions — exhaustive constructor coverage:
+        let _: QualityVerdict = QualityVerdict::Pass;
+        let _: QualityVerdict =
+            QualityVerdict::HardFail(crate::types::InversionDetails {
+                element_index: 0,
+                jacobian: -0.5,
+            });
+        let _: QualityVerdict =
+            QualityVerdict::SoftFail(crate::types::MetricsBreached {
+                min_scaled_jacobian: None,
+                pct_below_025: None,
+                max_aspect_ratio_increase: None,
+            });
+    };
 }
