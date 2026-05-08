@@ -431,4 +431,94 @@ mod tests {
         // contract documented above).
         assert!(!is_geometry_query_helper("IsWatertight"));
     }
+
+    // --- Geometry topology-selector helpers (task 2324 step-8) ---
+    //
+    // Sibling list to `GEOMETRY_KINEMATIC_QUERY_NAMES` for the three
+    // topology-selector helpers per `docs/prds/topology-selectors.md` §3.9:
+    //   - `closest_point(point, geometry) -> Point3<Length>`
+    //   - `on(point, geometry) -> Bool`
+    //   - `angle_between_surfaces(a, b) -> Angle`
+    // Eval-time dispatch is in
+    // `reify_eval::geometry_ops::try_eval_topology_selector`, which routes to
+    // `GeometryQuery::ClosestPointOnShape` / `PointOnShape` / `SurfaceAngle`.
+
+    #[test]
+    fn is_geometry_topology_selector_recognises_closest_point() {
+        assert!(is_geometry_topology_selector("closest_point"));
+    }
+
+    #[test]
+    fn is_geometry_topology_selector_recognises_on() {
+        assert!(is_geometry_topology_selector("on"));
+    }
+
+    #[test]
+    fn is_geometry_topology_selector_recognises_angle_between_surfaces() {
+        assert!(is_geometry_topology_selector("angle_between_surfaces"));
+    }
+
+    #[test]
+    fn is_geometry_topology_selector_rejects_conformance_query_names() {
+        // `is_watertight` belongs to the conformance-query family; the lists
+        // must remain disjoint so cell classification doesn't double-fire.
+        assert!(!is_geometry_topology_selector("is_watertight"));
+    }
+
+    #[test]
+    fn is_geometry_topology_selector_rejects_kinematic_query_names() {
+        // `interferes` belongs to the kinematic-query family; these lists are
+        // disjoint per the `GEOMETRY_KINEMATIC_QUERY_NAMES` doc-comment.
+        assert!(!is_geometry_topology_selector("interferes"));
+    }
+
+    #[test]
+    fn is_geometry_topology_selector_rejects_constructor_names() {
+        // `box` is a constructor in `GEOMETRY_FUNCTION_NAMES` and must not
+        // overlap with the topology-selector predicate.
+        assert!(!is_geometry_topology_selector("box"));
+    }
+
+    #[test]
+    fn is_geometry_topology_selector_rejects_empty_name() {
+        assert!(!is_geometry_topology_selector(""));
+    }
+
+    #[test]
+    fn is_geometry_topology_selector_is_case_sensitive() {
+        // Reify function names are snake_case; PascalCase variants must not
+        // match.
+        assert!(!is_geometry_topology_selector("ClosestPoint"));
+    }
+
+    #[test]
+    fn topology_selector_result_type_closest_point_is_point3_length() {
+        assert_eq!(
+            topology_selector_result_type("closest_point"),
+            Some(reify_types::Type::point3(reify_types::Type::length()))
+        );
+    }
+
+    #[test]
+    fn topology_selector_result_type_on_is_bool() {
+        assert_eq!(
+            topology_selector_result_type("on"),
+            Some(reify_types::Type::Bool)
+        );
+    }
+
+    #[test]
+    fn topology_selector_result_type_angle_between_surfaces_is_angle() {
+        assert_eq!(
+            topology_selector_result_type("angle_between_surfaces"),
+            Some(reify_types::Type::angle())
+        );
+    }
+
+    #[test]
+    fn topology_selector_result_type_returns_none_for_unrecognised_names() {
+        assert_eq!(topology_selector_result_type("is_watertight"), None);
+        assert_eq!(topology_selector_result_type("interferes"), None);
+        assert_eq!(topology_selector_result_type(""), None);
+    }
 }
