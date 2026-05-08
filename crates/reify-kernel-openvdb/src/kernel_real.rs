@@ -139,6 +139,20 @@ impl OpenVdbKernel {
     /// Returns `Err(ExportError::IoError)` if the path is not writable or the
     /// underlying `openvdb::io::File::write` throws.
     ///
+    /// # `&self` no-mutation invariant
+    ///
+    /// Takes `&self` and is registered on the [`Sync`] audit list at the
+    /// bottom of this file. The C++ side (`cpp/openvdb_wrapper.cpp::
+    /// write_vdb_grid_ffi`) `deepCopy()`s the registered FloatGrid before
+    /// applying `setName(grid_name)` to the copy — the registered grid is
+    /// NEVER mutated by a write call. This is regression-guarded by
+    /// `tests/grid_io_tests.rs::write_vdb_grid_does_not_mutate_registered_handle_grid_name`.
+    /// Any future revision that introduces an in-place mutation of the
+    /// registered grid (e.g. lifting the `setName` out of the deep-copy
+    /// arm) MUST flip the signature back to `&mut self` AND update the
+    /// Sync audit list — otherwise concurrent readers from
+    /// `sample_sdf_at` / `active_voxel_count` could race.
+    ///
     /// # Metadata round-trip gap (units)
     ///
     /// This function writes only the grid name and the active-voxel data;
@@ -204,6 +218,34 @@ impl OpenVdbKernel {
         self.handles.insert(id, grid_ptr);
         Ok(id)
     }
+
+    /// Read the registered grid's `MetaMap`-backed name.
+    ///
+    /// Used by integration tests to pin the `&self` no-mutation invariant
+    /// for [`Self::write_vdb_grid`] — capture the name pre-write, write
+    /// the grid under a different name, then re-read and assert
+    /// equality. The fix in `cpp/openvdb_wrapper.cpp::write_vdb_grid_ffi`
+    /// (deep-copy before `setName`) preserves the registered grid's
+    /// name across the export.
+    ///
+    /// Gated behind the `test-fixtures` Cargo feature so the test-only
+    /// API surface does not leak into production builds. Mirrors
+    /// [`Self::open_vdb_grid_for_test`].
+    ///
+    /// Sound under the [`Sync`] audit list at the bottom of this file:
+    /// `Grid::getName()` is a pure read of the cached `MetaMap` entry
+    /// — no lazy init, no tree walk.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn grid_name_for_test(
+        &self,
+        handle: GeometryHandleId,
+    ) -> Result<String, QueryError> {
+        let grid = self
+            .handles
+            .get(&handle)
+            .ok_or(QueryError::InvalidHandle(handle))?;
+        Ok(openvdb_ffi::grid_name(grid))
+    }
 }
 
 impl Default for OpenVdbKernel {
@@ -220,16 +262,26 @@ impl Default for OpenVdbKernel {
 // MAINTENANCE CONTRACT for `unsafe impl Sync`
 // -------------------------------------------
 //
-// `Sync` is justified ONLY by the current set of `&self` methods, both of
+// `Sync` is justified ONLY by the current set of `&self` methods, all of
 // which are read-only over the FloatGrid tree:
+//
 //   - `active_voxel_count` → `grid_active_voxel_count` →
 //     `FloatGrid::activeVoxelCount()`: walks immutable tree topology.
 //   - `sample_sdf_at` → `grid_sample_sdf` → `BoxSampler` over a
 //     `ConstAccessor`: read-only against the tree.
+//   - `write_vdb_grid` → `write_vdb_grid_ffi`: the C++ side
+//     `FloatGrid::deepCopy()`s the registered grid before any `setName`
+//     or metadata mutation, so the registered grid is NEVER mutated by
+//     a write call (regression-guarded by
+//     `tests/grid_io_tests.rs::write_vdb_grid_does_not_mutate_registered_handle_grid_name`
+//     and the comment block above
+//     `cpp/openvdb_wrapper.cpp::write_vdb_grid_ffi`).
+//   - `grid_name_for_test` → `grid_name` → `Grid::getName()`: pure read
+//     of the cached `MetaMap` entry, no lazy init, no tree walk.
 //
-// Mutating methods (`realize_voxel_from_mesh`, `write_vdb_grid`,
-// `open_vdb_grid_for_test`) take `&mut self` and rely on Rust's borrow
-// checker for exclusive access, NOT on `Sync`.
+// Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`)
+// take `&mut self` and rely on Rust's borrow checker for exclusive
+// access, NOT on `Sync`.
 //
 // DO NOT add a new `&self` method that internally calls any of the
 // following OpenVDB APIs without first replacing this `unsafe impl Sync`
@@ -247,6 +299,11 @@ impl Default for OpenVdbKernel {
 //   - Any leaf-level metadata accessor that materialises lazy data
 //     (`getMetadata` chains that promote `nullptr` to a default-initialised
 //     entry).
+//   - Any in-place mutation of the registered FloatGrid (e.g. `setName`,
+//     `insertMeta`, `setTransform`, `setBackground`). If a future write
+//     entry point would otherwise require such a mutation, deep-copy the
+//     grid first (mirror the pattern in `write_vdb_grid_ffi`) so the
+//     registered handle stays unchanged.
 //
 // Today none of the `&self` methods reach those paths — the I/O accessors
 // (`grid_bbox_*`, `grid_densify_to_buffer`, `grid_voxel_sizes`) are used

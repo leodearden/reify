@@ -161,6 +161,14 @@ rust::String grid_units(const OpenVdbGridHandle& h) {
     return rust::String(units_meta->value());
 }
 
+rust::String grid_name(const OpenVdbGridHandle& h) {
+    // `Grid::getName()` returns the cached `MetaMap`-backed string by const
+    // reference — pure read, no lazy init, no internal mutation. Safe to
+    // call from `&self` on the Rust side under the Sync contract (see
+    // src/kernel_real.rs:220-260's audited `&self` accessor list).
+    return rust::String(h.grid->getName());
+}
+
 // ---------------------------------------------------------------------------
 // File I/O
 // ---------------------------------------------------------------------------
@@ -176,11 +184,25 @@ void write_vdb_grid_ffi(
     // file but readers will reject the result.
     ensure_initialized_cpp_side();
 
-    // Set the grid name in its metadata.
-    h.grid->setName(std::string(grid_name));
+    // Deep-copy the FloatGrid before mutating its metadata. This preserves
+    // the `&self` contract of the Rust `OpenVdbKernel::write_vdb_grid`
+    // entry point: the registered handle's FloatGrid is NEVER mutated by
+    // a write call, so the function is sound to call concurrently from
+    // threads holding `&OpenVdbKernel` (the `Sync` maintenance contract
+    // in `src/kernel_real.rs:220-260` lists `write_vdb_grid` under the
+    // audited `&self` methods).
+    //
+    // `FloatGrid::deepCopy()` returns a new `FloatGrid::Ptr` whose tree
+    // shares no nodes with the original — topology, transform, metadata,
+    // and active-voxel-count round-trip exactly, so downstream consumers
+    // (tests, importers) see equivalent geometry. Cost is one full tree
+    // walk plus copy; for v0.4 shells use-cases (sub-million-voxel narrow
+    // bands) this is well under the I/O cost.
+    auto grid_copy = h.grid->deepCopy();
+    grid_copy->setName(std::string(grid_name));
 
     openvdb::GridPtrVec grids;
-    grids.push_back(h.grid);
+    grids.push_back(grid_copy);
 
     // Use a named string to avoid the "most vexing parse" with openvdb::io::File.
     std::string path_str{path};

@@ -47,6 +47,13 @@ pub mod ffi {
         // values; the Rust caller propagates them into `SampledField.spacing`.
         fn grid_voxel_sizes(h: &OpenVdbGridHandle) -> [f64; 3];
         fn grid_units(h: &OpenVdbGridHandle) -> String;
+        // Pure read of the cached MetaMap-backed grid name. No lazy init,
+        // no tree walk — safe to call from `&self` callers under the Sync
+        // audit list at `src/kernel_real.rs:220-260`. Used by the
+        // test-only `OpenVdbKernel::grid_name_for_test` accessor to pin
+        // the no-mutation invariant for `write_vdb_grid` (regression
+        // guard against in-place `setName` reverts).
+        fn grid_name(h: &OpenVdbGridHandle) -> String;
 
         // File I/O — throw std::runtime_error on failure; cxx maps to Err.
         fn write_vdb_grid_ffi(

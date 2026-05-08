@@ -73,6 +73,11 @@ std::array<double, 3> grid_bbox_max(const OpenVdbGridHandle& h);
 /// isotropy or accept the per-axis spacing as-is.
 std::array<double, 3> grid_voxel_sizes(const OpenVdbGridHandle& h);
 rust::String grid_units(const OpenVdbGridHandle& h);
+/// Read the grid's name from its cached `MetaMap` entry. Pure read of an
+/// already-materialised string — no lazy initialisation, no tree walk.
+/// Safe to call from `&self` callers under the `Sync` audit list at
+/// `src/kernel_real.rs:220-260`.
+rust::String grid_name(const OpenVdbGridHandle& h);
 
 // ---------------------------------------------------------------------------
 // File I/O
