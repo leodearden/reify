@@ -286,8 +286,16 @@ pub fn quality_check(
             });
             let morphed_ar = element_aspect_ratio(&p);
             let source_ar = element_aspect_ratio(&sp);
-            // Skip comparison when source is degenerate.
-            if source_ar > 0.0 && source_ar.is_finite() && !source_ar.is_nan() {
+            // Skip comparison when either AR is degenerate.
+            // source degenerate: zero-volume source tet → undefined ratio baseline.
+            // morphed degenerate: AR=INFINITY (zero-volume coplanar/collapsed tet).
+            //   Surfacing +inf in the public MetricsBreached.max_aspect_ratio_increase
+            //   field is awkward for serialization (JSON/MessagePack lack standard
+            //   +inf encoding). A degenerate morphed tet also typically trips the
+            //   min-scaled-J floor or HardFail, so the AR signal is redundant.
+            if source_ar > 0.0 && source_ar.is_finite() && !source_ar.is_nan()
+                && morphed_ar.is_finite()
+            {
                 let ratio = morphed_ar / source_ar;
                 if ratio > max_ar_increase {
                     max_ar_increase = ratio;
