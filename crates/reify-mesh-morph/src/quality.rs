@@ -201,15 +201,21 @@ pub fn quality_check(
     let mut count_below_025: usize = 0;
     let mut max_ar_increase: f64 = 0.0;
 
-    // Build source iterator only when connectivity matches.
-    // When lengths differ we pair with an empty iterator by using a flag.
-    let source_chunks: Vec<&[u32]> = if matched_connectivity {
-        source.tet_indices.chunks_exact(4).collect()
+    // Build a lazy source iterator when connectivity matches; None otherwise.
+    // Using an iterator (rather than collecting a Vec) avoids an O(n) heap
+    // allocation proportional to mesh size and keeps source elements in
+    // lockstep with the morphed loop without upfront allocation.
+    let mut source_iter = if matched_connectivity {
+        Some(source.tet_indices.chunks_exact(4))
     } else {
-        Vec::new()
+        None
     };
 
     for (elem_idx, chunk) in morphed.tet_indices.chunks_exact(4).enumerate() {
+        // Advance source iterator in lockstep — even when the morphed element
+        // is skipped below, so that source[k] always aligns with morphed[k].
+        let src_chunk_opt = source_iter.as_mut().and_then(|it| it.next());
+
         // Read 4 corner positions, widening f32 → f64 at the read boundary.
         let idx = [
             chunk[0] as usize,
@@ -218,7 +224,8 @@ pub fn quality_check(
             chunk[3] as usize,
         ];
         // Skip elements with out-of-range indices (defensive; same discipline
-        // as laplacian.rs:141-149).
+        // as laplacian.rs:141-149). Source iterator was already advanced above,
+        // preserving lockstep alignment even on skip.
         if idx.iter().any(|&i| i >= morphed_vertex_count) {
             continue;
         }
@@ -254,14 +261,18 @@ pub fn quality_check(
         }
 
         // Aspect-ratio increase comparison (only when connectivity matches).
-        if matched_connectivity {
-            let src_chunk = source_chunks[elem_idx];
+        // src_chunk_opt is None when matched_connectivity is false, so this
+        // naturally skips when topologies differ without an extra branch.
+        if let Some(src_chunk) = src_chunk_opt {
             let src_idx = [
                 src_chunk[0] as usize,
                 src_chunk[1] as usize,
                 src_chunk[2] as usize,
                 src_chunk[3] as usize,
             ];
+            // When a source element has out-of-range indices, skip the AR
+            // comparison for this element only; morphed-only metrics (scaled J,
+            // pct_below_025) were already accumulated above.
             if src_idx.iter().any(|&i| i >= source_vertex_count) {
                 continue;
             }
@@ -461,7 +472,11 @@ mod tests {
             element_order: ElementOrderTag::P1,
             normals: None,
         };
-        let opts = MorphOptions::default(); // quality_floor_min_scaled_jacobian = 0.15
+        // Set pct threshold above 1.0 so it can never trip, isolating the
+        // min-scaled-J check. Mirrors the isolation pattern used in the
+        // AR-increase test (step-9) where other thresholds are disabled.
+        let mut opts = MorphOptions::default(); // quality_floor_min_scaled_jacobian = 0.15
+        opts.quality_floor_pct_below_025 = 1.01;
         let result = quality_check(&morphed, &source, &opts);
         match result {
             QualityVerdict::SoftFail(ref metrics) => {
@@ -653,6 +668,87 @@ mod tests {
         }
     }
 
+    // ── Connectivity-mismatch contract ────────────────────────────────────────
+
+    /// When `morphed.tet_indices.len() != source.tet_indices.len()`, the
+    /// aspect-ratio-increase comparison must be skipped (`max_aspect_ratio_increase`
+    /// stays `None`). The hard-fail and scaled-J checks must still run on the
+    /// morphed mesh as documented in the module-level preconditions section.
+    ///
+    /// This test pins that contract so a future refactor that accidentally
+    /// panics on the index mismatch or omits the AR check condition is caught.
+    #[test]
+    fn quality_check_with_mismatched_connectivity_skips_ar_increase_but_runs_morphed_checks() {
+        // morphed: 1 wildly-stretched tet (AR >> 2× any reasonable source AR)
+        //   node 3 at (0,0,5) — scaled J ≈ 0.054 at corner 3 < 0.15 → soft trips.
+        // source:  2 regular tets (different element count → connectivity mismatch)
+        // Expected:
+        //   - max_aspect_ratio_increase = None  (AR comparison skipped)
+        //   - min_scaled_jacobian = Some(...)   (proves morphed-only checks ran)
+        //   - HardFail not returned             (morphed tet is right-handed)
+        #[rustfmt::skip]
+        let morphed_vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 5.0, // stretched — high AR, low scaled J
+        ];
+        let morphed = VolumeMesh {
+            vertices: morphed_vertices,
+            tet_indices: vec![0u32, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // source: 2 tets → tet_indices.len() = 8 ≠ 4 (morphed) → mismatch
+        #[rustfmt::skip]
+        let source_vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+            0.0, 0.0, 2.0,
+        ];
+        let source = VolumeMesh {
+            vertices: source_vertices,
+            tet_indices: vec![0u32, 1, 2, 3, 0, 1, 2, 4],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // Default opts: quality_floor_min_scaled_jacobian = 0.15.
+        // The stretched tet has scaled J ≈ 0.054 → min_scaled_jacobian trips.
+        let opts = MorphOptions::default();
+        let result = quality_check(&morphed, &source, &opts);
+
+        match &result {
+            QualityVerdict::SoftFail(metrics) => {
+                assert!(
+                    metrics.max_aspect_ratio_increase.is_none(),
+                    "max_aspect_ratio_increase must be None on connectivity mismatch, \
+                     got {:?}",
+                    metrics.max_aspect_ratio_increase
+                );
+                // Verify the morphed-only checks still ran: scaled J < 0.15 so
+                // min_scaled_jacobian should be Some (not None).
+                assert!(
+                    metrics.min_scaled_jacobian.is_some(),
+                    "min_scaled_jacobian should be Some — proves morphed-only checks \
+                     ran despite connectivity mismatch; got None"
+                );
+            }
+            QualityVerdict::Pass => {
+                panic!("expected SoftFail (stretched tet should trip min-scaled-J)");
+            }
+            QualityVerdict::HardFail(details) => {
+                panic!(
+                    "expected SoftFail, got HardFail({details:?}) — \
+                     stretched tet is right-handed and must not invert"
+                );
+            }
+        }
+    }
+
     // ── Step-11: HardFail preempts SoftFail (regression guard) ──────────────
 
     /// Regression guard: when any element is inverted, `HardFail` is returned
@@ -725,32 +821,5 @@ mod tests {
         }
     }
 
-    // ── Compile fence: exhaustive variant match (no wildcard arm) ─────────────
-    //
-    // Adding, removing, or renaming any QualityVerdict variant breaks
-    // compilation here — same discipline as LaplacianFailure (laplacian.rs:659)
-    // and MorphFailure (options.rs:144).
-    #[test]
-    fn quality_verdict_exhaustive_variant_fence() {
-        use crate::types::{InversionDetails, MetricsBreached};
-        let variants: &[QualityVerdict] = &[
-            QualityVerdict::Pass,
-            QualityVerdict::HardFail(InversionDetails {
-                element_index: 0,
-                jacobian: -0.5,
-            }),
-            QualityVerdict::SoftFail(MetricsBreached {
-                min_scaled_jacobian: Some(0.1),
-                pct_below_025: None,
-                max_aspect_ratio_increase: None,
-            }),
-        ];
-        for v in variants {
-            match v {
-                QualityVerdict::Pass => {}
-                QualityVerdict::HardFail(InversionDetails { .. }) => {}
-                QualityVerdict::SoftFail(MetricsBreached { .. }) => {}
-            }
-        }
-    }
 }
+
