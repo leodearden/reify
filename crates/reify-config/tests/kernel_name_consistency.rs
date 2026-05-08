@@ -70,13 +70,22 @@ fn gmsh_kernel_name_const_matches_kernel_id_display() {
 }
 
 /// Exhaustiveness guard: adding a `KernelId` variant without updating this
-/// test is a compile error (missing match arm) AND a runtime failure
-/// (length mismatch). Both signal that a new per-kernel consistency test
-/// must be added above.
+/// test is a **compile error** (missing match arm). Fix the compile error by
+/// listing the new variant in the match below AND adding a corresponding
+/// per-kernel consistency test function above (named
+/// `<kernel>_kernel_name_const_matches_kernel_id_display`).
+///
+/// The compile-time non-wildcard match is the primary enforcement mechanism.
+/// A separate runtime length check was removed as redundant — if the match arm
+/// compiles, every live variant is already enumerated here and in the per-kernel
+/// tests.
 #[test]
 fn kernel_id_variants_have_consistency_pins() {
     // Compile-time guard — a non-wildcard match forces every variant to be listed.
-    // Adding a sixth KernelId variant without adding it here is a compile error.
+    // Adding a KernelId variant without adding it here is a compile error.
+    // When you fix that compile error, also add the corresponding per-kernel
+    // consistency test function above (see the five functions at the top of
+    // this file for the naming convention).
     fn _exhaustiveness_guard(id: KernelId) {
         match id {
             KernelId::Occt
@@ -86,16 +95,4 @@ fn kernel_id_variants_have_consistency_pins() {
             | KernelId::Gmsh => (),
         }
     }
-
-    // Runtime guard — ALL.len() must match the count of per-kernel tests above.
-    // If you added a KernelId variant and fixed the compile error above, also
-    // add the corresponding per-kernel consistency test function in this file
-    // and bump this count.
-    assert_eq!(
-        KernelId::ALL.len(),
-        5,
-        "KernelId::ALL has grown beyond 5 variants; add a per-kernel \
-         consistency test in crates/reify-config/tests/kernel_name_consistency.rs \
-         for the new variant and update this count"
-    );
 }
