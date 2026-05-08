@@ -12,7 +12,7 @@
 use reify_types::Value;
 
 /// Structured shell stress result carrying per-integration-layer stress
-/// channels and the per-element local-to-global rotation frame.
+/// channels.
 ///
 /// # Channels
 ///
@@ -20,10 +20,12 @@ use reify_types::Value;
 /// - `mid`    — mid-surface (neutral-plane) stress. For tet results all three
 ///   channels are equal (no through-thickness gradient).
 /// - `bottom` — bottom-surface stress (inner fibre opposite to `top`).
-/// - `frame`  — per-element local-to-global rotation
-///   (`Field<Point3<Length>, Matrix<3,3,Real>>` at runtime).
-///   Set to `Value::Undef` for tet results (tet stress is already
-///   in the global Cartesian frame; no local frame exists).
+///
+/// The per-element local-to-global rotation frame lives on `ElasticResult`
+/// (as `frame : Real` placeholder for `Field<Point3<Length>, Matrix<3,3,Real>>`),
+/// not on `ShellStress`. All three channels share the same per-element
+/// rotation, so keeping `frame` at the `ElasticResult` level avoids
+/// duplicating it across channels.
 ///
 /// # Note on `Eq`
 ///
@@ -34,24 +36,20 @@ pub struct ShellStress {
     pub top: Value,
     pub mid: Value,
     pub bottom: Value,
-    pub frame: Value,
 }
 
 impl ShellStress {
     /// Canonical tet-result constructor. Sets `top == mid == bottom == field`
-    /// (no through-thickness stress variation for solid elements) and
-    /// `frame = Value::Undef` (tet stress is already in the global frame).
+    /// (no through-thickness stress variation for solid elements).
     ///
     /// Engine-integration tasks T18-T20 call this for every tet-element result
     /// when packaging the solver output. For shell elements they use direct
-    /// struct initialisation with distinct per-layer fields and the MITC3+
-    /// local frame.
+    /// struct initialisation with distinct per-layer fields.
     pub fn homogeneous(field: Value) -> Self {
         Self {
             top: field.clone(),
             mid: field.clone(),
             bottom: field,
-            frame: Value::Undef,
         }
     }
 }

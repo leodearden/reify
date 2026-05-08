@@ -66,7 +66,6 @@
 //! assert!(ss.top.is_undef());
 //! assert!(ss.mid.is_undef());
 //! assert!(ss.bottom.is_undef());
-//! assert!(ss.frame.is_undef());
 //! ```
 
 pub mod assembly;
