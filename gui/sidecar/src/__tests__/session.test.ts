@@ -2706,4 +2706,59 @@ describe('SidecarSession proc error handling', () => {
     // (c) No spurious extra error outbounds beyond the timeout one
     expect(outputs.filter((o) => o.type === 'error')).toHaveLength(1);
   });
+
+  it('non-ABORT_ERR proc error is logged via console.error', async () => {
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      // Create a mock process that will emit a non-ABORT error then close normally
+      const mockProc = new EventEmitter() as any;
+      const stdout = new PassThrough();
+      mockProc.stdout = stdout;
+      mockProc.stderr = new PassThrough();
+      mockProc.stdin = new PassThrough();
+      mockProc.exitCode = null;
+
+      vi.mocked(spawn).mockImplementation((() => {
+        // On the next tick, emit a spawn-time error (e.g., ENOENT), then close with exit code 1
+        process.nextTick(() => {
+          const spawnErr = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
+          mockProc.emit('error', spawnErr);
+          stdout.push(null);
+          mockProc.exitCode = 1;
+          mockProc.emit('close', 1);
+        });
+        return mockProc;
+      }) as any);
+
+      await session.init();
+      outputs.length = 0;
+
+      // Send a message — it will complete via the close path (exit code 1 → error outbound)
+      await session.handleMessage({
+        type: 'send_message',
+        id: 'msg-enoent',
+        text: 'Task that fails to spawn',
+      });
+
+      // (a) console.error was called with the diagnostic prefix and the error
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        expect.objectContaining({ code: 'ENOENT' })
+      );
+
+      // (b) The close-path still emits an error outbound (exitCode === 1)
+      const errors = outputs.filter((o) => o.type === 'error');
+      expect(errors.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
 });
