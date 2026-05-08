@@ -1658,24 +1658,48 @@ mod tests {
     /// successful prior load, `state.compiled` must be cleared — NOT left as a
     /// stale pointer to the previous module.
     ///
-    /// Pre-fix, the retain() added in task 3183 pruned `state.files` to the new
-    /// path but left `state.compiled` intact, so `get_diagnostics()` would attempt
-    /// to resolve byte-spans from the prior module against the new file's source —
-    /// producing wrong line/column numbers.  Setting `state.compiled = None` on the
-    /// non-pipeline path keeps (active_file, files, compiled) mutually consistent.
+    /// Phase 1 uses `BRACKET_COMPILE_ERROR_PATH` (parse-clean, compile-time
+    /// diagnostics present) rather than a fully-clean fixture.  That matters
+    /// because a fully-clean fixture produces no diagnostics in `state.compiled`,
+    /// so `get_diagnostics()` returns `[]` even if `state.compiled` is stale —
+    /// the core assertion would pass regardless of the line-607 fix and the test
+    /// would not catch the regression.  With a compile-error fixture, `state.compiled`
+    /// carries labelled diagnostics whose byte-spans target `bracket_compile_error.ri`'s
+    /// source; if the subsequent `open_file(BRACKET_PARSE_ERROR_PATH)` leaves
+    /// `state.compiled` intact those stale spans are resolved against the parse-error
+    /// file's source and `get_diagnostics()` returns non-empty (wrong-line/col) output.
+    /// Setting `state.compiled = None` on the non-pipeline path (line 607) keeps
+    /// (active_file, files, compiled) mutually consistent and makes the core assertion
+    /// pass correctly.
     #[test]
     fn open_file_parse_error_clears_compiled() {
         let ctx = fresh_ctx();
 
-        // Open a valid .ri file so that state.compiled is populated.
-        ctx.open_file(BRACKET_PATH)
-            .expect("open_file should succeed for bracket.ri");
+        // Open bracket_compile_error.ri — parse-clean but carries compile-time
+        // diagnostics.  After this call state.compiled holds a module whose
+        // byte-spans target bracket_compile_error.ri's source.
+        ctx.open_file(BRACKET_COMPILE_ERROR_PATH)
+            .expect("open_file should succeed for bracket_compile_error.ri");
 
         let open_files_1 = ctx.get_open_files().unwrap();
         assert_eq!(
             open_files_1.len(),
             1,
-            "sanity: one file open after bracket.ri"
+            "sanity: one file open after bracket_compile_error.ri"
+        );
+
+        // Precondition: confirm that the compile-error fixture actually produces
+        // non-empty diagnostics — otherwise the core assertion below could pass
+        // even if state.compiled is NOT cleared (the stale module's diagnostic
+        // list would also be empty, producing a false green).
+        let pre_diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should succeed after open_file(bracket_compile_error.ri)");
+        assert!(
+            !pre_diags.is_empty(),
+            "precondition: bracket_compile_error.ri must produce non-empty diagnostics \
+             so the byte-spans would misresolve against the parse-error fixture's source \
+             if state.compiled were not cleared; got {pre_diags:?}"
         );
 
         // Open a parse-failing .ri file — open_file should still succeed (the file
@@ -1696,7 +1720,7 @@ mod tests {
         );
 
         // Core assertion: get_diagnostics() must return an empty Vec — NOT
-        // diagnostics from the prior bracket.ri module resolved against
+        // diagnostics from the prior bracket_compile_error.ri module resolved against
         // bracket_parse_error.ri's source (which would produce wrong line/columns).
         let diagnostics = ctx
             .get_diagnostics()
