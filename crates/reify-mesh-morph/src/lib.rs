@@ -348,6 +348,21 @@ mod tests {
         let _ = _fn_ref;
     };
 
+    // ── Step 3 (task 3153): pin the by-value `morph` signature ───────────────
+
+    // Compile fence: fails to compile until `morph` takes `BRep` by value.
+    // `old_mesh` and `options` remain `&`-bound (not `Copy`).
+    #[allow(unused)]
+    const _: fn() = || {
+        let _fn_ref: fn(
+            &reify_types::VolumeMesh,
+            BRep,
+            BRep,
+            &MorphOptions,
+        ) -> Result<reify_types::VolumeMesh, MorphFailure> = morph;
+        let _ = _fn_ref;
+    };
+
     // ── Steps 1-2 (task 3142): Stage-B regression guards ─────────────────────
 
     #[test]
