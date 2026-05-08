@@ -813,7 +813,7 @@ pub(crate) fn compile_entity(
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
                 }
-                outside_decl_spans.insert(sub.name.clone(), sub.span);
+                outside_decl_spans.entry(sub.name.clone()).or_insert(sub.span);
                 // Reverse-direction collision (task 2375): if this Sub's name
                 // was already registered as a match-arm cluster, emit the collision
                 // diagnostic. The cluster is suppressed; the Sub is kept.
