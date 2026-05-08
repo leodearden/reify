@@ -89,3 +89,10 @@ tree-sitter-language = "0.1"
 tree-sitter-reify = { path = "tree-sitter-reify" }
 
 tracing = "0.1"
+
+# Sparse linear algebra for FEA assembly + CG solver pipeline
+# (PRD docs/prds/v0_3/structural-analysis-fea.md task #9). We disable
+# the default `rayon` feature because the project uses `std::thread::scope`
+# for ad-hoc parallelism (matches reify-kernel-occt and reify-test-support);
+# `npy`, `rand`, and `linalg` are unused by the assembly primitive.
+faer = { version = "0.24", default-features = false, features = ["std", "sparse"] }
