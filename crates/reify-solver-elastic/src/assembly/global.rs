@@ -190,6 +190,17 @@ pub fn assemble_global_stiffness(
 /// gives faer's duplicate-summation step a stable input ordering and
 /// matches the row-major layout of [`ElementStiffness::data`] (one
 /// sequential read per output triplet).
+///
+/// # N-agnostic contract
+///
+/// The loop bounds derive from `n_local = element.connectivity.len()` and
+/// the constant `3` (axes per node) exclusively — there is no hardcoded
+/// `4` (P1 node count) or `10` (P2 node count) anywhere in the body. The
+/// `assemble_global_stiffness` entry-point's per-element contract check
+/// (`connectivity.len() * 3 == k_e.n_dofs`) is the only coupling between
+/// `n_local` and `k_e`, so this primitive accepts any element shape whose
+/// K_e satisfies that invariant. Pinned by the
+/// `single_p2_element_identity_connectivity_matches_k_e_bit_for_bit` test.
 fn emit_element_triplets(
     element: &AssemblyElement<'_>,
     out: &mut Vec<Triplet<usize, usize, f64>>,
