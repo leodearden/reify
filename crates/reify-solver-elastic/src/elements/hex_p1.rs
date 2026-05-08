@@ -40,7 +40,8 @@ use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 
 /// Gauss-Legendre 1/√3 coordinate (within 1 ulp of `(3.0_f64).sqrt().recip()`).
 ///
-/// Hard-coded literal because `f64::sqrt` is not `const fn` — mirrors the
+/// Written as a literal so the constant is usable in `const` context regardless
+/// of MSRV's `f64::sqrt` const-stability status — mirrors the
 /// `TET_P2_STROUD_A`/`B` pattern in `tet_p2.rs`.
 const HEX_P1_GAUSS_PT: f64 = 0.5773502691896257; // ≈ 1/√3
 

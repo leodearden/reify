@@ -22,9 +22,10 @@ pub struct TetP2;
 /// `(a,a,a), (b,a,a), (a,b,a), (a,a,b)` and equal weights `1/24`. The
 /// total weight `4/24 = 1/6` matches the reference-tet volume.
 ///
-/// Hard-coded to 17 significant figures rather than computed at runtime:
-/// `f64::sqrt` is not `const fn`, and a `OnceLock` for a 4-entry static
-/// slice would be needless ceremony. The literals match
+/// Written as literals (rather than via runtime `sqrt` + a `OnceLock`) so the
+/// quadrature table is usable in `const` context regardless of MSRV's
+/// `f64::sqrt` const-stability status; a `OnceLock` for a 4-entry static
+/// slice would also be needless ceremony. The literals match
 /// `(5 ± k √5) / 20` rounded to nearest representable `f64` (within 4 ×
 /// `f64::EPSILON` of `(5 ± k √5) / 20` evaluated at runtime — see the
 /// `quad_points_is_four_point_stroud_rule` test).
