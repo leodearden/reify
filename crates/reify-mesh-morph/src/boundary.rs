@@ -748,15 +748,13 @@ mod tests {
         correspondence.face_to_face.insert(h(10), h(20));
         correspondence.face_to_face.insert(h(11), h(21));
 
-        // Guard: projector panics if called with any handle != h(21).
         let mut proj = RecordingProjector::new();
-        proj.set_expected_face_handle(h(21));
         proj.add_face_response(h(21), Ok([1.05, 1.0, 0.0]));
-        // Competing response for the globally-closest face h(20).  Wiring it
-        // means a regression that incorrectly dispatches to h(20) would
-        // *silently succeed* rather than panicking with "no canned response" —
-        // so the captured_calls assertion below becomes the definitive failure
-        // signal instead of accidental scaffolding noise.
+        // Competing canned response for the globally-closest face h(20).
+        // Wiring it means a regression that incorrectly dispatches to h(20)
+        // would *silently succeed at the projector level* rather than
+        // panicking with "no canned response for face …" — so the
+        // captured_calls assertions below are the definitive failure signals.
         proj.add_face_response(h(20), Ok([0.0, 0.0, 0.0]));
 
         let result = compute_dirichlet_bcs(&mesh, &ba, &correspondence, &proj);
