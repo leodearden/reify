@@ -266,6 +266,35 @@ mod tests {
     }
 
     #[test]
+    fn elastic_result_round_trip_preserves_nan_and_infinity_bit_patterns() {
+        let original = ElasticResult {
+            displacement: vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0, 0.0],
+            stress: vec![f64::NAN],
+            max_von_mises: f64::NAN,
+            converged: false,
+            iterations: 0,
+            solve_time_ms: 0,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
+        // NaN != NaN under PartialEq, so compare bit-patterns explicitly.
+        assert_eq!(decoded.displacement.len(), original.displacement.len());
+        for (d, o) in decoded.displacement.iter().zip(original.displacement.iter()) {
+            assert_eq!(d.to_bits(), o.to_bits(), "displacement bit pattern drift");
+        }
+        assert_eq!(decoded.stress.len(), original.stress.len());
+        for (d, o) in decoded.stress.iter().zip(original.stress.iter()) {
+            assert_eq!(d.to_bits(), o.to_bits(), "stress bit pattern drift");
+        }
+        assert_eq!(
+            decoded.max_von_mises.to_bits(),
+            original.max_von_mises.to_bits(),
+            "max_von_mises bit pattern drift"
+        );
+    }
+
+    #[test]
     fn elastic_result_round_trips_all_six_fields() {
         let original = ElasticResult {
             displacement: vec![1.0, -2.5, 3.14159, 0.0, 1e-9],
