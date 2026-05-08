@@ -2868,3 +2868,277 @@ describe('SidecarSession proc error handling', () => {
     }
   });
 });
+
+
+// === Step-3 failing tests: permission-prompt wiring ===
+// These fail because session.ts does not yet support permissionMcp config,
+// and ipc.ts does not yet accept permission_decision inbound messages.
+
+import { readFileSync } from 'node:fs';
+import type { PermissionServer } from '../permission-server.js';
+
+/**
+ * Build a mock PermissionServer whose onRequest() captures the registered handler.
+ */
+function makeMockPermissionServer(): {
+  server: PermissionServer;
+  triggerRequest: (req: { request_id: string; tool_name: string; tool_input: Record<string, unknown> }) => void;
+} {
+  let capturedHandler: ((req: any) => void) | null = null;
+
+  const server: PermissionServer = {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    url: vi.fn().mockReturnValue('http://127.0.0.1:29999/mcp'),
+    onRequest: vi.fn((handler: (req: any) => void) => {
+      capturedHandler = handler;
+    }),
+    decide: vi.fn(),
+    setRemembered: vi.fn(),
+  };
+
+  return {
+    server,
+    triggerRequest: (req) => {
+      if (!capturedHandler) throw new Error('onRequest handler was never registered by the session');
+      capturedHandler(req);
+    },
+  };
+}
+
+describe('SidecarSession permission-prompt wiring (step-3)', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  // (a) spawn args include --permission-prompt-tool and --mcp-config when permissionMcp configured
+  it('(a) spawn includes --permission-prompt-tool and --mcp-config when permissionMcp is configured', async () => {
+    const { server } = makeMockPermissionServer();
+    const permUrl = 'http://127.0.0.1:29999/mcp';
+
+    let capturedMcpConfig: unknown = null;
+    vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
+      const mcpConfigIdx = args.indexOf('--mcp-config');
+      if (mcpConfigIdx !== -1) {
+        const filePath = args[mcpConfigIdx + 1];
+        try {
+          capturedMcpConfig = JSON.parse(readFileSync(filePath, 'utf-8'));
+        } catch {}
+      }
+      return createMockProcess([{ type: 'result', session_id: 'sess-perm-a' }]);
+    }) as any));
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: permUrl, server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-perm-a', text: 'Hello' });
+
+    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
+
+    // (a1) --permission-prompt-tool with the correct tool path
+    const ptIdx = callArgs.indexOf('--permission-prompt-tool');
+    expect(ptIdx).toBeGreaterThanOrEqual(0);
+    expect(callArgs[ptIdx + 1]).toBe('mcp__reify-permission__approve_tool');
+
+    // (a2) --mcp-config points to a temp file
+    const mcpIdx = callArgs.indexOf('--mcp-config');
+    expect(mcpIdx).toBeGreaterThanOrEqual(0);
+
+    // (a3) The temp file contains the correct MCP server config
+    expect(capturedMcpConfig).toEqual({
+      mcpServers: {
+        'reify-permission': {
+          type: 'http',
+          url: permUrl,
+        },
+      },
+    });
+  });
+
+  // (b) onRequest fires → session emits permission_request outbound
+  it('(b) onRequest callback causes session to emit permission_request outbound', async () => {
+    const { server, triggerRequest } = makeMockPermissionServer();
+
+    // Use a hanging process so the invocation stays alive while we test mid-flight events
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+
+    vi.mocked(spawn).mockImplementation((() => mockProc) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: 'http://127.0.0.1:29999/mcp', server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // Start an invocation (don't await — it's hanging until stdout closes)
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-perm-b',
+      text: 'Write something',
+    });
+
+    // Give the session a tick to call onRequest
+    await new Promise((r) => setTimeout(r, 10));
+
+    // (b1) The session must have registered an onRequest handler with the permission server
+    expect((server.onRequest as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+
+    // (b2) Triggering the handler should cause a permission_request outbound
+    triggerRequest({
+      request_id: 'req-b1',
+      tool_name: 'Write',
+      tool_input: { path: '/tmp/x' },
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const permReq = outputs.find((o) => o.type === 'permission_request') as any;
+    expect(permReq).toBeDefined();
+    expect(permReq.id).toBe('msg-perm-b');
+    expect(permReq.request_id).toBe('req-b1');
+    expect(permReq.tool_name).toBe('Write');
+    expect(permReq.tool_input).toEqual({ path: '/tmp/x' });
+
+    // Cleanup: close the process
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+
+  // (c) handleMessage(permission_decision) calls server.decide()
+  it('(c) handleMessage(permission_decision) calls server.decide()', async () => {
+    const { server, triggerRequest } = makeMockPermissionServer();
+
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+
+    vi.mocked(spawn).mockImplementation((() => mockProc) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: 'http://127.0.0.1:29999/mcp', server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-perm-c',
+      text: 'Write something',
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Trigger the onRequest to register a pending request_id
+    triggerRequest({ request_id: 'req-c1', tool_name: 'Write', tool_input: { path: '/tmp/y' } });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Send the permission_decision inbound
+    await session.handleMessage({
+      type: 'permission_decision',
+      request_id: 'req-c1',
+      behavior: 'allow',
+    } as any);
+
+    // server.decide() must have been called with the correct args
+    expect((server.decide as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('req-c1', { behavior: 'allow' });
+
+    // Cleanup
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+
+  // (d) handleMessage(permission_decision) with remember: true calls server.setRemembered()
+  it('(d) permission_decision with remember: true calls server.setRemembered(tool_name)', async () => {
+    const { server, triggerRequest } = makeMockPermissionServer();
+
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+
+    vi.mocked(spawn).mockImplementation((() => mockProc) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: 'http://127.0.0.1:29999/mcp', server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-perm-d',
+      text: 'Write something',
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Register a pending request for 'Write'
+    triggerRequest({ request_id: 'req-d1', tool_name: 'Write', tool_input: {} });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Send permission_decision with remember: true
+    await session.handleMessage({
+      type: 'permission_decision',
+      request_id: 'req-d1',
+      behavior: 'allow',
+      remember: true,
+    } as any);
+
+    // Both decide() and setRemembered() should have been called
+    expect((server.decide as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('req-d1', expect.objectContaining({ behavior: 'allow' }));
+    expect((server.setRemembered as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('Write');
+
+    // Cleanup
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+
+  // (e) permission_decision with no permission server configured produces error outbound
+  it('(e) permission_decision with no permissionMcp configured emits a structured error', async () => {
+    // Session created without permissionMcp
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({
+      type: 'permission_decision',
+      request_id: 'req-e1',
+      behavior: 'allow',
+    } as any);
+
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).message).toMatch(/permission/i);
+    // Should not crash or throw
+  });
+});
