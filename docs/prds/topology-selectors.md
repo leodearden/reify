@@ -175,3 +175,14 @@ Also references #318, #319 (existing selector FFI pattern) and #249
    (`block_inertia`, `fillet_top_edges`) shipped as `.ri` example files
    under `examples/topology_selectors/` and exercised by the eval test
    harness.
+8. **Stdlib language-level wiring** (task 2699) — registers all 14 §3.9
+   helper names as language-level stdlib bindings in
+   `crates/reify-compiler/src/units.rs::GEOMETRY_TOPOLOGY_SELECTOR_NAMES`
+   and sets their compile-time cell types via `topology_selector_result_type`.
+   Without this step the OCCT FFIs (tasks 1-4) are unreachable from `.ri`
+   source: the compiler rejects unrecognised function names as undefined,
+   and unregistered geometry-returning cells trip the
+   `assert_value_cell_types_representable` assertion at runtime. Task 2324
+   wired the first three (`closest_point`, `on`, `angle_between_surfaces`);
+   task 2699 wires the remaining eleven. Eval-side dispatch for the eleven
+   new names (runtime/numeric coverage) is task 2691.
