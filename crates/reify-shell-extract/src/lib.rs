@@ -33,6 +33,23 @@
 //! OpenVDB FFI lands, the storage backing can be swapped behind the same
 //! public API without changing T2/T3/T4 callers.
 //!
+//! # Region-segmentation smoke test
+//!
+//! ```
+//! use reify_shell_extract::{
+//!     segment_regions, MedialMask, MidSurfaceMesh,
+//!     SegmentationError, SegmentationOptions, SegmentationResult,
+//! };
+//!
+//! let mask = MedialMask { spacing: [1.0, 1.0, 1.0], origin: [0.0, 0.0, 0.0], voxels: vec![] };
+//! let mesh = MidSurfaceMesh { vertices: vec![], triangles: vec![], thickness: vec![] };
+//! let result: SegmentationResult =
+//!     segment_regions(&mask, &mesh, &SegmentationOptions::default()).unwrap();
+//! assert!(result.regions.is_empty() && result.vertex_labels.is_empty()
+//!         && result.triangle_labels.is_empty());
+//! let _: SegmentationError = SegmentationError::InvalidThreshold { value: 0.0 };
+//! ```
+//!
 //! # Mid-surface extraction smoke test
 //!
 //! ```
@@ -97,4 +114,8 @@ pub mod segmentation;
 pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
 pub use mid_surface::{
     MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extract_mid_surface,
+};
+pub use segmentation::{
+    segment_regions, RegionClassification, RegionInfo, SegmentationError, SegmentationOptions,
+    SegmentationResult,
 };
