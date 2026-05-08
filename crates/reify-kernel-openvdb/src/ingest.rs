@@ -30,7 +30,7 @@ use reify_types::{
     Diagnostic, DiagnosticCode, DimensionVector, InterpolationKind, SampledField, SampledGridKind,
     Type,
 };
-use reify_types::sampled::{LINSPACE_MAX_INTERVALS, linspace_inclusive};
+use reify_types::sampled::{LINSPACE_MAX_INTERVALS, LinspaceError, linspace_inclusive};
 
 /// Spatial-grid shape of an OpenVDB source grid.
 ///
@@ -360,8 +360,11 @@ pub fn lower_to_sampled(
     for i in 0..axis_count {
         match linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]) {
             Ok(g) => axis_grids.push(g),
-            Err(n_intervals) => {
+            Err(LinspaceError::Excessive { n_intervals }) => {
                 return Err(IngestError::ExcessiveAxisLength { axis: i, n_intervals });
+            }
+            Err(LinspaceError::Overflow) => {
+                return Err(IngestError::ExcessiveAxisLength { axis: i, n_intervals: usize::MAX });
             }
         }
     }

@@ -13,7 +13,7 @@ use reify_types::{
     SampledField, SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId,
     ValueMap, VersionId,
 };
-use reify_types::sampled::linspace_inclusive;
+use reify_types::sampled::{LinspaceError, linspace_inclusive};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
@@ -854,7 +854,7 @@ fn build_sampled_field(
     for i in 0..bounds_min.len() {
         match linspace_inclusive(bounds_min[i], bounds_max[i], spacing[i]) {
             Ok(g) => axis_grids.push(g),
-            Err(_) => {
+            Err(LinspaceError::Excessive { .. }) | Err(LinspaceError::Overflow) => {
                 push_invalid_config(
                     ctx,
                     format!(
