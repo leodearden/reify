@@ -482,9 +482,21 @@ impl SidecarHandle {
     }
 
     /// Send an abort signal to the sidecar (cancels the current message).
+    ///
+    /// This method is idempotent against a dead sidecar: if the sidecar has
+    /// already exited and its stdin pipe is closed, the write will return
+    /// `BrokenPipe`, which is silently converted to `Ok(())` — the
+    /// user-visible action ("stop the request") is already complete.
     pub async fn abort(&mut self) -> Result<(), String> {
         let mut writer = self.stdin.lock().await;
-        write_to_sidecar(&mut *writer, &InboundMessage::Abort).await
+        let line = format_inbound(&InboundMessage::Abort);
+        match writer.write_all(line.as_bytes()).await {
+            Ok(()) => Ok(()),
+            // The sidecar already exited and its stdin pipe is closed.
+            // The user-visible action ("stop the request") is trivially complete.
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            Err(e) => Err(format!("write_to_sidecar: {}", e)),
+        }
     }
 
     /// Send a clear_session signal to the sidecar (resets conversation history).
