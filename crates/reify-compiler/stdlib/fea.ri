@@ -59,10 +59,12 @@
 // shapes; the alias and dispatch semantics are wired by the engine tasks.
 //
 // Rust runtime container: `crates/reify-solver-elastic/src/shell_result.rs`
-// houses the `ShellStress` struct with a `homogeneous(field)` constructor for
-// tet results (sets top == mid == bottom == field; frame = Value::Undef).
-// Engine-integration tasks T18-T20 call `homogeneous` for tet elements and
-// use direct struct initialisation for shell elements.
+// houses the `ShellStress` struct with three fields (top/mid/bottom) and a
+// `homogeneous(field)` constructor for tet results (sets all three channels
+// to field; no `frame` field on `ShellStress` — `frame` lives on
+// `ElasticResult`, as listed above). Engine-integration tasks T18-T20 call
+// `homogeneous` for tet elements and use direct struct initialisation for
+// shell elements.
 //
 // See `docs/prds/v0_4/structural-analysis-shells.md` § "Stress through
 // thickness" for the full design rationale.
