@@ -588,11 +588,20 @@ pub fn mesh_mid_surface(
         }
     }
 
-    // Guard: if the triangle list is somehow empty after dedup (shouldn't
-    // happen given the vertices-is-empty check above), reset sentinels.
+    // Canary: if no triangles were iterated the loop body never ran, so both
+    // sentinels must still hold their initial `f64::INFINITY` values.  This
+    // is now a debug_assert rather than a defensive reset: the reset is
+    // redundant (sentinels start at INFINITY and no assignment occurs when the
+    // loop is empty), and the assert documents the loop invariant and catches
+    // any future change that modifies the sentinel initialisation or loop body
+    // without preserving this post-condition.
     if new_triangles.is_empty() {
-        worst_aspect_ratio = f64::INFINITY;
-        worst_min_angle = f64::INFINITY;
+        debug_assert!(
+            worst_aspect_ratio.is_infinite() && worst_min_angle.is_infinite(),
+            "loop invariant violated: empty triangle list must leave sentinels at \
+             f64::INFINITY (worst_aspect_ratio={worst_aspect_ratio}, \
+             worst_min_angle={worst_min_angle})"
+        );
     }
 
     // ── 6. Quality gate ───────────────────────────────────────────────────────
