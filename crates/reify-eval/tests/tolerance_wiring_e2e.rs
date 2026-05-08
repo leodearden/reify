@@ -1110,3 +1110,60 @@ fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
         engine.realization_cache(),
     );
 }
+
+/// Task 3103, step-3 — pins that the active tolerance scope survives
+/// `build()`'s internal eval cycle so callers need no re-activation.
+///
+/// The canonical user flow is `engine.eval → activate_purpose → engine.build`.
+/// Before task 3103, `Engine::eval` (called internally by `build()`) cleared
+/// `active_purpose_bindings` and `active_tolerance_scope`, so after `build()`
+/// returned the scope was empty even though the user had activated a purpose.
+/// Task 3103 fixes this by preserving bindings across eval() and re-injecting
+/// them against the fresh snapshot; the tolerance scope therefore survives the
+/// internal eval round-trip.
+///
+/// Precondition: `active_tolerance_for("MyDesign")` returns `Some(1e-6)`
+/// immediately after `activate_purpose`.
+/// Post-build assertion: `active_tolerance_for("MyDesign")` still returns
+/// `Some(1e-6)` WITHOUT any re-activation between the user's
+/// `activate_purpose` call and `build()`.
+#[test]
+fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_internal_eval() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_tol_scope_survives_build_internal_eval".to_string(),
+    ]))
+    .template(step_input_template(50e-6))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Canonical user flow: eval → activate_purpose (no re-activation after this)
+    engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    // Precondition: scope is populated before build()
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign"),
+        Some(1e-6),
+        "precondition: active_tolerance_for must return Some(1e-6) immediately \
+         after activate_purpose"
+    );
+
+    // build() calls check() → eval() internally; task 3103 ensures the scope
+    // is preserved across that internal eval round-trip.
+    let _build = engine.build(&module, ExportFormat::Step);
+
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign"),
+        Some(1e-6),
+        "expected the active tolerance scope to survive build()'s internal eval — \
+         task 3103 closes the gap where eval() cleared active_purpose_bindings / \
+         active_tolerance_scope and forced production callers to re-activate \
+         purposes between every build"
+    );
+}
