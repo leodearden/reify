@@ -165,14 +165,18 @@ pub enum MesherError {
         /// Number of thickness entries in the mesh.
         thickness_len: usize,
     },
-    /// A triangle index references a vertex beyond `mesh.vertices.len()`.
-    OutOfRangeTriangleIndex {
-        /// Zero-based index of the offending triangle in `mesh.triangles`.
-        triangle_index: usize,
-        /// The vertex index that is out of range.
-        vertex_index: u32,
-        /// The total number of vertices in the mesh.
-        vertices_len: usize,
+    /// A vertex coordinate in `mesh.vertices` is non-finite (`NaN`, `+Inf`, or
+    /// `-Inf`). Non-finite coordinates silently corrupt the dedup hash:
+    /// `NaN` casts to `0` (all NaN vertices collapse into the origin bin) and
+    /// `±Inf` saturates to `i64::MIN`/`i64::MAX` (all infinite vertices
+    /// merge into the same boundary bin). Both failure modes produce incorrect
+    /// mesh topology without any runtime error.
+    NonFiniteVertex {
+        /// Zero-based index of the vertex in `mesh.vertices` whose coordinate
+        /// is non-finite.
+        vertex_index: usize,
+        /// The specific non-finite coordinate value (`NaN`, `+Inf`, or `-Inf`).
+        coord: f64,
     },
     /// A thickness entry in `mesh.thickness` is non-finite (`NaN`, `+Inf`, or
     /// `-Inf`). Non-finite thickness values would poison the per-vertex averaged
@@ -186,18 +190,14 @@ pub enum MesherError {
         /// The specific non-finite thickness value (`NaN`, `+Inf`, or `-Inf`).
         value: f64,
     },
-    /// A vertex coordinate in `mesh.vertices` is non-finite (`NaN`, `+Inf`, or
-    /// `-Inf`). Non-finite coordinates silently corrupt the dedup hash:
-    /// `NaN` casts to `0` (all NaN vertices collapse into the origin bin) and
-    /// `±Inf` saturates to `i64::MIN`/`i64::MAX` (all infinite vertices
-    /// merge into the same boundary bin). Both failure modes produce incorrect
-    /// mesh topology without any runtime error.
-    NonFiniteVertex {
-        /// Zero-based index of the vertex in `mesh.vertices` whose coordinate
-        /// is non-finite.
-        vertex_index: usize,
-        /// The specific non-finite coordinate value (`NaN`, `+Inf`, or `-Inf`).
-        coord: f64,
+    /// A triangle index references a vertex beyond `mesh.vertices.len()`.
+    OutOfRangeTriangleIndex {
+        /// Zero-based index of the offending triangle in `mesh.triangles`.
+        triangle_index: usize,
+        /// The vertex index that is out of range.
+        vertex_index: u32,
+        /// The total number of vertices in the mesh.
+        vertices_len: usize,
     },
     /// One or more triangles failed the quality gate after `remesh_iterations`
     /// rounds of smoothing. Carries the full quality metrics and the
@@ -246,14 +246,12 @@ impl std::fmt::Display for MesherError {
                 "mesh.thickness.len() ({thickness_len}) ≠ mesh.vertices.len() \
                  ({vertices_len}); the two parallel arrays must be the same length"
             ),
-            MesherError::OutOfRangeTriangleIndex {
-                triangle_index,
-                vertex_index,
-                vertices_len,
-            } => write!(
+            MesherError::NonFiniteVertex { vertex_index, coord } => write!(
                 f,
-                "triangle {triangle_index} references vertex index {vertex_index} \
-                 which is out of range (mesh has {vertices_len} vertices)"
+                "vertex {vertex_index} contains non-finite coordinate {coord}; \
+                 vertex coordinates must be finite (NaN silently collapses into \
+                 the dedup origin bin; ±Inf saturates to i64 boundary bins, \
+                 merging unrelated vertices and corrupting mesh topology)"
             ),
             MesherError::NonFiniteThickness { vertex_index, value } => write!(
                 f,
@@ -262,12 +260,14 @@ impl std::fmt::Display for MesherError {
                  duplicate-vertex merges and propagate to downstream FEA stiffness \
                  matrix assembly)"
             ),
-            MesherError::NonFiniteVertex { vertex_index, coord } => write!(
+            MesherError::OutOfRangeTriangleIndex {
+                triangle_index,
+                vertex_index,
+                vertices_len,
+            } => write!(
                 f,
-                "vertex {vertex_index} contains non-finite coordinate {coord}; \
-                 vertex coordinates must be finite (NaN silently collapses into \
-                 the dedup origin bin; ±Inf saturates to i64 boundary bins, \
-                 merging unrelated vertices and corrupting mesh topology)"
+                "triangle {triangle_index} references vertex index {vertex_index} \
+                 which is out of range (mesh has {vertices_len} vertices)"
             ),
             MesherError::QualityBelowThreshold {
                 metrics,
