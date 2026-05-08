@@ -1000,8 +1000,10 @@ mod tests {
     /// field is renamed or removed, this test fails at compile time rather than
     /// silently passing with stale bindings.
     ///
-    /// Asserts `shell_branch_prune_ratio == 1.0` (PRD §89 conservative default)
-    /// and `max_prune_iterations == 8` (chain-collapse bound doubled for safety).
+    /// Asserts `shell_branch_prune_ratio == 1.0` (PRD §89 conservative default),
+    /// `max_prune_iterations == 8` (chain-collapse bound doubled for safety), and
+    /// `grid_alignment_tolerance == 1e-9` (controls canonical-vertex dedup tolerance
+    /// for the T2→T3 shared-edge contract).
     ///
     /// Mirrors `mesher_options_defaults_pin_empirical_constants` (mesher.rs)
     /// and `mid_surface_options_defaults_pin_empirical_constants` (mid_surface.rs).
@@ -1011,6 +1013,8 @@ mod tests {
         let PruneOptions {
             shell_branch_prune_ratio,
             max_prune_iterations,
+            // controls canonical-vertex dedup tolerance for the T2→T3 shared-edge contract
+            grid_alignment_tolerance,
         } = PruneOptions::default();
         assert_eq!(
             shell_branch_prune_ratio, 1.0,
@@ -1019,6 +1023,11 @@ mod tests {
         assert_eq!(
             max_prune_iterations, 8,
             "max_prune_iterations default must be 8 (chain-collapse bound)"
+        );
+        assert_eq!(
+            grid_alignment_tolerance, 1e-9,
+            "grid_alignment_tolerance default must be 1e-9 (effectively bit-exact for \
+             internal T2 pipeline while admitting float jitter from future T2 variants)"
         );
     }
 
