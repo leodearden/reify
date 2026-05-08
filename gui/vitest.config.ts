@@ -4,6 +4,13 @@ import solidPlugin from 'vite-plugin-solid';
 export default defineConfig({
   plugins: [solidPlugin()],
   test: {
+    // Raised from vitest defaults (5 000 ms / 10 000 ms) to absorb the
+    // cargo-concurrency scheduling jitter that starves the Node event loop
+    // when cross-worktree cargo workers saturate the 32-token jobserver
+    // (esc-2915-17 / esc-3061-3, task 3185). These values replace the
+    // per-test overrides that were previously scattered across test files.
+    testTimeout: 15_000,
+    hookTimeout: 30_000,
     environment: 'jsdom',
     globals: true,
     exclude: ['sidecar/**', 'node_modules/**'],
