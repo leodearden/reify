@@ -26,8 +26,10 @@ pub use reify_eval::{
 /// callers that need it for failure-mode visibility counters (PRD task #11)
 /// should call [`morph_eligible`] directly.
 pub fn eligible(old_brep: &BRep, new_brep: &BRep) -> bool {
+    // Deref the &BRep — `BRep<'a>` is a `Copy` type alias for
+    // `MorphSnapshot<'a>` and `morph_eligible` takes the snapshot by value.
     matches!(
-        eligibility::morph_eligible(old_brep, new_brep),
+        eligibility::morph_eligible(*old_brep, *new_brep),
         Eligibility::Eligible(_)
     )
 }
@@ -65,7 +67,8 @@ pub fn morph(
 ) -> Result<reify_types::VolumeMesh, MorphFailure> {
     let _ = old_mesh;
     let _ = options;
-    match eligibility::morph_eligible(old_brep, new_brep) {
+    // Deref — see note in `eligible()` above.
+    match eligibility::morph_eligible(*old_brep, *new_brep) {
         Eligibility::Ineligible(reason) => Err(MorphFailure::Ineligible(reason)),
         Eligibility::Eligible(_correspondence_map) => Err(MorphFailure::SolverError(
             SolverErrorPayload::new(
