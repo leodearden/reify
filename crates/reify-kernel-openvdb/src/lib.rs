@@ -31,11 +31,33 @@
 //! `crates/reify-test-support/src/mocks.rs` — `FailingMockGeometryKernel`.
 
 pub mod ingest;
-pub mod kernel;
 pub mod register;
+
+// Real FFI bridge — only compiled when the build script detects OpenVDB.
+#[cfg(has_openvdb)]
+pub mod ffi;
+
+// Shared library-initialisation helper used by both `kernel_real` and `ingest`
+// (cfg(has_openvdb) read path) — only compiled when has_openvdb is set.
+#[cfg(has_openvdb)]
+mod init;
+
+// Real kernel (FFI-backed) — only compiled when has_openvdb is set.
+#[cfg(has_openvdb)]
+pub mod kernel_real;
+
+// Stub kernel — only compiled when has_openvdb is NOT set.
+#[cfg(not(has_openvdb))]
+pub mod kernel;
+
+// Single public `OpenVdbKernel` ident regardless of build mode (mirrors OCCT's
+// pub use pattern from crates/reify-kernel-occt/src/lib.rs).
+#[cfg(has_openvdb)]
+pub use kernel_real::OpenVdbKernel;
+#[cfg(not(has_openvdb))]
+pub use kernel::OpenVdbKernel;
 
 pub use ingest::{
     IngestError, IngestOutcome, KNOWN_UNITS, OpenVdbGridKind, OpenVdbGridSource,
     OpenVdbInterpolation, lower_to_sampled, read_vdb_file, validate_grid_units,
 };
-pub use kernel::OpenVdbKernel;

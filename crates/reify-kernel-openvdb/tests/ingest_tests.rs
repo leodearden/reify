@@ -638,6 +638,11 @@ fn lower_to_sampled_excessive_axis_returns_excessive_axis_length() {
 /// The surrounding prose ("OpenVDB", task ID, etc.) is incidental and
 /// intentionally not pinned, so future rewording (or the FFI body landing)
 /// doesn't have to update test assertions.
+///
+/// This test is gated `cfg(not(has_openvdb))` because when the real FFI is
+/// present the stub body is replaced by the real read path (see task 3095
+/// step-8). The parallel `cfg(has_openvdb)` test is added in step-9.
+#[cfg(not(has_openvdb))]
 #[test]
 fn read_vdb_file_returns_ffi_not_implemented_with_path() {
     let result = read_vdb_file("path/to/example.vdb", "voxel_grid", &Type::length());
@@ -658,6 +663,35 @@ fn read_vdb_file_returns_ffi_not_implemented_with_path() {
         msg.contains("path/to/example.vdb"),
         "Display message must include the path; got {msg:?}"
     );
+}
+
+/// Step-9 (`cfg(has_openvdb)`): `read_vdb_file` with a non-existent path must
+/// return `IngestError::FileReadError { path, .. }` — NOT `FfiNotImplemented`.
+///
+/// Pins the new error contract that the real FFI body introduces: the OpenVDB
+/// I/O layer raises a C++ exception (`std::runtime_error`) which the cxx bridge
+/// maps to a Rust `cxx::Exception`; `read_vdb_file` converts it to
+/// `IngestError::FileReadError { path: <the caller's path>, detail: <ex.what()> }`.
+///
+/// The `detail` field is intentionally not asserted — its prose comes from the
+/// OpenVDB C++ layer and may differ across library versions.
+#[cfg(has_openvdb)]
+#[test]
+fn read_vdb_file_missing_path_returns_file_read_error() {
+    let missing = "/nonexistent/path/does-not-exist.vdb";
+    let result = read_vdb_file(missing, "any_grid", &Type::Real);
+    match result {
+        Err(IngestError::FileReadError { path, detail: _ }) => {
+            assert_eq!(
+                path, missing,
+                "FileReadError must carry the requested path; got path={path:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(IngestError::FileReadError {{ path: {:?}, .. }}), got {other:?}",
+            missing
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
