@@ -133,6 +133,16 @@ impl PersistentlyCacheable for ElasticResult {
     }
 
     fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self> {
+        // Error-propagation discipline (pinned by
+        // `elastic_result_deserialize_from_truncated_reader_returns_io_error`):
+        //   * `zstd::Decoder::new(r)?` — `zstd::Error: Into<io::Error>`, so `?`
+        //     surfaces frame-header faults as `io::Error` directly.
+        //   * `.map_err(io::Error::other)` — `bincode::Error` does NOT
+        //     implement `Into<io::Error>`, so it must be mapped explicitly.
+        //   * `read_exact` on a fixed `[u8; 8]` buffer returns
+        //     `Err(io::ErrorKind::UnexpectedEof)` on a short read; the
+        //     `f64::from_le_bytes` call then only ever sees a populated 8-byte
+        //     array, so there's no slice-indexing panic path to guard.
         let mut decoder = zstd::Decoder::new(r)?;
         let header: ElasticResultHeader =
             bincode::deserialize_from(&mut decoder).map_err(io::Error::other)?;
