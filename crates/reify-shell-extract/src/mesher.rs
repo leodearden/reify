@@ -169,15 +169,16 @@ pub enum MesherError {
         vertices_len: usize,
     },
     /// One or more triangles failed the quality gate after `remesh_iterations`
-    /// rounds of smoothing. Carries the worst-case metrics as a diagnostic
-    /// payload.
+    /// rounds of smoothing. Carries the full quality metrics and the
+    /// de-duplicated mesh so callers can inspect failing triangles, drive
+    /// their own repair, or forward the mesh for visualisation.
     QualityBelowThreshold {
-        /// Worst (minimum) aspect ratio seen across the mesh.
-        min_aspect_ratio: f64,
-        /// Worst (minimum) interior angle seen across the mesh, in degrees.
-        min_angle_degrees: f64,
-        /// Number of triangles that failed the quality gate.
-        failed_triangle_count: usize,
+        /// Full quality metrics over the de-duplicated mesh (worst-case
+        /// values, failed count, total counts).
+        metrics: QualityMetrics,
+        /// The de-duplicated mesh that failed the quality gate. Exposed so
+        /// callers can attempt their own remediation without re-running dedup.
+        mesh: MidSurfaceMesh,
         /// Number of smoothing iterations attempted before failing.
         remesh_iterations: u32,
     },
@@ -222,16 +223,18 @@ impl std::fmt::Display for MesherError {
                  which is out of range (mesh has {vertices_len} vertices)"
             ),
             MesherError::QualityBelowThreshold {
-                min_aspect_ratio,
-                min_angle_degrees,
-                failed_triangle_count,
+                metrics,
                 remesh_iterations,
+                ..
             } => write!(
                 f,
                 "mesh quality below threshold after {remesh_iterations} remesh \
-                 iteration(s): {failed_triangle_count} triangle(s) failed; \
-                 worst aspect_ratio={min_aspect_ratio:.6}, \
-                 worst min_angle={min_angle_degrees:.3}°"
+                 iteration(s): {} triangle(s) failed; \
+                 worst aspect_ratio={:.6}, \
+                 worst min_angle={:.3}°",
+                metrics.failed_triangle_count,
+                metrics.min_aspect_ratio,
+                metrics.min_angle_degrees,
             ),
         }
     }
@@ -478,6 +481,10 @@ pub fn mesh_mid_surface(
         .collect();
 
     // ── 5. Per-triangle quality ───────────────────────────────────────────────
+    // Compute counts here (before the gate) so both the error and success
+    // paths can reuse them without moving the vectors prematurely.
+    let vertex_count = new_vertices.len();
+    let triangle_count = new_triangles.len();
     let mut worst_aspect_ratio = f64::INFINITY;
     let mut worst_min_angle = f64::INFINITY;
     let mut failed_count = 0usize;
@@ -513,17 +520,28 @@ pub fn mesh_mid_surface(
         // Deferred (v0.4): Laplacian smoothing / MMG2D-style remeshing.
         // Both max_remesh_iterations == 0 and > 0 fall through to the same
         // error path. Full smoothing is a follow-up task.
+        //
+        // The de-duplicated mesh is returned inside the error so callers can
+        // inspect failing triangles, attempt their own repair, or visualise
+        // the geometry without re-running the dedup step.
         return Err(MesherError::QualityBelowThreshold {
-            min_aspect_ratio: worst_aspect_ratio,
-            min_angle_degrees: worst_min_angle,
-            failed_triangle_count: failed_count,
+            metrics: QualityMetrics {
+                triangle_count,
+                vertex_count,
+                min_aspect_ratio: worst_aspect_ratio,
+                min_angle_degrees: worst_min_angle,
+                failed_triangle_count: failed_count,
+            },
+            mesh: MidSurfaceMesh {
+                vertices: new_vertices,
+                triangles: new_triangles,
+                thickness: new_thickness,
+            },
             remesh_iterations: 0,
         });
     }
 
     // ── 7. Return success ─────────────────────────────────────────────────────
-    let vertex_count = new_vertices.len();
-    let triangle_count = new_triangles.len();
     Ok(MesherResult {
         mesh: MidSurfaceMesh {
             vertices: new_vertices,
@@ -593,9 +611,18 @@ mod tests {
             vertices_len: 0,
         };
         let _: MesherError = MesherError::QualityBelowThreshold {
-            min_aspect_ratio: 0.0,
-            min_angle_degrees: 0.0,
-            failed_triangle_count: 0,
+            metrics: QualityMetrics {
+                triangle_count: 0,
+                vertex_count: 0,
+                min_aspect_ratio: 0.0,
+                min_angle_degrees: 0.0,
+                failed_triangle_count: 0,
+            },
+            mesh: MidSurfaceMesh {
+                vertices: vec![],
+                triangles: vec![],
+                thickness: vec![],
+            },
             remesh_iterations: 0,
         };
 
@@ -1036,21 +1063,24 @@ mod tests {
 
         match err {
             MesherError::QualityBelowThreshold {
-                min_aspect_ratio,
-                min_angle_degrees,
-                failed_triangle_count,
+                ref metrics,
                 remesh_iterations,
+                ..
             } => {
                 assert!(
-                    min_aspect_ratio < 0.1,
-                    "sliver aspect ratio must be < 0.1 (default threshold), got {min_aspect_ratio}"
+                    metrics.min_aspect_ratio < 0.1,
+                    "sliver aspect ratio must be < 0.1 (default threshold), \
+                     got {}",
+                    metrics.min_aspect_ratio
                 );
                 assert!(
-                    min_angle_degrees < 20.0,
-                    "sliver min angle must be < 20° (default threshold), got {min_angle_degrees}"
+                    metrics.min_angle_degrees < 20.0,
+                    "sliver min angle must be < 20° (default threshold), \
+                     got {}°",
+                    metrics.min_angle_degrees
                 );
                 assert_eq!(
-                    failed_triangle_count, 1,
+                    metrics.failed_triangle_count, 1,
                     "exactly 1 triangle fails the gate"
                 );
                 assert_eq!(
