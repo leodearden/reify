@@ -257,6 +257,10 @@ pub fn quality_check(
                     element_index: elem_idx,
                     jacobian: sj,
                 });
+                // First inverted element wins — exit the loop; soft-fail
+                // bookkeeping after this point would be discarded by the
+                // early-return at the HardFail check below anyway.
+                break;
             }
         }
 
