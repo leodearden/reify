@@ -130,4 +130,104 @@ mod tests {
             );
         }
     }
+
+    // ── shape_grad_at tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn shape_grad_at_returns_eight_rows_each_with_three_components() {
+        let probe = ReferenceCoord::new(0.3, -0.4, 0.2);
+        let g = HexP1.shape_grad_at(probe);
+        assert_eq!(g.len(), 8, "shape_grad_at must return N_NODES=8 rows");
+        for row in &g {
+            assert_eq!(row.len(), 3, "each gradient row must have 3 components");
+        }
+    }
+
+    #[test]
+    fn shape_grad_at_matches_analytic_form_at_centroid_and_probes() {
+        // At centroid (0,0,0): ∇N_i = (ξ_i, η_i, ζ_i) / 8.
+        let centroid = ReferenceCoord::new(0.0, 0.0, 0.0);
+        let g = HexP1.shape_grad_at(centroid);
+        for (i, (grad, sign)) in g.iter().zip(VERTEX_SIGNS.iter()).enumerate() {
+            for k in 0..3 {
+                let expected = sign[k] / 8.0;
+                assert!(
+                    (grad[k] - expected).abs() < TOL,
+                    "∇N_{i}(centroid)[{k}] = {}, expected {}",
+                    grad[k],
+                    expected,
+                );
+            }
+        }
+
+        // At off-centroid probe (0.3, -0.4, 0.2): verify analytic formula for
+        // selected nodes.
+        let probe = ReferenceCoord::new(0.3, -0.4, 0.2);
+        let g2 = HexP1.shape_grad_at(probe);
+        let xi = 0.3_f64;
+        let eta = -0.4_f64;
+        let zeta = 0.2_f64;
+        for (i, (grad, s)) in g2.iter().zip(VERTEX_SIGNS.iter()).enumerate() {
+            let (sx, sy, sz) = (s[0], s[1], s[2]);
+            let expected = [
+                (sx / 8.0) * (1.0 + sy * eta) * (1.0 + sz * zeta),
+                (sy / 8.0) * (1.0 + sx * xi)  * (1.0 + sz * zeta),
+                (sz / 8.0) * (1.0 + sx * xi)  * (1.0 + sy * eta),
+            ];
+            for k in 0..3 {
+                assert!(
+                    (grad[k] - expected[k]).abs() < TOL,
+                    "∇N_{i}(probe)[{k}] = {}, expected {}",
+                    grad[k],
+                    expected[k],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shape_grad_at_partition_of_unity_consequence() {
+        // Σ_i ∇N_i = (0, 0, 0) — consequence of Σ N_i ≡ 1.
+        let probes = [
+            ReferenceCoord::new(0.0, 0.0, 0.0),
+            ReferenceCoord::new(0.3, -0.4, 0.2),
+            ReferenceCoord::new(-0.7, 0.5, -0.1),
+        ];
+        for p in &probes {
+            let g = HexP1.shape_grad_at(*p);
+            let mut sum = [0.0_f64; 3];
+            for row in &g {
+                for k in 0..3 {
+                    sum[k] += row[k];
+                }
+            }
+            for k in 0..3 {
+                assert!(
+                    sum[k].abs() < TOL,
+                    "Σ_i ∇N_i({:?})[{k}] = {}, expected 0",
+                    p,
+                    sum[k],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shape_grad_at_d_by_d_xi_is_independent_of_xi() {
+        // ∂N_i/∂ξ = (ξ_i/8)(1 + η_i η)(1 + ζ_i ζ) has no ξ dependency.
+        // Two probes that share (η, ζ) but differ in ξ must give the same
+        // [0] components.
+        let p1 = ReferenceCoord::new(0.0, 0.3, -0.4);
+        let p2 = ReferenceCoord::new(0.5, 0.3, -0.4);
+        let g1 = HexP1.shape_grad_at(p1);
+        let g2 = HexP1.shape_grad_at(p2);
+        for i in 0..8 {
+            assert!(
+                (g1[i][0] - g2[i][0]).abs() < TOL,
+                "∂N_{i}/∂ξ should not depend on ξ: p1 gives {}, p2 gives {}",
+                g1[i][0],
+                g2[i][0],
+            );
+        }
+    }
 }
