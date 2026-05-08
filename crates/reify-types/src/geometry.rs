@@ -613,6 +613,56 @@ pub enum GeometryOp {
     },
 }
 
+impl GeometryOp {
+    /// Stable static label for this variant — used in error messages so format
+    /// strings interpolate a stable token rather than the full `Debug` print.
+    ///
+    /// Returning `&'static str` makes the method zero-allocation. The
+    /// exhaustive `match` means adding a new `GeometryOp` variant requires
+    /// adding an arm here at the same diff site; the compiler enforces
+    /// this — eliminating the cross-crate drift surface where downstream
+    /// kernels previously had to maintain their own copy of this table.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            GeometryOp::Box { .. } => "Box",
+            GeometryOp::Cylinder { .. } => "Cylinder",
+            GeometryOp::Sphere { .. } => "Sphere",
+            GeometryOp::Tube { .. } => "Tube",
+            GeometryOp::Union { .. } => "Union",
+            GeometryOp::Difference { .. } => "Difference",
+            GeometryOp::Intersection { .. } => "Intersection",
+            GeometryOp::Fillet { .. } => "Fillet",
+            GeometryOp::Chamfer { .. } => "Chamfer",
+            GeometryOp::Translate { .. } => "Translate",
+            GeometryOp::Rotate { .. } => "Rotate",
+            GeometryOp::Scale { .. } => "Scale",
+            GeometryOp::RotateAround { .. } => "RotateAround",
+            GeometryOp::LinearPattern { .. } => "LinearPattern",
+            GeometryOp::CircularPattern { .. } => "CircularPattern",
+            GeometryOp::Mirror { .. } => "Mirror",
+            GeometryOp::LinearPattern2D { .. } => "LinearPattern2D",
+            GeometryOp::ArbitraryPattern { .. } => "ArbitraryPattern",
+            GeometryOp::Loft { .. } => "Loft",
+            GeometryOp::Extrude { .. } => "Extrude",
+            GeometryOp::Revolve { .. } => "Revolve",
+            GeometryOp::Sweep { .. } => "Sweep",
+            GeometryOp::Pipe { .. } => "Pipe",
+            GeometryOp::ExtrudeSymmetric { .. } => "ExtrudeSymmetric",
+            GeometryOp::SweepGuided { .. } => "SweepGuided",
+            GeometryOp::LoftGuided { .. } => "LoftGuided",
+            GeometryOp::LineSegment { .. } => "LineSegment",
+            GeometryOp::Arc { .. } => "Arc",
+            GeometryOp::Helix { .. } => "Helix",
+            GeometryOp::InterpCurve { .. } => "InterpCurve",
+            GeometryOp::BezierCurve { .. } => "BezierCurve",
+            GeometryOp::NurbsCurve { .. } => "NurbsCurve",
+            GeometryOp::Draft { .. } => "Draft",
+            GeometryOp::Thicken { .. } => "Thicken",
+            GeometryOp::Shell { .. } => "Shell",
+        }
+    }
+}
+
 /// Queries against geometry handles.
 #[derive(Debug, Clone)]
 pub enum GeometryQuery {
