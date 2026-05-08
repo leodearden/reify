@@ -56,11 +56,11 @@ pub use reify_eval::{
 /// `false` otherwise. The structured rejection [`Reason`] is discarded;
 /// callers that need it for failure-mode visibility counters (PRD task #11)
 /// should call [`morph_eligible`] directly.
-pub fn eligible(old_brep: &BRep, new_brep: &BRep) -> bool {
-    // Deref the &BRep — `BRep<'a>` is a `Copy` type alias for
-    // `MorphSnapshot<'a>` and `morph_eligible` takes the snapshot by value.
+pub fn eligible(old_brep: BRep, new_brep: BRep) -> bool {
+    // `BRep` is `Copy` (alias for `MorphSnapshot<'a>`); pass by value matches
+    // `morph_eligible`'s signature directly.
     matches!(
-        eligibility::morph_eligible(*old_brep, *new_brep),
+        eligibility::morph_eligible(old_brep, new_brep),
         Eligibility::Eligible(_)
     )
 }
@@ -206,7 +206,7 @@ mod tests {
         let table = TopologyAttributeTable::default();
         let old_brep = make_brep(&old_graph, &values, &table);
         let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(eligible(&old_brep, &new_brep));
+        assert!(eligible(old_brep, new_brep));
     }
 
     #[test]
@@ -219,7 +219,7 @@ mod tests {
         let table = TopologyAttributeTable::default();
         let old_brep = make_brep(&old_graph, &values, &table);
         let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(!eligible(&old_brep, &new_brep));
+        assert!(!eligible(old_brep, new_brep));
     }
 
     // ── Step-7/amendment: morph() Ineligible and Eligible paths ─────────────
