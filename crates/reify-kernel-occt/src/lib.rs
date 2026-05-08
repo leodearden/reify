@@ -480,6 +480,23 @@ pub struct OcctKernel {
     /// repopulate this map (best-effort: post-restore queries return `None`
     /// until the handle is re-stored locally).
     reprs: HashMap<u64, BRepKind>,
+    /// Idempotency cache for [`Self::extract_edges`]: parent handle id →
+    /// previously-minted edge handle list (in canonical
+    /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` order). On a cache hit, the
+    /// stored vec is returned verbatim; on a miss, fresh handles are minted
+    /// via `store_with_repr` and stored here.
+    ///
+    /// Required by the v0.2 selector vocabulary v2 (task 2658, step-26):
+    /// `selector_vocabulary_v2::adjacent_to_face` re-calls `extract_faces`
+    /// internally to recover the face_handle → face_index mapping. Without
+    /// idempotency the second call would mint a fresh set of ids and the
+    /// caller's pre-extracted handles would no longer match. The cache
+    /// makes `extract_*` deterministic per (kernel, parent) pair.
+    extracted_edges: HashMap<u64, Vec<GeometryHandleId>>,
+    /// Idempotency cache for [`Self::extract_faces`]: parent handle id →
+    /// previously-minted face handle list (canonical `TopExp::MapShapes`
+    /// order). Sister to `extracted_edges`; same rationale.
+    extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
     next_id: u64,
     /// Number of shapes that failed deserialization during the last `with_warm_state()` call.
     last_warm_start_failures: usize,
@@ -495,6 +512,8 @@ impl OcctKernel {
         Self {
             shapes: HashMap::new(),
             reprs: HashMap::new(),
+            extracted_edges: HashMap::new(),
+            extracted_faces: HashMap::new(),
             next_id: 1,
             last_warm_start_failures: 0,
         }
@@ -555,15 +574,29 @@ impl OcctKernel {
         Ok(ffi::ffi::topology_cache_build_counts(shape))
     }
 
-    /// Extract every unique edge of `handle` as a fresh handle with
+    /// Extract every unique edge of `handle` as a handle with
     /// `BRepKind::Edge`. Order follows the canonical
     /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration.
+    ///
+    /// **Idempotent per parent**: a second call with the same `handle`
+    /// returns the same handle list as the first call (cached in
+    /// `extracted_edges`). This is required by the v0.2 selector
+    /// vocabulary v2's `adjacent_to_face` (and forthcoming
+    /// `ancestor_faces_of_edge`), which re-calls `extract_*` to recover
+    /// the canonical sub-shape index of a caller-supplied handle. Without
+    /// idempotency the second call would mint a fresh set of ids and the
+    /// caller's pre-extracted handles would no longer match. The cache is
+    /// invalidated on `with_warm_state` (when the kernel's shape table is
+    /// swapped wholesale).
     ///
     /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
     pub fn extract_edges(
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        if let Some(cached) = self.extracted_edges.get(&handle.0) {
+            return Ok(cached.clone());
+        }
         // Collect into a Vec<UniquePtr<OcctShape>> in a scope where the
         // immutable borrow of `self` (via get_shape) drops before we mutate
         // self via store_with_repr.
@@ -588,18 +621,25 @@ impl OcctKernel {
             let h = self.store_with_repr(sub, BRepKind::Edge);
             ids.push(h.id);
         }
+        self.extracted_edges.insert(handle.0, ids.clone());
         Ok(ids)
     }
 
-    /// Extract every unique face of `handle` as a fresh handle with
+    /// Extract every unique face of `handle` as a handle with
     /// `BRepKind::Face`. Order follows the canonical
     /// `TopExp::MapShapes(.., TopAbs_FACE, ..)` enumeration.
+    ///
+    /// **Idempotent per parent**: see [`Self::extract_edges`] for the
+    /// rationale and cache-invalidation contract.
     ///
     /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
     pub fn extract_faces(
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        if let Some(cached) = self.extracted_faces.get(&handle.0) {
+            return Ok(cached.clone());
+        }
         let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
             let shape = self
                 .get_shape(handle)
@@ -621,6 +661,7 @@ impl OcctKernel {
             let h = self.store_with_repr(sub, BRepKind::Face);
             ids.push(h.id);
         }
+        self.extracted_faces.insert(handle.0, ids.clone());
         Ok(ids)
     }
 
@@ -2480,6 +2521,11 @@ impl WarmStartable for OcctKernel {
             self.shapes = staged;
             self.reprs = new_reprs;
             self.next_id = warm.next_id;
+            // Wholesale shape replacement invalidates any cached parent →
+            // children mapping (the cached child ids may not correspond to
+            // any face/edge of the freshly-restored parent shapes).
+            self.extracted_edges.clear();
+            self.extracted_faces.clear();
         }
     }
 }
