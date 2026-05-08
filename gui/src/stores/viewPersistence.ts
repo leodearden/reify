@@ -65,7 +65,21 @@ export function loadViewPersistence(absPath: string): PersistentViewState | null
     if (raw === null) return null;
 
     const parsed: unknown = JSON.parse(raw);
-    if (!isPersistentViewState(parsed)) return null;
+    if (!isPersistentViewState(parsed)) {
+      // Emit a diagnostic when a version field is present but wrong — most
+      // commonly a legacy v1 entry left over from before the schema bump.
+      // This gives users a single actionable line in the console instead of
+      // a silent fallback to defaults.
+      if (typeof parsed === 'object' && parsed !== null && 'version' in parsed) {
+        const legacyVersion = (parsed as Record<string, unknown>)['version'];
+        console.warn(
+          `[viewPersistence] Discarding persisted state for "${absPath}": ` +
+            `legacy schema version ${JSON.stringify(legacyVersion)} (expected "2"). ` +
+            `Falling back to defaults.`,
+        );
+      }
+      return null;
+    }
 
     return parsed;
   } catch {
