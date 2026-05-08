@@ -503,6 +503,7 @@ const App: Component = () => {
   }
 
   async function handleOpen() {
+    if (!confirmDiscardIfDirty()) return;
     try {
       const path = await pickOpenPath();
       if (!path) return;
