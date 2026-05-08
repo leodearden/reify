@@ -40,7 +40,8 @@ use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 
 /// Gauss-Legendre 1/√3 coordinate (within 1 ulp of `(3.0_f64).sqrt().recip()`).
 ///
-/// Hard-coded literal because `f64::sqrt` is not `const fn` — mirrors the
+/// Written as a literal so the constant is usable in `const` context regardless
+/// of MSRV's `f64::sqrt` const-stability status — mirrors the
 /// `TET_P2_STROUD_A`/`B` pattern in `tet_p2.rs`.
 const HEX_P1_GAUSS_PT: f64 = 0.5773502691896257; // ≈ 1/√3
 
@@ -200,8 +201,11 @@ mod tests {
     }
 
     #[test]
-    fn shape_grad_at_matches_analytic_form_at_centroid_and_probes() {
-        // At centroid (0,0,0): ∇N_i = (ξ_i, η_i, ζ_i) / 8.
+    fn shape_grad_at_matches_simple_analytic_form_at_centroid() {
+        // At the centroid (0,0,0) the trilinear product-rule terms all simplify
+        // to 1·1 factors, giving ∇N_i = (ξ_i, η_i, ζ_i) / 8.  This is a
+        // genuinely independent check — no product-rule terms are involved — and
+        // it pins the simplest case explicitly.
         let centroid = ReferenceCoord::new(0.0, 0.0, 0.0);
         let g = HexP1.shape_grad_at(centroid);
         for (i, (grad, sign)) in g.iter().zip(VERTEX_SIGNS.iter()).enumerate() {
@@ -215,28 +219,57 @@ mod tests {
                 );
             }
         }
+    }
 
-        // At off-centroid probe (0.3, -0.4, 0.2): verify analytic formula for
-        // selected nodes.
-        let probe = ReferenceCoord::new(0.3, -0.4, 0.2);
-        let g2 = HexP1.shape_grad_at(probe);
-        let xi = 0.3_f64;
-        let eta = -0.4_f64;
-        let zeta = 0.2_f64;
-        for (i, (grad, s)) in g2.iter().zip(VERTEX_SIGNS.iter()).enumerate() {
-            let (sx, sy, sz) = (s[0], s[1], s[2]);
-            let expected = [
-                (sx / 8.0) * (1.0 + sy * eta) * (1.0 + sz * zeta),
-                (sy / 8.0) * (1.0 + sx * xi)  * (1.0 + sz * zeta),
-                (sz / 8.0) * (1.0 + sx * xi)  * (1.0 + sy * eta),
-            ];
+    #[test]
+    fn shape_grad_at_matches_finite_difference_oracle_at_off_centroid_probes() {
+        // FD oracle: central-difference truncation O(h²) ≈ 1e-12 + roundoff
+        // O(ε·|f|/h) ≈ 1e-10; 1e-9 is comfortably above the sum.
+        //
+        // Why FD rather than the closed form: the closed form mirrors
+        // shape_grad_at's product expression bit-for-bit and can only catch
+        // refactor typos — any analytic-derivation error propagates identically
+        // to both sides.  FD compares against shape_at (a different function
+        // whose correctness is pinned by Kronecker-delta and partition-of-unity
+        // tests), so the oracle is independent and will detect wrong math.
+        const FD_H: f64 = 1e-6;
+        const FD_TOL: f64 = 1e-9;
+
+        // All probes are strictly interior: |coord_k| ≤ 0.7, so coord ± h·ê_k
+        // stays safely inside [-1, 1]³ for h = 1e-6.
+        let probes = [
+            ReferenceCoord::new(0.3, -0.4, 0.2),
+            ReferenceCoord::new(-0.7, 0.5, -0.1),
+            ReferenceCoord::new(0.5, 0.5, 0.5),
+        ];
+
+        for probe in &probes {
+            let grad = HexP1.shape_grad_at(*probe);
             for k in 0..3 {
-                assert!(
-                    (grad[k] - expected[k]).abs() < TOL,
-                    "∇N_{i}(probe)[{k}] = {}, expected {}",
-                    grad[k],
-                    expected[k],
-                );
+                let coord_plus = match k {
+                    0 => ReferenceCoord::new(probe.xi + FD_H, probe.eta, probe.zeta),
+                    1 => ReferenceCoord::new(probe.xi, probe.eta + FD_H, probe.zeta),
+                    2 => ReferenceCoord::new(probe.xi, probe.eta, probe.zeta + FD_H),
+                    _ => unreachable!(),
+                };
+                let coord_minus = match k {
+                    0 => ReferenceCoord::new(probe.xi - FD_H, probe.eta, probe.zeta),
+                    1 => ReferenceCoord::new(probe.xi, probe.eta - FD_H, probe.zeta),
+                    2 => ReferenceCoord::new(probe.xi, probe.eta, probe.zeta - FD_H),
+                    _ => unreachable!(),
+                };
+                let n_plus = HexP1.shape_at(coord_plus);
+                let n_minus = HexP1.shape_at(coord_minus);
+                for i in 0..8 {
+                    let fd_approx = (n_plus[i] - n_minus[i]) / (2.0 * FD_H);
+                    assert!(
+                        (fd_approx - grad[i][k]).abs() < FD_TOL,
+                        "FD∇N_{i}({:?})[{k}]: fd={fd_approx}, analytic={}, diff={}",
+                        probe,
+                        grad[i][k],
+                        (fd_approx - grad[i][k]).abs(),
+                    );
+                }
             }
         }
     }
