@@ -97,7 +97,14 @@ pub struct ElasticResult {
 impl PersistentlyCacheable for ElasticResult {
     fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
         // Level 0 selects zstd's default compression level (3 in zstd 0.13),
-        // which is byte-deterministic for identical input.
+        // which is byte-deterministic for identical input. Pinned explicitly
+        // — `zstd 0.13` does not currently expose a non-deterministic mode at
+        // this level, but byte-determinism is a hard requirement of the
+        // persistent-cache PRD. The pin is verified by
+        // `elastic_result_serialization_is_byte_deterministic` and
+        // `elastic_result_reserialize_after_deserialize_is_byte_identical`;
+        // bump the level if a future zstd release breaks default-level
+        // determinism.
         let mut encoder = zstd::Encoder::new(w, 0)?;
         let header = ElasticResultHeader {
             max_von_mises_bits: self.max_von_mises.to_bits(),
