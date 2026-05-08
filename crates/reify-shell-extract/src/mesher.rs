@@ -996,4 +996,76 @@ mod tests {
             result.metrics.min_aspect_ratio
         );
     }
+
+    // ── Steps 13-14: quality-gate test ───────────────────────────────────────
+
+    /// The quality gate fires on a near-degenerate sliver triangle.
+    ///
+    /// `[0,0,0]`, `[1,0,0]`, `[0.5, 1e-3, 0]` — very flat, tiny min angle —
+    /// should fail the default quality thresholds (`min_aspect_ratio: 0.1`,
+    /// `min_angle_degrees: 20.0`).
+    #[test]
+    fn mesh_mid_surface_quality_gate_fires_on_sliver_triangle() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1e-3, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![1.0, 1.0, 1.0],
+        };
+
+        // Use default options: min_aspect_ratio=0.1, min_angle_degrees=20.0,
+        // max_remesh_iterations=0 (fail-fast).
+        let err = mesh_mid_surface(&mesh, &MesherOptions::default())
+            .expect_err("sliver triangle must fail the quality gate");
+
+        match err {
+            MesherError::QualityBelowThreshold {
+                min_aspect_ratio,
+                min_angle_degrees,
+                failed_triangle_count,
+                remesh_iterations,
+            } => {
+                assert!(
+                    min_aspect_ratio < 0.1,
+                    "sliver aspect ratio must be < 0.1 (default threshold), got {min_aspect_ratio}"
+                );
+                assert!(
+                    min_angle_degrees < 20.0,
+                    "sliver min angle must be < 20° (default threshold), got {min_angle_degrees}"
+                );
+                assert_eq!(
+                    failed_triangle_count, 1,
+                    "exactly 1 triangle fails the gate"
+                );
+                assert_eq!(
+                    remesh_iterations, 0,
+                    "fail-fast: 0 remesh iterations with max_remesh_iterations=0"
+                );
+            }
+            other => panic!("expected QualityBelowThreshold, got {other:?}"),
+        }
+    }
+
+    /// Quality gate: `max_remesh_iterations > 0` still returns
+    /// `QualityBelowThreshold` in v0.4 (smoothing is deferred).
+    #[test]
+    fn mesh_mid_surface_quality_gate_deferred_remesh_returns_same_error() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1e-3, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![1.0, 1.0, 1.0],
+        };
+
+        let opts = MesherOptions {
+            max_remesh_iterations: 5, // non-zero, but smoothing is deferred
+            ..MesherOptions::default()
+        };
+
+        let err = mesh_mid_surface(&mesh, &opts)
+            .expect_err("deferred smoother: sliver still fails even with max_remesh_iterations=5");
+
+        assert!(
+            matches!(err, MesherError::QualityBelowThreshold { .. }),
+            "expected QualityBelowThreshold even with max_remesh_iterations=5, got {err:?}"
+        );
+    }
 }
