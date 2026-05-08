@@ -1355,6 +1355,20 @@ mod tests {
 
         // (a) Body must retain a meaningful interior — a regression that treated
         // every shared edge as boundary would prune the entire body to 0.
+        //
+        // Derivation of the ≥ 8 threshold:
+        //   • 5×5×5 grid → 4×4 = 16 centerline cells per z-layer (the cells
+        //     that straddle the z=0 mid-plane and actually produce surface
+        //     triangles via Marching Cubes).
+        //   • MC emits ~2 triangles per active cube on a flat slab, so
+        //     16 cells × 2 ≈ 32 raw triangles before pruning.
+        //   • Branch pruning removes the outer ring of boundary-only cells
+        //     (the 4×4 grid has 12 edge cells, leaving 4 interior cells).
+        //     4 interior cells × 2 triangles = 8 triangles minimum.
+        //   • Hence ≥ 8 is the tightest count that survives legitimate pruning
+        //     of a flat 5×5×5 slab.  If T2's MC variant changes (e.g. adds
+        //     fan-triangulation), update this bound to match the new interior
+        //     cell count × triangles-per-cell.
         assert!(
             result.mesh.triangles.len() >= 8,
             "body must retain at least 8 triangles after pruning; got {}",
