@@ -1539,198 +1539,119 @@ mod tests {
         );
     }
 
-    /// Verify that `load_file` prunes `state.files` to a singleton on every call,
-    /// so that `get_open_files()` never advertises more than one file.
+    /// Shared three-phase invariant checker for singleton-`files` pruning tests.
     ///
-    /// Pre-fix, `load_file`'s `state.files.insert(...)` accumulates entries — calling
-    /// `load_file(a)` followed by `load_file(b)` left both `a` and `b` in `state.files`,
-    /// while `compiled` / `active_file` reflected only `b`.
+    /// Invokes `op` in place of `load_file` / `open_file` and asserts that
+    /// `state.files.keys() == {active_file}` holds after every call — i.e.
+    /// the entry for the prior path is dropped (not accumulated).
     ///
-    /// Mirrors the multi-phase structure of `update_source_drops_prior_files_map_entries`
-    /// (task 3100) for the `load_file` entry point.  Post-fix: all three state-mutating
-    /// entry points (`update_source`, `load_file`, `open_file`) maintain the invariant
-    /// `state.files.keys() == {active_file}` — see task 3183 multi-document consumer audit.
+    /// Phase structure (a = BRACKET_PATH, b = BRACKET_COMPILE_ERROR_PATH):
+    ///   Phase 1 — op(a): baseline, len == 1.
+    ///   Phase 2 — op(b): len still 1; surviving entry ends_with(b);
+    ///             get_source(a) errors with "file not open".
+    ///   Phase 3 — op(a) back: len still 1; surviving entry ends_with(a);
+    ///             get_source(b) errors with "file not open".
     ///
-    /// Path assertions use `ends_with` rather than exact equality — same flake-avoidance
-    /// rationale as `update_source_after_load_file_switches_active_file`.
-    #[test]
-    fn load_file_drops_prior_files_map_entries() {
-        let ctx = fresh_ctx();
-
-        // --- Phase 1: load_file(a.ri) ---
-        ctx.load_file(BRACKET_PATH)
-            .expect("load_file should succeed for bracket.ri");
-
-        // Baseline: exactly one file open after first load_file.
+    /// Path assertions use `ends_with` rather than exact equality — same
+    /// flake-avoidance rationale as `update_source_after_load_file_switches_active_file`.
+    fn assert_singleton_files_invariant(ctx: &CliToolContext, op: impl Fn(&CliToolContext, &str)) {
+        // --- Phase 1: op(a) ---
+        op(ctx, BRACKET_PATH);
         assert_eq!(
             ctx.get_open_files().unwrap().len(),
             1,
-            "baseline: exactly one file open after first load_file"
+            "baseline: exactly one file open after first op call"
         );
 
-        // --- Phase 2: load_file(b.ri) — files-map must NOT grow to 2 ---
-        ctx.load_file(BRACKET_COMPILE_ERROR_PATH)
-            .expect("load_file should succeed for bracket_compile_error.ri");
-
-        // Core bound assertion: state.files must be pruned to a single entry.
+        // --- Phase 2: op(b) — files-map must NOT grow to 2 ---
+        op(ctx, BRACKET_COMPILE_ERROR_PATH);
         assert_eq!(
             ctx.get_open_files().unwrap().len(),
             1,
-            "state.files must be pruned to a single entry after load_file(b); \
+            "state.files must be pruned to a single entry after op(b); \
              prior bracket.ri entry must be dropped (not 2)"
         );
-
-        // Independent oracle: the surviving entry names b.ri.
         let open_files = ctx.get_open_files().unwrap();
         assert!(
             open_files[0].path.ends_with("bracket_compile_error.ri"),
-            "surviving open file must be bracket_compile_error.ri after load_file(b); \
-             got {:?}",
+            "surviving entry must be bracket_compile_error.ri after op(b); got {:?}",
             open_files[0].path
         );
-
-        // Prior path must no longer be reachable via get_source.
         // ToolError::EngineError("file not open: …") formats as "engine error: file not open: …".
         let err = ctx.get_source(Some(BRACKET_PATH)).unwrap_err();
         let err_str = err.to_string();
         assert!(
             err_str.contains("file not open"),
-            "get_source for the prior bracket.ri path must fail with 'file not open'; got: {:?}",
+            "get_source(bracket.ri) must fail with 'file not open' after op(b); got: {:?}",
             err
         );
         assert!(
             err_str.contains("bracket.ri"),
-            "error message must mention the prior bracket.ri path; got: {:?}",
+            "error must mention bracket.ri; got: {:?}",
             err
         );
 
-        // --- Phase 3: loop guard — load_file back to a.ri ---
-        ctx.load_file(BRACKET_PATH)
-            .expect("load_file back to bracket.ri should succeed");
-
+        // --- Phase 3: loop guard — op(a) back ---
+        op(ctx, BRACKET_PATH);
         assert_eq!(
             ctx.get_open_files().unwrap().len(),
             1,
-            "state.files must remain bounded after load_file switch back to a.ri"
+            "state.files must remain bounded after switching back to a"
         );
-
         let open_files2 = ctx.get_open_files().unwrap();
         assert!(
             open_files2[0].path.ends_with("bracket.ri"),
-            "surviving open file must be bracket.ri after switching back; got {:?}",
+            "surviving entry must be bracket.ri after switching back; got {:?}",
             open_files2[0].path
         );
-
         let err2 = ctx.get_source(Some(BRACKET_COMPILE_ERROR_PATH)).unwrap_err();
         let err2_str = err2.to_string();
         assert!(
             err2_str.contains("file not open"),
-            "get_source for the prior bracket_compile_error.ri path must fail with 'file not open'; \
-             got: {:?}",
+            "get_source(bracket_compile_error.ri) must fail with 'file not open'; got: {:?}",
             err2
         );
         assert!(
             err2_str.contains("bracket_compile_error.ri"),
-            "error message must mention the prior bracket_compile_error.ri path; got: {:?}",
+            "error must mention bracket_compile_error.ri; got: {:?}",
             err2
         );
+    }
+
+    /// Verify that `load_file` prunes `state.files` to a singleton on every call,
+    /// so that `get_open_files()` never advertises more than one file.
+    ///
+    /// Pre-fix, `load_file`'s `state.files.insert(...)` accumulated entries — calling
+    /// `load_file(a)` then `load_file(b)` left both `a` and `b` in `state.files`,
+    /// while `compiled` / `active_file` reflected only `b`.
+    ///
+    /// Post-fix: all three state-mutating entry points (`update_source`, `load_file`,
+    /// `open_file`) maintain `state.files.keys() == {active_file}` — see task 3183.
+    #[test]
+    fn load_file_drops_prior_files_map_entries() {
+        let ctx = fresh_ctx();
+        assert_singleton_files_invariant(&ctx, |ctx, path| {
+            ctx.load_file(path)
+                .expect("load_file should succeed");
+        });
     }
 
     /// Verify that `open_file` prunes `state.files` to a singleton on every call,
     /// so that `get_open_files()` never advertises more than one file.
     ///
-    /// Pre-fix, `open_file`'s `state.files.insert(...)` accumulates entries — calling
-    /// `open_file(a)` followed by `open_file(b)` left both `a` and `b` in `state.files`,
+    /// Pre-fix, `open_file`'s `state.files.insert(...)` accumulated entries — calling
+    /// `open_file(a)` then `open_file(b)` left both `a` and `b` in `state.files`,
     /// while `compiled` / `active_file` reflected only `b`.
     ///
-    /// Mirrors the multi-phase structure of `update_source_drops_prior_files_map_entries`
-    /// (task 3100) for the `open_file` entry point.  Post-fix: all three state-mutating
-    /// entry points (`update_source`, `load_file`, `open_file`) maintain the invariant
-    /// `state.files.keys() == {active_file}` — see task 3183 multi-document consumer audit.
-    ///
-    /// Path assertions use `ends_with` rather than exact equality — same flake-avoidance
-    /// rationale as `update_source_after_load_file_switches_active_file`.
+    /// Post-fix: all three state-mutating entry points (`update_source`, `load_file`,
+    /// `open_file`) maintain `state.files.keys() == {active_file}` — see task 3183.
     #[test]
     fn open_file_drops_prior_files_map_entries() {
         let ctx = fresh_ctx();
-
-        // --- Phase 1: open_file(a.ri) ---
-        ctx.open_file(BRACKET_PATH)
-            .expect("open_file should succeed for bracket.ri");
-
-        // Baseline: exactly one file open after first open_file.
-        assert_eq!(
-            ctx.get_open_files().unwrap().len(),
-            1,
-            "baseline: exactly one file open after first open_file"
-        );
-
-        // --- Phase 2: open_file(b.ri) — files-map must NOT grow to 2 ---
-        ctx.open_file(BRACKET_COMPILE_ERROR_PATH)
-            .expect("open_file should succeed for bracket_compile_error.ri");
-
-        // Core bound assertion: state.files must be pruned to a single entry.
-        assert_eq!(
-            ctx.get_open_files().unwrap().len(),
-            1,
-            "state.files must be pruned to a single entry after open_file(b); \
-             prior bracket.ri entry must be dropped (not 2)"
-        );
-
-        // Independent oracle: the surviving entry names b.ri.
-        let open_files = ctx.get_open_files().unwrap();
-        assert!(
-            open_files[0].path.ends_with("bracket_compile_error.ri"),
-            "surviving open file must be bracket_compile_error.ri after open_file(b); \
-             got {:?}",
-            open_files[0].path
-        );
-
-        // Prior path must no longer be reachable via get_source.
-        // ToolError::EngineError("file not open: …") formats as "engine error: file not open: …".
-        let err = ctx.get_source(Some(BRACKET_PATH)).unwrap_err();
-        let err_str = err.to_string();
-        assert!(
-            err_str.contains("file not open"),
-            "get_source for the prior bracket.ri path must fail with 'file not open'; got: {:?}",
-            err
-        );
-        assert!(
-            err_str.contains("bracket.ri"),
-            "error message must mention the prior bracket.ri path; got: {:?}",
-            err
-        );
-
-        // --- Phase 3: loop guard — open_file back to a.ri ---
-        ctx.open_file(BRACKET_PATH)
-            .expect("open_file back to bracket.ri should succeed");
-
-        assert_eq!(
-            ctx.get_open_files().unwrap().len(),
-            1,
-            "state.files must remain bounded after open_file switch back to a.ri"
-        );
-
-        let open_files2 = ctx.get_open_files().unwrap();
-        assert!(
-            open_files2[0].path.ends_with("bracket.ri"),
-            "surviving open file must be bracket.ri after switching back; got {:?}",
-            open_files2[0].path
-        );
-
-        let err2 = ctx.get_source(Some(BRACKET_COMPILE_ERROR_PATH)).unwrap_err();
-        let err2_str = err2.to_string();
-        assert!(
-            err2_str.contains("file not open"),
-            "get_source for the prior bracket_compile_error.ri path must fail with 'file not open'; \
-             got: {:?}",
-            err2
-        );
-        assert!(
-            err2_str.contains("bracket_compile_error.ri"),
-            "error message must mention the prior bracket_compile_error.ri path; got: {:?}",
-            err2
-        );
+        assert_singleton_files_invariant(&ctx, |ctx, path| {
+            ctx.open_file(path)
+                .expect("open_file should succeed");
+        });
     }
 
     /// Regression: when `open_file` opens a parse-failing .ri file after a
