@@ -6,6 +6,7 @@
 //! sparse-matrix assembly via faer-rs is PRD task #9's job and consumes
 //! [`ElementStiffness`] row-major.
 
+pub mod global;
 pub mod tet;
 
 #[cfg(test)]
