@@ -87,17 +87,37 @@ fn main() {
     println!("cargo:rustc-cfg=has_openvdb");
 
     // Build the cxx bridge + C++ wrapper.
+    //
+    // The OpenVDB include directory is added with `-isystem<path>` rather
+    // than `-I<path>` so any warnings emitted from inside OpenVDB headers
+    // (deprecation notices, signed-comparison hits, etc.) are suppressed by
+    // the compiler's default treatment of system headers — without silencing
+    // the same warnings in our wrapper code (`cpp/openvdb_wrapper.cpp`).
+    //
+    // We deliberately keep `-Wno-deprecated-declarations` (which targets
+    // *uses* of deprecated APIs from headers, including from our wrapper
+    // when a typedef bottoms out in a deprecated alias) but drop
+    // `-Wno-deprecated` (which would mask deprecations *defined* in our
+    // wrapper itself — exactly the case we want a heads-up on).
+    //
+    // gcc/clang both accept the no-space form `-isystem<dir>` so we can
+    // emit it as a single token via `flag_if_supported`. (The two-token
+    // form `-isystem <dir>` requires multiple `.arg()` calls which `cc`
+    // does not expose; the no-space form is documented in both compilers'
+    // user manuals.)
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let isystem_flag = format!(
+        "-isystem{}",
+        include_dir.to_str().expect("include_dir must be UTF-8")
+    );
     let mut build = cxx_build::bridge("src/ffi.rs");
     build
         .file("cpp/openvdb_wrapper.cpp")
-        .include(&include_dir)
+        .flag_if_supported(&isystem_flag)
         .include(crate_dir.join("cpp"))
         .std("c++17")
         .flag_if_supported("-Wno-unused-parameter")
-        .flag_if_supported("-Wno-deprecated-declarations")
-        // Suppress OpenVDB's internal deprecation warnings (common in 13.x).
-        .flag_if_supported("-Wno-deprecated");
+        .flag_if_supported("-Wno-deprecated-declarations");
 
     build.compile("reify_openvdb_wrapper");
 
