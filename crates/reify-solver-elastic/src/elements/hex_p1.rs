@@ -130,6 +130,7 @@ impl ReferenceElement for HexP1 {
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)] // index variables drive match arms / parallel arrays
 mod tests {
     use super::*;
 

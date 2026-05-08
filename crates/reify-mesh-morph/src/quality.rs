@@ -490,8 +490,11 @@ mod tests {
         // Set pct threshold above 1.0 so it can never trip, isolating the
         // min-scaled-J check. Mirrors the isolation pattern used in the
         // AR-increase test (step-9) where other thresholds are disabled.
-        let mut opts = MorphOptions::default(); // quality_floor_min_scaled_jacobian = 0.15
-        opts.quality_floor_pct_below_025 = 1.01;
+        // quality_floor_min_scaled_jacobian = 0.15 from default.
+        let opts = MorphOptions {
+            quality_floor_pct_below_025: 1.01,
+            ..MorphOptions::default()
+        };
         let result = quality_check(&morphed, &source, &opts);
         match result {
             QualityVerdict::SoftFail(ref metrics) => {
@@ -567,8 +570,10 @@ mod tests {
         // quality_floor_pct_below_025 = 0.5 so 3/4 = 0.75 > threshold.
         // quality_floor_min_scaled_jacobian stays at default 0.15 —
         // global min (≈ 0.177) > 0.15 so min_scaled_jacobian stays None.
-        let mut opts = MorphOptions::default();
-        opts.quality_floor_pct_below_025 = 0.5;
+        let opts = MorphOptions {
+            quality_floor_pct_below_025: 0.5,
+            ..MorphOptions::default()
+        };
 
         let result = quality_check(&mesh, &mesh, &opts);
         match &result {
@@ -653,10 +658,12 @@ mod tests {
         // at default. Setting floor to 0.0 means only a strictly-negative
         // observed J fires (impossible for a non-inverted tet that reaches
         // the SoftFail branch). pct threshold > 1.0 is also unreachable.
-        let mut opts = MorphOptions::default();
-        opts.quality_floor_min_scaled_jacobian = 0.0;
-        opts.quality_floor_pct_below_025 = 1.01;
         // quality_aspect_ratio_increase_max stays at 2.0 (default).
+        let opts = MorphOptions {
+            quality_floor_min_scaled_jacobian: 0.0,
+            quality_floor_pct_below_025: 1.01,
+            ..MorphOptions::default()
+        };
 
         let result = quality_check(&morphed, &source, &opts);
         match &result {
@@ -817,9 +824,11 @@ mod tests {
         // pct = 1.0 (1/1 below 0.25) → threshold 1.01: 1.0 > 1.01 is false → pct_below_025 = None.
         // Before fix: ratio = INFINITY / source_ar = INFINITY > 2.0 → SoftFail.
         // After fix: AR skipped (morphed_ar.is_infinite()) → all None → Pass.
-        let mut opts = MorphOptions::default();
-        opts.quality_floor_min_scaled_jacobian = 0.0;
-        opts.quality_floor_pct_below_025 = 1.01;
+        let opts = MorphOptions {
+            quality_floor_min_scaled_jacobian: 0.0,
+            quality_floor_pct_below_025: 1.01,
+            ..MorphOptions::default()
+        };
         // quality_aspect_ratio_increase_max stays at 2.0 (default).
 
         assert_eq!(

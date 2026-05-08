@@ -538,7 +538,7 @@ mod tests {
             .expect("slab prune_branches should succeed");
 
         assert!(
-            result.mesh.triangles.len() > 0,
+            !result.mesh.triangles.is_empty(),
             "slab body must survive pruning"
         );
         assert_eq!(
@@ -1143,7 +1143,7 @@ mod tests {
         );
         // Body triangle (ratio ≈ 10) must survive.
         assert!(
-            result.mesh.triangles.len() >= 1,
+            !result.mesh.triangles.is_empty(),
             "body triangle must survive"
         );
     }

@@ -380,7 +380,7 @@ fn query_closest_point_on_shape_returns_xyz_json_for_external_point() {
             + needle.len();
         let tail = &json[start..];
         let end = tail
-            .find(|c: char| c == ',' || c == '}')
+            .find([',', '}'])
             .unwrap_or(tail.len());
         tail[..end]
             .trim()

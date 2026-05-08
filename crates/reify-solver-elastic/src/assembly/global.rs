@@ -974,7 +974,7 @@ mod tests {
                     if delta >= tol {
                         let is_worse = worst
                             .as_ref()
-                            .map_or(true, |&(_, _, _, _, _, wd, wt)| delta / tol > wd / wt);
+                            .is_none_or(|&(_, _, _, _, _, wd, wt)| delta / tol > wd / wt);
                         if is_worse {
                             worst = Some((threads, i, j, p, d, delta, tol));
                         }

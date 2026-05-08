@@ -269,6 +269,7 @@ fn slab_mesh() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
 ///     Y=2.5 voxels in Z-extent → 2.5) — Z=2.5 is past the +Z band edge.
 ///   - X↔Y swap: probe reads at (Y=2.5, X=8, 0.5) — Y=8 is past the +Y
 ///     face (slab Y extent 0..6).
+///
 /// Any of these saturate to the POSITIVE band-limit value, flipping the
 /// negative-SDF assertion below.
 #[cfg(has_openvdb)]
