@@ -2286,19 +2286,35 @@ impl OcctKernel {
                 )))
             }
             GeometryQuery::FaceNormal(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
-                let n = ffi::ffi::query_face_normal(shape)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                let [x, y, z] = self.face_outward_unit_normal(*id)?;
                 // Encode as the same JSON-string format as Centroid so
                 // downstream filters share a single parse routine.
                 Ok(Value::String(format!(
-                    "{{\"x\":{},\"y\":{},\"z\":{}}}",
-                    n.x, n.y, n.z
+                    "{{\"x\":{x},\"y\":{y},\"z\":{z}}}"
                 )))
             }
         }
+    }
+
+    /// Outward unit normal at the centroid of `face` as a typed `[f64; 3]`.
+    ///
+    /// Single source of truth shared by the `GeometryQuery::FaceNormal`
+    /// production arm and the `face_outward_unit_normal_for_test` shim, so
+    /// the equivalence is structural rather than enforced by a cross-check
+    /// test.
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, or yields a degenerate normal.
+    fn face_outward_unit_normal(&self, id: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        let s = self
+            .get_shape(id)
+            .map_err(|_| QueryError::InvalidHandle(id))?;
+        let p = ffi::ffi::query_face_normal(s)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok([p.x, p.y, p.z])
     }
 
     pub fn export(
@@ -2505,12 +2521,7 @@ impl OcctKernel {
         &self,
         face: GeometryHandleId,
     ) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(face)
-            .map_err(|_| QueryError::InvalidHandle(face))?;
-        let p = ffi::ffi::query_face_normal(s)
-            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-        Ok([p.x, p.y, p.z])
+        self.face_outward_unit_normal(face)
     }
 
     /// Create a circle face at the given z-height via the OCCT FFI and store
