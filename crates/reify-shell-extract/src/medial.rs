@@ -345,7 +345,7 @@ pub fn compute_medial_mask(
         let sp = sdf.spacing[axis];
         let bmin = sdf.bounds_min[axis];
         let bmax = sdf.bounds_max[axis];
-        if !(sp.is_finite() && sp > 0.0) || !bmin.is_finite() || !bmax.is_finite() || bmin > bmax {
+        if !(sp.is_finite() && sp > 0.0 && bmin.is_finite() && bmax.is_finite() && bmin <= bmax) {
             return Err(MedialError::InvalidAxisGeometry {
                 axis,
                 spacing: sp,
