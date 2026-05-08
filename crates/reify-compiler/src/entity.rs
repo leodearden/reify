@@ -527,7 +527,7 @@ pub(crate) fn compile_entity(
                     // We'll update this after the expression is compiled.
                     scope.register(&let_decl.name, Type::Real);
                 }
-                outside_decl_spans.insert(let_decl.name.clone(), let_decl.span);
+                outside_decl_spans.entry(let_decl.name.clone()).or_insert(let_decl.span);
                 // Reverse-direction collision (task 2375): if this Let's name
                 // was already registered as a match-arm cluster, emit the collision
                 // diagnostic. The cluster is suppressed; the Let is kept.
