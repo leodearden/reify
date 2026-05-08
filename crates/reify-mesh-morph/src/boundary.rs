@@ -752,9 +752,25 @@ mod tests {
         let mut proj = RecordingProjector::new();
         proj.set_expected_face_handle(h(21));
         proj.add_face_response(h(21), Ok([1.05, 1.0, 0.0]));
+        // Competing response for the globally-closest face h(20).  Wiring it
+        // means a regression that incorrectly dispatches to h(20) would
+        // *silently succeed* rather than panicking with "no canned response" —
+        // so the captured_calls assertion below becomes the definitive failure
+        // signal instead of accidental scaffolding noise.
+        proj.add_face_response(h(20), Ok([0.0, 0.0, 0.0]));
 
         let result = compute_dirichlet_bcs(&mesh, &ba, &correspondence, &proj);
         assert_eq!(result, Ok(vec![(0, [1.05, 1.0, 0.0])]));
+
+        // Structural guard: exactly one face dispatch, to the mapped counterpart h(21).
+        // Asserting the only recorded call is to h(21) implies zero calls referencing h(20).
+        let calls = proj.captured_calls();
+        assert_eq!(calls.len(), 1, "expected exactly one projector call");
+        assert_eq!(
+            calls[0],
+            ProjectorCall::Face { face: h(21), point: [1.0, 1.0, 0.0] },
+            "must dispatch to mapped face h(21), never the globally-closest h(20)"
+        );
     }
 
     // ── Step-29: multiple attachments in ascending node-index order ───────────
