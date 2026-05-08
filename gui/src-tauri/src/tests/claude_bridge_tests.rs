@@ -960,6 +960,40 @@ async fn sidecar_handle_abort_returns_ok_when_stdin_pipe_is_broken() {
 }
 
 #[tokio::test]
+async fn sidecar_handle_abort_short_circuits_when_state_is_crashed() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, BufReader};
+    use tokio::sync::Mutex;
+
+    // State=Crashed so the upcoming state pre-check should short-circuit before writing.
+    let state = Arc::new(Mutex::new(SidecarState::Crashed("simulated".to_string())));
+    // Keep the read half alive so writes would succeed if attempted.
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let result = handle.abort().await;
+    assert!(
+        result.is_ok(),
+        "expected abort() in Crashed state to return Ok, got: {:?}",
+        result
+    );
+
+    // Assert no bytes were written to stdin — if the short-circuit fires, the pipe
+    // should be silent. A read with a short timeout should time out (not return bytes).
+    let mut buf = vec![0u8; 64];
+    let read_result =
+        tokio::time::timeout(Duration::from_millis(50), reader_end.read(&mut buf)).await;
+    assert!(
+        read_result.is_err(),
+        "expected no write to stdin when state is Crashed, but read bytes: {:?}",
+        read_result.map(|r| r.map(|n| std::str::from_utf8(&buf[..n]).unwrap_or("<invalid utf8>").to_string()))
+    );
+}
+
+#[tokio::test]
 async fn sidecar_handle_clear_session_writes_clear_session_json() {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, BufReader};
