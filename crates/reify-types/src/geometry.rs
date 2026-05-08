@@ -4170,4 +4170,99 @@ mod tests {
         let cloned = p1_mesh.clone();
         let _ = format!("{:?}", cloned);
     }
+
+    // ──────────────────────────────────────────────────────────────────
+    // FaceSurfaceKind / EdgeCurveKind — geometry-type filter enums (PRD line 78)
+    //
+    // Mirror OCCT's `GeomAbs_*` taxonomy: surface kinds and curve kinds
+    // are distinct enums (their `Bezier`/`BSpline` arms come from
+    // `GeomAbs_BezierSurface`/`GeomAbs_BSplineCurve` and are not
+    // interchangeable). The selectors `faces_by_surface_kind` and
+    // `edges_by_curve_kind` carry their input-type constraint in the type
+    // signature — passing a curve kind to the face selector is a compile
+    // error.
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn face_surface_kind_variants_distinct_and_derive_required_traits() {
+        use std::collections::HashSet;
+
+        // Variant-distinctness: each constructor must inhabit a unique
+        // discriminant. `HashSet` capacity == 9 (one per variant) proves
+        // every arm is reachable and pairwise distinct under `Eq + Hash`.
+        let variants = [
+            FaceSurfaceKind::Plane,
+            FaceSurfaceKind::Cylinder,
+            FaceSurfaceKind::Cone,
+            FaceSurfaceKind::Sphere,
+            FaceSurfaceKind::Torus,
+            FaceSurfaceKind::BezierSurface,
+            FaceSurfaceKind::BSplineSurface,
+            FaceSurfaceKind::OffsetSurface,
+            FaceSurfaceKind::Other,
+        ];
+        let set: HashSet<FaceSurfaceKind> = variants.iter().copied().collect();
+        assert_eq!(
+            set.len(),
+            9,
+            "FaceSurfaceKind must have 9 distinct variants — got {:?}",
+            set
+        );
+
+        // Copy + Debug derives are part of the public surface (Copy lets
+        // the selector pass kinds by value through the closure boundary;
+        // Debug renders them in error messages).
+        let k = FaceSurfaceKind::Plane;
+        let copied: FaceSurfaceKind = k; // needs Copy
+        let _ = format!("{:?}", copied);
+    }
+
+    #[test]
+    fn edge_curve_kind_variants_distinct_and_derive_required_traits() {
+        use std::collections::HashSet;
+
+        let variants = [
+            EdgeCurveKind::Line,
+            EdgeCurveKind::Circle,
+            EdgeCurveKind::Ellipse,
+            EdgeCurveKind::Hyperbola,
+            EdgeCurveKind::Parabola,
+            EdgeCurveKind::BezierCurve,
+            EdgeCurveKind::BSplineCurve,
+            EdgeCurveKind::OffsetCurve,
+            EdgeCurveKind::Other,
+        ];
+        let set: HashSet<EdgeCurveKind> = variants.iter().copied().collect();
+        assert_eq!(
+            set.len(),
+            9,
+            "EdgeCurveKind must have 9 distinct variants — got {:?}",
+            set
+        );
+
+        let k = EdgeCurveKind::Line;
+        let copied: EdgeCurveKind = k;
+        let _ = format!("{:?}", copied);
+    }
+
+    #[test]
+    fn geometry_query_face_surface_kind_and_edge_curve_kind_variants_exist() {
+        // Construct + pattern-match the new GeometryQuery::FaceSurfaceKind variant.
+        let face_kind = GeometryQuery::FaceSurfaceKind(GeometryHandleId(17));
+        match &face_kind {
+            GeometryQuery::FaceSurfaceKind(id) => {
+                assert_eq!(*id, GeometryHandleId(17));
+            }
+            _ => panic!("expected FaceSurfaceKind variant"),
+        }
+
+        // Construct + pattern-match the new GeometryQuery::EdgeCurveKind variant.
+        let edge_kind = GeometryQuery::EdgeCurveKind(GeometryHandleId(19));
+        match &edge_kind {
+            GeometryQuery::EdgeCurveKind(id) => {
+                assert_eq!(*id, GeometryHandleId(19));
+            }
+            _ => panic!("expected EdgeCurveKind variant"),
+        }
+    }
 }
