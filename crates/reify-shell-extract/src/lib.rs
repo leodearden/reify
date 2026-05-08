@@ -121,6 +121,7 @@
 pub mod medial;
 pub mod mesher;
 pub mod mid_surface;
+pub mod pruning;
 pub mod segmentation;
 
 pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
