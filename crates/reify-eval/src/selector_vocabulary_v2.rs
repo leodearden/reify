@@ -177,3 +177,53 @@ pub fn faces_perpendicular_to<K: GeometryKernel + ?Sized>(
         },
     )
 }
+
+/// Return the subset of `extract_edges(handle)` whose midpoint tangent is
+/// **perpendicular** to `axis` within `angular_tol_rad`.
+///
+/// An edge is retained iff its (unit) tangent `t` satisfies
+/// `|t · axis| <= sin(angular_tol_rad)`. Symmetric counterpart of
+/// [`faces_perpendicular_to`] for edges.
+///
+/// **Sign-tolerant**: the kernel may return either direction along an
+/// edge, so a tangent's sign is irrelevant — the absolute-cosine check
+/// `|t · axis|` already provides this.
+///
+/// # Errors
+///
+/// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
+///   contains a non-finite component.
+/// - Propagates any error from `extract_edges`.
+/// - Propagates any error from a per-edge `EdgeTangent` query.
+/// - Returns `QueryError::QueryFailed` on a malformed `EdgeTangent`
+///   payload or a degenerate (near-zero magnitude) tangent.
+pub fn edges_perpendicular_to<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    axis: [f64; 3],
+    angular_tol_rad: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let axis = normalize3(axis).ok_or_else(|| {
+        QueryError::QueryFailed(
+            "edges_perpendicular_to: axis direction must be non-zero and finite".into(),
+        )
+    })?;
+    let sin_tol = angular_tol_rad.sin();
+    let edges = kernel.extract_edges(handle)?;
+    filter_by_value(
+        kernel,
+        &edges,
+        "edges_perpendicular_to",
+        GeometryQuery::EdgeTangent,
+        |id, value| {
+            let raw = parse_xyz_value(value, "EdgeTangent")?;
+            let tan = normalize3(raw).ok_or_else(|| {
+                QueryError::QueryFailed(format!(
+                    "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
+                    id
+                ))
+            })?;
+            Ok(dot3(tan, axis).abs() <= sin_tol)
+        },
+    )
+}
