@@ -1624,6 +1624,286 @@ fn kernel_distance(
     }
 }
 
+// ── Topology-selector dispatch (task 2324) ──────────────────────────────────
+//
+// `try_eval_topology_selector` is the kernel-aware eval-time dispatch for the
+// stdlib helpers `closest_point`, `on`, and `angle_between_surfaces` (PRD
+// `docs/prds/topology-selectors.md` §3.9). Sibling to
+// `try_eval_conformance_query` and `try_eval_kinematic_query` — same
+// arg-shape / fall-through contract.
+//
+// Helper-name → kernel-query mapping:
+//   `closest_point(point, geometry)` → `GeometryQuery::ClosestPointOnShape`
+//   `on(point, geometry)`            → `GeometryQuery::PointOnShape`
+//   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
+//
+// Arg-shape contract:
+//   - Both args must be `ValueRef`s — literal / inline-call shapes fall
+//     through to `None` so the cell stays at its compiled default
+//     (`Value::Undef`). Pinned by the
+//     `try_eval_topology_selector_*_literal_args_falls_through_to_none`
+//     unit tests.
+//   - For `closest_point` / `on`: args[0] must resolve in `values` to a
+//     `Value::Point` of three Length-dimensioned scalars; args[1] must
+//     resolve in `named_steps` to a `GeometryHandleId` (let-bound geometry).
+//   - For `angle_between_surfaces`: both args must resolve in `named_steps`
+//     to a `GeometryHandleId`.
+//
+// Returns:
+//   `Some(Value::Point(vec![length, length, length]))` for `closest_point`
+//                          (parsed from the kernel's JSON-Point3 reply).
+//   `Some(Value::Bool(_))` for `on`.
+//   `Some(Value::Scalar { dimension: ANGLE, .. })` for
+//                          `angle_between_surfaces`.
+//   `Some(Value::Undef)`   on a kernel error or a malformed kernel reply
+//                          (defensive downgrade with a Warning diagnostic).
+//   `None`                 when the expression is not a recognised
+//                          topology-selector helper, or the arg shape is
+//                          unsupported. Callers fall through to the cell's
+//                          compiled default.
+pub(crate) fn try_eval_topology_selector(
+    expr: &reify_types::CompiledExpr,
+    named_steps: &HashMap<String, GeometryHandleId>,
+    values: &reify_types::ValueMap,
+    kernel: &dyn reify_types::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // (1) Must be a FunctionCall — anything else is unsupported.
+    let (function, args) = match &expr.kind {
+        reify_types::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        _ => return None,
+    };
+
+    // (2) Must be one of the three recognised helper names.
+    let helper = match function.name.as_str() {
+        "closest_point" => TopologySelectorHelper::ClosestPoint,
+        "on" => TopologySelectorHelper::On,
+        "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
+        _ => return None,
+    };
+
+    // (3) All v0.1 helpers are 2-arg; non-2-arg call sites fall through.
+    if args.len() != 2 {
+        return None;
+    }
+
+    match helper {
+        TopologySelectorHelper::ClosestPoint | TopologySelectorHelper::On => {
+            // args[0]: point ValueRef → values map → Value::Point of three Length scalars.
+            let point = match resolve_point3_length_arg(&args[0], values) {
+                Some(p) => p,
+                None => return None,
+            };
+            // args[1]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = match resolve_geometry_handle_arg(&args[1], named_steps) {
+                Some(h) => h,
+                None => return None,
+            };
+
+            match helper {
+                TopologySelectorHelper::ClosestPoint => {
+                    let query = reify_types::GeometryQuery::ClosestPointOnShape {
+                        handle,
+                        px: point[0],
+                        py: point[1],
+                        pz: point[2],
+                    };
+                    dispatch_closest_point(kernel, &query, &function.name, diagnostics)
+                }
+                TopologySelectorHelper::On => {
+                    // Hard-code OCCT's `Precision::Confusion()` (~1e-7) as the
+                    // default tolerance for the v0.1 2-arg `on(point, geometry)`
+                    // surface. Kernel docstring at
+                    // `crates/reify-kernel-occt/src/lib.rs` (`OcctKernel::point_on_shape`)
+                    // recommends this value. A future explicit-tolerance
+                    // overload `on(point, geometry, tol)` will plumb the user-
+                    // supplied tolerance through here.
+                    const DEFAULT_ON_TOLERANCE_M: f64 = 1e-7;
+                    let query = reify_types::GeometryQuery::PointOnShape {
+                        handle,
+                        px: point[0],
+                        py: point[1],
+                        pz: point[2],
+                        tolerance: DEFAULT_ON_TOLERANCE_M,
+                    };
+                    dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
+                }
+                TopologySelectorHelper::AngleBetweenSurfaces => unreachable!(
+                    "angle_between_surfaces is handled in the outer match"
+                ),
+            }
+        }
+        TopologySelectorHelper::AngleBetweenSurfaces => {
+            // Both args: geometry ValueRefs → named_steps map → GeometryHandleId.
+            let face_a = match resolve_geometry_handle_arg(&args[0], named_steps) {
+                Some(h) => h,
+                None => return None,
+            };
+            let face_b = match resolve_geometry_handle_arg(&args[1], named_steps) {
+                Some(h) => h,
+                None => return None,
+            };
+            let query = reify_types::GeometryQuery::SurfaceAngle { face_a, face_b };
+            dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TopologySelectorHelper {
+    ClosestPoint,
+    On,
+    AngleBetweenSurfaces,
+}
+
+/// Resolve a `CompiledExprKind::ValueRef` arg to a `Value::Point` of three
+/// Length-dimensioned scalars and return their SI-metres components.
+/// Returns `None` for any non-`ValueRef` shape, missing cell, non-Point
+/// payload, wrong length, or non-scalar component — caller maps to the
+/// "unsupported arg shape → fall through" behaviour.
+fn resolve_point3_length_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<[f64; 3]> {
+    let id = match &expr.kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    let value = values.get(id)?;
+    let components = match value {
+        reify_types::Value::Point(items) => items,
+        _ => return None,
+    };
+    if components.len() != 3 {
+        return None;
+    }
+    let mut out = [0.0_f64; 3];
+    for (i, comp) in components.iter().enumerate() {
+        match comp {
+            // Accept either dimensionless `Real` or any `Scalar` (the
+            // dimension is fixed at the `Type::Point<Length>` cell-type
+            // level; allowing both keeps the dispatch resilient to mock
+            // test fixtures that may store points as raw `Real`s).
+            reify_types::Value::Scalar { si_value, .. } => out[i] = *si_value,
+            reify_types::Value::Real(v) => out[i] = *v,
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Resolve a `CompiledExprKind::ValueRef` geometry-arg to a `GeometryHandleId`
+/// via `named_steps`. Returns `None` for any non-`ValueRef` shape or missing
+/// `named_steps` entry — caller maps to the "unsupported arg shape → fall
+/// through" behaviour.
+fn resolve_geometry_handle_arg(
+    expr: &reify_types::CompiledExpr,
+    named_steps: &HashMap<String, GeometryHandleId>,
+) -> Option<GeometryHandleId> {
+    let cell_id = match &expr.kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    named_steps.get(&cell_id.member).copied()
+}
+
+/// Issue a `ClosestPointOnShape` query and unwrap to a
+/// `Value::Point(vec![length, length, length])`. Returns
+/// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
+/// malformed JSON-Point3 reply.
+fn dispatch_closest_point(
+    kernel: &dyn reify_types::GeometryKernel,
+    query: &reify_types::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match kernel.query(query) {
+        Ok(value) => match crate::topology_selectors::parse_xyz_value(&value, helper_name) {
+            Ok([x, y, z]) => Some(reify_types::Value::Point(vec![
+                reify_types::Value::length(x),
+                reify_types::Value::length(y),
+                reify_types::Value::length(z),
+            ])),
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{} kernel reply parse failed: {}",
+                    helper_name, err
+                )));
+                Some(reify_types::Value::Undef)
+            }
+        },
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
+}
+
+/// Issue a `PointOnShape` query and unwrap to a `Value::Bool(_)`. Returns
+/// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
+/// non-Bool reply.
+fn dispatch_point_on_shape(
+    kernel: &dyn reify_types::GeometryKernel,
+    query: &reify_types::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match kernel.query(query) {
+        Ok(reify_types::Value::Bool(b)) => Some(reify_types::Value::Bool(b)),
+        Ok(other) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel returned non-Bool value {:?}; treating as undefined",
+                helper_name, other
+            )));
+            Some(reify_types::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
+}
+
+/// Issue a `SurfaceAngle` query and unwrap to a `Value::angle(rad)`. Returns
+/// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
+/// non-numeric reply.
+fn dispatch_surface_angle(
+    kernel: &dyn reify_types::GeometryKernel,
+    query: &reify_types::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match kernel.query(query) {
+        Ok(reify_types::Value::Real(rad)) => Some(reify_types::Value::angle(rad)),
+        // Some mock kernels store the angle as an angle-dimensioned Scalar
+        // — accept either form so the dispatch is kernel-implementation
+        // agnostic (mirrors `kernel_distance`'s Real|Scalar leniency).
+        Ok(reify_types::Value::Scalar { si_value, .. }) => {
+            Some(reify_types::Value::angle(si_value))
+        }
+        Ok(other) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel returned non-numeric value {:?}; treating as undefined",
+                helper_name, other
+            )));
+            Some(reify_types::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
