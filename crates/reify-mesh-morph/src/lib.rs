@@ -16,6 +16,14 @@
 //! [`compute_dirichlet_bcs`]), interior nodes iteratively averaged with
 //! their topological neighbours via Jacobi iteration. Engine wiring (PRD
 //! task #10) selects between this smoother and the elasticity morph.
+//!
+//! ## PRD task #9 — quality check — quality module
+//!
+//! The [`quality`] module implements the two-tier quality-check pass that
+//! runs after the morph engine produces a deformed mesh. Returns
+//! [`QualityVerdict::Pass`], [`QualityVerdict::HardFail`] (element
+//! inversion), or [`QualityVerdict::SoftFail`] (metric threshold breach).
+//! Engine wiring (PRD task #10) maps hard/soft fail to remesh fallback.
 
 pub mod boundary;
 pub mod eligibility;
@@ -31,6 +39,7 @@ pub use boundary::{
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 pub use laplacian::{LaplacianFailure, laplacian_smooth};
 pub use options::{MorphFailure, MorphOptions};
+pub use quality::{QualityVerdict, quality_check};
 pub use types::{BRep, InversionDetails, MetricsBreached, SolverErrorPayload};
 
 /// Re-exported so consumers can pattern-match `Reason::BijectionFailure(_)`
