@@ -352,6 +352,62 @@ fn faces_perpendicular_to_zero_axis_returns_query_failed() {
 }
 
 #[test]
+fn faces_perpendicular_to_negative_tol_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], -0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for negative tol, got {:?}", other),
+    }
+}
+
+#[test]
+fn faces_perpendicular_to_tol_above_half_pi_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = faces_perpendicular_to(
+        &mut kernel,
+        parent,
+        [1.0, 0.0, 0.0],
+        std::f64::consts::FRAC_PI_2 + 1e-3,
+    );
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for tol > π/2, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn faces_perpendicular_to_nan_tol_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], f64::NAN);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
+    }
+}
+
+#[test]
 fn faces_perpendicular_to_degenerate_normal_returns_query_failed() {
     // A face that reports a zero normal (degenerate face) must surface a
     // QueryFailed rather than slipping through with NaN-poisoned arithmetic.
@@ -423,6 +479,62 @@ fn edges_perpendicular_to_zero_axis_returns_query_failed() {
             );
         }
         other => panic!("expected Err(QueryFailed) for zero axis, got {:?}", other),
+    }
+}
+
+#[test]
+fn edges_perpendicular_to_negative_tol_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], -0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for negative tol, got {:?}", other),
+    }
+}
+
+#[test]
+fn edges_perpendicular_to_tol_above_half_pi_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = edges_perpendicular_to(
+        &mut kernel,
+        parent,
+        [0.0, 0.0, 1.0],
+        std::f64::consts::FRAC_PI_2 + 1e-3,
+    );
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for tol > π/2, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn edges_perpendicular_to_nan_tol_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], f64::NAN);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
     }
 }
 
