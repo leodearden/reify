@@ -87,6 +87,15 @@ mod tests {
         }
     }
 
+    fn empty_mesh() -> reify_types::VolumeMesh {
+        reify_types::VolumeMesh {
+            vertices: Vec::new(),
+            tet_indices: Vec::new(),
+            element_order: reify_types::ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
     // ── Step-5: eligible() contract ───────────────────────────────────────────
 
     #[test]
@@ -113,5 +122,26 @@ mod tests {
         let old_brep = make_brep(&old_graph, &values, &table);
         let new_brep = make_brep(&new_graph, &values, &table);
         assert!(!eligible(&old_brep, &new_brep));
+    }
+
+    // ── Step-7: morph() Ineligible path ──────────────────────────────────────
+
+    #[test]
+    fn morph_returns_ineligible_failure_on_stage_a_structural_change() {
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = diverged_graph(&old_graph);
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+        let table = TopologyAttributeTable::default();
+        let old_brep = make_brep(&old_graph, &values, &table);
+        let new_brep = make_brep(&new_graph, &values, &table);
+        let mesh = empty_mesh();
+        let options = MorphOptions::default();
+        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        assert!(matches!(
+            result,
+            Err(MorphFailure::Ineligible(Reason::StructuralChange))
+        ));
     }
 }
