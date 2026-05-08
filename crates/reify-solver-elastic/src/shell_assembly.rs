@@ -373,11 +373,8 @@ pub fn shell_element_stiffness(
     //   γ_ξζ = Σ_i dn_ref[i][0] * u_z_i + N_i(tp) * θ_y_i
     //   γ_ηζ = Σ_i dn_ref[i][1] * u_z_i - N_i(tp) * θ_x_i
 
-    // We treat this as a linear operator on the 18-DOF vector and build
-    // a 2×18 matrix B_cov_tp for each tying point. Then we assemble
-    // TyingShears flat fields gamma_<comp>_at_<point> sourced from B_cov_tp[tp][component][dof].
-    // Actually the interpolation formula takes scalar inputs, so we must
-    // handle the linearity differently: we propagate the whole B matrix.
+    // TyingShears takes scalar inputs, so we drive it column-by-column: feeding
+    // the per-DOF slice of b_cov[tp][component][dof] and recovering a 2×NDOF row of B_s_cov_qp.
 
     // B_cov[tp][component][dof]: covariant shear B-matrix at each tying point
     let mut b_cov = [[[0.0_f64; NDOF]; 2]; 3]; // [tp][cov_component][dof]
