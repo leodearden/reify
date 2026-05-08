@@ -479,6 +479,54 @@ mod tests {
             "bottom σ_yy + top σ_yy = {} ≠ 0", s.bottom[1][1] + s.top[1][1]);
     }
 
+    /// Uniform θ_y = α at all nodes should produce uniform transverse shear
+    /// σ_xz = κ·G·α through the thickness, with σ_yz = 0 and all in-plane
+    /// components zero (partition-of-unity cancels the curvature gradient).
+    ///
+    /// For UNIT_TRI, jac2 = identity, so covariant = physical.  MITC3+ projected
+    /// shear at centroid: γ_ξζ = α (all N_i·α sum to 1·α), γ_ηζ = 0.
+    /// Therefore σ_xz = (5/6)·G·α, uniform across top/mid/bottom.
+    #[test]
+    fn shell_element_stress_uniform_theta_y_yields_constant_transverse_shear() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.003_f64;
+
+        let mut u = [0.0_f64; 18];
+        for n in 0..3 {
+            u[6 * n + 4] = alpha; // uniform θ_y at all nodes
+        }
+
+        let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let g_mod = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let expected_sxz = kappa * g_mod * alpha;
+
+        let scale = expected_sxz.abs().max(1.0);
+        let tol = 1e-9 * scale;
+        let tol_abs = 1e-9 * (mat.youngs_modulus * alpha * t).max(1.0); // for near-zero checks
+
+        // σ_xz = (5/6)·G·α, uniform across all three layers.
+        for (name, layer) in [("top", s.top), ("mid", s.mid), ("bottom", s.bottom)] {
+            assert!((layer[0][2] - expected_sxz).abs() < tol,
+                "{name} σ_xz = {}, expected {expected_sxz}", layer[0][2]);
+            assert!((layer[2][0] - expected_sxz).abs() < tol,
+                "{name} σ_zx = {}, expected {expected_sxz}", layer[2][0]);
+            // σ_yz = 0
+            assert!(layer[1][2].abs() < tol, "{name} σ_yz = {}, expected 0", layer[1][2]);
+            assert!(layer[2][1].abs() < tol, "{name} σ_zy = {}, expected 0", layer[2][1]);
+            // σ_zz = 0
+            assert!(layer[2][2].abs() < tol_abs, "{name} σ_zz = {}, expected 0", layer[2][2]);
+            // In-plane block = 0 (uniform θ_y → zero curvature via partition of unity).
+            assert!(layer[0][0].abs() < tol_abs, "{name} σ_xx = {}, expected 0", layer[0][0]);
+            assert!(layer[1][1].abs() < tol_abs, "{name} σ_yy = {}, expected 0", layer[1][1]);
+            assert!(layer[0][1].abs() < tol_abs, "{name} σ_xy = {}, expected 0", layer[0][1]);
+        }
+    }
+
     /// `ShellStress::homogeneous(field)` is the canonical tet-result constructor.
     /// It must set all three stress channels to the same field value.
     ///
