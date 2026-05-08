@@ -360,6 +360,10 @@ pub fn edges_perpendicular_to<K: GeometryKernel + ?Sized>(
 /// - Propagates any error from `query_many`.
 /// - Returns `QueryError::QueryFailed` on a malformed `BoundingBox`
 ///   payload (non-string, non-JSON, missing axis fields).
+/// - Returns `QueryError::QueryFailed` if any extracted extent is
+///   non-finite (NaN or ±∞) — defence-in-depth against a misbehaving
+///   kernel that would otherwise propagate non-deterministically through
+///   `f64::max`/`f64::min`.
 pub fn extremal_by_bbox<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     candidates: &[GeometryHandleId],
@@ -387,6 +391,16 @@ pub fn extremal_by_bbox<K: GeometryKernel + ?Sized>(
             ExtremalSense::Max => max_v,
             ExtremalSense::Min => min_v,
         });
+    }
+    // Defence-in-depth: a NaN metric would propagate inconsistently through
+    // `f64::max`/`f64::min` (depending on operand order), letting a NaN
+    // candidate silently slip into or out of the extreme cluster. Refuse
+    // the query rather than emit a non-deterministic result. Mirrors the
+    // `is_finite` discipline in `topology_selectors::normalize3`.
+    if metrics.iter().any(|m| !m.is_finite()) {
+        return Err(QueryError::QueryFailed(
+            "extremal_by_bbox: BoundingBox payload contained a non-finite extent".into(),
+        ));
     }
     // Find the global extreme; an empty `candidates` was short-circuited
     // above, so `metrics` is non-empty.
@@ -444,6 +458,10 @@ pub fn extremal_by_bbox<K: GeometryKernel + ?Sized>(
 /// - Propagates any error from `query_many`.
 /// - Returns `QueryError::QueryFailed` on a malformed `Centroid`
 ///   payload (non-string, non-JSON, missing fields).
+/// - Returns `QueryError::QueryFailed` if any centroid component is
+///   non-finite (NaN or ±∞) — defence-in-depth against a misbehaving
+///   kernel that would otherwise propagate non-deterministically through
+///   `f64::max`/`f64::min`.
 pub fn extremal_by_centroid<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     candidates: &[GeometryHandleId],
@@ -471,6 +489,16 @@ pub fn extremal_by_centroid<K: GeometryKernel + ?Sized>(
     for value in &values {
         let xyz = parse_xyz_value(value, "Centroid")?;
         metrics.push(dot3(xyz, axis_vec));
+    }
+    // Defence-in-depth: a NaN metric would propagate inconsistently through
+    // `f64::max`/`f64::min` (depending on operand order), letting a NaN
+    // candidate silently slip into or out of the extreme cluster. Refuse
+    // the query rather than emit a non-deterministic result. Mirrors the
+    // `is_finite` discipline in `topology_selectors::normalize3`.
+    if metrics.iter().any(|m| !m.is_finite()) {
+        return Err(QueryError::QueryFailed(
+            "extremal_by_centroid: Centroid payload contained a non-finite component".into(),
+        ));
     }
     // Find the global extreme; non-empty since `candidates` is non-empty.
     let extreme = metrics
@@ -832,6 +860,11 @@ pub fn adjacent_to_face<K: GeometryKernel + ?Sized>(
             )));
         }
     };
+    // Dedup-on-first-seen mirrors the combinator discipline. OCCT's
+    // `edge_face_map` produces unique indices in practice, but a
+    // misbehaving kernel could otherwise leak duplicates through this
+    // selector while every other selector in this module absorbs them.
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(indices.len());
     let mut out: Vec<GeometryHandleId> = Vec::with_capacity(indices.len());
     for item in indices {
         let idx = match item {
@@ -853,7 +886,9 @@ pub fn adjacent_to_face<K: GeometryKernel + ?Sized>(
                 faces.len()
             ))
         })?;
-        out.push(neighbour);
+        if seen.insert(neighbour) {
+            out.push(neighbour);
+        }
     }
     Ok(out)
 }
@@ -907,6 +942,11 @@ pub fn ancestor_faces_of_edge<K: GeometryKernel + ?Sized>(
             )));
         }
     };
+    // Dedup-on-first-seen mirrors the combinator discipline. OCCT's
+    // `edge_face_map` produces unique indices in practice, but a
+    // misbehaving kernel could otherwise leak duplicates through this
+    // selector while every other selector in this module absorbs them.
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(indices.len());
     let mut out: Vec<GeometryHandleId> = Vec::with_capacity(indices.len());
     for item in indices {
         let idx = match item {
@@ -928,7 +968,9 @@ pub fn ancestor_faces_of_edge<K: GeometryKernel + ?Sized>(
                 faces.len()
             ))
         })?;
-        out.push(parent_face);
+        if seen.insert(parent_face) {
+            out.push(parent_face);
+        }
     }
     Ok(out)
 }
@@ -936,10 +978,10 @@ pub fn ancestor_faces_of_edge<K: GeometryKernel + ?Sized>(
 /// Return every face of `parent` other than `face_handle`, preserving
 /// canonical `extract_faces` order.
 ///
-/// Implements PRD line 81's `siblings(face)` slot. Pure-Rust composition
-/// of `extract_faces(parent)` and [`except`]: returns the canonical face
-/// list with `face_handle` removed (single occurrence per the
-/// dedup-on-first-seen discipline).
+/// Implements PRD line 81's `siblings(face)` slot. Composes
+/// `extract_faces(parent)` with a single filter step that drops the
+/// matching handle. Order discipline: canonical `extract_faces` order
+/// (kernel face lists are duplicate-free, so no extra dedup is needed).
 ///
 /// Symmetric with [`adjacent_to_face`] in error shape: a `face_handle`
 /// not present in `extract_faces(parent)` errors with
@@ -962,7 +1004,7 @@ pub fn siblings_of_face<K: GeometryKernel + ?Sized>(
             "siblings_of_face: face {face_handle:?} is not a child of parent {parent:?} (was extract_faces(parent) called?)"
         )));
     }
-    Ok(except(&faces, &[face_handle]))
+    Ok(faces.into_iter().filter(|f| *f != face_handle).collect())
 }
 
 /// Recover the parent body handle of a sub-shape produced by
