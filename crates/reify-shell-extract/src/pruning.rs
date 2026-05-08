@@ -554,6 +554,10 @@ mod tests {
             result.metrics.iterations <= PruneOptions::default().max_prune_iterations,
             "iterations must be within the configured bound"
         );
+        assert!(
+            result.metrics.converged,
+            "slab prune must converge naturally within the iteration bound"
+        );
 
         // Parallel-array invariant.
         assert_eq!(
@@ -626,6 +630,10 @@ mod tests {
             result.mesh.vertices.len(), 3,
             "only the three body vertices survive (v0, v1, v2)"
         );
+        assert!(
+            result.metrics.converged,
+            "duplicate-vertex fixture must converge naturally"
+        );
     }
 
     // ── Step 13: vertex-compaction test ──────────────────────────────────────
@@ -677,6 +685,10 @@ mod tests {
                 "surviving vertices all have thickness 1.0, got {t}"
             );
         }
+        assert!(
+            result.metrics.converged,
+            "vertex-compaction fixture must converge naturally"
+        );
     }
 
     // ── Step 11: prune-spike test ─────────────────────────────────────────────
@@ -725,6 +737,10 @@ mod tests {
             result.metrics.iterations >= 1,
             "at least one iteration ran"
         );
+        assert!(
+            result.metrics.converged,
+            "spike fixture must converge naturally after spike is pruned"
+        );
     }
 
     // ── Amendment: threshold-straddling tests (suggestion 5) ─────────────────
@@ -768,6 +784,10 @@ mod tests {
             "spike (ratio=1.0) must be pruned when threshold=1.05"
         );
         assert_eq!(result.mesh.triangles.len(), 1, "body must survive");
+        assert!(
+            result.metrics.converged,
+            "just-below-threshold spike must converge naturally after pruning"
+        );
     }
 
     /// With `shell_branch_prune_ratio = 0.95`, the spike (ratio 1.0 ≥ 0.95)
@@ -785,6 +805,10 @@ mod tests {
             "spike (ratio=1.0) must survive when threshold=0.95"
         );
         assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
+        assert!(
+            result.metrics.converged,
+            "just-above-threshold spike (no pruning) must converge naturally"
+        );
     }
 
     /// With a very low threshold (0.05), the original spike (ratio ≈ 0.125)
@@ -815,6 +839,10 @@ mod tests {
             "spike (ratio≈0.125) must survive when threshold=0.05"
         );
         assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
+        assert!(
+            result.metrics.converged,
+            "threshold-too-low fixture (no pruning) must converge naturally"
+        );
     }
 
     // ── Step 9: no-prune baseline test ───────────────────────────────────────
@@ -855,6 +883,10 @@ mod tests {
         assert!(
             result.metrics.iterations <= 1,
             "at most one pass needed to settle"
+        );
+        assert!(
+            result.metrics.converged,
+            "no-prune baseline must converge naturally"
         );
     }
 
@@ -1020,6 +1052,10 @@ mod tests {
             "empty input → empty output thickness"
         );
         assert_eq!(result.metrics.iterations, 0, "no iterations on empty input");
+        assert!(
+            result.metrics.converged,
+            "empty input must report converged=true (trivially settled)"
+        );
 
         // Compile probes: all four error variants are publicly named and
         // constructible.
