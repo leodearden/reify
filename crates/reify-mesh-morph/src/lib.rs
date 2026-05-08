@@ -244,4 +244,25 @@ mod tests {
         let _: Option<NodeAttachment> = None;
         let _: Option<ProjectorPayload> = None;
     };
+
+    // ── Step-18: lib re-exports make laplacian module public surface accessible ─
+
+    // Compile fence: verifies LaplacianFailure variants and laplacian_smooth
+    // are accessible from the crate root, and pins the laplacian_smooth
+    // signature. Same discipline as the boundary fence above — fails to
+    // compile if a re-export drops or the public signature drifts.
+    const _: fn() = || {
+        use crate::{LaplacianFailure, laplacian_smooth};
+        let _fn_ref: fn(
+            &reify_types::VolumeMesh,
+            &[(u32, [f64; 3])],
+            u32,
+        ) -> Result<reify_types::VolumeMesh, LaplacianFailure> = laplacian_smooth;
+        // Variant mentions force the enum's variant set into the fence — adding
+        // or removing a variant under the same names elsewhere would still
+        // require these constructors to compile.
+        let _: LaplacianFailure = LaplacianFailure::InvalidNodeIndex(0u32);
+        let _: LaplacianFailure =
+            LaplacianFailure::UnsupportedElementOrder(reify_types::ElementOrderTag::P2);
+    };
 }
