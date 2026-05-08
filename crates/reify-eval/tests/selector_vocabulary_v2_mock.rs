@@ -10,7 +10,7 @@
 //! mirrors `topology_filtered_selectors_mock.rs`.
 
 use reify_eval::selector_vocabulary_v2::{
-    complement, except, faces_perpendicular_to, intersect, union,
+    complement, edges_perpendicular_to, except, faces_perpendicular_to, intersect, union,
 };
 use reify_test_support::MockGeometryKernel;
 use reify_types::{GeometryHandleId, QueryError, Value};
@@ -361,6 +361,79 @@ fn faces_perpendicular_to_degenerate_normal_returns_query_failed() {
     assert!(
         matches!(result, Err(QueryError::QueryFailed(_))),
         "degenerate normal must produce QueryFailed, got {:?}",
+        result
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// edges_perpendicular_to — `#axis` direction filter for edges (PRD line 76)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn edges_perpendicular_to_keeps_edges_orthogonal_to_axis() {
+    // Three edges with tangents +X, +Y, +Z. For axis = +Z the edges with
+    // tangents perpendicular to Z (i.e. +X, +Y) survive; the +Z edge is
+    // dropped because its tangent is parallel to Z.
+    let parent = GeometryHandleId(1);
+    let e_x = GeometryHandleId(2);
+    let e_y = GeometryHandleId(3);
+    let e_z = GeometryHandleId(4);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e_x, e_y, e_z])
+        .with_edge_tangent_result(
+            e_x,
+            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
+        )
+        .with_edge_tangent_result(
+            e_y,
+            Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()),
+        )
+        .with_edge_tangent_result(
+            e_z,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()),
+        );
+
+    let result =
+        edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], 1.0_f64.to_radians())
+            .expect("edges_perpendicular_to should succeed");
+    assert_eq!(
+        result,
+        vec![e_x, e_y],
+        "edges with tangents ⟂ Z (i.e. +X, +Y) survive; +Z edge dropped"
+    );
+}
+
+#[test]
+fn edges_perpendicular_to_zero_axis_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 0.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-zero and finite"),
+                "error should mention 'non-zero and finite', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for zero axis, got {:?}", other),
+    }
+}
+
+#[test]
+fn edges_perpendicular_to_degenerate_tangent_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let e = GeometryHandleId(2);
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e])
+        .with_edge_tangent_result(
+            e,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".into()),
+        );
+    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], 0.1);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "degenerate tangent must produce QueryFailed, got {:?}",
         result
     );
 }
