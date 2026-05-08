@@ -29,3 +29,40 @@
 //
 // See `docs/prds/v0_4/structural-analysis-shells.md` § "BC framework" for the
 // full design rationale.
+//
+// v0.4 shell stress framework (PRD task T16 — decomposition step 16):
+//
+// `ElasticResult` (in `std/solver/elastic`) now carries six field-typed slots
+// for shell-result data. Three of these are grouped into a companion structure,
+// `ShellStress` (also in `std/solver/elastic`):
+//
+//   ElasticResult.stress  — kept as the legacy tet-compatible stress placeholder
+//                           (Real, per TODO(field-in-param, task #3117)).
+//   ElasticResult.frame   — new in T16: per-element local-to-global rotation
+//                           (Real placeholder for Field<Point3<Length>,
+//                           Matrix<3,3,Real>>). Set to Value::Undef for tet
+//                           results; populated from the MITC3+ mid-surface
+//                           mesher for shell results.
+//   ShellStress.top       — top-surface Cauchy stress layer (Real placeholder
+//                           for Field<Point3<Length>, Tensor<2,3,Pressure>>).
+//   ShellStress.mid       — mid-surface (neutral-plane) stress layer. For tet
+//                           results all three ShellStress channels are equal.
+//   ShellStress.bottom    — bottom-surface stress layer.
+//
+// Runtime structured-stress contract (NOT implemented at the stdlib level):
+// The backward-compatible alias `result.stress` → `result.stress.mid` for
+// tet-to-shell migration, and the `to_global(stress, frame)` helper for
+// transforming shell-local stress to the global Cartesian frame, are
+// engine-integration concerns deferred to tasks T18-T20 ("Auto-classification
+// dispatch", "Shell extraction failure handling", "Persistent-naming for
+// derived mid-surface entities"). At the stdlib level T16 only declares the
+// shapes; the alias and dispatch semantics are wired by the engine tasks.
+//
+// Rust runtime container: `crates/reify-solver-elastic/src/shell_result.rs`
+// houses the `ShellStress` struct with a `homogeneous(field)` constructor for
+// tet results (sets top == mid == bottom == field; frame = Value::Undef).
+// Engine-integration tasks T18-T20 call `homogeneous` for tet elements and
+// use direct struct initialisation for shell elements.
+//
+// See `docs/prds/v0_4/structural-analysis-shells.md` § "Stress through
+// thickness" for the full design rationale.
