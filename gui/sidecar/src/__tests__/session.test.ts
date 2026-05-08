@@ -2772,9 +2772,11 @@ describe('SidecarSession proc error handling', () => {
         expect.objectContaining({ code: 'ENOENT' })
       );
 
-      // (b) The close-path still emits an error outbound (exitCode === 1)
+      // (b) The close-path emits exactly one error outbound (exitCode === 1)
       const errors = outputs.filter((o) => o.type === 'error');
-      expect(errors.length).toBeGreaterThanOrEqual(1);
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as any).message).toMatch(/Claude CLI exited with code 1/);
+      expect((errors[0] as any).id).toBe('msg-enoent');
     } finally {
       consoleErrorSpy.mockRestore();
     }
