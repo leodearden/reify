@@ -5944,6 +5944,89 @@ mod tests {
         );
     }
 
+    /// Pins the defensive dim-check in `dispatch_surface_angle`'s Scalar arm —
+    /// mirrors `resolve_point3_length_arg`'s tightened LENGTH check from commit
+    /// 8c464177db. A LENGTH-dimensioned Scalar reply must NOT be silently
+    /// reinterpreted as radians; the dispatcher must emit a Warning naming the
+    /// helper and return Undef. Gated `#[cfg(not(debug_assertions))]` because in
+    /// debug builds the same fixture trips the sibling
+    /// `..._panics_in_debug_build` test's debug_assert.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_emits_warning_and_returns_undef()
+     {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        // LENGTH-dimensioned Scalar is the real-world bug class this guards
+        // against: metres silently reinterpreted as radians.
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "angle_between_surfaces with LENGTH-dimensioned Scalar reply must yield \
+             Some(Value::Undef), NOT Some(Value::angle(1.0)); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "wrong-dim Scalar reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("angle_between_surfaces"),
+            "diagnostic must mention the helper name 'angle_between_surfaces', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("dimension") || diag.message.contains("wrong-dimensioned"),
+            "diagnostic must mention the dimension mismatch, got: {}",
+            diag.message
+        );
+    }
+
     #[test]
     fn try_eval_topology_selector_on_non_bool_kernel_reply_emits_warning_and_returns_undef() {
         use reify_test_support::mocks::MockGeometryKernel;
