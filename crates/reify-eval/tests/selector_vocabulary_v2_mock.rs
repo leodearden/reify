@@ -9,8 +9,11 @@
 //! (edge / face) handles returned by the configured extraction. This
 //! mirrors `topology_filtered_selectors_mock.rs`.
 
-use reify_eval::selector_vocabulary_v2::{complement, except, intersect, union};
-use reify_types::GeometryHandleId;
+use reify_eval::selector_vocabulary_v2::{
+    complement, except, faces_perpendicular_to, intersect, union,
+};
+use reify_test_support::MockGeometryKernel;
+use reify_types::{GeometryHandleId, QueryError, Value};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // intersect — set intersection over Vec<GeometryHandleId>
@@ -252,4 +255,112 @@ fn except_with_full_overlap_is_empty() {
     let a = vec![GeometryHandleId(1), GeometryHandleId(2)];
     let b = vec![GeometryHandleId(2), GeometryHandleId(1)];
     assert!(except(&a, &b).is_empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// faces_perpendicular_to — `#axis` direction filter for faces (PRD line 76)
+//
+// A face's normal `n` is perpendicular to `axis` iff n ⟂ axis, i.e. the
+// projection |n · axis| is small. Sign-tolerant: ±axis both qualify.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn faces_perpendicular_to_keeps_faces_orthogonal_to_axis() {
+    // Three faces with normals exactly +X, +Y, +Z.
+    // For axis = +X, perpendicular faces are those with n · X = 0 → +Y, +Z.
+    // The +X face has n · X = 1, so it must be dropped.
+    let parent = GeometryHandleId(1);
+    let f_x = GeometryHandleId(2);
+    let f_y = GeometryHandleId(3);
+    let f_z = GeometryHandleId(4);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f_x, f_y, f_z])
+        .with_face_normal_result(
+            f_x,
+            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
+        )
+        .with_face_normal_result(
+            f_y,
+            Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()),
+        )
+        .with_face_normal_result(
+            f_z,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()),
+        );
+
+    let result =
+        faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 1.0_f64.to_radians())
+            .expect("faces_perpendicular_to should succeed for axis-aligned normals");
+    assert_eq!(
+        result,
+        vec![f_y, f_z],
+        "faces with normals ⟂ X (i.e. +Y, +Z) survive; +X face is dropped"
+    );
+}
+
+#[test]
+fn faces_perpendicular_to_is_sign_tolerant() {
+    // A face with normal -X is "parallel to X axis" (anti-parallel) and
+    // therefore NOT perpendicular. The selector treats ±axis equivalently —
+    // both contribute to the "parallel" side and are excluded.
+    let parent = GeometryHandleId(1);
+    let f_neg_x = GeometryHandleId(2);
+    let f_y = GeometryHandleId(3);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f_neg_x, f_y])
+        .with_face_normal_result(
+            f_neg_x,
+            Value::String("{\"x\":-1.0,\"y\":0.0,\"z\":0.0}".into()),
+        )
+        .with_face_normal_result(
+            f_y,
+            Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()),
+        );
+
+    let result =
+        faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 1.0_f64.to_radians())
+            .expect("faces_perpendicular_to should succeed");
+    assert_eq!(
+        result,
+        vec![f_y],
+        "anti-parallel face (-X) is parallel to X (sign-tolerant); only ⟂ face survives"
+    );
+}
+
+#[test]
+fn faces_perpendicular_to_zero_axis_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = faces_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 0.0], 0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("non-zero and finite"),
+                "error should mention 'non-zero and finite', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for zero axis, got {:?}", other),
+    }
+}
+
+#[test]
+fn faces_perpendicular_to_degenerate_normal_returns_query_failed() {
+    // A face that reports a zero normal (degenerate face) must surface a
+    // QueryFailed rather than slipping through with NaN-poisoned arithmetic.
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_face_normal_result(
+            f,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".into()),
+        );
+    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.1);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "degenerate normal must produce QueryFailed, got {:?}",
+        result
+    );
 }
