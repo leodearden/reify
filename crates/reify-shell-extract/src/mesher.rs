@@ -19,9 +19,9 @@
 //! - **Quality gate** with `Err(MesherError::QualityBelowThreshold { … })`
 //!   carrying the worst-case metrics as a diagnostic payload.
 //!
-//! **Deferred (v0.4):** The full Laplacian smoothing (`max_remesh_iterations
-//! > 0`) and MMG2D-style remeshing pipeline. Callers may set
-//! `max_remesh_iterations > 0` but will receive the same
+//! **Deferred (v0.4):** The full Laplacian smoothing
+//! (`max_remesh_iterations > 0`) and MMG2D-style remeshing pipeline. Callers
+//! may set `max_remesh_iterations > 0` but will receive the same
 //! `QualityBelowThreshold` error; the smoothing implementation is a follow-up
 //! task.
 
