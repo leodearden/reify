@@ -26,7 +26,7 @@
 //! - Last op = [`GeometryOp::Revolve`] with non-degenerate axis and angle
 //!   → [`SweptKind::Revolve`].
 //! - Last op = [`GeometryOp::Sweep`] whose `path` handle resolves to a
-//!   [`GeometryOp::LineSegment`] source op → [`SweptKind::Loft`] (single-profile
+//!   [`GeometryOp::LineSegment`] source op → [`SweptKind::SweepLinear`] (single-profile
 //!   sweep along a straight, provably non-twisted path).
 //!
 //! Rejected (returns `None`):
@@ -120,7 +120,7 @@ pub enum SweptKind {
     /// constant by construction). Curved paths (Arc / Helix / NurbsCurve / …)
     /// are conservatively rejected for Phase A — see the "non-twisted path"
     /// design decision in `.task/plan.json`.
-    Loft {
+    SweepLinear {
         profile: GeometryHandleId,
         path: GeometryHandleId,
     },
@@ -262,7 +262,7 @@ pub fn classify_swept_body(ops: &[GeometryOp], handles: &[GeometryHandleId]) -> 
                 .position(|h| h == path)
                 .and_then(|i| ops.get(i));
             match path_source {
-                Some(GeometryOp::LineSegment { .. }) => Some(SweptKind::Loft {
+                Some(GeometryOp::LineSegment { .. }) => Some(SweptKind::SweepLinear {
                     profile: *profile,
                     path: *path,
                 }),
