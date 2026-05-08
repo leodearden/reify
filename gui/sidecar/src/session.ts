@@ -39,6 +39,11 @@ export class SidecarSession {
   /** Called when the session produces an outbound message. */
   onOutput: (msg: OutboundMessage) => void = () => {};
 
+  /** Returns true while a handleSendMessage invocation is in-flight. Exposed for tests. */
+  isInvocationActive(): boolean {
+    return this.abortController !== null;
+  }
+
   constructor(config: SessionConfig) {
     this.config = config;
   }

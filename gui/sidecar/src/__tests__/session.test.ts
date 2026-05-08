@@ -2775,8 +2775,9 @@ describe('SidecarSession proc error handling', () => {
       // (b) The close-path emits exactly one error outbound (exitCode === 1)
       const errors = outputs.filter((o) => o.type === 'error');
       expect(errors).toHaveLength(1);
-      expect((errors[0] as any).message).toMatch(/Claude CLI exited with code 1/);
-      expect((errors[0] as any).id).toBe('msg-enoent');
+      if (errors[0].type !== 'error') throw new Error('Expected error message');
+      expect(errors[0].message).toMatch(/Claude CLI exited with code 1/);
+      expect(errors[0].id).toBe('msg-enoent');
     } finally {
       consoleErrorSpy.mockRestore();
     }
@@ -2838,7 +2839,7 @@ describe('SidecarSession proc error handling', () => {
       // before that initialisation.
       {
         const deadline = Date.now() + 1000;
-        while ((session as any).abortController === null) {
+        while (!session.isInvocationActive()) {
           if (Date.now() > deadline) throw new Error('timed out waiting for abortController');
           await Promise.resolve();
         }
