@@ -4807,6 +4807,16 @@ mod tests {
                 faces_to_remove: vec![0],
             }),
         ];
+        // Changing this constant forces the test to be updated whenever a
+        // variant is added or removed from GeometryOp — compile-time
+        // exhaustiveness on kind_name() guarantees correctness, this assertion
+        // guarantees the token list here stays in sync.
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 35;
+        assert_eq!(
+            cases.len(),
+            GEOMETRY_OP_VARIANT_COUNT,
+            "Update `cases` and kind_name() when adding/removing GeometryOp variants",
+        );
         for (expected, op) in cases {
             assert_eq!(
                 op.kind_name(),
@@ -4882,6 +4892,16 @@ mod tests {
                 face_b: GeometryHandleId(2),
             }),
         ];
+        // Changing this constant forces the test to be updated whenever a
+        // variant is added or removed from GeometryQuery — compile-time
+        // exhaustiveness on kind_name() guarantees correctness, this assertion
+        // guarantees the token list here stays in sync.
+        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 23;
+        assert_eq!(
+            cases.len(),
+            GEOMETRY_QUERY_VARIANT_COUNT,
+            "Update `cases` and kind_name() when adding/removing GeometryQuery variants",
+        );
         for (expected, q) in cases {
             assert_eq!(
                 q.kind_name(),
