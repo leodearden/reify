@@ -385,12 +385,19 @@ pub(crate) fn compile_expr_guarded(
     lambda_counter: &mut u32,
 ) -> CompiledExpr {
     match &expr.kind {
-        reify_syntax::ExprKind::NumberLiteral { value: v, .. } => {
-            // Whole numbers become Int, fractional become Real
-            if *v == (*v as i64) as f64 && v.is_finite() {
-                CompiledExpr::literal(Value::Int(*v as i64), Type::Int)
+        reify_syntax::ExprKind::NumberLiteral { value, is_real } => {
+            // Syntactic distinction: tokens written with `.` or `e`/`E` are Real;
+            // bare integer tokens are Int. Int→Real widening at annotated-let
+            // injection sites (conformance/checker.rs) covers `let x : Real = 42`.
+            if *is_real {
+                CompiledExpr::literal(Value::Real(*value), Type::Real)
+            } else if value.is_finite() && *value == (*value as i64) as f64 {
+                CompiledExpr::literal(Value::Int(*value as i64), Type::Int)
             } else {
-                CompiledExpr::literal(Value::Real(*v), Type::Real)
+                // Defensive: a non-real-flagged literal whose f64 isn't a clean
+                // integer (overflow / NaN / infinity from a parser edge case).
+                // This branch is unreachable for grammar-conforming input.
+                CompiledExpr::literal(Value::Real(*value), Type::Real)
             }
         }
         reify_syntax::ExprKind::QuantityLiteral { value, unit } => {
