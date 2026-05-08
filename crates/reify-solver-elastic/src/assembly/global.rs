@@ -839,7 +839,8 @@ mod tests {
     /// # What this tests
     ///
     /// `assemble_global_stiffness` with `AssemblyMode::Parallel { threads }`
-    /// partitions the element slice into `ceil(N / threads)` chunks, assigns
+    /// partitions the element slice into `threads` chunks of size up to
+    /// `ceil(N / threads)` (via `elements.chunks(ceil(N / threads))`), assigns
     /// one chunk per worker thread, and merges the local `Vec<Triplet>` in
     /// handle-vector (== chunk-iteration == slice) order. The merge order is
     /// deterministic for any fixed `threads`, but the per-thread accumulation
