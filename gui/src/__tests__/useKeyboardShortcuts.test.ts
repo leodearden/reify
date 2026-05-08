@@ -282,6 +282,38 @@ describe('useKeyboardShortcuts', () => {
     }
   });
 
+  it('dispatching Ctrl+N keydown on document calls onNew callback', () => {
+    const onNew = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onNew });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true }),
+    );
+    expect(onNew).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+N is skipped when target is an <input>', () => {
+    const onNew = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onNew });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true }),
+      );
+      expect(onNew).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
   it('dispatching Escape with onClearSelection provided invokes it', () => {
     const onClearSelection = vi.fn();
     dispose = createRoot((d) => {

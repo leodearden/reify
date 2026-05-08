@@ -2,6 +2,7 @@ import { onMount, onCleanup } from 'solid-js';
 import { SHORTCUTS, matchesEvent, type ShortcutId } from '../shortcuts';
 
 export interface KeyboardShortcutCallbacks {
+  onNew?: () => void;
   onOpen?: () => void;
   onSave?: () => void;
   onReEvaluate?: () => void;
@@ -33,6 +34,7 @@ export interface KeyboardShortcutCallbacks {
  * Use `hasCallbackWiring(id)` to check membership from outside this module.
  */
 const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCallbacks>> = {
+  new:         'onNew',
   open:        'onOpen',
   save:        'onSave',
   export:      'onExportDialog',

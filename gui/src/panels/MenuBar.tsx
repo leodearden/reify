@@ -8,6 +8,7 @@ import { getShortcut, shortcutKey, type ShortcutId } from '../shortcuts';
 import styles from './MenuBar.module.css';
 
 export interface MenuBarProps {
+  onNew?: () => void;
   onOpen?: () => void;
   onSave?: () => void;
   onExport?: () => void;
@@ -36,6 +37,7 @@ const MENU_DEFS: MenuDef[] = [
     id: 'file',
     label: 'File',
     items: [
+      { label: 'New', shortcutId: 'new', action: 'onNew' },
       { label: 'Open', shortcutId: 'open', action: 'onOpen' },
       { label: 'Save', shortcutId: 'save', action: 'onSave' },
       { label: 'Export', shortcutId: 'export', action: 'onExport' },
