@@ -47,6 +47,13 @@ fn make_offset_rect_profile(kernel: &mut OcctKernelHandle) -> reify_types::Geome
 /// face-normal filter.
 const DIR_TOL: f64 = 1e-6;
 
+/// File-local pure helper: |dot(n, axis)| using array-typed inputs.
+/// Avoids re-coupling to the kernel after task 3134's migration to
+/// face_outward_unit_normal_for_test.
+fn axis_dot_abs(n: [f64; 3], axis: [f64; 3]) -> f64 {
+    (n[0] * axis[0] + n[1] * axis[1] + n[2] * axis[2]).abs()
+}
+
 /// `BRepPrimAPI_MakeRevol` (PARTIAL — 180°): the test:
 /// - builds a 5×10mm rect profile offset to x=17.5mm (left edge at 15mm);
 /// - calls `revolve_with_history(profile, axis_origin=[0,0,0],
