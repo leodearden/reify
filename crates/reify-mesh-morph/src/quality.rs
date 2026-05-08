@@ -771,23 +771,34 @@ mod tests {
         }
     }
 
-    // ── Step-1: degenerate morphed tet (coplanar) skips AR comparison ────────
+    // ── Step-1 (task 3172) / Step-1 (task 3196): degenerate morphed tet ─────
+    //
+    // task 3172 fix: AR comparison skipped when morphed_ar.is_infinite().
+    // task 3196 fix: degenerate morphed tet surfaces in
+    //   MetricsBreached.degenerate_morphed_element regardless of caller floors.
 
-    /// Regression guard: when the morphed tet is coplanar (all z=0),
-    /// `element_aspect_ratio` returns `f64::INFINITY`. Before the fix the code
-    /// propagates INFINITY to `max_aspect_ratio_increase`, returning `SoftFail`.
-    /// After the fix (step-2), the AR comparison is skipped when
-    /// `morphed_ar.is_infinite()`.
+    /// Regression guard for task 3196 — a degenerate morphed tet must surface in
+    /// `MetricsBreached.degenerate_morphed_element` regardless of caller-configured
+    /// floors, not silently pass.
     ///
-    /// Why scaled J = 0 (not inverted → reaches AR block):
-    /// All 4 nodes lie in the z=0 plane, so every corner's det(ea,eb,ec) = 0
-    /// (dot of a planar cross-product with a planar vector is zero). The
-    /// degenerate fallback is 0.0, which is not < 0 → no HardFail.
+    /// Fixture: coplanar morphed tet (all z=0); source = regular unit tet.
+    /// `quality_floor_min_scaled_jacobian = 0.0` (floor disabled — proves the
+    /// detection is floor-independent), `quality_floor_pct_below_025 = 1.01`
+    /// (pct disabled).
     ///
-    /// Why AR = INFINITY: vol = 0 → all face heights = 0 → min_height = 0 →
-    /// `element_aspect_ratio` returns `f64::INFINITY`.
+    /// Why scaled J = 0 (not inverted → no HardFail):
+    /// All 4 nodes lie in the z=0 plane, so every corner's det(ea,eb,ec) = 0.
+    /// The degenerate fallback is 0.0, which is not < 0 → no HardFail.
+    ///
+    /// Why AR = INFINITY (and must be skipped, per task 3172):
+    /// vol = 0 → all face heights = 0 → min_height = 0 →
+    /// `element_aspect_ratio` returns `f64::INFINITY`. Surfacing +inf in
+    /// `max_aspect_ratio_increase` is awkward for serialization; the
+    /// `degenerate_morphed_element` field makes the AR signal redundant for
+    /// failure detection.
     #[test]
-    fn quality_check_with_degenerate_morphed_tet_skips_ar_comparison() {
+    fn quality_check_with_degenerate_morphed_tet_returns_soft_fail_with_degenerate_morphed_element_populated(
+    ) {
         // Morphed: coplanar tet (all z=0) — AR = INFINITY, scaled J = 0 (not inverted).
         #[rustfmt::skip]
         let morphed_vertices: Vec<f32> = vec![
@@ -819,11 +830,11 @@ mod tests {
             normals: None,
         };
 
-        // Isolate the AR check: disable min-J and pct thresholds.
+        // Disable min-J and pct floors to isolate degenerate_morphed_element detection.
         // Scaled J = 0 → floor 0.0: 0 < 0 is false → min_scaled_jacobian = None.
         // pct = 1.0 (1/1 below 0.25) → threshold 1.01: 1.0 > 1.01 is false → pct_below_025 = None.
-        // Before fix: ratio = INFINITY / source_ar = INFINITY > 2.0 → SoftFail.
-        // After fix: AR skipped (morphed_ar.is_infinite()) → all None → Pass.
+        // AR = INFINITY → skipped (task-3172 fix) → max_aspect_ratio_increase = None.
+        // degenerate_morphed_element = Some(0) because sj == 0.0 at element 0.
         let opts = MorphOptions {
             quality_floor_min_scaled_jacobian: 0.0,
             quality_floor_pct_below_025: 1.01,
@@ -831,12 +842,38 @@ mod tests {
         };
         // quality_aspect_ratio_increase_max stays at 2.0 (default).
 
-        assert_eq!(
-            quality_check(&morphed, &source, &opts),
-            QualityVerdict::Pass,
-            "degenerate morphed tet (coplanar, AR=INFINITY) must not surface INFINITY \
-             in max_aspect_ratio_increase; AR comparison must be skipped"
-        );
+        let result = quality_check(&morphed, &source, &opts);
+        match &result {
+            QualityVerdict::SoftFail(metrics) => {
+                assert_eq!(
+                    metrics.degenerate_morphed_element,
+                    Some(0),
+                    "degenerate coplanar tet must surface as degenerate_morphed_element=Some(0)"
+                );
+                assert_eq!(
+                    metrics.max_aspect_ratio_increase,
+                    None,
+                    "AR comparison must be skipped for degenerate morphed tet (task-3172 contract)"
+                );
+                assert_eq!(
+                    metrics.min_scaled_jacobian,
+                    None,
+                    "min_scaled_jacobian must be None — proves floor=0.0 disabling is the regime"
+                );
+            }
+            QualityVerdict::Pass => {
+                panic!(
+                    "expected SoftFail with degenerate_morphed_element=Some(0), \
+                     got Pass — degenerate morphed tet must not silently pass (task 3196)"
+                );
+            }
+            QualityVerdict::HardFail(d) => {
+                panic!(
+                    "expected SoftFail, got HardFail({d:?}) — \
+                     coplanar tet has sj=0 (not < 0) and must not invert"
+                );
+            }
+        }
     }
 
     // ── Step-11: HardFail preempts SoftFail (regression guard) ──────────────
