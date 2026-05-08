@@ -33,7 +33,7 @@ function _typeLevelCheck(): void {
 
   // This will fail to compile until PersistentViewState is defined in types.ts
   const state: PersistentViewState = {
-    version: '1',
+    version: '2',
     activeViewId: 'user:view-1',
     userViews: [view1],
     explicit: { 'Assembly.flange': 'show' as VisibilityState },
@@ -42,7 +42,7 @@ function _typeLevelCheck(): void {
   };
 
   // Verify field types by assignment
-  const _version: '1' = state.version;
+  const _version: '2' = state.version;
   const _activeViewId: string = state.activeViewId;
   const _userViews: ViewDefinition[] = state.userViews;
   const _explicit: Record<string, VisibilityState> = state.explicit;
@@ -79,7 +79,7 @@ describe('PersistentViewState — runtime constructor shape', () => {
     };
 
     const state: PersistentViewState = {
-      version: '1',
+      version: '2',
       activeViewId: 'user:v1',
       userViews: [view],
       explicit: { 'Root.geometry': 'hidden' as VisibilityState },
@@ -87,7 +87,7 @@ describe('PersistentViewState — runtime constructor shape', () => {
       timestamp: new Date().toISOString(),
     };
 
-    expect(state.version).toBe('1');
+    expect(state.version).toBe('2');
     expect(state.activeViewId).toBe('user:v1');
     expect(state.userViews).toHaveLength(1);
     expect(state.userViews[0].id).toBe('user:v1');
@@ -96,18 +96,18 @@ describe('PersistentViewState — runtime constructor shape', () => {
     expect(typeof state.timestamp).toBe('string');
   });
 
-  it('version field must be the literal string "1"', () => {
-    // Runtime check that version is stored and retrieved as "1"
+  it('version field must be the literal string "2"', () => {
+    // Runtime check that version is stored and retrieved as "2"
     const state: PersistentViewState = {
-      version: '1',
+      version: '2',
       activeViewId: 'auto:default',
       userViews: [],
       explicit: {},
       viewportCameras: {},
       timestamp: '2026-04-22T00:00:00.000Z',
     };
-    expect(state.version).toBe('1');
-    expect(state.version).not.toBe(1); // must be string, not number
+    expect(state.version).toBe('2');
+    expect(state.version).not.toBe(2); // must be string, not number
   });
 
   it('userViews array holds ViewDefinition objects with all required fields', () => {
@@ -117,7 +117,7 @@ describe('PersistentViewState — runtime constructor shape', () => {
     ];
 
     const state: PersistentViewState = {
-      version: '1',
+      version: '2',
       activeViewId: 'user:a',
       userViews: views,
       explicit: {},
@@ -134,7 +134,7 @@ describe('PersistentViewState — runtime constructor shape', () => {
     const cam2: CameraState = { position: [0, 1, 0], target: [0, 0, 0], up: [0, 0, 1], zoom: 2 };
 
     const state: PersistentViewState = {
-      version: '1',
+      version: '2',
       activeViewId: 'auto:default',
       userViews: [],
       explicit: {},
@@ -154,7 +154,7 @@ describe('PersistentViewState — runtime constructor shape', () => {
 /** Minimal valid PersistentViewState for testing. */
 function makeState(overrides?: Partial<PersistentViewState>): PersistentViewState {
   return {
-    version: '1',
+    version: '2',
     activeViewId: 'auto:default',
     userViews: [],
     explicit: {},
@@ -189,7 +189,7 @@ describe('loadViewPersistence', () => {
     const key = `${STORAGE_KEY_PREFIX}${TEST_PATH}`;
     const raw = localStorage.getItem(key);
     expect(raw).not.toBeNull();
-    expect(JSON.parse(raw!).version).toBe('1');
+    expect(JSON.parse(raw!).version).toBe('2');
   });
 
   it('(c) load parses a valid stored entry round-trip', () => {
@@ -203,7 +203,7 @@ describe('loadViewPersistence', () => {
     saveViewPersistence(TEST_PATH, state);
     const loaded = loadViewPersistence(TEST_PATH);
     expect(loaded).not.toBeNull();
-    expect(loaded!.version).toBe('1');
+    expect(loaded!.version).toBe('2');
     expect(loaded!.activeViewId).toBe('user:my-view');
     expect(loaded!.userViews).toHaveLength(1);
     expect(loaded!.explicit['Root.geometry']).toBe('hidden');
@@ -234,7 +234,7 @@ describe('loadViewPersistence', () => {
     localStorage.setItem(
       `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
       JSON.stringify({
-        version: '1',
+        version: '2',
         activeViewId: 'auto:default',
         userViews: 'wrong',
         explicit: {},
@@ -413,7 +413,7 @@ describe('viewPersistence — camera state round-trip (step-37)', () => {
     };
 
     const state: PersistentViewState = {
-      version: '1',
+      version: '2',
       activeViewId: 'auto:default',
       userViews: [],
       explicit: {},
@@ -444,7 +444,7 @@ describe('viewPersistence — camera state round-trip (step-37)', () => {
     }
 
     const state: PersistentViewState = {
-      version: '1',
+      version: '2',
       activeViewId: 'auto:default',
       userViews: [],
       explicit: {},

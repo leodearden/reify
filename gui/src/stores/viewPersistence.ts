@@ -30,7 +30,7 @@ function isPersistentViewState(value: unknown): value is PersistentViewState {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
 
-  if (v['version'] !== '1') return false;
+  if (v['version'] !== '2') return false;
   if (typeof v['activeViewId'] !== 'string') return false;
   if (!Array.isArray(v['userViews'])) return false;
   if (typeof v['explicit'] !== 'object' || v['explicit'] === null || Array.isArray(v['explicit']))

@@ -796,14 +796,14 @@ export function createViewStateStore() {
    *
    * - Only user views (id not starting with `auto:`) are included in
    *   `userViews`; auto views are regenerated on load and must not be persisted.
-   * - `version` is stamped as `"1"`.
+   * - `version` is stamped as `"2"`.
    * - `viewportCameras` and `timestamp` are intentionally omitted — the
    *   App.tsx layer composes these fields before writing.
    */
   function serializePersistedState(): Omit<PersistentViewState, 'viewportCameras' | 'timestamp'> {
     const userViews = Object.values(state.views).filter((v) => !v.auto);
     return {
-      version: '1',
+      version: '2',
       activeViewId: state.activeViewId,
       userViews: userViews.map((v) => ({ ...v })),
       explicit: { ...state.explicit } as Record<string, VisibilityState>,

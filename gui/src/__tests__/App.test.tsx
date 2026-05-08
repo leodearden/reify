@@ -3448,7 +3448,7 @@ describe('DualViewport wiring', () => {
 /** Minimal valid PersistentViewState for test helpers. */
 function makePersistedState(overrides: Partial<import('../types').PersistentViewState> = {}): import('../types').PersistentViewState {
   return {
-    version: '1',
+    version: '2',
     activeViewId: 'user:my-view',
     userViews: [],
     explicit: {},
@@ -3644,7 +3644,7 @@ describe('App persistence wiring — debounced save (step-31)', () => {
       const raw = localStorage.getItem('reify:views:/test/bracket.ri');
       expect(raw).not.toBeNull();
       const parsed = JSON.parse(raw!);
-      expect(parsed.version).toBe('1');
+      expect(parsed.version).toBe('2');
       expect(typeof parsed.timestamp).toBe('string');
     } finally {
       vi.useRealTimers();
@@ -3699,7 +3699,7 @@ describe('App persistence wiring — Save views action (step-33)', () => {
     await waitFor(() => {
       expect(sidecarPersistence.saveSidecar).toHaveBeenCalledWith(
         '/test/bracket.ri',
-        expect.objectContaining({ version: '1' }),
+        expect.objectContaining({ version: '2' }),
       );
     });
   });
@@ -3747,7 +3747,7 @@ describe('App persistence wiring — camera state restoration (step-37)', () => 
     vi.mocked(bridge.pickOpenPath).mockResolvedValue(path);
     vi.mocked(bridge.openFile).mockResolvedValue({ path, content: '' });
     vi.mocked(sidecarPersistence.loadSidecar).mockResolvedValue({
-      version: '1',
+      version: '2',
       activeViewId: 'auto:default',
       userViews: [],
       explicit: {},

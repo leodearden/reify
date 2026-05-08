@@ -14,7 +14,7 @@ const mockReadViewSidecar = vi.mocked(readViewSidecar);
 const mockWriteViewSidecar = vi.mocked(writeViewSidecar);
 
 const validState: PersistentViewState = {
-  version: '1',
+  version: '2',
   activeViewId: 'auto:default',
   userViews: [],
   explicit: {},
