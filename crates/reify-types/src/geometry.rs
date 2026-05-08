@@ -2662,6 +2662,73 @@ mod tests {
     }
 
     #[test]
+    fn closest_point_on_shape_variant_is_constructible_and_matchable() {
+        // Pin the shape of the new ClosestPointOnShape variant — the eval-side
+        // dispatcher (task 2324) builds and reads back exactly these fields.
+        let cp = GeometryQuery::ClosestPointOnShape {
+            handle: GeometryHandleId(17),
+            px: 1.0,
+            py: 2.0,
+            pz: 3.0,
+        };
+        match &cp {
+            GeometryQuery::ClosestPointOnShape { handle, px, py, pz } => {
+                assert_eq!(*handle, GeometryHandleId(17));
+                assert_eq!(*px, 1.0);
+                assert_eq!(*py, 2.0);
+                assert_eq!(*pz, 3.0);
+            }
+            _ => panic!("expected ClosestPointOnShape variant"),
+        }
+    }
+
+    #[test]
+    fn point_on_shape_variant_is_constructible_and_matchable() {
+        // Pin the shape of the new PointOnShape variant — the dispatcher
+        // supplies tolerance from `Precision::Confusion()` (~1e-7) by default.
+        let pos = GeometryQuery::PointOnShape {
+            handle: GeometryHandleId(19),
+            px: 4.0,
+            py: 5.0,
+            pz: 6.0,
+            tolerance: 1e-7,
+        };
+        match &pos {
+            GeometryQuery::PointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => {
+                assert_eq!(*handle, GeometryHandleId(19));
+                assert_eq!(*px, 4.0);
+                assert_eq!(*py, 5.0);
+                assert_eq!(*pz, 6.0);
+                assert_eq!(*tolerance, 1e-7);
+            }
+            _ => panic!("expected PointOnShape variant"),
+        }
+    }
+
+    #[test]
+    fn surface_angle_variant_is_constructible_and_matchable() {
+        // Pin the shape of the new SurfaceAngle variant — kernel returns
+        // the unsigned angle in radians ∈ [0, π].
+        let sa = GeometryQuery::SurfaceAngle {
+            face_a: GeometryHandleId(23),
+            face_b: GeometryHandleId(29),
+        };
+        match &sa {
+            GeometryQuery::SurfaceAngle { face_a, face_b } => {
+                assert_eq!(*face_a, GeometryHandleId(23));
+                assert_eq!(*face_b, GeometryHandleId(29));
+            }
+            _ => panic!("expected SurfaceAngle variant"),
+        }
+    }
+
+    #[test]
     fn debug_assert_query_many_invariant_passes_when_lengths_match() {
         // Empty batch: the boundary case most likely to expose an off-by-one
         // bug if the helper's comparison were inverted.
