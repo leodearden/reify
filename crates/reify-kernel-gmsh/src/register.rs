@@ -60,6 +60,8 @@ use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Oper
 ///
 /// Must equal `KernelId::Gmsh.to_string()` (`"gmsh"`) so the project-pin
 /// lookup in `reify-config` matches the registered adapter at runtime.
+/// Enforced by
+/// `crates/reify-config/tests/kernel_name_consistency.rs::gmsh_kernel_name_const_matches_kernel_id_display`.
 ///
 /// # Lex-min note
 ///
