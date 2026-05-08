@@ -189,9 +189,7 @@ pub fn apply_dirichlet_row_elimination(
             let n = sym.nrows();
 
             // Step 2: zero row i — set every stored value in row i to 0.0.
-            for idx in row_ptr[i]..row_ptr[i + 1] {
-                vals[idx] = 0.0;
-            }
+            vals[row_ptr[i]..row_ptr[i + 1]].fill(0.0);
 
             // Step 3: zero column i for every row j ≠ i.
             // Step 4: set K[i][i] = 1.0 (diagonal of the constrained DOF).
@@ -237,10 +235,8 @@ mod tests {
 
     use faer::sparse::SparseRowMat;
 
-    use crate::assembly::{
-        AssemblyElement, AssemblyMode, assemble_global_stiffness,
-    };
     use crate::assembly::tet::element_stiffness_p1;
+    use crate::assembly::{AssemblyElement, AssemblyMode, assemble_global_stiffness};
     use crate::constitutive::IsotropicElastic;
 
     /// Steel-like dimensionless material reused across boundary tests.
@@ -332,7 +328,10 @@ mod tests {
         apply_dirichlet_row_elimination(
             &mut k,
             &mut f,
-            &[DirichletBc { dof: constrained_dof, value: 0.0 }],
+            &[DirichletBc {
+                dof: constrained_dof,
+                value: 0.0,
+            }],
         );
 
         let d = constrained_dof;
@@ -387,11 +386,7 @@ mod tests {
 
         // (e) f[d] must be 0.0; f[j] for j ≠ d must be bit-identical to before
         //     (homogeneous BC subtracts K[j][d] * 0.0 = 0 from f[j]).
-        assert_eq!(
-            f[d],
-            0.0,
-            "f[{d}] should be 0.0 after homogeneous BC",
-        );
+        assert_eq!(f[d], 0.0, "f[{d}] should be 0.0 after homogeneous BC",);
         for j in 0..12 {
             if j != d {
                 assert_eq!(
@@ -438,11 +433,7 @@ mod tests {
 
         let d = 3usize;
         let u = 0.5_f64;
-        apply_dirichlet_row_elimination(
-            &mut k,
-            &mut f,
-            &[DirichletBc { dof: d, value: u }],
-        );
+        apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: d, value: u }]);
 
         // (a) For every j ≠ d: f_after[j] == f_before[j] - K_before[j][d] * u.
         //     Single-summand subtraction — bit-for-bit equal (no reordering).
@@ -517,9 +508,15 @@ mod tests {
         let mut f: Vec<f64> = (0..15).map(|i| (i + 1) as f64 / 10.0).collect();
 
         let bcs = [
-            DirichletBc { dof: 0, value: 0.0 },    // homogeneous
-            DirichletBc { dof: 14, value: 0.001 },  // inhomogeneous
-            DirichletBc { dof: 7, value: -0.002 },  // inhomogeneous
+            DirichletBc { dof: 0, value: 0.0 }, // homogeneous
+            DirichletBc {
+                dof: 14,
+                value: 0.001,
+            }, // inhomogeneous
+            DirichletBc {
+                dof: 7,
+                value: -0.002,
+            }, // inhomogeneous
         ];
         apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
 
@@ -557,13 +554,25 @@ mod tests {
     #[test]
     fn multiple_bcs_are_order_independent_within_fp_tolerance() {
         let bcs_forward = [
-            DirichletBc { dof: 0, value: 0.0 },    // homogeneous
-            DirichletBc { dof: 14, value: 0.001 },  // inhomogeneous
-            DirichletBc { dof: 7, value: -0.002 },  // inhomogeneous
+            DirichletBc { dof: 0, value: 0.0 }, // homogeneous
+            DirichletBc {
+                dof: 14,
+                value: 0.001,
+            }, // inhomogeneous
+            DirichletBc {
+                dof: 7,
+                value: -0.002,
+            }, // inhomogeneous
         ];
         let bcs_reverse = [
-            DirichletBc { dof: 7, value: -0.002 },
-            DirichletBc { dof: 14, value: 0.001 },
+            DirichletBc {
+                dof: 7,
+                value: -0.002,
+            },
+            DirichletBc {
+                dof: 14,
+                value: 0.001,
+            },
             DirichletBc { dof: 0, value: 0.0 },
         ];
 
@@ -623,7 +632,10 @@ mod tests {
         apply_dirichlet_row_elimination(
             &mut k,
             &mut f,
-            &[DirichletBc { dof: 99, value: 0.0 }],
+            &[DirichletBc {
+                dof: 99,
+                value: 0.0,
+            }],
         );
     }
 
@@ -637,11 +649,7 @@ mod tests {
     fn f_length_mismatch_panics() {
         let mut k = single_p1_k(); // 12 × 12
         let mut f = vec![0.0_f64; 7]; // wrong length
-        apply_dirichlet_row_elimination(
-            &mut k,
-            &mut f,
-            &[DirichletBc { dof: 0, value: 0.0 }],
-        );
+        apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: 0, value: 0.0 }]);
     }
 
     /// Missing diagonal entry panics with a message naming the dof.
@@ -665,15 +673,10 @@ mod tests {
             // (2, 2) intentionally absent
         ];
         let mut k: SparseRowMat<usize, f64> =
-            SparseRowMat::try_new_from_triplets(3, 3, &triplets)
-                .expect("valid triplets");
+            SparseRowMat::try_new_from_triplets(3, 3, &triplets).expect("valid triplets");
         let mut f = vec![0.0_f64; 3];
         // Applying a BC at dof 2 should panic because K[2][2] has no stored entry.
-        apply_dirichlet_row_elimination(
-            &mut k,
-            &mut f,
-            &[DirichletBc { dof: 2, value: 0.0 }],
-        );
+        apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: 2, value: 0.0 }]);
     }
 
     // -----------------------------------------------------------------------

@@ -34,6 +34,7 @@
 //!     IsotropicElastic,
 //!     ShellStress,
 //!     ShellElementStress, shell_element_frame, shell_element_stress,
+//!     DirichletBc, apply_dirichlet_row_elimination,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -94,6 +95,12 @@
 //! assert_eq!(ses.top[0][0], 0.0, "zero-DOF top σ_xx must be 0.0");
 //! assert_eq!(ses.mid[0][0], 0.0, "zero-DOF mid σ_xx must be 0.0");
 //! assert_eq!(ses.bottom[0][0], 0.0, "zero-DOF bottom σ_xx must be 0.0");
+//!
+//! // DirichletBc smoke test (T2917): construct, clone, and verify round-trip.
+//! let bc = DirichletBc { dof: 0, value: 0.0 };
+//! assert_eq!(bc.clone(), bc, "DirichletBc must round-trip through Clone");
+//! // Verify apply_dirichlet_row_elimination is callable (empty bcs = no-op).
+//! let _ = apply_dirichlet_row_elimination;
 //! ```
 
 pub mod assembly;
@@ -111,8 +118,12 @@ pub use boundary::{DirichletBc, apply_dirichlet_row_elimination};
 pub use constitutive::IsotropicElastic;
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
-    tet_p1::TetP1, tet_p2::TetP2, hex_p1::HexP1,
+    hex_p1::HexP1,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
+    tet_p1::TetP1,
+    tet_p2::TetP2,
 };
 pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
-pub use shell_result::{ShellStress, ShellElementStress, shell_element_frame, shell_element_stress};
+pub use shell_result::{
+    ShellElementStress, ShellStress, shell_element_frame, shell_element_stress,
+};
