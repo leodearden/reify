@@ -1042,6 +1042,117 @@ mod tests {
         );
     }
 
+    // --- Tilted-frame block rotation test ---
+
+    #[test]
+    fn shell_tilted_frame_block_rotation_matches_q_kflat_qt() {
+        // # Why this test exists
+        //
+        // `shell_element_stiffness` assembles K in a local mid-surface frame and
+        // rotates each 3×3 sub-block to global via:
+        //
+        //   K_global[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R
+        //
+        // where `R = frame.r` has rows = local basis vectors expressed in global
+        // coordinates (`x_local = R · x_global`).
+        //
+        // All four existing patch tests (membrane, shear, bending, thickness) use
+        // UNIT_TRI in the xy-plane, giving R = I, so the rotation block is a no-op.
+        // The existing `shell_strain_energy_invariant_under_global_rigid_rotation`
+        // checks only the scalar ½ uᵀ K u: because K is symmetric, a transpose flip
+        // (R · sub · Rᵀ instead of Rᵀ · sub · R) leaves energy invariant for any
+        // symmetric K and is therefore invisible to that test.
+        //
+        // # Why the equality K_tilted[block] = Q · K_flat[block] · Qᵀ holds
+        //
+        // For the tilted triangle Q·UNIT_TRI, `build_shell_frame` produces
+        //   e1_tilted = Q·e_x,  e2_tilted = Q·e_y,  e3_tilted = Q·e_z
+        // so R_tilted[i][j] = Q[j][i], i.e. R_tilted = Qᵀ.
+        //
+        // The local 2D coordinates used to build K_local are
+        //   x_loc = R_tilted · (Q·node) = Qᵀ·Q·node = node
+        // so K_local_tilted ≡ K_local_flat (up to float rounding).
+        //
+        // Therefore:
+        //   K_global_flat   = Iᵀ · K_local · I             = K_local
+        //   K_global_tilted = (Qᵀ)ᵀ · K_local · Qᵀ        = Q · K_local · Qᵀ
+        //                   = Q · K_global_flat · Qᵀ
+        //
+        // # What bugs this catches that the energy invariant misses
+        //
+        // If the production loop applied R · sub · Rᵀ (transpose flip), the tilted
+        // result would be Qᵀ · K_local · Q ≠ Q · K_local · Qᵀ for the generic
+        // Q = Ry(45°)·Rz(30°) used here (no zero entries in any row/column).
+        // A sign flip on any row or column of R propagates to a specific 3×3 block
+        // entry and is equally caught by per-entry comparison.
+
+        let mat = steel_like();
+        let t = 0.05_f64;
+
+        // --- Step 1: flat (xy-plane) stiffness; R_flat = I, so K_flat = K_local ---
+        let k_flat = shell_element_stiffness(&UNIT_TRI, t, &mat);
+
+        // --- Step 2: build Q = Ry(45°) · Rz(30°) (same as the covariance test) ---
+        let cos30 = (30.0_f64.to_radians()).cos();
+        let sin30 = (30.0_f64.to_radians()).sin();
+        let cos45 = (45.0_f64.to_radians()).cos();
+        let sin45 = (45.0_f64.to_radians()).sin();
+        let rz = [[cos30, -sin30, 0.0], [sin30, cos30, 0.0], [0.0, 0.0, 1.0]];
+        let ry = [[cos45, 0.0, sin45], [0.0, 1.0, 0.0], [-sin45, 0.0, cos45]];
+        let q = mat3_mul(&ry, &rz);
+
+        // --- Step 3: tilt the triangle nodes by Q ---
+        let mut tilted_nodes = [[0.0_f64; 3]; 3];
+        for (ni, node) in UNIT_TRI.iter().enumerate() {
+            for i in 0..3 {
+                tilted_nodes[ni][i] = q[i][0]*node[0] + q[i][1]*node[1] + q[i][2]*node[2];
+            }
+        }
+
+        // --- Step 4: stiffness for tilted triangle ---
+        let k_tilted = shell_element_stiffness(&tilted_nodes, t, &mat);
+
+        // --- Step 5: pre-compute Qᵀ ---
+        let qt = [[q[0][0], q[1][0], q[2][0]],
+                  [q[0][1], q[1][1], q[2][1]],
+                  [q[0][2], q[1][2], q[2][2]]];
+
+        // --- Step 6: per-block assertion: K_tilted[bi,bj] == Q · K_flat[bi,bj] · Qᵀ ---
+        // n_blocks = 2 * N_NODES = 6 (displacement triple + rotation triple per node),
+        // mirroring the rotation-block loop in shell_element_stiffness (lines 464-486).
+        let n_blocks = 2 * Mitc3Plus::N_NODES; // 6
+        for bi in 0..n_blocks {
+            for bj in 0..n_blocks {
+                // Extract 3×3 sub-block from k_flat
+                let mut sub_flat = [[0.0_f64; 3]; 3];
+                for p in 0..3 {
+                    for qq in 0..3 {
+                        sub_flat[p][qq] = k_flat.get(3*bi + p, 3*bj + qq);
+                    }
+                }
+                // expected = Q · sub_flat · Qᵀ
+                let q_sub = mat3_mul(&q, &sub_flat);
+                let expected_block = mat3_mul(&q_sub, &qt);
+
+                // Compare entry-by-entry with relative tolerance 1e-9 · max(|expected|, 1.0)
+                for p in 0..3 {
+                    for qq in 0..3 {
+                        let actual = k_tilted.get(3*bi + p, 3*bj + qq);
+                        let expected = expected_block[p][qq];
+                        let tol = 1e-9 * expected.abs().max(1.0);
+                        assert!(
+                            (actual - expected).abs() < tol,
+                            "block ({bi},{bj}) entry ({p},{qq}): \
+                             actual={actual:.6e}, expected={expected:.6e}, \
+                             diff={:.6e}",
+                            (actual - expected).abs(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     #[should_panic(expected = "degenerate shell element: p0 == p1")]
     fn build_shell_frame_panics_on_zero_edge_p0_eq_p1() {
