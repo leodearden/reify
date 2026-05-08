@@ -4357,6 +4357,11 @@ dependencies = [
 name = "reify-config"
 version = "0.1.0"
 dependencies = [
+ "reify-kernel-fidget",
+ "reify-kernel-gmsh",
+ "reify-kernel-manifold",
+ "reify-kernel-occt",
+ "reify-kernel-openvdb",
  "serde",
  "tempfile",
  "toml 0.8.2",
