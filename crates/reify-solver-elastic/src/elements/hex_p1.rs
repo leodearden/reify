@@ -1,8 +1,76 @@
 //! First-order hexahedron (P1 / hex8) reference element.
 //!
-//! Implementation pending — test scaffold only at this stage.
+//! Trilinear 8-node element defined on the **reference cube** `[-1, 1]³`
+//! with vertices at the 8 corners `{±1}³`. Shape functions are tensor
+//! products of linear 1D Lagrange basis functions:
+//!
+//! ```text
+//! N_i(ξ, η, ζ) = (1/8)(1 + ξ_i ξ)(1 + η_i η)(1 + ζ_i ζ)
+//! ```
+//!
+//! where `(ξ_i, η_i, ζ_i) ∈ {±1}³` is the sign-pattern triple for node `i`
+//! in the canonical Hughes/Gmsh hex8 ordering:
+//!
+//! | node | ξ  | η  | ζ  |
+//! |------|----|----|----|
+//! | 0    | −1 | −1 | −1 |
+//! | 1    | +1 | −1 | −1 |
+//! | 2    | +1 | +1 | −1 |
+//! | 3    | −1 | +1 | −1 |
+//! | 4    | −1 | −1 | +1 |
+//! | 5    | +1 | −1 | +1 |
+//! | 6    | +1 | +1 | +1 |
+//! | 7    | −1 | +1 | +1 |
+//!
+//! Bottom face (ζ = −1) traversed counter-clockwise when viewed from +ζ;
+//! top face (ζ = +1) in the same cyclic order.  Right-handed orientation —
+//! the canonical ordering produces a positive `det J` for an unsheared cube.
 
 use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
+
+/// First-order Lagrangian hexahedron (trilinear hex8).
+pub struct HexP1;
+
+/// Sign-pattern triples `(ξ_i, η_i, ζ_i) ∈ {±1}³` for each of the 8 nodes
+/// in the canonical Hughes/Gmsh hex8 ordering.
+///
+/// Single-source: used by both `shape_at` and `shape_grad_at` to prevent
+/// per-method ordering drift.
+pub const VERTEX_SIGNS: [[f64; 3]; 8] = [
+    [-1.0, -1.0, -1.0], // v_0
+    [ 1.0, -1.0, -1.0], // v_1
+    [ 1.0,  1.0, -1.0], // v_2
+    [-1.0,  1.0, -1.0], // v_3
+    [-1.0, -1.0,  1.0], // v_4
+    [ 1.0, -1.0,  1.0], // v_5
+    [ 1.0,  1.0,  1.0], // v_6
+    [-1.0,  1.0,  1.0], // v_7
+];
+
+impl ReferenceElement for HexP1 {
+    const N_NODES: usize = 8;
+
+    /// Trilinear shape functions evaluated at `coord`.
+    ///
+    /// Returns `[N_0, …, N_7]` where
+    /// `N_i(ξ, η, ζ) = (1/8)(1 + ξ_i ξ)(1 + η_i η)(1 + ζ_i ζ)`.
+    fn shape_at(&self, coord: ReferenceCoord) -> Vec<f64> {
+        let ReferenceCoord { xi, eta, zeta } = coord;
+        let mut n = Vec::with_capacity(8);
+        for s in &VERTEX_SIGNS {
+            n.push((1.0 + s[0] * xi) * (1.0 + s[1] * eta) * (1.0 + s[2] * zeta) / 8.0);
+        }
+        n
+    }
+
+    fn shape_grad_at(&self, _coord: ReferenceCoord) -> Vec<[f64; 3]> {
+        unimplemented!("step-4 will implement HexP1::shape_grad_at")
+    }
+
+    fn quad_points(&self) -> &'static [QuadraturePoint] {
+        unimplemented!("step-6 will implement HexP1::quad_points")
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -36,7 +104,7 @@ mod tests {
             let n = HexP1.shape_at(*v);
             assert_eq!(n.len(), 8, "shape_at must return N_NODES=8 entries");
             for (j, &n_j) in n.iter().enumerate() {
-                let expected = if i == j { 1.0 } else { 0.0 };
+                let expected = if i == j { 1.0_f64 } else { 0.0_f64 };
                 assert!(
                     (n_j - expected).abs() < TOL,
                     "N_{j}({:?}) = {n_j}, expected {expected}",
