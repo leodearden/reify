@@ -28,6 +28,7 @@
 use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
+use bytemuck;
 
 /// On-disk-layout version for [`ElasticResult`]. Bump when the encoding
 /// format changes (separate from `engine_version_hash`, which invalidates
@@ -200,15 +201,45 @@ impl PersistentlyCacheable for ElasticResult {
             stress_len: self.stress.len() as u64,
         };
         bincode::serialize_into(&mut encoder, &header).map_err(io::Error::other)?;
-        // Iterate-by-reference so empty `Vec`s emit zero slab bytes cleanly
-        // (no `.first().unwrap()` / `.chunks(8).next()` patterns that would
-        // panic on len = 0). Pinned by
-        // `elastic_result_round_trips_with_empty_field_arrays`.
-        for v in &self.displacement {
-            encoder.write_all(&v.to_le_bytes())?;
+        // Bulk slab write — one `write_all` per slab rather than one per
+        // element. `bytemuck::cast_slice::<f64, u8>` reinterprets the `&[f64]`
+        // buffer as `&[u8]` without any copy; on little-endian hosts (the common
+        // case) the native f64 bytes are already little-endian, so this is a
+        // zero-copy fast path. The on-disk format is unconditionally little-endian
+        // for cross-host portability; on big-endian hosts we build a temporary
+        // `Vec<u8>` via `to_le_bytes()` per element (per-element CPU swap, single
+        // bulk write to the encoder).
+        //
+        // Empty-safety: `cast_slice::<f64, u8>(&[])` returns `&[]`;
+        // `write_all(&[])` is a no-op — empty `Vec`s still emit zero slab bytes.
+        // Pinned by `elastic_result_round_trips_with_empty_field_arrays`.
+        //
+        // Large-N: the 1<<20-element bulk path is exercised by
+        // `elastic_result_round_trips_one_million_element_vectors` (step-1 pin).
+        //
+        // Byte-order: the slab section is pinned as unconditionally little-endian
+        // on disk by `elastic_result_serialized_slab_section_is_little_endian_bytewise`
+        // (step-3 pin), which is stronger than the same-host run-to-run determinism
+        // guard (`elastic_result_serialization_is_byte_deterministic`).
+        #[cfg(target_endian = "little")]
+        encoder.write_all(bytemuck::cast_slice::<f64, u8>(&self.displacement))?;
+        #[cfg(target_endian = "big")]
+        {
+            let mut buf: Vec<u8> = Vec::with_capacity(self.displacement.len() * 8);
+            for v in &self.displacement {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+            encoder.write_all(&buf)?;
         }
-        for v in &self.stress {
-            encoder.write_all(&v.to_le_bytes())?;
+        #[cfg(target_endian = "little")]
+        encoder.write_all(bytemuck::cast_slice::<f64, u8>(&self.stress))?;
+        #[cfg(target_endian = "big")]
+        {
+            let mut buf: Vec<u8> = Vec::with_capacity(self.stress.len() * 8);
+            for v in &self.stress {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+            encoder.write_all(&buf)?;
         }
         encoder.finish()?;
         Ok(())
