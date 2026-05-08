@@ -353,8 +353,14 @@ fn edges_parallel_to_with_tags_zero_axis_errors_before_table_mutation() {
     );
 }
 
-#[test]
-fn edges_parallel_to_with_tags_negative_tol_errors_before_table_mutation() {
+/// Shared assertion fixture for the three angular-tolerance boundary tests
+/// below.  Calls `edges_parallel_to_with_tags` with a valid axis and an
+/// empty kernel + empty table, then asserts:
+///   - The result is `Err(QueryFailed)` with `"angular_tol_rad"` in the
+///     message.
+///   - `table.len() == 0` — tol validation fired before any kernel or table
+///     touch.
+fn assert_tol_rejected(tol: f64) {
     let parent = GeometryHandleId(1);
     let mut kernel = MockGeometryKernel::new();
     let mut table = FeatureTagTable::default();
@@ -363,16 +369,14 @@ fn edges_parallel_to_with_tags_negative_tol_errors_before_table_mutation() {
         step_kind: StepKind::Primitive,
         sub_index: 0,
     };
-
     let result = topology_selectors::edges_parallel_to_with_tags(
         &mut kernel,
         &mut table,
         parent,
         parent_tag,
         [1.0, 0.0, 0.0],
-        -0.1,
+        tol,
     );
-
     match result {
         Err(QueryError::QueryFailed(msg)) => {
             assert!(
@@ -380,85 +384,31 @@ fn edges_parallel_to_with_tags_negative_tol_errors_before_table_mutation() {
                 "error should mention 'angular_tol_rad', got: {msg:?}"
             );
         }
-        other => panic!("expected Err(QueryFailed) for negative tol, got {:?}", other),
+        other => panic!(
+            "expected Err(QueryFailed) for tol {:?}, got {:?}",
+            tol, other
+        ),
     }
     assert_eq!(
         table.len(),
         0,
         "table must remain empty: tol validation must error before any kernel or table touch"
     );
+}
+
+#[test]
+fn edges_parallel_to_with_tags_negative_tol_errors_before_table_mutation() {
+    assert_tol_rejected(-0.1);
 }
 
 #[test]
 fn edges_parallel_to_with_tags_tol_above_half_pi_errors_before_table_mutation() {
-    let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
-    let mut table = FeatureTagTable::default();
-    let parent_tag = FeatureTag {
-        source_span: SourceSpan::new(0, 10),
-        step_kind: StepKind::Primitive,
-        sub_index: 0,
-    };
-
-    let result = topology_selectors::edges_parallel_to_with_tags(
-        &mut kernel,
-        &mut table,
-        parent,
-        parent_tag,
-        [1.0, 0.0, 0.0],
-        std::f64::consts::FRAC_PI_2 + 1e-3,
-    );
-
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for tol > π/2, got {:?}", other),
-    }
-    assert_eq!(
-        table.len(),
-        0,
-        "table must remain empty: tol validation must error before any kernel or table touch"
-    );
+    assert_tol_rejected(std::f64::consts::FRAC_PI_2 + 1e-3);
 }
 
 #[test]
 fn edges_parallel_to_with_tags_nan_tol_errors_before_table_mutation() {
-    let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
-    let mut table = FeatureTagTable::default();
-    let parent_tag = FeatureTag {
-        source_span: SourceSpan::new(0, 10),
-        step_kind: StepKind::Primitive,
-        sub_index: 0,
-    };
-
-    let result = topology_selectors::edges_parallel_to_with_tags(
-        &mut kernel,
-        &mut table,
-        parent,
-        parent_tag,
-        [1.0, 0.0, 0.0],
-        f64::NAN,
-    );
-
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
-    }
-    assert_eq!(
-        table.len(),
-        0,
-        "table must remain empty: tol validation must error before any kernel or table touch"
-    );
+    assert_tol_rejected(f64::NAN);
 }
 
 // ─── negative tests: post-extraction error paths ──────────────────────────────

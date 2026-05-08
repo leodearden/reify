@@ -430,6 +430,29 @@ pub(crate) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+/// Validate that `angular_tol_rad` is finite and in the inclusive range
+/// `[0, max]`, returning `Err(QueryError::QueryFailed)` on violation.
+///
+/// `fn_name` names the calling selector in the diagnostic.  `max_label` is
+/// the human-readable form of `max` (e.g. `"π/2"` or `"π"`) so the error
+/// message uses Unicode rather than a raw float literal.
+///
+/// Used by all five angular-tolerance selectors to guard NaN, ±∞, and
+/// out-of-range values **before** any kernel touch or tag-table mutation.
+pub(crate) fn validate_angular_tol(
+    fn_name: &'static str,
+    tol: f64,
+    max: f64,
+    max_label: &'static str,
+) -> Result<(), QueryError> {
+    if !tol.is_finite() || !(0.0..=max).contains(&tol) {
+        return Err(QueryError::QueryFailed(format!(
+            "{fn_name}: angular_tol_rad must be finite and in [0, {max_label}] (got {tol})"
+        )));
+    }
+    Ok(())
+}
+
 /// Return the subset of `extract_faces(handle)` whose surface normal at
 /// the face's centroid is within `angular_tol_rad` of the `target`
 /// direction.
@@ -467,14 +490,7 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
     target: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    if !angular_tol_rad.is_finite()
-        || !(0.0..=std::f64::consts::PI).contains(&angular_tol_rad)
-    {
-        return Err(QueryError::QueryFailed(format!(
-            "faces_by_normal: angular_tol_rad must be finite and in [0, π] (got {})",
-            angular_tol_rad
-        )));
-    }
+    validate_angular_tol("faces_by_normal", angular_tol_rad, std::f64::consts::PI, "π")?;
     let target = normalize3(target).ok_or_else(|| {
         QueryError::QueryFailed(
             "faces_by_normal: target direction must be non-zero and finite".into(),
@@ -533,14 +549,12 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    if !angular_tol_rad.is_finite()
-        || !(0.0..=std::f64::consts::FRAC_PI_2).contains(&angular_tol_rad)
-    {
-        return Err(QueryError::QueryFailed(format!(
-            "edges_parallel_to: angular_tol_rad must be finite and in [0, π/2] (got {})",
-            angular_tol_rad
-        )));
-    }
+    validate_angular_tol(
+        "edges_parallel_to",
+        angular_tol_rad,
+        std::f64::consts::FRAC_PI_2,
+        "π/2",
+    )?;
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "edges_parallel_to: axis direction must be non-zero and finite".into(),
@@ -618,14 +632,12 @@ pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
     // Tolerance validation is FIRST — before axis normalization, extract_edges,
     // and table mutation. "Fail before kernel touch" contract pinned by
     // edges_parallel_to_with_tags_*_errors_before_table_mutation tests.
-    if !angular_tol_rad.is_finite()
-        || !(0.0..=std::f64::consts::FRAC_PI_2).contains(&angular_tol_rad)
-    {
-        return Err(QueryError::QueryFailed(format!(
-            "edges_parallel_to_with_tags: angular_tol_rad must be finite and in [0, π/2] (got {})",
-            angular_tol_rad
-        )));
-    }
+    validate_angular_tol(
+        "edges_parallel_to_with_tags",
+        angular_tol_rad,
+        std::f64::consts::FRAC_PI_2,
+        "π/2",
+    )?;
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "edges_parallel_to_with_tags: axis direction must be non-zero and finite".into(),

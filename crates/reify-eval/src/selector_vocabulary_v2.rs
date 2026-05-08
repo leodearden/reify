@@ -77,7 +77,7 @@ use reify_types::{
 
 use crate::topology_selectors::{
     dot3, filter_by_value, normalize3, parse_bbox_axis_extents, parse_xyz_value,
-    query_per_subshape,
+    query_per_subshape, validate_angular_tol,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,14 +248,12 @@ pub fn faces_perpendicular_to<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    if !angular_tol_rad.is_finite()
-        || !(0.0..=std::f64::consts::FRAC_PI_2).contains(&angular_tol_rad)
-    {
-        return Err(QueryError::QueryFailed(format!(
-            "faces_perpendicular_to: angular_tol_rad must be finite and in [0, π/2] (got {})",
-            angular_tol_rad
-        )));
-    }
+    validate_angular_tol(
+        "faces_perpendicular_to",
+        angular_tol_rad,
+        std::f64::consts::FRAC_PI_2,
+        "π/2",
+    )?;
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "faces_perpendicular_to: axis direction must be non-zero and finite".into(),
@@ -310,14 +308,12 @@ pub fn edges_perpendicular_to<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    if !angular_tol_rad.is_finite()
-        || !(0.0..=std::f64::consts::FRAC_PI_2).contains(&angular_tol_rad)
-    {
-        return Err(QueryError::QueryFailed(format!(
-            "edges_perpendicular_to: angular_tol_rad must be finite and in [0, π/2] (got {})",
-            angular_tol_rad
-        )));
-    }
+    validate_angular_tol(
+        "edges_perpendicular_to",
+        angular_tol_rad,
+        std::f64::consts::FRAC_PI_2,
+        "π/2",
+    )?;
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "edges_perpendicular_to: axis direction must be non-zero and finite".into(),
