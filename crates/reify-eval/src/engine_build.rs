@@ -49,6 +49,28 @@ struct RealizationOutputs<'a> {
     swept_kind_table: &'a mut SweptKindTable,
 }
 
+impl<'a> RealizationOutputs<'a> {
+    /// Constructs the aggregate from positional `&mut` references in
+    /// struct-declaration order (tasks 3119 + 3133).  Collapses the
+    /// 7-line struct-literal at every call site into a single-line
+    /// `RealizationOutputs::new(...)` call.
+    fn new(
+        step_handles: &'a mut Vec<GeometryHandleId>,
+        named_steps: &'a mut HashMap<String, GeometryHandleId>,
+        feature_tag_table: &'a mut FeatureTagTable,
+        topology_attribute_table: &'a mut TopologyAttributeTable,
+        swept_kind_table: &'a mut SweptKindTable,
+    ) -> Self {
+        Self {
+            step_handles,
+            named_steps,
+            feature_tag_table,
+            topology_attribute_table,
+            swept_kind_table,
+        }
+    }
+}
+
 /// Dispatch on `attribute_history` to populate `topology_attribute_table`
 /// for sweep-style ops (extrude / revolve, currently). Called by
 /// `Engine::execute_realization_ops` immediately after the existing
