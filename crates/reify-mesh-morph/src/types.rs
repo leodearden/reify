@@ -37,8 +37,12 @@ pub struct InversionDetails {
 
 /// Payload for [`crate::MorphFailure::QualitySoftFail`].
 ///
-/// Carries which quality thresholds from [`crate::MorphOptions`] were breached.
-/// Fields are `None` when the corresponding check passed. Populated by the
+/// Carries quality breach information for the output mesh. Most fields reflect
+/// threshold breaches from [`crate::MorphOptions`] and are `None` when the
+/// corresponding check passed. The exception is `degenerate_morphed_element`:
+/// it is unconditional — populated whenever a morphed tet has zero scaled
+/// Jacobian (coplanar/zero-volume or coincident-edge degenerate), regardless
+/// of any configured [`crate::MorphOptions`] threshold. Populated by the
 /// quality-check pass in PRD task #9.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricsBreached {
@@ -54,6 +58,14 @@ pub struct MetricsBreached {
     /// the ratio crosses the configured threshold. `None` when connectivity is
     /// mismatched, either AR is non-finite, or the ratio is within threshold.
     pub max_aspect_ratio_increase: Option<f64>,
+    /// Zero-based index of the first morphed element with zero scaled Jacobian
+    /// (coplanar/zero-volume or coincident-edge degenerate tet).
+    ///
+    /// Populated regardless of [`crate::MorphOptions`] thresholds — a degenerate
+    /// morphed tet always trips `SoftFail` via this field, even when
+    /// `quality_floor_min_scaled_jacobian` is set to `0.0`. `None` when no
+    /// degenerate morphed tet was seen.
+    pub degenerate_morphed_element: Option<usize>,
 }
 
 /// Opaque payload for [`crate::MorphFailure::SolverError`].

@@ -40,8 +40,12 @@ pub enum MorphFailure {
 
     /// Soft quality thresholds were breached but no hard inversion occurred.
     ///
-    /// Produced by the quality-check pass in PRD task #9. The payload
-    /// records which of the [`crate::MorphOptions`] thresholds tripped.
+    /// Produced by the quality-check pass in PRD task #9. The payload records
+    /// which of the [`crate::MorphOptions`] thresholds tripped. Also fires when
+    /// a morphed tet is detected as exactly degenerate (scaled Jacobian == 0.0),
+    /// independent of caller-configured thresholds — `degenerate_morphed_element`
+    /// will be `Some(element_index)` in that case even when all threshold floors
+    /// are set to zero.
     QualitySoftFail(MetricsBreached),
 
     /// The elastic-solve kernel failed (e.g. singular stiffness matrix).
@@ -151,6 +155,7 @@ mod tests {
             min_scaled_jacobian: Some(0.10),
             pct_below_025: Some(0.02),
             max_aspect_ratio_increase: Some(2.5),
+            degenerate_morphed_element: None,
         });
         let solver_err =
             MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix"));

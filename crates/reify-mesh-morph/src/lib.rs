@@ -334,6 +334,7 @@ mod tests {
                 min_scaled_jacobian: None,
                 pct_below_025: None,
                 max_aspect_ratio_increase: None,
+                degenerate_morphed_element: None,
             });
     };
 
