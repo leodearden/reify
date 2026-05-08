@@ -136,9 +136,10 @@ pub fn laplacian_smooth(
     // Jacobi double-buffer: each iteration reads exclusively from `current`
     // and writes exclusively to `next`. In-place mutation would convert
     // this into Gauss-Seidel and make the result depend on traversal order.
+    // Allocate the second buffer once and reuse via std::mem::swap so the
+    // amortised allocation cost is paid exactly once across all iterations.
     let mut next: Vec<[f64; 3]> = vec![[0.0; 3]; vertex_count];
-    let _ = iterations; // step-14 wraps the body below in a 0..iterations loop.
-    {
+    for _ in 0..iterations {
         for i in 0..vertex_count {
             if is_boundary[i] {
                 next[i] = current[i];
