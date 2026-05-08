@@ -814,6 +814,27 @@ mod tests {
         );
     }
 
+    /// An empty registry must produce `None` from `pick_lexmin_brep_kernel_in`.
+    ///
+    /// This pins the empty-registry contract relied on by
+    /// [`crate::Engine::with_registered_kernel`]'s "no kernel registered"
+    /// diagnostic path (stub-mode build with `cfg(has_occt)` off).
+    ///
+    /// After step-4, both `find(brep)` and `values().next()` on an empty map
+    /// return `None`, so the test already passes — it is written here for
+    /// explicit contract documentation and as a guard against future refactors
+    /// that might accidentally return a sentinel value on empty input.
+    #[test]
+    fn pick_lexmin_brep_kernel_in_returns_none_for_empty_registry() {
+        let map: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        let result = pick_lexmin_brep_kernel_in(&map, |d: &CapabilityDescriptor| d.clone());
+        assert_eq!(
+            result, None,
+            "pick_lexmin_brep_kernel_in must return None for an empty registry — \
+             preserves Engine::with_registered_kernel's 'no kernel registered' semantics",
+        );
+    }
+
     /// The Operator-visibility contract table on `emit_kernel_selection`
     /// declares `total == 0` emits no event.
     /// The `debug_assert!(total >= 1, …)` enforces this structurally: callers
