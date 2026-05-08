@@ -61,11 +61,13 @@
 //! assert_eq!(k.n_dofs, 18);
 //! assert_eq!(k.data.len(), 324);
 //!
-//! // ShellStress smoke test (T16).
-//! let ss = ShellStress::homogeneous(reify_types::Value::Undef);
-//! assert!(ss.top.is_undef());
-//! assert!(ss.mid.is_undef());
-//! assert!(ss.bottom.is_undef());
+//! // ShellStress smoke test (T16): use a non-trivial value so a regression where
+//! // one channel is left default would surface here.
+//! let field = reify_types::Value::Real(1.0);
+//! let ss = ShellStress::homogeneous(field.clone());
+//! assert_eq!(ss.top, field, "homogeneous: top must equal input");
+//! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
+//! assert_eq!(ss.bottom, field, "homogeneous: bottom must equal input");
 //! ```
 
 pub mod assembly;

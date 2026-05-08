@@ -2,8 +2,11 @@
 // result (PRD task T16, `docs/prds/v0_4/structural-analysis-shells.md` §
 // "Stress through thickness").
 //
-// Sibling to the stdlib-level `ShellStress` structure_def in
-// `crates/reify-compiler/stdlib/solver_elastic.ri:std/solver/elastic`. This
+// Sibling to the stdlib-level `ShellStress` structure_def declared at
+// `crates/reify-compiler/stdlib/solver_elastic.ri:366` (std/solver/elastic).
+// Both definitions must stay shape-aligned (top/mid/bottom); if a future task
+// adds a fourth layer, update both sides together. Engine-integration tasks
+// T18-T20 will add a cross-assertion once they consume both sides. This
 // file ships the data-only contract (define the shape + tet constructor);
 // engine-integration tasks T18-T20 are responsible for actually populating
 // these fields from the MITC3+ kernel and wiring the `to_global(stress,
