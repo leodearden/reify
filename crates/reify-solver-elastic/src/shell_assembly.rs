@@ -168,9 +168,9 @@ fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// direction is **not** global `θ_z` unless the shell is xy-aligned.  For a
 /// tilted element, the zero-stiffness eigenvector in each node's
 /// three-component rotation sub-block is `R\[2\]` — the local frame's normal
-/// axis expressed in global coordinates.  Equivalently, the 3×3 rotation
-/// sub-block of K_global for each node pair has a zero eigenvalue with
-/// eigenvector `R\[2\]ᵀ` (in local-rotation basis: `\[0, 0, 1\]`).
+/// axis expressed in global coordinates.  Derivation: `K_local · R · v = 0
+/// ⇒ R · v ∥ ê_z ⇒ v ∝ Rᵀ · ê_z`, which is exactly the third row of `R`,
+/// i.e. `e3 = R\[2\]`.
 ///
 /// The global sparse-assembly consumer (PRD T#11) must either:
 /// (a) constrain each node's rotation about the per-element local normal
