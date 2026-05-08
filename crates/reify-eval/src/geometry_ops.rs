@@ -5979,6 +5979,67 @@ mod tests {
         );
     }
 
+    /// Pins the DIMENSIONLESS leniency documented at the `dispatch_surface_angle`
+    /// Scalar arm (see comment block around line 1902). A mock kernel that returns
+    /// `Value::Scalar { dimension: DIMENSIONLESS, si_value: x }` must be accepted
+    /// alongside ANGLE without emitting any diagnostic, and must resolve to
+    /// `Value::angle(x)`. Without this test, tightening the guard to ANGLE-only
+    /// would not be caught by the existing ANGLE or Real fixtures.
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_dimensionless_resolves_as_angle()
+     {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Scalar {
+                si_value: std::f64::consts::FRAC_PI_2,
+                dimension: reify_types::DimensionVector::DIMENSIONLESS,
+            },
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            "angle_between_surfaces with kernel Scalar(DIMENSIONLESS, PI/2) reply must \
+             resolve to Some(Value::angle(PI/2)); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "DIMENSIONLESS Scalar reply must NOT emit diagnostics (intentional leniency), \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
     /// Shared fixture for the two wrong-dim-Scalar tests below. Builds a
     /// `MockGeometryKernel` wired to return a LENGTH-dimensioned Scalar for the
     /// `angle_between_surfaces(face_a, face_b)` call, together with the
@@ -6070,12 +6131,15 @@ mod tests {
             diag.message
         );
         // DimensionVector::LENGTH displays as "m" (via its fmt::Display impl).
-        // Asserting "dimension=m" pins that the warning names the actual
-        // offending dimension rather than just any wording about dimensions.
+        // The format string is `"(dimension={}, si_value={})"`  so the rendered
+        // fragment is `"dimension=m, si_value="`.  Anchoring past the trailing
+        // comma prevents false positives from dimensions that also start with
+        // "m" (e.g. m^2, m·s^-1, mol, …).
         assert!(
-            diag.message.contains("dimension=m"),
-            "diagnostic must mention the offending dimension (LENGTH displays as 'm'); \
-             got: {}",
+            diag.message.contains("dimension=m, si_value="),
+            "diagnostic must mention the offending dimension anchored by the trailing \
+             ', si_value=' (LENGTH displays as 'm'; bare 'dimension=m' would also \
+             match m^2, m·… etc.); got: {}",
             diag.message
         );
     }
