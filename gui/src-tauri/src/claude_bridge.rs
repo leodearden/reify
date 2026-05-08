@@ -112,14 +112,25 @@ pub fn parse_outbound(line: &str) -> Result<OutboundMessage, String> {
     serde_json::from_str(line.trim()).map_err(|e| format!("parse_outbound: {}", e))
 }
 
+/// Write an InboundMessage as a JSON line, returning the raw `io::Error`.
+///
+/// This is the low-level primitive. Callers that need `ErrorKind` inspection (e.g.
+/// `SidecarHandle::abort` checking for `BrokenPipe`) use this directly; callers that
+/// want a `String` error use `write_to_sidecar`.
+async fn try_write_inbound<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    msg: &InboundMessage,
+) -> Result<(), std::io::Error> {
+    let line = format_inbound(msg);
+    writer.write_all(line.as_bytes()).await
+}
+
 /// Write an InboundMessage as a JSON line to the sidecar stdin.
 pub async fn write_to_sidecar<W: AsyncWrite + Unpin>(
     writer: &mut W,
     msg: &InboundMessage,
 ) -> Result<(), String> {
-    let line = format_inbound(msg);
-    writer
-        .write_all(line.as_bytes())
+    try_write_inbound(writer, msg)
         .await
         .map_err(|e| format!("write_to_sidecar: {}", e))
 }
@@ -491,17 +502,19 @@ impl SidecarHandle {
     ///   `BrokenPipe` error is also silently converted to `Ok(())` — the
     ///   user-visible action ("stop the request") is already complete.
     pub async fn abort(&mut self) -> Result<(), String> {
-        // State pre-check: if the sidecar is known-gone, abort is trivially complete.
-        // Clone out of the lock before the next await to avoid holding two locks simultaneously
-        // (matches the lock-ordering hygiene in claude_send_message_impl).
-        let state = self.state.lock().await.clone();
-        if matches!(state, SidecarState::NotStarted | SidecarState::Crashed(_)) {
+        // State pre-check: end the lock-guard temporary before taking the stdin lock
+        // to avoid holding two locks simultaneously (matches lock-ordering hygiene in
+        // claude_send_message_impl). A block drops the guard at `}` without a clone.
+        let early_return = {
+            let s = self.state.lock().await;
+            matches!(*s, SidecarState::NotStarted | SidecarState::Crashed(_))
+        };
+        if early_return {
             return Ok(());
         }
 
         let mut writer = self.stdin.lock().await;
-        let line = format_inbound(&InboundMessage::Abort);
-        match writer.write_all(line.as_bytes()).await {
+        match try_write_inbound(&mut *writer, &InboundMessage::Abort).await {
             Ok(()) => Ok(()),
             // The sidecar already exited and its stdin pipe is closed.
             // The user-visible action ("stop the request") is trivially complete.
