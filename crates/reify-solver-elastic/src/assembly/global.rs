@@ -765,6 +765,85 @@ mod tests {
         }
     }
 
+    /// `Parallel { threads: 2 }` and `Parallel { threads: 4 }` produce
+    /// tolerance-equivalent results on a shared-DOF mesh.
+    ///
+    /// The `AssemblyMode::Parallel` doc comment claims cross-thread-count
+    /// drift on shared-DOF meshes is bounded by `O(ulp · max|K_e[i][j]|)` —
+    /// but
+    /// `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`
+    /// only exercises Deterministic vs `Parallel { threads: 4 }`. This test
+    /// pins the cross-thread-count claim directly: two parallel runs at
+    /// **different** thread counts must agree within the same tolerance.
+    ///
+    /// Mesh: same fan-around-central-node mesh as step-13. Two thread
+    /// counts that produce different chunk partitions:
+    /// - `threads = 2` ⇒ `chunk_size = ceil(4 / 2) = 2` ⇒ chunks
+    ///   `[e0, e1]`, `[e2, e3]`. Two workers, each emits 2 elements'
+    ///   triplets, then merge.
+    /// - `threads = 4` ⇒ `chunk_size = ceil(4 / 4) = 1` ⇒ chunks
+    ///   `[e0]`, `[e1]`, `[e2]`, `[e3]`. Four workers, each emits 1
+    ///   element's triplets, then merge.
+    ///
+    /// In our current implementation both flatten to the same triplet
+    /// sequence (slice order, since chunks tile slice order) and faer
+    /// sums in encounter order, so today's output is bit-equal across
+    /// the two thread counts. The test asserts the *looser* tolerance
+    /// contract because (a) it matches what the docstring guarantees,
+    /// (b) it leaves implementation flexibility for a future load-balanced
+    /// chunker that might reorder accumulation, and (c) bit-equality
+    /// would be an over-fit — the right contract for FEA is
+    /// tolerance-equivalence, not bit-stability across thread counts.
+    #[test]
+    fn parallel_mode_cross_thread_count_tolerance_equivalent_on_shared_dof_mesh() {
+        let mat = dimensionless_steel_like();
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
+
+        // Same fan-around-central-node mesh as step-13.
+        let conns: [[usize; 4]; 4] = [
+            [0, 1, 2, 3],
+            [0, 4, 5, 6],
+            [0, 7, 8, 9],
+            [0, 10, 11, 12],
+        ];
+        let n_nodes = 13;
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| AssemblyElement {
+                id: i,
+                connectivity: c,
+                k_e: &k_e,
+            })
+            .collect();
+
+        let par2 = assemble_global_stiffness(
+            n_nodes,
+            &elements,
+            AssemblyMode::Parallel { threads: 2 },
+        );
+        let par4 = assemble_global_stiffness(
+            n_nodes,
+            &elements,
+            AssemblyMode::Parallel { threads: 4 },
+        );
+
+        let dim = 3 * n_nodes;
+        for i in 0..dim {
+            for j in 0..dim {
+                let p2 = read(&par2, i, j);
+                let p4 = read(&par4, i, j);
+                let tol = 1e-12 * p4.abs().max(1.0);
+                let delta = (p2 - p4).abs();
+                assert!(
+                    delta < tol,
+                    "K_par2[{i}][{j}] = {p2} but K_par4[{i}][{j}] = {p4}; \
+                     |Δ| = {delta} ≥ tol = {tol}",
+                );
+            }
+        }
+    }
+
     /// Global K is symmetric within FP tolerance on the fan mesh from
     /// step-13.
     ///
