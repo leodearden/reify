@@ -1666,4 +1666,61 @@ mod tests {
                 .is_undef()
         );
     }
+
+    // ── linear_combine weights iteration validation ──────────────────────────
+
+    #[test]
+    fn linear_combine_non_string_weight_key_returns_undef() {
+        // Weight keys must be Value::String — Int key rejects.
+        let mcr = make_multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::Int(7), Value::Real(1.0));
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(weights_map)])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn linear_combine_non_numeric_weight_value_returns_undef() {
+        // Weight values must be numeric (as_f64() returns Some) — String rejects.
+        let mcr = make_multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(
+            Value::String("A".to_string()),
+            Value::String("oops".to_string()),
+        );
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(weights_map)])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn linear_combine_unknown_case_name_returns_undef() {
+        // Weight references a case name absent from base_results.cases.
+        let mcr = make_multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("missing".to_string()), Value::Real(1.0));
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(weights_map)])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn linear_combine_case_value_not_a_map_returns_undef() {
+        // base_results.cases["A"] is Value::Int(123) — not a Map.
+        let mcr = make_multi_case_result_value(&[("A", Value::Int(123))]);
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("A".to_string()), Value::Real(1.0));
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(weights_map)])
+                .unwrap()
+                .is_undef()
+        );
+    }
 }
