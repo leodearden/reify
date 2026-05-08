@@ -71,6 +71,15 @@ struct ElasticResultHeader {
 /// encoding of their state. The cache layer dispatches on the concrete type
 /// per cache key, so this trait is **not** object-safe.
 pub trait PersistentlyCacheable: Sized {
+    /// On-disk-layout version. Bumped when the encoding format changes,
+    /// independently of any `engine_version_hash` (which invalidates result
+    /// semantics rather than the wire format).
+    ///
+    /// Associated const (no `&self`) so the cache layer can read the format
+    /// version directly from the type — keying entries by `(TypeId, FORMAT_VERSION)`
+    /// without first materialising a value.
+    const FORMAT_VERSION: u32;
+
     /// Serialize `self` to `w`. Encoding must be byte-deterministic for any
     /// given value (re-serializing a deserialized value must yield the
     /// identical byte sequence).
@@ -81,11 +90,6 @@ pub trait PersistentlyCacheable: Sized {
     /// preserve every field bit-exactly (including NaN payloads and signed
     /// zeros for any `f64` fields).
     fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self>;
-
-    /// On-disk-layout version. Bumped when the encoding format changes,
-    /// independently of any `engine_version_hash` (which invalidates result
-    /// semantics rather than the wire format).
-    fn format_version(&self) -> u32;
 
     /// Solve time in milliseconds, exposed to the cache layer for
     /// cost-weighted LRU eviction.
@@ -108,6 +112,8 @@ pub struct ElasticResult {
 }
 
 impl PersistentlyCacheable for ElasticResult {
+    const FORMAT_VERSION: u32 = ELASTIC_RESULT_FORMAT_VERSION;
+
     fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
         // Level 0 selects zstd's default compression level (3 in zstd 0.13),
         // which is byte-deterministic for identical input. Pinned explicitly
@@ -178,10 +184,6 @@ impl PersistentlyCacheable for ElasticResult {
         })
     }
 
-    fn format_version(&self) -> u32 {
-        ELASTIC_RESULT_FORMAT_VERSION
-    }
-
     fn solve_time_ms(&self) -> u64 {
         self.solve_time_ms
     }
@@ -200,15 +202,10 @@ mod tests {
 
     #[test]
     fn elastic_result_format_version_is_one() {
-        let er = ElasticResult {
-            displacement: vec![],
-            stress: vec![],
-            max_von_mises: 0.0,
-            converged: false,
-            iterations: 0,
-            solve_time_ms: 0,
-        };
-        assert_eq!(er.format_version(), 1);
+        // Read from the trait associated const directly — no instance needed,
+        // demonstrating the cache-layer use case where `(TypeId, FORMAT_VERSION)`
+        // can be looked up before any value materialises.
+        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 1);
     }
 
     #[test]
