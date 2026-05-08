@@ -510,6 +510,19 @@ impl Engine {
                     kernel.as_ref(),
                     &mut diagnostics,
                 );
+                // Task 2324: topology-selector post-process (closest_point /
+                // on / angle_between_surfaces) — sibling to the conformance-
+                // query and kinematic-query wirings; runs after `named_steps`
+                // is populated so the helpers can resolve let-bound geometry
+                // names to a `GeometryHandleId` and let-bound point names to
+                // a `Value::Point`.
+                Engine::post_process_topology_selectors(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
             }
 
             if step_handles.is_empty() {
@@ -634,6 +647,19 @@ impl Engine {
                 // helpers can resolve each Snapshot body's `solid` String to
                 // a `GeometryHandleId`.
                 Engine::post_process_kinematic_queries(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
+                // Task 2324: topology-selector post-process (closest_point /
+                // on / angle_between_surfaces) — sibling to the conformance-
+                // query and kinematic-query wirings; runs after `named_steps`
+                // is populated so the helpers can resolve let-bound geometry
+                // names to a `GeometryHandleId` and let-bound point names to
+                // a `Value::Point`.
+                Engine::post_process_topology_selectors(
                     template,
                     &named_steps,
                     &mut values,
@@ -836,6 +862,21 @@ impl Engine {
             // surface exposes the same kernel-resolved kinematic-query
             // values as the build surface so GUI overlays stay consistent.
             Engine::post_process_kinematic_queries(
+                template,
+                &named_steps,
+                values,
+                kernel.as_ref(),
+                diagnostics,
+            );
+            // Task 2324: topology-selector post-process (closest_point /
+            // on / angle_between_surfaces) — sibling to the conformance-
+            // query and kinematic-query wirings; runs after `named_steps`
+            // is populated so the helpers can resolve let-bound geometry
+            // names to a `GeometryHandleId` and let-bound point names to
+            // a `Value::Point`. Tessellate surface exposes the same
+            // kernel-resolved values as the build surface so GUI overlays
+            // stay consistent.
+            Engine::post_process_topology_selectors(
                 template,
                 &named_steps,
                 values,
@@ -1269,6 +1310,58 @@ impl Engine {
                 None => continue,
             };
             if let Some(value) = crate::geometry_ops::try_eval_kinematic_query(
+                default_expr,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
+    /// Post-process value cells for a template after `execute_realization_ops`
+    /// has populated `named_steps`, dispatching the topology-selector helpers
+    /// `closest_point` / `on` / `angle_between_surfaces` (task 2324).
+    ///
+    /// Sibling to `post_process_conformance_queries` and
+    /// `post_process_kinematic_queries`. For each `ValueCellDecl` in
+    /// `template.value_cells` whose `default_expr` is a recognised
+    /// topology-selector helper, this writes the kernel-resolved value
+    /// (`Value::Point(_)` for `closest_point`, `Value::Bool(_)` for `on`,
+    /// `Value::Scalar { dimension: ANGLE, .. }` for `angle_between_surfaces`)
+    /// into `values`, overwriting the `Value::Undef` left behind by the pure
+    /// `eval_expr` path. Cells whose dispatch returns `None` (literal arg,
+    /// missing `named_steps` or `values` entry, non-helper function call)
+    /// are left untouched — see
+    /// [`crate::geometry_ops::try_eval_topology_selector`]'s `None`-return
+    /// contract.
+    ///
+    /// Called from the same three sites as `post_process_conformance_queries`
+    /// and `post_process_kinematic_queries` so build / build_snapshot /
+    /// tessellate paths agree on the patched value.
+    fn post_process_topology_selectors(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Iterate `values` directly without snapshotting (parallels the
+        // `post_process_kinematic_queries` sibling above). Safe because
+        // topology-selector helpers do not chain through value cells —
+        // each helper's args resolve to either a let-bound `Value::Point`
+        // already populated by `eval_expr` or a `named_steps` handle
+        // populated by `execute_realization_ops`, never to another
+        // topology-selector cell, so an earlier patch in this loop cannot
+        // influence a later dispatch's input.
+        for cell in &template.value_cells {
+            let default_expr = match &cell.default_expr {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(value) = crate::geometry_ops::try_eval_topology_selector(
                 default_expr,
                 named_steps,
                 values,
