@@ -262,18 +262,24 @@ pub fn assemble_global_stiffness(
     // entries in encounter order**. We rely on this contract: when two
     // (or more) elements share a DOF pair, each element emits its own
     // triplet, and the accumulated `K_global[i][j]` is the sum of all
-    // contributions in slice-iteration order. Verified by faer's own
-    // `test_from_indices` (sparse/mod.rs:280-326), which asserts
-    // `mat.val() == &[1.0 + 3.0, ..., 6.0 + 7.0]` after seeding two
-    // duplicate `(0,0)` and `(3,3)` triplets — the assertion uses the
-    // unevaluated `1.0 + 3.0` form, which is bit-exact for those values
-    // but documents the encounter-order sum contract.
+    // contributions in slice-iteration order.
+    //
+    // The contract is pinned by the `faer_sums_duplicate_triplets_in_encounter_order`
+    // unit test below, which seeds five duplicate triplets whose left-fold
+    // (encounter-order) and pairwise-tree-reduction sums diverge above
+    // the LSB — so a faer upgrade that switches summation strategy
+    // surfaces immediately rather than silently invalidating the
+    // parallel-mode determinism contract. Faer's own `test_from_indices`
+    // (sparse/mod.rs:280-326) demonstrates the same behavior on values
+    // that happen to be sum-order-invariant; our canary uses values that
+    // are not, so it would also catch a regression that survives faer's
+    // own test suite.
     //
     // If a future faer version regresses this (e.g. overwrites instead of
     // summing), the fix is to switch the local helper to a pre-merge pass
     // that sums in a `BTreeMap<(row, col), f64>` keyed by the canonical
     // `(row, col)` order. step-5's `two_p1_elements_sharing_face_*` test
-    // would surface the regression.
+    // would also surface the regression.
     SparseRowMat::try_new_from_triplets(3 * n_nodes, 3 * n_nodes, &triplets)
         .expect("triplets within declared 3*n_nodes dims (per-element bounds enforced upstream)")
 }
@@ -820,6 +826,60 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Faer's `try_new_from_triplets` sums duplicate `(row, col)` entries
+    /// in **encounter order** — the contract `assemble_global_stiffness`'s
+    /// parallel-mode determinism depends on. A faer minor-version bump
+    /// that switches internally to e.g. tree-pairwise reduction (without
+    /// breaking faer's own internal `test_from_indices` fixture, whose
+    /// values happen to be sum-order-invariant) would silently invalidate
+    /// the bit-stability claim pinned by
+    /// `parallel_mode_bit_equal_to_deterministic_on_disjoint_mesh` and the
+    /// fixed-thread-count back-to-back determinism check in
+    /// `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`.
+    ///
+    /// Five duplicate triplets at `(0, 0)` whose left-fold (encounter-order)
+    /// sum and pairwise-tree-reduction sum diverge well above the LSB:
+    ///
+    /// ```text
+    /// values:           [1e20, 1.0, -1e20, 1.0, 1.0]
+    /// encounter-fold:   ((((1e20 + 1.0) + -1e20) + 1.0) + 1.0)
+    ///                 = ((1e20 + -1e20) + 1.0) + 1.0
+    ///                 = (0.0 + 1.0) + 1.0
+    ///                 = 2.0
+    /// pairwise-tree:    ((1e20 + 1.0) + (-1e20 + 1.0)) + 1.0
+    ///                 = (1e20 + -1e20) + 1.0
+    ///                 = 0.0 + 1.0
+    ///                 = 1.0
+    /// ```
+    ///
+    /// (`1.0` is below the half-ulp of `1e20 ≈ 2^66`, so `1e20 + 1.0` and
+    /// `-1e20 + 1.0` round back to `±1e20` exactly.) Any non-`2.0` result
+    /// means faer's summation order has changed and the assembly
+    /// determinism contract must be re-validated.
+    #[test]
+    fn faer_sums_duplicate_triplets_in_encounter_order() {
+        let triplets = [
+            Triplet::new(0usize, 0usize, 1e20),
+            Triplet::new(0, 0, 1.0),
+            Triplet::new(0, 0, -1e20),
+            Triplet::new(0, 0, 1.0),
+            Triplet::new(0, 0, 1.0),
+        ];
+        let k = SparseRowMat::try_new_from_triplets(1, 1, &triplets)
+            .expect("1x1 input within declared dims");
+        let v = read(&k, 0, 0);
+        assert_eq!(
+            v.to_bits(),
+            2.0_f64.to_bits(),
+            "faer no longer sums duplicates in encounter order: got {v}, expected 2.0. \
+             This breaks the parallel-mode determinism contract pinned by \
+             `parallel_mode_bit_equal_to_deterministic_on_disjoint_mesh` and the \
+             tolerance-equivalence claim in \
+             `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`. \
+             Re-validate before bumping the faer dep.",
+        );
     }
 
     /// Single P2 element with identity connectivity `[0..10]` → K_global
