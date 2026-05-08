@@ -11,8 +11,61 @@
 
 #![cfg(has_occt)]
 
-use reify_kernel_occt::{LocalFeatureOpHistoryRecords, OcctKernelHandle};
+use reify_kernel_occt::{DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle};
 use reify_types::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+
+/// Private trait implemented by both [`HistoryRecord`] and [`DeletedRecord`]
+/// so that [`assert_records_in_range`] can operate on slices of either type.
+/// Both types carry `parent_index: u8` and `parent_subshape_index: u32`;
+/// only `HistoryRecord` additionally carries `result_subshape_index`.
+trait ParentBounded {
+    fn parent_index(&self) -> u8;
+    fn parent_subshape_index(&self) -> u32;
+}
+
+impl ParentBounded for HistoryRecord {
+    fn parent_index(&self) -> u8 {
+        self.parent_index
+    }
+    fn parent_subshape_index(&self) -> u32 {
+        self.parent_subshape_index
+    }
+}
+
+impl ParentBounded for DeletedRecord {
+    fn parent_index(&self) -> u8 {
+        self.parent_index
+    }
+    fn parent_subshape_index(&self) -> u32 {
+        self.parent_subshape_index
+    }
+}
+
+/// Assert that every record in `records` has `parent_index == 0` and
+/// `parent_subshape_index < max_psi`.
+///
+/// `field` is included verbatim in every failure message (e.g. `"edge_modified"`,
+/// `"edge_deleted"`), and `op_name` identifies the operation (e.g. `"fillet"`).
+fn assert_records_in_range<R: ParentBounded>(
+    records: &[R],
+    max_psi: u32,
+    op_name: &str,
+    field: &str,
+) {
+    for r in records {
+        assert_eq!(
+            r.parent_index(),
+            0,
+            "{op_name} {field} records always have parent_index=0, got {}",
+            r.parent_index()
+        );
+        assert!(
+            r.parent_subshape_index() < max_psi,
+            "{op_name} {field} parent_subshape_index {} out of range (expected < {max_psi})",
+            r.parent_subshape_index()
+        );
+    }
+}
 
 /// Assert well-formedness of all edge-related history buffers produced by a
 /// local-feature operation (fillet or chamfer) on a 10 mm box.
@@ -87,18 +140,7 @@ pub fn assert_local_feature_history_well_formed(
         generated_edge_parents.len(),
         history.face_generated.len()
     );
-    for r in &history.face_generated {
-        assert_eq!(
-            r.parent_index, 0,
-            "{op_name} face_generated records always have parent_index=0, got {}",
-            r.parent_index
-        );
-        assert!(
-            r.parent_subshape_index < 12,
-            "{op_name} face_generated parent_subshape_index {} out of range for a 12-edge box",
-            r.parent_subshape_index
-        );
-    }
+    assert_records_in_range(&history.face_generated, 12, op_name, "face_generated");
 
     // (h) Derive result_edge_count for index-bounds checks.
     let result_edges = kernel
@@ -110,17 +152,8 @@ pub fn assert_local_feature_history_well_formed(
     // No non-empty assertion: for a fully-filleted/chamfered box, OCCT may route
     // parent edges through Generated() or IsDeleted() rather than Modified()
     // (see plan design decision).
+    assert_records_in_range(&history.edge_modified, 12, op_name, "edge_modified");
     for r in &history.edge_modified {
-        assert_eq!(
-            r.parent_index, 0,
-            "{op_name} edge_modified records always have parent_index=0, got {}",
-            r.parent_index
-        );
-        assert!(
-            r.parent_subshape_index < 12,
-            "{op_name} edge_modified parent_subshape_index {} out of range for a 12-edge box",
-            r.parent_subshape_index
-        );
         assert!(
             r.result_subshape_index < result_edge_count,
             "{op_name} edge_modified result_subshape_index {} out of range; result has {} edges",
@@ -133,18 +166,8 @@ pub fn assert_local_feature_history_well_formed(
     // parent_subshape_index is into the VERTEX map (box has 8 vertices), not
     // the edge map, because edge_generated is populated via
     // emit_sweep_generated_cross_type(shape_vertex_map, result_edge_map, TopAbs_EDGE).
+    assert_records_in_range(&history.edge_generated, 8, op_name, "edge_generated");
     for r in &history.edge_generated {
-        assert_eq!(
-            r.parent_index, 0,
-            "{op_name} edge_generated records always have parent_index=0, got {}",
-            r.parent_index
-        );
-        assert!(
-            r.parent_subshape_index < 8,
-            "{op_name} edge_generated parent_subshape_index {} out of range for an 8-vertex box \
-             (edge_generated is keyed by parent VERTEX, not parent edge)",
-            r.parent_subshape_index
-        );
         assert!(
             r.result_subshape_index < result_edge_count,
             "{op_name} edge_generated result_subshape_index {} out of range; result has {} edges",
@@ -170,18 +193,7 @@ pub fn assert_local_feature_history_well_formed(
         "{op_name} edge_deleted must be non-empty: OCCT marks all parent edges IsDeleted(); \
          got 0 records (regression in edge-deleted emit loop?)"
     );
-    for d in &history.edge_deleted {
-        assert_eq!(
-            d.parent_index, 0,
-            "{op_name} edge_deleted records always have parent_index=0, got {}",
-            d.parent_index
-        );
-        assert!(
-            d.parent_subshape_index < 12,
-            "{op_name} edge_deleted parent_subshape_index {} out of range for a 12-edge box",
-            d.parent_subshape_index
-        );
-    }
+    assert_records_in_range(&history.edge_deleted, 12, op_name, "edge_deleted");
 }
 
 /// Run the full face-records integration test body for a local-feature operation
