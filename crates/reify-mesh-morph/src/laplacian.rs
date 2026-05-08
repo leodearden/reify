@@ -650,6 +650,32 @@ mod tests {
         assert_eq!(out_a.normals, out_b.normals);
     }
 
+    // ── Step-19: drops stale normals on output ──────────────────────────────
+
+    /// Regression test: `laplacian_smooth` must set `normals: None` on the
+    /// returned mesh *regardless of whether the input had normals*, because
+    /// vertex motion makes any pre-existing per-vertex normals geometrically
+    /// stale. Pinned by the contract-change in step-20.
+    ///
+    /// Fixture: a single-vertex mesh with `normals: Some(...)` on input.
+    /// After any smoothing call (including zero iterations), the output must
+    /// have `normals: None`.
+    #[test]
+    fn laplacian_smooth_drops_normals_on_output_even_when_input_has_some_normals() {
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32, 0.0, 0.0],
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: Some(vec![1.0_f32, 0.0, 0.0]),
+        };
+        let out = laplacian_smooth(&mesh, &[], 0).unwrap();
+        assert!(
+            out.normals.is_none(),
+            "expected normals: None, got: {:?}",
+            out.normals
+        );
+    }
+
     // ── Step-3: exhaustive variant fence for LaplacianFailure ─────────────────
     //
     // No-wildcard match guarantees that adding/removing/renaming a variant
