@@ -37,6 +37,7 @@ pub mod source_location;
 pub use source_location::resolve_entity_source_location;
 pub mod field_import_provenance;
 pub mod morph_stage_b;
+pub mod persistent_cache;
 pub mod test_runner;
 pub mod tolerance_bucket;
 pub mod tolerance_budget;
