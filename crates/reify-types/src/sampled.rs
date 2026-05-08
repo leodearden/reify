@@ -46,8 +46,9 @@ pub enum LinspaceError {
     /// user-facing diagnostic (e.g. "requires 11 000 000 grid intervals,
     /// exceeds the 10 000 000 interval cap") without recomputing it.
     ///
-    /// This variant is only returned when the span/spacing ratio fits in a
-    /// `usize` (i.e. ≤ `usize::MAX as f64`) but exceeds the cap.
+    /// This variant is only returned when the span/spacing ratio is strictly
+    /// less than `usize::MAX as f64` (= 2^64 on 64-bit targets), so the
+    /// cast to `usize` is exact and the count fits in a `usize`.
     Excessive {
         /// The computed interval count.  Guaranteed to be
         /// `> LINSPACE_MAX_INTERVALS` and representable as a finite `usize`.
@@ -103,14 +104,16 @@ pub fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Result<Vec<f64
     }
     // Detect overflow BEFORE the `as usize` cast.
     //
-    // `usize::MAX as f64` rounds up to 2^64 on 64-bit platforms (f64 has a
-    // 53-bit mantissa), so values in [2^64-1, 2^64) technically slip past
-    // this guard and then saturate via `as usize`.  Those values are so far
-    // above the production cap (10 M) that the Excessive branch catches them
-    // regardless — the Overflow path is primarily for astronomically large
-    // inputs like span=1e308 where the ratio plainly overflows.
+    // On 64-bit platforms, `usize::MAX as f64` rounds UP to 2^64 (the nearest
+    // representable f64 ≥ usize::MAX, since f64 has only a 53-bit mantissa and
+    // 2^64-1 is not exactly representable).  Using `>=` therefore catches both:
+    //   • ratio == 2^64 exactly — `2^64 as usize` would saturate to usize::MAX
+    //   • ratio > 2^64 — plainly overflows
+    // Values below 2^64 produce valid, finite usize values via `as usize`; the
+    // largest representable f64 below 2^64 is 2^64 - 2048, which still greatly
+    // exceeds the production cap (10 M) and is caught by the Excessive branch.
     let ratio = span / spacing;
-    if ratio > usize::MAX as f64 {
+    if ratio >= usize::MAX as f64 {
         return Err(LinspaceError::Overflow);
     }
     // Round to nearest integer to avoid floating-point cliff effects:
