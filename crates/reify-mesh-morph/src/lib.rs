@@ -115,7 +115,8 @@ mod tests {
     use reify_compiler::ValueCellKind;
     use reify_eval::graph::{EvaluationGraph, RealizationNodeData, ValueCellNode};
     use reify_types::{
-        ContentHash, RealizationNodeId, TopologyAttributeTable, Type, Value, ValueCellId, ValueMap,
+        CapKind, ContentHash, FeatureId, GeometryHandleId, RealizationNodeId, Role,
+        TopologyAttribute, TopologyAttributeTable, Type, Value, ValueCellId, ValueMap,
     };
 
     // ── Test fixture helpers (mirrored from eligibility::tests) ───────────────
@@ -170,6 +171,26 @@ mod tests {
             tet_indices: Vec::new(),
             element_order: reify_types::ElementOrderTag::P1,
             normals: None,
+        }
+    }
+
+    // ── Stage-B fixture helpers (mirrored from eligibility::tests) ────────────
+
+    fn h(n: u64) -> GeometryHandleId {
+        GeometryHandleId(n)
+    }
+
+    fn feat() -> FeatureId {
+        FeatureId::new("Feature#realization[0]")
+    }
+
+    fn attr(role: Role, local_index: u32) -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: feat(),
+            role,
+            local_index,
+            user_label: None,
+            mod_history: Vec::new(),
         }
     }
 
@@ -313,4 +334,52 @@ mod tests {
                 max_aspect_ratio_increase: None,
             });
     };
+
+    // ── Step-1 (task 3142): Stage-B BijectionFailure regression guard ─────────
+
+    #[test]
+    fn morph_returns_ineligible_bijection_failure_on_stage_b_count_mismatch() {
+        // Regression guard: morph() must project Stage-B CountMismatch into
+        // MorphFailure::Ineligible(Reason::BijectionFailure(_)), not SolverError
+        // or panic.
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = old_graph.clone();
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+
+        // old: 1 face with Cap(Top); new: 2 faces Cap(Top)+Cap(Bottom).
+        // Stage A passes (identical graphs); Stage B rejects on CountMismatch.
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 1));
+
+        let old_brep = BRep {
+            graph: &old_graph,
+            values: &values,
+            topology_attributes: &old_table,
+            faces: &[h(10)],
+            edges: &[],
+            vertices: &[],
+        };
+        let new_brep = BRep {
+            graph: &new_graph,
+            values: &values,
+            topology_attributes: &new_table,
+            faces: &[h(20), h(21)],
+            edges: &[],
+            vertices: &[],
+        };
+
+        let mesh = empty_mesh();
+        let options = MorphOptions::default();
+        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        assert!(
+            matches!(result, Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))),
+            "Stage-B CountMismatch should project to MorphFailure::Ineligible(BijectionFailure), got: {result:?}"
+        );
+    }
 }
