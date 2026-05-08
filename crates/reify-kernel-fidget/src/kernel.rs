@@ -673,6 +673,60 @@ mod tests {
         }
     }
 
+    /// `execute(Sphere)` must reject every non-positive or non-finite radius
+    /// with `GeometryError::OperationFailed` whose message contains both
+    /// `"sphere radius"` and `"finite positive"`.  The integer-coercion path
+    /// (`Value::Int(-1)`) is included to confirm that the check runs on the
+    /// `f64` produced by `extract_f64`, not on the raw `Value` tag.
+    ///
+    /// A valid `Value::Real(1.0)` sanity case at the end is a regression
+    /// guard that the helper does not over-reject.
+    #[test]
+    fn fidget_kernel_execute_sphere_rejects_invalid_radius() {
+        let bad_radii: &[Value] = &[
+            Value::Real(-1.0),
+            Value::Real(0.0),
+            Value::Real(f64::NAN),
+            Value::Real(f64::INFINITY),
+            Value::Real(f64::NEG_INFINITY),
+            Value::Int(-1),
+        ];
+
+        for radius in bad_radii {
+            let mut kernel = FidgetKernel::new();
+            let result = kernel.execute(&GeometryOp::Sphere {
+                radius: radius.clone(),
+            });
+            match result {
+                Err(GeometryError::OperationFailed(msg)) => {
+                    assert!(
+                        msg.contains("sphere radius"),
+                        "message must name 'sphere radius'; radius={radius:?}, got {msg:?}",
+                    );
+                    assert!(
+                        msg.contains("finite positive"),
+                        "message must contain 'finite positive'; radius={radius:?}, got {msg:?}",
+                    );
+                }
+                Ok(handle) => panic!(
+                    "execute(Sphere) with radius={radius:?} must fail, but returned Ok({handle:?})",
+                ),
+                Err(other) => panic!(
+                    "execute(Sphere) with radius={radius:?} must return \
+                     OperationFailed, got {other:?}",
+                ),
+            }
+        }
+
+        // Sanity: a valid radius must still succeed (regression guard).
+        let mut kernel = FidgetKernel::new();
+        kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .expect("execute(Sphere) with radius=1.0 must succeed");
+    }
+
     /// Pins the stable contract that the FIRST missing handle is the one
     /// named in `InvalidReference` — `left` is checked before `right`.
     #[test]
