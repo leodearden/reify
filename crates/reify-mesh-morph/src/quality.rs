@@ -200,6 +200,7 @@ pub fn quality_check(
     let mut total_evaluated: usize = 0;
     let mut count_below_025: usize = 0;
     let mut max_ar_ratio: f64 = 0.0;
+    let mut first_degenerate_morphed: Option<usize> = None;
 
     // Build a lazy source iterator when connectivity matches; None otherwise.
     // Using an iterator (rather than collecting a Vec) avoids an O(n) heap
@@ -265,6 +266,12 @@ pub fn quality_check(
             break;
         }
 
+        // sj is now in [0, +inf). Exactly 0.0 means zero-volume (coplanar) or
+        // coincident-edge (collapsed) tet — both are degenerate. First-wins.
+        if sj == 0.0 && first_degenerate_morphed.is_none() {
+            first_degenerate_morphed = Some(elem_idx);
+        }
+
         // Aspect-ratio increase comparison (only when connectivity matches).
         // src_chunk_opt is None when matched_connectivity is false, so this
         // naturally skips when topologies differ without an extra branch.
@@ -296,8 +303,10 @@ pub fn quality_check(
             // morphed degenerate: AR=INFINITY (zero-volume coplanar/collapsed tet).
             //   Surfacing +inf in the public MetricsBreached.max_aspect_ratio_increase
             //   field is awkward for serialization (JSON/MessagePack lack standard
-            //   +inf encoding). A degenerate morphed tet also typically trips the
-            //   min-scaled-J floor or HardFail, so the AR signal is redundant.
+            //   +inf encoding). The degenerate morphed tet itself is surfaced via
+            //   `MetricsBreached.degenerate_morphed_element` (populated unconditionally
+            //   when sj == 0.0), making the AR signal redundant *for failure detection*
+            //   regardless of caller-configured floors.
             // is_finite() already excludes NaN, so the redundant !is_nan() check
             // is dropped. Order: is_finite() first short-circuits the > 0.0 compare
             // on the rare NaN/Inf input.
@@ -347,12 +356,13 @@ pub fn quality_check(
         min_scaled_jacobian,
         pct_below_025,
         max_aspect_ratio_increase,
-        degenerate_morphed_element: None,
+        degenerate_morphed_element: first_degenerate_morphed,
     };
 
     if metrics.min_scaled_jacobian.is_some()
         || metrics.pct_below_025.is_some()
         || metrics.max_aspect_ratio_increase.is_some()
+        || metrics.degenerate_morphed_element.is_some()
     {
         QualityVerdict::SoftFail(metrics)
     } else {
