@@ -2404,4 +2404,52 @@ mod tests {
             other => panic!("expected Value::Real, got {:?}", other),
         }
     }
+
+    // ── linear_combine malformed ElasticResult Map rejection ─────────────────
+
+    #[test]
+    fn linear_combine_case_missing_displacement_key_returns_undef() {
+        // Case A's ElasticResult Map has no "displacement" key (only stress etc.)
+        let axis = vec![0.0, 1.0, 2.0];
+        let stress_field = wrap_sampled_field(
+            make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        // Build a partial ElasticResult missing the displacement key.
+        let mut partial = BTreeMap::new();
+        partial.insert(Value::String("stress".to_string()), stress_field);
+        partial.insert(Value::String("max_von_mises".to_string()), Value::Real(30.0));
+        partial.insert(Value::String("converged".to_string()), Value::Bool(true));
+        partial.insert(Value::String("iterations".to_string()), Value::Int(0));
+        let partial_case = Value::Map(partial);
+
+        let mcr = make_multi_case_result_value(&[("A", partial_case)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn linear_combine_case_missing_stress_key_returns_undef() {
+        // Case A's ElasticResult Map has no "stress" key (only displacement etc.)
+        let axis = vec![0.0, 1.0, 2.0];
+        let disp_field = wrap_sampled_field(
+            make_sampled_1d("d", axis, vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        // Build a partial ElasticResult missing the stress key.
+        let mut partial = BTreeMap::new();
+        partial.insert(Value::String("displacement".to_string()), disp_field);
+        partial.insert(Value::String("max_von_mises".to_string()), Value::Real(3.0));
+        partial.insert(Value::String("converged".to_string()), Value::Bool(true));
+        partial.insert(Value::String("iterations".to_string()), Value::Int(0));
+        let partial_case = Value::Map(partial);
+
+        let mcr = make_multi_case_result_value(&[("A", partial_case)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
 }
