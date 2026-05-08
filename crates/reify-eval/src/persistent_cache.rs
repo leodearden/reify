@@ -27,6 +27,24 @@
 
 use std::io::{self, Read, Write};
 
+use serde::{Deserialize, Serialize};
+
+/// Compact bincode-encoded prefix that precedes the raw f64 byte slabs in the
+/// zstd-wrapped body. `max_von_mises` is stored as its `u64` bit pattern
+/// (NOT as `f64`) so NaN payloads, signaling-NaN bits, and signed zeros
+/// survive serde NaN-normalization. Pinned by
+/// `elastic_result_round_trip_preserves_nan_and_infinity_bit_patterns` in
+/// step-9.
+#[derive(Serialize, Deserialize)]
+struct ElasticResultHeader {
+    max_von_mises_bits: u64,
+    converged: bool,
+    iterations: u32,
+    solve_time_ms: u64,
+    displacement_len: u64,
+    stress_len: u64,
+}
+
 /// Opt-in trait for `ComputeNode` output value types that may be persisted
 /// across sessions in the on-disk cache.
 ///
@@ -71,12 +89,53 @@ pub struct ElasticResult {
 }
 
 impl PersistentlyCacheable for ElasticResult {
-    fn serialize_to_writer(&self, _w: &mut impl Write) -> io::Result<()> {
-        unimplemented!("step-4")
+    fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
+        // Level 0 selects zstd's default compression level (3 in zstd 0.13),
+        // which is byte-deterministic for identical input.
+        let mut encoder = zstd::Encoder::new(w, 0)?;
+        let header = ElasticResultHeader {
+            max_von_mises_bits: self.max_von_mises.to_bits(),
+            converged: self.converged,
+            iterations: self.iterations,
+            solve_time_ms: self.solve_time_ms,
+            displacement_len: self.displacement.len() as u64,
+            stress_len: self.stress.len() as u64,
+        };
+        bincode::serialize_into(&mut encoder, &header).map_err(io::Error::other)?;
+        for v in &self.displacement {
+            encoder.write_all(&v.to_le_bytes())?;
+        }
+        for v in &self.stress {
+            encoder.write_all(&v.to_le_bytes())?;
+        }
+        encoder.finish()?;
+        Ok(())
     }
 
-    fn deserialize_from_reader(_r: &mut impl Read) -> io::Result<Self> {
-        unimplemented!("step-4")
+    fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self> {
+        let mut decoder = zstd::Decoder::new(r)?;
+        let header: ElasticResultHeader =
+            bincode::deserialize_from(&mut decoder).map_err(io::Error::other)?;
+        let mut displacement = Vec::with_capacity(header.displacement_len as usize);
+        for _ in 0..header.displacement_len {
+            let mut bytes = [0u8; 8];
+            decoder.read_exact(&mut bytes)?;
+            displacement.push(f64::from_le_bytes(bytes));
+        }
+        let mut stress = Vec::with_capacity(header.stress_len as usize);
+        for _ in 0..header.stress_len {
+            let mut bytes = [0u8; 8];
+            decoder.read_exact(&mut bytes)?;
+            stress.push(f64::from_le_bytes(bytes));
+        }
+        Ok(ElasticResult {
+            displacement,
+            stress,
+            max_von_mises: f64::from_bits(header.max_von_mises_bits),
+            converged: header.converged,
+            iterations: header.iterations,
+            solve_time_ms: header.solve_time_ms,
+        })
     }
 
     fn format_version(&self) -> u32 {
