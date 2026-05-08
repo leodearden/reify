@@ -50,10 +50,12 @@ struct RealizationOutputs<'a> {
 }
 
 impl<'a> RealizationOutputs<'a> {
-    /// Constructs the aggregate from positional `&mut` references in
-    /// struct-declaration order (tasks 3119 + 3133).  Collapses the
-    /// 7-line struct-literal at every call site into a single-line
-    /// `RealizationOutputs::new(...)` call.
+    /// Positional constructor mirroring struct-declaration field order
+    /// (tasks 3119 + 3133).  Call sites don't need to repeat field names;
+    /// argument order is fixed by the struct definition.  Line count at
+    /// each call site is unchanged from struct-literal form — the trade-off
+    /// is fewer redundant identifiers vs. the named-field self-documentation
+    /// of struct-literal syntax.
     fn new(
         step_handles: &'a mut Vec<GeometryHandleId>,
         named_steps: &'a mut HashMap<String, GeometryHandleId>,
@@ -2431,71 +2433,27 @@ mod tests {
 
     // ── RealizationOutputs::new constructor ──────────────────────────────────
 
-    /// Pins the `RealizationOutputs::new` constructor signature (task 3133).
-    /// Calls the constructor with positional `&mut` args in struct-declaration
-    /// order, drives a single Box op through `execute_realization_ops`, and
-    /// asserts the happy-path invariant: exactly one handle is appended and no
-    /// Error diagnostics are emitted.  A reordering or arity regression in the
-    /// `new` signature will cause this test to fail to compile.
+    /// Compile-time signature pin for `RealizationOutputs::new` (task 3133).
+    /// A reordering or arity regression in the `new` signature will cause
+    /// this test to fail to compile.  The happy-path Box realization is
+    /// already covered by `execute_realization_ops_happy_path_appends_handle`
+    /// and the 13 other call-site tests in this module.
     #[test]
     fn realization_outputs_new_constructs_usable_aggregate() {
-        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{CompiledExpr, Type};
-
-        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
-
-        let ops = vec![CompiledGeometryOp::Primitive {
-            kind: PrimitiveKind::Box,
-            args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
-            ],
-        }];
-
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        // Construct the aggregate with positional args in struct-field order.
+        // Any change to argument order, count, types, or return type breaks
+        // this call at compile time without needing a full realization run.
         let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
         let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
         let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
-            &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
-            None,
-            SourceSpan::new(0, 0),
-            &mut None,
-        );
-
-        assert_eq!(step_handles.len(), 1, "expected one handle appended");
-        let errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "expected no error diagnostics, got: {:?}",
-            errors
+        let _: RealizationOutputs<'_> = RealizationOutputs::new(
+            &mut step_handles,
+            &mut named_steps,
+            &mut feature_tag_table,
+            &mut topology_attribute_table,
+            &mut swept_kind_table,
         );
     }
 
