@@ -2,11 +2,21 @@
 //!
 //! This crate provides the combined eligibility predicate for mesh morphing
 //! (PRD `docs/prds/v0_3/mesh-morphing.md`, tasks #3 and #10).
+//!
+//! ## PRD task #5 — boundary-node correspondence + closest-point projection — boundary module
+//!
+//! The [`boundary`] module implements the surface-node → Dirichlet-BC
+//! translation step that gates the elasticity morph (PRD task #7).
 
+pub mod boundary;
 pub mod eligibility;
 pub mod options;
 pub mod types;
 
+pub use boundary::{
+    BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
+    compute_dirichlet_bcs,
+};
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 pub use options::{MorphFailure, MorphOptions};
 pub use types::{BRep, InversionDetails, MetricsBreached, SolverErrorPayload};
@@ -208,5 +218,34 @@ mod tests {
             result,
             Err(MorphFailure::Ineligible(Reason::StructuralChange))
         ));
+    }
+
+    // ── Step-31: lib re-exports make boundary module public surface accessible ─
+
+    /// Compile fence: verifies each name from the boundary module is accessible
+    /// from the crate root, following the
+    /// `assert_copy::<MorphSnapshot<'static>>()` pattern in eligibility.rs.
+    #[test]
+    fn lib_re_exports_make_boundary_module_public_surface_accessible_from_crate_root() {
+        // Importing each name from the crate root — compile error if any is missing.
+        use crate::{
+            BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
+            compute_dirichlet_bcs,
+        };
+
+        // Reference each name to suppress "unused import" warnings.
+        let _ = BoundaryAssociation::default();
+        let _attach = NodeAttachment::OnFace(reify_types::GeometryHandleId(1));
+        let _fail = ProjectionFailure::InvalidNodeIndex(0);
+        let _payload = ProjectorPayload::new("test");
+
+        // Verify compute_dirichlet_bcs is a callable function at crate root.
+        let _fn_ref: fn(
+            &reify_types::VolumeMesh,
+            &BoundaryAssociation,
+            &reify_eval::CorrespondenceMap,
+            &dyn Projector,
+        ) -> Result<Vec<(u32, [f64; 3])>, ProjectionFailure> = compute_dirichlet_bcs;
+        let _ = _fn_ref;
     }
 }
