@@ -1250,5 +1250,24 @@ mod tests {
                 );
             }
         }
+
+        // Regression guard: binary-MC on a planar slab should produce
+        // non-degenerate triangles (typical output is right-isosceles:
+        // aspect_ratio ≈ 0.866, min_angle ≈ 45°). The bounds below are much
+        // more permissive than the FEA defaults (0.1 / 20.0°) to tolerate any
+        // boundary-cell effects, but would catch a catastrophic regression
+        // where the extractor begins emitting near-zero-area triangles.
+        assert!(
+            result.metrics.min_aspect_ratio > 0.01,
+            "extractor regression: binary-MC slab min_aspect_ratio ({}) must \
+             be above 0.01 (expected ≈ 0.866 for right-isosceles triangles)",
+            result.metrics.min_aspect_ratio
+        );
+        assert!(
+            result.metrics.min_angle_degrees > 1.0,
+            "extractor regression: binary-MC slab min_angle_degrees ({}°) must \
+             be above 1.0° (expected ≈ 45° for right-isosceles triangles)",
+            result.metrics.min_angle_degrees
+        );
     }
 }
