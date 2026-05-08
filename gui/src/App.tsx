@@ -72,7 +72,7 @@ import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
 import type { PersistentViewState } from './types';
 import styles from './App.module.css';
 
-const NEW_FILE_TEMPLATE = '// New design\n';
+export const NEW_FILE_TEMPLATE = '// New design\n';
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
 const DEFAULT_EDITOR_WIDTH = 300;
