@@ -586,6 +586,95 @@ mod tests {
         }
     }
 
+    #[test]
+    fn classify_swept_body_revolve_just_above_tolerance_classifies() {
+        // Boundary test: the Revolve guard compares `axis_norm_sq < tol²` (NOT
+        // `axis_norm < tol`), so the threshold on the axis *norm* is exactly
+        // `tol`.  For `axis_dir = [tol * 1.5, 0.0, 0.0]`:
+        //
+        //   axis_norm_sq = (tol * 1.5)² = 2.25 · tol²
+        //
+        // Since `2.25 · tol² < tol²` is FALSE, the guard is NOT triggered and
+        // the op proceeds to classification.  Expected output:
+        // `Some(SweptKind::Revolve { axis_dir ≈ [1.0, 0.0, 0.0], … })`.
+        //
+        // Why `1.5`? It gives `norm_sq = 2.25 · tol²`, unambiguously above `tol²`
+        // with comfortable margin, while still exercising the same tiny-norm regime
+        // that would be perturbed by a faulty refactor.
+        //
+        // Why `angle_rad = FRAC_PI_2`? The guard also rejects when
+        // `|angle_rad| < tol` (independent `||` branch).  Using a clearly
+        // non-degenerate angle isolates the axis-threshold: any failure here is
+        // unambiguously attributable to the axis guard, not the angle guard.
+        //
+        // Why the `is_finite()` check? The regression this test guards against is
+        // a refactor that moves `sqrt` above the degeneracy guard, which could
+        // feed `sqrt` a near-zero value and yield NaN components via `0 / 0`
+        // normalisation.  A unit-length tolerance check alone would not catch NaN
+        // (NaN arithmetic propagates to `NaN`, and `NaN < 1e-12` is `false`, so
+        // the norm assertion would report "norm = NaN" but silently pass through
+        // `assert!`).  An explicit `is_finite()` check pins the actual invariant
+        // cited in the inline source comment ("never sqrt(0)") and catches both
+        // the NaN and the "very large finite value" failure modes.
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(0),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [REVOLVE_DEGENERATE_TOLERANCE * 1.5, 0.0, 0.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        }];
+        let handles = vec![GeometryHandleId(1)];
+        let result = classify_swept_body(&ops, &handles);
+        match result {
+            Some(SweptKind::Revolve {
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            }) => {
+                assert_eq!(
+                    axis_origin,
+                    [0.0, 0.0, 0.0],
+                    "axis_origin must be propagated verbatim"
+                );
+                assert_eq!(
+                    angle_rad,
+                    std::f64::consts::FRAC_PI_2,
+                    "angle_rad must be propagated verbatim"
+                );
+                // Finiteness check: guards against NaN-producing refactors that
+                // move sqrt above the degeneracy guard.
+                assert!(
+                    axis_dir.iter().all(|c| c.is_finite()),
+                    "all axis_dir components must be finite; got {axis_dir:?}"
+                );
+                // Unit-length: axis_dir = [tol*1.5, 0, 0] → normalised = [1.0, 0, 0].
+                let norm: f64 = axis_dir.iter().map(|c| c * c).sum::<f64>().sqrt();
+                assert!(
+                    (norm - 1.0).abs() < 1e-12,
+                    "normalised axis_dir must be unit-length; got norm={norm}"
+                );
+                assert!(
+                    (axis_dir[0] - 1.0).abs() < 1e-12,
+                    "axis_dir[0] must be ~1.0; got {}",
+                    axis_dir[0]
+                );
+                assert!(
+                    axis_dir[1].abs() < 1e-12,
+                    "axis_dir[1] must be ~0.0; got {}",
+                    axis_dir[1]
+                );
+                assert!(
+                    axis_dir[2].abs() < 1e-12,
+                    "axis_dir[2] must be ~0.0; got {}",
+                    axis_dir[2]
+                );
+            }
+            other => panic!(
+                "expected Some(SweptKind::Revolve {{ ... }}) for axis_dir just above \
+                 REVOLVE_DEGENERATE_TOLERANCE, but got {other:?}"
+            ),
+        }
+    }
+
     // ── Step-5: Sweep / Loft path-source resolution and rejection ─────────
 
     #[test]
