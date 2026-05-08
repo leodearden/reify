@@ -302,3 +302,43 @@ structure def ElasticResult {
     // physically impossible. Same task-2544 rationale as above.
     constraint max_von_mises >= 0
 }
+
+// ── ShellStress ──────────────────────────────────────────────────────────────
+
+// `ShellStress` is the through-thickness stress container for shell elements.
+// It carries three stress channels, one per integration layer:
+//
+//   top    — top-surface stress (outer fibre in the solver's local-z direction).
+//   mid    — mid-surface (neutral-plane) stress. For tet results, this is
+//            equal to `top` and `bottom` (no through-thickness gradient).
+//            The backward-compatible alias `result.stress` targets this channel
+//            for tet→shell migration; the alias semantics are implemented by
+//            engine-integration tasks T18-T20.
+//   bottom — bottom-surface stress (inner fibre opposite to `top`).
+//
+// At runtime each channel is a `Field<Point3<Length>, Tensor<2, 3, Pressure>>`
+// — a per-mesh-node Cauchy stress tensor. These are declared as `Real`
+// placeholders for the same reason as `ElasticResult.displacement` and
+// `ElasticResult.stress`: Reify's `resolve_parameterized_builtin_type` does
+// not yet support `Field<X, Y>` in `param` positions. See the
+// TODO(field-in-param, task #3117) block above (in ElasticResult) for the
+// planned migration pass that will tighten all six field-typed slots
+// (displacement, stress, frame, top, mid, bottom) in a single diff.
+//
+// Tet-result population convention: the engine calls
+// `ShellStress::homogeneous(field)` (Rust constructor in
+// `crates/reify-solver-elastic/src/shell_result.rs`), which sets
+// top == mid == bottom == the single tet stress field. This preserves the
+// invariant that `ShellStress` always has all three channels populated even
+// for solid-element results that have no through-thickness variation.
+//
+// No defaults, no constraints — output container only, populated exclusively
+// by the solver. Mirrors the `ElasticResult` shape discipline.
+//
+// PRD reference: docs/prds/v0_4/structural-analysis-shells.md §
+// "Stress through thickness".
+structure def ShellStress {
+    param top : Real
+    param mid : Real
+    param bottom : Real
+}
