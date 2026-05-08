@@ -138,6 +138,38 @@ fn engine_with_registered_kernel_picks_occt_for_brep_box_build() {
     );
 }
 
+/// Integration pin for `pick_lexmin_brep_kernel()`: must return the `"occt"`
+/// registration in OCCT-available builds, proving the BRep-capability filter
+/// does not accidentally exclude OCCT and that the function is publicly
+/// reachable via `reify_eval::kernel_registry::pick_lexmin_brep_kernel`.
+///
+/// Skipped in stub mode: with `cfg(has_occt)` off the registry is empty and
+/// `pick_lexmin_brep_kernel()` returns `None` — there is no `"occt"` entry to
+/// assert on. The skip is announced via `eprintln!` so stub-mode CI produces an
+/// observable signal (a silent no-op would let a regression that drops the OCCT
+/// submit hide in green logs on stub-mode CI).
+#[test]
+fn pick_lexmin_brep_kernel_returns_occt_when_only_occt_registered() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping pick_lexmin_brep_kernel_returns_occt_when_only_occt_registered: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let picked = reify_eval::kernel_registry::pick_lexmin_brep_kernel()
+        .expect("pick_lexmin_brep_kernel must return Some in an OCCT-available build");
+
+    assert_eq!(
+        picked.name,
+        "occt",
+        "pick_lexmin_brep_kernel must return the 'occt' registration when OCCT is the \
+         only registered kernel; the BRep filter must not exclude OCCT (which claims \
+         BRep pairs in its CapabilityDescriptor)",
+    );
+}
+
 /// Integration pin for the tracing emission from `Engine::with_registered_kernel`:
 /// the constructor must fire exactly one selection event (INFO when multiple
 /// kernels are registered, DEBUG when only one is) per call at the
