@@ -347,7 +347,7 @@ fn full_revolve_with_history_reports_no_caps() {
         let n = kernel
             .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
             .expect("face_outward_unit_normal_for_test should succeed");
-        let dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
+        let dot = axis_dot_abs(n, axis_dir);
         assert!(
             dot > 1.0 - DIR_TOL,
             "synthesised annular-disk face for radial edge e{radial_edge} must \
@@ -369,7 +369,7 @@ fn full_revolve_with_history_reports_no_caps() {
         let n = kernel
             .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
             .expect("face_outward_unit_normal_for_test should succeed");
-        let dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
+        let dot = axis_dot_abs(n, axis_dir);
         assert!(
             dot < DIR_TOL,
             "OCCT-reported cylindrical face for axial edge e{axial_edge} must \
@@ -548,7 +548,7 @@ fn full_revolve_triangle_profile_synthesis_regression() {
     let n = kernel
         .face_outward_unit_normal_for_test(result_faces[radial.result_subshape_index as usize])
         .expect("face_outward_unit_normal_for_test should succeed");
-    let radial_dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
+    let radial_dot = axis_dot_abs(n, axis_dir);
     assert!(
         radial_dot > 1.0 - DIR_TOL,
         "synthesised annular-disk face for radial edge e0 must have \
@@ -569,7 +569,7 @@ fn full_revolve_triangle_profile_synthesis_regression() {
         let n = kernel
             .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
             .expect("face_outward_unit_normal_for_test should succeed");
-        let slanted_dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
+        let slanted_dot = axis_dot_abs(n, axis_dir);
         assert!(
             slanted_dot < 1.0 - DIR_TOL,
             "OCCT-reported conical face for slanted edge e{slanted_idx} must have \
