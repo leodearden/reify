@@ -392,6 +392,57 @@ mod tests {
     use super::*;
     use crate::mid_surface::MidSurfaceMesh;
 
+    // ── Step 13: vertex-compaction test ──────────────────────────────────────
+
+    /// After pruning the spike triangle, the spike apex vertex must be removed
+    /// (compacted) and all triangle indices must remain in-range.
+    ///
+    /// Reuses the body+spike fixture from step 11.
+    #[test]
+    fn prune_branches_compacts_orphan_vertices_after_pruning() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],   // v0, thickness 1.0
+                [0.5, 0.0, 0.0],   // v1, thickness 1.0
+                [0.25, 10.0, 0.0], // v2, thickness 1.0 — body apex
+                [0.25, -0.1, 0.0], // v3, thickness 10.0 — spike apex (orphan after pruning)
+            ],
+            triangles: vec![[0, 1, 2], [0, 1, 3]],
+            thickness: vec![1.0, 1.0, 1.0, 10.0],
+        };
+        let result = prune_branches(&mesh, &PruneOptions::default())
+            .expect("valid mesh should not error");
+
+        // Spike apex (v3) must be gone.
+        assert_eq!(result.mesh.vertices.len(), 3, "only 3 vertices survive");
+        assert_eq!(
+            result.mesh.thickness.len(),
+            result.mesh.vertices.len(),
+            "thickness parallel-array must be same length as vertices"
+        );
+        assert_eq!(result.metrics.pruned_vertex_count, 1, "one orphan removed");
+
+        // Every triangle index must be in-range.
+        for tri in &result.mesh.triangles {
+            for &vi in tri.iter() {
+                assert!(
+                    (vi as usize) < result.mesh.vertices.len(),
+                    "all triangle indices must be in-range after compaction"
+                );
+            }
+        }
+
+        // Body triangle thickness values: v0=1.0, v1=1.0, v2=1.0.
+        // After compaction the body vertices are re-indexed 0..3 in original order.
+        // All three should have thickness 1.0.
+        for &t in &result.mesh.thickness {
+            assert!(
+                (t - 1.0).abs() < 1e-12,
+                "surviving vertices all have thickness 1.0, got {t}"
+            );
+        }
+    }
+
     // ── Step 11: prune-spike test ─────────────────────────────────────────────
 
     /// Two-triangle fixture: body survives, spike is pruned.
