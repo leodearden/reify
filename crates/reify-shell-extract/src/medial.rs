@@ -1189,7 +1189,7 @@ mod tests {
     /// 0.001` test would have missed (see code-review suggestion #2).
     #[test]
     fn tightening_distance_tolerance_reduces_slab_mask_size() {
-        use rustc_hash::FxHashSet;
+        use std::collections::HashSet;
 
         let n = 16usize;
         let sdf = slab_sdf_3d(3.0, n);
@@ -1236,7 +1236,7 @@ mod tests {
         );
 
         // (c) strict ⊂ loose (voxel-set inclusion)
-        let loose_set: FxHashSet<[i32; 3]> = loose_mask.voxels.iter().copied().collect();
+        let loose_set: HashSet<[i32; 3]> = loose_mask.voxels.iter().copied().collect();
         for v in &strict_mask.voxels {
             assert!(
                 loose_set.contains(v),
