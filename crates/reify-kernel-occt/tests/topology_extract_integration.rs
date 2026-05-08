@@ -242,10 +242,9 @@ fn query_face_normal_top_face_of_box_is_plus_z() {
         .copied()
         .expect("a 10x10x10 box centered at origin must have a top face at z=+5e-3");
 
-    let normal = kernel
-        .query(&GeometryQuery::FaceNormal(top))
-        .expect("FaceNormal query should succeed");
-    let (nx, ny, nz) = parse_xyz(&normal);
+    let [nx, ny, nz] = kernel
+        .face_outward_unit_normal_for_test(top)
+        .expect("face_outward_unit_normal_for_test should succeed");
 
     let dir_tol = 1e-9;
     assert!(
