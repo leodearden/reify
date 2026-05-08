@@ -47,43 +47,6 @@ fn make_offset_rect_profile(kernel: &mut OcctKernelHandle) -> reify_types::Geome
 /// face-normal filter.
 const DIR_TOL: f64 = 1e-6;
 
-/// Parse a `Value::String` formatted by the kernel as
-/// `{"x":..,  "y":..,  "z":..}` (the JSON encoding used by FaceNormal,
-/// EdgeTangent, Centroid) into a 3-tuple of f64. Mirrors the helper of
-/// the same name in `tests/topology_extract_integration.rs:208`.
-fn parse_xyz(v: &Value) -> (f64, f64, f64) {
-    let s = match v {
-        Value::String(s) => s,
-        other => panic!("expected Value::String, got {:?}", other),
-    };
-    let parsed: serde_json::Value = serde_json::from_str(s)
-        .unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
-    let x = parsed["x"].as_f64().expect("missing x");
-    let y = parsed["y"].as_f64().expect("missing y");
-    let z = parsed["z"].as_f64().expect("missing z");
-    (x, y, z)
-}
-
-/// Compute `|(face_normal) · axis_dir|` for the face at `result_faces[face_idx]`.
-///
-/// Shared by both full-revolution normal-axis orientation checks so the
-/// `dot_for` closure does not have to be re-defined inside each test function.
-/// Both tests use `axis_dir = [0.0, 0.0, 1.0]`; the parameter is kept explicit
-/// so the helper remains useful if a future test revolves about a different axis.
-fn face_axis_dot(
-    kernel: &OcctKernelHandle,
-    result_faces: &[GeometryHandleId],
-    face_idx: u32,
-    axis_dir: [f64; 3],
-) -> f64 {
-    let face_id = result_faces[face_idx as usize];
-    let v = kernel
-        .query(&GeometryQuery::FaceNormal(face_id))
-        .expect("FaceNormal query should succeed");
-    let (nx, ny, nz) = parse_xyz(&v);
-    (nx * axis_dir[0] + ny * axis_dir[1] + nz * axis_dir[2]).abs()
-}
-
 /// `BRepPrimAPI_MakeRevol` (PARTIAL — 180°): the test:
 /// - builds a 5×10mm rect profile offset to x=17.5mm (left edge at 15mm);
 /// - calls `revolve_with_history(profile, axis_origin=[0,0,0],
@@ -374,7 +337,10 @@ fn full_revolve_with_history_reports_no_caps() {
             .unwrap_or_else(|| {
                 panic!("rect radial edge e{radial_edge} missing from face_generated")
             });
-        let dot = face_axis_dot(&kernel, &result_faces, rec.result_subshape_index, axis_dir);
+        let n = kernel
+            .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
+            .expect("face_outward_unit_normal_for_test should succeed");
+        let dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
         assert!(
             dot > 1.0 - DIR_TOL,
             "synthesised annular-disk face for radial edge e{radial_edge} must \
@@ -393,7 +359,10 @@ fn full_revolve_with_history_reports_no_caps() {
             .unwrap_or_else(|| {
                 panic!("rect axial edge e{axial_edge} missing from face_generated")
             });
-        let dot = face_axis_dot(&kernel, &result_faces, rec.result_subshape_index, axis_dir);
+        let n = kernel
+            .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
+            .expect("face_outward_unit_normal_for_test should succeed");
+        let dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
         assert!(
             dot < DIR_TOL,
             "OCCT-reported cylindrical face for axial edge e{axial_edge} must \
@@ -569,7 +538,10 @@ fn full_revolve_triangle_profile_synthesis_regression() {
         .iter()
         .find(|r| r.parent_subshape_index == 0)
         .expect("triangle e0 (radial) must produce a face_generated record");
-    let radial_dot = face_axis_dot(&kernel, &result_faces, radial.result_subshape_index, axis_dir);
+    let n = kernel
+        .face_outward_unit_normal_for_test(result_faces[radial.result_subshape_index as usize])
+        .expect("face_outward_unit_normal_for_test should succeed");
+    let radial_dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
     assert!(
         radial_dot > 1.0 - DIR_TOL,
         "synthesised annular-disk face for radial edge e0 must have \
@@ -587,8 +559,10 @@ fn full_revolve_triangle_profile_synthesis_regression() {
             .unwrap_or_else(|| {
                 panic!("triangle slanted edge e{slanted_idx} missing from face_generated")
             });
-        let slanted_dot =
-            face_axis_dot(&kernel, &result_faces, rec.result_subshape_index, axis_dir);
+        let n = kernel
+            .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
+            .expect("face_outward_unit_normal_for_test should succeed");
+        let slanted_dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
         assert!(
             slanted_dot < 1.0 - DIR_TOL,
             "OCCT-reported conical face for slanted edge e{slanted_idx} must have \
