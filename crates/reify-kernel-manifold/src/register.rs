@@ -117,6 +117,11 @@ inventory::submit! {
 /// Used as both the `KernelRegistration::name` and the BTreeMap key in the
 /// dispatcher registry (`reify_eval::kernel_registry::registry()`).
 ///
+/// Must equal `KernelId::Manifold.to_string()` (`"manifold"`) so the
+/// project-pin lookup in `reify-config` matches the registered adapter at
+/// runtime. Enforced by
+/// `crates/reify-config/tests/kernel_name_consistency.rs::manifold_kernel_name_const_matches_kernel_id_display`.
+///
 /// # Lex-min note
 ///
 /// `"manifold"` sorts before `"occt"` lexicographically. However, OCCT and
