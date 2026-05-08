@@ -58,6 +58,9 @@ use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Oper
 /// Used as both the `KernelRegistration::name` and the BTreeMap key in the
 /// dispatcher registry (`reify_eval::kernel_registry::registry()`).
 ///
+/// Must equal `KernelId::Gmsh.to_string()` (`"gmsh"`) so the project-pin
+/// lookup in `reify-config` matches the registered adapter at runtime.
+///
 /// # Lex-min note
 ///
 /// `"gmsh"` sorts BEFORE `"manifold"`, `"occt"`, `"openvdb"` and AFTER
