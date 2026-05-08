@@ -186,3 +186,96 @@ fn is_orientable_let_binding_compiles_with_bool_type() {
     let compiled = assert_helper_let_compiles("is_orientable", "orientable");
     assert_helper_cell_typed_bool(&compiled, "orientable");
 }
+
+// ─── Topology selector helpers (task 2324 step-10) ───────────────────────────
+//
+// `closest_point(point, geometry) -> Point3<Length>`,
+// `on(point, geometry) -> Bool`, and
+// `angle_between_surfaces(a, b) -> Angle` are dispatched by name in the
+// compiler (`is_geometry_topology_selector` in `units.rs`) and force the
+// let-binding's compiled cell type to the registry-mandated Type via the new
+// arm in `expr.rs`. Without that branch, the cell would be typed
+// `Type::Geometry` (closest_point's geometry arg is the second arg, but
+// `Type::Point3<Length>` for `on` would still be wrong from the first-arg
+// fallback) and trip `assert_value_cell_types_representable`.
+
+/// Compile a structure that names a topology-selector helper as a let binding
+/// RHS, with a let-bound `point3(0mm, 0mm, 0mm)` and `box(10mm, 10mm, 10mm)`
+/// in scope. Asserts no compile errors and returns the compiled module.
+fn assert_topology_selector_let_compiles(call_rhs: &str, cell_name: &str) -> CompiledModule {
+    let source = format!(
+        r#"
+structure def Bracket {{
+    let body = box(10mm, 10mm, 10mm)
+    let p = point3(0mm, 0mm, 0mm)
+    let {cell_name} = {call_rhs}
+}}
+"#
+    );
+    let compiled = compile_source_with_stdlib(&source);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "structure with `{call_rhs}` should compile cleanly, got errors: {:#?}",
+        errors
+    );
+    compiled
+}
+
+/// Find the value cell named `cell_name` in the compiled `Bracket` template
+/// and assert its `cell_type` equals `expected`.
+fn assert_helper_cell_typed(compiled: &CompiledModule, cell_name: &str, expected: &Type) {
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bracket")
+        .expect("compiled module should contain `Bracket` template");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == cell_name)
+        .unwrap_or_else(|| {
+            panic!(
+                "template `Bracket` should contain a `{cell_name}` value cell, got: {:?}",
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        &cell.cell_type, expected,
+        "cell `{cell_name}` must be typed {:?} (registry-mandated, not first-arg fallback), got: {:?}",
+        expected, cell.cell_type
+    );
+}
+
+#[test]
+fn closest_point_let_binding_compiles_with_point3_length_type() {
+    let compiled =
+        assert_topology_selector_let_compiles("closest_point(p, body)", "cp");
+    assert_helper_cell_typed(&compiled, "cp", &Type::point3(Type::length()));
+}
+
+#[test]
+fn on_let_binding_compiles_with_bool_type() {
+    let compiled = assert_topology_selector_let_compiles("on(p, body)", "on_body");
+    assert_helper_cell_typed(&compiled, "on_body", &Type::Bool);
+}
+
+#[test]
+fn angle_between_surfaces_let_binding_compiles_with_angle_type() {
+    // angle_between_surfaces' first/second args resolve to whatever expression
+    // is provided; the compile-time type wiring keys only on the function
+    // name, so passing `body, body` (two geometries) is sufficient to exercise
+    // the result_type arm in `expr.rs`. v0.1 has no surface-extraction syntax;
+    // semantic / runtime-arg validation lives in
+    // `geometry_ops::try_eval_topology_selector` and falls through to
+    // `Value::Undef` when args don't resolve to face handles.
+    let compiled = assert_topology_selector_let_compiles(
+        "angle_between_surfaces(body, body)",
+        "ang",
+    );
+    assert_helper_cell_typed(&compiled, "ang", &Type::angle());
+}
