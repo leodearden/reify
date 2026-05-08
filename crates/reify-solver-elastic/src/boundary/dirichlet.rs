@@ -313,7 +313,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Step 2 — homogeneous BC zeros the constrained row/col and sets diagonal
+    // Homogeneous BC: row/col-zeroing and diagonal set
     // -----------------------------------------------------------------------
 
     /// Homogeneous BC (`u = 0`) zeros row `i` and column `i` of K, sets
@@ -409,13 +409,10 @@ mod tests {
                 );
             }
         }
-
-        // suppress unused-variable warning from snapshot on the lines above
-        let _ = &k_before;
     }
 
     // -----------------------------------------------------------------------
-    // Step 3 — inhomogeneous BC subtracts the constrained column into f
+    // Inhomogeneous BC: column-into-RHS subtraction
     // -----------------------------------------------------------------------
 
     /// Inhomogeneous BC (`u ≠ 0`) subtracts `K_before[j][i] · u` from `f[j]`
@@ -426,11 +423,6 @@ mod tests {
     /// value `u`, the expected `f_after[j] = f_before[j] - k_before[j][d] * u`
     /// is computed from the pre-call snapshots.  This is a single-summand
     /// FP subtract (no reordering ambiguity), so bit-for-bit equality holds.
-    ///
-    /// Test fails (step-4 implementation) because the column-into-RHS step
-    /// is not yet implemented — `f[j]` for j ≠ d will not change, so the
-    /// assertion `f_after[j] == f_before[j] - k_before[j][d] * u` fails
-    /// whenever `k_before[j][d] != 0.0`.
     #[test]
     fn inhomogeneous_bc_subtracts_column_into_rhs() {
         let mut k = single_p1_k();
@@ -500,7 +492,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Step 4 — multiple BCs preserve K symmetry (SPD preservation regression)
+    // Multi-BC: SPD preservation regression
     // -----------------------------------------------------------------------
 
     /// Multi-BC row-elimination on a real FEA-assembled K preserves symmetry
@@ -548,7 +540,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Step 5 — multiple BCs are order-independent within FP tolerance
+    // Multi-BC: order-independence within FP tolerance
     // -----------------------------------------------------------------------
 
     /// Applying the same multi-BC list in two different orders produces
@@ -624,16 +616,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Step 6 — contract violations panic with descriptive messages
+    // Contract violations: panic with descriptive messages
     // -----------------------------------------------------------------------
 
     /// Out-of-range DOF index panics with a message naming the offending dof
     /// and the matrix dimension.
     ///
-    /// With step-12's explicit `assert!(bc.dof < k.nrows(), …)` at function
-    /// entry this panics before any faer indexing occurs.  Without step-12,
-    /// the function silently accesses `row_ptr[99]..row_ptr[100]` which
-    /// panics with a faer/slice index-out-of-bounds message (wrong message).
+    /// The explicit `assert!(bc.dof < k.nrows(), …)` at function entry fires
+    /// before any faer indexing occurs, giving a descriptive message rather
+    /// than a raw slice-out-of-bounds panic.
     #[test]
     #[should_panic(expected = "DirichletBc")]
     fn out_of_range_dof_panics() {
@@ -652,9 +643,9 @@ mod tests {
 
     /// Mismatched f length panics with a message naming both lengths.
     ///
-    /// Without step-12's explicit check this silently writes to `f[bc.dof]`
-    /// which may be an out-of-bounds index, producing a different panic
-    /// message (or UB in unsafe code).
+    /// The explicit `assert_eq!(f.len(), k.nrows(), …)` at function entry
+    /// fires before any element access, giving a descriptive message that
+    /// names both the actual and expected lengths.
     #[test]
     #[should_panic(expected = "f.len()")]
     fn f_length_mismatch_panics() {
@@ -666,8 +657,8 @@ mod tests {
     /// Missing diagonal entry panics with a message naming the dof.
     ///
     /// Synthesise a 3×3 CSR that intentionally omits the `(2, 2)` diagonal
-    /// entry.  The `diag_found` check inside the per-BC loop (added in
-    /// step-4) fires and panics with the expected message.
+    /// entry.  The `diag_found` guard inside the per-BC loop fires and
+    /// panics with the expected message.
     #[test]
     #[should_panic(expected = "diagonal")]
     fn missing_diagonal_entry_panics() {
@@ -691,7 +682,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Step 1 — empty BC list is a no-op
+    // Empty BC list: no-op contract
     // -----------------------------------------------------------------------
 
     /// Empty BC list → K and f are bit-identical to their pre-call snapshots.
