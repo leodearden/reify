@@ -56,6 +56,7 @@ pub use structural_classifier::{
 };
 pub mod sweep_classifier;
 pub use sweep_classifier::{classify_swept_body, SweptKind, SweptKindTable};
+pub mod selector_vocabulary_v2;
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
