@@ -28,6 +28,32 @@
 
 use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 
+/// Gauss-Legendre 1/√3 coordinate (within 1 ulp of `(3.0_f64).sqrt().recip()`).
+///
+/// Hard-coded literal because `f64::sqrt` is not `const fn` — mirrors the
+/// `TET_P2_STROUD_A`/`B` pattern in `tet_p2.rs`.
+const HEX_P1_GAUSS_PT: f64 = 0.5773502691896257; // ≈ 1/√3
+
+/// 2×2×2 Gauss-Legendre quadrature rule for the reference cube `[-1, 1]³`.
+///
+/// 8 points at `(±1/√3, ±1/√3, ±1/√3)`, all with weight 1.  Total weight
+/// 8 = reference-cube volume.  Tensor product of the 1D 2-point
+/// Gauss-Legendre rule on `[-1, 1]`, which is degree-3 exact per axis —
+/// sufficient for the trilinear stiffness integrand `Bᵀ D B` on a
+/// constant-Jacobian hex (each `B = ∇N` component is bilinear in the two
+/// remaining reference coordinates, so `Bᵀ D B` has per-axis degree ≤ 2,
+/// well within the rule's degree-3-per-axis exactness).
+const HEX_P1_QUAD: &[QuadraturePoint] = &[
+    QuadraturePoint { coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT), weight: 1.0 },
+    QuadraturePoint { coord: ReferenceCoord::new( HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT), weight: 1.0 },
+    QuadraturePoint { coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT), weight: 1.0 },
+    QuadraturePoint { coord: ReferenceCoord::new( HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT), weight: 1.0 },
+    QuadraturePoint { coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT), weight: 1.0 },
+    QuadraturePoint { coord: ReferenceCoord::new( HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT), weight: 1.0 },
+    QuadraturePoint { coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT), weight: 1.0 },
+    QuadraturePoint { coord: ReferenceCoord::new( HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT), weight: 1.0 },
+];
+
 /// First-order Lagrangian hexahedron (trilinear hex8).
 pub struct HexP1;
 
@@ -88,7 +114,7 @@ impl ReferenceElement for HexP1 {
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
-        unimplemented!("step-6 will implement HexP1::quad_points")
+        HEX_P1_QUAD
     }
 }
 
