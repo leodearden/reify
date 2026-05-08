@@ -70,7 +70,7 @@ fn gmsh_kernel_name_const_matches_kernel_id_display() {
 }
 
 /// Exhaustiveness guard: adding a `KernelId` variant without updating this
-/// test is a **compile error** (missing match arm). Fix the compile error by
+/// const is a **compile error** (missing match arm). Fix the compile error by
 /// listing the new variant in the match below AND adding a corresponding
 /// per-kernel consistency test function above (named
 /// `<kernel>_kernel_name_const_matches_kernel_id_display`).
@@ -79,20 +79,10 @@ fn gmsh_kernel_name_const_matches_kernel_id_display() {
 /// A separate runtime length check was removed as redundant — if the match arm
 /// compiles, every live variant is already enumerated here and in the per-kernel
 /// tests.
-#[test]
-fn kernel_id_variants_have_consistency_pins() {
-    // Compile-time guard — a non-wildcard match forces every variant to be listed.
-    // Adding a KernelId variant without adding it here is a compile error.
-    // When you fix that compile error, also add the corresponding per-kernel
-    // consistency test function above (see the five functions at the top of
-    // this file for the naming convention).
-    fn _exhaustiveness_guard(id: KernelId) {
-        match id {
-            KernelId::Occt
-            | KernelId::Manifold
-            | KernelId::Fidget
-            | KernelId::OpenVdb
-            | KernelId::Gmsh => (),
-        }
-    }
-}
+const _EXHAUSTIVENESS_PIN: fn(KernelId) = |id| match id {
+    KernelId::Occt
+    | KernelId::Manifold
+    | KernelId::Fidget
+    | KernelId::OpenVdb
+    | KernelId::Gmsh => (),
+};
