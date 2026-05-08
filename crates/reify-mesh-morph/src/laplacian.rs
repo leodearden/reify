@@ -539,6 +539,45 @@ mod tests {
         );
     }
 
+    // ── Step-15: orphan interior node leaves position unchanged ──────────────
+
+    /// Defensive: a node with no topological neighbours (not in any tet) and
+    /// not in `prescribed_positions` must keep its initial position across
+    /// every iteration. Documents the "no neighbours → unchanged" branch from
+    /// the design decisions (prevents 0/0 division injecting NaN).
+    #[test]
+    fn laplacian_smooth_with_orphan_interior_node_leaves_position_unchanged() {
+        // 5 vertices but tet_indices only references nodes 0..3 (node 4 is
+        // an orphan: not in any tet, not prescribed).
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // 0
+                1.0, 0.0, 0.0, // 1
+                0.0, 1.0, 0.0, // 2
+                0.0, 0.0, 1.0, // 3
+                42.0, 43.0, 44.0, // 4: orphan
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        // Pin nodes 0..3 so the only "free" node is the orphan node 4.
+        let prescribed = vec![
+            (0_u32, [0.0_f64, 0.0, 0.0]),
+            (1, [1.0, 0.0, 0.0]),
+            (2, [0.0, 1.0, 0.0]),
+            (3, [0.0, 0.0, 1.0]),
+        ];
+
+        let out = laplacian_smooth(&mesh, &prescribed, 5).unwrap();
+
+        // Orphan must keep its initial position (no NaN).
+        let base = 4 * 3;
+        assert_eq!(out.vertices[base], 42.0);
+        assert_eq!(out.vertices[base + 1], 43.0);
+        assert_eq!(out.vertices[base + 2], 44.0);
+    }
+
     // ── Step-3: exhaustive variant fence for LaplacianFailure ─────────────────
     //
     // No-wildcard match guarantees that adding/removing/renaming a variant
