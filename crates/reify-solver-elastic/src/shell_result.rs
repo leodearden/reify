@@ -11,6 +11,51 @@
 
 use reify_types::Value;
 
+/// Structured shell stress result carrying per-integration-layer stress
+/// channels and the per-element local-to-global rotation frame.
+///
+/// # Channels
+///
+/// - `top`    — top-surface stress (outer fibre in the element's local-z).
+/// - `mid`    — mid-surface (neutral-plane) stress. For tet results all three
+///              channels are equal (no through-thickness gradient).
+/// - `bottom` — bottom-surface stress (inner fibre opposite to `top`).
+/// - `frame`  — per-element local-to-global rotation
+///              (`Field<Point3<Length>, Matrix<3,3,Real>>` at runtime).
+///              Set to `Value::Undef` for tet results (tet stress is already
+///              in the global Cartesian frame; no local frame exists).
+///
+/// # Note on `Eq`
+///
+/// `PartialEq` is derived; `Eq` cannot be derived because `Value` contains
+/// `f64`, which does not implement `Eq`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellStress {
+    pub top: Value,
+    pub mid: Value,
+    pub bottom: Value,
+    pub frame: Value,
+}
+
+impl ShellStress {
+    /// Canonical tet-result constructor. Sets `top == mid == bottom == field`
+    /// (no through-thickness stress variation for solid elements) and
+    /// `frame = Value::Undef` (tet stress is already in the global frame).
+    ///
+    /// Engine-integration tasks T18-T20 call this for every tet-element result
+    /// when packaging the solver output. For shell elements they use direct
+    /// struct initialisation with distinct per-layer fields and the MITC3+
+    /// local frame.
+    pub fn homogeneous(field: Value) -> Self {
+        Self {
+            top: field.clone(),
+            mid: field.clone(),
+            bottom: field,
+            frame: Value::Undef,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

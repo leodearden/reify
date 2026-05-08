@@ -31,6 +31,7 @@
 //!     Mitc3Plus, ShellReferenceCoord, TyingPoint,
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
 //!     IsotropicElastic,
+//!     ShellStress,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -59,6 +60,13 @@
 //! let k = shell_element_stiffness(&nodes, 0.05, &mat);
 //! assert_eq!(k.n_dofs, 18);
 //! assert_eq!(k.data.len(), 324);
+//!
+//! // ShellStress smoke test (T16).
+//! let ss = ShellStress::homogeneous(reify_types::Value::Undef);
+//! assert!(ss.top.is_undef());
+//! assert!(ss.mid.is_undef());
+//! assert!(ss.bottom.is_undef());
+//! assert!(ss.frame.is_undef());
 //! ```
 
 pub mod assembly;
@@ -74,3 +82,4 @@ pub use elements::{
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
 };
 pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
+pub use shell_result::ShellStress;
