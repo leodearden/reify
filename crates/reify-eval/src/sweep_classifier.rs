@@ -669,7 +669,7 @@ mod tests {
         );
     }
 
-    // ── Step-5: Sweep / Loft path-source resolution and rejection ─────────
+    // ── Step-5: Sweep path-source resolution; multi-profile Loft/LoftGuided rejection ──
 
     #[test]
     fn classify_swept_body_sweep_with_line_segment_path_classifies_as_sweep_linear() {
