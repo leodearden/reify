@@ -171,10 +171,10 @@ purpose mfg_ready(subject : Structure) {
     );
 }
 
-// ── §2: eval() clears stale purpose state (migrated from purpose_eval.rs) ────
+// ── §2: eval() preserves active purpose state across re-eval (task 3103) ─────
 
 #[test]
-fn eval_clears_stale_purpose_state() {
+fn eval_preserves_active_purpose_state_across_re_eval() {
     let compiled = parse_and_compile(SIMPLE_MFG_SRC);
     let mut engine = make_engine();
     engine.eval(&compiled);
@@ -183,17 +183,18 @@ fn eval_clears_stale_purpose_state() {
         engine.is_purpose_active("mfg_ready"),
         "purpose should be active after activation"
     );
-    // Second eval — fresh snapshot; purpose state should be cleared (lib.rs:930-931)
+    // Second eval — fresh snapshot; active_purpose_bindings (user intent) must
+    // be preserved and re-injected into the new graph (task 3103).
     engine.eval(&compiled);
     assert!(
-        !engine.is_purpose_active("mfg_ready"),
-        "purpose should NOT be active after a fresh eval() call"
+        engine.is_purpose_active("mfg_ready"),
+        "purpose MUST still be active after a fresh eval() call — task 3103 preserves bindings"
     );
-    // Re-activation should work (not blocked by stale 'already active' guard)
+    // Re-activation should be an idempotent no-op (not blocked, not doubled)
     engine.activate_purpose("mfg_ready", "Bracket");
     assert!(
         engine.is_purpose_active("mfg_ready"),
-        "purpose should be re-activatable after fresh eval()"
+        "purpose should still be active after a redundant activate_purpose call"
     );
 }
 
