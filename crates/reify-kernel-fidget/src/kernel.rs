@@ -39,7 +39,9 @@ use fidget::shape::EzShape;
 
 use reify_types::{
     BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-    GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+    GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
+    SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
+    TessError, Value,
 };
 
 /// Tree-backed Fidget SDF kernel.
@@ -670,13 +672,10 @@ mod tests {
             });
             match result {
                 Err(GeometryError::OperationFailed(msg)) => {
-                    assert!(
-                        msg.contains("sphere radius"),
-                        "message must name 'sphere radius'; radius={radius:?}, got {msg:?}",
-                    );
-                    assert!(
-                        msg.contains("finite positive"),
-                        "message must contain 'finite positive'; radius={radius:?}, got {msg:?}",
+                    assert_eq!(
+                        msg.as_str(),
+                        SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
+                        "sphere-radius rejection message must be byte-identical to the shared const; radius={radius:?}, got {msg:?}",
                     );
                 }
                 Ok(handle) => panic!(
