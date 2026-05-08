@@ -2133,4 +2133,153 @@ mod tests {
             other => panic!("expected Real, got {:?}", other),
         }
     }
+
+    // ── linear_combine mesh/codomain/source incompatibility rejection ────────
+
+    #[test]
+    fn linear_combine_displacement_grid_axis_lengths_mismatch_returns_undef() {
+        // Case A displacement has 5 grid points, case B has 4 — mismatch → Undef.
+        let a_disp = wrap_sampled_field(
+            make_sampled_1d("da", vec![0.0, 1.0, 2.0, 3.0, 4.0], vec![1.0, 2.0, 3.0, 4.0, 5.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_stress = wrap_sampled_field(
+            make_sampled_1d("sa", vec![0.0, 1.0, 2.0, 3.0, 4.0], vec![10.0, 20.0, 30.0, 40.0, 50.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_disp = wrap_sampled_field(
+            make_sampled_1d("db", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_1d("sb", vec![0.0, 1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0, 40.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(b_disp, b_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        wm.insert(Value::String("B".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn linear_combine_stress_grid_bounds_min_mismatch_returns_undef() {
+        // Cases share displacement grids but stress grids differ in bounds_min.
+        let axis_a = vec![0.0, 1.0, 2.0];
+        let axis_b = vec![1.0, 2.0, 3.0]; // different bounds
+        let shared = wrap_sampled_field(
+            make_sampled_1d("d", axis_a.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_stress = wrap_sampled_field(
+            make_sampled_1d("sa", axis_a.clone(), vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_1d("sb", axis_b, vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(shared.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(shared, b_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        wm.insert(Value::String("B".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn linear_combine_codomain_type_mismatch_returns_undef() {
+        // Case A stress has Real codomain, case B has Pressure codomain.
+        let axis = vec![0.0, 1.0, 2.0];
+        let shared_disp = wrap_sampled_field(
+            make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_stress = wrap_sampled_field(
+            make_sampled_1d("sa", axis.clone(), vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_1d("sb", axis.clone(), vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Scalar { dimension: DimensionVector::PRESSURE },
+        );
+        let case_a = make_fixture_elastic_result_with_fields(shared_disp.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(shared_disp, b_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        wm.insert(Value::String("B".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn linear_combine_displacement_non_sampled_source_returns_undef() {
+        // Case B's displacement has FieldSourceKind::Analytical — non-Sampled → Undef.
+        let axis = vec![0.0, 1.0, 2.0];
+        let shared_stress = wrap_sampled_field(
+            make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_disp = wrap_sampled_field(
+            make_sampled_1d("da", axis, vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_disp = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(Value::Undef),
+        };
+        let case_a = make_fixture_elastic_result_with_fields(a_disp, shared_stress.clone());
+        let case_b = make_fixture_elastic_result_with_fields(b_disp, shared_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        wm.insert(Value::String("B".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn linear_combine_displacement_sampled_with_non_sampledfield_lambda_returns_undef() {
+        // Case B's displacement is Sampled-source but lambda is Value::Undef (degenerate).
+        let axis = vec![0.0, 1.0, 2.0];
+        let shared_stress = wrap_sampled_field(
+            make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_disp = wrap_sampled_field(
+            make_sampled_1d("da", axis, vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_disp = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::Undef), // Sampled but non-SampledField lambda
+        };
+        let case_a = make_fixture_elastic_result_with_fields(a_disp, shared_stress.clone());
+        let case_b = make_fixture_elastic_result_with_fields(b_disp, shared_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        wm.insert(Value::String("B".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
 }
