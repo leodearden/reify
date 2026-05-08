@@ -301,30 +301,45 @@ pub fn prune_branches(
     // would treat every edge as a boundary (incidence count 1), making every
     // triangle a tip and pruning the entire mesh.
     //
-    // Solution: build a coordinate → canonical index map keyed on f64 bit
-    // patterns (binary-MC midpoints are bit-exact duplicates).  Edge-incidence
-    // is computed over canonical indices; original indices are still used for
-    // vertex positions and thickness lookups.
+    // Solution: build a coordinate → canonical index map keyed on quantised
+    // integer coordinates.  Edge-incidence is computed over canonical indices;
+    // original indices are still used for vertex positions and thickness
+    // lookups.
     //
-    // Normalisation: −0.0 and +0.0 are numerically equal but have distinct bit
-    // patterns (0x8000_0000_0000_0000 vs 0x0000_0000_0000_0000).  We normalise
-    // both to +0.0 so they share the same canonical key.
+    // COUPLING NOTE: T2 must emit shared-edge midpoints whose coordinates
+    // agree within `options.grid_alignment_tolerance` (default 1e-9).  Two
+    // vertices whose coordinates round to the same integer grid cell at that
+    // tolerance are merged into a single canonical index.  This is effectively
+    // bit-exact for the current internal T2 pipeline (binary-MC midpoints from
+    // identical axis-grid lookups), while admitting small float jitter from any
+    // future value-weighted T2 interpolation.
     //
-    // COUPLING NOTE: this relies on T2 producing bit-exact duplicate coordinates
-    // for shared-edge midpoints.  If T2 is ever changed to average or
-    // interpolate midpoints, the dedup will silently fail and every edge will
-    // appear as a boundary edge, causing spurious pruning of the mesh body.
-    // The slab end-to-end test (`prune_branches_slab_end_to_end_pipeline`) and
-    // the duplicate-vertex regression test below would catch such a regression.
+    // Quantisation formula: `(coord * inv_tol).round() as i64`, with
+    // `inv_tol = 1.0 / grid_alignment_tolerance` precomputed — same pattern as
+    // `mesher.rs::dedup_vertices` (`MesherOptions::merge_tolerance`, default
+    // 1e-9) which is the established precedent for vertex dedup in this crate.
+    // Cross-reference: `MidSurfaceOptions::grid_alignment_tolerance` carries
+    // the matching default 1e-9 at T2's end of the contract.
+    //
+    // NaN/Inf saturation: NaN coordinates round to `0` via
+    // `f64::NAN.round() as i64 = 0` and collide at the origin.  ±Inf saturate
+    // to `i64::MIN`/`i64::MAX`.  These edge cases match the mesher's documented
+    // behaviour (mesher.rs:258–271) and are acceptable — the former bit-exact
+    // code did not handle NaN differently either (NaN has many distinct bit
+    // patterns).  The `−0.0`/`+0.0` sign-of-zero distinction falls out
+    // automatically: `(-0.0_f64 * inv_tol).round() as i64 = 0`, same as for
+    // `+0.0`.
     let canonical: Vec<u32> = {
-        let mut coord_to_canon: FxHashMap<[u64; 3], u32> = FxHashMap::default();
+        let inv_tol = 1.0 / options.grid_alignment_tolerance;
+        let mut coord_to_canon: FxHashMap<[i64; 3], u32> = FxHashMap::default();
         vertices
             .iter()
             .map(|v| {
-                // Normalise −0.0 → +0.0 before taking bit patterns.
-                // In IEEE 754, −0.0 == +0.0 is true, so this branch fires for both.
-                let norm = |x: f64| if x == 0.0 { 0.0_f64 } else { x };
-                let key = [norm(v[0]).to_bits(), norm(v[1]).to_bits(), norm(v[2]).to_bits()];
+                let key = [
+                    (v[0] * inv_tol).round() as i64,
+                    (v[1] * inv_tol).round() as i64,
+                    (v[2] * inv_tol).round() as i64,
+                ];
                 let next_id = coord_to_canon.len() as u32;
                 *coord_to_canon.entry(key).or_insert(next_id)
             })
