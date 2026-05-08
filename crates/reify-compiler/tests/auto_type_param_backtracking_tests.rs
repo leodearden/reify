@@ -44,7 +44,7 @@
 //! `dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker`,
 //! and `dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use reify_compiler::auto_type_param::{
     AutoTypeParam, MAX_AUTO_TYPE_PARAM_CANDIDATES, MultiParamResolutionOutcome,
@@ -54,8 +54,8 @@ use reify_compiler::auto_type_param::{
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 use reify_types::{
-    BinOp, CompiledExpr, CompiledFunction, ConstraintNodeId, DiagnosticCode, Satisfaction,
-    Severity, SourceSpan, Type, Value, ValueCellId,
+    CompiledExpr, CompiledFunction, DiagnosticCode, Satisfaction, Severity, SourceSpan, Type,
+    Value, ValueCellId,
 };
 
 /// Build the `(template_registry, trait_registry)` pair that
