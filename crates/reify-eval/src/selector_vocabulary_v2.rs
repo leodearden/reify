@@ -373,3 +373,83 @@ pub fn extremal_by_bbox<K: GeometryKernel + ?Sized>(
     }
     Ok(out)
 }
+
+/// Return the cluster of `candidates` whose `Centroid` projection onto
+/// `axis` is within `tol_m` of the global extreme (max or min).
+///
+/// By-center counterpart of [`extremal_by_bbox`] (PRD line 77's `>>axis`
+/// slot). The two diverge on non-flat faces: a curved face's centroid
+/// can lie inside the bbox interior even though the bbox extent reaches
+/// further along the axis. Both selectors are first-class so callers
+/// can choose semantically (e.g. parting-line selection prefers
+/// centroid-based; clearance checks prefer bbox-based).
+///
+/// Issues a single batched `kernel.query_many` for all candidate
+/// `Centroid` reads, projects each onto `axis` (using the axis-aligned
+/// unit vector — equivalent to reading `centroid[axis]` for the three
+/// Cartesian axes), and returns the cluster in input order with
+/// dedup-on-first-seen.
+///
+/// # Edge cases
+///
+/// - Empty `candidates` → `Ok(Vec::new())`.
+/// - On a tie cluster of size > 1, no diagnostic is emitted here — the
+///   caller is expected to chain a uniqueness resolver
+///   (`resolve_unique_by_attribute`, etc.) for that signal.
+///
+/// # Errors
+///
+/// - Propagates any error from `query_many`.
+/// - Returns `QueryError::QueryFailed` on a malformed `Centroid`
+///   payload (non-string, non-JSON, missing fields).
+pub fn extremal_by_centroid<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    candidates: &[GeometryHandleId],
+    axis: Axis,
+    sense: ExtremalSense,
+    tol_m: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Batched read: one `query_many` for the entire candidate slice.
+    let values = query_per_subshape(
+        kernel,
+        candidates,
+        "extremal_by_centroid",
+        GeometryQuery::Centroid,
+    )?;
+    // Project each centroid onto the chosen axis. The axis-aligned unit
+    // vector reduces a generic dot-product to a single component pick,
+    // but using `dot3` keeps the code symmetric with the direction
+    // filters and ready for an oblique-axis extension if that ever
+    // arrives.
+    let axis_vec = axis.unit();
+    let mut metrics: Vec<f64> = Vec::with_capacity(candidates.len());
+    for value in &values {
+        let xyz = parse_xyz_value(value, "Centroid")?;
+        metrics.push(dot3(xyz, axis_vec));
+    }
+    // Find the global extreme; non-empty since `candidates` is non-empty.
+    let extreme = metrics
+        .iter()
+        .copied()
+        .fold(
+            match sense {
+                ExtremalSense::Max => f64::NEG_INFINITY,
+                ExtremalSense::Min => f64::INFINITY,
+            },
+            |acc, v| match sense {
+                ExtremalSense::Max => acc.max(v),
+                ExtremalSense::Min => acc.min(v),
+            },
+        );
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
+    let mut out: Vec<GeometryHandleId> = Vec::new();
+    for (id, metric) in candidates.iter().zip(metrics.iter()) {
+        if (metric - extreme).abs() <= tol_m && seen.insert(*id) {
+            out.push(*id);
+        }
+    }
+    Ok(out)
+}
