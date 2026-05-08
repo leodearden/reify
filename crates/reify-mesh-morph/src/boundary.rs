@@ -674,6 +674,62 @@ mod tests {
         }
     }
 
+    // ── Step-25b (parity): propagates projector edge failure ─────────────────
+
+    #[test]
+    fn compute_dirichlet_bcs_propagates_projector_edge_failure_as_projection_failure_projector_variant()
+    {
+        let mesh = mesh_with_vertices(vec![0.0_f32, 0.0, 0.0]);
+        let mut ba = BoundaryAssociation::default();
+        ba.associate(0, NodeAttachment::OnEdge(h(30)));
+
+        let mut correspondence = CorrespondenceMap::default();
+        correspondence.edge_to_edge.insert(h(30), h(40));
+
+        let mut proj = RecordingProjector::new();
+        proj.add_edge_response(
+            h(40),
+            Err(ProjectorPayload::new("BRepExtrema edge projection failed")),
+        );
+
+        let result = compute_dirichlet_bcs(&mesh, &ba, &correspondence, &proj);
+        match result {
+            Err(ProjectionFailure::Projector(payload)) => {
+                assert_eq!(payload.message(), "BRepExtrema edge projection failed");
+            }
+            other => panic!("expected Projector failure, got: {other:?}"),
+        }
+    }
+
+    // ── Step-25c (parity): propagates projector vertex failure ───────────────
+
+    #[test]
+    fn compute_dirichlet_bcs_propagates_projector_vertex_failure_as_projection_failure_projector_variant()
+    {
+        let mesh = mesh_with_vertices(vec![0.0_f32, 0.0, 0.0]);
+        let mut ba = BoundaryAssociation::default();
+        ba.associate(0, NodeAttachment::OnVertex(h(50)));
+
+        // Manually populated even though Stage B never produces it in v0.2 —
+        // same approach as the existing happy-path vertex test.
+        let mut correspondence = CorrespondenceMap::default();
+        correspondence.vertex_to_vertex.insert(h(50), h(60));
+
+        let mut proj = RecordingProjector::new();
+        proj.add_vertex_response(
+            h(60),
+            Err(ProjectorPayload::new("vertex_position lookup failed")),
+        );
+
+        let result = compute_dirichlet_bcs(&mesh, &ba, &correspondence, &proj);
+        match result {
+            Err(ProjectionFailure::Projector(payload)) => {
+                assert_eq!(payload.message(), "vertex_position lookup failed");
+            }
+            other => panic!("expected Projector failure, got: {other:?}"),
+        }
+    }
+
     // ── Step-27: PRD critical-correctness regression guard ────────────────────
 
     /// PRD invariant: corner / edge nodes must project onto the *mapped
