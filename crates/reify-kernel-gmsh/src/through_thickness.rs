@@ -155,7 +155,7 @@ pub fn through_thickness_check(
     // Emit a WARN and early-return with no findings so the pipeline doesn't
     // receive garbage results. Operators can filter via
     // `RUST_LOG=reify_kernel_gmsh::through_thickness=warn`.
-    if let Some(_) = centroids.iter().find(|c| c.is_nan()) {
+    if centroids.iter().any(|c| c.is_nan()) {
         tracing::warn!(
             target: "reify_kernel_gmsh::through_thickness",
             reason = "nan_centroid",
