@@ -1509,4 +1509,29 @@ mod tests {
             .is_undef()
         );
     }
+
+    // ── linear_combine dispatcher signal ────────────────────────────────────
+
+    #[test]
+    fn linear_combine_dispatcher_returns_some() {
+        // `linear_combine` must be a recognised FEA function name — `eval_fea`
+        // must return `Some(_)`, not `None`. The actual value may be Undef
+        // (wrong arity), but `None` would mean the arm is missing.
+        assert!(eval_fea("linear_combine", &[]).is_some());
+    }
+
+    #[test]
+    fn linear_combine_zero_args_returns_undef() {
+        // arity must be exactly 2 (base_results, weights).
+        assert!(eval_fea("linear_combine", &[]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn linear_combine_three_args_returns_undef() {
+        // arity must be exactly 2 — three args rejects.
+        let a = Value::Int(1);
+        let b = Value::Int(2);
+        let c = Value::Int(3);
+        assert!(eval_fea("linear_combine", &[a, b, c]).unwrap().is_undef());
+    }
 }
