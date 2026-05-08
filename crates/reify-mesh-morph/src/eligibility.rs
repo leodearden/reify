@@ -119,7 +119,7 @@ pub enum Reason {
 ///   passed; `map` carries the bijection downstream.
 /// - [`Eligibility::Ineligible(reason)`][Eligibility::Ineligible] — a stage
 ///   rejected the edit; `reason` carries the structured diagnostic.
-pub fn morph_eligible(old: &MorphSnapshot, new: &MorphSnapshot) -> Eligibility {
+pub fn morph_eligible(old: MorphSnapshot, new: MorphSnapshot) -> Eligibility {
     // Step 1: Stage A (cheap pre-flight; short-circuits before touching the
     // new-side handles/table).
     if !stage_a_eligible(old.graph, new.graph, old.values, new.values) {
@@ -245,7 +245,7 @@ mod tests {
         };
 
         assert_eq!(
-            morph_eligible(&old_snap, &new_snap),
+            morph_eligible(old_snap, new_snap),
             Eligibility::Eligible(CorrespondenceMap::default())
         );
     }
@@ -294,7 +294,7 @@ mod tests {
         };
 
         assert_eq!(
-            morph_eligible(&old_snap, &new_snap),
+            morph_eligible(old_snap, new_snap),
             Eligibility::Ineligible(Reason::StructuralChange)
         );
     }
@@ -345,7 +345,7 @@ mod tests {
         // Stage A dominates: result is StructuralChange, not NamingLayerError,
         // and not a panic from the Stage B path.
         assert_eq!(
-            morph_eligible(&old_snap, &new_snap),
+            morph_eligible(old_snap, new_snap),
             Eligibility::Ineligible(Reason::StructuralChange)
         );
     }
@@ -387,7 +387,7 @@ mod tests {
         };
 
         assert_eq!(
-            morph_eligible(&old_snap, &new_snap),
+            morph_eligible(old_snap, new_snap),
             Eligibility::Ineligible(Reason::BijectionFailure(BijectionFailure::CountMismatch {
                 kind: SubShapeKind::Face,
                 old_count: 1,
@@ -430,7 +430,7 @@ mod tests {
             vertices: &[],
         };
 
-        let result = morph_eligible(&old_snap, &new_snap);
+        let result = morph_eligible(old_snap, new_snap);
         match result {
             Eligibility::Ineligible(Reason::BijectionFailure(
                 BijectionFailure::UnmappedElement {
@@ -475,7 +475,7 @@ mod tests {
             vertices: &[],
         };
 
-        let result = morph_eligible(&old_snap, &new_snap);
+        let result = morph_eligible(old_snap, new_snap);
         match &result {
             Eligibility::Ineligible(Reason::NamingLayerError {
                 kind: SubShapeKind::Face,
@@ -525,7 +525,7 @@ mod tests {
             vertices: &[],
         };
 
-        let result = morph_eligible(&old_snap, &new_snap);
+        let result = morph_eligible(old_snap, new_snap);
         match &result {
             Eligibility::Ineligible(Reason::NamingLayerError {
                 kind: SubShapeKind::Face,
