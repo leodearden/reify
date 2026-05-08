@@ -788,4 +788,72 @@ mod tests {
         )
         .expect("min_angle_degrees = 0.001 must be accepted");
     }
+
+    // ── Steps 7-8: input-mesh validation tests ────────────────────────────────
+
+    /// `mesh_mid_surface` rejects a mesh where `thickness.len() ≠ vertices.len()`.
+    #[test]
+    fn mesh_mid_surface_rejects_inconsistent_mesh_lengths() {
+        // 1 vertex, 0 thickness entries
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0]],
+            triangles: vec![],
+            thickness: vec![], // length mismatch: 0 ≠ 1
+        };
+        let err = mesh_mid_surface(&mesh, &MesherOptions::default())
+            .expect_err("thickness/vertices length mismatch must be rejected");
+        assert!(
+            matches!(
+                err,
+                MesherError::InconsistentInputMesh {
+                    vertices_len: 1,
+                    thickness_len: 0,
+                }
+            ),
+            "expected InconsistentInputMesh {{ vertices_len: 1, thickness_len: 0 }}, got {err:?}"
+        );
+
+        // 0 vertices, 2 thickness entries (reversed mismatch)
+        let mesh2 = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![1.0, 2.0], // length mismatch: 2 ≠ 0
+        };
+        let err2 = mesh_mid_surface(&mesh2, &MesherOptions::default())
+            .expect_err("extra thickness entries must be rejected");
+        assert!(
+            matches!(
+                err2,
+                MesherError::InconsistentInputMesh {
+                    vertices_len: 0,
+                    thickness_len: 2,
+                }
+            ),
+            "expected InconsistentInputMesh {{ vertices_len: 0, thickness_len: 2 }}, got {err2:?}"
+        );
+    }
+
+    /// `mesh_mid_surface` rejects a triangle whose vertex index ≥ `vertices.len()`.
+    #[test]
+    fn mesh_mid_surface_rejects_out_of_range_triangle_index() {
+        // 1 vertex, triangle references index 1 (out of range for 1-element array)
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0]],
+            triangles: vec![[0, 1, 0]], // vertex_index 1 is out of range
+            thickness: vec![1.0],
+        };
+        let err = mesh_mid_surface(&mesh, &MesherOptions::default())
+            .expect_err("out-of-range triangle index must be rejected");
+        assert!(
+            matches!(
+                err,
+                MesherError::OutOfRangeTriangleIndex {
+                    triangle_index: 0,
+                    vertex_index: 1,
+                    vertices_len: 1,
+                }
+            ),
+            "expected OutOfRangeTriangleIndex {{ tri: 0, vi: 1, vlen: 1 }}, got {err:?}"
+        );
+    }
 }
