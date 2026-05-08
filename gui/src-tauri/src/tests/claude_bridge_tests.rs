@@ -936,6 +936,30 @@ async fn sidecar_handle_abort_writes_abort_json() {
 }
 
 #[tokio::test]
+async fn sidecar_handle_abort_returns_ok_when_stdin_pipe_is_broken() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    // State=Ready so the state pre-check does NOT short-circuit;
+    // this test must exercise the BrokenPipe path specifically.
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    // Drop the read half immediately so any write to writer returns BrokenPipe.
+    let (writer, stdin_reader) = tokio::io::duplex(1024);
+    drop(stdin_reader);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let result = handle.abort().await;
+    assert!(
+        result.is_ok(),
+        "expected abort() against a closed stdin to be a no-op success, got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
 async fn sidecar_handle_clear_session_writes_clear_session_json() {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, BufReader};
