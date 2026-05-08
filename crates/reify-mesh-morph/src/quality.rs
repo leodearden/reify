@@ -183,8 +183,8 @@ pub enum QualityVerdict {
 ///
 /// When `morphed.tet_indices.len() != source.tet_indices.len()`, the
 /// aspect-ratio-increase comparison is skipped (`max_aspect_ratio_increase`
-/// stays `None`). The hard-fail and min-scaled-J / pct-below-025 checks still
-/// run on the morphed mesh.
+/// stays `None`). The hard-fail, min-scaled-J / pct-below-025, and
+/// `degenerate_morphed_element` checks still run on the morphed mesh.
 pub fn quality_check(
     morphed: &VolumeMesh,
     source: &VolumeMesh,

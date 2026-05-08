@@ -37,8 +37,12 @@ pub struct InversionDetails {
 
 /// Payload for [`crate::MorphFailure::QualitySoftFail`].
 ///
-/// Carries which quality thresholds from [`crate::MorphOptions`] were breached.
-/// Fields are `None` when the corresponding check passed. Populated by the
+/// Carries quality breach information for the output mesh. Most fields reflect
+/// threshold breaches from [`crate::MorphOptions`] and are `None` when the
+/// corresponding check passed. The exception is `degenerate_morphed_element`:
+/// it is unconditional — populated whenever a morphed tet has zero scaled
+/// Jacobian (coplanar/zero-volume or coincident-edge degenerate), regardless
+/// of any configured [`crate::MorphOptions`] threshold. Populated by the
 /// quality-check pass in PRD task #9.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricsBreached {
