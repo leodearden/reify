@@ -588,34 +588,10 @@ mod tests {
 
     #[test]
     fn classify_swept_body_revolve_just_above_tolerance_classifies() {
-        // Boundary test: the Revolve guard compares `axis_norm_sq < tol²` (NOT
-        // `axis_norm < tol`), so the threshold on the axis *norm* is exactly
-        // `tol`.  For `axis_dir = [tol * 1.5, 0.0, 0.0]`:
-        //
-        //   axis_norm_sq = (tol * 1.5)² = 2.25 · tol²
-        //
-        // Since `2.25 · tol² < tol²` is FALSE, the guard is NOT triggered and
-        // the op proceeds to classification.  Expected output:
-        // `Some(SweptKind::Revolve { axis_dir ≈ [1.0, 0.0, 0.0], … })`.
-        //
-        // Why `1.5`? It gives `norm_sq = 2.25 · tol²`, unambiguously above `tol²`
-        // with comfortable margin, while still exercising the same tiny-norm regime
-        // that would be perturbed by a faulty refactor.
-        //
-        // Why `angle_rad = FRAC_PI_2`? The guard also rejects when
-        // `|angle_rad| < tol` (independent `||` branch).  Using a clearly
-        // non-degenerate angle isolates the axis-threshold: any failure here is
-        // unambiguously attributable to the axis guard, not the angle guard.
-        //
-        // Why the `is_finite()` check? The regression this test guards against is
-        // a refactor that moves `sqrt` above the degeneracy guard, which could
-        // feed `sqrt` a near-zero value and yield NaN components via `0 / 0`
-        // normalisation.  A unit-length tolerance check alone would not catch NaN
-        // (NaN arithmetic propagates to `NaN`, and `NaN < 1e-12` is `false`, so
-        // the norm assertion would report "norm = NaN" but silently pass through
-        // `assert!`).  An explicit `is_finite()` check pins the actual invariant
-        // cited in the inline source comment ("never sqrt(0)") and catches both
-        // the NaN and the "very large finite value" failure modes.
+        // Boundary regression guard: axis_dir = [tol*1.5, 0, 0] → norm_sq = 2.25·tol² > tol²,
+        // so the op must classify as Revolve with normalised axis [1, 0, 0].  `is_finite()`
+        // pins the "never sqrt(0)" invariant against refactors that move sqrt above the guard;
+        // FRAC_PI_2 isolates the axis-threshold check from the independent angle guard.
         let ops = vec![GeometryOp::Revolve {
             profile: GeometryHandleId(0),
             axis_origin: [0.0, 0.0, 0.0],
@@ -640,13 +616,10 @@ mod tests {
                     std::f64::consts::FRAC_PI_2,
                     "angle_rad must be propagated verbatim"
                 );
-                // Finiteness check: guards against NaN-producing refactors that
-                // move sqrt above the degeneracy guard.
                 assert!(
                     axis_dir.iter().all(|c| c.is_finite()),
                     "all axis_dir components must be finite; got {axis_dir:?}"
                 );
-                // Unit-length: axis_dir = [tol*1.5, 0, 0] → normalised = [1.0, 0, 0].
                 let norm: f64 = axis_dir.iter().map(|c| c * c).sum::<f64>().sqrt();
                 assert!(
                     (norm - 1.0).abs() < 1e-12,
@@ -677,32 +650,11 @@ mod tests {
 
     #[test]
     fn classify_swept_body_revolve_just_below_tolerance_returns_none() {
-        // Boundary test (complementary to `…_just_above_tolerance_classifies`):
-        // for `axis_dir = [tol * 0.5, 0.0, 0.0]`:
-        //
-        //   axis_norm_sq = (tol * 0.5)² = 0.25 · tol²
-        //
-        // Since `0.25 · tol² < tol²` is TRUE, the degeneracy guard IS triggered
-        // and `classify_swept_body` must return `None`.
-        //
-        // Why this matters even though the all-zero-axis test already exists:
-        // `classify_swept_body_revolve_degenerate_axis_returns_none` exercises an
-        // *exactly*-zero axis (`[0, 0, 0]`), which trivially satisfies the guard.
-        // This test pins the *threshold edge*: a nearly-but-not-quite-zero axis
-        // whose norm is just below `tol`.  A faulty implementation that uses the
-        // wrong comparison (e.g. `if axis_norm_sq < tol` instead of `< tol²`)
-        // would have `0.25 · tol² < tol` be FALSE for the tiny value of `tol`
-        // (1e-12), and would incorrectly *accept* this input instead of
-        // rejecting it.  Together with `…_just_above_tolerance_classifies`, this
-        // test pins both sides of the threshold.
-        //
-        // Why `0.5`? It gives `norm_sq = 0.25 · tol²`, unambiguously below `tol²`
-        // with comfortable margin.
-        //
-        // Why `angle_rad = FRAC_PI_2`? Same isolation argument as the just-above
-        // test: isolates the axis-threshold from the independent angle-threshold
-        // guard so any unexpected non-`None` result is unambiguously attributable
-        // to the axis guard.
+        // Boundary complement: axis_dir = [tol*0.5, 0, 0] → norm_sq = 0.25·tol² < tol²,
+        // so the degeneracy guard fires and classify_swept_body must return None.  Distinct
+        // from the all-zero-axis test — pins the threshold edge against guard-loosening
+        // mutations (e.g. `<` → `<=`, dropped guard).  The just-above sibling disambiguates
+        // `< tol` vs `< tol²`; FRAC_PI_2 isolates the axis guard from the angle guard.
         let ops = vec![GeometryOp::Revolve {
             profile: GeometryHandleId(0),
             axis_origin: [0.0, 0.0, 0.0],
