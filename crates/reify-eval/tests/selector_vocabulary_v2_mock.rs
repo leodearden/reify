@@ -351,60 +351,35 @@ fn faces_perpendicular_to_zero_axis_returns_query_failed() {
     }
 }
 
-#[test]
-fn faces_perpendicular_to_negative_tol_returns_query_failed() {
+fn assert_faces_perpendicular_to_tol_rejected(tol: f64) {
     let parent = GeometryHandleId(1);
     let mut kernel = MockGeometryKernel::new();
-    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], -0.1);
+    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol);
     match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for negative tol, got {:?}", other),
-    }
-}
-
-#[test]
-fn faces_perpendicular_to_tol_above_half_pi_returns_query_failed() {
-    let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
-    let result = faces_perpendicular_to(
-        &mut kernel,
-        parent,
-        [1.0, 0.0, 0.0],
-        std::f64::consts::FRAC_PI_2 + 1e-3,
-    );
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
+        Err(QueryError::QueryFailed(msg)) => assert!(
+            msg.contains("angular_tol_rad"),
+            "error should mention 'angular_tol_rad', got: {msg:?}"
+        ),
         other => panic!(
-            "expected Err(QueryFailed) for tol > π/2, got {:?}",
-            other
+            "expected Err(QueryFailed) for tol {:?}, got {:?}",
+            tol, other
         ),
     }
 }
 
 #[test]
+fn faces_perpendicular_to_negative_tol_returns_query_failed() {
+    assert_faces_perpendicular_to_tol_rejected(-0.1);
+}
+
+#[test]
+fn faces_perpendicular_to_tol_above_half_pi_returns_query_failed() {
+    assert_faces_perpendicular_to_tol_rejected(std::f64::consts::FRAC_PI_2 + 1e-3);
+}
+
+#[test]
 fn faces_perpendicular_to_nan_tol_returns_query_failed() {
-    let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
-    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], f64::NAN);
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
-    }
+    assert_faces_perpendicular_to_tol_rejected(f64::NAN);
 }
 
 fn assert_faces_perpendicular_to_tol_accepted_at_boundaries() {
@@ -505,60 +480,35 @@ fn edges_perpendicular_to_zero_axis_returns_query_failed() {
     }
 }
 
-#[test]
-fn edges_perpendicular_to_negative_tol_returns_query_failed() {
+fn assert_edges_perpendicular_to_tol_rejected(tol: f64) {
     let parent = GeometryHandleId(1);
     let mut kernel = MockGeometryKernel::new();
-    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], -0.1);
+    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], tol);
     match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for negative tol, got {:?}", other),
-    }
-}
-
-#[test]
-fn edges_perpendicular_to_tol_above_half_pi_returns_query_failed() {
-    let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
-    let result = edges_perpendicular_to(
-        &mut kernel,
-        parent,
-        [0.0, 0.0, 1.0],
-        std::f64::consts::FRAC_PI_2 + 1e-3,
-    );
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
+        Err(QueryError::QueryFailed(msg)) => assert!(
+            msg.contains("angular_tol_rad"),
+            "error should mention 'angular_tol_rad', got: {msg:?}"
+        ),
         other => panic!(
-            "expected Err(QueryFailed) for tol > π/2, got {:?}",
-            other
+            "expected Err(QueryFailed) for tol {:?}, got {:?}",
+            tol, other
         ),
     }
 }
 
 #[test]
+fn edges_perpendicular_to_negative_tol_returns_query_failed() {
+    assert_edges_perpendicular_to_tol_rejected(-0.1);
+}
+
+#[test]
+fn edges_perpendicular_to_tol_above_half_pi_returns_query_failed() {
+    assert_edges_perpendicular_to_tol_rejected(std::f64::consts::FRAC_PI_2 + 1e-3);
+}
+
+#[test]
 fn edges_perpendicular_to_nan_tol_returns_query_failed() {
-    let parent = GeometryHandleId(1);
-    let mut kernel = MockGeometryKernel::new();
-    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], f64::NAN);
-    match result {
-        Err(QueryError::QueryFailed(msg)) => {
-            assert!(
-                msg.contains("angular_tol_rad"),
-                "error should mention 'angular_tol_rad', got: {msg:?}"
-            );
-        }
-        other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
-    }
+    assert_edges_perpendicular_to_tol_rejected(f64::NAN);
 }
 
 fn assert_edges_perpendicular_to_tol_accepted_at_boundaries() {
