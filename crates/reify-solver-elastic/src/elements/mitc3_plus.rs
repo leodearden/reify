@@ -535,5 +535,4 @@ mod tests {
             assert!(s.abs() < TOL, "Σ_i ∇N_i[{k}] = {s}, expected 0");
         }
     }
-
 }
