@@ -217,6 +217,25 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
 }
 
+/// Validate that `value` is finite and strictly positive.
+///
+/// Returns `Err(GeometryError::OperationFailed)` with a message of the form
+/// `"{label} must be a finite positive value"` when the predicate
+/// `value.is_finite() && value > 0.0` is false.
+///
+/// Mirrors the OCCT kernel's `validate_positive_finite` helper
+/// (`crates/reify-kernel-occt/src/lib.rs:145-160`) but kept local to this
+/// crate to avoid expanding scope past the `#[cfg(has_occt)]` boundary.
+fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(())
+    } else {
+        Err(GeometryError::OperationFailed(format!(
+            "{label} must be a finite positive value"
+        )))
+    }
+}
+
 /// Stable static label for a `GeometryQuery` variant — same role as
 /// [`op_kind_name`] but for the query-error catch-all.
 fn query_kind_name(q: &GeometryQuery) -> &'static str {
@@ -302,8 +321,11 @@ fn op_kind_name(op: &GeometryOp) -> &'static str {
 impl GeometryKernel for FidgetKernel {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         match op {
+            // Input validation runs at the boundary so `sphere_tree` can
+            // assume a finite positive radius.
             GeometryOp::Sphere { radius } => {
                 let r = extract_f64(radius)?;
+                validate_positive_finite(r, "sphere radius")?;
                 let tree = Self::sphere_tree(r);
                 Ok(self.insert_tree(tree))
             }
