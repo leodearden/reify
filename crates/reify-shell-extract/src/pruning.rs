@@ -167,6 +167,17 @@ pub enum PruneError {
         /// The offending value supplied by the caller.
         value: u32,
     },
+    /// `grid_alignment_tolerance` must be strictly positive and finite.
+    ///
+    /// A zero or negative tolerance produces `inv_tol = 1/tol = ±Inf`, which
+    /// saturates all non-zero coordinates to `i64::MAX`/`i64::MIN` and
+    /// collapses them into one or two canonical buckets — every edge appears
+    /// shared and tip detection degrades silently.  A NaN tolerance collapses
+    /// every vertex into a single canonical index for the same reason.
+    InvalidGridAlignmentTolerance {
+        /// The offending value supplied by the caller.
+        value: f64,
+    },
     /// `mesh.thickness.len()` must equal `mesh.vertices.len()`.
     InconsistentInputMesh {
         /// Number of vertex positions in the mesh.
@@ -197,6 +208,12 @@ impl std::fmt::Display for PruneError {
                 f,
                 "max_prune_iterations must be ≥ 1 (got {value}); zero would \
                  force a no-op even on prunable input"
+            ),
+            PruneError::InvalidGridAlignmentTolerance { value } => write!(
+                f,
+                "grid_alignment_tolerance must be strictly positive and finite \
+                 (got {value}); use 1e-9 for the default (matches \
+                 MidSurfaceOptions::grid_alignment_tolerance)"
             ),
             PruneError::InconsistentInputMesh {
                 vertices_len,
@@ -246,6 +263,11 @@ pub fn prune_branches(
     if options.max_prune_iterations == 0 {
         return Err(PruneError::InvalidMaxIterations {
             value: options.max_prune_iterations,
+        });
+    }
+    if options.grid_alignment_tolerance <= 0.0 || !options.grid_alignment_tolerance.is_finite() {
+        return Err(PruneError::InvalidGridAlignmentTolerance {
+            value: options.grid_alignment_tolerance,
         });
     }
 
@@ -1044,6 +1066,48 @@ mod tests {
         }
     }
 
+    /// `prune_branches` rejects non-positive, non-finite, and NaN
+    /// `grid_alignment_tolerance` values.
+    ///
+    /// A zero/negative/NaN/±Inf tolerance would cause `inv_tol = 1/tol` to be
+    /// infinite or NaN, silently collapsing every vertex into one or two
+    /// canonical buckets — tip detection degrades without any error signal.
+    /// This guard makes the contract explicit, consistent with the validation
+    /// of `shell_branch_prune_ratio` and the field's doc-comment ("Must be
+    /// strictly positive and finite").
+    ///
+    /// Mirrors `prune_branches_rejects_invalid_ratio` above.
+    #[test]
+    fn prune_branches_rejects_invalid_grid_alignment_tolerance() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        for bad_tol in [0.0_f64, -1.0, -1e-9, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let opts = PruneOptions {
+                grid_alignment_tolerance: bad_tol,
+                ..PruneOptions::default()
+            };
+            match prune_branches(&mesh, &opts) {
+                Err(PruneError::InvalidGridAlignmentTolerance { value }) => {
+                    // NaN != NaN, so use is_nan check for that case.
+                    if bad_tol.is_nan() {
+                        assert!(value.is_nan(), "expected NaN, got {value}");
+                    } else {
+                        assert_eq!(
+                            value, bad_tol,
+                            "error value should echo the bad input"
+                        );
+                    }
+                }
+                other => panic!(
+                    "expected InvalidGridAlignmentTolerance for tol={bad_tol}, got {other:?}"
+                ),
+            }
+        }
+    }
+
     // ── Step 3: defaults-pin test ─────────────────────────────────────────────
 
     /// Pin `PruneOptions::default()` struct shape via pattern destructuring.
@@ -1118,10 +1182,11 @@ mod tests {
             "empty input must report converged=true (trivially settled)"
         );
 
-        // Compile probes: all four error variants are publicly named and
+        // Compile probes: all error variants are publicly named and
         // constructible.
         let _: PruneError = PruneError::InvalidRatio { value: 0.0 };
         let _: PruneError = PruneError::InvalidMaxIterations { value: 0 };
+        let _: PruneError = PruneError::InvalidGridAlignmentTolerance { value: 0.0 };
         let _: PruneError = PruneError::InconsistentInputMesh {
             vertices_len: 0,
             thickness_len: 0,
