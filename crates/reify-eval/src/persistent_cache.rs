@@ -223,6 +223,41 @@ mod tests {
         assert_eq!(zero.solve_time_ms(), 0);
     }
 
+    /// Build an ElasticResult populated with the same non-trivial values used
+    /// by the determinism + round-trip tests, so each test gets a fresh copy.
+    fn make_sample_result() -> ElasticResult {
+        ElasticResult {
+            displacement: vec![1.0, -2.5, 3.14159, 0.0, 1e-9],
+            stress: vec![100e6, -50e6, 0.0, 250e6],
+            max_von_mises: 250e6,
+            converged: true,
+            iterations: 423,
+            solve_time_ms: 1234,
+        }
+    }
+
+    #[test]
+    fn elastic_result_serialization_is_byte_deterministic() {
+        let a = make_sample_result();
+        let b = make_sample_result();
+        let mut buf_a: Vec<u8> = Vec::new();
+        let mut buf_b: Vec<u8> = Vec::new();
+        a.serialize_to_writer(&mut buf_a).unwrap();
+        b.serialize_to_writer(&mut buf_b).unwrap();
+        assert_eq!(buf_a, buf_b);
+    }
+
+    #[test]
+    fn elastic_result_reserialize_after_deserialize_is_byte_identical() {
+        let original = make_sample_result();
+        let mut bytes_a: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut bytes_a).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &bytes_a[..]).unwrap();
+        let mut bytes_b: Vec<u8> = Vec::new();
+        decoded.serialize_to_writer(&mut bytes_b).unwrap();
+        assert_eq!(bytes_a, bytes_b);
+    }
+
     #[test]
     fn elastic_result_round_trips_all_six_fields() {
         let original = ElasticResult {
