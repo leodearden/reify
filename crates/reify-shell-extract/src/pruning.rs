@@ -98,6 +98,12 @@ pub struct PruneMetrics {
     /// this occurs when there are no tip triangles, or when all tip
     /// triangles clear the ratio threshold.
     pub iterations: u32,
+    /// `true` when the loop terminated naturally (a round saw `any_pruned ==
+    /// false` and exited via the `break`), meaning no prunable tips remained.
+    /// `false` when `max_prune_iterations` was hit while the final round was
+    /// still actively pruning — callers should treat `false` as a signal that
+    /// residual prunable tips may remain in the output mesh.
+    pub converged: bool,
 }
 
 /// Output of a successful [`prune_branches`] call.
@@ -240,6 +246,7 @@ pub fn prune_branches(
                 pruned_triangle_count: 0,
                 pruned_vertex_count: 0,
                 iterations: 0,
+                converged: true,
             },
         });
     }
@@ -287,6 +294,7 @@ pub fn prune_branches(
             .collect()
     };
 
+    let mut converged = false;
     for _ in 0..options.max_prune_iterations {
         // Build edge → incident-triangle count map using canonical indices.
         // Key: sorted canonical vertex pair [u32; 2]; value: incident count.
@@ -361,6 +369,7 @@ pub fn prune_branches(
         }
 
         if !any_pruned {
+            converged = true;
             break;
         }
 
@@ -421,6 +430,7 @@ pub fn prune_branches(
             pruned_triangle_count: total_pruned,
             pruned_vertex_count,
             iterations,
+            converged,
         },
     })
 }
@@ -544,6 +554,10 @@ mod tests {
             result.metrics.iterations <= PruneOptions::default().max_prune_iterations,
             "iterations must be within the configured bound"
         );
+        assert!(
+            result.metrics.converged,
+            "slab prune must converge naturally within the iteration bound"
+        );
 
         // Parallel-array invariant.
         assert_eq!(
@@ -616,6 +630,10 @@ mod tests {
             result.mesh.vertices.len(), 3,
             "only the three body vertices survive (v0, v1, v2)"
         );
+        assert!(
+            result.metrics.converged,
+            "duplicate-vertex fixture must converge naturally"
+        );
     }
 
     // ── Step 13: vertex-compaction test ──────────────────────────────────────
@@ -667,6 +685,10 @@ mod tests {
                 "surviving vertices all have thickness 1.0, got {t}"
             );
         }
+        assert!(
+            result.metrics.converged,
+            "vertex-compaction fixture must converge naturally"
+        );
     }
 
     // ── Step 11: prune-spike test ─────────────────────────────────────────────
@@ -715,6 +737,10 @@ mod tests {
             result.metrics.iterations >= 1,
             "at least one iteration ran"
         );
+        assert!(
+            result.metrics.converged,
+            "spike fixture must converge naturally after spike is pruned"
+        );
     }
 
     // ── Amendment: threshold-straddling tests (suggestion 5) ─────────────────
@@ -758,6 +784,10 @@ mod tests {
             "spike (ratio=1.0) must be pruned when threshold=1.05"
         );
         assert_eq!(result.mesh.triangles.len(), 1, "body must survive");
+        assert!(
+            result.metrics.converged,
+            "just-below-threshold spike must converge naturally after pruning"
+        );
     }
 
     /// With `shell_branch_prune_ratio = 0.95`, the spike (ratio 1.0 ≥ 0.95)
@@ -775,6 +805,10 @@ mod tests {
             "spike (ratio=1.0) must survive when threshold=0.95"
         );
         assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
+        assert!(
+            result.metrics.converged,
+            "just-above-threshold spike (no pruning) must converge naturally"
+        );
     }
 
     /// With a very low threshold (0.05), the original spike (ratio ≈ 0.125)
@@ -805,6 +839,10 @@ mod tests {
             "spike (ratio≈0.125) must survive when threshold=0.05"
         );
         assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
+        assert!(
+            result.metrics.converged,
+            "threshold-too-low fixture (no pruning) must converge naturally"
+        );
     }
 
     // ── Step 9: no-prune baseline test ───────────────────────────────────────
@@ -845,6 +883,10 @@ mod tests {
         assert!(
             result.metrics.iterations <= 1,
             "at most one pass needed to settle"
+        );
+        assert!(
+            result.metrics.converged,
+            "no-prune baseline must converge naturally"
         );
     }
 
@@ -1010,6 +1052,10 @@ mod tests {
             "empty input → empty output thickness"
         );
         assert_eq!(result.metrics.iterations, 0, "no iterations on empty input");
+        assert!(
+            result.metrics.converged,
+            "empty input must report converged=true (trivially settled)"
+        );
 
         // Compile probes: all four error variants are publicly named and
         // constructible.
@@ -1035,5 +1081,94 @@ mod tests {
             &crate::MidSurfaceMesh,
             &crate::PruneOptions,
         ) -> Result<crate::PruneResult, crate::PruneError> = crate::prune_branches;
+    }
+
+    // ── Task 3161: converged-flag tests ──────────────────────────────────────
+
+    /// Chain-pruning fixture: body + two-step prune chain.
+    ///
+    /// Topology:
+    /// - body = [0,1,2]: tall apex at v2=(0.15,10,0); ratio ≈ 10 → always survives.
+    /// - T1   = [0,1,3]: hinge at v3=(0.15,-0.1,0); branch_length=0.3, ratio=0.3 → prunable.
+    /// - T2   = [0,3,4]: apex at v4=(0,-0.2,0); branch_length=0.2, ratio=0.2 → prunable.
+    ///
+    /// Initial tips: T2 has 2 boundary edges ({0,4},{3,4}) → pruned in iter 1.
+    /// After T2 pruned, edge {0,3} becomes boundary → T1 becomes a tip in iter 2.
+    /// With `max_prune_iterations=1`, only T2 is pruned; T1 remains as residual.
+    fn chain_pruning_fixture() -> MidSurfaceMesh {
+        MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],    // v0
+                [0.3, 0.0, 0.0],    // v1 — shared body/T1 base edge length = 0.3
+                [0.15, 10.0, 0.0],  // v2 — body apex (ratio ≈ 10, survives)
+                [0.15, -0.1, 0.0],  // v3 — T1/T2 hinge
+                [0.0, -0.2, 0.0],   // v4 — T2 apex
+            ],
+            triangles: vec![
+                [0, 1, 2], // body
+                [0, 1, 3], // T1: shares edge {0,1} with body; {0,3} shared with T2
+                [0, 3, 4], // T2: tip initially (boundary edges {0,4} and {3,4})
+            ],
+            thickness: vec![1.0, 1.0, 1.0, 1.0, 1.0],
+        }
+    }
+
+    /// With `max_prune_iterations=1`, the prune loop is truncated after pruning
+    /// T2 (iter 1).  T1 is now a tip (after T2's removal exposes edge {0,3})
+    /// but the loop bound prevents iter 2 from running.  The result must
+    /// report `converged == false` to signal residual prunable tips.
+    #[test]
+    fn prune_branches_reports_converged_false_when_loop_truncated_at_max_iterations() {
+        let mesh = chain_pruning_fixture();
+        let opts = PruneOptions {
+            max_prune_iterations: 1,
+            ..PruneOptions::default()
+        };
+        let result = prune_branches(&mesh, &opts)
+            .expect("chain-pruning fixture should not error");
+
+        // Loop ran one round and actively pruned → truncated, not converged.
+        assert!(
+            !result.metrics.converged,
+            "converged must be false when max_prune_iterations truncated the loop \
+             while pruning was still active"
+        );
+        assert_eq!(
+            result.metrics.iterations, 1,
+            "exactly one iteration should have run"
+        );
+        assert!(
+            result.metrics.pruned_triangle_count >= 1,
+            "T2 must have been pruned in the one allowed iteration"
+        );
+        // Body triangle (ratio ≈ 10) must survive.
+        assert!(
+            result.mesh.triangles.len() >= 1,
+            "body triangle must survive"
+        );
+    }
+
+    /// With default options (`max_prune_iterations=8`), the chain fully prunes
+    /// (T2 in iter 1, T1 in iter 2, body settles in iter 3) and the loop exits
+    /// naturally on the no-prune pass → `converged == true`.
+    #[test]
+    fn prune_branches_reports_converged_true_when_loop_settles_naturally() {
+        let mesh = chain_pruning_fixture();
+        let result = prune_branches(&mesh, &PruneOptions::default())
+            .expect("chain-pruning fixture should not error");
+
+        assert!(
+            result.metrics.converged,
+            "converged must be true when the loop settled naturally (no-prune pass)"
+        );
+        // Both T1 and T2 pruned; body remains.
+        assert_eq!(
+            result.metrics.pruned_triangle_count, 2,
+            "T1 and T2 must both be pruned with default max iterations"
+        );
+        assert_eq!(
+            result.mesh.triangles.len(), 1,
+            "only the body triangle must survive"
+        );
     }
 }
