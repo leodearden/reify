@@ -10,6 +10,50 @@ use crate::mid_surface::MidSurfaceMesh;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
 
+/// Caller attestation that `mask` represents a **single physical body**.
+///
+/// `segment_regions`'s second-pass `MixedComponentOfBody` promotion (PRD §103)
+/// is **whole-mask body-scoped**: if the mask spans multiple disconnected bodies,
+/// every `ShellEligible` region anywhere in the mask is promoted when *any*
+/// region is `TetEligible`, regardless of whether those regions belong to the
+/// same physical body.  This produces incorrect tags for multi-body inputs.
+///
+/// Wrapping a [`MedialMask`] in `SingleBodyMask::new(mask)` is an explicit,
+/// reviewable, searchable attestation that the caller has split the mask per
+/// body before invoking `segment_regions`.  No runtime validation is performed
+/// — the invariant is a caller's responsibility, not a computable property
+/// (a single physical body's medial mask can legitimately have multiple
+/// disconnected components at voxel resolution, e.g. a barbell geometry).
+///
+/// # Example
+///
+/// ```
+/// use reify_shell_extract::{MedialMask, SingleBodyMask};
+///
+/// let mask = MedialMask { spacing: [1.0, 1.0, 1.0], origin: [0.0, 0.0, 0.0], voxels: vec![] };
+/// let single = SingleBodyMask::new(mask);
+/// assert!(single.inner().voxels.is_empty());
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct SingleBodyMask {
+    mask: MedialMask,
+}
+
+impl SingleBodyMask {
+    /// Affirm that `mask` represents a single physical body.
+    ///
+    /// This is a caller attestation — no runtime check is performed.
+    /// See [`SingleBodyMask`] for the full rationale.
+    pub fn new(mask: MedialMask) -> Self {
+        Self { mask }
+    }
+
+    /// Return a borrow of the wrapped [`MedialMask`].
+    pub fn inner(&self) -> &MedialMask {
+        &self.mask
+    }
+}
+
 /// Tunable parameters for [`segment_regions`].
 ///
 /// The default `shell_threshold = 0.2` corresponds to `L/t > 5` (PRD §63 /

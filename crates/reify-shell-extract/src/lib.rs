@@ -145,5 +145,5 @@ pub use mid_surface::{
 pub use pruning::{prune_branches, PruneError, PruneMetrics, PruneOptions, PruneResult};
 pub use segmentation::{
     segment_regions, RegionClassification, RegionInfo, SegmentationError, SegmentationOptions,
-    SegmentationResult,
+    SegmentationResult, SingleBodyMask,
 };
