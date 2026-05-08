@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { createLineReader } from './ipc.js';
 import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
+import type { PermissionServer } from './permission-server.js';
 
 export interface SessionConfig {
   model: string;
@@ -8,6 +12,16 @@ export interface SessionConfig {
   systemPrompt: string;
   /** Timeout in milliseconds for each SDK invocation. Default: 300_000 (5 minutes). */
   timeoutMs?: number;
+  /**
+   * Optional permission-prompt MCP server to wire Claude CLI's --permission-prompt-tool.
+   * When provided, invokeSdk appends --mcp-config and --permission-prompt-tool args.
+   */
+  permissionMcp?: {
+    /** The MCP endpoint URL (e.g. http://127.0.0.1:<port>/mcp) */
+    url: string;
+    /** The PermissionServer instance for registering the onRequest callback */
+    server: PermissionServer;
+  };
 }
 
 /**
@@ -36,6 +50,15 @@ export class SidecarSession {
   /** The stdin of the currently in-flight claude CLI process, if any. */
   private currentStdin: NodeJS.WritableStream | null = null;
 
+  /**
+   * Maps request_id → tool_name for pending permission requests.
+   * Used to look up the tool_name when a permission_decision with remember:true arrives.
+   */
+  private pendingPermissionRequests: Map<string, string> = new Map();
+
+  /** The send_message id for the currently in-flight invocation, if any. */
+  private currentInvocationId: string | null = null;
+
   /** Called when the session produces an outbound message. */
   onOutput: (msg: OutboundMessage) => void = () => {};
 
@@ -46,6 +69,22 @@ export class SidecarSession {
 
   constructor(config: SessionConfig) {
     this.config = config;
+    // Register the permission-request handler immediately if a permission server is configured.
+    // The handler reads currentInvocationId dynamically so it picks up the correct id for
+    // whichever send_message invocation is in flight when the callback fires.
+    if (config.permissionMcp) {
+      config.permissionMcp.server.onRequest((req) => {
+        const id = this.currentInvocationId ?? '';
+        this.pendingPermissionRequests.set(req.request_id, req.tool_name);
+        this.onOutput({
+          type: 'permission_request',
+          id,
+          request_id: req.request_id,
+          tool_name: req.tool_name,
+          tool_input: req.tool_input,
+        });
+      });
+    }
   }
 
   /**
@@ -66,6 +105,8 @@ export class SidecarSession {
     this.sessionId = null;
     this.toolNameById.clear();
     this.pendingToolUseIds.clear();
+    this.pendingPermissionRequests.clear();
+    this.currentInvocationId = null;
   }
 
   /**
@@ -86,6 +127,9 @@ export class SidecarSession {
         break;
       case 'tool_result':
         this.handleToolResult(msg.tool_name, msg.result, msg.id, msg.tool_use_id);
+        break;
+      case 'permission_decision':
+        this.handlePermissionDecision(msg.request_id, msg.behavior, msg.message, msg.updated_input, msg.remember);
         break;
     }
   }
@@ -124,6 +168,7 @@ export class SidecarSession {
 
     // Create abort controller for this request
     this.abortController = new AbortController();
+    this.currentInvocationId = id;
 
     try {
       await this.invokeSdk(id, prompt);
@@ -137,6 +182,7 @@ export class SidecarSession {
       }
     } finally {
       this.abortController = null;
+      this.currentInvocationId = null;
     }
   }
 
@@ -162,6 +208,26 @@ export class SidecarSession {
 
     if (this.sessionId) {
       args.push('--resume', this.sessionId);
+    }
+
+    // Write a temp MCP config file for the permission server and add the CLI flags.
+    // The file is deleted in the finally block (after invokeSdk exits / proc closes).
+    let mcpConfigTmpDir: string | null = null;
+    let mcpConfigTmpFile: string | null = null;
+    if (this.config.permissionMcp) {
+      mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-perm-'));
+      mcpConfigTmpFile = path.join(mcpConfigTmpDir, 'mcp-config.json');
+      const mcpConfig = {
+        mcpServers: {
+          'reify-permission': {
+            type: 'http',
+            url: this.config.permissionMcp.url,
+          },
+        },
+      };
+      fs.writeFileSync(mcpConfigTmpFile, JSON.stringify(mcpConfig));
+      args.push('--mcp-config', mcpConfigTmpFile);
+      args.push('--permission-prompt-tool', 'mcp__reify-permission__approve_tool');
     }
 
     const proc = spawn('claude', args, {
@@ -345,6 +411,13 @@ export class SidecarSession {
     } finally {
       clearTimeout(timeoutId);
       this.currentStdin = null;
+      // Clean up the temp MCP config file and directory.
+      if (mcpConfigTmpFile) {
+        try { fs.unlinkSync(mcpConfigTmpFile); } catch {}
+      }
+      if (mcpConfigTmpDir) {
+        try { fs.rmdirSync(mcpConfigTmpDir); } catch {}
+      }
     }
 
     // Wait for process exit and check exit code
@@ -476,6 +549,51 @@ export class SidecarSession {
     this.sessionId = null;
     this.toolNameById.clear();
     this.pendingToolUseIds.clear();
+    this.pendingPermissionRequests.clear();
     this.onOutput({ type: 'ready' });
+  }
+
+  /**
+   * Handle an inbound permission_decision: forward it to the permission server's decide()
+   * and, when remember is true, also call setRemembered() with the associated tool_name.
+   * Emits a structured error outbound when no permission server is configured or the
+   * request_id is unknown.
+   */
+  private handlePermissionDecision(
+    requestId: string,
+    behavior: 'allow' | 'deny',
+    message?: string,
+    updatedInput?: Record<string, unknown>,
+    remember?: boolean,
+  ): void {
+    const permServer = this.config.permissionMcp?.server;
+    if (!permServer) {
+      this.onOutput({
+        type: 'error',
+        id: this.currentInvocationId ?? '',
+        message: 'permission_decision received but no permission server is configured',
+      });
+      return;
+    }
+
+    // Look up the tool_name for this request_id (needed for setRemembered).
+    const toolName = this.pendingPermissionRequests.get(requestId);
+
+    // Build the decision object — omit undefined optional fields.
+    const decision: { behavior: 'allow' | 'deny'; message?: string; updatedInput?: Record<string, unknown> } = { behavior };
+    if (message !== undefined) decision.message = message;
+    if (updatedInput !== undefined) decision.updatedInput = updatedInput;
+
+    permServer.decide(requestId, decision);
+
+    if (remember && toolName !== undefined) {
+      permServer.setRemembered(toolName);
+    }
+
+    // Clean up the tracking entry (decide() on the server already consumed the promise,
+    // keeping the map entry only wastes memory on long sessions).
+    if (toolName !== undefined) {
+      this.pendingPermissionRequests.delete(requestId);
+    }
   }
 }
