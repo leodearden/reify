@@ -236,25 +236,6 @@ fn is_positive_finite(v: f64) -> bool {
     v.is_finite() && v > 0.0
 }
 
-/// Validate that `value` is finite and strictly positive.
-///
-/// Returns `Err(GeometryError::OperationFailed)` with a message of the form
-/// `"{label} must be a finite positive value"` when `is_positive_finite(value)`
-/// is false.
-///
-/// Mirrors the OCCT kernel's `validate_positive_finite` helper
-/// (`crates/reify-kernel-occt/src/lib.rs:145-160`) but kept local to this
-/// crate to avoid expanding scope past the `#[cfg(has_occt)]` boundary.
-fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError> {
-    if is_positive_finite(value) {
-        Ok(())
-    } else {
-        Err(GeometryError::OperationFailed(format!(
-            "{label} must be a finite positive value"
-        )))
-    }
-}
-
 
 impl GeometryKernel for FidgetKernel {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
@@ -263,7 +244,11 @@ impl GeometryKernel for FidgetKernel {
             // assume a finite positive radius.
             GeometryOp::Sphere { radius } => {
                 let r = extract_f64(radius)?;
-                validate_positive_finite(r, "sphere radius")?;
+                if !is_positive_finite(r) {
+                    return Err(GeometryError::OperationFailed(
+                        SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.into(),
+                    ));
+                }
                 let tree = Self::sphere_tree(r);
                 Ok(self.insert_tree(tree))
             }
@@ -275,12 +260,14 @@ impl GeometryKernel for FidgetKernel {
                 let w = extract_f64(width)?;
                 let h = extract_f64(height)?;
                 let d = extract_f64(depth)?;
-                // Combined check matches OCCT's single-message convention
-                // (`crates/reify-kernel-occt/src/lib.rs:1497-1507`) so the
-                // error string is byte-identical across kernels.
+                // Combined check: all three dimensions validated together so
+                // a single shared const covers any failure.  Using
+                // `BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE` (from
+                // `reify_types`) makes the error string byte-identical to
+                // OCCT's emission — structural, not just conventional.
                 if !(is_positive_finite(w) && is_positive_finite(h) && is_positive_finite(d)) {
                     return Err(GeometryError::OperationFailed(
-                        "box dimensions must be finite positive values".into(),
+                        BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE.into(),
                     ));
                 }
                 let tree = Self::box_tree(w, h, d);
