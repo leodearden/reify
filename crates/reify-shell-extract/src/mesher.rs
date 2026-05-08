@@ -1398,6 +1398,85 @@ mod tests {
         }
     }
 
+    // ── task-3194 step-5: NonFiniteThickness rejection ────────────────────────
+
+    /// `mesh_mid_surface` rejects meshes with non-finite thickness entries.
+    ///
+    /// A `NaN`, `+Inf`, or `-Inf` thickness value would poison the averaged
+    /// thickness on duplicate-vertex merges and propagate to downstream FEA
+    /// stiffness matrix assembly without any diagnostic.
+    ///
+    /// The check fires from validation (before dedup), so it fires even for
+    /// vertices that are duplicates of each other — preventing silent
+    /// thickness-poisoning in the merge step.
+    #[test]
+    fn mesh_mid_surface_rejects_non_finite_thickness() {
+        // 3-vertex mesh with all-finite vertices; substitute one non-finite
+        // thickness at index 1.
+        let opts = MesherOptions::default();
+
+        for (label, bad_val) in [
+            ("NaN thickness", f64::NAN),
+            ("+Inf thickness", f64::INFINITY),
+            ("-Inf thickness", f64::NEG_INFINITY),
+        ] {
+            let mesh = MidSurfaceMesh {
+                vertices: vec![
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                triangles: vec![],
+                thickness: vec![1.0, bad_val, 1.0],
+            };
+
+            let err = mesh_mid_surface(&mesh, &opts)
+                .expect_err(&format!("mesh with {label} at index 1 must be rejected"));
+
+            match err {
+                MesherError::NonFiniteThickness { vertex_index, value } => {
+                    assert_eq!(
+                        vertex_index, 1,
+                        "{label}: expected vertex_index 1, got {vertex_index}"
+                    );
+                    if bad_val.is_nan() {
+                        assert!(
+                            value.is_nan(),
+                            "{label}: expected NaN value, got {value}"
+                        );
+                    } else {
+                        assert_eq!(
+                            value, bad_val,
+                            "{label}: expected value {bad_val}, got {value}"
+                        );
+                    }
+                }
+                other => panic!("{label}: expected NonFiniteThickness, got {other:?}"),
+            }
+        }
+
+        // Extra fixture: duplicate vertices (0 == 1 at same position) where
+        // vertex 1 has NaN thickness — the check fires from validation (step
+        // ordering), not from the dedup merge step.
+        let mesh_dup = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0], // duplicate of vertex 0
+            ],
+            triangles: vec![],
+            thickness: vec![1.0, f64::NAN],
+        };
+        let err_dup = mesh_mid_surface(&mesh_dup, &opts)
+            .expect_err("duplicate-vertex mesh with NaN thickness[1] must be rejected before dedup");
+        assert!(
+            matches!(
+                err_dup,
+                MesherError::NonFiniteThickness { vertex_index: 1, value } if value.is_nan()
+            ),
+            "expected NonFiniteThickness {{ vertex_index: 1, NaN }}, got {err_dup:?}"
+        );
+    }
+
     // ── task-3194 step-1: subnormal merge_tolerance rejection ─────────────────
 
     /// `mesh_mid_surface` rejects subnormal `merge_tolerance` values where
