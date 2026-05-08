@@ -8,7 +8,7 @@
 //! explicit `MeshingOptions.mesh_size` override at the dispatcher level; this
 //! function returns only the auto-derived default.
 
-use reify_kernel_gmsh::auto_size::{auto_mesh_size_from_features, AutoSizeConfig};
+use reify_kernel_gmsh::auto_size::{auto_mesh_size_from_features, AutoSizeConfig, AutoSizeError};
 use reify_types::Mesh;
 
 /// With the default multiplier (1.0), the returned size equals the smallest
@@ -57,6 +57,34 @@ fn multiplier_scales_size_proportionally() {
         "expected size ≈ 0.25 (0.5 × 0.5 multiplier); got {}",
         size
     );
+}
+
+/// An index that references a vertex slot beyond `vertices.len()/3` must
+/// produce `Err(AutoSizeError::IndexOutOfBounds { .. })` rather than panicking
+/// with an out-of-bounds slice access.
+#[test]
+fn out_of_bounds_index_returns_err() {
+    // 3 vertices (9 floats) → n_vertices = 3. Index 99 is out of range.
+    let mesh = reify_types::Mesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            0.0, 1.0, 0.0, // v2
+        ],
+        indices: vec![0, 1, 99],
+        normals: None,
+    };
+    let cfg = AutoSizeConfig::default();
+    match auto_mesh_size_from_features(&mesh, cfg) {
+        Err(AutoSizeError::IndexOutOfBounds { index, n_vertices }) => {
+            assert_eq!(index, 99, "reported index must be 99");
+            assert_eq!(n_vertices, 3, "reported n_vertices must be 3");
+        }
+        Ok(v) => panic!(
+            "expected Err(AutoSizeError::IndexOutOfBounds) for index 99 \
+             in a 3-vertex mesh, but got Ok({v})"
+        ),
+    }
 }
 
 /// A mesh with a 1m bounding box but a 1mm sliver edge somewhere returns a
