@@ -26,7 +26,7 @@ fn auto_mesh_size_from_smallest_edge_with_default_multiplier() {
         normals: None,
     };
     let cfg = AutoSizeConfig::default();
-    let size = auto_mesh_size_from_features(&mesh, cfg);
+    let size = auto_mesh_size_from_features(&mesh, cfg).unwrap();
     assert!(
         (size - 0.5).abs() < 1e-9,
         "expected size ≈ 0.5 (shortest edge × 1.0 default multiplier); got {}",
@@ -51,7 +51,7 @@ fn multiplier_scales_size_proportionally() {
     let cfg = AutoSizeConfig {
         feature_multiplier: 0.5,
     };
-    let size = auto_mesh_size_from_features(&mesh, cfg);
+    let size = auto_mesh_size_from_features(&mesh, cfg).unwrap();
     assert!(
         (size - 0.25).abs() < 1e-9,
         "expected size ≈ 0.25 (0.5 × 0.5 multiplier); got {}",
@@ -109,7 +109,7 @@ fn does_not_use_overall_bounding_box() {
         normals: None,
     };
     let cfg = AutoSizeConfig::default();
-    let size = auto_mesh_size_from_features(&mesh, cfg);
+    let size = auto_mesh_size_from_features(&mesh, cfg).unwrap();
     // Tolerance: Mesh::vertices is Vec<f32>, so values like 5.001 - 5.0 lose
     // ~1e-7 of absolute precision in the f32 round-trip. 1e-6 absolute is
     // safely above that floor while still 1000× tighter than the 1m bbox
