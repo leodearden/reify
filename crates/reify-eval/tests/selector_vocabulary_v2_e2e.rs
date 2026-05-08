@@ -24,9 +24,20 @@
 //! `BRepAdaptor_Curve::GetType()` and these tests must turn green.
 
 use reify_eval::selector_vocabulary_v2::{adjacent_to_face, owner_body_of};
+// Step-31 / step-32 cross-reference: the compositional smoke test below
+// imports the v2 vocabulary via the top-level `reify_eval::{…}` surface
+// (the `pub use` re-exports finalised in step-32) rather than through
+// `reify_eval::selector_vocabulary_v2::*`. This pins the public API
+// path that downstream callers (`.ri` language wiring, future
+// integration tests) are expected to use.
+use reify_eval::{
+    Axis, ExtremalSense, created_by_feature, extremal_by_centroid, faces_by_surface_kind,
+    has_user_label, intersect, siblings_of_face, user_label_eq,
+};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    GeometryKernel, GeometryOp, GeometryQuery, Value,
+    CapKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp,
+    GeometryQuery, Role, TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -372,4 +383,191 @@ fn owner_body_of_box_edge_resolves_to_box() {
             "box edge {i} ({edge_id:?}) must resolve to box_id {box_id:?}, got {parent:?}"
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compositional smoke test (PRD task 10, lines 74-82) — exercise a realistic
+// chain of v2 selectors against a 10mm box without per-call extract churn.
+//
+// Pipeline:
+//   1. extract_faces(box) once.
+//   2. faces_by_surface_kind(_, _, Plane) — all 6 faces of a box are planar,
+//      so this returns the full slice (the `%Plane` filter is identity here
+//      but pins the FFI-backed surface-kind classification end-to-end).
+//   3. extremal_by_centroid(_, &planar, Z, Max, 1e-6) — picks the unique
+//      top face (centroid Z = +5e-3 m, the next-highest pair sit at 0).
+//   4. owner_body_of(_, top[0]) — must round-trip back to the original
+//      `box_id`, demonstrating the parent_handle provenance map records
+//      every `extract_faces` child.
+//   5. siblings_of_face(_, box, top[0]) — returns the other 5 box faces.
+//   6. intersect(planar, &[top[0]]) — pure-Rust combinator, must return
+//      the singleton top face (proves combinators compose with the
+//      kernel-side filters without extra extraction calls).
+//
+// Step-31 RED: the `use reify_eval::{…}` import block above pulls v2
+// vocabulary through the top-level re-exports promised by step-32; until
+// step-32 lands those `pub use` declarations the test fails to compile.
+// Step-32 (GREEN) adds the re-exports and turns this test green.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn compositional_smoke_box_top_planar_face_chain() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let box_id = kernel
+        .execute(&ten_mm_box_op())
+        .expect("10mm box should build via OCCT")
+        .id;
+
+    // (1) Single upfront extract_faces — the v2 vocabulary chains over
+    // this slice without re-extracting at every step.
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces(box) should succeed");
+    assert_eq!(faces.len(), 6, "a 10mm box must have 6 faces");
+
+    // (2) %Plane filter — all 6 box faces are planar.
+    let planar = faces_by_surface_kind(&mut kernel, box_id, FaceSurfaceKind::Plane)
+        .expect("faces_by_surface_kind(_, Plane) should succeed");
+    assert_eq!(
+        planar.len(),
+        6,
+        "every face of a box is planar; got {} (faces = {faces:?})",
+        planar.len()
+    );
+
+    // (3) Pick the unique top face by centroid Z. With OCCT's default box
+    // (origin at one corner, body extends along +X/+Y/+Z), the top face's
+    // centroid sits at z = BOX_SIDE_M / 2 + half-thickness offset; the
+    // bottom and sides have lower centroid Z. The cluster within 1e-6 m
+    // of the global max must therefore be a singleton.
+    let top = extremal_by_centroid(&mut kernel, &planar, Axis::Z, ExtremalSense::Max, 1e-6)
+        .expect("extremal_by_centroid(_, Z, Max) should succeed");
+    assert_eq!(
+        top.len(),
+        1,
+        "expected unique top face; got cluster of {} (cluster = {top:?})",
+        top.len()
+    );
+    let top_face_h = top[0];
+
+    // (4) owner_body_of must round-trip the sub-handle back to the box.
+    let parent = owner_body_of(&kernel, top_face_h)
+        .expect("owner_body_of(top_face) should succeed");
+    assert_eq!(
+        parent, box_id,
+        "top face must resolve to box_id; got {parent:?}"
+    );
+
+    // (5) siblings_of_face: 6 - 1 = 5 elements, none of which is `top_face_h`.
+    let sibs = siblings_of_face(&mut kernel, box_id, top_face_h)
+        .expect("siblings_of_face(_, top_face) should succeed");
+    assert_eq!(
+        sibs.len(),
+        5,
+        "siblings_of_face must return 5 of the 6 faces; got {} (sibs = {sibs:?})",
+        sibs.len()
+    );
+    assert!(
+        !sibs.contains(&top_face_h),
+        "siblings list must not include the queried face {top_face_h:?}"
+    );
+
+    // (6) Pure-Rust combinator threading: intersect(planar, [top_face_h])
+    // must yield the singleton top face — proves the combinators compose
+    // with the kernel-side filters without an extra extraction call.
+    let chained = intersect(&planar, &[top_face_h]);
+    assert_eq!(
+        chained,
+        vec![top_face_h],
+        "intersect(planar, [top]) must collapse to the top face singleton"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compositional smoke test — TopologyAttributeTable filters
+// (`created_by_feature` and `has_user_label` / `user_label_eq`) over the
+// extract_faces output of a 10mm box. The table is seeded by hand to model
+// the auto-attribute scheme (PRD line 82); the .ri language wiring sits
+// downstream of this contract.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn compositional_smoke_attribute_filters_over_box_faces() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let box_id = kernel
+        .execute(&ten_mm_box_op())
+        .expect("10mm box should build via OCCT")
+        .id;
+    let faces: Vec<GeometryHandleId> = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces(box) should succeed");
+    assert_eq!(faces.len(), 6);
+
+    // Seed an attribute table modelling the v0.2 auto-attribute scheme:
+    // every face is `created_by` the box feature; faces[0] additionally
+    // carries a user label "top".
+    let box_feature = FeatureId::new("box-2658-smoke");
+    let other_feature = FeatureId::new("not-a-real-feature");
+
+    let mut table = TopologyAttributeTable::default();
+    for (i, fid) in faces.iter().enumerate() {
+        let user_label = if i == 0 { Some("top".to_string()) } else { None };
+        table.record(
+            *fid,
+            TopologyAttribute {
+                feature_id: box_feature.clone(),
+                role: Role::Cap(CapKind::Top),
+                local_index: i as u32,
+                user_label,
+                mod_history: Vec::new(),
+            },
+        );
+    }
+
+    // created_by_feature(box_feature) must return all 6 faces in order.
+    let by_box = created_by_feature(&table, &faces, &box_feature);
+    assert_eq!(
+        by_box, faces,
+        "created_by_feature(box) must return all box faces in encounter order"
+    );
+
+    // created_by_feature(other) must return nothing.
+    let by_other = created_by_feature(&table, &faces, &other_feature);
+    assert!(
+        by_other.is_empty(),
+        "created_by_feature(other_feature) must return [] when no face matches; got {by_other:?}"
+    );
+
+    // has_user_label must pull out the single labelled face.
+    let labelled = has_user_label(&table, &faces);
+    assert_eq!(
+        labelled,
+        vec![faces[0]],
+        "has_user_label must surface only the face with a user_label"
+    );
+
+    // user_label_eq("top") must match the same face exactly.
+    let top_by_label = user_label_eq(&table, &faces, "top");
+    assert_eq!(
+        top_by_label,
+        vec![faces[0]],
+        "user_label_eq(\"top\") must surface only the face labelled \"top\""
+    );
+
+    // user_label_eq("nope") returns [].
+    let none_match = user_label_eq(&table, &faces, "nope");
+    assert!(
+        none_match.is_empty(),
+        "user_label_eq(\"nope\") must return [] when no face carries that label; got {none_match:?}"
+    );
 }
