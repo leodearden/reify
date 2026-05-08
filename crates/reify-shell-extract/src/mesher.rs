@@ -931,4 +931,69 @@ mod tests {
             result.mesh.thickness[merged_idx]
         );
     }
+
+    // ── Steps 11-12: quality-metrics correctness tests ────────────────────────
+
+    /// Quality metrics for an equilateral triangle: aspect ratio = 1.0, min
+    /// angle = 60°.
+    ///
+    /// Vertices: `[0,0,0]`, `[1,0,0]`, `[0.5, sqrt(3)/2, 0]` — side length 1.
+    #[test]
+    fn mesh_mid_surface_quality_metrics_equilateral_triangle() {
+        let h = (3.0f64).sqrt() / 2.0; // height of unit equilateral triangle
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, h, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![1.0, 1.0, 1.0],
+        };
+
+        // Relaxed thresholds: well below 1.0 and 60°
+        let opts = MesherOptions {
+            min_aspect_ratio: 1e-6,
+            min_angle_degrees: 0.001,
+            ..MesherOptions::default()
+        };
+        let result = mesh_mid_surface(&mesh, &opts).expect("equilateral triangle should pass");
+
+        assert!(
+            (result.metrics.min_aspect_ratio - 1.0).abs() < 1e-9,
+            "equilateral triangle must have aspect ratio 1.0, got {}",
+            result.metrics.min_aspect_ratio
+        );
+        assert!(
+            (result.metrics.min_angle_degrees - 60.0).abs() < 1e-9,
+            "equilateral triangle must have min angle 60°, got {}",
+            result.metrics.min_angle_degrees
+        );
+    }
+
+    /// Quality metrics for a right-isosceles triangle: `[0,0,0]`, `[1,0,0]`,
+    /// `[0,1,0]`. Min angle should be ~45° and aspect ratio < 1.0.
+    #[test]
+    fn mesh_mid_surface_quality_metrics_right_triangle() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![1.0, 1.0, 1.0],
+        };
+
+        let opts = MesherOptions {
+            min_aspect_ratio: 1e-6,
+            min_angle_degrees: 0.001,
+            ..MesherOptions::default()
+        };
+        let result = mesh_mid_surface(&mesh, &opts).expect("right triangle should pass");
+
+        // The two equal legs have 45° angles; the right angle is 90°.
+        assert!(
+            (result.metrics.min_angle_degrees - 45.0).abs() < 1e-9,
+            "right-isosceles triangle must have min angle 45°, got {}",
+            result.metrics.min_angle_degrees
+        );
+        assert!(
+            result.metrics.min_aspect_ratio > 0.0 && result.metrics.min_aspect_ratio < 1.0,
+            "right triangle aspect ratio must be in (0, 1), got {}",
+            result.metrics.min_aspect_ratio
+        );
+    }
 }
