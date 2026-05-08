@@ -392,6 +392,62 @@ mod tests {
     use super::*;
     use crate::mid_surface::MidSurfaceMesh;
 
+    // ── Step 5: options-validation tests ─────────────────────────────────────
+
+    /// `prune_branches` rejects non-positive, non-finite, and NaN ratio values.
+    ///
+    /// Mirrors `mesh_mid_surface_rejects_invalid_merge_tolerance` (mesher.rs).
+    #[test]
+    fn prune_branches_rejects_invalid_ratio() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        for bad_ratio in [0.0_f64, -1.0, f64::NAN, f64::INFINITY] {
+            let opts = PruneOptions {
+                shell_branch_prune_ratio: bad_ratio,
+                ..PruneOptions::default()
+            };
+            match prune_branches(&mesh, &opts) {
+                Err(PruneError::InvalidRatio { value }) => {
+                    // NaN != NaN, so use is_nan check for that case.
+                    if bad_ratio.is_nan() {
+                        assert!(value.is_nan(), "expected NaN, got {value}");
+                    } else {
+                        assert_eq!(
+                            value, bad_ratio,
+                            "error value should echo the bad input"
+                        );
+                    }
+                }
+                other => panic!(
+                    "expected InvalidRatio for ratio={bad_ratio}, got {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// `prune_branches` rejects `max_prune_iterations == 0`.
+    ///
+    /// Mirrors `mesh_mid_surface_rejects_invalid_merge_tolerance` (mesher.rs).
+    #[test]
+    fn prune_branches_rejects_invalid_max_iterations() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        let opts = PruneOptions {
+            max_prune_iterations: 0,
+            ..PruneOptions::default()
+        };
+        match prune_branches(&mesh, &opts) {
+            Err(PruneError::InvalidMaxIterations { value: 0 }) => {}
+            other => panic!("expected InvalidMaxIterations {{value:0}}, got {other:?}"),
+        }
+    }
+
     // ── Step 3: defaults-pin test ─────────────────────────────────────────────
 
     /// Pin `PruneOptions::default()` struct shape via pattern destructuring.
