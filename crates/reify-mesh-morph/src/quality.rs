@@ -357,6 +357,89 @@ mod tests {
         }
     }
 
+    // ── Step-7: pct_below_025 soft-fail threshold ─────────────────────────────
+
+    #[test]
+    fn quality_check_with_more_than_threshold_pct_of_elements_below_025_returns_soft_fail_with_pct_below_025_populated(
+    ) {
+        // 4 tets: 1 regular unit tet (scaled J ≈ 0.707) + 3 mildly degraded tets
+        // (scaled J in (0.15, 0.25)) so they all stay above the min-J floor (0.15)
+        // but trip the 0.25 count.
+        //
+        // Degraded tet construction: take the unit tet and flatten node 2 toward
+        // the 0-1 edge by scaling its y coordinate to 0.01. The tet stays
+        // right-handed (positive det) but becomes skinny.
+        //
+        // With quality_floor_pct_below_025 = 0.5, and 3/4 elements < 0.25
+        // → pct = 0.75 > 0.5 → SoftFail.
+
+        // Regular unit tet (nodes 0-3)
+        // Three degraded tets sharing node 0 and 1 but with a flattened apex:
+        //   tet 1: nodes 0,1,4,5  (y-flattened variant)
+        //   tet 2: nodes 0,1,6,7
+        //   tet 3: nodes 0,1,8,9
+        // All use the same base edge (0→1) with varying squashed apex positions.
+        #[rustfmt::skip]
+        let vertices: Vec<f32> = vec![
+            // Nodes 0-3: regular unit tet
+            0.0, 0.0, 0.0,  // 0
+            1.0, 0.0, 0.0,  // 1
+            0.0, 1.0, 0.0,  // 2
+            0.0, 0.0, 1.0,  // 3
+            // Nodes 4-5: degraded apex for tet 1
+            0.5, 0.01, 0.0,  // 4
+            0.5, 0.005, 0.2, // 5
+            // Nodes 6-7: degraded apex for tet 2
+            0.5, 0.02, 0.0,  // 6
+            0.5, 0.01,  0.2, // 7
+            // Nodes 8-9: degraded apex for tet 3
+            0.5, 0.015, 0.0, // 8
+            0.5, 0.008, 0.2, // 9
+        ];
+        #[rustfmt::skip]
+        let tet_indices: Vec<u32> = vec![
+            0, 1, 2, 3, // regular unit tet (scaled J ≈ 0.707)
+            0, 1, 4, 5, // degraded tet 1
+            0, 1, 6, 7, // degraded tet 2
+            0, 1, 8, 9, // degraded tet 3
+        ];
+        let mesh = VolumeMesh {
+            vertices,
+            tet_indices,
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // Use quality_floor_pct_below_025 = 0.5 so 3/4 = 0.75 > threshold.
+        // Keep other thresholds at defaults so min_scaled_J and AR won't trip.
+        let mut opts = MorphOptions::default();
+        opts.quality_floor_pct_below_025 = 0.5;
+
+        let result = quality_check(&mesh, &mesh, &opts);
+        match &result {
+            QualityVerdict::SoftFail(metrics) => {
+                assert!(
+                    metrics.min_scaled_jacobian.is_none(),
+                    "min_scaled_jacobian should be None (degraded tets stay above 0.15), \
+                     got {:?}",
+                    metrics.min_scaled_jacobian
+                );
+                let pct = metrics
+                    .pct_below_025
+                    .expect("pct_below_025 should be Some");
+                assert!(
+                    (0.7..=0.8).contains(&pct),
+                    "expected pct in [0.7, 0.8], got {pct}"
+                );
+                assert!(
+                    metrics.max_aspect_ratio_increase.is_none(),
+                    "max_aspect_ratio_increase should be None"
+                );
+            }
+            other => panic!("expected SoftFail, got: {other:?}"),
+        }
+    }
+
     // ── Compile fence: exhaustive variant match (no wildcard arm) ─────────────
     //
     // Adding, removing, or renaming any QualityVerdict variant breaks
