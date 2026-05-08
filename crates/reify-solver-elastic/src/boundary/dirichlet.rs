@@ -93,9 +93,17 @@ pub struct DirichletBc {
 ///
 /// # Order-independence
 ///
-/// For distinct DOF indices the result is order-independent: K is bit-identical
-/// and f is tolerance-equal regardless of the slice order of `bcs`.  See the
-/// module-level doc for the mechanism.
+/// For **distinct** DOF indices the result is order-independent: K is
+/// bit-identical and f is tolerance-equal regardless of the slice order of
+/// `bcs`.  The mechanism: BC₁'s row-zero pass zeros `K[k₁][k₂]`, so when
+/// BC₂ later runs `f[k₁] -= K[k₁][k₂] · u₂`, it reads `0.0` — leaving
+/// `f[k₁] = u₁` intact.  K bit-identity follows because set operations
+/// (writing 0.0 and 1.0) are idempotent regardless of which BC reaches a
+/// shared entry first.
+///
+/// The `multiple_bcs_are_order_independent_within_fp_tolerance` test is the
+/// regression pin.  Note: duplicate DOFs in `bcs` (the same `dof` appearing
+/// twice) are caller error; the result is unspecified and not guarded against.
 ///
 /// # Panics
 ///
