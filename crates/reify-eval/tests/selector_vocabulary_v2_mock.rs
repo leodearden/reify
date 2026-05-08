@@ -407,6 +407,29 @@ fn faces_perpendicular_to_nan_tol_returns_query_failed() {
     }
 }
 
+fn assert_faces_perpendicular_to_tol_accepted_at_boundaries() {
+    let parent = GeometryHandleId(1);
+    for tol in [0.0_f64, std::f64::consts::FRAC_PI_2] {
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(parent, vec![]);
+        let faces = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "faces_perpendicular_to should accept tol = {tol} (inclusive boundary), \
+                     got Err: {e:?}"
+                )
+            });
+        assert!(
+            faces.is_empty(),
+            "expected empty result for tol = {tol}, got {faces:?}"
+        );
+    }
+}
+
+#[test]
+fn faces_perpendicular_to_inclusive_boundaries_zero_and_half_pi_are_accepted() {
+    assert_faces_perpendicular_to_tol_accepted_at_boundaries();
+}
+
 #[test]
 fn faces_perpendicular_to_degenerate_normal_returns_query_failed() {
     // A face that reports a zero normal (degenerate face) must surface a
@@ -536,6 +559,29 @@ fn edges_perpendicular_to_nan_tol_returns_query_failed() {
         }
         other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
     }
+}
+
+fn assert_edges_perpendicular_to_tol_accepted_at_boundaries() {
+    let parent = GeometryHandleId(1);
+    for tol in [0.0_f64, std::f64::consts::FRAC_PI_2] {
+        let mut kernel = MockGeometryKernel::new().with_extracted_edges(parent, vec![]);
+        let edges = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], tol)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "edges_perpendicular_to should accept tol = {tol} (inclusive boundary), \
+                     got Err: {e:?}"
+                )
+            });
+        assert!(
+            edges.is_empty(),
+            "expected empty result for tol = {tol}, got {edges:?}"
+        );
+    }
+}
+
+#[test]
+fn edges_perpendicular_to_inclusive_boundaries_zero_and_half_pi_are_accepted() {
+    assert_edges_perpendicular_to_tol_accepted_at_boundaries();
 }
 
 #[test]
