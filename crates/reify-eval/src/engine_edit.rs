@@ -843,6 +843,17 @@ impl Engine {
         // the cache from kernel execution. Pinned by
         // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
         // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-17).
+        //
+        // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
+        // the analogous one in `Engine::edit_source` (engine_edit.rs around
+        // line 1920). Removing either reset, or reordering either function
+        // body so the reset moves AFTER any state mutation that could fail
+        // (which would let a stale cache leak when the edit returns Err),
+        // silently regresses the auto-invalidation hook. Both resets MUST
+        // co-exist near function entry; the symmetry is independently pinned
+        // by the test pair listed above plus
+        // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
+        // (step-19).
         self.realization_cache = crate::realization_cache::RealizationCache::new();
         // Reset the test-instrumentation diff snapshot. The "most recent
         // edit_source call" invariant on `Engine::last_diff_value_cells()`
@@ -1924,6 +1935,17 @@ impl Engine {
         // `edit_param`. Pinned by
         // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
         // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-19).
+        //
+        // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
+        // the analogous one in `Engine::edit_param` (engine_edit.rs around
+        // line 846). Removing either reset, or reordering either function
+        // body so the reset moves AFTER any state mutation that could fail
+        // (which would let a stale cache leak when the edit returns Err),
+        // silently regresses the auto-invalidation hook. Both resets MUST
+        // co-exist near function entry; the symmetry is independently pinned
+        // by the test pair listed above plus
+        // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+        // (step-17).
         self.realization_cache = crate::realization_cache::RealizationCache::new();
         // Disjoint-field borrow: Rust's NLL tracks this borrow as touching only
         // the `eval_state` field (not all of `self`), so later mutable borrows
