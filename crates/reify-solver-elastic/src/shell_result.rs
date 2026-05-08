@@ -60,7 +60,45 @@ impl ShellStress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell_assembly::build_shell_frame;
     use reify_types::Value;
+
+    /// `shell_element_frame(nodes)` must return the transpose of `build_shell_frame(nodes).r`.
+    ///
+    /// `build_shell_frame.r` has rows = local basis vectors in global coordinates, so it maps
+    /// global → local.  The frame field convention (see `ElasticResult.frame` in solver_elastic.ri)
+    /// is local-to-global.  Therefore `shell_element_frame` must return the transpose of `r`.
+    ///
+    /// Also verified: each row of the returned matrix has unit norm (orthonormal).
+    #[test]
+    fn shell_element_frame_is_transpose_of_shell_frame_rotation() {
+        let nodes: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]];
+        let frame_r = build_shell_frame(&nodes).r;
+        let result = shell_element_frame(&nodes);
+
+        // result[i][j] must equal frame_r[j][i] (transpose)
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = frame_r[j][i];
+                let got = result[i][j];
+                assert!(
+                    (got - expected).abs() < 1e-12,
+                    "result[{i}][{j}] = {got}, expected frame.r[{j}][{i}] = {expected}",
+                );
+            }
+        }
+
+        // Each column of result (= each row of frame_r) has unit norm.
+        for i in 0..3 {
+            let norm_sq = result[i][0] * result[i][0]
+                + result[i][1] * result[i][1]
+                + result[i][2] * result[i][2];
+            assert!(
+                (norm_sq - 1.0).abs() < 1e-12,
+                "result row {i} norm² = {norm_sq}, expected 1.0",
+            );
+        }
+    }
 
     /// `ShellStress::homogeneous(field)` is the canonical tet-result constructor.
     /// It must set all three stress channels to the same field value.
