@@ -83,6 +83,7 @@ vi.mock('three', () => {
   class MockGridHelper {
     type = 'GridHelper';
     visible = true;
+    rotation = { x: 0, y: 0, z: 0 };
     constructor(public size?: number, public divisions?: number) {}
   }
 
@@ -281,6 +282,11 @@ describe('createScene', () => {
     const { camera } = setup();
     expect((camera.up as any).set).toHaveBeenCalledWith(0, 0, 1);
     expect((camera.up as any).z).toBe(1);
+  });
+
+  it('rotates GridHelper onto the XY plane (rotation.x = π/2) so the grid is the floor under Z-up', () => {
+    const result = setup();
+    expect(result.grid.rotation.x).toBeCloseTo(Math.PI / 2);
   });
 
   it('adjustClipping with empty bounds is a no-op (V-11)', () => {
