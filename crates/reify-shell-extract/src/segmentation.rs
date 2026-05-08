@@ -991,6 +991,78 @@ mod tests {
         );
     }
 
+    // ── Task 3149: non-finite vertex coords → sentinel label ─────────────────
+
+    /// Guard: vertices with non-finite world coordinates must receive the
+    /// `u32::MAX` sentinel label, not a silently-wrong region label.
+    ///
+    /// ## Why this matters
+    ///
+    /// In Rust 1.45+, `f64::NAN as i32 == 0`.  Without an explicit finite
+    /// check, a NaN-component vertex computes fractional indices that cast
+    /// to 0, which can accidentally match a real voxel at index `[0, 0, 0]`
+    /// and silently receive a non-sentinel label.  In debug builds the
+    /// helper's `debug_assert!` catches this first, producing a panic
+    /// instead.  Either way the pre-fix behaviour is wrong.
+    ///
+    /// Post-fix: every non-finite vertex is short-circuited before the
+    /// fractional-index computation; `vertex_labels[vi]` retains its
+    /// `u32::MAX` initialiser without any explicit re-assignment.
+    #[test]
+    fn segment_regions_assigns_sentinel_label_to_non_finite_vertex_coords() {
+        // Single-voxel mask at [0, 0, 0] so that the NaN→0i32 saturating cast
+        // would accidentally hit a real voxel pre-fix.
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[0, 0, 0]],
+        };
+        let nan = f64::NAN;
+        let inf = f64::INFINITY;
+        let neg_inf = f64::NEG_INFINITY;
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],        // 0: finite → must label 0
+                [nan, 0.0, 0.0],         // 1: NaN x-component
+                [0.0, nan, 0.0],         // 2: NaN y-component
+                [0.0, 0.0, nan],         // 3: NaN z-component
+                [inf, neg_inf, nan],     // 4: all non-finite
+            ],
+            triangles: vec![],
+            thickness: vec![1.0; 5],
+        };
+
+        let result = segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            .expect("segment_regions must not error or panic on non-finite vertex coords");
+
+        assert_eq!(
+            result.vertex_labels[0],
+            0,
+            "finite vertex [0.0, 0.0, 0.0] must be labelled with region 0"
+        );
+        assert_eq!(
+            result.vertex_labels[1],
+            u32::MAX,
+            "vertex with NaN x-component must receive sentinel u32::MAX \
+             (not a spurious 0 due to NaN→0i32 cast)"
+        );
+        assert_eq!(
+            result.vertex_labels[2],
+            u32::MAX,
+            "vertex with NaN y-component must receive sentinel u32::MAX"
+        );
+        assert_eq!(
+            result.vertex_labels[3],
+            u32::MAX,
+            "vertex with NaN z-component must receive sentinel u32::MAX"
+        );
+        assert_eq!(
+            result.vertex_labels[4],
+            u32::MAX,
+            "vertex with all-non-finite coords (±Inf, NaN) must receive sentinel u32::MAX"
+        );
+    }
+
     // ── Step 19: defaults pin ────────────────────────────────────────────────
 
     /// Pin SegmentationOptions default values against accidental drift.
