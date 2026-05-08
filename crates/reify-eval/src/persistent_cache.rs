@@ -252,10 +252,13 @@ impl PersistentlyCacheable for ElasticResult {
         //     surfaces frame-header faults as `io::Error` directly.
         //   * `.map_err(io::Error::other)` — `bincode::Error` does NOT
         //     implement `Into<io::Error>`, so it must be mapped explicitly.
-        //   * `read_exact` on a fixed `[u8; 8]` buffer returns
-        //     `Err(io::ErrorKind::UnexpectedEof)` on a short read; the
-        //     `f64::from_le_bytes` call then only ever sees a populated 8-byte
-        //     array, so there's no slice-indexing panic path to guard.
+        //   * `read_exact` on the pre-sized byte buffer returns
+        //     `Err(io::ErrorKind::UnexpectedEof)` on a short slab read — pinned
+        //     by `elastic_result_deserialize_accepts_lengths_at_the_limit`, which
+        //     asserts the bound-check passes but the slab EOF still surfaces.
+        //   * `chunks_exact(8).map(f64::from_le_bytes)` only ever sees exactly-8-byte
+        //     sub-slices from `chunks_exact`, so there is no partial-read-mid-element
+        //     fault path to guard against.
         let mut decoder = zstd::Decoder::new(r)?;
         let header: ElasticResultHeader =
             bincode::deserialize_from(&mut decoder).map_err(io::Error::other)?;
@@ -265,30 +268,69 @@ impl PersistentlyCacheable for ElasticResult {
         // `MAX_F64_ELEMENTS` for the rationale on the limit value.
         let displacement_cap = check_f64_vec_len("displacement", header.displacement_len)?;
         let stress_cap = check_f64_vec_len("stress", header.stress_len)?;
-        // Defence-in-depth (review feedback on the deserialise allocation
-        // hazard): even with the bound check in place, an honest 128 MiB
-        // reservation may fail on memory-constrained hosts (no overcommit,
-        // small CI sandbox). `try_reserve_exact` surfaces such a failure as
-        // `io::Error` rather than aborting the process via `Vec::with_capacity`'s
+        // Bulk slab read — allocate a byte buffer, single `read_exact` per slab,
+        // then convert LE bytes to f64 via `from_le_bytes` (identity on LE hosts,
+        // byte-swap on BE hosts — no cfg-gating needed on the read side).
+        //
+        // Defence-in-depth: `try_reserve_exact` is applied to BOTH the byte
+        // buffer (allocated first, before `read_exact`) and the f64 result Vec.
+        // `MAX_F64_ELEMENTS = 1<<24` caps each allocation at 128 MiB, but an
+        // honest reservation may still fail on memory-constrained hosts (no
+        // overcommit, small CI sandbox). `try_reserve_exact` surfaces such a
+        // failure as `io::Error` rather than aborting via `Vec::with_capacity`'s
         // panic-on-OOM path.
+        //
+        // `checked_mul(8)` is explicit defence-in-depth for `cap * 8`: though
+        // `MAX_F64_ELEMENTS = 1<<24` and `1<<24 * 8 = 1<<27` cannot overflow
+        // `usize` even on a 32-bit host, the checked path is documented so a
+        // future increase to `MAX_F64_ELEMENTS` does not silently overflow.
+        //
+        // `drop(byte_buf)` after converting releases the temporary u8 buffer
+        // before the next slab's allocation, bounding peak memory to ~1x slab
+        // size rather than 2x during steady-state.
+        //
+        // Large-N: pinned by `elastic_result_round_trips_one_million_element_vectors`.
+        // LE byte order: pinned by `elastic_result_serialized_slab_section_is_little_endian_bytewise`.
+        let displacement_bytes = displacement_cap
+            .checked_mul(8)
+            .ok_or_else(|| io::Error::other("displacement byte size overflow"))?;
+        let mut byte_buf: Vec<u8> = Vec::new();
+        byte_buf
+            .try_reserve_exact(displacement_bytes)
+            .map_err(io::Error::other)?;
+        byte_buf.resize(displacement_bytes, 0u8);
+        decoder.read_exact(&mut byte_buf)?;
         let mut displacement: Vec<f64> = Vec::new();
         displacement
             .try_reserve_exact(displacement_cap)
             .map_err(io::Error::other)?;
-        for _ in 0..header.displacement_len {
-            let mut bytes = [0u8; 8];
-            decoder.read_exact(&mut bytes)?;
-            displacement.push(f64::from_le_bytes(bytes));
+        for chunk in byte_buf.chunks_exact(8) {
+            displacement.push(f64::from_le_bytes(
+                chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"),
+            ));
         }
+        drop(byte_buf);
+
+        let stress_bytes = stress_cap
+            .checked_mul(8)
+            .ok_or_else(|| io::Error::other("stress byte size overflow"))?;
+        let mut byte_buf: Vec<u8> = Vec::new();
+        byte_buf
+            .try_reserve_exact(stress_bytes)
+            .map_err(io::Error::other)?;
+        byte_buf.resize(stress_bytes, 0u8);
+        decoder.read_exact(&mut byte_buf)?;
         let mut stress: Vec<f64> = Vec::new();
         stress
             .try_reserve_exact(stress_cap)
             .map_err(io::Error::other)?;
-        for _ in 0..header.stress_len {
-            let mut bytes = [0u8; 8];
-            decoder.read_exact(&mut bytes)?;
-            stress.push(f64::from_le_bytes(bytes));
+        for chunk in byte_buf.chunks_exact(8) {
+            stress.push(f64::from_le_bytes(
+                chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"),
+            ));
         }
+        drop(byte_buf);
+
         Ok(ElasticResult {
             displacement,
             stress,
