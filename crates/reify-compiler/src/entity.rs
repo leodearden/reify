@@ -67,7 +67,7 @@ pub(crate) fn substitute_expr(
     let span = expr.span;
     let new_kind = match &expr.kind {
         // Leaf variants — no sub-expressions to recurse into.
-        ExprKind::NumberLiteral(n) => ExprKind::NumberLiteral(*n),
+        ExprKind::NumberLiteral { value, is_real } => ExprKind::NumberLiteral { value: *value, is_real: *is_real },
         ExprKind::QuantityLiteral { value, unit } => ExprKind::QuantityLiteral {
             value: *value,
             unit: unit.clone(),

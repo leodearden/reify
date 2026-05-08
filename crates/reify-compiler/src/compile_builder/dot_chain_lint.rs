@@ -459,7 +459,7 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
         // `ExprKind::MemberAccess` — chain detection in the MemberAccess arm
         // stops as soon as `cursor.kind` is no longer `MemberAccess`. Pinned
         // by `enum_access_root_within_threshold_does_not_warn`.
-        ExprKind::NumberLiteral(_)
+        ExprKind::NumberLiteral { .. }
         | ExprKind::QuantityLiteral { .. }
         | ExprKind::StringLiteral(_)
         | ExprKind::BoolLiteral(_)
@@ -619,7 +619,7 @@ mod tests {
 
         fn shallow_leaf(span: SourceSpan) -> Expr {
             Expr {
-                kind: ExprKind::NumberLiteral(0.0),
+                kind: ExprKind::NumberLiteral { value: 0.0, is_real: false },
                 span,
             }
         }
@@ -867,7 +867,7 @@ mod tests {
             );
 
             let mut expr = Expr {
-                kind: ExprKind::NumberLiteral(0.0),
+                kind: ExprKind::NumberLiteral { value: 0.0, is_real: false },
                 span,
             };
             for _ in 0..(MAX_EXPR_DEPTH / depth_per_layer(arm) + 1) {

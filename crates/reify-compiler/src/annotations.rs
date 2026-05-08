@@ -14,7 +14,7 @@ pub(crate) fn lower_annotations(
                 .filter_map(|expr| {
                     use reify_syntax::ExprKind;
                     match &expr.kind {
-                        ExprKind::NumberLiteral(value) => {
+                        ExprKind::NumberLiteral { value, .. } => {
                             if *value == value.floor() && value.abs() < i64::MAX as f64 {
                                 Some(reify_types::AnnotationArg::Int(*value as i64))
                             } else {

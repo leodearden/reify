@@ -54,7 +54,7 @@ fn parse_derived_unit() {
 
     match &u.conversion {
         Some(expr) => match &expr.kind {
-            ExprKind::NumberLiteral(v) => {
+            ExprKind::NumberLiteral { value: v, .. } => {
                 assert!((v - 0.001).abs() < 1e-9, "expected 0.001, got {}", v);
             }
             other => panic!("expected NumberLiteral(0.001), got {:?}", other),
@@ -82,7 +82,7 @@ fn parse_offset_unit() {
 
     match &u.conversion {
         Some(expr) => match &expr.kind {
-            ExprKind::NumberLiteral(v) => {
+            ExprKind::NumberLiteral { value: v, .. } => {
                 assert!((v - 1.0).abs() < 1e-9, "expected 1.0, got {}", v);
             }
             other => panic!("expected NumberLiteral(1.0), got {:?}", other),
@@ -92,7 +92,7 @@ fn parse_offset_unit() {
 
     match &u.offset {
         Some(expr) => match &expr.kind {
-            ExprKind::NumberLiteral(v) => {
+            ExprKind::NumberLiteral { value: v, .. } => {
                 assert!((v - 273.15).abs() < 1e-9, "expected 273.15, got {}", v);
             }
             other => panic!("expected NumberLiteral(273.15), got {:?}", other),
@@ -140,13 +140,13 @@ fn parse_unit_complex_conversion() {
             ExprKind::BinOp { op, left, right } => {
                 assert_eq!(op, "*");
                 match &left.kind {
-                    ExprKind::NumberLiteral(v) => {
+                    ExprKind::NumberLiteral { value: v, .. } => {
                         assert!((v - 25.4).abs() < 1e-9, "expected left=25.4, got {}", v);
                     }
                     other => panic!("expected NumberLiteral(25.4) on left, got {:?}", other),
                 }
                 match &right.kind {
-                    ExprKind::NumberLiteral(v) => {
+                    ExprKind::NumberLiteral { value: v, .. } => {
                         assert!((v - 0.001).abs() < 1e-9, "expected right=0.001, got {}", v);
                     }
                     other => panic!("expected NumberLiteral(0.001) on right, got {:?}", other),
@@ -213,7 +213,7 @@ fn parse_unit_offset_only() {
 
     match &u.offset {
         Some(expr) => match &expr.kind {
-            ExprKind::NumberLiteral(v) => {
+            ExprKind::NumberLiteral { value: v, .. } => {
                 assert!((v - 273.15).abs() < 1e-9, "expected 273.15, got {}", v);
             }
             other => panic!("expected NumberLiteral(273.15), got {:?}", other),

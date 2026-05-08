@@ -635,7 +635,7 @@ mod tests {
             is_pub: false,
             type_expr: None,
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,

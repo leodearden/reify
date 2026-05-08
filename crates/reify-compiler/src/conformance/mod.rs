@@ -900,7 +900,7 @@ mod tests {
                     is_pub: false,
                     type_expr: Some(direction_type_expr),
                     value: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(0.0),
+                        kind: reify_syntax::ExprKind::NumberLiteral { value: 0.0, is_real: false },
                         span: SourceSpan::empty(0),
                     },
                     where_clause: None,
@@ -1052,7 +1052,7 @@ mod tests {
                         is_pub: false,
                         type_expr: None,
                         value: reify_syntax::Expr {
-                            kind: reify_syntax::ExprKind::NumberLiteral(5.5),
+                            kind: reify_syntax::ExprKind::NumberLiteral { value: 5.5, is_real: true },
                             span: SourceSpan::empty(0),
                         },
                         where_clause: None,
@@ -1208,7 +1208,7 @@ mod tests {
             is_pub: false,
             type_expr: None, // cell_type carries the annotation; type_expr is the raw AST form
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -1225,7 +1225,7 @@ mod tests {
             is_pub: false,
             type_expr: None,
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(5.5),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 5.5, is_real: true },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -1679,7 +1679,7 @@ mod tests {
                         is_pub: false,
                         type_expr: None,
                         value: reify_syntax::Expr {
-                            kind: reify_syntax::ExprKind::NumberLiteral(5.5),
+                            kind: reify_syntax::ExprKind::NumberLiteral { value: 5.5, is_real: true },
                             span: SourceSpan::empty(0),
                         },
                         where_clause: None,
@@ -1803,7 +1803,7 @@ mod tests {
                     is_pub: false,
                     type_expr: Some(length_type_expr),
                     value: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(0.0),
+                        kind: reify_syntax::ExprKind::NumberLiteral { value: 0.0, is_real: false },
                         span: SourceSpan::empty(0),
                     },
                     where_clause: None,
@@ -1814,7 +1814,7 @@ mod tests {
                 reify_syntax::MemberDecl::Constraint(reify_syntax::ConstraintDecl {
                     label: Some("bound".to_string()),
                     expr: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
                         span: SourceSpan::empty(0),
                     },
                     where_clause: None,
@@ -2028,7 +2028,7 @@ mod tests {
             is_pub: false,
             type_expr: None, // unannotated — must go through Pass 2 inference
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(2.5),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 2.5, is_real: true },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2129,7 +2129,7 @@ mod tests {
             is_pub: false,
             type_expr: None, // unannotated — will be compiled in Pass 2
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(5.5),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 5.5, is_real: true },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2252,7 +2252,7 @@ mod tests {
             is_pub: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 80.0, is_real: false },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2367,7 +2367,7 @@ mod tests {
             is_pub: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 80.0, is_real: false },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2905,7 +2905,7 @@ mod tests {
             is_pub: false,
             type_expr: None, // type_expr not consulted — DefaultKind carries cell_type directly
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 80.0, is_real: false },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -3544,7 +3544,7 @@ mod tests {
             is_pub: false,
             type_expr: None, // type_expr not consulted — DefaultKind::Let carries cell_type directly
             value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(80.0),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 80.0, is_real: false },
                 span: SourceSpan::empty(0),
             },
             where_clause: None,

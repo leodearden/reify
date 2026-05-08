@@ -231,7 +231,7 @@ fn parse_qualified_in_arithmetic() {
                 other => panic!("expected QualifiedAccess as left, got {:?}", other),
             }
             assert!(
-                matches!(&right.kind, ExprKind::NumberLiteral(n) if *n == 1.0),
+                matches!(&right.kind, ExprKind::NumberLiteral { value: n, .. } if *n == 1.0),
                 "expected NumberLiteral(1), got {:?}",
                 right.kind
             );

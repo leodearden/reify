@@ -136,7 +136,7 @@ structure S {
                 other => panic!("expected MemberAccess for left, got {:?}", other),
             }
             assert!(
-                matches!(&right.kind, ExprKind::NumberLiteral(v) if *v == 50.0),
+                matches!(&right.kind, ExprKind::NumberLiteral { value: v, .. } if *v == 50.0),
                 "expected right NumberLiteral(50), got {:?}",
                 right.kind
             );

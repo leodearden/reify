@@ -771,8 +771,11 @@ pub struct Expr {
 /// Expression kinds in the AST.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
-    /// Numeric literal: `42`, `3.14`
-    NumberLiteral(f64),
+    /// Numeric literal: `42`, `3.14`, `1.0`, `1e6`.
+    /// `is_real` is `true` when the source token contains `.`, `e`, or `E`;
+    /// `false` for bare integer tokens (e.g. `42`, `0`). Used by the compiler
+    /// to distinguish `1.0 : Real` from `1 : Int` without re-inspecting source text.
+    NumberLiteral { value: f64, is_real: bool },
     /// Quantity literal: `80mm`, `45deg`
     QuantityLiteral { value: f64, unit: String },
     /// String literal: `"hello"`

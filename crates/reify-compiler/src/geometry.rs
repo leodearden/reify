@@ -1734,7 +1734,7 @@ mod tests {
             kind: reify_syntax::ExprKind::FunctionCall {
                 name: "make_cube".to_string(),
                 args: vec![reify_syntax::Expr {
-                    kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                    kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
                     span: reify_types::SourceSpan::new(0, 1),
                 }],
             },
@@ -1782,11 +1782,11 @@ mod tests {
                 name: "sweep".to_string(),
                 args: vec![
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(2.0),
+                        kind: reify_syntax::ExprKind::NumberLiteral { value: 2.0, is_real: false },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                 ],
@@ -1854,15 +1854,15 @@ mod tests {
                 name: "loft".to_string(),
                 args: vec![
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(2.0),
+                        kind: reify_syntax::ExprKind::NumberLiteral { value: 2.0, is_real: false },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                     reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(3.0),
+                        kind: reify_syntax::ExprKind::NumberLiteral { value: 3.0, is_real: false },
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                 ],
@@ -1932,7 +1932,7 @@ mod tests {
     fn make_call_with_arity(name: &str, n: usize) -> reify_syntax::Expr {
         let args = (0..n)
             .map(|_| reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                kind: reify_syntax::ExprKind::NumberLiteral { value: 1.0, is_real: false },
                 span: reify_types::SourceSpan::new(0, 1),
             })
             .collect();

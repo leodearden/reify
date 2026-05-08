@@ -128,7 +128,7 @@ fn parse_ad_hoc_selector_precedence_over_index() {
     match &let_decl.value.kind {
         ExprKind::IndexAccess { object, index } => {
             assert!(
-                matches!(&index.kind, ExprKind::NumberLiteral(v) if (*v - 0.0).abs() < f64::EPSILON)
+                matches!(&index.kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 0.0).abs() < f64::EPSILON)
             );
             // The indexed object must be AdHocSelector
             match &object.kind {
@@ -181,7 +181,7 @@ fn parse_ad_hoc_selector_with_expr_args() {
                     assert_eq!(op, "*");
                     assert!(matches!(&left.kind, ExprKind::Ident(n) if n == "width"));
                     assert!(
-                        matches!(&right.kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                        matches!(&right.kind, ExprKind::NumberLiteral { value: v, .. } if (*v - 2.0).abs() < f64::EPSILON)
                     );
                 }
                 other => panic!("expected BinOp as arg, got {:?}", other),

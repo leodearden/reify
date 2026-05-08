@@ -35,7 +35,7 @@ fn function_call_single_named_arg_strips_name() {
             assert_eq!(name, "foo");
             assert_eq!(args.len(), 1, "expected 1 positional arg, got {:?}", args);
             assert!(
-                matches!(args[0].kind, ExprKind::NumberLiteral(v) if (v - 1.0).abs() < 1e-10),
+                matches!(args[0].kind, ExprKind::NumberLiteral { value: v, .. } if (v - 1.0).abs() < 1e-10),
                 "expected NumberLiteral(1.0), got {:?}",
                 args[0].kind
             );
@@ -53,11 +53,11 @@ fn function_call_multiple_named_args_strips_names() {
             assert_eq!(name, "foo");
             assert_eq!(args.len(), 2, "expected 2 positional args, got {:?}", args);
             assert!(
-                matches!(args[0].kind, ExprKind::NumberLiteral(v) if (v - 1.0).abs() < 1e-10),
+                matches!(args[0].kind, ExprKind::NumberLiteral { value: v, .. } if (v - 1.0).abs() < 1e-10),
                 "expected args[0] = NumberLiteral(1.0)"
             );
             assert!(
-                matches!(args[1].kind, ExprKind::NumberLiteral(v) if (v - 2.0).abs() < 1e-10),
+                matches!(args[1].kind, ExprKind::NumberLiteral { value: v, .. } if (v - 2.0).abs() < 1e-10),
                 "expected args[1] = NumberLiteral(2.0)"
             );
         }
@@ -95,7 +95,7 @@ fn function_call_nested_named_args_acceptance_shape() {
         inner_args
     );
     assert!(
-        matches!(inner_args[0].kind, ExprKind::NumberLiteral(v) if (v - 1000.0).abs() < 1e-10),
+        matches!(inner_args[0].kind, ExprKind::NumberLiteral { value: v, .. } if (v - 1000.0).abs() < 1e-10),
         "expected NumberLiteral(1000.0), got {:?}",
         inner_args[0].kind
     );
@@ -110,11 +110,11 @@ fn function_call_mixed_positional_and_named_args() {
             assert_eq!(name, "foo");
             assert_eq!(args.len(), 2, "expected 2 positional args, got {:?}", args);
             assert!(
-                matches!(args[0].kind, ExprKind::NumberLiteral(v) if (v - 1.0).abs() < 1e-10),
+                matches!(args[0].kind, ExprKind::NumberLiteral { value: v, .. } if (v - 1.0).abs() < 1e-10),
                 "expected args[0] = NumberLiteral(1.0)"
             );
             assert!(
-                matches!(args[1].kind, ExprKind::NumberLiteral(v) if (v - 2.0).abs() < 1e-10),
+                matches!(args[1].kind, ExprKind::NumberLiteral { value: v, .. } if (v - 2.0).abs() < 1e-10),
                 "expected args[1] = NumberLiteral(2.0)"
             );
         }

@@ -625,7 +625,7 @@ fn walk_expr_depth(
             }
         }
         // Leaf expressions — no children.
-        ExprKind::NumberLiteral(_)
+        ExprKind::NumberLiteral { .. }
         | ExprKind::QuantityLiteral { .. }
         | ExprKind::StringLiteral(_)
         | ExprKind::BoolLiteral(_)

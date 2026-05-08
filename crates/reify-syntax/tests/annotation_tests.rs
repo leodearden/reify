@@ -137,7 +137,7 @@ fn parse_annotation_with_multiple_args() {
     }
     // Second arg: NumberLiteral(3.0)
     match &s.annotations[0].args[1].kind {
-        ExprKind::NumberLiteral(n) => assert!((*n - 3.0).abs() < 1e-10, "expected 3.0, got {n}"),
+        ExprKind::NumberLiteral { value: n, .. } => assert!((*n - 3.0).abs() < 1e-10, "expected 3.0, got {n}"),
         other => panic!("expected NumberLiteral(3.0), got {:?}", other),
     }
     // Third arg: BoolLiteral(true)
@@ -172,7 +172,7 @@ fn parse_annotation_with_complex_expression_arg() {
                 other => panic!("expected Ident(\"width\"), got {:?}", other),
             }
             match &right.kind {
-                ExprKind::NumberLiteral(n) => assert!(
+                ExprKind::NumberLiteral { value: n, .. } => assert!(
                     (*n - 0.01).abs() < 1e-10,
                     "expected 0.01, got {n}"
                 ),

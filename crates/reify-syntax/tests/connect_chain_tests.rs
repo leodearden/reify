@@ -84,7 +84,7 @@ fn parse_connect_with_connector() {
     assert_eq!(connect.params.len(), 1);
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
-        ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10),
+        ExprKind::NumberLiteral { value: n, .. } => assert!((*n - 8.8).abs() < 1e-10),
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 }
@@ -239,7 +239,7 @@ fn parse_connect_mixed_params_and_mappings() {
     );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
-        ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
+        ExprKind::NumberLiteral { value: n, .. } => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 
@@ -282,7 +282,7 @@ fn parse_connect_mixed_multiple_entries() {
     );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
-        ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10),
+        ExprKind::NumberLiteral { value: n, .. } => assert!((*n - 8.8).abs() < 1e-10),
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
     assert_eq!(connect.params[1].0, "thickness");
@@ -342,7 +342,7 @@ fn parse_connect_trailing_comma() {
     );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
-        ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
+        ExprKind::NumberLiteral { value: n, .. } => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 
@@ -385,7 +385,7 @@ fn parse_connect_mapping_before_param() {
     );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
-        ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
+        ExprKind::NumberLiteral { value: n, .. } => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 

@@ -385,7 +385,7 @@ pub(crate) fn compile_expr_guarded(
     lambda_counter: &mut u32,
 ) -> CompiledExpr {
     match &expr.kind {
-        reify_syntax::ExprKind::NumberLiteral(v) => {
+        reify_syntax::ExprKind::NumberLiteral { value: v, .. } => {
             // Whole numbers become Int, fractional become Real
             if *v == (*v as i64) as f64 && v.is_finite() {
                 CompiledExpr::literal(Value::Int(*v as i64), Type::Int)
@@ -1293,7 +1293,7 @@ pub(crate) fn compile_expr_guarded(
                 && let Some(clusters) = scope.sub_match_arm_groups.get(col_sub_name.as_str())
                 && let Some((_group, per_arm)) =
                     clusters.iter().find(|(g, _)| &g.name == group_name)
-                && let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind
+                && let reify_syntax::ExprKind::NumberLiteral { value: n, .. } = &index.kind
             {
                 if !n.is_finite() || *n >= i64::MAX as f64 {
                     // Out-of-range or non-finite index in a cluster-routing pattern:
@@ -1362,7 +1362,7 @@ pub(crate) fn compile_expr_guarded(
                 };
 
                 // For literal integer index, resolve directly to a scoped ValueRef
-                if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
+                if let reify_syntax::ExprKind::NumberLiteral { value: n, .. } = &index.kind {
                     // Task 3045: guard non-finite / out-of-representable-range values first.
                     // `*n as i64` silently saturates to i64::MAX for inputs like 1e20 or
                     // any finite float ≥ 2^63, producing a bogus scoped ValueRef with no
@@ -2230,7 +2230,7 @@ pub(crate) fn compile_expr_guarded(
                         return propagate_poison();
                     }
                     // Check that the argument is a string literal (type check)
-                    if let reify_syntax::ExprKind::NumberLiteral(_) = &args[0].kind {
+                    if let reify_syntax::ExprKind::NumberLiteral { .. } = &args[0].kind {
                         // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                         return make_poison_literal(
                             diagnostics,
