@@ -215,27 +215,47 @@ impl Default for OpenVdbKernel {
 // objects with no thread-local storage; ownership (the UniquePtr) can be
 // safely transferred across thread boundaries.
 //
-// `Sync` claim narrowed to the FFI calls actually reached through `&self`:
-//   - `grid_active_voxel_count` — calls `FloatGrid::activeVoxelCount()` which
-//     walks the immutable tree topology read-only.
-//   - `grid_sample_sdf` — uses a `BoxSampler` over a `ConstAccessor` which is
-//     read-only for the underlying tree.
+// MAINTENANCE CONTRACT for `unsafe impl Sync`
+// -------------------------------------------
 //
-// Both are read-only on the tree and therefore safe under concurrent `&self`
-// callers. Mutating methods (`realize_voxel_from_mesh`, `write_vdb_grid`,
-// `open_vdb_grid_for_test`) are `&mut self` and rely on Rust's borrow checker
-// for exclusive access, not on `Sync`.
+// `Sync` is justified ONLY by the current set of `&self` methods, both of
+// which are read-only over the FloatGrid tree:
+//   - `active_voxel_count` → `grid_active_voxel_count` →
+//     `FloatGrid::activeVoxelCount()`: walks immutable tree topology.
+//   - `sample_sdf_at` → `grid_sample_sdf` → `BoxSampler` over a
+//     `ConstAccessor`: read-only against the tree.
 //
-// NOT yet reached through `&self` but worth flagging: any future `&self`
-// query that calls `evalActiveVoxelBoundingBox` (e.g. exposing bbox via the
-// kernel API) would need re-evaluation — some OpenVDB versions cache
-// bounding-box state internally on first call, which would race under
-// concurrent readers. Today none of the `&self` methods touch that path; the
-// I/O accessors (`grid_bbox_*`, `grid_densify_to_buffer`, `grid_voxel_sizes`)
-// are only used from `read_vdb_file` against a freshly-constructed handle
-// not yet shared, so concurrency does not arise. If the bbox path is later
-// exposed through a `&self` query, this `unsafe impl Sync` should be replaced
-// with a `parking_lot::Mutex` mirroring the OCCT actor pattern.
+// Mutating methods (`realize_voxel_from_mesh`, `write_vdb_grid`,
+// `open_vdb_grid_for_test`) take `&mut self` and rely on Rust's borrow
+// checker for exclusive access, NOT on `Sync`.
+//
+// DO NOT add a new `&self` method that internally calls any of the
+// following OpenVDB APIs without first replacing this `unsafe impl Sync`
+// with a `parking_lot::Mutex<HashMap<…>>` (mirroring the OCCT actor
+// pattern). These APIs mutate hidden internal state on first read and
+// therefore race under concurrent `&self` callers:
+//
+//   - `Grid::evalActiveVoxelBoundingBox()` — caches bbox internally on
+//     first call in some OpenVDB versions; a future `&self` "get bbox"
+//     accessor would race.
+//   - `Tree::nodeCount()` and friends — leaf-level counters cache the
+//     first walk's result.
+//   - `Transform::indexToWorld(..)` on non-linear (frustum/non-affine)
+//     transforms — internal LUT lazy initialisation.
+//   - Any leaf-level metadata accessor that materialises lazy data
+//     (`getMetadata` chains that promote `nullptr` to a default-initialised
+//     entry).
+//
+// Today none of the `&self` methods reach those paths — the I/O accessors
+// (`grid_bbox_*`, `grid_densify_to_buffer`, `grid_voxel_sizes`) are used
+// only from `read_vdb_file` against a freshly-constructed handle that has
+// not yet been shared, so concurrency does not arise even though they
+// would otherwise be on the audit list.
+//
+// If you find yourself adding such an accessor: replace the unsafe Sync
+// impl with `Mutex<HashMap<...>>` rather than auditing more entries onto
+// this list. The maintenance burden of keeping this list accurate scales
+// linearly; the Mutex cost is one branch per call.
 unsafe impl Send for OpenVdbKernel {}
 unsafe impl Sync for OpenVdbKernel {}
 
