@@ -706,6 +706,66 @@ mod tests {
         }
     }
 
+    /// Global K is symmetric within FP tolerance on the fan mesh from
+    /// step-13.
+    ///
+    /// Per-element K_e is symmetric (pinned by Task 2915's tests, since
+    /// `K_e = ∫ BᵀDB dV` with symmetric `D`). faer's CSR-from-triplets
+    /// sums duplicates in a fixed encounter order, so `K_global[i][j]`
+    /// and `K_global[j][i]` are sums of mirror pairs of triplets. The
+    /// emission loop emits both `(a, b)` and `(b, a)` for every local
+    /// pair, so the LSB of the sum order at `(i, j)` and `(j, i)` can
+    /// differ — but both must equal each other within FP tolerance.
+    ///
+    /// Mesh: 4 P1 tets fanning around node 0, `n_nodes = 13` (same as
+    /// step-13). Multiple K_e contributions land at shared DOFs, so a
+    /// regression that, say, accidentally makes the (a, b) and (b, a)
+    /// emission paths drift apart (e.g. by emitting upper-triangle only
+    /// for one element and full block for another) surfaces here.
+    ///
+    /// Tolerance is `1e-9 * max(|K[i][j]|, |K[j][i]|, 1)` — generous
+    /// enough that any reasonable summation order satisfies it, tight
+    /// enough that an algorithmic asymmetry (e.g. dropping triplets,
+    /// half-block emission) trips the assertion.
+    #[test]
+    fn global_k_is_symmetric_within_fp_tolerance() {
+        let mat = dimensionless_steel_like();
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
+
+        // Same fan-around-central-node mesh as step-13.
+        let conns: [[usize; 4]; 4] = [
+            [0, 1, 2, 3],
+            [0, 4, 5, 6],
+            [0, 7, 8, 9],
+            [0, 10, 11, 12],
+        ];
+        let n_nodes = 13;
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| AssemblyElement {
+                id: i,
+                connectivity: c,
+                k_e: &k_e,
+            })
+            .collect();
+
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        let dim = 3 * n_nodes;
+        for i in 0..dim {
+            for j in 0..dim {
+                let kij = read(&k, i, j);
+                let kji = read(&k, j, i);
+                let tol = 1e-9 * kij.abs().max(kji.abs()).max(1.0);
+                let delta = (kij - kji).abs();
+                assert!(
+                    delta <= tol,
+                    "K[{i}][{j}] = {kij}, K[{j}][{i}] = {kji}; |Δ| = {delta} > tol = {tol}",
+                );
+            }
+        }
+    }
+
     /// Single P2 element with identity connectivity `[0..10]` → K_global
     /// equals K_e bit-for-bit at every entry.
     ///
