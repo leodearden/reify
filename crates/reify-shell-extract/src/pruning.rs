@@ -1036,4 +1036,93 @@ mod tests {
             &crate::PruneOptions,
         ) -> Result<crate::PruneResult, crate::PruneError> = crate::prune_branches;
     }
+
+    // ── Task 3161: converged-flag tests ──────────────────────────────────────
+
+    /// Chain-pruning fixture: body + two-step prune chain.
+    ///
+    /// Topology:
+    /// - body = [0,1,2]: tall apex at v2=(0.15,10,0); ratio ≈ 10 → always survives.
+    /// - T1   = [0,1,3]: hinge at v3=(0.15,-0.1,0); branch_length=0.3, ratio=0.3 → prunable.
+    /// - T2   = [0,3,4]: apex at v4=(0,-0.2,0); branch_length=0.2, ratio=0.2 → prunable.
+    ///
+    /// Initial tips: T2 has 2 boundary edges ({0,4},{3,4}) → pruned in iter 1.
+    /// After T2 pruned, edge {0,3} becomes boundary → T1 becomes a tip in iter 2.
+    /// With `max_prune_iterations=1`, only T2 is pruned; T1 remains as residual.
+    fn chain_pruning_fixture() -> MidSurfaceMesh {
+        MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],    // v0
+                [0.3, 0.0, 0.0],    // v1 — shared body/T1 base edge length = 0.3
+                [0.15, 10.0, 0.0],  // v2 — body apex (ratio ≈ 10, survives)
+                [0.15, -0.1, 0.0],  // v3 — T1/T2 hinge
+                [0.0, -0.2, 0.0],   // v4 — T2 apex
+            ],
+            triangles: vec![
+                [0, 1, 2], // body
+                [0, 1, 3], // T1: shares edge {0,1} with body; {0,3} shared with T2
+                [0, 3, 4], // T2: tip initially (boundary edges {0,4} and {3,4})
+            ],
+            thickness: vec![1.0, 1.0, 1.0, 1.0, 1.0],
+        }
+    }
+
+    /// With `max_prune_iterations=1`, the prune loop is truncated after pruning
+    /// T2 (iter 1).  T1 is now a tip (after T2's removal exposes edge {0,3})
+    /// but the loop bound prevents iter 2 from running.  The result must
+    /// report `converged == false` to signal residual prunable tips.
+    #[test]
+    fn prune_branches_reports_converged_false_when_loop_truncated_at_max_iterations() {
+        let mesh = chain_pruning_fixture();
+        let opts = PruneOptions {
+            max_prune_iterations: 1,
+            ..PruneOptions::default()
+        };
+        let result = prune_branches(&mesh, &opts)
+            .expect("chain-pruning fixture should not error");
+
+        // Loop ran one round and actively pruned → truncated, not converged.
+        assert!(
+            !result.metrics.converged,
+            "converged must be false when max_prune_iterations truncated the loop \
+             while pruning was still active"
+        );
+        assert_eq!(
+            result.metrics.iterations, 1,
+            "exactly one iteration should have run"
+        );
+        assert!(
+            result.metrics.pruned_triangle_count >= 1,
+            "T2 must have been pruned in the one allowed iteration"
+        );
+        // Body triangle (ratio ≈ 10) must survive.
+        assert!(
+            result.mesh.triangles.len() >= 1,
+            "body triangle must survive"
+        );
+    }
+
+    /// With default options (`max_prune_iterations=8`), the chain fully prunes
+    /// (T2 in iter 1, T1 in iter 2, body settles in iter 3) and the loop exits
+    /// naturally on the no-prune pass → `converged == true`.
+    #[test]
+    fn prune_branches_reports_converged_true_when_loop_settles_naturally() {
+        let mesh = chain_pruning_fixture();
+        let result = prune_branches(&mesh, &PruneOptions::default())
+            .expect("chain-pruning fixture should not error");
+
+        assert!(
+            result.metrics.converged,
+            "converged must be true when the loop settled naturally (no-prune pass)"
+        );
+        // Both T1 and T2 pruned; body remains.
+        assert_eq!(
+            result.metrics.pruned_triangle_count, 2,
+            "T1 and T2 must both be pruned with default max iterations"
+        );
+        assert_eq!(
+            result.mesh.triangles.len(), 1,
+            "only the body triangle must survive"
+        );
+    }
 }
