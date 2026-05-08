@@ -80,6 +80,13 @@ pub struct DirichletBc {
 /// overwritten.  Callers may therefore reuse the same K/f allocation across
 /// multiple solves.
 ///
+/// The input `K` must have at most one stored entry per `(row, col)` pair —
+/// the standard CSR uniqueness invariant satisfied by all faer
+/// [`SparseRowMat`] matrices assembled via `try_new_from_triplets` and by
+/// [`assemble_global_stiffness`].  The fused column-scan stops at the first
+/// match per row; a matrix with duplicate column entries would leave one copy
+/// un-zeroed and produce a silently wrong result.
+///
 /// # Symmetry preservation
 ///
 /// Row-elimination zeros both row `i` and column `i`, so symmetric K stays
@@ -103,7 +110,8 @@ pub struct DirichletBc {
 ///
 /// The `multiple_bcs_are_order_independent_within_fp_tolerance` test is the
 /// regression pin.  Note: duplicate DOFs in `bcs` (the same `dof` appearing
-/// twice) are caller error; the result is unspecified and not guarded against.
+/// twice) are caller error; the result is unspecified and, in debug builds,
+/// caught by an explicit assertion.
 ///
 /// # Panics
 ///
@@ -145,6 +153,24 @@ pub fn apply_dirichlet_row_elimination(
         );
     }
 
+    // Debug-only: duplicate DOF indices produce undefined output (a later
+    // BC's row/col-zero overwrites an earlier BC's f[k] = u). Surface it
+    // eagerly in debug builds via an O(m log m) sort-and-scan.
+    #[cfg(debug_assertions)]
+    {
+        let mut dofs: Vec<usize> = bcs.iter().map(|bc| bc.dof).collect();
+        dofs.sort_unstable();
+        for w in dofs.windows(2) {
+            assert_ne!(
+                w[0], w[1],
+                "duplicate DirichletBc dof {} in bcs slice; duplicate DOFs produce \
+                 undefined output — deduplicate before calling \
+                 apply_dirichlet_row_elimination",
+                w[0],
+            );
+        }
+    }
+
     if bcs.is_empty() {
         return;
     }
@@ -153,75 +179,60 @@ pub fn apply_dirichlet_row_elimination(
         let i = bc.dof;
         let u = bc.value;
 
-        // ORDERING: column-into-RHS (step 1 of the algorithm) reads the
-        // still-original K[j][i] values and MUST run before the row/col
-        // zeroing (steps 2-3) that overwrites them.  Reversing this order
-        // would silently zero the column-into-RHS contribution because
-        // K[j][i] == 0 after step 3 runs.
-        {
-            let (sym, vals) = k.parts_mut();
-            let row_ptr = sym.row_ptr();
-            let col_idx = sym.col_idx();
-            let n = sym.nrows();
+        let (sym, vals) = k.parts_mut();
+        let row_ptr = sym.row_ptr();
+        let col_idx = sym.col_idx();
+        let n = sym.nrows();
 
-            // Step 1: f[j] -= K[j][i] * u for every row j ≠ i.
-            // Skipping j == i because f[i] is overwritten in step 5 anyway.
-            for j in 0..n {
-                if j != i {
-                    let start = row_ptr[j];
-                    let end = row_ptr[j + 1];
-                    for idx in start..end {
-                        if col_idx[idx] == i {
-                            // Read the still-original K[j][i], subtract.
-                            f[j] -= vals[idx] * u;
-                            // At most one match per row in CSR.
-                            break;
-                        }
+        // Step 2: zero row i — set every stored value in row i to 0.0.
+        // Must precede the fused loop: the diagonal K[i][i] is zeroed here
+        // and then unconditionally set to 1.0 inside the loop (step 4).
+        // Running this fill after the loop would clobber that write.
+        vals[row_ptr[i]..row_ptr[i + 1]].fill(0.0);
+
+        // Fused steps 1, 3, and 4: single pass over all rows.
+        //
+        // For each row j, locate the stored K[j][i] entry (at most one per
+        // row in CSR — the uniqueness invariant required by this function):
+        //
+        // • j ≠ i: read K[j][i], subtract into f[j] (step 1), then zero the
+        //   stored entry (step 3). Reading before writing preserves the
+        //   still-original K[j][i] value for the subtraction. Step 2 above
+        //   only zeroed row i, so K[j][i] for j ≠ i is unaffected here.
+        //
+        // • j == i: set K[i][i] = 1.0 (step 4; step 2 already zeroed it).
+        //   f[i] is overwritten unconditionally by step 5, so the
+        //   column-into-RHS term is skipped for the diagonal row.
+        let mut diag_found = false;
+        for j in 0..n {
+            let start = row_ptr[j];
+            let end = row_ptr[j + 1];
+            for idx in start..end {
+                if col_idx[idx] == i {
+                    if j == i {
+                        // Diagonal: was zeroed by step 2; set to 1.0 (step 4).
+                        vals[idx] = 1.0;
+                        diag_found = true;
+                    } else {
+                        // Off-diagonal column i entry:
+                        // step 1 — read K[j][i], subtract into f[j] before zeroing;
+                        // step 3 — zero the stored entry.
+                        f[j] -= vals[idx] * u;
+                        vals[idx] = 0.0;
                     }
+                    // At most one entry per (row, col) pair in CSR: stop after first match.
+                    break;
                 }
             }
         }
 
-        {
-            let (sym, vals) = k.parts_mut();
-            let row_ptr = sym.row_ptr();
-            let col_idx = sym.col_idx();
-            let n = sym.nrows();
-
-            // Step 2: zero row i — set every stored value in row i to 0.0.
-            vals[row_ptr[i]..row_ptr[i + 1]].fill(0.0);
-
-            // Step 3: zero column i for every row j ≠ i.
-            // Step 4: set K[i][i] = 1.0 (diagonal of the constrained DOF).
-            let mut diag_found = false;
-            for j in 0..n {
-                let start = row_ptr[j];
-                let end = row_ptr[j + 1];
-                for idx in start..end {
-                    if col_idx[idx] == i {
-                        if j == i {
-                            // Diagonal entry: was already zeroed by step 2,
-                            // now set to 1.0.
-                            vals[idx] = 1.0;
-                            diag_found = true;
-                        } else {
-                            // Off-diagonal column entry: zero it.
-                            vals[idx] = 0.0;
-                        }
-                        // At most one match per row in CSR.
-                        break;
-                    }
-                }
-            }
-
-            assert!(
-                diag_found,
-                "DirichletBc {{ dof: {i} }} has no explicit diagonal entry K[{i}][{i}] — \
-                 the row-elimination algorithm requires a stored diagonal so K[i][i] can \
-                 be set to 1.0 in place. FEA-assembled K always has a diagonal entry per \
-                 Task 2916; a missing diagonal indicates the input K is not FEA-assembled.",
-            );
-        }
+        assert!(
+            diag_found,
+            "DirichletBc {{ dof: {i} }} has no explicit diagonal entry K[{i}][{i}] — \
+             the row-elimination algorithm requires a stored diagonal so K[i][i] can \
+             be set to 1.0 in place. FEA-assembled K always has a diagonal entry per \
+             Task 2916; a missing diagonal indicates the input K is not FEA-assembled.",
+        );
 
         // Step 5: pin RHS — f[i] is overwritten with the prescribed value.
         f[i] = u;
