@@ -298,6 +298,25 @@ mod tests {
     }
 
     #[test]
+    fn elastic_result_round_trips_with_empty_field_arrays() {
+        // Pin that displacement_len = 0 / stress_len = 0 are handled cleanly
+        // on both sides — the slab loops must not assume "at least one
+        // element" via `.first().unwrap()` or similar.
+        let original = ElasticResult {
+            displacement: Vec::new(),
+            stress: Vec::new(),
+            max_von_mises: 0.0,
+            converged: false,
+            iterations: 0,
+            solve_time_ms: 0,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
     fn elastic_result_round_trips_all_six_fields() {
         let original = ElasticResult {
             displacement: vec![1.0, -2.5, 3.14159, 0.0, 1e-9],
