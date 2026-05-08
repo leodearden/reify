@@ -110,10 +110,64 @@ pub fn apply_dirichlet_row_elimination(
     if bcs.is_empty() {
         return;
     }
-    todo!(
-        "apply_dirichlet_row_elimination: non-empty BC list not yet implemented \
-         (step-4 will replace this todo!)"
-    )
+
+    for bc in bcs {
+        let i = bc.dof;
+        let u = bc.value;
+
+        // ORDERING: column-into-RHS (step 1 of the algorithm) reads the
+        // still-original K[j][i] values and MUST run before the row/col
+        // zeroing (steps 2-3) that overwrites them.  The column-into-RHS
+        // step is implemented in step-6; here we handle steps 2-5 so that
+        // homogeneous BCs (u = 0) are correct (the column-into-RHS
+        // contribution is K[j][i] * 0.0 = 0.0, a no-op).
+
+        {
+            let (sym, vals) = k.parts_mut();
+            let row_ptr = sym.row_ptr();
+            let col_idx = sym.col_idx();
+            let n = sym.nrows();
+
+            // Step 2: zero row i — set every stored value in row i to 0.0.
+            for idx in row_ptr[i]..row_ptr[i + 1] {
+                vals[idx] = 0.0;
+            }
+
+            // Step 3: zero column i for every row j ≠ i.
+            // Step 4: set K[i][i] = 1.0 (diagonal of the constrained DOF).
+            let mut diag_found = false;
+            for j in 0..n {
+                let start = row_ptr[j];
+                let end = row_ptr[j + 1];
+                for idx in start..end {
+                    if col_idx[idx] == i {
+                        if j == i {
+                            // Diagonal entry: was already zeroed by step 2,
+                            // now set to 1.0.
+                            vals[idx] = 1.0;
+                            diag_found = true;
+                        } else {
+                            // Off-diagonal column entry: zero it.
+                            vals[idx] = 0.0;
+                        }
+                        // At most one match per row in CSR.
+                        break;
+                    }
+                }
+            }
+
+            assert!(
+                diag_found,
+                "DirichletBc {{ dof: {i} }} has no explicit diagonal entry K[{i}][{i}] — \
+                 the row-elimination algorithm requires a stored diagonal so K[i][i] can \
+                 be set to 1.0 in place. FEA-assembled K always has a diagonal entry per \
+                 Task 2916; a missing diagonal indicates the input K is not FEA-assembled.",
+            );
+        }
+
+        // Step 5: pin RHS — f[i] is overwritten with the prescribed value.
+        f[i] = u;
+    }
 }
 
 #[cfg(test)]
