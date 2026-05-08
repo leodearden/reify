@@ -144,6 +144,8 @@ pub fn quality_check(
     // Single pass over morphed elements: track inversions and soft-fail metrics.
     let mut hard_fail: Option<InversionDetails> = None;
     let mut global_min_scaled_j = f64::INFINITY;
+    let mut total_well_formed: usize = 0;
+    let mut count_below_025: usize = 0;
 
     for (elem_idx, chunk) in morphed.tet_indices.chunks_exact(4).enumerate() {
         // Read 4 corner positions, widening f32 → f64 at the read boundary.
@@ -169,8 +171,14 @@ pub fn quality_check(
 
         // Use element_scaled_jacobian (per-element min over 4 corners).
         let sj = element_scaled_jacobian(&p);
+        total_well_formed += 1;
         if sj < global_min_scaled_j {
             global_min_scaled_j = sj;
+        }
+        // 0.25 is the fixed metric split point per PRD spec; only the trip
+        // fraction is configurable via quality_floor_pct_below_025.
+        if sj < 0.25 {
+            count_below_025 += 1;
         }
 
         if sj < 0.0 {
@@ -197,9 +205,20 @@ pub fn quality_check(
         None
     };
 
+    let pct = if total_well_formed > 0 {
+        count_below_025 as f64 / total_well_formed as f64
+    } else {
+        0.0
+    };
+    let pct_below_025 = if pct > options.quality_floor_pct_below_025 {
+        Some(pct)
+    } else {
+        None
+    };
+
     let metrics = MetricsBreached {
         min_scaled_jacobian,
-        pct_below_025: None,
+        pct_below_025,
         max_aspect_ratio_increase: None,
     };
 
@@ -362,46 +381,50 @@ mod tests {
     #[test]
     fn quality_check_with_more_than_threshold_pct_of_elements_below_025_returns_soft_fail_with_pct_below_025_populated(
     ) {
-        // 4 tets: 1 regular unit tet (scaled J ≈ 0.707) + 3 mildly degraded tets
-        // (scaled J in (0.15, 0.25)) so they all stay above the min-J floor (0.15)
-        // but trip the 0.25 count.
+        // 4 independent tets: 1 regular unit tet (min scaled J ≈ 0.707) and
+        // 3 mildly-degraded tets with min scaled J in (0.15, 0.25).
         //
-        // Degraded tet construction: take the unit tet and flatten node 2 toward
-        // the 0-1 edge by scaling its y coordinate to 0.01. The tet stays
-        // right-handed (positive det) but becomes skinny.
+        // Degraded tet construction: (0,0,0),(1,0,0),(0,1,0),(0,0,h).
+        // For this tet the worst corner is the one opposite the large triangle;
+        // analysis shows min scaled J = h / sqrt(1 + h²) (see plan).
+        //   h=0.18 → 0.18/sqrt(1.0324) ≈ 0.177  (in (0.15, 0.25)) ✓
+        //   h=0.20 → 0.20/sqrt(1.0400) ≈ 0.196  (in (0.15, 0.25)) ✓
+        //   h=0.23 → 0.23/sqrt(1.0529) ≈ 0.224  (in (0.15, 0.25)) ✓
         //
-        // With quality_floor_pct_below_025 = 0.5, and 3/4 elements < 0.25
-        // → pct = 0.75 > 0.5 → SoftFail.
+        // global min = 0.177 > 0.15 (default floor) → min_scaled_jacobian=None.
+        // All 3 degraded tets have scaled J < 0.25 → pct = 3/4 = 0.75.
+        // With quality_floor_pct_below_025 = 0.5: 0.75 > 0.5 → SoftFail.
+        // source = same vertices (identity morph → AR increase = 1×) → no AR trip.
 
-        // Regular unit tet (nodes 0-3)
-        // Three degraded tets sharing node 0 and 1 but with a flattened apex:
-        //   tet 1: nodes 0,1,4,5  (y-flattened variant)
-        //   tet 2: nodes 0,1,6,7
-        //   tet 3: nodes 0,1,8,9
-        // All use the same base edge (0→1) with varying squashed apex positions.
         #[rustfmt::skip]
         let vertices: Vec<f32> = vec![
-            // Nodes 0-3: regular unit tet
-            0.0, 0.0, 0.0,  // 0
-            1.0, 0.0, 0.0,  // 1
-            0.0, 1.0, 0.0,  // 2
-            0.0, 0.0, 1.0,  // 3
-            // Nodes 4-5: degraded apex for tet 1
-            0.5, 0.01, 0.0,  // 4
-            0.5, 0.005, 0.2, // 5
-            // Nodes 6-7: degraded apex for tet 2
-            0.5, 0.02, 0.0,  // 6
-            0.5, 0.01,  0.2, // 7
-            // Nodes 8-9: degraded apex for tet 3
-            0.5, 0.015, 0.0, // 8
-            0.5, 0.008, 0.2, // 9
+            // Tet 0: regular unit tet (nodes 0-3), min scaled J ≈ 0.707
+            0.0,  0.0, 0.0,
+            1.0,  0.0, 0.0,
+            0.0,  1.0, 0.0,
+            0.0,  0.0, 1.0,
+            // Tet 1: degraded, h=0.18, min scaled J ≈ 0.177 (nodes 4-7)
+            4.0,  0.0, 0.0,
+            5.0,  0.0, 0.0,
+            4.0,  1.0, 0.0,
+            4.0,  0.0, 0.18,
+            // Tet 2: degraded, h=0.20, min scaled J ≈ 0.196 (nodes 8-11)
+            8.0,  0.0, 0.0,
+            9.0,  0.0, 0.0,
+            8.0,  1.0, 0.0,
+            8.0,  0.0, 0.20,
+            // Tet 3: degraded, h=0.23, min scaled J ≈ 0.224 (nodes 12-15)
+            12.0, 0.0, 0.0,
+            13.0, 0.0, 0.0,
+            12.0, 1.0, 0.0,
+            12.0, 0.0, 0.23,
         ];
         #[rustfmt::skip]
         let tet_indices: Vec<u32> = vec![
-            0, 1, 2, 3, // regular unit tet (scaled J ≈ 0.707)
-            0, 1, 4, 5, // degraded tet 1
-            0, 1, 6, 7, // degraded tet 2
-            0, 1, 8, 9, // degraded tet 3
+            0,  1,  2,  3,  // unit tet, min scaled J ≈ 0.707
+            4,  5,  6,  7,  // degraded h=0.18, min scaled J ≈ 0.177
+            8,  9,  10, 11, // degraded h=0.20, min scaled J ≈ 0.196
+            12, 13, 14, 15, // degraded h=0.23, min scaled J ≈ 0.224
         ];
         let mesh = VolumeMesh {
             vertices,
@@ -410,8 +433,9 @@ mod tests {
             normals: None,
         };
 
-        // Use quality_floor_pct_below_025 = 0.5 so 3/4 = 0.75 > threshold.
-        // Keep other thresholds at defaults so min_scaled_J and AR won't trip.
+        // quality_floor_pct_below_025 = 0.5 so 3/4 = 0.75 > threshold.
+        // quality_floor_min_scaled_jacobian stays at default 0.15 —
+        // global min (≈ 0.177) > 0.15 so min_scaled_jacobian stays None.
         let mut opts = MorphOptions::default();
         opts.quality_floor_pct_below_025 = 0.5;
 
@@ -420,7 +444,7 @@ mod tests {
             QualityVerdict::SoftFail(metrics) => {
                 assert!(
                     metrics.min_scaled_jacobian.is_none(),
-                    "min_scaled_jacobian should be None (degraded tets stay above 0.15), \
+                    "min_scaled_jacobian should be None (global min ≈ 0.177 > 0.15 floor), \
                      got {:?}",
                     metrics.min_scaled_jacobian
                 );
