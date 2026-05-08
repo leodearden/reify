@@ -1897,9 +1897,15 @@ fn dispatch_surface_angle(
         // LENGTH) is caught rather than silently reinterpreted as radians.
         // Mirrors `resolve_point3_length_arg`'s tightened LENGTH check
         // introduced in commit 8c464177db (task 2324): debug_assert FIRST,
-        // then if-fall-through in release. DIMENSIONLESS is accepted alongside
-        // ANGLE because some mock kernels store raw radian values without a
-        // dimension tag.
+        // then if-fall-through in release.
+        //
+        // DIMENSIONLESS is accepted alongside ANGLE as a deliberate
+        // compatibility trade-off: some mock kernels return raw f64 values
+        // without attaching a dimension tag (see
+        // `MockGeometryKernel::with_surface_angle_result`). A production kernel
+        // returning DIMENSIONLESS for an angle would itself violate the type
+        // contract — this leniency is intentional test-support compatibility,
+        // not because DIMENSIONLESS is a valid angle dimension in real kernels.
         Ok(reify_types::Value::Scalar {
             si_value,
             dimension,
@@ -1918,7 +1924,7 @@ fn dispatch_surface_angle(
             {
                 diagnostics.push(Diagnostic::warning(format!(
                     "{} kernel returned wrong-dimensioned Scalar \
-                     (dimension={:?}, si_value={}); treating as undefined",
+                     (dimension={}, si_value={}); treating as undefined",
                     helper_name, dimension, si_value
                 )));
                 return Some(reify_types::Value::Undef);
@@ -5973,6 +5979,48 @@ mod tests {
         );
     }
 
+    /// Shared fixture for the two wrong-dim-Scalar tests below. Builds a
+    /// `MockGeometryKernel` wired to return a LENGTH-dimensioned Scalar for the
+    /// `angle_between_surfaces(face_a, face_b)` call, together with the
+    /// `named_steps` map, empty `ValueMap`, and the compiled `expr`. Each test
+    /// owns its own `diagnostics` Vec and call site, which is all that differs
+    /// between the debug-panic and release-warn cases.
+    fn wrong_dim_scalar_fixture() -> (
+        reify_types::CompiledExpr,
+        HashMap<String, reify_types::GeometryHandleId>,
+        reify_types::ValueMap,
+        reify_test_support::mocks::MockGeometryKernel,
+    ) {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        // LENGTH is the real-world bug class: metres silently reinterpreted as
+        // radians. Using LENGTH (not e.g. MASS) ties the fixture to the actual
+        // failure mode described in the task analysis.
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+        );
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+        let values = reify_types::ValueMap::new();
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        (expr, named_steps, values, kernel)
+    }
+
     /// Pins the defensive dim-check in `dispatch_surface_angle`'s Scalar arm —
     /// mirrors `resolve_point3_length_arg`'s tightened LENGTH check from commit
     /// 8c464177db. A LENGTH-dimensioned Scalar reply must NOT be silently
@@ -5984,35 +6032,7 @@ mod tests {
     #[test]
     fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_emits_warning_and_returns_undef()
      {
-        use reify_test_support::mocks::MockGeometryKernel;
-        let face_a = reify_types::GeometryHandleId(31);
-        let face_b = reify_types::GeometryHandleId(37);
-        // LENGTH-dimensioned Scalar is the real-world bug class this guards
-        // against: metres silently reinterpreted as radians.
-        let kernel = MockGeometryKernel::new().with_surface_angle_result(
-            face_a,
-            face_b,
-            reify_types::Value::Scalar {
-                si_value: 1.0,
-                dimension: reify_types::DimensionVector::LENGTH,
-            },
-        );
-
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        named_steps.insert("face_a".to_string(), face_a);
-        named_steps.insert("face_b".to_string(), face_b);
-
-        let values = reify_types::ValueMap::new();
-
-        let expr = topology_selector_call_two_value_refs(
-            "angle_between_surfaces",
-            "Bracket",
-            "face_a",
-            reify_types::Type::Geometry,
-            "face_b",
-            reify_types::Type::Geometry,
-            reify_types::Type::angle(),
-        );
+        let (expr, named_steps, values, kernel) = wrong_dim_scalar_fixture();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
@@ -6049,9 +6069,13 @@ mod tests {
             "diagnostic must mention the helper name 'angle_between_surfaces', got: {}",
             diag.message
         );
+        // DimensionVector::LENGTH displays as "m" (via its fmt::Display impl).
+        // Asserting "dimension=m" pins that the warning names the actual
+        // offending dimension rather than just any wording about dimensions.
         assert!(
-            diag.message.contains("dimension") || diag.message.contains("wrong-dimensioned"),
-            "diagnostic must mention the dimension mismatch, got: {}",
+            diag.message.contains("dimension=m"),
+            "diagnostic must mention the offending dimension (LENGTH displays as 'm'); \
+             got: {}",
             diag.message
         );
     }
@@ -6074,33 +6098,7 @@ mod tests {
     #[should_panic(expected = "expected ANGLE")]
     fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_panics_in_debug_build()
      {
-        use reify_test_support::mocks::MockGeometryKernel;
-        let face_a = reify_types::GeometryHandleId(31);
-        let face_b = reify_types::GeometryHandleId(37);
-        let kernel = MockGeometryKernel::new().with_surface_angle_result(
-            face_a,
-            face_b,
-            reify_types::Value::Scalar {
-                si_value: 1.0,
-                dimension: reify_types::DimensionVector::LENGTH,
-            },
-        );
-
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        named_steps.insert("face_a".to_string(), face_a);
-        named_steps.insert("face_b".to_string(), face_b);
-
-        let values = reify_types::ValueMap::new();
-
-        let expr = topology_selector_call_two_value_refs(
-            "angle_between_surfaces",
-            "Bracket",
-            "face_a",
-            reify_types::Type::Geometry,
-            "face_b",
-            reify_types::Type::Geometry,
-            reify_types::Type::angle(),
-        );
+        let (expr, named_steps, values, kernel) = wrong_dim_scalar_fixture();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         // The debug_assert! in dispatch_surface_angle's Scalar arm must panic
