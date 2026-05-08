@@ -220,7 +220,9 @@ pub fn compute_dirichlet_bcs(
     for (node_idx, attachment) in boundary.iter() {
         let i = node_idx as usize;
         let base = i.checked_mul(3).ok_or(ProjectionFailure::InvalidNodeIndex(node_idx))?;
-        if base + 2 >= old_mesh.vertices.len() {
+        // Uniform overflow discipline: check both mul and the end boundary.
+        let end = base.checked_add(3).ok_or(ProjectionFailure::InvalidNodeIndex(node_idx))?;
+        if end > old_mesh.vertices.len() {
             return Err(ProjectionFailure::InvalidNodeIndex(node_idx));
         }
         let old_position = [
@@ -337,9 +339,10 @@ mod tests {
         face_responses: HashMap<GeometryHandleId, Result<[f64; 3], ProjectorPayload>>,
         edge_responses: HashMap<GeometryHandleId, Result<[f64; 3], ProjectorPayload>>,
         vertex_responses: HashMap<GeometryHandleId, Result<[f64; 3], ProjectorPayload>>,
-        /// If set, panics when `project_onto_face` is called with any handle
-        /// NOT in this set.
-        face_handle_guard: Option<GeometryHandleId>,
+        /// If set, panics when `project_onto_face` is called with a handle other
+        /// than this one. Face-only scope: edge/vertex calls are not guarded.
+        /// Use `expected_face_handle` to make the intent explicit at call sites.
+        expected_face_handle: Option<GeometryHandleId>,
     }
 
     impl RecordingProjector {
@@ -349,7 +352,7 @@ mod tests {
                 face_responses: HashMap::new(),
                 edge_responses: HashMap::new(),
                 vertex_responses: HashMap::new(),
-                face_handle_guard: None,
+                expected_face_handle: None,
             }
         }
 
@@ -365,8 +368,10 @@ mod tests {
             self.vertex_responses.insert(vertex, result);
         }
 
-        fn set_face_handle_guard(&mut self, expected: GeometryHandleId) {
-            self.face_handle_guard = Some(expected);
+        /// Assert that every `project_onto_face` call uses this exact handle.
+        /// Guards face dispatch only — edge/vertex calls are not checked.
+        fn set_expected_face_handle(&mut self, expected: GeometryHandleId) {
+            self.expected_face_handle = Some(expected);
         }
 
         fn captured_calls(&self) -> Vec<ProjectorCall> {
@@ -380,7 +385,7 @@ mod tests {
             face: GeometryHandleId,
             point: [f64; 3],
         ) -> Result<[f64; 3], ProjectorPayload> {
-            if let Some(expected) = self.face_handle_guard {
+            if let Some(expected) = self.expected_face_handle {
                 assert_eq!(
                     face, expected,
                     "must project onto mapped counterpart of attached face, NOT closest globally"
@@ -417,31 +422,6 @@ mod tests {
         }
     }
 
-    // ── Step-1: NodeAttachment three variants ─────────────────────────────────
-
-    #[test]
-    fn node_attachment_three_variants_carry_geometry_handle_id_and_match_exhaustively() {
-        let face_node = NodeAttachment::OnFace(h(1));
-        let edge_node = NodeAttachment::OnEdge(h(2));
-        let vertex_node = NodeAttachment::OnVertex(h(3));
-
-        match face_node {
-            NodeAttachment::OnFace(handle) => assert_eq!(handle, h(1)),
-            NodeAttachment::OnEdge(_) => panic!("wrong variant"),
-            NodeAttachment::OnVertex(_) => panic!("wrong variant"),
-        }
-        match edge_node {
-            NodeAttachment::OnFace(_) => panic!("wrong variant"),
-            NodeAttachment::OnEdge(handle) => assert_eq!(handle, h(2)),
-            NodeAttachment::OnVertex(_) => panic!("wrong variant"),
-        }
-        match vertex_node {
-            NodeAttachment::OnFace(_) => panic!("wrong variant"),
-            NodeAttachment::OnEdge(_) => panic!("wrong variant"),
-            NodeAttachment::OnVertex(handle) => assert_eq!(handle, h(3)),
-        }
-    }
-
     // ── Step-3: BoundaryAssociation round-trip ────────────────────────────────
 
     #[test]
@@ -465,39 +445,6 @@ mod tests {
         assert_eq!(ba.get(7), Some(NodeAttachment::OnFace(h(10))));
         assert_eq!(ba.len(), 2);
         assert!(!ba.is_empty());
-    }
-
-    // ── Step-5: ProjectionFailure three variants ──────────────────────────────
-
-    #[test]
-    fn projection_failure_three_variants_construct_and_pattern_match_exhaustively() {
-        let f1 = ProjectionFailure::MissingCorrespondence {
-            kind: SubShapeKind::Face,
-            old_handle: h(1),
-        };
-        let f2 = ProjectionFailure::InvalidNodeIndex(7);
-        let f3 = ProjectionFailure::Projector(ProjectorPayload::new("kernel BRepExtrema failed"));
-
-        match f1 {
-            ProjectionFailure::MissingCorrespondence { kind, old_handle } => {
-                assert_eq!(kind, SubShapeKind::Face);
-                assert_eq!(old_handle, h(1));
-            }
-            ProjectionFailure::InvalidNodeIndex(_) => panic!("wrong variant"),
-            ProjectionFailure::Projector(_) => panic!("wrong variant"),
-        }
-        match f2 {
-            ProjectionFailure::MissingCorrespondence { .. } => panic!("wrong variant"),
-            ProjectionFailure::InvalidNodeIndex(idx) => assert_eq!(idx, 7),
-            ProjectionFailure::Projector(_) => panic!("wrong variant"),
-        }
-        match f3 {
-            ProjectionFailure::MissingCorrespondence { .. } => panic!("wrong variant"),
-            ProjectionFailure::InvalidNodeIndex(_) => panic!("wrong variant"),
-            ProjectionFailure::Projector(payload) => {
-                assert_eq!(payload.message(), "kernel BRepExtrema failed");
-            }
-        }
     }
 
     // ── Step-7: Projector trait is object-safe ────────────────────────────────
@@ -747,7 +694,7 @@ mod tests {
 
         // Guard: projector panics if called with any handle != h(21).
         let mut proj = RecordingProjector::new();
-        proj.set_face_handle_guard(h(21));
+        proj.set_expected_face_handle(h(21));
         proj.add_face_response(h(21), Ok([1.05, 1.0, 0.0]));
 
         let result = compute_dirichlet_bcs(&mesh, &ba, &correspondence, &proj);

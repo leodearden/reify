@@ -222,30 +222,23 @@ mod tests {
 
     // ── Step-31: lib re-exports make boundary module public surface accessible ─
 
-    /// Compile fence: verifies each name from the boundary module is accessible
-    /// from the crate root, following the
-    /// `assert_copy::<MorphSnapshot<'static>>()` pattern in eligibility.rs.
-    #[test]
-    fn lib_re_exports_make_boundary_module_public_surface_accessible_from_crate_root() {
-        // Importing each name from the crate root — compile error if any is missing.
+    // Compile fence: verifies each name from the boundary module is accessible
+    // from the crate root, and pins the compute_dirichlet_bcs signature.
+    // Follows the `const _: fn() = || { ... }` discipline in eligibility.rs —
+    // no runtime assertions, just type-check guarantees.
+    const _: fn() = || {
         use crate::{
             BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
             compute_dirichlet_bcs,
         };
-
-        // Reference each name to suppress "unused import" warnings.
-        let _ = BoundaryAssociation::default();
-        let _attach = NodeAttachment::OnFace(reify_types::GeometryHandleId(1));
-        let _fail = ProjectionFailure::InvalidNodeIndex(0);
-        let _payload = ProjectorPayload::new("test");
-
-        // Verify compute_dirichlet_bcs is a callable function at crate root.
         let _fn_ref: fn(
             &reify_types::VolumeMesh,
             &BoundaryAssociation,
             &reify_eval::CorrespondenceMap,
             &dyn Projector,
         ) -> Result<Vec<(u32, [f64; 3])>, ProjectionFailure> = compute_dirichlet_bcs;
-        let _ = _fn_ref;
-    }
+        // Type mentions for names not in _fn_ref; avoids unused-import warnings.
+        let _: Option<NodeAttachment> = None;
+        let _: Option<ProjectorPayload> = None;
+    };
 }
