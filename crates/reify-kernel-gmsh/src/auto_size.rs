@@ -57,7 +57,7 @@ impl Default for AutoSizeConfig {
 /// The variant carries structured fields so callers can surface diagnostics
 /// without parsing message strings — mirrors the shape of
 /// `reify_types::QueryError::NonFiniteParameter { u, v }`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AutoSizeError {
     /// A value in `mesh.indices` references a vertex slot beyond
     /// `mesh.vertices.len() / 3`.
@@ -101,6 +101,15 @@ impl std::error::Error for AutoSizeError {}
 /// `mesh.indices` is ≥ `mesh.vertices.len() / 3`. The check is a single
 /// up-front pass over all indices; the inner per-triangle loop keeps
 /// unconditional indexing so the well-formed common case stays fast.
+///
+/// # Caller invariants
+///
+/// `mesh.vertices.len()` must be a multiple of 3 (one `(x, y, z)` triple
+/// per vertex). This is not validated by the function — in practice all
+/// upstream producers (OCCT tessellator, manifold adapter) emit
+/// triplet-aligned buffers. A malformed buffer whose length is not divisible
+/// by 3 will be silently treated as if the trailing partial coordinate did
+/// not exist (`n_vertices = mesh.vertices.len() / 3` truncates).
 pub fn auto_mesh_size_from_features(
     mesh: &Mesh,
     cfg: AutoSizeConfig,

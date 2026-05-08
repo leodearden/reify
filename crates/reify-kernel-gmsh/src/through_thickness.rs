@@ -155,6 +155,11 @@ pub fn through_thickness_check(
     // Emit a WARN and early-return with no findings so the pipeline doesn't
     // receive garbage results. Operators can filter via
     // `RUST_LOG=reify_kernel_gmsh::through_thickness=warn`.
+    // Checking centroids is sufficient as a proxy for the entire NaN-poisoning
+    // class: a NaN centroid implies tet_extents_sum is also NaN, since both
+    // flow from the same per-vertex projected coordinates. A future refactor
+    // that decouples extent computation from centroid computation would need
+    // to extend this guard to cover tet_extents_sum independently.
     if centroids.iter().any(|c| c.is_nan()) {
         tracing::warn!(
             target: "reify_kernel_gmsh::through_thickness",
