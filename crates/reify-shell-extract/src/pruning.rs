@@ -93,8 +93,10 @@ pub struct PruneMetrics {
     pub pruned_triangle_count: usize,
     /// Number of vertices removed during compaction (orphan vertices).
     pub pruned_vertex_count: usize,
-    /// Number of prune-iteration rounds that actually ran (0 if no tip
-    /// triangles were found on the first pass).
+    /// Number of rounds in which at least one triangle was pruned.
+    /// `0` if no triangles qualified for removal on the first pass —
+    /// this occurs when there are no tip triangles, or when all tip
+    /// triangles clear the ratio threshold.
     pub iterations: u32,
 }
 
@@ -259,12 +261,26 @@ pub fn prune_branches(
     // patterns (binary-MC midpoints are bit-exact duplicates).  Edge-incidence
     // is computed over canonical indices; original indices are still used for
     // vertex positions and thickness lookups.
+    //
+    // Normalisation: −0.0 and +0.0 are numerically equal but have distinct bit
+    // patterns (0x8000_0000_0000_0000 vs 0x0000_0000_0000_0000).  We normalise
+    // both to +0.0 so they share the same canonical key.
+    //
+    // COUPLING NOTE: this relies on T2 producing bit-exact duplicate coordinates
+    // for shared-edge midpoints.  If T2 is ever changed to average or
+    // interpolate midpoints, the dedup will silently fail and every edge will
+    // appear as a boundary edge, causing spurious pruning of the mesh body.
+    // The slab end-to-end test (`prune_branches_slab_end_to_end_pipeline`) and
+    // the duplicate-vertex regression test below would catch such a regression.
     let canonical: Vec<u32> = {
         let mut coord_to_canon: FxHashMap<[u64; 3], u32> = FxHashMap::default();
         vertices
             .iter()
             .map(|v| {
-                let key = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+                // Normalise −0.0 → +0.0 before taking bit patterns.
+                // In IEEE 754, −0.0 == +0.0 is true, so this branch fires for both.
+                let norm = |x: f64| if x == 0.0 { 0.0_f64 } else { x };
+                let key = [norm(v[0]).to_bits(), norm(v[1]).to_bits(), norm(v[2]).to_bits()];
                 let next_id = coord_to_canon.len() as u32;
                 *coord_to_canon.entry(key).or_insert(next_id)
             })
@@ -328,7 +344,17 @@ pub fn prune_branches(
             let local_thickness =
                 (thickness[a as usize] + thickness[b as usize] + thickness[c as usize]) / 3.0;
 
-            if local_thickness > 0.0 && branch_length / local_thickness < ratio {
+            // Non-positive or non-finite local_thickness is treated as
+            // automatically prunable: the branch_length/thickness ratio is
+            // conceptually infinite for any positive branch_length, so the
+            // prune condition is always satisfied.  This avoids the opposite
+            // failure mode of the rest of the validation (which prefers
+            // explicit errors over silent fallback): silently retaining
+            // degenerate zero-thickness tips as un-prunable.
+            let prune = local_thickness <= 0.0
+                || !local_thickness.is_finite()
+                || branch_length / local_thickness < ratio;
+            if prune {
                 pruned_in_round[tri_idx] = true;
                 any_pruned = true;
             }
@@ -538,6 +564,60 @@ mod tests {
         }
     }
 
+    // ── Amendment: duplicate-vertex regression test (suggestion 1) ──────────────
+    //
+    // Regression guard: simulates T2's duplicate-vertex output where the
+    // shared-edge vertices are stored at different indices with identical
+    // coordinates.  The canonical-dedup must merge them so the shared edge is
+    // recognised as internal (incidence count 2), not two separate boundary
+    // edges (which would make both triangles appear as tips).
+    //
+    // If T2 is ever changed so that midpoint coordinates are no longer
+    // bit-exact duplicates (e.g. via averaging), the canonical-dedup silently
+    // fails.  This test would catch that regression if the body happened to
+    // be pruned — though the body's ratio (≈10) is well above the default
+    // threshold, so what the test primarily validates is correct spike pruning
+    // in the presence of duplicate-index topology.
+
+    /// A mesh whose shared-edge vertices are stored at duplicate positions and
+    /// different indices (as T2 emits) must still correctly prune the spike.
+    ///
+    /// Layout: body = [v0, v1, v2], spike = [v3, v4, v5],
+    /// where v3 == v0 and v4 == v1 (same coordinates, different indices).
+    /// The canonical-dedup merges v0/v3 and v1/v4 so edge (v0,v1)~(v3,v4)
+    /// is counted as an internal edge with incidence 2.
+    #[test]
+    fn prune_branches_handles_duplicate_vertex_positions() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],   // v0 — body side of shared edge
+                [0.5, 0.0, 0.0],   // v1 — body side of shared edge
+                [0.25, 10.0, 0.0], // v2 — body apex
+                [0.0, 0.0, 0.0],   // v3 == v0 duplicate (spike side)
+                [0.5, 0.0, 0.0],   // v4 == v1 duplicate (spike side)
+                [0.25, -0.1, 0.0], // v5 — spike apex
+            ],
+            triangles: vec![[0, 1, 2], [3, 4, 5]],
+            thickness: vec![1.0, 1.0, 1.0, 1.0, 1.0, 10.0],
+        };
+        let result = prune_branches(&mesh, &PruneOptions::default())
+            .expect("mesh with duplicate-position vertices should not error");
+        // spike [3,4,5]: branch_length=0.5, local_t≈4.0 → ratio≈0.125 < 1.0 → pruned
+        // body  [0,1,2]: branch_length≈10,  local_t=1.0 → ratio≈10   >> 1.0 → survives
+        assert_eq!(
+            result.mesh.triangles.len(), 1,
+            "body triangle must survive when spike has duplicate-position vertices"
+        );
+        assert_eq!(
+            result.metrics.pruned_triangle_count, 1,
+            "spike triangle must be pruned"
+        );
+        assert_eq!(
+            result.mesh.vertices.len(), 3,
+            "only the three body vertices survive (v0, v1, v2)"
+        );
+    }
+
     // ── Step 13: vertex-compaction test ──────────────────────────────────────
 
     /// After pruning the spike triangle, the spike apex vertex must be removed
@@ -635,6 +715,96 @@ mod tests {
             result.metrics.iterations >= 1,
             "at least one iteration ran"
         );
+    }
+
+    // ── Amendment: threshold-straddling tests (suggestion 5) ─────────────────
+    //
+    // These tests ensure the prune predicate `branch_length / local_thickness < ratio`
+    // is correctly sensitive to the configured threshold.  The spike fixture has
+    // ratio exactly 1.0; testing at 1.05 and 0.95 straddles the boundary.  A
+    // regression that flipped `<` to `<=` or changed the metric definition
+    // (e.g. min vs max edge length) would cause at least one of these to fail.
+
+    /// Shared fixture for threshold-straddling tests.
+    ///
+    /// Two triangles sharing edge (v0, v1):
+    /// - Body  [0, 1, 2]: branch_length ≈ 10.0, local_thickness = 1.0 → ratio ≈ 10 (always survives).
+    /// - Spike [0, 1, 3]: branch_length = 1.0,  local_thickness = 1.0 → ratio = 1.0 (straddles threshold).
+    fn threshold_straddle_fixture() -> MidSurfaceMesh {
+        MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],    // v0, thickness 1.0 — shared edge start
+                [1.0, 0.0, 0.0],    // v1, thickness 1.0 — shared edge end (length = 1.0)
+                [0.5, 10.0, 0.0],   // v2, thickness 1.0 — body apex (edge ≈ 10)
+                [0.5, -0.001, 0.0], // v3, thickness 1.0 — spike apex (edges ≈ 0.5)
+            ],
+            triangles: vec![[0, 1, 2], [0, 1, 3]],
+            thickness: vec![1.0, 1.0, 1.0, 1.0],
+        }
+    }
+
+    /// With `shell_branch_prune_ratio = 1.05`, the spike (ratio 1.0 < 1.05) is
+    /// pruned; the body (ratio ≈ 10 ≫ 1.05) survives.
+    #[test]
+    fn prune_branches_prunes_spike_just_below_threshold() {
+        let mesh = threshold_straddle_fixture();
+        let opts = PruneOptions {
+            shell_branch_prune_ratio: 1.05,
+            ..PruneOptions::default()
+        };
+        let result = prune_branches(&mesh, &opts).expect("valid mesh");
+        assert_eq!(
+            result.metrics.pruned_triangle_count, 1,
+            "spike (ratio=1.0) must be pruned when threshold=1.05"
+        );
+        assert_eq!(result.mesh.triangles.len(), 1, "body must survive");
+    }
+
+    /// With `shell_branch_prune_ratio = 0.95`, the spike (ratio 1.0 ≥ 0.95)
+    /// survives; no triangles are pruned.
+    #[test]
+    fn prune_branches_retains_spike_just_above_threshold() {
+        let mesh = threshold_straddle_fixture();
+        let opts = PruneOptions {
+            shell_branch_prune_ratio: 0.95,
+            ..PruneOptions::default()
+        };
+        let result = prune_branches(&mesh, &opts).expect("valid mesh");
+        assert_eq!(
+            result.metrics.pruned_triangle_count, 0,
+            "spike (ratio=1.0) must survive when threshold=0.95"
+        );
+        assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
+    }
+
+    /// With a very low threshold (0.05), the original spike (ratio ≈ 0.125)
+    /// falls above the threshold and is NOT pruned.  Verifies that the
+    /// `shell_branch_prune_ratio` parameter actually controls pruning — a
+    /// lower threshold means fewer pruned branches.
+    #[test]
+    fn prune_branches_retains_spike_when_threshold_too_low() {
+        // Re-uses the spike fixture from step 11:
+        // spike ratio ≈ 0.5/4.0 = 0.125; with threshold=0.05, spike survives.
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],   // v0, thickness 1.0
+                [0.5, 0.0, 0.0],   // v1, thickness 1.0
+                [0.25, 10.0, 0.0], // v2, thickness 1.0 — body apex
+                [0.25, -0.1, 0.0], // v3, thickness 10.0 — spike apex
+            ],
+            triangles: vec![[0, 1, 2], [0, 1, 3]],
+            thickness: vec![1.0, 1.0, 1.0, 10.0],
+        };
+        let opts = PruneOptions {
+            shell_branch_prune_ratio: 0.05, // below spike ratio ≈ 0.125
+            ..PruneOptions::default()
+        };
+        let result = prune_branches(&mesh, &opts).expect("valid mesh");
+        assert_eq!(
+            result.metrics.pruned_triangle_count, 0,
+            "spike (ratio≈0.125) must survive when threshold=0.05"
+        );
+        assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
     }
 
     // ── Step 9: no-prune baseline test ───────────────────────────────────────
