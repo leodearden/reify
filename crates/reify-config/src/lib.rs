@@ -734,23 +734,16 @@ mod tests {
 
     #[test]
     fn kernel_id_all_covers_every_variant() {
-        // Exhaustive match: compile error if a future variant is added without
-        // being listed here, forcing the contributor to update KernelId::ALL too.
-        fn count(id: KernelId) -> u8 {
-            match id {
-                KernelId::Occt
-                | KernelId::Manifold
-                | KernelId::Fidget
-                | KernelId::OpenVdb
-                | KernelId::Gmsh => 1,
-            }
-        }
-        let _ = count; // silence unused-function warning
-        // Dual safeguard: the exhaustive `match` above is the compile-time check
-        // (adding a new KernelId variant without listing it here is a compile
-        // error); this assertion is the runtime check (adding a variant to both
-        // the enum and the match without updating KernelId::ALL will flip this
-        // red). Both must be updated when a new variant is introduced.
+        // Compile-time guard: adding a KernelId variant without listing it here is
+        // a compile error, signalling that KernelId::ALL must also be extended.
+        let _exhaustive_guard = |id: KernelId| match id {
+            KernelId::Occt
+            | KernelId::Manifold
+            | KernelId::Fidget
+            | KernelId::OpenVdb
+            | KernelId::Gmsh => (),
+        };
+        // Pin ALL.len() so adding a variant without extending ALL fails this test.
         assert_eq!(KernelId::ALL.len(), 5);
     }
 }
