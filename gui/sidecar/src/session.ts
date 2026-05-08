@@ -159,6 +159,13 @@ export class SidecarSession {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
+    // Minimal 'error' listener to satisfy Node's EventEmitter contract: an unlistened-to
+    // 'error' event on the ChildProcess is rethrown via process.nextTick(() => { throw err }),
+    // which would kill the sidecar. This no-op prevents that crash for any proc error.
+    // See step-4 for the refined version that differentiates ABORT_ERR from other errors.
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    proc.on('error', () => {});
+
     // Attach an 'error' listener so an unhandled stream error cannot crash the sidecar process.
     // Error reporting for *correlated* writes flows through per-write callbacks (see writes below),
     // which capture the correct id for each write rather than the outer send_message id.
