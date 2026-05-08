@@ -125,6 +125,29 @@ mod tests {
         }
     }
 
+    // ── Step-7: out-of-range prescribed-position node index ──────────────────
+
+    /// Mirrors `compute_dirichlet_bcs_node_index_out_of_mesh_vertices_range_*`
+    /// from boundary.rs:635 — same overflow-safe index validation, same
+    /// structured failure shape.
+    #[test]
+    fn laplacian_smooth_with_node_index_out_of_mesh_vertices_range_returns_invalid_node_index() {
+        // 2 nodes → vertices.len() == 6; node 5 → base = 15 >= 6
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0],
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let result = laplacian_smooth(&mesh, &[(5, [9.0, 9.0, 9.0])], 1);
+        match result {
+            Err(LaplacianFailure::InvalidNodeIndex(idx)) => {
+                assert_eq!(idx, 5);
+            }
+            other => panic!("expected InvalidNodeIndex(5), got: {other:?}"),
+        }
+    }
+
     // ── Step-3: exhaustive variant fence for LaplacianFailure ─────────────────
     //
     // No-wildcard match guarantees that adding/removing/renaming a variant
