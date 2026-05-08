@@ -894,7 +894,10 @@ mod tests {
         let n_nodes = N_ELEMENTS + 3; // 140
 
         let k_e = element_stiffness_p1(&UNIT_TET_P1, &dimensionless_steel_like());
-        assert_eq!(k_e.n_dofs, 12, "P1 tet must have 12 DOFs (4 nodes × 3 axes)");
+        assert_eq!(
+            k_e.n_dofs, 12,
+            "P1 tet must have 12 DOFs (4 nodes × 3 axes)"
+        );
 
         // Sliding-window connectivity: tet i → [i, i+1, i+2, i+3].
         // Each consecutive pair shares a 3-node face, so every interior face
@@ -923,11 +926,8 @@ mod tests {
         // slot layout: (threads, i, j, p, d, delta, tol)
 
         for threads in [1_usize, 2, 3, 5, 7, 8] {
-            let par = assemble_global_stiffness(
-                n_nodes,
-                &elements,
-                AssemblyMode::Parallel { threads },
-            );
+            let par =
+                assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads });
             for i in 0..dim {
                 for j in 0..dim {
                     let d = read(&det, i, j);
