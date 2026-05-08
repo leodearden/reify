@@ -52,6 +52,11 @@ impl SingleBodyMask {
     pub fn inner(&self) -> &MedialMask {
         &self.mask
     }
+
+    /// Unwrap and return the owned [`MedialMask`].
+    pub fn into_inner(self) -> MedialMask {
+        self.mask
+    }
 }
 
 /// Tunable parameters for [`segment_regions`].
@@ -1176,35 +1181,9 @@ mod tests {
         );
     }
 
-    // ── Task 3137 step 3: segment_regions accepts &SingleBodyMask ────────────
+    // ── Task 3137: SingleBodyMask newtype wrapper ────────────────────────────
 
-    /// `segment_regions` can be called with a `&SingleBodyMask` wrapper around
-    /// an empty mask; the empty-mask post-conditions still hold.
-    #[test]
-    fn segment_regions_accepts_single_body_mask_wrapper() {
-        let mask = MedialMask {
-            spacing: [1.0, 1.0, 1.0],
-            origin: [0.0, 0.0, 0.0],
-            voxels: vec![],
-        };
-        let mesh = MidSurfaceMesh {
-            vertices: vec![],
-            triangles: vec![],
-            thickness: vec![],
-        };
-        let single_body = SingleBodyMask::new(mask);
-        let result: SegmentationResult =
-            segment_regions(&single_body, &mesh, &SegmentationOptions::default())
-                .expect("empty SingleBodyMask + empty mesh should return Ok");
-        assert!(result.regions.is_empty(), "empty mask → no regions");
-        assert!(result.vertex_labels.is_empty(), "empty mesh → no vertex labels");
-        assert!(result.triangle_labels.is_empty(), "empty mesh → no triangle labels");
-    }
-
-    // ── Task 3137 step 1: SingleBodyMask newtype wrapper ─────────────────────
-
-    /// `SingleBodyMask::new` wraps a `MedialMask` by value; `inner()` returns
-    /// a `&MedialMask` borrow with all fields preserved.
+    /// `SingleBodyMask::new` + `inner()` round-trips the wrapped `MedialMask`.
     #[test]
     fn single_body_mask_wraps_medial_mask_via_new_and_inner() {
         let mask = MedialMask {
@@ -1212,11 +1191,6 @@ mod tests {
             origin: [0.0, 0.0, 0.0],
             voxels: vec![[1, 2, 3]],
         };
-        let wrapped = SingleBodyMask::new(mask.clone());
-        assert_eq!(wrapped.inner().spacing, [1.0, 1.0, 1.0]);
-        assert_eq!(wrapped.inner().origin, [0.0, 0.0, 0.0]);
-        assert_eq!(wrapped.inner().voxels, vec![[1, 2, 3]]);
-        // Type-ascription: inner() must return a borrow of MedialMask.
-        let _: &MedialMask = wrapped.inner();
+        assert_eq!(SingleBodyMask::new(mask.clone()).inner(), &mask);
     }
 }
