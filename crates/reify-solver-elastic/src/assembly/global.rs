@@ -923,8 +923,16 @@ mod tests {
         // Track the worst-offending (threads, i, j) pair across the full sweep so
         // the failure message names the entry with the largest |Δ|/tol ratio, not
         // merely the first one encountered in row-major order.
-        let mut worst: Option<(usize, usize, usize, f64, f64, f64, f64)> = None;
-        // slot layout: (threads, i, j, p, d, delta, tol)
+        struct Worst {
+            threads: usize,
+            i: usize,
+            j: usize,
+            p: f64,
+            d: f64,
+            delta: f64,
+            tol: f64,
+        }
+        let mut worst: Option<Worst> = None;
 
         for threads in [1_usize, 2, 3, 5, 7, 8] {
             let par =
@@ -938,15 +946,15 @@ mod tests {
                     if delta >= tol {
                         let is_worse = worst
                             .as_ref()
-                            .is_none_or(|&(_, _, _, _, _, wd, wt)| delta / tol > wd / wt);
+                            .is_none_or(|w| delta / tol > w.delta / w.tol);
                         if is_worse {
-                            worst = Some((threads, i, j, p, d, delta, tol));
+                            worst = Some(Worst { threads, i, j, p, d, delta, tol });
                         }
                     }
                 }
             }
         }
-        if let Some((threads, i, j, p, d, delta, tol)) = worst {
+        if let Some(Worst { threads, i, j, p, d, delta, tol }) = worst {
             panic!(
                 "worst-offender across sweep: threads={threads} K_par[{i}][{j}] = {p} \
                  but K_det[{i}][{j}] = {d}; |Δ| = {delta} ≥ tol = {tol} \
