@@ -28,6 +28,7 @@
 //! this file should grow to mirror `field_source_kinds_smoke.rs`'s 4-level
 //! pattern.
 
+use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 use reify_types::ModulePath;
 
 const BLOCK_INERTIA_PATH: &str = concat!(
@@ -39,6 +40,24 @@ const FILLET_TOP_EDGES_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/topology_selectors/fillet_top_edges.ri"
 );
+
+const ALL_TOPOLOGY_SELECTORS_WIRING_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/topology_selectors/all_topology_selectors_wiring.ri"
+);
+
+#[test]
+fn all_topology_selectors_wiring_compiles_with_stdlib() {
+    let source = std::fs::read_to_string(ALL_TOPOLOGY_SELECTORS_WIRING_PATH)
+        .expect("examples/topology_selectors/all_topology_selectors_wiring.ri should exist");
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "examples/topology_selectors/all_topology_selectors_wiring.ri should compile with \
+         no error-severity diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+}
 
 #[test]
 fn block_inertia_ri_parses_cleanly() {
