@@ -181,7 +181,7 @@ impl Mitc3Plus {
     /// - At A=(½,0): output `γ_ξζ = gamma_xi_zeta_at_a`  (tying identity for A).
     /// - At B=(0,½): output `γ_ηζ = gamma_eta_zeta_at_b`  (tying identity for B).
     /// - Constant when paired inputs match: `c = 0`, output is uniform.
-    /// - Affine in `(ξ, η)`: the formula has a constant base + linear correction term.
+    /// - Affine in `(ξ, η)`: constant base term plus a linear `η·c` / `−ξ·c` correction.
     pub fn interpolate_assumed_shear(
         &self,
         sampled: TyingShears,
@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn interpolate_assumed_shear_is_linear_in_reference_coords() {
+    fn interpolate_assumed_shear_is_affine_in_reference_coords() {
         let sampled = TyingShears {
             gamma_xi_zeta_at_a: 1.0,
             gamma_eta_zeta_at_b: 1.0,
