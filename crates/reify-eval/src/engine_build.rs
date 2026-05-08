@@ -603,7 +603,7 @@ impl Engine {
 
     /// Full build: evaluate, check constraints, produce geometry.
     ///
-    /// # Tolerance wiring (task 2874)
+    /// # Tolerance wiring (tasks 2874, 3103)
     ///
     /// `build` (alongside [`Self::build_snapshot`],
     /// [`Self::tessellate_realizations`], and [`Self::tessellate_snapshot`])
@@ -613,19 +613,16 @@ impl Engine {
     ///
     /// 1. **Imported-tolerance-promise diagnostics** — invokes
     ///    [`Self::emit_imported_tolerance_promise_diagnostics_for_module`]
-    ///    AFTER `eval()` (and BEFORE `check()` clears tolerance scope) so
-    ///    `BuildResult.diagnostics` carries every
-    ///    `ImportedTolerancePromiseInsufficient` /
-    ///    `InputTolerancePromiseIsZero` warning derivable from the active
-    ///    purpose bindings. The two snapshot surfaces (`build_snapshot` and
-    ///    `tessellate_snapshot`) emit the same diagnostics AFTER
-    ///    `check_constraints_against_templates`, since neither calls `eval()`.
-    /// 2. **Per-realization demanded tolerance** — precomputes
+    ///    AFTER `check()`. Task 3103 consolidated the placement by preserving
+    ///    `active_purpose_bindings` across `eval()` (see `engine_eval.rs`), so
+    ///    the pre-check workaround is no longer required. All four surfaces now
+    ///    emit AFTER their respective constraint check.
+    /// 2. **Per-realization demanded tolerance** — computes
     ///    `(template_name, entity) → Option<f64>` via the
     ///    [`Engine::demanded_tolerance_for_output`] →
-    ///    [`Engine::active_tolerance_for`] priority chain BEFORE `check()`
-    ///    so the eval-side scope clear cannot strand the tolerance-routing
-    ///    surface from the realization loop.
+    ///    [`Engine::active_tolerance_for`] priority chain AFTER `check()`.
+    ///    Eval preservation (task 3103) ensures the scope survives the
+    ///    internal `eval()` round-trip inside `check()`.
     /// 3. **Per-stage tolerance budget** — routes the demanded tolerance
     ///    through [`Engine::compute_realization_tolerance_budget`] against
     ///    [`crate::kernel_registry::collect_registry`] so multi-kernel
@@ -645,44 +642,30 @@ impl Engine {
     /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
     /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
+        // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
+        // eval() preserves active_purpose_bindings across the call, making the
+        // pre-check workaround obsolete. All four surfaces (build /
+        // build_snapshot / tessellate_realizations / tessellate_snapshot) now
+        // share the post-check placement. See engine_eval.rs for the
+        // preservation site (task 3103).
+        let check_result = self.check(module);
+        let mut diagnostics = check_result.diagnostics;
+
         // Task 2874: emit imported-tolerance-promise diagnostics
         // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
         // for every (Input × Output × active-purpose-binding) triple recognised
-        // in the pre-`check()` snapshot. See
+        // in the post-`check()` snapshot. See
         // `Engine::emit_imported_tolerance_promise_diagnostics_for_module` for
         // the recognition shapes and code-agnostic forwarding contract.
-        //
-        // PLACEMENT: BEFORE `self.check(module)` rather than after, because
-        // `check()` calls `eval()` which clears `active_purpose_bindings` and
-        // `active_tolerance_scope` (engine_eval.rs:1149-1150). Running the
-        // helper after check would always observe empty bindings — no
-        // diagnostic could ever fire from production. The pre-check snapshot
-        // is the user's intent at the moment build() is invoked, which is the
-        // semantically correct view for diagnostic emission. Mirrored in
-        // `tessellate_realizations`. `build_snapshot` does NOT call eval, so
-        // its placement (after `check_constraints_against_templates`) is fine.
-        let mut tolerance_diagnostics: Vec<Diagnostic> = Vec::new();
-        self.emit_imported_tolerance_promise_diagnostics_for_module(
-            module,
-            &mut tolerance_diagnostics,
-        );
+        self.emit_imported_tolerance_promise_diagnostics_for_module(module, &mut diagnostics);
 
         // Task 2874 step-6: precompute per-realization demanded tolerance
-        // ALSO BEFORE `self.check(module)` for the same reason as the
-        // diagnostic emission helper above — `check()` calls `eval()`
-        // which clears `active_purpose_bindings` / `active_tolerance_scope`
-        // (engine_eval.rs:1149-1150). Computing `demanded_tols` after
-        // `check()` would always observe an empty tolerance scope, so the
-        // priority chain `demanded_tolerance_for_output → active_tolerance_for`
-        // would always return `None`, and the cache would never populate.
-        // Mirrored in `tessellate_realizations`. `build_snapshot` does NOT
-        // call eval, so its placement (after the constraint check) remains
-        // semantically correct.
+        // AFTER `self.check(module)` — eval() now preserves active_purpose_bindings
+        // (task 3103), so the priority chain `demanded_tolerance_for_output →
+        // active_tolerance_for` correctly reads the preserved/re-injected scope.
+        // `build_snapshot` does NOT call eval, so its placement (after the
+        // constraint check) was already semantically correct.
         let demanded_tols = self.compute_demanded_tols(module);
-
-        let check_result = self.check(module);
-        let mut diagnostics = check_result.diagnostics;
-        diagnostics.extend(tolerance_diagnostics);
         // Task 2320: `values` is moved out of `check_result` here so the
         // per-template post-process can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
@@ -849,10 +832,14 @@ impl Engine {
     ///
     /// `tessellate_realizations` mirrors [`Self::build`] across all four
     /// production-wiring contracts — see that method's docstring for the
-    /// full description. The snapshot variant [`Self::tessellate_snapshot`]
-    /// participates in the same four-contract mirror with the same placement
-    /// nuance as [`Self::build_snapshot`] (diagnostics emit AFTER constraint
-    /// check, not before, since no eval() runs). The integration smoke
+    /// full description (task 2874). Task 3103 consolidated the helper
+    /// placement: all four surfaces (build / build_snapshot /
+    /// tessellate_realizations / tessellate_snapshot) now emit diagnostics
+    /// and compute demanded tolerances AFTER their respective constraint check.
+    /// The snapshot variant [`Self::tessellate_snapshot`] was already
+    /// post-check; the non-snapshot surfaces gained the same placement once
+    /// eval() preserves `active_purpose_bindings` across the call. The
+    /// integration smoke
     /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
     /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs` pins all four
     /// axes (diagnostic emission, demanded-tolerance routing,
@@ -863,40 +850,35 @@ impl Engine {
     /// tessellation precision), whereas `build` applies it at the
     /// realization-cache key.
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
-        // Task 2874: emit imported-tolerance-promise diagnostics BEFORE
-        // `self.check(module)` for the same reason as `build` — see that
-        // function for the placement rationale (eval() inside check() clears
-        // `active_purpose_bindings`). Mirrored across `build` /
-        // `tessellate_realizations`; `build_snapshot` does not call eval so
-        // it can emit the diagnostic after `check_constraints_against_templates`.
-        let mut tolerance_diagnostics: Vec<Diagnostic> = Vec::new();
-        self.emit_imported_tolerance_promise_diagnostics_for_module(
-            module,
-            &mut tolerance_diagnostics,
-        );
+        // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
+        // eval() preserves active_purpose_bindings across the call, making the
+        // pre-check workaround obsolete. All four surfaces (build /
+        // build_snapshot / tessellate_realizations / tessellate_snapshot) now
+        // share the post-check placement. See engine_eval.rs for the
+        // preservation site (task 3103).
+        let check_result = self.check(module);
+        let mut diagnostics = check_result.diagnostics;
+
+        // Task 2874: emit imported-tolerance-promise diagnostics AFTER
+        // `self.check(module)` — eval() now preserves active_purpose_bindings
+        // (task 3103), so the helper observes the preserved/re-injected scope.
+        // `build_snapshot` does not call eval so it already emitted after
+        // `check_constraints_against_templates`.
+        self.emit_imported_tolerance_promise_diagnostics_for_module(module, &mut diagnostics);
 
         // Task 2874 step-6: precompute per-realization demanded tolerance
-        // ALSO BEFORE `self.check(module)` because `check()` calls `eval()`
-        // which clears `active_purpose_bindings` / `active_tolerance_scope`
-        // (engine_eval.rs:1149-1150). Mirrored in `build`. Missing keys
-        // are treated as `None` by `tessellate_from_values` callers.
+        // AFTER `self.check(module)` — eval() now preserves active_purpose_bindings
+        // (task 3103), so the priority chain `demanded_tolerance_for_output →
+        // active_tolerance_for` correctly reads the preserved/re-injected scope.
+        // Missing keys are treated as `None` by `tessellate_from_values` callers.
         let demanded_tols = self.compute_demanded_tols(module);
 
         // Task 2874 step-12: precompute per-realization tessellation budget
-        // by routing the per-output demanded tolerance — falling back to the
-        // module-level `#precision` pragma when no per-output demand exists —
-        // through `compute_realization_tolerance_budget` against the
-        // inventory-collected kernel registry. The result is the budgeted
-        // tolerance we hand to `kernel.tessellate(handle, budget)`. Done
-        // BEFORE `self.check(module)` for the same reason as `demanded_tols`:
-        // `check()` clears tolerance scope. Mirrored in `tessellate_snapshot`.
+        // AFTER `self.check(module)` for the same reason as `demanded_tols`.
+        // Mirrored in `tessellate_snapshot`.
         let registry_owned = crate::kernel_registry::collect_registry();
         let tessellation_budgets =
             self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
-
-        let check_result = self.check(module);
-        let mut diagnostics = check_result.diagnostics;
-        diagnostics.extend(tolerance_diagnostics);
         // Task 2320 amendment: `values` is moved into a local mutable binding
         // here so `tessellate_from_values` can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
