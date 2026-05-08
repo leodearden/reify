@@ -63,8 +63,28 @@ impl ReferenceElement for HexP1 {
         n
     }
 
-    fn shape_grad_at(&self, _coord: ReferenceCoord) -> Vec<[f64; 3]> {
-        unimplemented!("step-4 will implement HexP1::shape_grad_at")
+    /// Shape-function gradients in reference coordinates.
+    ///
+    /// Returns `[∇N_0, …, ∇N_7]` where each row is
+    /// `[∂N_i/∂ξ, ∂N_i/∂η, ∂N_i/∂ζ]`.  Derived via the product rule:
+    ///
+    /// ```text
+    /// ∇N_i = (1/8) [ξ_i (1 + η_i η)(1 + ζ_i ζ),
+    ///               η_i (1 + ξ_i ξ)(1 + ζ_i ζ),
+    ///               ζ_i (1 + ξ_i ξ)(1 + η_i η)]
+    /// ```
+    fn shape_grad_at(&self, coord: ReferenceCoord) -> Vec<[f64; 3]> {
+        let ReferenceCoord { xi, eta, zeta } = coord;
+        let mut g = Vec::with_capacity(8);
+        for s in &VERTEX_SIGNS {
+            let (sx, sy, sz) = (s[0], s[1], s[2]);
+            g.push([
+                (sx / 8.0) * (1.0 + sy * eta)  * (1.0 + sz * zeta),
+                (sy / 8.0) * (1.0 + sx * xi)   * (1.0 + sz * zeta),
+                (sz / 8.0) * (1.0 + sx * xi)   * (1.0 + sy * eta),
+            ]);
+        }
+        g
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
