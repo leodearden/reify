@@ -315,17 +315,16 @@ impl Engine {
     /// design decisions").
     ///
     /// Reads the static linker-collected set of [`reify_types::KernelRegistration`] records
-    /// once at startup, picks the lexicographically smallest entry by `name`
-    /// (matching the dispatcher's tie-break contract and the `collect_registry`
-    /// BTreeMap key ordering), invokes its `factory` to instantiate a
-    /// [`GeometryKernel`], and forwards to [`Engine::with_prelude`] with the
-    /// embedded stdlib.
+    /// once at startup, picks the **BRep-preferring lex-smallest** entry (see
+    /// [`crate::kernel_registry::pick_lexmin_brep_kernel`]), invokes its
+    /// `factory` to instantiate a [`GeometryKernel`], and forwards to
+    /// [`Engine::with_prelude`] with the embedded stdlib.
     ///
     /// # v0.2 single-kernel scope
     ///
     /// In v0.2 OCCT is the only adapter that submits a registration (gated on
     /// `cfg(has_occt)` in `crates/reify-kernel-occt/src/register.rs`), so the
-    /// lex-smallest pick is unambiguous. In v0.3 once additional adapters
+    /// BRep-preferring pick is unambiguous. In v0.3 once additional adapters
     /// (`reify-kernel-manifold`, `-fidget`, `-openvdb`) ship, the per-op
     /// dispatch decision moves into [`crate::dispatcher::dispatch`] — which
     /// already accepts a `&BTreeMap<String, &CapabilityDescriptor>`
@@ -341,20 +340,22 @@ impl Engine {
     /// None)`. The existing build-path error surface ("no geometry kernel
     /// registered") fires cleanly without a non-functional stub kernel.
     ///
-    /// # Manifold stub feature gate
+    /// # BRep-preferring picker (task 3224)
     ///
-    /// `reify-kernel-manifold`'s `inventory::submit!` is gated on
-    /// `#[cfg(feature = "stub_register")]` (no `cfg(test)` clause — see
-    /// rationale in `crates/reify-kernel-manifold/src/register.rs`).  In
-    /// production builds without that feature the Manifold stub contributes
-    /// **no entry** to `kernel_registry::registry()`, so the lex-min
-    /// tie-break in [`crate::kernel_registry::pick_lexmin_kernel`] is a
-    /// no-op for that kernel.  This prevents `"manifold" < "occt"` from
-    /// silently routing geometry ops through an unimplemented stub when no
-    /// operator has explicitly requested the Manifold kernel.  Integration
-    /// test binaries activate the feature via a self-dev-dep in
-    /// `crates/reify-kernel-manifold/Cargo.toml` — see the
-    /// `stub_register` feature comment there for the full rationale.
+    /// This constructor uses [`crate::kernel_registry::pick_lexmin_brep_kernel`]
+    /// rather than the pure [`crate::kernel_registry::pick_lexmin_kernel`].  The
+    /// distinction matters if a binary ever links both `reify-kernel-manifold`
+    /// (Mesh-only stub; name `"manifold"`) and `reify-kernel-occt` (full BRep;
+    /// name `"occt"`): `"manifold" < "occt"` in ASCII order, so a pure lex-min
+    /// pick would silently route every BRep op through the Manifold stub which
+    /// returns `OperationFailed`.  The BRep-preferring picker avoids this by
+    /// filtering for BRep-capable kernels first.
+    ///
+    /// When no registered kernel claims any BRep pair (e.g. a hypothetical
+    /// Mesh-only build), the picker falls back to pure lex-min — a Mesh-only
+    /// binary still wants *some* kernel.  Empty-registry semantics are
+    /// unchanged: `None` is returned and forwarded to `Engine::with_prelude`
+    /// as before.
     ///
     /// # Why additive (not a replacement)
     ///
@@ -366,23 +367,23 @@ impl Engine {
     ///
     /// # Operator visibility
     ///
-    /// A structured tracing event is emitted after the lex-min pick; see
+    /// A structured tracing event is emitted after the pick; see
     /// [`crate::kernel_registry::emit_kernel_selection`] for the level-selection
     /// contract. The event fires only when a [`tracing::Subscriber`] is installed,
     /// so bare tests and binaries that install no subscriber are unaffected.
     pub fn with_registered_kernel(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
-        // Centralised lex-min: both this constructor and (in v0.3+) any
-        // dispatcher selection share the same tie-break helper, so the
-        // "lex-smallest by `name`" invariant lives in one place rather than
-        // being independently re-derived. The helper reads the memoized
-        // [`crate::kernel_registry::registry`] BTreeMap, so the inventory walk
-        // happens at most once per process even if other call paths
-        // (collect_registry, future dispatcher wiring) also hit the registry.
-        let picked = crate::kernel_registry::pick_lexmin_kernel();
+        // BRep-preferring lex-min picker (task 3224): uses pick_lexmin_brep_kernel
+        // rather than pick_lexmin_kernel so a Mesh-only kernel registered under a
+        // lex-smaller name (e.g. "manifold" < "occt") cannot silently win the pick
+        // when a BRep-capable kernel is also registered. The fallback to pure lex-min
+        // (when no entry claims a BRep pair) preserves Mesh-only-binary semantics.
+        // The helper reads the OnceLock-memoized registry(), so the inventory walk
+        // happens at most once per process even if other call paths also hit it.
+        let picked = crate::kernel_registry::pick_lexmin_brep_kernel();
         if let Some(reg) = picked {
             let total = crate::kernel_registry::registry().len();
-            // Same `&'static` map as `pick_lexmin_kernel` saw — `registry()` is
-            // `OnceLock`-memoized, so the count cannot disagree with the pick.
+            // Same `&'static` map as pick_lexmin_brep_kernel saw — registry() is
+            // OnceLock-memoized, so the count cannot disagree with the pick.
             crate::kernel_registry::emit_kernel_selection(reg.name, total);
         }
         let kernel: Option<Box<dyn GeometryKernel>> = picked.map(|reg| (reg.factory)());
