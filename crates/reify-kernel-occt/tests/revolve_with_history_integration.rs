@@ -47,6 +47,11 @@ fn make_offset_rect_profile(kernel: &mut OcctKernelHandle) -> reify_types::Geome
 /// face-normal filter.
 const DIR_TOL: f64 = 1e-6;
 
+/// |dot(n, axis)| for normal-vs-axis alignment checks.
+fn axis_dot_abs(n: [f64; 3], axis: [f64; 3]) -> f64 {
+    (n[0] * axis[0] + n[1] * axis[1] + n[2] * axis[2]).abs()
+}
+
 /// `BRepPrimAPI_MakeRevol` (PARTIAL — 180°): the test:
 /// - builds a 5×10mm rect profile offset to x=17.5mm (left edge at 15mm);
 /// - calls `revolve_with_history(profile, axis_origin=[0,0,0],
@@ -340,7 +345,7 @@ fn full_revolve_with_history_reports_no_caps() {
         let n = kernel
             .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
             .expect("face_outward_unit_normal_for_test should succeed");
-        let dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
+        let dot = axis_dot_abs(n, axis_dir);
         assert!(
             dot > 1.0 - DIR_TOL,
             "synthesised annular-disk face for radial edge e{radial_edge} must \
@@ -362,7 +367,7 @@ fn full_revolve_with_history_reports_no_caps() {
         let n = kernel
             .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
             .expect("face_outward_unit_normal_for_test should succeed");
-        let dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
+        let dot = axis_dot_abs(n, axis_dir);
         assert!(
             dot < DIR_TOL,
             "OCCT-reported cylindrical face for axial edge e{axial_edge} must \
@@ -541,7 +546,7 @@ fn full_revolve_triangle_profile_synthesis_regression() {
     let n = kernel
         .face_outward_unit_normal_for_test(result_faces[radial.result_subshape_index as usize])
         .expect("face_outward_unit_normal_for_test should succeed");
-    let radial_dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
+    let radial_dot = axis_dot_abs(n, axis_dir);
     assert!(
         radial_dot > 1.0 - DIR_TOL,
         "synthesised annular-disk face for radial edge e0 must have \
@@ -562,7 +567,7 @@ fn full_revolve_triangle_profile_synthesis_regression() {
         let n = kernel
             .face_outward_unit_normal_for_test(result_faces[rec.result_subshape_index as usize])
             .expect("face_outward_unit_normal_for_test should succeed");
-        let slanted_dot = (n[0] * axis_dir[0] + n[1] * axis_dir[1] + n[2] * axis_dir[2]).abs();
+        let slanted_dot = axis_dot_abs(n, axis_dir);
         assert!(
             slanted_dot < 1.0 - DIR_TOL,
             "OCCT-reported conical face for slanted edge e{slanted_idx} must have \
@@ -855,4 +860,10 @@ fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
         &[0_u32, 0, 100, 0, 1, 200, 0, 2, 300],
         "stable-sort must reorder by parent_subshape_index (0 < 1 < 2)"
     );
+}
+
+/// Pins the `.abs()` branch: anti-parallel input (dot = -1.0) → 1.0.
+#[test]
+fn axis_dot_abs_returns_absolute_dot_product() {
+    assert_eq!(axis_dot_abs([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]), 1.0);
 }

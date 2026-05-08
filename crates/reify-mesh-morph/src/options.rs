@@ -23,7 +23,7 @@ use crate::types::{InversionDetails, MetricsBreached, SolverErrorPayload};
 ///
 /// The exhaustive contract test in `options::tests` acts as a compile-fence:
 /// adding, removing, or renaming a variant breaks the test immediately.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MorphFailure {
     /// The edit was rejected by the eligibility predicate (task #3).
     ///
@@ -130,49 +130,41 @@ mod tests {
 
     #[test]
     fn morph_failure_four_variants_construct_and_pattern_match_exhaustively() {
-        let variants = [
-            MorphFailure::Ineligible(Reason::StructuralChange),
-            MorphFailure::QualityHardFail(InversionDetails {
-                element_index: 7,
-                jacobian: -1.0,
-            }),
-            MorphFailure::QualitySoftFail(MetricsBreached {
-                min_scaled_jacobian: Some(0.10),
-                pct_below_025: Some(0.02),
-                max_aspect_ratio_increase: Some(2.5),
-            }),
-            MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix")),
-        ];
+        let ineligible = MorphFailure::Ineligible(Reason::StructuralChange);
+        let hard_fail = MorphFailure::QualityHardFail(InversionDetails {
+            element_index: 7,
+            jacobian: -1.0,
+        });
+        let soft_fail = MorphFailure::QualitySoftFail(MetricsBreached {
+            min_scaled_jacobian: Some(0.10),
+            pct_below_025: Some(0.02),
+            max_aspect_ratio_increase: Some(2.5),
+        });
+        let solver_err =
+            MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix"));
 
-        for failure in variants {
-            // Exhaustive match — no wildcard arm. Adding or renaming a variant
-            // in MorphFailure breaks this test, which is the intended contract lock.
-            // Each arm asserts on the carried payload.
+        // Exhaustive compile-fence: a no-wildcard match over each of the four
+        // locally-bound variants ensures that adding, removing, or renaming a
+        // variant in MorphFailure breaks compilation immediately — the contract
+        // the doc-comment on MorphFailure advertises. Each arm also probes the
+        // carried payload via a field accessor so a constructor that drops or
+        // swaps a field is caught (not merely PartialEq reflexivity).
+        for failure in [&ineligible, &hard_fail, &soft_fail, &solver_err] {
             match failure {
                 MorphFailure::Ineligible(reason) => {
-                    assert!(
-                        matches!(reason, Reason::StructuralChange),
-                        "unexpected reason: {reason:?}"
-                    );
+                    assert_eq!(*reason, Reason::StructuralChange);
                 }
-                MorphFailure::QualityHardFail(InversionDetails {
-                    element_index: idx,
-                    jacobian: j,
-                }) => {
-                    assert_eq!(idx, 7);
-                    assert!((j - -1.0).abs() < 1e-12);
+                MorphFailure::QualityHardFail(d) => {
+                    assert_eq!(d.element_index, 7);
+                    assert_eq!(d.jacobian, -1.0);
                 }
-                MorphFailure::QualitySoftFail(MetricsBreached {
-                    min_scaled_jacobian,
-                    pct_below_025,
-                    max_aspect_ratio_increase,
-                }) => {
-                    assert!((min_scaled_jacobian.unwrap() - 0.10).abs() < 1e-12);
-                    assert!((pct_below_025.unwrap() - 0.02).abs() < 1e-12);
-                    assert!((max_aspect_ratio_increase.unwrap() - 2.5).abs() < 1e-12);
+                MorphFailure::QualitySoftFail(m) => {
+                    assert_eq!(m.min_scaled_jacobian, Some(0.10));
+                    assert_eq!(m.pct_below_025, Some(0.02));
+                    assert_eq!(m.max_aspect_ratio_increase, Some(2.5));
                 }
-                MorphFailure::SolverError(payload) => {
-                    assert_eq!(payload.message(), "singular stiffness matrix");
+                MorphFailure::SolverError(p) => {
+                    assert_eq!(p.message(), "singular stiffness matrix");
                 }
             }
         }

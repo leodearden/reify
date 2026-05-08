@@ -33,6 +33,17 @@
 //! OpenVDB FFI lands, the storage backing can be swapped behind the same
 //! public API without changing T2/T3/T4 callers.
 //!
+//! # Mid-surface mesher smoke test (T9)
+//!
+//! ```
+//! use reify_shell_extract::{mesh_mid_surface, MesherOptions, MesherResult, MidSurfaceMesh};
+//!
+//! let mesh = MidSurfaceMesh { vertices: vec![], triangles: vec![], thickness: vec![] };
+//! let result: MesherResult =
+//!     mesh_mid_surface(&mesh, &MesherOptions::default()).unwrap();
+//! assert!(result.mesh.vertices.is_empty() && result.metrics.triangle_count == 0);
+//! ```
+//!
 //! # Region-segmentation smoke test
 //!
 //! ```
@@ -108,10 +119,14 @@
 //! ```
 
 pub mod medial;
+pub mod mesher;
 pub mod mid_surface;
 pub mod segmentation;
 
 pub use medial::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
+pub use mesher::{
+    mesh_mid_surface, MesherError, MesherOptions, MesherResult, QualityMetrics,
+};
 pub use mid_surface::{
     MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extract_mid_surface,
 };

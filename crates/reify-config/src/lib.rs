@@ -731,4 +731,19 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn kernel_id_all_covers_every_variant() {
+        // Compile-time guard: adding a KernelId variant without listing it here is
+        // a compile error, signalling that KernelId::ALL must also be extended.
+        let _exhaustive_guard = |id: KernelId| match id {
+            KernelId::Occt
+            | KernelId::Manifold
+            | KernelId::Fidget
+            | KernelId::OpenVdb
+            | KernelId::Gmsh => (),
+        };
+        // Pin ALL.len() so adding a variant without extending ALL fails this test.
+        assert_eq!(KernelId::ALL.len(), 5);
+    }
 }

@@ -7,6 +7,8 @@
 
 use crate::medial::MedialMask;
 use crate::mid_surface::MidSurfaceMesh;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::VecDeque;
 
 /// Tunable parameters for [`segment_regions`].
 ///
@@ -201,20 +203,11 @@ pub fn segment_regions(
         });
     }
 
-    use std::collections::{HashMap, HashSet, VecDeque};
-
-    // PERF (deferred): uses the default SipHash hasher, which is correct but
-    // slower than necessary on 12-byte `[i32; 3]` keys.  For PRD-realistic
-    // 256³ grids (~16 M active voxels), switching to `FxHashMap`/`FxHashSet`
-    // (rustc-hash crate) or a dense index-based representation would be
-    // worthwhile.  Cross-reference: medial.rs carries the same note in its
-    // deferred-optimization list.
-
     // Build O(1) membership lookup.
-    let mask_set: HashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
+    let mask_set: FxHashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
 
     // BFS 6-face connected-component labelling.
-    let mut voxel_to_label: HashMap<[i32; 3], u32> = HashMap::new();
+    let mut voxel_to_label: FxHashMap<[i32; 3], u32> = FxHashMap::default();
     let mut region_voxels: Vec<Vec<[i32; 3]>> = Vec::new();
     let mut next_label: u32 = 0;
 
@@ -276,10 +269,11 @@ pub fn segment_regions(
         let f: [f64; 3] = std::array::from_fn(|a| {
             (world[a] - mask.origin[a]) / mask.spacing[a]
         });
-        // Enumerate the 8 floor/ceil corner candidates.
-        'candidate: for dz in [f[2].floor() as i32, f[2].ceil() as i32] {
-            for dy in [f[1].floor() as i32, f[1].ceil() as i32] {
-                for dx in [f[0].floor() as i32, f[0].ceil() as i32] {
+        // Enumerate unique floor/ceil corner candidates (1–8 per vertex).
+        // Integer-aligned axes yield one candidate; fractional axes yield two.
+        'candidate: for dz in axis_floor_ceil_unique(f[2]) {
+            for dy in axis_floor_ceil_unique(f[1]) {
+                for dx in axis_floor_ceil_unique(f[0]) {
                     let candidate = [dx, dy, dz];
                     if let Some(&lbl) = voxel_to_label.get(&candidate) {
                         vertex_labels[vi] = lbl;
@@ -404,8 +398,24 @@ pub fn segment_regions(
     })
 }
 
+/// Yield the unique integer voxel indices that bracket `coord` on one axis.
+///
+/// - If `coord` is integer-aligned (`floor == ceil`), yields a single value.
+/// - If `coord` is fractional, yields `floor` then `ceil` (two distinct values).
+///
+/// Allocation-free: returns a chained iterator of at most two elements.
+pub(crate) fn axis_floor_ceil_unique(
+    coord: f64,
+) -> impl Iterator<Item = i32> {
+    debug_assert!(coord.is_finite(), "axis_floor_ceil_unique: coord must be finite (got {coord})");
+    let floor = coord.floor() as i32;
+    let ceil = coord.ceil() as i32;
+    std::iter::once(floor).chain((floor != ceil).then_some(ceil))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::axis_floor_ceil_unique;
     use std::collections::HashSet;
 
     use crate::mid_surface::{extract_mid_surface, MidSurfaceOptions};
@@ -899,6 +909,85 @@ mod tests {
             result.regions[0].classification,
             RegionClassification::TetEligible,
             "ratio ≈ 0.125 > 0.001 threshold → TetEligible"
+        );
+    }
+
+    // ── Task 3136: axis_floor_ceil_unique dedup ──────────────────────────────
+
+    /// `axis_floor_ceil_unique` must yield a single value for integer-aligned
+    /// coordinates and two distinct values for fractional coordinates.
+    #[test]
+    fn axis_floor_ceil_unique_dedups_integer_coords() {
+        assert_eq!(
+            axis_floor_ceil_unique(0.0).collect::<Vec<_>>(),
+            vec![0],
+            "0.0 is integer-aligned → single yield"
+        );
+        assert_eq!(
+            axis_floor_ceil_unique(-3.0).collect::<Vec<_>>(),
+            vec![-3],
+            "-3.0 is integer-aligned → single yield"
+        );
+        assert_eq!(
+            axis_floor_ceil_unique(0.5).collect::<Vec<_>>(),
+            vec![0, 1],
+            "0.5 is fractional → floor=0, ceil=1"
+        );
+        assert_eq!(
+            axis_floor_ceil_unique(-1.5).collect::<Vec<_>>(),
+            vec![-2, -1],
+            "-1.5 is fractional → floor=-2, ceil=-1"
+        );
+    }
+
+    /// The triple-nested loop over `axis_floor_ceil_unique` must visit the
+    /// correct number of unique candidates: 1 for all-integer coords, up to
+    /// 8 for all-fractional coords.
+    #[test]
+    fn segment_regions_corner_enumeration_visits_each_unique_candidate_once() {
+        fn count_candidates(f: [f64; 3]) -> usize {
+            let mut n = 0usize;
+            for _dz in axis_floor_ceil_unique(f[2]) {
+                for _dy in axis_floor_ceil_unique(f[1]) {
+                    for _dx in axis_floor_ceil_unique(f[0]) {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        }
+
+        assert_eq!(count_candidates([0.0, 0.0, 0.0]), 1, "all-integer → 1 candidate");
+        assert_eq!(count_candidates([0.5, 0.0, 0.0]), 2, "one-fractional → 2 candidates");
+        assert_eq!(count_candidates([0.5, 0.5, 0.0]), 4, "two-fractional → 4 candidates");
+        assert_eq!(count_candidates([0.5, 0.5, 0.5]), 8, "all-fractional → 8 candidates");
+    }
+
+    /// Regression: a vertex whose world position maps to an integer voxel index
+    /// (floor == ceil on every axis) must still be correctly labeled.
+    /// This exercises the dedup path's single-candidate case.
+    #[test]
+    fn segment_regions_correctly_labels_vertex_at_integer_voxel_position() {
+        // Single voxel at index [3, 4, 5].
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[3, 4, 5]],
+        };
+        // One vertex whose fractional index is exactly [3.0, 4.0, 5.0].
+        // With origin=[0,0,0] and spacing=[1,1,1]:
+        //   f[a] = (world[a] - origin[a]) / spacing[a] = world[a].
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[3.0, 4.0, 5.0]],
+            triangles: vec![],
+            thickness: vec![1.0],
+        };
+        let result = segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            .expect("single voxel + single vertex → Ok");
+        assert_eq!(
+            result.vertex_labels,
+            vec![0],
+            "vertex at integer voxel position must be labeled with the only region (0)"
         );
     }
 

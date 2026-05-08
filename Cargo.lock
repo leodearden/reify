@@ -4159,6 +4159,7 @@ name = "reify-shell-extract"
 version = "0.1.0"
 dependencies = [
  "reify-types",
+ "rustc-hash",
 ]
 
 [[package]]

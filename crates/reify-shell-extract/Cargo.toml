@@ -7,3 +7,4 @@ description = "Voxel-medial mid-surface extraction for v0.4 shell-element FEA (P
 
 [dependencies]
 reify-types.workspace = true
+rustc-hash = "2"

@@ -32,6 +32,7 @@
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
 //!     IsotropicElastic,
 //!     ShellStress,
+//!     ShellElementStress, shell_element_frame, shell_element_stress,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -68,6 +69,27 @@
 //! assert_eq!(ss.top, field, "homogeneous: top must equal input");
 //! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
 //! assert_eq!(ss.bottom, field, "homogeneous: bottom must equal input");
+//!
+//! // T7 smoke tests: shell_element_frame orthonormality + shell_element_stress zero-DOF regression.
+//! let frame_mat: [[f64; 3]; 3] = shell_element_frame(&nodes);
+//! // All three rows of the local-to-global rotation matrix must have unit norm.
+//! for i in 0..3 {
+//!     let norm_sq = frame_mat[i][0]*frame_mat[i][0]
+//!         + frame_mat[i][1]*frame_mat[i][1]
+//!         + frame_mat[i][2]*frame_mat[i][2];
+//!     assert!((norm_sq - 1.0).abs() < 1e-12,
+//!         "frame_mat row {i} norm² = {norm_sq}, expected 1.0");
+//! }
+//! // Off-diagonal Gram entry: rows 0 and 1 must be orthogonal.
+//! let gram_01 = frame_mat[0][0]*frame_mat[1][0]
+//!     + frame_mat[0][1]*frame_mat[1][1]
+//!     + frame_mat[0][2]*frame_mat[1][2];
+//! assert!(gram_01.abs() < 1e-12, "frame_mat rows 0·1 = {gram_01}, expected 0.0");
+//! // Zero DOFs → all stress components must be exactly 0.0 (regression guard).
+//! let ses: ShellElementStress = shell_element_stress(&nodes, 0.05, &mat, &[0.0_f64; 18]);
+//! assert_eq!(ses.top[0][0], 0.0, "zero-DOF top σ_xx must be 0.0");
+//! assert_eq!(ses.mid[0][0], 0.0, "zero-DOF mid σ_xx must be 0.0");
+//! assert_eq!(ses.bottom[0][0], 0.0, "zero-DOF bottom σ_xx must be 0.0");
 //! ```
 
 pub mod assembly;
@@ -83,4 +105,4 @@ pub use elements::{
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
 };
 pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
-pub use shell_result::ShellStress;
+pub use shell_result::{ShellStress, ShellElementStress, shell_element_frame, shell_element_stress};

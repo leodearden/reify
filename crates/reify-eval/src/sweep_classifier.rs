@@ -26,7 +26,7 @@
 //! - Last op = [`GeometryOp::Revolve`] with non-degenerate axis and angle
 //!   → [`SweptKind::Revolve`].
 //! - Last op = [`GeometryOp::Sweep`] whose `path` handle resolves to a
-//!   [`GeometryOp::LineSegment`] source op → [`SweptKind::Loft`] (single-profile
+//!   [`GeometryOp::LineSegment`] source op → [`SweptKind::SweepLinear`] (single-profile
 //!   sweep along a straight, provably non-twisted path).
 //!
 //! Rejected (returns `None`):
@@ -120,7 +120,7 @@ pub enum SweptKind {
     /// constant by construction). Curved paths (Arc / Helix / NurbsCurve / …)
     /// are conservatively rejected for Phase A — see the "non-twisted path"
     /// design decision in `.task/plan.json`.
-    Loft {
+    SweepLinear {
         profile: GeometryHandleId,
         path: GeometryHandleId,
     },
@@ -262,7 +262,7 @@ pub fn classify_swept_body(ops: &[GeometryOp], handles: &[GeometryHandleId]) -> 
                 .position(|h| h == path)
                 .and_then(|i| ops.get(i));
             match path_source {
-                Some(GeometryOp::LineSegment { .. }) => Some(SweptKind::Loft {
+                Some(GeometryOp::LineSegment { .. }) => Some(SweptKind::SweepLinear {
                     profile: *profile,
                     path: *path,
                 }),
@@ -669,14 +669,14 @@ mod tests {
         );
     }
 
-    // ── Step-5: Sweep / Loft path-source resolution and rejection ─────────
+    // ── Step-5: Sweep path-source resolution; multi-profile Loft/LoftGuided rejection ──
 
     #[test]
-    fn classify_swept_body_sweep_with_line_segment_path_classifies_as_loft() {
+    fn classify_swept_body_sweep_with_line_segment_path_classifies_as_sweep_linear() {
         // Two-op slice: op[0] is a LineSegment path constructor whose result
         // handle is GeometryHandleId(1); op[1] is a Sweep that consumes that
         // path handle. The classifier must trace path → LineSegment via the
-        // parallel handles slice and accept the sweep as a non-twisted Loft.
+        // parallel handles slice and accept the sweep as SweepLinear.
         let ops = vec![
             GeometryOp::LineSegment {
                 x1: 0.0,
@@ -694,11 +694,11 @@ mod tests {
         let handles = vec![GeometryHandleId(1), GeometryHandleId(2)];
         assert_eq!(
             classify_swept_body(&ops, &handles),
-            Some(SweptKind::Loft {
+            Some(SweptKind::SweepLinear {
                 profile: GeometryHandleId(0),
                 path: GeometryHandleId(1),
             }),
-            "Sweep along a LineSegment-source path must classify as SweptKind::Loft"
+            "Sweep along a LineSegment-source path must classify as SweptKind::SweepLinear"
         );
     }
 
@@ -730,8 +730,8 @@ mod tests {
     #[test]
     fn classify_swept_body_geometry_op_loft_multi_profile_returns_none() {
         // GeometryOp::Loft is multi-profile by construction; explicitly
-        // rejected for Phase A even though SweptKind::Loft exists (the latter
-        // names single-profile Sweep-along-line-segment, per the design
+        // rejected for Phase A even though SweptKind::SweepLinear exists (the
+        // latter names single-profile Sweep-along-line-segment, per the design
         // decision in .task/plan.json).
         let ops = vec![GeometryOp::Loft {
             profiles: vec![GeometryHandleId(0), GeometryHandleId(1)],

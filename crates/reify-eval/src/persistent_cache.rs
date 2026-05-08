@@ -52,8 +52,7 @@ const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
 /// [`ElasticResult::deserialize_from_reader`] for defence-in-depth on hosts
 /// where even 128 MiB cannot be satisfied.
 ///
-/// Pinned by `elastic_result_max_f64_elements_is_workload_realistic`,
-/// `check_f64_vec_len_rejects_value_above_workload_limit`,
+/// Pinned by `check_f64_vec_len_rejects_value_above_workload_limit`,
 /// `elastic_result_deserialize_rejects_oversize_displacement_len`, and
 /// `elastic_result_deserialize_rejects_oversize_stress_len`.
 const MAX_F64_ELEMENTS: u64 = 1 << 24;
@@ -165,6 +164,7 @@ impl PersistentlyCacheable for ElasticResult {
         // `elastic_result_reserialize_after_deserialize_is_byte_identical`;
         // bump the level if a future zstd release breaks default-level
         // determinism.
+        // Single-threaded only — Encoder::multithread() breaks byte-determinism.
         let mut encoder = zstd::Encoder::new(w, 0)?;
         let header = ElasticResultHeader {
             max_von_mises_bits: self.max_von_mises.to_bits(),
@@ -263,7 +263,12 @@ mod tests {
     fn elastic_result_format_version_is_one() {
         // Read from the trait associated const directly — no instance needed,
         // demonstrating the cache-layer use case where `(TypeId, FORMAT_VERSION)`
-        // can be looked up before any value materialises.
+        // can be looked up before any value materialises. Pins the project
+        // convention that FORMAT_VERSION starts at 1 because 0 means
+        // "uninitialised / unknown" (see `ELASTIC_RESULT_FORMAT_VERSION` doc).
+        // An intentional format bump must touch this assertion — that is the
+        // point: it forces a deliberate acknowledgement that cached bytes from
+        // the previous version are now incompatible.
         assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 1);
     }
 
@@ -552,27 +557,6 @@ mod tests {
         original.serialize_to_writer(&mut buf).unwrap();
         let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
         assert_eq!(decoded, original);
-    }
-
-    #[test]
-    fn elastic_result_max_f64_elements_is_workload_realistic() {
-        // Pins the workload-realistic upper bound demanded by review:
-        // 1<<30 ≈ 1.07B f64s ≈ 8 GiB virtual allocation panics on 32-bit
-        // hosts (usize multiplication overflows in Vec's allocator) and on
-        // 64-bit hosts without overcommit (Windows, some macOS configs, CI
-        // sandboxes). 1<<24 ≈ 16M f64s ≈ 128 MiB is still vastly above any
-        // plausible per-result FEA output but bounded enough that a
-        // corrupted/tampered cache entry cannot weaponise the bound check
-        // itself.
-        assert!(
-            MAX_F64_ELEMENTS <= (1 << 24),
-            "MAX_F64_ELEMENTS = {} exceeds workload-realistic limit 1<<24 = {}; \
-             a corrupted cache entry advertising the maximum would trigger an \
-             {}-byte virtual allocation that panics on 32-bit / no-overcommit hosts",
-            MAX_F64_ELEMENTS,
-            1u64 << 24,
-            MAX_F64_ELEMENTS * 8,
-        );
     }
 
     #[test]

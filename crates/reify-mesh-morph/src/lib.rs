@@ -2,11 +2,21 @@
 //!
 //! This crate provides the combined eligibility predicate for mesh morphing
 //! (PRD `docs/prds/v0_3/mesh-morphing.md`, tasks #3 and #10).
+//!
+//! ## PRD task #5 — boundary-node correspondence + closest-point projection — boundary module
+//!
+//! The [`boundary`] module implements the surface-node → Dirichlet-BC
+//! translation step that gates the elasticity morph (PRD task #7).
 
+pub mod boundary;
 pub mod eligibility;
 pub mod options;
 pub mod types;
 
+pub use boundary::{
+    BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
+    compute_dirichlet_bcs,
+};
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 pub use options::{MorphFailure, MorphOptions};
 pub use types::{BRep, InversionDetails, MetricsBreached, SolverErrorPayload};
@@ -211,4 +221,26 @@ mod tests {
             Err(MorphFailure::Ineligible(Reason::StructuralChange))
         ));
     }
+
+    // ── Step-31: lib re-exports make boundary module public surface accessible ─
+
+    // Compile fence: verifies each name from the boundary module is accessible
+    // from the crate root, and pins the compute_dirichlet_bcs signature.
+    // Follows the `const _: fn() = || { ... }` discipline in eligibility.rs —
+    // no runtime assertions, just type-check guarantees.
+    const _: fn() = || {
+        use crate::{
+            BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
+            compute_dirichlet_bcs,
+        };
+        let _fn_ref: fn(
+            &reify_types::VolumeMesh,
+            &BoundaryAssociation,
+            &reify_eval::CorrespondenceMap,
+            &dyn Projector,
+        ) -> Result<Vec<(u32, [f64; 3])>, ProjectionFailure> = compute_dirichlet_bcs;
+        // Type mentions for names not in _fn_ref; avoids unused-import warnings.
+        let _: Option<NodeAttachment> = None;
+        let _: Option<ProjectorPayload> = None;
+    };
 }

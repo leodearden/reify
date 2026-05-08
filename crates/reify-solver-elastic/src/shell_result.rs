@@ -12,7 +12,270 @@
 // these fields from the MITC3+ kernel and wiring the `to_global(stress,
 // frame)` dispatch helper.
 
+use crate::constitutive::IsotropicElastic;
+use crate::shell_assembly::{build_shell_frame, plane_stress_d};
 use reify_types::Value;
+
+/// Returns the local-to-global rotation matrix for a three-node MITC3+ shell element.
+///
+/// # Convention
+///
+/// The returned 3×3 matrix is the *local-to-global* rotation:
+/// - `result[i][j]` is the *i-th global component of the j-th local basis vector*
+///   (equivalently: the j-th column of `result` is the j-th local basis vector expressed
+///   in global coordinates).
+/// - A local-frame displacement vector `v_local` maps to global via `v_global = frame · v_local`.
+/// - A local-frame rank-2 stress tensor maps to global via `σ_global = frame · σ_local · frameᵀ`.
+///
+/// This is the **transpose** of [`crate::shell_assembly::build_shell_frame`]`.r`, which stores
+/// the *global-to-local* rotation (rows = local basis vectors in global coordinates,
+/// so `R · v_global = v_local`).  Transposing gives the local-to-global direction:
+/// `result[i][j] = frame.r[j][i]`.
+///
+/// # Relation to `ElasticResult.frame`
+///
+/// Matches the `ElasticResult.frame` local-to-global convention documented in
+/// `crates/reify-compiler/stdlib/solver_elastic.ri:276–294`.  The future
+/// `to_global(stress, frame)` helper (T18-T20) can use this directly as
+/// `σ_global = frame · σ_local · frameᵀ` without any transpose step at the call site.
+pub fn shell_element_frame(nodes: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let r = build_shell_frame(nodes).r;
+    // Transpose: result[i][j] = r[j][i].
+    let mut result = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            result[i][j] = r[j][i];
+        }
+    }
+    result
+}
+
+/// Per-element Cauchy stress tensors in the local mid-surface frame for a
+/// MITC3+ shell element.
+///
+/// Each field is a full 3×3 symmetric stress tensor in the element's local
+/// coordinate frame (e₁, e₂, e₃):
+/// - index 0 ↔ e₁ (first in-plane direction)
+/// - index 1 ↔ e₂ (second in-plane direction)
+/// - index 2 ↔ e₃ (out-of-plane / thickness direction)
+///
+/// # Through-thickness layers
+///
+/// - `top`    — stress at z = +t/2 (outer fibre in the local-e₃ direction).
+/// - `mid`    — stress at z = 0 (neutral plane / mid-surface).
+/// - `bottom` — stress at z = −t/2 (inner fibre, opposite to `top`).
+///
+/// In-plane components (indices [0][0], [1][1], [0][1]/[1][0]) vary linearly
+/// through thickness (membrane + bending).  Transverse-shear components
+/// ([0][2]/[2][0], [1][2]/[2][1]) are uniform across the three layers
+/// (Reissner-Mindlin first-order, κ = 5/6 correction folded in).
+/// σ_zz ([2][2]) is zero (plane-stress assumption).
+///
+/// # To-global transform (T18-T20)
+///
+/// Use `shell_element_frame` to obtain the local-to-global rotation matrix F,
+/// then `σ_global = F · σ_local · Fᵀ` for each layer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellElementStress {
+    /// Stress tensor at z = +t/2 (top / outer fibre), local frame.
+    pub top: [[f64; 3]; 3],
+    /// Stress tensor at z = 0 (mid-surface / neutral plane), local frame.
+    pub mid: [[f64; 3]; 3],
+    /// Stress tensor at z = −t/2 (bottom / inner fibre), local frame.
+    pub bottom: [[f64; 3]; 3],
+}
+
+/// Recover the Cauchy stress tensors at the top, mid, and bottom surfaces of a
+/// MITC3+ shell element in the element's local coordinate frame.
+///
+/// # Arguments
+///
+/// - `nodes` — three physical vertex positions in global coordinates.
+/// - `thickness` — constant shell thickness `t > 0`.
+/// - `material` — isotropic linear-elastic constitutive law.
+/// - `u_global` — 18-DOF global displacement vector; DOF layout is
+///   `6·node + i` with i ∈ {0..5} for `(u_x, u_y, u_z, θ_x, θ_y, θ_z)`.
+///
+/// # Returns
+///
+/// A [`ShellElementStress`] with in-plane stress varying linearly through
+/// thickness (membrane + bending at z = ±t/2 and 0) and transverse-shear
+/// uniform across layers (Reissner-Mindlin, κ = 5/6).  σ_zz = 0 everywhere.
+///
+/// # Panics
+///
+/// Panics if `nodes` are degenerate (same as [`build_shell_frame`]).
+#[allow(clippy::needless_range_loop)]
+pub fn shell_element_stress(
+    nodes: &[[f64; 3]; 3],
+    thickness: f64,
+    material: &IsotropicElastic,
+    u_global: &[f64; 18],
+) -> ShellElementStress {
+    use crate::elements::mitc3_plus::{Mitc3Plus, TyingShears};
+
+    let frame = build_shell_frame(nodes);
+    let r = frame.r; // rows = local basis in global coords: R · v_global = v_local
+    let area = frame.area;
+    let t = thickness;
+
+    // --- Rotate 18 global DOFs → local frame (6 blocks of 3 DOFs) ---
+    // Block order per node: translations (6n+0..2) then rotations (6n+3..5).
+    let mut u_loc = [0.0_f64; 18];
+    let n_nodes = Mitc3Plus::N_NODES;       // 3
+    let ndp = Mitc3Plus::N_DOFS_PER_NODE;  // 6
+    for node in 0..n_nodes {
+        for triple in 0..2 {
+            let off = ndp * node + 3 * triple;
+            let vg = [u_global[off], u_global[off + 1], u_global[off + 2]];
+            for i in 0..3 {
+                u_loc[off + i] = r[i][0] * vg[0] + r[i][1] * vg[1] + r[i][2] * vg[2];
+            }
+        }
+    }
+
+    // --- Local 2D nodal coords: xloc[n] = (R · (p_n − p0)).xy ---
+    let p0 = frame.origin;
+    let mut xloc = [[0.0_f64; 2]; 3];
+    for i in 0..n_nodes {
+        let d = [nodes[i][0] - p0[0], nodes[i][1] - p0[1], nodes[i][2] - p0[2]];
+        xloc[i][0] = r[0][0] * d[0] + r[0][1] * d[1] + r[0][2] * d[2];
+        xloc[i][1] = r[1][0] * d[0] + r[1][1] * d[1] + r[1][2] * d[2];
+    }
+
+    // --- 2D shape gradients (constant for linear triangle) ---
+    let two_a = 2.0 * area;
+    let x = [xloc[0][0], xloc[1][0], xloc[2][0]];
+    let y = [xloc[0][1], xloc[1][1], xloc[2][1]];
+    // dN[i] = [dN_i/dx, dN_i/dy], cyclic (i,j,k) = (0,1,2), (1,2,0), (2,0,1)
+    let dn = [
+        [(y[1] - y[2]) / two_a, (x[2] - x[1]) / two_a],
+        [(y[2] - y[0]) / two_a, (x[0] - x[2]) / two_a],
+        [(y[0] - y[1]) / two_a, (x[1] - x[0]) / two_a],
+    ];
+
+    // --- Membrane Voigt strain: ε = [ε_xx, ε_yy, γ_xy] ---
+    let mut eps = [0.0_f64; 3];
+    for i in 0..n_nodes {
+        let ux = u_loc[ndp * i];       // u_x in local frame
+        let uy = u_loc[ndp * i + 1];   // u_y in local frame
+        eps[0] += dn[i][0] * ux;  // ε_xx
+        eps[1] += dn[i][1] * uy;  // ε_yy
+        eps[2] += dn[i][1] * ux + dn[i][0] * uy; // γ_xy
+    }
+
+    // --- Plane-stress Voigt stress from membrane strain ---
+    let d_pl = plane_stress_d(material);
+    let mut sv_mem = [0.0_f64; 3]; // σ_voigt_membrane
+    for p in 0..3 {
+        for q in 0..3 {
+            sv_mem[p] += d_pl[p][q] * eps[q];
+        }
+    }
+
+    // --- Curvature Voigt vector: κ = [κ_xx, κ_yy, 2κ_xy] from rotation DOFs ---
+    // κ_xx = −∂θ_y/∂x, κ_yy = +∂θ_x/∂y, 2κ_xy = ∂θ_x/∂x − ∂θ_y/∂y
+    // (matches bending B-matrix convention in shell_assembly.rs:274-308)
+    let mut kappa = [0.0_f64; 3];
+    for i in 0..n_nodes {
+        let tx = u_loc[ndp * i + 3]; // θ_x in local frame
+        let ty = u_loc[ndp * i + 4]; // θ_y in local frame
+        kappa[0] += -dn[i][0] * ty;  // κ_xx = -∂θ_y/∂x
+        kappa[1] +=  dn[i][1] * tx;  // κ_yy = +∂θ_x/∂y
+        kappa[2] +=  dn[i][0] * tx - dn[i][1] * ty; // 2κ_xy
+    }
+
+    // --- Bending Voigt stress: σ_bending = D_pl · κ ---
+    let mut sv_bend = [0.0_f64; 3]; // σ_voigt_bending (per unit z)
+    for p in 0..3 {
+        for q in 0..3 {
+            sv_bend[p] += d_pl[p][q] * kappa[q];
+        }
+    }
+
+    // --- MITC3+ transverse-shear recovery ---
+    // Replicate tying-point covariant shear sampling from shell_assembly.rs:352-433.
+    // Covariant shear at a tying point (ξ_t, η_t):
+    //   γ_ξζ = Σ_i dn_ref[i][0]*u_z_i + N_i*θ_y_i
+    //   γ_ηζ = Σ_i dn_ref[i][1]*u_z_i - N_i*θ_x_i
+    let tying_pts = Mitc3Plus.tying_points();
+    let mut b_cov = [[[0.0_f64; 18]; 2]; 3]; // [tp][cov_comp][dof]
+    for (tp_idx, tp) in tying_pts.iter().enumerate() {
+        let n_at_tp = Mitc3Plus.shape_at(tp.coord);
+        let dn_ref_tp = Mitc3Plus.shape_grad_at(tp.coord); // constant: [[-1,-1],[1,0],[0,1]]
+        for node in 0..n_nodes {
+            let dof_uz = ndp * node + 2;
+            let dof_tx = ndp * node + 3;
+            let dof_ty = ndp * node + 4;
+            b_cov[tp_idx][0][dof_uz] += dn_ref_tp[node][0]; // γ_ξζ ← dn_ref·u_z
+            b_cov[tp_idx][0][dof_ty] += n_at_tp[node];      // γ_ξζ ← N·θ_y
+            b_cov[tp_idx][1][dof_uz] += dn_ref_tp[node][1]; // γ_ηζ ← dn_ref·u_z
+            b_cov[tp_idx][1][dof_tx] -= n_at_tp[node];      // γ_ηζ ← −N·θ_x
+        }
+    }
+
+    // Sample covariant shears at each tying point from u_loc.
+    let mut g_cov_tp = [[0.0_f64; 2]; 3]; // [tp][xi/eta]
+    for tp_idx in 0..3 {
+        for comp in 0..2 {
+            for dof in 0..18 {
+                g_cov_tp[tp_idx][comp] += b_cov[tp_idx][comp][dof] * u_loc[dof];
+            }
+        }
+    }
+
+    // Project covariant shears at centroid (ξ=1/3, η=1/3) via MITC3+.
+    let centroid = crate::elements::mitc3_plus::ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0);
+    let sampled = TyingShears {
+        gamma_xi_zeta_at_a:  g_cov_tp[0][0],
+        gamma_eta_zeta_at_b: g_cov_tp[1][1],
+        gamma_xi_zeta_at_c:  g_cov_tp[2][0],
+        gamma_eta_zeta_at_c: g_cov_tp[2][1],
+    };
+    let g_cov_ctr = Mitc3Plus.interpolate_assumed_shear(sampled, centroid);
+
+    // Covariant → physical: γ_phys = J2⁻ᵀ · γ_cov
+    // J2 = [[x1-x0, x2-x0], [y1-y0, y2-y0]] in local 2D coords.
+    let jac2 = [
+        [x[1] - x[0], x[2] - x[0]],
+        [y[1] - y[0], y[2] - y[0]],
+    ];
+    let det2 = jac2[0][0] * jac2[1][1] - jac2[0][1] * jac2[1][0];
+    // J2⁻ᵀ (= (J2⁻¹)ᵀ)
+    let inv_t = [
+        [ jac2[1][1] / det2, -jac2[1][0] / det2],
+        [-jac2[0][1] / det2,  jac2[0][0] / det2],
+    ];
+    let g_phys_xz = inv_t[0][0] * g_cov_ctr.gamma_xi_zeta + inv_t[0][1] * g_cov_ctr.gamma_eta_zeta;
+    let g_phys_yz = inv_t[1][0] * g_cov_ctr.gamma_xi_zeta + inv_t[1][1] * g_cov_ctr.gamma_eta_zeta;
+
+    // Shear stresses: σ_xz = κ·G·γ_xz_phys, σ_yz = κ·G·γ_yz_phys (κ = 5/6)
+    let e = material.youngs_modulus;
+    let nu = material.poisson_ratio;
+    let g_mod = e / (2.0 * (1.0 + nu));
+    const KAPPA: f64 = 5.0 / 6.0;
+    let s_xz = KAPPA * g_mod * g_phys_xz;
+    let s_yz = KAPPA * g_mod * g_phys_yz;
+
+    // --- Assemble per-layer 3×3 stress tensors ---
+    // In-plane: σ_voigt(z) = sv_mem + z·sv_bend; transverse-shear uniform.
+    let make_layer = |z: f64| -> [[f64; 3]; 3] {
+        let sv0 = sv_mem[0] + z * sv_bend[0]; // σ_xx(z)
+        let sv1 = sv_mem[1] + z * sv_bend[1]; // σ_yy(z)
+        let sv2 = sv_mem[2] + z * sv_bend[2]; // σ_xy(z) (= γ_xy(z)·G in Voigt)
+        [
+            [sv0,  sv2,  s_xz],
+            [sv2,  sv1,  s_yz],
+            [s_xz, s_yz, 0.0 ],
+        ]
+    };
+
+    ShellElementStress {
+        top:    make_layer(t / 2.0),
+        mid:    make_layer(0.0),
+        bottom: make_layer(-t / 2.0),
+    }
+}
 
 /// Structured shell stress result carrying per-integration-layer stress
 /// channels.
@@ -61,6 +324,211 @@ impl ShellStress {
 mod tests {
     use super::*;
     use reify_types::Value;
+
+    /// `shell_element_frame(nodes)` must return the transpose of `build_shell_frame(nodes).r`.
+    ///
+    /// `build_shell_frame.r` has rows = local basis vectors in global coordinates, so it maps
+    /// global → local.  The frame field convention (see `ElasticResult.frame` in solver_elastic.ri)
+    /// is local-to-global.  Therefore `shell_element_frame` must return the transpose of `r`.
+    ///
+    /// Also verified: each row of the returned matrix has unit norm (orthonormal).
+    #[test]
+    fn shell_element_frame_is_transpose_of_shell_frame_rotation() {
+        let nodes: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]];
+        let frame_r = build_shell_frame(&nodes).r;
+        let result = shell_element_frame(&nodes);
+
+        // result[i][j] must equal frame_r[j][i] (transpose)
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = frame_r[j][i];
+                let got = result[i][j];
+                assert!(
+                    (got - expected).abs() < 1e-12,
+                    "result[{i}][{j}] = {got}, expected frame.r[{j}][{i}] = {expected}",
+                );
+            }
+        }
+
+        // Each column of result (= each row of frame_r) has unit norm.
+        for i in 0..3 {
+            let norm_sq = result[i][0] * result[i][0]
+                + result[i][1] * result[i][1]
+                + result[i][2] * result[i][2];
+            assert!(
+                (norm_sq - 1.0).abs() < 1e-12,
+                "result row {i} norm² = {norm_sq}, expected 1.0",
+            );
+        }
+    }
+
+    // Helpers shared across shell_element_stress tests.
+    fn steel_like() -> IsotropicElastic {
+        IsotropicElastic { youngs_modulus: 200.0e9, poisson_ratio: 0.3 }
+    }
+
+    const UNIT_TRI: [[f64; 3]; 3] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
+
+    /// Pure membrane mode (u_x at node 1 = a, u_y at node 2 = b, all rotations zero)
+    /// should produce uniform stress through thickness with no curvature contribution.
+    ///
+    /// For UNIT_TRI, local = global frame, dN_1/dx = 1, dN_2/dy = 1, all other
+    /// relevant gradients are zero.  Voigt strain = [a, b, 0], so:
+    ///   σ_voigt = D_pl · [a, b, 0]
+    ///
+    /// Asserted: top == mid == bottom; σ_xx ≈ σ_voigt[0]; σ_yy ≈ σ_voigt[1];
+    /// σ_xy = 0 (since γ_xy = 0); all σ_xz/σ_yz/σ_zz = 0.
+    #[test]
+    fn shell_element_stress_pure_membrane_mode_yields_uniform_through_thickness() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let a = 0.001_f64;
+        let b = -0.0005_f64;
+
+        let mut u = [0.0_f64; 18];
+        u[6 * 1 + 0] = a; // u_x at node 1
+        u[6 * 2 + 1] = b; // u_y at node 2
+
+        let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+
+        // Analytical stress via plane-stress D-matrix.
+        let d = plane_stress_d(&mat);
+        let sv0 = d[0][0] * a + d[0][1] * b; // σ_xx
+        let sv1 = d[1][0] * a + d[1][1] * b; // σ_yy
+
+        let scale = sv0.abs().max(sv1.abs()).max(1.0);
+        let tol = 1e-9 * scale;
+
+        // top, mid, bottom must be equal (no through-thickness gradient).
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (s.top[i][j] - s.mid[i][j]).abs() < tol,
+                    "top[{i}][{j}] = {} ≠ mid[{i}][{j}] = {}",
+                    s.top[i][j], s.mid[i][j],
+                );
+                assert!(
+                    (s.top[i][j] - s.bottom[i][j]).abs() < tol,
+                    "top[{i}][{j}] = {} ≠ bottom[{i}][{j}] = {}",
+                    s.top[i][j], s.bottom[i][j],
+                );
+            }
+        }
+
+        // In-plane normal components.
+        assert!((s.top[0][0] - sv0).abs() < tol, "σ_xx = {}, expected {sv0}", s.top[0][0]);
+        assert!((s.top[1][1] - sv1).abs() < tol, "σ_yy = {}, expected {sv1}", s.top[1][1]);
+
+        // In-plane shear and transverse components must be zero.
+        assert!(s.top[0][1].abs() < tol, "σ_xy = {}, expected 0", s.top[0][1]);
+        assert!(s.top[1][0].abs() < tol, "σ_yx = {}, expected 0", s.top[1][0]);
+        assert!(s.top[0][2].abs() < tol, "σ_xz = {}, expected 0", s.top[0][2]);
+        assert!(s.top[2][0].abs() < tol, "σ_zx = {}, expected 0", s.top[2][0]);
+        assert!(s.top[1][2].abs() < tol, "σ_yz = {}, expected 0", s.top[1][2]);
+        assert!(s.top[2][1].abs() < tol, "σ_zy = {}, expected 0", s.top[2][1]);
+        assert!(s.top[2][2].abs() < tol, "σ_zz = {}, expected 0", s.top[2][2]);
+    }
+
+    /// Pure bending mode (θ_y at node 1 only) must produce anti-symmetric in-plane
+    /// stress across top/bottom and zero stress at mid-surface.
+    ///
+    /// For UNIT_TRI, dN_1/dx = 1, so κ_xx = −∂θ_y/∂x = −α·dN_1/dx = −α,
+    /// κ_yy = 2κ_xy = 0.  Analytical per-layer in-plane Voigt stress:
+    ///   σ_voigt(z) = z · D_pl · [−α, 0, 0]
+    ///
+    /// Asserted: top[0][0] ≈ −(t/2)·α·D_pl[0][0]; bottom = −top (in-plane);
+    /// mid in-plane block ≈ 0; top[0][1] ≈ 0 (no in-plane shear).
+    #[test]
+    fn shell_element_stress_pure_bending_mode_yields_anti_symmetric_through_thickness() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.002_f64;
+
+        let mut u = [0.0_f64; 18];
+        u[6 * 1 + 4] = alpha; // θ_y at node 1; all translations and other rotations zero
+
+        let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+        let d = plane_stress_d(&mat);
+
+        // κ_xx = −α (only dN_1/dx = 1 contributes), κ_yy = 0, 2κ_xy = 0.
+        // σ_bending_voigt = D_pl · [−α, 0, 0]
+        let sb0 = d[0][0] * (-alpha); // σ_xx per unit z
+        let sb1 = d[1][0] * (-alpha); // σ_yy per unit z (= D[0][1]·(−α))
+
+        let scale = (sb0 * t / 2.0).abs().max((sb1 * t / 2.0).abs()).max(1.0);
+        let tol = 1e-9 * scale;
+
+        // top: z = +t/2
+        assert!((s.top[0][0] - sb0 * (t / 2.0)).abs() < tol,
+            "top σ_xx = {}, expected {}", s.top[0][0], sb0 * (t / 2.0));
+        assert!((s.top[1][1] - sb1 * (t / 2.0)).abs() < tol,
+            "top σ_yy = {}, expected {}", s.top[1][1], sb1 * (t / 2.0));
+        assert!(s.top[0][1].abs() < tol, "top σ_xy = {}, expected 0", s.top[0][1]);
+        assert!(s.top[1][0].abs() < tol, "top σ_yx = {}, expected 0", s.top[1][0]);
+
+        // mid: z = 0 → in-plane stress = 0
+        assert!(s.mid[0][0].abs() < tol, "mid σ_xx = {}, expected 0", s.mid[0][0]);
+        assert!(s.mid[1][1].abs() < tol, "mid σ_yy = {}, expected 0", s.mid[1][1]);
+        assert!(s.mid[0][1].abs() < tol, "mid σ_xy = {}, expected 0", s.mid[0][1]);
+
+        // bottom: z = −t/2 → anti-symmetric vs top
+        assert!((s.bottom[0][0] + s.top[0][0]).abs() < tol,
+            "bottom σ_xx + top σ_xx = {} ≠ 0", s.bottom[0][0] + s.top[0][0]);
+        assert!((s.bottom[1][1] + s.top[1][1]).abs() < tol,
+            "bottom σ_yy + top σ_yy = {} ≠ 0", s.bottom[1][1] + s.top[1][1]);
+    }
+
+    /// Uniform θ_y = α at all nodes should produce uniform transverse shear
+    /// σ_xz = κ·G·α through the thickness, with σ_yz = 0 and all in-plane
+    /// components zero (partition-of-unity cancels the curvature gradient).
+    ///
+    /// For UNIT_TRI, jac2 = identity, so covariant = physical.  MITC3+ projected
+    /// shear at centroid: γ_ξζ = α (all N_i·α sum to 1·α), γ_ηζ = 0.
+    /// Therefore σ_xz = (5/6)·G·α, uniform across top/mid/bottom.
+    #[test]
+    fn shell_element_stress_uniform_theta_y_yields_constant_transverse_shear() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.003_f64;
+
+        let mut u = [0.0_f64; 18];
+        for n in 0..3 {
+            u[6 * n + 4] = alpha; // uniform θ_y at all nodes
+        }
+
+        let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let g_mod = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let expected_sxz = kappa * g_mod * alpha;
+
+        let scale = expected_sxz.abs().max(1.0);
+        let tol = 1e-9 * scale;
+        let tol_abs = 1e-9 * (mat.youngs_modulus * alpha * t).max(1.0); // for near-zero checks
+
+        // σ_xz = (5/6)·G·α, uniform across all three layers.
+        for (name, layer) in [("top", s.top), ("mid", s.mid), ("bottom", s.bottom)] {
+            assert!((layer[0][2] - expected_sxz).abs() < tol,
+                "{name} σ_xz = {}, expected {expected_sxz}", layer[0][2]);
+            assert!((layer[2][0] - expected_sxz).abs() < tol,
+                "{name} σ_zx = {}, expected {expected_sxz}", layer[2][0]);
+            // σ_yz = 0
+            assert!(layer[1][2].abs() < tol, "{name} σ_yz = {}, expected 0", layer[1][2]);
+            assert!(layer[2][1].abs() < tol, "{name} σ_zy = {}, expected 0", layer[2][1]);
+            // σ_zz = 0
+            assert!(layer[2][2].abs() < tol_abs, "{name} σ_zz = {}, expected 0", layer[2][2]);
+            // In-plane block = 0 (uniform θ_y → zero curvature via partition of unity).
+            assert!(layer[0][0].abs() < tol_abs, "{name} σ_xx = {}, expected 0", layer[0][0]);
+            assert!(layer[1][1].abs() < tol_abs, "{name} σ_yy = {}, expected 0", layer[1][1]);
+            assert!(layer[0][1].abs() < tol_abs, "{name} σ_xy = {}, expected 0", layer[0][1]);
+        }
+    }
 
     /// `ShellStress::homogeneous(field)` is the canonical tet-result constructor.
     /// It must set all three stress channels to the same field value.

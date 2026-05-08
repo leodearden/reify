@@ -356,7 +356,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
 }
 
 /// (e) Sweep-along-LineSegment realization populates the table with a single
-/// `SweptKind::Loft` keyed by the realization's final handle.
+/// `SweptKind::SweepLinear` keyed by the realization's final handle.
 ///
 /// # What this test covers
 ///
@@ -372,7 +372,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
 /// `path` handle by scanning the parallel `handles` slice and matches against
 /// `GeometryOp::LineSegment { .. }` source ops. A Sphere-as-path would resolve
 /// to `GeometryOp::Sphere` and the classifier would return `None` instead of
-/// `SweptKind::Loft`. This test pins the LineSegment-source resolution wiring:
+/// `SweptKind::SweepLinear`. This test pins the LineSegment-source resolution wiring:
 /// the path op (Op 1) is `CompiledGeometryOp::Curve { kind: CurveKind::LineSegment }`
 /// so it compiles to `GeometryOp::LineSegment`, satisfying the classifier's guard.
 ///
@@ -457,10 +457,10 @@ fn engine_swept_kind_table_records_sweep_along_line_segment_realization() {
     );
     assert_eq!(
         table.lookup(final_handle),
-        Some(&SweptKind::Loft {
+        Some(&SweptKind::SweepLinear {
             profile: profile_handle,
             path: path_handle,
         }),
-        "the realization's final handle must map to SweptKind::Loft with profile=ops[0].result_handle and path=ops[1].result_handle"
+        "the realization's final handle must map to SweptKind::SweepLinear with profile=ops[0].result_handle and path=ops[1].result_handle"
     );
 }
