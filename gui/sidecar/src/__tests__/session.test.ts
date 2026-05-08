@@ -2624,3 +2624,234 @@ describe('waitForOutput cancel hook', () => {
     expect(session.onOutput).toBe(originalOnOutput);
   });
 });
+
+// ---------------------------------------------------------------------------
+// proc error handling — ABORT_ERR suppression and non-ABORT logging
+// ---------------------------------------------------------------------------
+describe('SidecarSession proc error handling', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('ABORT_ERR from spawned ChildProcess on timeout abort does not crash and is suppressed silently', async () => {
+    vi.useFakeTimers();
+
+    // Spy on console.error to assert the ABORT_ERR is suppressed silently (not logged)
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      session = new SidecarSession({
+        model: 'claude-opus-4-6',
+        workingDirectory: '/tmp/test-project',
+        systemPrompt: 'You are a test assistant.',
+        timeoutMs: 1000,
+      });
+      session.onOutput = (msg) => outputs.push(msg);
+
+      // Create a mock process that hangs forever
+      const mockProc = new EventEmitter() as any;
+      const stdout = new PassThrough();
+      mockProc.stdout = stdout;
+      mockProc.stderr = new PassThrough();
+      mockProc.stdin = new PassThrough();
+      mockProc.exitCode = null;
+
+      vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+        if (opts?.signal) {
+          opts.signal.addEventListener('abort', () => {
+            // Mimic Node's abortChildProcess: emit 'error' with ABORT_ERR BEFORE 'close'
+            const abortErr = Object.assign(new Error('The operation was aborted'), {
+              code: 'ABORT_ERR',
+              name: 'AbortError',
+            });
+            mockProc.emit('error', abortErr);
+            stdout.end();
+            mockProc.exitCode = null;
+            mockProc.emit('close', null);
+          });
+        }
+        return mockProc;
+      }) as any);
+
+      await session.init();
+      outputs.length = 0;
+
+      // Start a message — it will hang until the timeout fires
+      const msgPromise = session.handleMessage({
+        type: 'send_message',
+        id: 'msg-timeout-aborterr',
+        text: 'Hanging task',
+      });
+
+      // Advance past the 1000ms timeout
+      vi.advanceTimersByTime(1001);
+
+      // Await the message promise — if ABORT_ERR is not caught, this throws
+      await msgPromise;
+
+      // (a) Exactly one error outbound with 'timed out' message
+      const errors = outputs.filter((o) => o.type === 'error');
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as any).message).toContain('timed out');
+      expect((errors[0] as any).id).toBe('msg-timeout-aborterr');
+
+      // (b) No done outbound (timeout, not clean completion)
+      const dones = outputs.filter((o) => o.type === 'done');
+      expect(dones).toHaveLength(0);
+
+      // (c) No spurious extra error outbounds beyond the timeout one
+      expect(outputs.filter((o) => o.type === 'error')).toHaveLength(1);
+
+      // (d) ABORT_ERR is suppressed silently — must NOT appear in console.error
+      expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        expect.anything()
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it('non-ABORT_ERR proc error is logged via console.error', async () => {
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      // Create a mock process that will emit a non-ABORT error then close normally
+      const mockProc = new EventEmitter() as any;
+      const stdout = new PassThrough();
+      mockProc.stdout = stdout;
+      mockProc.stderr = new PassThrough();
+      mockProc.stdin = new PassThrough();
+      mockProc.exitCode = null;
+
+      vi.mocked(spawn).mockImplementation((() => {
+        // Emit 'error' on nextTick, then 'close' on setImmediate — split across ticks to
+        // more faithfully model Node's real ordering (abortChildProcess emits 'error'
+        // then 'close' across at least one I/O turn). This avoids incidental coupling
+        // where an already-ended stream is passed to consumers that haven't yet attached.
+        process.nextTick(() => {
+          const spawnErr = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
+          mockProc.emit('error', spawnErr);
+          setImmediate(() => {
+            stdout.push(null);
+            mockProc.exitCode = 1;
+            mockProc.emit('close', 1);
+          });
+        });
+        return mockProc;
+      }) as any);
+
+      await session.init();
+      outputs.length = 0;
+
+      // Send a message — it will complete via the close path (exit code 1 → error outbound)
+      await session.handleMessage({
+        type: 'send_message',
+        id: 'msg-enoent',
+        text: 'Task that fails to spawn',
+      });
+
+      // (a) console.error was called with the diagnostic prefix and the error
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        expect.objectContaining({ code: 'ENOENT' })
+      );
+
+      // (b) The close-path still emits an error outbound (exitCode === 1)
+      const errors = outputs.filter((o) => o.type === 'error');
+      expect(errors.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it('ABORT_ERR from spawned ChildProcess on user abort emits done (not error) and is not logged', async () => {
+    // Covers the second documented branch of the proc.on('error') listener:
+    // handleAbort() → abortController.abort() (no reason) → abortChildProcess emits
+    // ABORT_ERR → listener swallows silently → emitAbortOrDone emits 'done' (reason ≠ 'timeout')
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      session = new SidecarSession({
+        model: 'claude-opus-4-6',
+        workingDirectory: '/tmp/test-project',
+        systemPrompt: 'You are a test assistant.',
+        timeoutMs: 60000, // Long timeout — abort is user-driven, not timer-driven
+      });
+      session.onOutput = (msg) => outputs.push(msg);
+
+      const mockProc = new EventEmitter() as any;
+      const stdout = new PassThrough();
+      mockProc.stdout = stdout;
+      mockProc.stderr = new PassThrough();
+      mockProc.stdin = new PassThrough();
+      mockProc.exitCode = null;
+
+      vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+        if (opts?.signal) {
+          opts.signal.addEventListener('abort', () => {
+            // Mimic Node's abortChildProcess: emit ABORT_ERR BEFORE 'close'
+            const abortErr = Object.assign(new Error('The operation was aborted'), {
+              code: 'ABORT_ERR',
+              name: 'AbortError',
+            });
+            mockProc.emit('error', abortErr);
+            stdout.end();
+            mockProc.exitCode = null;
+            mockProc.emit('close', null);
+          });
+        }
+        return mockProc;
+      }) as any);
+
+      await session.init();
+      outputs.length = 0;
+
+      // Start a hanging message
+      const msgPromise = session.handleMessage({
+        type: 'send_message',
+        id: 'msg-user-abort',
+        text: 'Hanging task',
+      });
+
+      // Give it a tick to set up before aborting
+      await new Promise((r) => setTimeout(r, 10));
+
+      // User-initiated abort (reason is undefined, NOT 'timeout')
+      await session.handleMessage({ type: 'abort' });
+      await msgPromise;
+
+      // (a) Single 'done' outbound — user abort, not timeout error
+      const dones = outputs.filter((o) => o.type === 'done');
+      expect(dones).toHaveLength(1);
+      expect(dones[0]).toEqual({ type: 'done', id: 'msg-user-abort' });
+
+      // (b) No error outbound
+      const errors = outputs.filter((o) => o.type === 'error');
+      expect(errors).toHaveLength(0);
+
+      // (c) ABORT_ERR was suppressed silently — must NOT appear in console.error
+      expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        expect.anything()
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+});

@@ -159,6 +159,28 @@ export class SidecarSession {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
+    // Required: 'error' listener on the ChildProcess itself (distinct from proc.stdin?.on('error')).
+    //
+    // When the spawn `signal` aborts (timeout setTimeout → abortController.abort('timeout'),
+    // or user handleAbort), Node's abortChildProcess calls child.emit('error', err) with
+    // err.code === 'ABORT_ERR' BEFORE the 'close' event (node:child_process abortChildProcess).
+    // Per Node's EventEmitter contract, an unlistened-to 'error' event is rethrown via
+    // `process.nextTick(() => { throw err })`, killing the entire sidecar process.
+    //
+    // ABORT_ERR is benign — it is the deliberate signal we caused. The close-path's exitCode
+    // check (see proc.on('close', ...) below) plus emitAbortOrDone already produce the correct
+    // outbound (timeout error or done). Swallow ABORT_ERR silently to avoid double-reporting.
+    //
+    // Other errors (ENOENT, EACCES — spawn-time failures before a 'close' is guaranteed) are
+    // logged via console.error for diagnosability. The close-path exit code remains the
+    // authoritative failure signal for outbound messages; do NOT emit an extra outbound here.
+    // Mirrors the orphan-stream-error convention used by proc.stdin?.on('error', ...) below.
+    proc.on('error', (err: Error & { code?: string }) => {
+      if (err.code !== 'ABORT_ERR') {
+        console.error('[sidecar] spawned claude error:', err);
+      }
+    });
+
     // Attach an 'error' listener so an unhandled stream error cannot crash the sidecar process.
     // Error reporting for *correlated* writes flows through per-write callbacks (see writes below),
     // which capture the correct id for each write rather than the outer send_message id.
