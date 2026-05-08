@@ -5,8 +5,12 @@
 //!
 //! Unlike the OCCT counterpart (`crates/reify-kernel-occt/tests/inventory_registration.rs`),
 //! these tests are NOT gated on an `OCCT_AVAILABLE`-style flag — the openvdb
-//! adapter submits unconditionally in this v0.2 scaffold task (no
-//! `cfg(has_openvdb)` gate; see design decisions in `src/register.rs`).
+//! adapter's `inventory::submit!` is gated on
+//! `cfg(any(has_openvdb, feature = "stub_register"))`, and the self-dev-dep in
+//! `Cargo.toml` activates `stub_register` for this test binary's compilation
+//! closure.  As a result the registration is always present here, regardless
+//! of whether `/opt/reify-deps` is installed.  See design decisions in
+//! `src/register.rs`.
 //!
 //! # Design template
 //!

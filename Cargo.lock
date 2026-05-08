@@ -4095,6 +4095,7 @@ dependencies = [
  "inventory",
  "reify-eval",
  "reify-expr",
+ "reify-kernel-openvdb",
  "reify-test-support",
  "reify-types",
  "tempfile",
