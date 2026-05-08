@@ -801,6 +801,66 @@ pub(crate) fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
     Some((zmin?, zmax?))
 }
 
+/// Parse a `Value::String` BoundingBox payload (the kernel's
+/// `{"xmin":..,"ymin":..,"zmin":..,"xmax":..,"ymax":..,"zmax":..}` JSON
+/// encoding) and return `(min, max)` for the requested axis.
+///
+/// Generalises [`parse_bbox_z_extents`] to all three axes — the
+/// `extremal_by_bbox` selector dispatches on `Axis::{X, Y, Z}` and reads
+/// either the `*min` or `*max` extent depending on `ExtremalSense`.
+///
+/// Returns `QueryError::QueryFailed` on any deviation from the expected
+/// shape (non-string `Value`, malformed JSON, missing fields for the
+/// requested axis).
+pub(crate) fn parse_bbox_axis_extents(value: &Value, axis: u8) -> Result<(f64, f64), QueryError> {
+    let s = match value {
+        Value::String(s) => s,
+        other => {
+            return Err(QueryError::QueryFailed(format!(
+                "BoundingBox returned non-string value: {other:?}"
+            )));
+        }
+    };
+    parse_bbox_axis_extents_json(s, axis).ok_or_else(|| {
+        QueryError::QueryFailed(format!(
+            "BoundingBox returned malformed JSON payload: {s:?}"
+        ))
+    })
+}
+
+/// Parse `{"xmin":..,"ymin":..,"zmin":..,"xmax":..,"ymax":..,"zmax":..}`
+/// for the requested axis (`b'x' | b'y' | b'z'`), returning `(min, max)`.
+/// Returns `None` on structural deviation or unexpected `axis` byte.
+pub(crate) fn parse_bbox_axis_extents_json(s: &str, axis: u8) -> Option<(f64, f64)> {
+    let (min_key, max_key): (&str, &str) = match axis {
+        b'x' => ("xmin", "xmax"),
+        b'y' => ("ymin", "ymax"),
+        b'z' => ("zmin", "zmax"),
+        _ => return None,
+    };
+    let mut min_v: Option<f64> = None;
+    let mut max_v: Option<f64> = None;
+    parse_flat_number_object(s, |key, num| {
+        if key == min_key {
+            min_v = Some(num);
+            true
+        } else if key == max_key {
+            max_v = Some(num);
+            true
+        } else if matches!(
+            key,
+            "xmin" | "xmax" | "ymin" | "ymax" | "zmin" | "zmax"
+        ) {
+            // Other-axis extents are part of the well-formed payload
+            // but not needed for this caller; tolerate them silently.
+            true
+        } else {
+            false
+        }
+    })?;
+    Some((min_v?, max_v?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

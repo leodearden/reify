@@ -33,7 +33,58 @@ use std::collections::HashSet;
 
 use reify_types::{GeometryHandleId, GeometryKernel, GeometryQuery, QueryError};
 
-use crate::topology_selectors::{dot3, filter_by_value, normalize3, parse_xyz_value};
+use crate::topology_selectors::{
+    dot3, filter_by_value, normalize3, parse_bbox_axis_extents, parse_xyz_value,
+    query_per_subshape,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Axis / ExtremalSense — direction enums for extremal selectors (PRD line 77)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Cartesian axis for direction-aware selectors and extremal queries.
+///
+/// Used by [`extremal_by_bbox`] (and the upcoming `extremal_by_centroid`)
+/// to pick which component of a `BoundingBox` / `Centroid` payload to
+/// compare. The PRD vocabulary slots `>X` / `>Y` / `>Z` map to
+/// `Axis::{X, Y, Z}`; sign is carried by [`ExtremalSense`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Axis {
+    X,
+    Y,
+    Z,
+}
+
+impl Axis {
+    /// Return the axis byte tag (`b'x' | b'y' | b'z'`) used by
+    /// [`crate::topology_selectors::parse_bbox_axis_extents`].
+    pub(crate) fn as_byte(self) -> u8 {
+        match self {
+            Axis::X => b'x',
+            Axis::Y => b'y',
+            Axis::Z => b'z',
+        }
+    }
+
+    /// Return the axis-aligned unit vector (used by direction filters and
+    /// to project a Centroid payload onto a single component).
+    pub(crate) fn unit(self) -> [f64; 3] {
+        match self {
+            Axis::X => [1.0, 0.0, 0.0],
+            Axis::Y => [0.0, 1.0, 0.0],
+            Axis::Z => [0.0, 0.0, 1.0],
+        }
+    }
+}
+
+/// Sense of an extremal selector — whether to pick the maximum or minimum
+/// candidate along the chosen axis. Maps to the PRD vocabulary's `>axis`
+/// (Max — "highest") and the symmetric `<axis` (Min — "lowest").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExtremalSense {
+    Max,
+    Min,
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Boolean combinators (PRD line 79)
@@ -226,4 +277,99 @@ pub fn edges_perpendicular_to<K: GeometryKernel + ?Sized>(
             Ok(dot3(tan, axis).abs() <= sin_tol)
         },
     )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extremal selectors (PRD line 77)
+//
+// `>axis` (extremal-by-bounds) walks each candidate's BoundingBox along
+// the chosen axis and picks the cluster of candidates whose extreme is
+// within `tol_m` of the global extreme. `>>axis` (extremal-by-centroid)
+// is the centroid-based counterpart and follows in `extremal_by_centroid`.
+//
+// Tie semantics: the cluster of candidates within `tol_m` of the global
+// extreme is returned in input order. PRD line 66 explicitly accepts that
+// symmetric splits are unsolved across the literature; the selector
+// returns the full cluster (not an arbitrary single pick) so callers can
+// chain another disambiguator (`owner_body_of`, `user_label_eq`, …) or
+// surface a `TopologyAttributeStale`-style diagnostic from the resolver.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Return the cluster of `candidates` whose `BoundingBox` extent along
+/// `axis` (using `bbox.max[axis]` for `Max` and `bbox.min[axis]` for `Min`)
+/// is within `tol_m` of the global extreme.
+///
+/// Issues a single batched `kernel.query_many` for the entire candidate
+/// slice (matching the v0.1 batching discipline of `topology_selectors`),
+/// reads each `BoundingBox` payload via [`parse_bbox_axis_extents`], and
+/// returns the cluster in input order with dedup-on-first-seen.
+///
+/// # Edge cases
+///
+/// - Empty `candidates` → `Ok(Vec::new())`.
+/// - All candidates extreme within `tol_m` of one another → returns all
+///   of them (the cluster spans the whole input).
+/// - On a tie cluster of size > 1, no diagnostic is emitted here — the
+///   caller is expected to chain a uniqueness resolver
+///   (`resolve_unique_by_attribute`, etc.) for that signal.
+///
+/// # Errors
+///
+/// - Propagates any error from `query_many`.
+/// - Returns `QueryError::QueryFailed` on a malformed `BoundingBox`
+///   payload (non-string, non-JSON, missing axis fields).
+pub fn extremal_by_bbox<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    candidates: &[GeometryHandleId],
+    axis: Axis,
+    sense: ExtremalSense,
+    tol_m: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Batched read: one `query_many` for the entire candidate slice.
+    let values = query_per_subshape(
+        kernel,
+        candidates,
+        "extremal_by_bbox",
+        GeometryQuery::BoundingBox,
+    )?;
+    // Extract the per-candidate scalar to compare against (bbox.min[axis]
+    // for Min, bbox.max[axis] for Max).
+    let axis_byte = axis.as_byte();
+    let mut metrics: Vec<f64> = Vec::with_capacity(candidates.len());
+    for value in &values {
+        let (min_v, max_v) = parse_bbox_axis_extents(value, axis_byte)?;
+        metrics.push(match sense {
+            ExtremalSense::Max => max_v,
+            ExtremalSense::Min => min_v,
+        });
+    }
+    // Find the global extreme; an empty `candidates` was short-circuited
+    // above, so `metrics` is non-empty.
+    let extreme = metrics
+        .iter()
+        .copied()
+        .fold(
+            match sense {
+                ExtremalSense::Max => f64::NEG_INFINITY,
+                ExtremalSense::Min => f64::INFINITY,
+            },
+            |acc, v| match sense {
+                ExtremalSense::Max => acc.max(v),
+                ExtremalSense::Min => acc.min(v),
+            },
+        );
+    // Walk candidates in input order, emitting any whose metric is
+    // within `tol_m` of `extreme`. Dedup-on-first-seen mirrors the
+    // combinator discipline.
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
+    let mut out: Vec<GeometryHandleId> = Vec::new();
+    for (id, metric) in candidates.iter().zip(metrics.iter()) {
+        if (metric - extreme).abs() <= tol_m && seen.insert(*id) {
+            out.push(*id);
+        }
+    }
+    Ok(out)
 }
