@@ -217,6 +217,60 @@ fn faces_by_normal_zero_target_returns_query_failed() {
 }
 
 #[test]
+fn faces_by_normal_negative_tol_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], -0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for negative tol, got {:?}", other),
+    }
+}
+
+#[test]
+fn faces_by_normal_tol_above_pi_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = topology_selectors::faces_by_normal(
+        &mut kernel,
+        parent,
+        [0.0, 0.0, 1.0],
+        std::f64::consts::PI + 1e-3,
+    );
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for tol > π, got {:?}", other),
+    }
+}
+
+#[test]
+fn faces_by_normal_nan_tol_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result =
+        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], f64::NAN);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
+    }
+}
+
+#[test]
 fn faces_by_normal_nan_target_returns_query_failed() {
     // The !mag.is_finite() guard catches NaN before the mag < f64::EPSILON
     // check would (any comparison with NaN is false, so NaN would otherwise
