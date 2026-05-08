@@ -342,7 +342,11 @@ fn norm3(v: [f64; 3]) -> f64 {
 ///   (degree-1 exact for the `N · const` integrand).
 /// - `FaceOrder::P2Tri` — 6-node quadratic triangle in canonical order
 ///   `[v0, v1, v2, m_{01}, m_{12}, m_{20}]`, 3-point edge-midpoint quadrature
-///   (degree-2 exact).
+///   (degree-2 exact for straight-edged P2 triangles where edge midpoints lie
+///   at the geometric midpoint and the surface map is affine). For genuinely
+///   curved P2 faces the Jacobian `|t_ξ × t_η|` is non-polynomial and the
+///   3-point rule is approximate; this situation does not arise in the standard
+///   FEA practice of straight-edged tetrahedral meshes.
 ///
 /// # Additive semantics
 ///
@@ -567,39 +571,7 @@ mod tests {
         let mut f = vec![0.0_f64; 30]; // 10 nodes × 3 DOFs
         apply_body_force(&mut f, ElementOrder::P2, &connectivity, &phys, [1.0, 0.0, 0.0]);
 
-        let vol = 1.0 / 6.0;
-        let expected_vertex = -vol / 20.0;  // -1/120 * vol = -vol/120 — standard P2 lumping
-        let expected_midpt = vol / 5.0;     // actual P2 edge-midpoint weight (4*vol/20 = vol/5)
-
-        // Let me recalculate this analytically.
-        // For a P2 tet with constant body force ρ·b, the consistent body force is:
-        //   f_i = ∫ N_i dV · b
-        //
-        // For vertex node i, N_i = λ_i(2λ_i - 1)
-        //   ∫_T λ_i(2λ_i - 1) dV = ∫_T (2λ_i² - λ_i) dV
-        //   = 2·∫ λ_i² dV - ∫ λ_i dV
-        //   = 2 · vol/(5!/(2!·2!)) ...
-        // Standard integrals over unit tet: ∫_T λ_0^a λ_1^b λ_2^c λ_3^d dV = a!b!c!d!/(a+b+c+d+3)! · vol_factor
-        // For unit tet (vol=1/6): ∫ λ_i dV = 1/4 · 1/6 = 1/24
-        // ∫ λ_i² dV = 2! · 1!⁰ / (2+3)! · (3!) ...
-        // Actually: ∫_T λ_i^2 dV = 2·1·1·1/(2+1+1+1)! · (1·1·1·1) ...
-        // The standard formula: ∫_T λ_0^a λ_1^b λ_2^c λ_3^d dV = a!b!c!d!/(a+b+c+d+3)! · 6·vol
-        // where vol = 1/6 for the reference tet, so 6·vol = 1.
-        //   ∫ λ_i dV = 1!·0!·0!·0!/(1+3)! · 1 = 1/24
-        //   ∫ λ_i² dV = 2!·0!·0!·0!/(2+3)! · 1 = 2/120 = 1/60
-        //   So ∫ N_vertex dV = 2·(1/60) - 1/24 = 1/30 - 1/24 = (4-5)/120 = -1/120
-        //
-        // For edge-midpoint node (a,b): N = 4λ_a·λ_b
-        //   ∫ 4λ_a·λ_b dV = 4 · 1!·1!·0!·0!/(1+1+3)! · 1 = 4/(5!) = 4/120 = 1/30
-        //
-        // So vertex weight = -1/120, edge-midpoint weight = 1/30 = 4/120.
-        // These are per unit body-force, NOT multiplied by vol separately because
-        // these integrals already account for the physical-space volume.
-
-        // For unit reference tet (vol = 1/6):
-        // vertex nodes: f_i = -1/120
-        // edge-midpoint nodes: f_i = 1/30
-
+        // vertex: ∫ λ(2λ-1) dV = -1/120; midpoint: ∫ 4λ_a λ_b dV = 1/30 on unit ref tet
         let expected_vertex = -1.0 / 120.0;
         let expected_midpt = 1.0 / 30.0;
 
@@ -757,6 +729,101 @@ mod tests {
         // Nodes 3 and 4 must be untouched.
         for i in 9..15 {
             assert_eq!(f[i], 0.0, "f[{i}] should be 0.0 (not a face node)");
+        }
+    }
+
+    /// P1Tri triangle in the yz-plane (rotated out of the xy-plane). Normal
+    /// points in +x. Verifies that `apply_traction_load` handles non-axis-aligned
+    /// faces correctly: the computed `|t_ξ × t_η|` area element must equal 1 and
+    /// conservation `Σ f = area · traction` must still hold.
+    ///
+    /// Vertices: `(0,0,0)`, `(0,1,0)`, `(0,0,1)` — unit right triangle in the
+    /// yz-plane, area = 1/2. Each node gets area/3 = 1/6.
+    #[test]
+    fn apply_traction_p1tri_rotated_yz_plane_conservation() {
+        let face_phys: [[f64; 3]; 3] = [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let conn = [0usize, 1, 2];
+        let traction = [3.0, -1.0, 2.0];
+        let mut f = vec![0.0_f64; 9]; // 3 nodes
+        apply_traction_load(&mut f, FaceOrder::P1Tri, &conn, &face_phys, traction);
+
+        let area = 0.5;
+        let expected_per_node = area / 3.0; // 1/6
+
+        // Each node receives area/3 of each traction component.
+        for node in 0..3 {
+            for alpha in 0..3 {
+                let got = f[3 * node + alpha];
+                let expected = expected_per_node * traction[alpha];
+                assert!(
+                    (got - expected).abs() < TOL,
+                    "node {node} axis {alpha}: got {got}, expected {expected}",
+                );
+            }
+        }
+
+        // Conservation: sum over nodes == area * traction.
+        for alpha in 0..3 {
+            let total: f64 = (0..3).map(|n| f[3 * n + alpha]).sum();
+            let expected_total = area * traction[alpha];
+            assert!(
+                (total - expected_total).abs() < TOL,
+                "axis {alpha}: total = {total}, expected {expected_total}",
+            );
+        }
+    }
+
+    /// P1Tri with a non-contiguous, non-zero-based connectivity vector
+    /// `[4, 0, 7]` into a 10-node global `f` (length 30). Verifies that the
+    /// scatter step places contributions at the correct global DOF indices
+    /// (`f[12..15]`, `f[0..3]`, `f[21..24]`) and leaves all other entries zero.
+    ///
+    /// A bug that assumed local-index == global-index (i.e. `conn = [0,1,2]`)
+    /// would misplace the contributions and fail this test.
+    #[test]
+    fn apply_traction_p1tri_non_contiguous_connectivity_scatter() {
+        let face_phys: [[f64; 3]; 3] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        // Local face nodes 0, 1, 2 → global nodes 4, 0, 7.
+        let conn = [4usize, 0, 7];
+        let traction = [1.0, 0.0, 0.0];
+        let mut f = vec![0.0_f64; 30]; // 10 nodes
+        apply_traction_load(&mut f, FaceOrder::P1Tri, &conn, &face_phys, traction);
+
+        // Each local node gets area/3 = 1/6 of traction.
+        let expected = 1.0 / 6.0;
+
+        // Global node 4: f[12..15]
+        assert!((f[12] - expected).abs() < TOL, "f[12] (node 4 x-DOF) = {}, expected {expected}", f[12]);
+        assert_eq!(f[13], 0.0, "f[13] (node 4 y-DOF) should be 0");
+        assert_eq!(f[14], 0.0, "f[14] (node 4 z-DOF) should be 0");
+
+        // Global node 0: f[0..3]
+        assert!((f[0] - expected).abs() < TOL, "f[0] (node 0 x-DOF) = {}, expected {expected}", f[0]);
+        assert_eq!(f[1], 0.0, "f[1] (node 0 y-DOF) should be 0");
+        assert_eq!(f[2], 0.0, "f[2] (node 0 z-DOF) should be 0");
+
+        // Global node 7: f[21..24]
+        assert!((f[21] - expected).abs() < TOL, "f[21] (node 7 x-DOF) = {}, expected {expected}", f[21]);
+        assert_eq!(f[22], 0.0, "f[22] (node 7 y-DOF) should be 0");
+        assert_eq!(f[23], 0.0, "f[23] (node 7 z-DOF) should be 0");
+
+        // All other entries must remain zero.
+        let touched: std::collections::HashSet<usize> = [0, 1, 2, 12, 13, 14, 21, 22, 23]
+            .iter()
+            .cloned()
+            .collect();
+        for i in 0..30 {
+            if !touched.contains(&i) {
+                assert_eq!(f[i], 0.0, "f[{i}] should be 0.0 (not a face DOF)");
+            }
         }
     }
 
