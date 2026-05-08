@@ -1,0 +1,203 @@
+// Stdlib: Multi-Load-Case FEA  (`std.fea.multi_case`)
+//
+// Provides the named-type surface for the v0.3.x multi-load-case FEA workflow:
+//   - `LoadCase`        — solver-input bundle: a named set of loads, supports,
+//                         and optional solver-knob overrides
+//   - `MultiCaseResult` — solver-output container: a Map from case names to
+//                         per-case `ElasticResult` instances
+//
+// PRD reference: docs/prds/v0_3/structural-analysis-fea.md, "Multi-load-case
+// FEA" section (task #1, task #2).
+//
+// Module placement: `std.fea.multi_case` leaves room for future `std.fea.*`
+// siblings (e.g. `std.fea.modal`, `std.fea.thermal_coupling`) without
+// renaming. Registered immediately after `std.solver.elastic` in
+// `crates/reify-compiler/src/stdlib_loader.rs` so the growing prelude carries
+// `ElasticOptions` and `ElasticResult` in scope when this file compiles.
+//
+// Encoding deviations from the PRD:
+//   1. PRD writes `loads : List<Load>` and `supports : List<Support>`.
+//      `Load` and `Support` are not statically-typed structs in the current
+//      stdlib: runtime load/support instances are kind-tagged `Value::Map`s
+//      produced by `point_load`, `pressure_load`, `fixed_support`,
+//      `pinned_support`, etc. (name-dispatched builtins). Using
+//      `List<Real>` placeholders here mirrors the
+//      `ElasticResult.displacement : Real` precedent at
+//      `solver_elastic.ri:17-28` — a `TODO(load-trait)` note on each field
+//      signals the future tightening (a `trait def Load` marker that all
+//      kind-constructors satisfy). Runtime type-checking is shallow
+//      kind-match only, so `List<Real>` silently accepts a `Value::List` of
+//      load/support `Value::Map`s without runtime rejection.
+//   2. `LoadCase` has no `constraint` blocks: neither `loads` nor `supports`
+//      can be validated for non-emptiness or uniqueness at the struct level
+//      (constraint clauses evaluate per-instance scalar predicates; they
+//      cannot express collection invariants). Non-empty and unique-name
+//      validation is the responsibility of `solve_load_cases` (task #2).
+//      PRD task #10 owns the diagnostic surface for multi-case-specific
+//      failure modes.
+//   3. Accessor free-functions `case_names` / `result_for` are
+//      name-dispatched in `crates/reify-stdlib/src/fea.rs::eval_fea`,
+//      not as `method def`s here — matching the universal convention in
+//      this stdlib (zero `method def` / `fn def` declarations across all
+//      stdlib `.ri` files).
+
+// ── LoadCase structure ────────────────────────────────────────────────────────
+
+// `LoadCase` is the multi-load-case FEA solver-input bundle.  Each instance
+// represents a single named load scenario: a set of applied loads, a set of
+// boundary supports, and an optional override for the solver configuration.
+//
+// The canonical workflow is to build a `List<LoadCase>` and pass it to
+// `solve_load_cases(cases, material, geometry)` (task #2), which returns a
+// `MultiCaseResult`.  Each case is solved independently on the same mesh;
+// results are collected into the `MultiCaseResult.cases` Map keyed by
+// `LoadCase.name`.
+//
+// Field rationale:
+//   `name`     — uniqueness key in the output `MultiCaseResult.cases` Map;
+//                must be unique across all cases in a `List<LoadCase>` call
+//                (enforced by the producer — `solve_load_cases`, task #2).
+//                No constraint here because collection-invariants can't be
+//                expressed as per-instance scalar predicates.
+//   `loads`    — list of applied loads (point loads, pressure loads, etc.)
+//                produced by the runtime load constructors `point_load`,
+//                `pressure_load`, etc. Typed `List<Real>` as a placeholder
+//                pending `trait def Load` (see header note 1 and
+//                TODO(load-trait) below).
+//   `supports` — list of boundary-condition supports (fixed, pinned, etc.)
+//                produced by the runtime support constructors `fixed_support`,
+//                `pinned_support`, etc. Typed `List<Real>` as a placeholder
+//                pending `trait def Support` (TODO(load-trait)).
+//   `options`  — optional solver-knob override; `none` uses the
+//                solver-default `ElasticOptions()` for this case.  Providing
+//                per-case options lets callers vary mesh size or iteration
+//                budget case-by-case (e.g. a "fine-mesh override" case).
+structure def LoadCase {
+    // Unique human-readable name for this load case.  Becomes the key in
+    // the output `MultiCaseResult.cases` Map.  Uniqueness across a
+    // `List<LoadCase>` is enforced by the producer (`solve_load_cases`,
+    // task #2).
+    param name : String
+
+    // Applied loads for this case.  Each element is a runtime kind-tagged
+    // Map produced by `point_load`, `pressure_load`, etc.
+    //
+    // TODO(load-trait): replace `List<Real>` with `List<Load>` once
+    // `trait def Load` is declared and the kind-constructor builtins
+    // (`point_load`, `pressure_load`) are annotated as satisfying it.
+    // Precedent: `ElasticResult.displacement : Real` placeholder at
+    // `solver_elastic.ri:17-28`.
+    param loads : List<Real>
+
+    // Boundary-condition supports for this case.  Each element is a runtime
+    // kind-tagged Map produced by `fixed_support`, `pinned_support`, etc.
+    //
+    // TODO(load-trait): replace `List<Real>` with `List<Support>` once
+    // `trait def Support` is declared and the kind-constructor builtins
+    // are annotated.  Same precedent as `loads` above.
+    param supports : List<Real>
+
+    // Optional solver-knob override for this case.  `none` instructs
+    // `solve_load_cases` to apply the solver-default `ElasticOptions()`
+    // for this case.  Providing per-case options lets callers vary mesh
+    // size, iteration budget, element order, etc. independently per case.
+    param options : Option<ElasticOptions> = none
+}
+
+// ── MultiCaseResult structure ─────────────────────────────────────────────────
+
+// `MultiCaseResult` is the multi-load-case FEA solver-output container.
+// Each instance holds a complete set of per-case `ElasticResult` instances
+// produced by `solve_load_cases` (task #2), keyed by the corresponding
+// `LoadCase.name`.
+//
+// Design constraints:
+//   - No `constraint` blocks: the only meaningful invariant ("cases must be
+//     non-empty") is a collection invariant expressible only at the producer
+//     (`solve_load_cases`, task #2); per-instance scalar predicates can't
+//     enforce it.  Map key-uniqueness is structurally guaranteed by `BTreeMap`.
+//   - No per-field defaults: every `MultiCaseResult` instance must be
+//     populated by the solver — a bare `MultiCaseResult()` call would
+//     produce an empty Map, which is meaningless without a solve.
+//
+// Accessor free-functions (name-dispatched in `crates/reify-stdlib/src/fea.rs`):
+//   - `case_names(mcr : MultiCaseResult) -> List<String>`: returns the Map
+//     keys in BTreeMap lexicographic order (deterministic, content-addressing-
+//     stable per `Value::Map`'s `BTreeMap<Value::String, Value>` invariant).
+//   - `result_for(mcr : MultiCaseResult, name : String) -> ElasticResult`:
+//     returns the `ElasticResult` for `name`, or `Undef` on miss (silent-Undef
+//     per PRD task #10 deferral, matching the `envelope_*` convention).
+//
+// Field rationale:
+//   `cases` — Map from case name to `ElasticResult`. Keys match the
+//             `LoadCase.name` values passed to `solve_load_cases`.
+//             BTreeMap key uniqueness is structurally guaranteed.
+//             Map key type is `String` (matching `LoadCase.name : String`).
+//             Map value type is `ElasticResult` (from `std.solver.elastic`);
+//             each entry is the full per-case FEA output.
+structure def MultiCaseResult {
+    // Per-case solver results keyed by `LoadCase.name`.  Populated
+    // exclusively by `solve_load_cases` (task #2); no caller-supplied
+    // default makes sense.  BTreeMap iteration order is lexicographic on
+    // `Value::String` keys, so `case_names(mcr)` is deterministic without
+    // a post-sort step.
+    param cases : Map<String, ElasticResult>
+}
+
+// ── v0.4 shell BC framework (runtime-only) ───────────────────────────────────
+//
+// The `PinnedSupport` constructor and the shell-aware `FixedSupport` contract
+// are name-dispatched in `crates/reify-stdlib/src/supports.rs` — no
+// `structure def` is required here, following the same pattern as
+// `envelope_max` / `envelope_min`.  Neither constructor requires a static
+// type in this module.
+//
+// Runtime semantics enforced by solver task T8 (shell BC application):
+//   - `FixedSupport` on a shell entity auto-clamps all 6 DOFs (3 translational
+//     + 3 rotational).
+//   - `PinnedSupport` is the explicit-pin opt-out: constrains translational
+//     DOFs only, leaving rotational DOFs free.
+//   - `PinnedSupport` on a tet entity is semantically equivalent to
+//     `FixedSupport` on tet; T8 emits a diagnostic warning in that case.
+//
+// See `docs/prds/v0_4/structural-analysis-shells.md` § "BC framework" for
+// the full design rationale.
+//
+// v0.4 shell stress framework (PRD task T16 — decomposition step 16):
+//
+// `ElasticResult` (in `std/solver/elastic`) now carries six field-typed slots
+// for shell-result data. Three of these are grouped into a companion structure,
+// `ShellStress` (also in `std/solver/elastic`):
+//
+//   ElasticResult.stress  — kept as the legacy tet-compatible stress placeholder
+//                           (Real, per TODO(field-in-param, task #3117)).
+//   ElasticResult.frame   — new in T16: per-element local-to-global rotation
+//                           (Real placeholder for Field<Point3<Length>,
+//                           Matrix<3,3,Real>>). Set to Value::Undef for tet
+//                           results; populated from the MITC3+ mid-surface
+//                           mesher for shell results.
+//   ShellStress.top       — top-surface Cauchy stress layer (Real placeholder
+//                           for Field<Point3<Length>, Tensor<2,3,Pressure>>).
+//   ShellStress.mid       — mid-surface (neutral-plane) stress layer. For tet
+//                           results all three ShellStress channels are equal.
+//   ShellStress.bottom    — bottom-surface stress layer.
+//
+// Runtime structured-stress contract (NOT implemented at the stdlib level):
+// The backward-compatible alias `result.stress` → `result.stress.mid` for
+// tet-to-shell migration, and the `to_global(stress, frame)` helper for
+// transforming shell-local stress to the global Cartesian frame, are
+// engine-integration concerns deferred to tasks T18-T20 ("Auto-classification
+// dispatch", "Shell extraction failure handling", "Persistent-naming for
+// derived mid-surface entities"). At the stdlib level T16 only declares the
+// shapes; the alias and dispatch semantics are wired by the engine tasks.
+//
+// Rust runtime container: `crates/reify-solver-elastic/src/shell_result.rs`
+// houses the `ShellStress` struct with three fields (top/mid/bottom) and a
+// `homogeneous(field)` constructor for tet results (sets all three channels
+// to field; no `frame` field on `ShellStress` — `frame` lives on
+// `ElasticResult`, as listed above). Engine-integration tasks T18-T20 call
+// `homogeneous` for tet elements and use direct struct initialisation for
+// shell elements.
+//
+// See `docs/prds/v0_4/structural-analysis-shells.md` § "Stress through
+// thickness" for the full design rationale.

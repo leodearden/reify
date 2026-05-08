@@ -425,7 +425,7 @@ mod tests {
     /// by the determinism + round-trip tests, so each test gets a fresh copy.
     fn make_sample_result() -> ElasticResult {
         ElasticResult {
-            displacement: vec![1.0, -2.5, 3.14159, 0.0, 1e-9],
+            displacement: vec![1.0, -2.5, std::f64::consts::PI, 0.0, 1e-9],
             stress: vec![100e6, -50e6, 0.0, 250e6],
             max_von_mises: 250e6,
             converged: true,
@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn elastic_result_round_trips_all_six_fields() {
         let original = ElasticResult {
-            displacement: vec![1.0, -2.5, 3.14159, 0.0, 1e-9],
+            displacement: vec![1.0, -2.5, std::f64::consts::PI, 0.0, 1e-9],
             stress: vec![100e6, -50e6, 0.0, 250e6],
             max_von_mises: 250e6,
             converged: true,
@@ -755,7 +755,7 @@ mod tests {
         // and the `bincode::deserialize_from` reader-advancing idiom from the
         // oversize-len tests to consume past the header and expose the raw slab bytes.
         let original = ElasticResult {
-            displacement: vec![1.0_f64, -2.5_f64, 3.14159_f64],
+            displacement: vec![1.0_f64, -2.5_f64, std::f64::consts::PI],
             stress: vec![100e6_f64, -50e6_f64],
             max_von_mises: 100e6,
             converged: true,

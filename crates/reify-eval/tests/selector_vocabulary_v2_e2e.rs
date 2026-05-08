@@ -34,8 +34,8 @@ use reify_eval::{
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    CapKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp,
-    GeometryQuery, Role, TopologyAttribute, TopologyAttributeTable, Value,
+    CapKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryOp, GeometryQuery, Role,
+    TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
@@ -84,7 +84,7 @@ fn face_surface_kind_classifies_box_faces_as_plane() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
     let box_id = kernel
         .execute(&ten_mm_box_op())
         .expect("10mm box should build via OCCT")
@@ -131,7 +131,7 @@ fn face_surface_kind_classifies_cylinder_caps_and_lateral() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
     let cyl_id = kernel
         .execute(&cylinder_op())
         .expect("5mm/10mm cylinder should build via OCCT")
@@ -184,7 +184,7 @@ fn edge_curve_kind_classifies_box_edges_as_line() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
     let box_id = kernel
         .execute(&ten_mm_box_op())
         .expect("10mm box should build via OCCT")
@@ -327,7 +327,7 @@ fn owner_body_of_box_face_resolves_to_box() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
     let box_id = kernel
         .execute(&ten_mm_box_op())
         .expect("10mm box should build via OCCT")
@@ -356,7 +356,7 @@ fn owner_body_of_box_edge_resolves_to_box() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
     let box_id = kernel
         .execute(&ten_mm_box_op())
         .expect("10mm box should build via OCCT")
@@ -501,7 +501,7 @@ fn compositional_smoke_attribute_filters_over_box_faces() {
         return;
     }
 
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
     let box_id = kernel
         .execute(&ten_mm_box_op())
         .expect("10mm box should build via OCCT")

@@ -275,6 +275,7 @@ mod tests {
             BoundaryAssociation, NodeAttachment, ProjectionFailure, ProjectorPayload, Projector,
             compute_dirichlet_bcs,
         };
+        #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
             &reify_types::VolumeMesh,
             &BoundaryAssociation,
@@ -294,6 +295,7 @@ mod tests {
     // compile if a re-export drops or the public signature drifts.
     const _: fn() = || {
         use crate::{LaplacianFailure, laplacian_smooth};
+        #[allow(clippy::type_complexity)] // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
             &reify_types::VolumeMesh,
             &[(u32, [f64; 3])],

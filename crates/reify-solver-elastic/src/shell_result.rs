@@ -318,6 +318,8 @@ impl ShellStress {
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)] // index variables drive parallel-array indexing
+#[allow(clippy::identity_op)] // explicit `6 * node + dof` form mirrors the DOF layout
 mod tests {
     use super::*;
     use reify_types::Value;

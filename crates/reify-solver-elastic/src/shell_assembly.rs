@@ -509,6 +509,7 @@ pub fn shell_element_stiffness(
 
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
+#[allow(clippy::identity_op)] // explicit `ndp * node + dof` form mirrors the DOF layout
 mod tests {
     use super::*;
     use crate::constitutive::IsotropicElastic;

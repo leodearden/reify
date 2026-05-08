@@ -1663,7 +1663,6 @@ fn owner_body_of_returns_query_failed_on_non_int_payload() {
     // Defence-in-depth: if a future kernel ever returns a non-Int payload
     // for OwnerBody, the selector must surface it as QueryFailed rather
     // than panicking on the type mismatch.
-    let parent = GeometryHandleId(1);
     let child = GeometryHandleId(2);
     let kernel = MockGeometryKernel::new()
         .with_owner_body_value(child, Value::String("not an int".into()));

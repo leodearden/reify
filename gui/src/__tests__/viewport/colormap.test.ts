@@ -391,25 +391,22 @@ describe('bakeColours', () => {
 describe('barrel export wiring (viewport/index)', () => {
   // The first cold import of the barrel triggers Solid JSX transformation of
   // Viewport.tsx → FeaModeToolbar.tsx (added in task 2961) and a ~2.3 s
-  // module graph load. On a cold worker, or under the full suite's
-  // concurrent load, this can exceed vitest's default 5 000 ms test timeout.
-  // Pre-warm the module cache in beforeAll with a generous 30 000 ms
-  // allowance so each assertion stays fast; the per-test 15 000 ms overrides
-  // are kept as a safety net so tests stay robust to scheduling order
-  // (steward esc-3061-3).
+  // module graph load. Global testTimeout (15 000 ms) and hookTimeout
+  // (30 000 ms) in gui/vitest.config.ts provide the necessary headroom —
+  // per-test overrides are no longer needed (task 3185 consolidation).
   type BarrelModule = typeof import('../../viewport/index');
   let barrel: BarrelModule;
   beforeAll(async () => {
     barrel = await import('../../viewport/index');
-  }, 30_000);
+  });
 
   it('applyColormap is re-exported from the viewport barrel', () => {
     expect(typeof barrel.applyColormap).toBe('function');
-  }, 15_000);
+  });
 
   it('bakeColours is re-exported from the viewport barrel', () => {
     expect(typeof barrel.bakeColours).toBe('function');
-  }, 15_000);
+  });
 
   it('applyColormap returns a proper 3-element Array for all palettes and range modes', () => {
     const r: Range = { mode: 'fixed', min: 0, max: 1 };
@@ -435,5 +432,5 @@ describe('barrel export wiring (viewport/index)', () => {
     const opts: import('../../viewport/colormap').ColormapOptions = { nanColor: [0, 0, 1] };
     const nanResult = barrel.applyColormap(NaN, r, 'viridis', opts);
     expect(nanResult).toEqual([0, 0, 1]);
-  }, 15_000);
+  });
 });
