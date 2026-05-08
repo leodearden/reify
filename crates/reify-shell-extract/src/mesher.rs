@@ -1286,6 +1286,83 @@ mod tests {
         );
     }
 
+    // ── task-3194 step-3: NonFiniteVertex rejection ───────────────────────────
+
+    /// `mesh_mid_surface` rejects meshes with non-finite vertex coordinates.
+    ///
+    /// A `NaN`, `+Inf`, or `-Inf` coordinate in `mesh.vertices` would silently
+    /// collapse all affected vertices into the dedup origin bin (NaN→0) or into
+    /// a `i64::MIN`/`i64::MAX` boundary bin (±inf), corrupting mesh topology.
+    ///
+    /// The check fires **before** `OutOfRangeTriangleIndex` — even a triangle
+    /// that references a valid (but non-finite) vertex triggers
+    /// `NonFiniteVertex` first.
+    #[test]
+    fn mesh_mid_surface_rejects_non_finite_vertex_coord() {
+        // 2-vertex mesh: vertex 0 is valid, vertex 1 carries the bad coordinate.
+        // We use triangles that only reference valid indices (0 and 1) to show
+        // the check fires before OutOfRangeTriangleIndex would.
+        let opts = MesherOptions::default();
+
+        for (label, bad_coord) in [
+            ("NaN x", f64::NAN),
+            ("+Inf y", f64::INFINITY),
+            ("-Inf z", f64::NEG_INFINITY),
+        ] {
+            // Substitute the bad value into one coordinate of vertex 1.
+            let bad_vertex = [bad_coord, 0.0, 0.0];
+            let mesh = MidSurfaceMesh {
+                vertices: vec![[0.0, 0.0, 0.0], bad_vertex],
+                triangles: vec![[0, 1, 0]], // valid indices — only vertex 1 is bad
+                thickness: vec![1.0, 1.0],
+            };
+
+            let err = mesh_mid_surface(&mesh, &opts)
+                .expect_err(&format!("mesh with {label} must be rejected"));
+
+            match err {
+                MesherError::NonFiniteVertex { vertex_index, coord } => {
+                    assert_eq!(
+                        vertex_index, 1,
+                        "{label}: expected vertex_index 1, got {vertex_index}"
+                    );
+                    if bad_coord.is_nan() {
+                        assert!(
+                            coord.is_nan(),
+                            "{label}: expected NaN coord, got {coord}"
+                        );
+                    } else {
+                        assert_eq!(
+                            coord, bad_coord,
+                            "{label}: expected coord {bad_coord}, got {coord}"
+                        );
+                    }
+                }
+                other => panic!("{label}: expected NonFiniteVertex, got {other:?}"),
+            }
+        }
+
+        // Also verify: NaN in y coordinate, ±Inf in z coordinate.
+        for (label, vi, coord_idx, bad_val) in [
+            ("NaN y at vi=1", 1usize, 1usize, f64::NAN),
+            ("+Inf z at vi=1", 1, 2, f64::INFINITY),
+        ] {
+            let mut verts = vec![[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]];
+            verts[vi][coord_idx] = bad_val;
+            let mesh = MidSurfaceMesh {
+                vertices: verts,
+                triangles: vec![],
+                thickness: vec![1.0, 1.0],
+            };
+            let err = mesh_mid_surface(&mesh, &opts)
+                .expect_err(&format!("mesh with {label} must be rejected"));
+            assert!(
+                matches!(err, MesherError::NonFiniteVertex { vertex_index, .. } if vertex_index == vi),
+                "{label}: expected NonFiniteVertex {{ vertex_index: {vi} }}, got {err:?}"
+            );
+        }
+    }
+
     // ── task-3194 step-1: subnormal merge_tolerance rejection ─────────────────
 
     /// `mesh_mid_surface` rejects subnormal `merge_tolerance` values where
