@@ -235,6 +235,9 @@ pub fn except(a: &[GeometryHandleId], b: &[GeometryHandleId]) -> Vec<GeometryHan
 ///
 /// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
 ///   contains a non-finite component.
+/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
+///   outside the valid range `[0, π/2]`. Values beyond π/2 are non-monotonic
+///   (sin decreases past π/2), so only `[0, π/2]` has well-defined semantics.
 /// - Propagates any error from `extract_faces`.
 /// - Propagates any error from a per-face `FaceNormal` query.
 /// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal` payload
@@ -245,6 +248,14 @@ pub fn faces_perpendicular_to<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    if !angular_tol_rad.is_finite()
+        || !(0.0..=std::f64::consts::FRAC_PI_2).contains(&angular_tol_rad)
+    {
+        return Err(QueryError::QueryFailed(format!(
+            "faces_perpendicular_to: angular_tol_rad must be finite and in [0, π/2] (got {})",
+            angular_tol_rad
+        )));
+    }
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "faces_perpendicular_to: axis direction must be non-zero and finite".into(),
@@ -286,6 +297,9 @@ pub fn faces_perpendicular_to<K: GeometryKernel + ?Sized>(
 ///
 /// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
 ///   contains a non-finite component.
+/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
+///   outside the valid range `[0, π/2]`. Values beyond π/2 are non-monotonic
+///   (sin decreases past π/2), so only `[0, π/2]` has well-defined semantics.
 /// - Propagates any error from `extract_edges`.
 /// - Propagates any error from a per-edge `EdgeTangent` query.
 /// - Returns `QueryError::QueryFailed` on a malformed `EdgeTangent`
@@ -296,6 +310,14 @@ pub fn edges_perpendicular_to<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    if !angular_tol_rad.is_finite()
+        || !(0.0..=std::f64::consts::FRAC_PI_2).contains(&angular_tol_rad)
+    {
+        return Err(QueryError::QueryFailed(format!(
+            "edges_perpendicular_to: angular_tol_rad must be finite and in [0, π/2] (got {})",
+            angular_tol_rad
+        )));
+    }
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "edges_perpendicular_to: axis direction must be non-zero and finite".into(),
