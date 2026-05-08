@@ -579,6 +579,79 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Step 6 — contract violations panic with descriptive messages
+    // -----------------------------------------------------------------------
+
+    /// Out-of-range DOF index panics with a message naming the offending dof
+    /// and the matrix dimension.
+    ///
+    /// With step-12's explicit `assert!(bc.dof < k.nrows(), …)` at function
+    /// entry this panics before any faer indexing occurs.  Without step-12,
+    /// the function silently accesses `row_ptr[99]..row_ptr[100]` which
+    /// panics with a faer/slice index-out-of-bounds message (wrong message).
+    #[test]
+    #[should_panic(expected = "DirichletBc")]
+    fn out_of_range_dof_panics() {
+        let mut k = single_p1_k(); // 12 × 12
+        let mut f = vec![0.0_f64; 12];
+        // DOF 99 is out of range for a 12-DOF system.
+        apply_dirichlet_row_elimination(
+            &mut k,
+            &mut f,
+            &[DirichletBc { dof: 99, value: 0.0 }],
+        );
+    }
+
+    /// Mismatched f length panics with a message naming both lengths.
+    ///
+    /// Without step-12's explicit check this silently writes to `f[bc.dof]`
+    /// which may be an out-of-bounds index, producing a different panic
+    /// message (or UB in unsafe code).
+    #[test]
+    #[should_panic(expected = "f.len()")]
+    fn f_length_mismatch_panics() {
+        let mut k = single_p1_k(); // 12 × 12
+        let mut f = vec![0.0_f64; 7]; // wrong length
+        apply_dirichlet_row_elimination(
+            &mut k,
+            &mut f,
+            &[DirichletBc { dof: 0, value: 0.0 }],
+        );
+    }
+
+    /// Missing diagonal entry panics with a message naming the dof.
+    ///
+    /// Synthesise a 3×3 CSR that intentionally omits the `(2, 2)` diagonal
+    /// entry.  The `diag_found` check inside the per-BC loop (added in
+    /// step-4) fires and panics with the expected message.
+    #[test]
+    #[should_panic(expected = "diagonal")]
+    fn missing_diagonal_entry_panics() {
+        use faer::sparse::SparseRowMat;
+        use faer::sparse::Triplet;
+
+        // Build a 3×3 matrix without the (2,2) diagonal entry:
+        // K = | 1  0  0 |
+        //     | 0  2  0 |
+        //     | 0  0  0 |   ← no stored entry at (2,2)
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 0, 1.0),
+            Triplet::new(1, 1, 2.0),
+            // (2, 2) intentionally absent
+        ];
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(3, 3, &triplets)
+                .expect("valid triplets");
+        let mut f = vec![0.0_f64; 3];
+        // Applying a BC at dof 2 should panic because K[2][2] has no stored entry.
+        apply_dirichlet_row_elimination(
+            &mut k,
+            &mut f,
+            &[DirichletBc { dof: 2, value: 0.0 }],
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Step 1 — empty BC list is a no-op
     // -----------------------------------------------------------------------
 
