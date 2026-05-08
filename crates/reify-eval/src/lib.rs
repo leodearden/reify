@@ -55,14 +55,13 @@ pub use structural_classifier::{
     ParameterClass, classify_cell, realization_graph_shape_hash, stage_a_eligible,
 };
 pub mod sweep_classifier;
-pub use sweep_classifier::{classify_swept_body, SweptKind, SweptKindTable};
+pub use sweep_classifier::{SweptKind, SweptKindTable, classify_swept_body};
 pub mod selector_vocabulary_v2;
 pub use selector_vocabulary_v2::{
-    Axis, ExtremalSense, adjacent_to_face, ancestor_faces_of_edge, complement,
-    created_by_feature, edges_by_curve_kind, edges_perpendicular_to, except,
-    extremal_by_bbox, extremal_by_centroid, faces_by_surface_kind, faces_perpendicular_to,
-    geom_universal, has_user_label, intersect, owner_body_of, siblings_of_face,
-    split_by_feature, union, user_label_eq,
+    Axis, ExtremalSense, adjacent_to_face, ancestor_faces_of_edge, complement, created_by_feature,
+    edges_by_curve_kind, edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
+    faces_by_surface_kind, faces_perpendicular_to, geom_universal, has_user_label, intersect,
+    owner_body_of, siblings_of_face, split_by_feature, union, user_label_eq,
 };
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
@@ -94,8 +93,8 @@ use std::sync::Arc;
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintNodeId, ConstraintSolver, ContentHash,
-    Diagnostic, FeatureTagTable, GeometryKernel, Mesh, OptimizationObjective, OptimizedImpl,
-    Satisfaction, TopologyAttributeTable, ValueCellId, ValueMap,
+    Diagnostic, FeatureTagTable, GeometryHandleId, GeometryKernel, Mesh, OptimizationObjective,
+    OptimizedImpl, Satisfaction, TopologyAttributeTable, ValueCellId, ValueMap,
 };
 
 use crate::cache::{CacheStore, NodeId};
@@ -515,6 +514,78 @@ pub struct Engine {
     /// `SweptKind` via additional fields/variants; the enum is
     /// `#[non_exhaustive]` so that extension is non-breaking.
     swept_kind_table: SweptKindTable,
+    /// Per-engine realization cache keyed on `(entity_id, repr_kind, demanded_tol)`.
+    ///
+    /// Populated by `execute_realization_ops` after a fully-successful realization
+    /// when a demanded tolerance is available; consulted at the start of the same
+    /// helper to short-circuit kernel re-execution when a cached handle satisfies
+    /// the request under the partial-order rule (`cached_tol ≤ requested_tol`).
+    ///
+    /// Cache lifetime is engine-scoped: entries persist across successive `build()`
+    /// / `build_snapshot()` / `tessellate_realizations()` calls within a single
+    /// `Engine` *as long as the inputs are value-stable*.
+    ///
+    /// **Auto-invalidation hook points (task 2874, steps 17-20)**: `edit_param`
+    /// and `edit_source` reset the cache to a fresh `RealizationCache::new()`
+    /// near function entry, mirroring the established `feature_tag_table` /
+    /// `topology_attribute_table` reset-at-hook-point pattern
+    /// (engine_build.rs:531/406). After an edit, the next `build()` /
+    /// `build_snapshot()` cold-misses on every realization and re-populates
+    /// the cache from kernel execution. The reset is conservative — the
+    /// engine cannot prove which cached entries survive a given edit without
+    /// per-cell input-cone analysis we do not currently maintain — so the
+    /// entire cache is flushed on every edit regardless of whether the
+    /// edited cell participates in any realization's input cone.
+    ///
+    /// **Public escape hatch (task 2874, step-22)**: production callers can
+    /// also flush the cache explicitly via
+    /// [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
+    /// (engine_admin.rs) for scenarios where the auto-invalidation hook
+    /// points (`edit_param`, `edit_source`) do not fire — for example,
+    /// kernel swaps via test seams or upstream module reloads that bypass
+    /// `edit_source`. Both auto-invalidation hooks delegate to that public
+    /// mutator so the reset semantics are single-sourced.
+    ///
+    /// Pinned end-to-end by:
+    /// - `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+    ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_param`).
+    /// - `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
+    ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_source`).
+    /// - `clear_realization_cache_public_api_resets_cache_for_production_callers`
+    ///   in `tests/tolerance_wiring_e2e.rs` (covers the public mutator).
+    ///
+    /// **Scope of the partial-order rule (amendment correction)**: the
+    /// `cached_tol ≤ requested_tol` ordering ONLY mitigates *tolerance-driven*
+    /// staleness — a tighter demand misses a looser cached entry. It does
+    /// NOT cover parameter / source / purpose-binding edits that change the
+    /// underlying geometry while keeping `(entity_id, BRep, demanded_tol)`
+    /// constant. The auto-invalidation hooks above close that gap for
+    /// `edit_param` / `edit_source`. Purpose-binding edits via
+    /// `activate_purpose` / `deactivate_purpose` are covered by the
+    /// partial-order rule itself when they tighten the demanded tolerance
+    /// (a tighter cache lookup misses the looser entry); when they LOOSEN
+    /// the demand the cached entry is still valid because looser tolerance
+    /// requires looser-or-equal precision — exactly the win the cache exists
+    /// to deliver.
+    ///
+    /// **Partial-order miss verification (task 2874 step-14)**: a tighter
+    /// demanded tolerance MUST NOT be served by a looser cached entry. The
+    /// rule is enforced structurally by `RealizationCache::lookup` →
+    /// `ToleranceBucket::lookup`'s `cached_tol ≤ requested_tol` predicate
+    /// (`realization_cache.rs:101-116`); the engine wiring threads the
+    /// requested tolerance through to that predicate unchanged at both the
+    /// insert site (`execute_realization_ops` post-success) and the lookup
+    /// site (`execute_realization_ops` cache-hit short-circuit at the top of
+    /// the helper). The integration test
+    /// `cache_lookup_misses_when_purpose_changes_demanded_tolerance` in
+    /// `tests/tolerance_wiring_e2e.rs` pins this end-to-end: cache populated
+    /// at 1µm, second build at 1nm misses → kernel re-executes. No cache
+    /// clearing on `recompute_tolerance_scope` is required because the
+    /// partial-order rule already produces the correct cache-miss behaviour
+    /// when the demanded tolerance tightens between builds. (Conversely, a
+    /// loosening change between builds will hit the tighter cached entry —
+    /// exactly the win the cache exists to deliver.)
+    realization_cache: crate::realization_cache::RealizationCache<GeometryHandleId>,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     ///

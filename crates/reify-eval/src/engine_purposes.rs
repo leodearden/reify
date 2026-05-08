@@ -21,6 +21,25 @@ impl Engine {
     ///
     /// Requires a prior call to `eval()` so an evaluation state exists.
     /// If the purpose is already active, this is a no-op.
+    ///
+    /// **Re-activation requirement across `build()` / `tessellate_realizations()`**
+    /// (task 2874 amendment): both surfaces internally call `check()` →
+    /// `eval()`, and `eval()` clears `active_purpose_bindings`
+    /// (engine_eval.rs:1149-1150). Production callers that drive the
+    /// pattern `build(); ...; build();` (or `tessellate_realizations()`
+    /// twice) will observe an empty binding set on the second call's
+    /// pre-`check()` precompute, yielding `demanded_tol = None` for every
+    /// realization — the `RealizationCache` lookup at the top of
+    /// `execute_realization_ops` is bypassed (its `Some` guard fails) and
+    /// the kernel re-executes every op even when a cached handle exists.
+    /// To exercise the cache-hit short-circuit across multiple builds the
+    /// caller MUST `activate_purpose(...)` again between builds. The
+    /// snapshot surfaces (`build_snapshot` / `tessellate_snapshot`) do NOT
+    /// share this footgun because they do not call `eval()` — bindings
+    /// persist across snapshot rebuilds. A follow-up task that preserves
+    /// `active_purpose_bindings` across `eval()` (treating bindings as a
+    /// user-intent surface rather than eval-state) would close the gap;
+    /// today the re-activation dance is the documented workaround.
     pub fn activate_purpose(&mut self, purpose_name: &str, entity_ref: &str) {
         // No-op if already active
         if self.active_purposes.contains_key(purpose_name) {
@@ -262,6 +281,27 @@ impl Engine {
     /// incremental-update strategy keyed on entity_ref) inside this
     /// helper. Keep the recompute entry point so callers don't have to
     /// know the strategy changed.
+    ///
+    /// **Note on `Engine::realization_cache` interaction (task 2874 step-14 + amendment scope-correction)**:
+    /// this helper does NOT explicitly clear or invalidate the realization
+    /// cache. The cache's partial-order rule (`cached_tol ≤ requested_tol`,
+    /// enforced by `RealizationCache::lookup` → `ToleranceBucket::lookup`)
+    /// produces the correct cache-miss behaviour when the recomputed scope
+    /// tightens the demanded tolerance for a previously-cached entity, and
+    /// the correct cache-hit behaviour when the scope loosens or remains
+    /// unchanged. Pinned by the integration test
+    /// `cache_lookup_misses_when_purpose_changes_demanded_tolerance` in
+    /// `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
+    ///
+    /// IMPORTANT: the partial-order rule covers ONLY tolerance-driven
+    /// staleness. Handle-stability hazards orthogonal to demanded tolerance
+    /// (e.g. parameter edits invalidating the underlying geometry while
+    /// keeping `(entity_id, BRep, demanded_tol)` constant — a cache hit
+    /// would then return a stale `GeometryHandleId`) are NOT mitigated by
+    /// the partial-order rule and require their own invalidation strategy,
+    /// which is OUT OF SCOPE for this MVP wiring (follow-up task expected).
+    /// See the `Engine::realization_cache` field docstring on `lib.rs` for
+    /// the full known-limitation rundown.
     fn recompute_tolerance_scope(&mut self) {
         self.active_tolerance_scope.clear();
 

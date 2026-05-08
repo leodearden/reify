@@ -170,6 +170,13 @@ impl Engine {
             // `Engine::execute_realization_ops` and cleared at every build
             // entry point.
             swept_kind_table: crate::sweep_classifier::SweptKindTable::default(),
+            // Empty realization cache (task 2874). Populated by
+            // `execute_realization_ops` after fully-successful realizations
+            // when a demanded tolerance is available; consulted at the start
+            // of the helper to short-circuit kernel re-execution when a
+            // cached handle satisfies the request under the partial-order
+            // rule.
+            realization_cache: crate::realization_cache::RealizationCache::new(),
             // Only initialised in test / `test-instrumentation` builds; the
             // field is absent in production (see lib.rs and engine_eval.rs
             // for the matching cfg gates on the declaration and read site).
@@ -215,6 +222,77 @@ impl Engine {
     /// entry. Task 2982.
     pub fn swept_kind_table(&self) -> &crate::sweep_classifier::SweptKindTable {
         &self.swept_kind_table
+    }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Immutable access to the per-engine [`RealizationCache`] populated by
+    /// `execute_realization_ops` after fully-successful realizations whose
+    /// demanded tolerance is known. Tests use this accessor to assert that
+    /// `(entity_id, ReprKind::BRep, demanded_tol)` lookups return the
+    /// expected cached `GeometryHandleId` after `build()` /
+    /// `build_snapshot()` / `tessellate_realizations()` runs.
+    ///
+    /// Mirrors the cfg-gating pattern used by [`cache_store`](Self::cache_store):
+    /// the cache stores kernel-internal `GeometryHandleId` values, so exposing
+    /// the accessor in production builds would leak kernel implementation
+    /// detail into the public surface. Task 2874 (initial cache wiring)
+    /// adds the read-only test seam; broader cache invalidation control
+    /// surfaces are deferred to a follow-up.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn realization_cache(
+        &self,
+    ) -> &crate::realization_cache::RealizationCache<reify_types::GeometryHandleId> {
+        &self.realization_cache
+    }
+
+    /// Flush the per-engine [`RealizationCache`](crate::realization_cache::RealizationCache),
+    /// dropping every cached `(entity_id, repr_kind, demanded_tol) →
+    /// GeometryHandleId` entry.
+    ///
+    /// **Production escape hatch (task 2874, step-22).** Gives callers
+    /// explicit control over cache invalidation when they know an external
+    /// event has rendered cached `GeometryHandleId`s stale — for example,
+    /// swapping the geometry kernel via test seams, or an upstream module
+    /// reload that did not flow through `edit_source` (e.g. a CLI workflow
+    /// that constructs a fresh `CompiledModule` and feeds it in via a
+    /// non-`edit_source` path).
+    ///
+    /// **Most callers do NOT need to call this manually.** Both
+    /// [`Engine::edit_param`](crate::Engine::edit_param) and
+    /// [`Engine::edit_source`](crate::Engine::edit_source) already invoke
+    /// the same reset internally near function entry (the auto-invalidation
+    /// hook points pinned by tests
+    /// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+    /// and `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
+    /// in `tests/tolerance_wiring_e2e.rs`). This method is the escape hatch
+    /// for scenarios that fall OUTSIDE those hook points; it is NOT a
+    /// required pre-`build_snapshot` step.
+    ///
+    /// **Shape**: takes `&mut self`, returns nothing, idempotent on an
+    /// already-empty cache. Mirrors the precedent set by
+    /// [`Engine::clear_param_overrides`](Self::clear_param_overrides) — no
+    /// cfg gate, no return value, single-purpose mutator. The READ-side
+    /// accessor [`Engine::realization_cache`](Self::realization_cache)
+    /// keeps its `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// gate (cache contents are kernel-internal `GeometryHandleId` values
+    /// that should not leak into the production surface), but the
+    /// WRITE-side mutator is unconditionally available so production
+    /// callers can satisfy the cache-invalidation contract that the
+    /// `Engine::realization_cache` field's docstring documents.
+    ///
+    /// **What this method does NOT touch**: `eval_state`, `snapshot`,
+    /// `cache`, `journal`, `feature_tag_table`, `topology_attribute_table`,
+    /// `param_overrides`, registered solvers/kernels, or any other engine
+    /// state. The reset is single-purpose: only `realization_cache` is
+    /// reseat to a fresh [`RealizationCache::new()`](crate::realization_cache::RealizationCache::new).
+    ///
+    /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
+    /// in `tests/tolerance_wiring_e2e.rs`.
+    pub fn clear_realization_cache(&mut self) {
+        self.realization_cache = crate::realization_cache::RealizationCache::new();
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.

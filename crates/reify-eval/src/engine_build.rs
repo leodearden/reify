@@ -1,22 +1,24 @@
 // Split from lib.rs (task 2032) — build methods.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use reify_compiler::CompiledModule;
 use reify_types::{
-    AttributeHistory, CompiledFunction, Diagnostic, DiagnosticLabel, ErrorRef, ExportFormat,
-    FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId, GeometryKernel,
-    GeometryOp, LoftOpHistoryRecords, Mesh, RealizationNodeId, SourceSpan, SweepOpHistoryRecords,
-    TopologyAttributeTable, ValueMap, VersionId,
+    AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic, DiagnosticLabel,
+    ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryHandleId,
+    GeometryKernel, GeometryOp, LoftOpHistoryRecords, Mesh, Operation, RealizationNodeId, ReprKind,
+    SourceSpan, SweepOpHistoryRecords, TopologyAttributeTable, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::DependencyTrace;
+use crate::dispatcher::{dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
-use crate::sweep_classifier::{classify_swept_body, SweptKindTable};
+use crate::realization_cache::RealizationCache;
+use crate::sweep_classifier::{SweptKindTable, classify_swept_body};
 use crate::topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes,
@@ -411,6 +413,17 @@ impl Engine {
     /// module realizations using the geometry kernel. This is the incremental
     /// companion to build(): after edit_param() updates values, call
     /// build_snapshot() to get updated geometry without a cold restart.
+    ///
+    /// # Tolerance wiring (task 2874)
+    ///
+    /// `build_snapshot` mirrors [`Self::build`] across all four production-
+    /// wiring contracts (imported-tolerance-promise diagnostics, per-realization
+    /// demanded tolerance, per-stage tolerance budget, `RealizationCache`
+    /// populate/consult) — see [`Self::build`] for the full description. The
+    /// only placement difference: because `build_snapshot` does NOT call
+    /// `eval()` (it operates on the existing snapshot), the diagnostic-emission
+    /// helper runs AFTER `check_constraints_against_templates` rather than
+    /// before, since there is no eval-side scope clear to defend against.
     pub fn build_snapshot(
         &mut self,
         module: &CompiledModule,
@@ -428,11 +441,26 @@ impl Engine {
         let (constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
+        // Task 2874: emit imported-tolerance-promise diagnostics
+        // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
+        // for every (Input × Output × active-purpose-binding) triple recognised
+        // in the post-eval snapshot. See `Engine::emit_imported_tolerance_promise_diagnostics_for_module`
+        // for the recognition shapes and code-agnostic forwarding contract.
+        // Mirrored in `build` and `tessellate_realizations`.
+        self.emit_imported_tolerance_promise_diagnostics_for_module(module, &mut diagnostics);
+
         // Execute geometry operations. Use the snapshot's eval-round id rather
         // than `self.next_version_id`: build_snapshot is keyed off `state.snapshot.values`,
         // so Failed events must carry that snapshot's version, not the un-used
         // next round that `next_version_id` points at after prior eval/edit calls.
         let version_id = self.current_eval_version();
+        // Task 2874 step-6: precompute per-realization demanded tolerance
+        // BEFORE the `if let Some(ref mut kernel) = self.geometry_kernel`
+        // borrow below so the `&self` queries inside
+        // `compute_demanded_tols` don't collide with the kernel / table
+        // mutable borrows handed to `execute_realization_ops`. Missing keys
+        // are treated as `None`.
+        let demanded_tols = self.compute_demanded_tols(module);
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
@@ -451,6 +479,19 @@ impl Engine {
                 // are intentionally not supported.
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
                 for realization in &template.realizations {
+                    // Task 2874, step-6 wiring: per-realization demanded
+                    // tolerance for the cache-key triple `(entity_id,
+                    // ReprKind::BRep, demanded_tol)`. Priority chain is
+                    // `demanded_tolerance_for_output(template_name, entity)
+                    // → active_tolerance_for(entity)`; when both return
+                    // `None` no cache entry is written (the helper
+                    // preserves historical "no tolerance contract → no
+                    // caching" semantics for that branch). The map is
+                    // precomputed above the kernel borrow.
+                    let demanded_tol = demanded_tols
+                        .get(&(template.name.clone(), realization.id.entity.clone()))
+                        .copied()
+                        .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
@@ -471,6 +512,8 @@ impl Engine {
                         realization.name.as_deref(),
                         realization.span,
                         &mut kernel_error,
+                        &mut self.realization_cache,
+                        demanded_tol,
                     );
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
@@ -559,9 +602,87 @@ impl Engine {
     }
 
     /// Full build: evaluate, check constraints, produce geometry.
+    ///
+    /// # Tolerance wiring (task 2874)
+    ///
+    /// `build` (alongside [`Self::build_snapshot`],
+    /// [`Self::tessellate_realizations`], and [`Self::tessellate_snapshot`])
+    /// participates in four production-wiring contracts that route the
+    /// demanded-tolerance subsystem from authoring-time templates to
+    /// kernel-time realization:
+    ///
+    /// 1. **Imported-tolerance-promise diagnostics** — invokes
+    ///    [`Self::emit_imported_tolerance_promise_diagnostics_for_module`]
+    ///    AFTER `eval()` (and BEFORE `check()` clears tolerance scope) so
+    ///    `BuildResult.diagnostics` carries every
+    ///    `ImportedTolerancePromiseInsufficient` /
+    ///    `InputTolerancePromiseIsZero` warning derivable from the active
+    ///    purpose bindings. The two snapshot surfaces (`build_snapshot` and
+    ///    `tessellate_snapshot`) emit the same diagnostics AFTER
+    ///    `check_constraints_against_templates`, since neither calls `eval()`.
+    /// 2. **Per-realization demanded tolerance** — precomputes
+    ///    `(template_name, entity) → Option<f64>` via the
+    ///    [`Engine::demanded_tolerance_for_output`] →
+    ///    [`Engine::active_tolerance_for`] priority chain BEFORE `check()`
+    ///    so the eval-side scope clear cannot strand the tolerance-routing
+    ///    surface from the realization loop.
+    /// 3. **Per-stage tolerance budget** — routes the demanded tolerance
+    ///    through [`Engine::compute_realization_tolerance_budget`] against
+    ///    [`crate::kernel_registry::collect_registry`] so multi-kernel
+    ///    chain dispatch (when v0.3 adapters land) splits the budget across
+    ///    representation conversions; with the v0.2 occt-only inventory the
+    ///    budget passes through unchanged.
+    /// 4. **`RealizationCache` populate/consult** — `execute_realization_ops`
+    ///    consults `realization_cache` at the top of the helper for an
+    ///    `(entity, ReprKind::BRep, demanded_tol)` hit (cache short-circuits
+    ///    kernel re-execution under the partial-order rule
+    ///    `cached_tol ≤ requested_tol`) and, on a cache miss, populates the
+    ///    same key with the terminal handle after a fully-successful
+    ///    realization. Cache lifetime is engine-scoped — entries persist
+    ///    across `build` / `build_snapshot` / `tessellate_realizations`.
+    ///
+    /// All four contracts are pinned end-to-end by
+    /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
+    /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
+        // Task 2874: emit imported-tolerance-promise diagnostics
+        // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
+        // for every (Input × Output × active-purpose-binding) triple recognised
+        // in the pre-`check()` snapshot. See
+        // `Engine::emit_imported_tolerance_promise_diagnostics_for_module` for
+        // the recognition shapes and code-agnostic forwarding contract.
+        //
+        // PLACEMENT: BEFORE `self.check(module)` rather than after, because
+        // `check()` calls `eval()` which clears `active_purpose_bindings` and
+        // `active_tolerance_scope` (engine_eval.rs:1149-1150). Running the
+        // helper after check would always observe empty bindings — no
+        // diagnostic could ever fire from production. The pre-check snapshot
+        // is the user's intent at the moment build() is invoked, which is the
+        // semantically correct view for diagnostic emission. Mirrored in
+        // `tessellate_realizations`. `build_snapshot` does NOT call eval, so
+        // its placement (after `check_constraints_against_templates`) is fine.
+        let mut tolerance_diagnostics: Vec<Diagnostic> = Vec::new();
+        self.emit_imported_tolerance_promise_diagnostics_for_module(
+            module,
+            &mut tolerance_diagnostics,
+        );
+
+        // Task 2874 step-6: precompute per-realization demanded tolerance
+        // ALSO BEFORE `self.check(module)` for the same reason as the
+        // diagnostic emission helper above — `check()` calls `eval()`
+        // which clears `active_purpose_bindings` / `active_tolerance_scope`
+        // (engine_eval.rs:1149-1150). Computing `demanded_tols` after
+        // `check()` would always observe an empty tolerance scope, so the
+        // priority chain `demanded_tolerance_for_output → active_tolerance_for`
+        // would always return `None`, and the cache would never populate.
+        // Mirrored in `tessellate_realizations`. `build_snapshot` does NOT
+        // call eval, so its placement (after the constraint check) remains
+        // semantically correct.
+        let demanded_tols = self.compute_demanded_tols(module);
+
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
+        diagnostics.extend(tolerance_diagnostics);
         // Task 2320: `values` is moved out of `check_result` here so the
         // per-template post-process can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
@@ -593,6 +714,14 @@ impl Engine {
                 // are intentionally not supported.
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
                 for realization in &template.realizations {
+                    // Task 2874, step-6 wiring: per-realization demanded
+                    // tolerance for the cache-key triple `(entity_id,
+                    // ReprKind::BRep, demanded_tol)`. The priority-chain
+                    // is precomputed above the kernel borrow.
+                    let demanded_tol = demanded_tols
+                        .get(&(template.name.clone(), realization.id.entity.clone()))
+                        .copied()
+                        .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
@@ -613,6 +742,8 @@ impl Engine {
                         realization.name.as_deref(),
                         realization.span,
                         &mut kernel_error,
+                        &mut self.realization_cache,
+                        demanded_tol,
                     );
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
@@ -713,9 +844,59 @@ impl Engine {
     ///
     /// When no geometry kernel is configured, returns empty meshes with no
     /// error diagnostics (matching the pattern in [`build()`]).
+    ///
+    /// # Tolerance wiring (task 2874)
+    ///
+    /// `tessellate_realizations` mirrors [`Self::build`] across all four
+    /// production-wiring contracts — see that method's docstring for the
+    /// full description. The snapshot variant [`Self::tessellate_snapshot`]
+    /// participates in the same four-contract mirror with the same placement
+    /// nuance as [`Self::build_snapshot`] (diagnostics emit AFTER constraint
+    /// check, not before, since no eval() runs). The integration smoke
+    /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
+    /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs` pins all four
+    /// axes (diagnostic emission, demanded-tolerance routing,
+    /// per-stage budget, RealizationCache population) on this surface
+    /// simultaneously. The single difference vs. `build`: this surface
+    /// applies the budget at the `kernel.tessellate(handle, budget)` call
+    /// site (the per-output budgeted tolerance directly drives the
+    /// tessellation precision), whereas `build` applies it at the
+    /// realization-cache key.
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
+        // Task 2874: emit imported-tolerance-promise diagnostics BEFORE
+        // `self.check(module)` for the same reason as `build` — see that
+        // function for the placement rationale (eval() inside check() clears
+        // `active_purpose_bindings`). Mirrored across `build` /
+        // `tessellate_realizations`; `build_snapshot` does not call eval so
+        // it can emit the diagnostic after `check_constraints_against_templates`.
+        let mut tolerance_diagnostics: Vec<Diagnostic> = Vec::new();
+        self.emit_imported_tolerance_promise_diagnostics_for_module(
+            module,
+            &mut tolerance_diagnostics,
+        );
+
+        // Task 2874 step-6: precompute per-realization demanded tolerance
+        // ALSO BEFORE `self.check(module)` because `check()` calls `eval()`
+        // which clears `active_purpose_bindings` / `active_tolerance_scope`
+        // (engine_eval.rs:1149-1150). Mirrored in `build`. Missing keys
+        // are treated as `None` by `tessellate_from_values` callers.
+        let demanded_tols = self.compute_demanded_tols(module);
+
+        // Task 2874 step-12: precompute per-realization tessellation budget
+        // by routing the per-output demanded tolerance — falling back to the
+        // module-level `#precision` pragma when no per-output demand exists —
+        // through `compute_realization_tolerance_budget` against the
+        // inventory-collected kernel registry. The result is the budgeted
+        // tolerance we hand to `kernel.tessellate(handle, budget)`. Done
+        // BEFORE `self.check(module)` for the same reason as `demanded_tols`:
+        // `check()` clears tolerance scope. Mirrored in `tessellate_snapshot`.
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let tessellation_budgets =
+            self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
+
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
+        diagnostics.extend(tolerance_diagnostics);
         // Task 2320 amendment: `values` is moved into a local mutable binding
         // here so `tessellate_from_values` can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
@@ -737,6 +918,9 @@ impl Engine {
             &mut self.feature_tag_table,
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
+            &mut self.realization_cache,
+            &demanded_tols,
+            &tessellation_budgets,
         );
 
         TessellateResult {
@@ -757,10 +941,188 @@ impl Engine {
     /// `CompiledModule::default_tolerance` by `apply_module_pragmas`) through
     /// to the kernel. Falls back to [`Self::DEFAULT_TESSELLATION_TOLERANCE`]
     /// when the pragma is absent or was malformed.
+    ///
+    /// **Role since task 2874 step-12**: this remains the module-pragma
+    /// fallback that the per-realization budget pipeline consults when no
+    /// per-output demanded tolerance exists. The active fallback chain at
+    /// the `kernel.tessellate` call site is now:
+    /// `demanded_tolerance_for_output(template_name, entity)` →
+    /// `active_tolerance_for(entity)` → `effective_tessellation_tolerance(module)`.
+    /// The first available entry feeds
+    /// [`Self::compute_realization_tolerance_budget`], and the budget is
+    /// what `kernel.tessellate(handle, budget)` ultimately receives.
     fn effective_tessellation_tolerance(module: &CompiledModule) -> f64 {
         module
             .default_tolerance
             .unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE)
+    }
+
+    /// Compute the per-realization tolerance budget by routing `demanded_tol`
+    /// through the dispatcher's per-stage allocation primitive.
+    ///
+    /// Synthesises a [`crate::dispatcher::DispatchPlan`] via
+    /// [`dispatch`]`(registry, op, demanded, &available)` where the triple
+    /// `(op, demanded, available)` is sourced from
+    /// [`Self::BUDGET_QUERY_TRIPLE_V02`] (`(BooleanUnion, BRep, {BRep})`).
+    /// On `Some(plan)` returns [`per_stage_tolerance_for_plan`]`(&plan,
+    /// demanded_tol)`. On `None` (no plan: dispatcher could not find a
+    /// kernel + conversion chain that satisfies the request against the
+    /// supplied registry) returns `demanded_tol` unchanged — this mirrors
+    /// the empty-conversion pass-through contract pinned by
+    /// `dispatcher::tests::per_stage_tolerance_for_plan_empty_chain_returns_requested_tol_unchanged`,
+    /// just one level up in the call stack: no plan ⇒ no budget allocation.
+    ///
+    /// **Why a named const for the triple**: per the task 2874 design
+    /// decision the v0.2 occt-only inventory and BRep-on-BRep realization
+    /// metadata baseline mean the realization-level budget query always
+    /// issues `(BooleanUnion, BRep, {BRep})`. With that triple the BFS in
+    /// [`dispatch`] returns at depth 0 whenever any kernel in the registry
+    /// supports `(BooleanUnion, BRep)`, yielding a 0-conversion plan and
+    /// `per_stage_tolerance_for_plan` passes the demand through unchanged.
+    /// Multi-kernel adapters (PRD §"Resolved design decisions") will
+    /// introduce richer per-realization `Operation`/`ReprKind` metadata;
+    /// when that lands the call site that derives `(op, demanded, available)`
+    /// from `RealizationDecl::operations.last()` becomes the new source of
+    /// truth, and a single grep for `BUDGET_QUERY_TRIPLE_V02` surfaces every
+    /// place the v0.2 placeholder is consumed.
+    ///
+    /// **Signature** (amendment 2): takes the borrowed-value
+    /// `&BTreeMap<String, &CapabilityDescriptor>` map that [`dispatch`]
+    /// already requires. The owned→borrowed conversion (one `String` clone
+    /// per kernel-name) lives at the **single** call site
+    /// [`Self::compute_tessellation_budgets`], where it runs **once per
+    /// build** rather than once per realization. The earlier "owned-value
+    /// at the boundary, borrow-build inside the helper" arrangement only
+    /// relocated the per-call clone — for a build with `R` realizations
+    /// and `K` kernels it allocated `R · K` strings; this signature keeps
+    /// the cost at `K` per build regardless of `R`. Direct callers (today
+    /// just the test seam) build the borrowed view themselves at the call
+    /// site.
+    ///
+    /// **Production wiring** (task 2874 step-12): `tessellate_from_values`
+    /// calls this indirectly through `compute_tessellation_budgets`,
+    /// which collects the registry via
+    /// [`crate::kernel_registry::collect_registry`] and constructs the
+    /// borrowed-value view once before the per-realization loop. The
+    /// integration test
+    /// `tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget`
+    /// in `tests/tolerance_wiring_e2e.rs` pins that the demanded tolerance
+    /// flows through the helper to the kernel rather than being replaced
+    /// by the `effective_tessellation_tolerance(module)` module-pragma
+    /// fallback.
+    ///
+    /// `&self` is taken for forward compatibility (the future
+    /// `RealizationDecl`-driven variant will read realization metadata
+    /// from `self`) but is currently unused.
+    #[allow(clippy::unused_self)]
+    pub fn compute_realization_tolerance_budget(
+        &self,
+        registry: &BTreeMap<String, &CapabilityDescriptor>,
+        demanded_tol: f64,
+    ) -> f64 {
+        let (op, demanded, available_arr) = Self::BUDGET_QUERY_TRIPLE_V02;
+        let available: HashSet<ReprKind> = available_arr.iter().copied().collect();
+        match dispatch(registry, op, demanded, &available) {
+            Some(plan) => per_stage_tolerance_for_plan(&plan, demanded_tol),
+            None => demanded_tol,
+        }
+    }
+
+    /// Hard-coded `(op, demanded_repr, available_reprs)` triple used by
+    /// [`Self::compute_realization_tolerance_budget`] to query the
+    /// dispatcher for a per-stage budget plan in v0.2.
+    ///
+    /// Centralised here so that when v0.3 multi-kernel adapters land and
+    /// realization metadata begins carrying its own
+    /// `Operation`/`ReprKind`/`available` triple, every call site that
+    /// depends on this placeholder can be located by a single grep and
+    /// re-pointed at the realization-derived triple. See the
+    /// `compute_realization_tolerance_budget` docstring for the
+    /// 0-conversion-plan pass-through behaviour this triple yields with the
+    /// v0.2 single-kernel registry.
+    pub(crate) const BUDGET_QUERY_TRIPLE_V02: (Operation, ReprKind, &'static [ReprKind]) =
+        (Operation::BooleanUnion, ReprKind::BRep, &[ReprKind::BRep]);
+
+    /// Precompute per-realization demanded tolerance for the cache-key
+    /// `(entity_id, ReprKind::BRep, demanded_tol)` triple, plus the
+    /// fallback chain for callers that need the value as a non-`Option`
+    /// (e.g. tessellation-budget computation).
+    ///
+    /// Iterates `module.templates × realizations` and resolves each entry
+    /// via the priority chain
+    /// [`Engine::demanded_tolerance_for_output`] →
+    /// [`Engine::active_tolerance_for`]; missing keys flatten to `None`.
+    /// Callers that need the f64 fallback (typically the tessellation-budget
+    /// computation) chain through to `effective_tessellation_tolerance` at
+    /// the consumption site.
+    ///
+    /// Extracted in the task 2874 amendment from inline blocks duplicated
+    /// across `build` / `build_snapshot` / `tessellate_realizations` /
+    /// `tessellate_snapshot` so future invalidation / fallback-chain edits
+    /// land in one place.
+    pub(crate) fn compute_demanded_tols(
+        &self,
+        module: &CompiledModule,
+    ) -> HashMap<(String, String), Option<f64>> {
+        let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
+        for t in &module.templates {
+            for r in &t.realizations {
+                let key = (t.name.clone(), r.id.entity.clone());
+                let val = self
+                    .demanded_tolerance_for_output(&t.name, &r.id.entity)
+                    .or_else(|| self.active_tolerance_for(&r.id.entity));
+                map.insert(key, val);
+            }
+        }
+        map
+    }
+
+    /// Precompute per-realization tessellation budgets for the
+    /// `kernel.tessellate(handle, budget)` call site.
+    ///
+    /// For each `(template_name, realization_entity)` key in
+    /// `module.templates × realizations`, applies the priority chain
+    /// `demanded_tols.get(&key).flatten()` → `effective_tessellation_tolerance(module)`
+    /// to obtain the requested tolerance, then routes that through
+    /// [`Engine::compute_realization_tolerance_budget`] against the supplied
+    /// owned-value `registry` to obtain the budgeted tolerance.
+    ///
+    /// **Borrow-map allocation cost** (amendment 2): the borrowed-value
+    /// view `BTreeMap<String, &CapabilityDescriptor>` that
+    /// [`crate::dispatcher::dispatch`] requires is built **once** here,
+    /// before the realization loop, and reused for every realization in
+    /// this build. The earlier arrangement built it inside
+    /// `compute_realization_tolerance_budget` per-realization, leaving the
+    /// per-build kernel-name-string allocation count at `R · K` (R
+    /// realizations × K registered kernels). Hoisting the construction
+    /// here drops the cost back to `K` per build regardless of `R`.
+    ///
+    /// Extracted in the task 2874 amendment from inline blocks duplicated
+    /// across `tessellate_realizations` / `tessellate_snapshot`.
+    pub(crate) fn compute_tessellation_budgets(
+        &self,
+        module: &CompiledModule,
+        demanded_tols: &HashMap<(String, String), Option<f64>>,
+        registry: &BTreeMap<String, CapabilityDescriptor>,
+    ) -> HashMap<(String, String), f64> {
+        // Build the borrowed-value view that `dispatch` requires ONCE per
+        // build — see the "Borrow-map allocation cost" note above.
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry.iter().map(|(k, v)| (k.clone(), v)).collect();
+        let mut map: HashMap<(String, String), f64> = HashMap::new();
+        for t in &module.templates {
+            for r in &t.realizations {
+                let key = (t.name.clone(), r.id.entity.clone());
+                let req_tol = demanded_tols
+                    .get(&key)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
+                let budget = self.compute_realization_tolerance_budget(&registry_borrowed, req_tol);
+                map.insert(key, budget);
+            }
+        }
+        map
     }
 
     /// Shared helper: execute geometry operations and tessellate each realization.
@@ -774,6 +1136,29 @@ impl Engine {
     /// inside `execute_realization_ops` happen *before* the post-process
     /// runs, so the patch is observable only on the final `TessellateResult`
     /// surface — matching the build-pipeline semantics.
+    ///
+    /// `demanded_tols` maps `(template_name, realization_entity)` →
+    /// `Option<f64>` and is precomputed by the caller via
+    /// [`Engine::demanded_tolerance_for_output`] (with fallback to
+    /// [`Engine::active_tolerance_for`]) — task 2874 step-6 wiring. The
+    /// precompute decouples the `&self`-needing query from the `&mut self.*`
+    /// borrows already split across this static helper's parameter list.
+    /// Missing keys are treated as `None` (no demand contributor).
+    /// `realization_cache` is the engine's per-build cache that
+    /// `execute_realization_ops` populates on success and (post step-8) will
+    /// consult on entry.
+    ///
+    /// `tessellation_budgets` maps `(template_name, realization_entity)` → `f64`
+    /// and is precomputed by the caller via
+    /// [`Engine::compute_realization_tolerance_budget`] against the inventory-
+    /// collected kernel registry (task 2874 step-12). The map carries the
+    /// budgeted tolerance — the demanded tolerance routed through the
+    /// dispatcher's per-stage allocation primitive, with fallback to
+    /// [`Self::effective_tessellation_tolerance`] when no per-output demand
+    /// exists — that this helper hands to `kernel.tessellate(handle, budget)`.
+    /// Missing keys (which should not happen because the caller iterates the
+    /// same `module.templates` × `realizations` product) fall back to the
+    /// module-pragma default.
     #[allow(clippy::too_many_arguments)]
     fn tessellate_from_values(
         geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
@@ -785,6 +1170,9 @@ impl Engine {
         feature_tag_table: &mut FeatureTagTable,
         topology_attribute_table: &mut TopologyAttributeTable,
         swept_kind_table: &mut SweptKindTable,
+        realization_cache: &mut RealizationCache<GeometryHandleId>,
+        demanded_tols: &HashMap<(String, String), Option<f64>>,
+        tessellation_budgets: &HashMap<(String, String), f64>,
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
@@ -809,6 +1197,10 @@ impl Engine {
                 // Pass `&mut None` so `execute_realization_ops` collects the
                 // diagnostic but no caller acts on the kernel error here.
                 let mut kernel_error: Option<ErrorRef> = None;
+                let demanded_tol = demanded_tols
+                    .get(&(template.name.clone(), realization.id.entity.clone()))
+                    .copied()
+                    .unwrap_or(None);
                 Engine::execute_realization_ops(
                     kernel.as_mut(),
                     &realization.operations,
@@ -828,14 +1220,27 @@ impl Engine {
                     realization.name.as_deref(),
                     realization.span,
                     &mut kernel_error,
+                    realization_cache,
+                    demanded_tol,
                 );
 
                 // Tessellate this realization's final handle (if any new handles were produced)
                 if step_handles.len() > handle_start {
                     let last_handle = step_handles[step_handles.len() - 1];
-                    match kernel
-                        .tessellate(last_handle, Self::effective_tessellation_tolerance(module))
-                    {
+                    // Task 2874 step-12: forward the per-realization tessellation
+                    // budget (precomputed by the caller via
+                    // `Engine::compute_realization_tolerance_budget`) to the
+                    // kernel instead of the unconditional module-pragma
+                    // default. The map key matches the same
+                    // (template_name, entity) coordinate as `demanded_tols`;
+                    // missing entries (caller-side bug — should not happen)
+                    // fall back to the module pragma so we still produce a
+                    // mesh rather than panicking.
+                    let budget = tessellation_budgets
+                        .get(&(template.name.clone(), realization.id.entity.clone()))
+                        .copied()
+                        .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
+                    match kernel.tessellate(last_handle, budget) {
                         Ok(mesh) => {
                             meshes.push((realization.id.to_string(), mesh));
                         }
@@ -924,6 +1329,73 @@ impl Engine {
     /// caller is responsible for the cache + journal writes because the
     /// realization NodeId, cache, and journal are not threaded into this
     /// helper — see `Engine::mark_realization_failed` for the wire site.
+    ///
+    /// **`demanded_tol` + `realization_cache`** (task 2874, step-6 wiring): the
+    /// caller pre-computes the demanded tolerance for the realization via
+    /// [`Engine::demanded_tolerance_for_output`] (with fallback to
+    /// [`Engine::active_tolerance_for`]) and threads it in alongside a mutable
+    /// borrow of [`Engine::realization_cache`]. After a fully-successful
+    /// realization (the `step_handles[handle_start..].last()` branch that
+    /// records `named_steps`), if `demanded_tol` is `Some(t)` the helper
+    /// inserts `(realization_id.entity, ReprKind::BRep, t, last_handle)` into
+    /// the cache. When `demanded_tol` is `None` (no demand contributor exists
+    /// for this realization) no cache entry is written — preserving the
+    /// historical "no tolerance contract → no caching" semantics.
+    ///
+    /// **Cache-hit short-circuit** (task 2874, step-8 wiring): at the very
+    /// start of the helper — BEFORE the `for (op_idx, op) in
+    /// operations.iter().enumerate()` op loop — when both `demanded_tol`
+    /// and `realization_name` are `Some(_)` AND
+    /// `realization_cache.lookup(realization_id.entity, ReprKind::BRep, t)`
+    /// returns `Some(&handle)`, the helper:
+    ///   - pushes the cached handle onto `step_handles` (mirrors the
+    ///     successful-realization handle-stack post-condition),
+    ///   - inserts `(name, cached_handle)` into `named_steps` (mirrors the
+    ///     post-rollback `named_steps` write so downstream
+    ///     `GeomRef::Sub("body")` lookups continue to resolve),
+    ///   - returns early — skipping the kernel op loop, the
+    ///     `compile_geometry_op` evaluations, the per-op
+    ///     `feature_tag_table` / `topology_attribute_table` populations, the
+    ///     rollback-truncation gate, and the post-loop cache-insert
+    ///     (idempotent: the entry already exists, and re-inserting at the
+    ///     same `(entity, repr, tol)` key would be a no-op under the
+    ///     partial-order semantics).
+    ///
+    /// `realization_name = None` paths (anonymous realizations) bypass the
+    /// short-circuit so the named_steps write is never skipped where it
+    /// otherwise would not happen — anonymous realizations are not part of
+    /// the cache contract today. The post-condition the cache-hit branch
+    /// preserves is "after this helper returns successfully, the terminal
+    /// handle is the last entry in `step_handles[handle_start..]` AND
+    /// `named_steps[name] = terminal_handle`" — exactly the contract the
+    /// op-loop success path establishes (see the post-rollback
+    /// `step_handles[handle_start..].last()` block below).
+    ///
+    /// **Known limitation** (recorded as a design decision): a cache-hit
+    /// short-circuit skips per-op `feature_tag_table` /
+    /// `topology_attribute_table` populations, including the kernel-attribute
+    /// hook propagation added in task 2875. Both tables are reset to
+    /// `default()` at the start of every `build()` (see callers around
+    /// engine_build.rs `feature_tag_table = FeatureTagTable::default()` /
+    /// `topology_attribute_table = TopologyAttributeTable::default()`), so a
+    /// cache-served handle has no entries in those tables on the second
+    /// build. v0.2 callers do not combine `activate_purpose` with attribute
+    /// queries today, so this is documented (not regressed) in scope; a
+    /// follow-up task can either cache the table entries alongside the
+    /// handle or skip the table reset for engines with non-empty cache.
+    ///
+    /// **Internal-consistency invariant** (amendment): on cache-hit the
+    /// helper `debug_assert!`s that neither `feature_tag_table` nor
+    /// `topology_attribute_table` already carries an entry for the cached
+    /// handle. Under the per-build reset contract above, that assertion
+    /// must always hold (the table was just reset and only earlier
+    /// realizations in the same build could have touched a different
+    /// handle). The assertion fires loudly during development if a future
+    /// refactor weakens the per-build reset or routes a cache-served
+    /// handle through a path that ALSO populates the tables — both of
+    /// which would silently regress attribute-query results for a cached
+    /// handle. Production builds skip the check entirely
+    /// (`debug_assertions` cfg).
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
@@ -938,6 +1410,8 @@ impl Engine {
         realization_name: Option<&str>,
         realization_span: SourceSpan,
         kernel_error_out: &mut Option<ErrorRef>,
+        realization_cache: &mut RealizationCache<GeometryHandleId>,
+        demanded_tol: Option<f64>,
     ) {
         let RealizationOutputs {
             step_handles,
@@ -947,6 +1421,53 @@ impl Engine {
             swept_kind_table,
         } = outputs;
         let handle_start = step_handles.len();
+
+        // Task 2874, step-8: cache-hit short-circuit. When the caller has
+        // threaded a demanded tolerance AND the realization is named (the
+        // `named_steps` contract requires a name to write into the map),
+        // probe the per-engine `RealizationCache` at
+        // `(entity_id, ReprKind::BRep, demanded_tol)`. On hit we push the
+        // cached terminal handle, write `named_steps[name] = cached_handle`,
+        // and return — preserving the post-condition the success path
+        // establishes below. On miss (or when either guard is `None`) we
+        // fall through to the kernel op loop, and step-6's post-success
+        // insert at the bottom of the helper populates the cache for the
+        // NEXT call. The lookup uses `RealizationCache`'s partial-order
+        // "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`),
+        // so a tighter request automatically misses a looser cached entry
+        // (see step-13's pin).
+        if let (Some(tol), Some(name)) = (demanded_tol, realization_name)
+            && let Some(&cached_handle) =
+                realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol)
+        {
+            // Internal-consistency invariant (amendment): the per-build
+            // reset of `feature_tag_table` / `topology_attribute_table` at
+            // the top of build() / build_snapshot() / tessellate_*()
+            // guarantees neither table can already carry an entry for the
+            // cached handle on a clean cache-hit path. If a future refactor
+            // weakens the reset or routes the cached handle through a path
+            // that ALSO populates the tables, this debug_assert fires loudly
+            // during development rather than silently regressing attribute-
+            // query results for cached handles.
+            debug_assert!(
+                feature_tag_table.lookup(cached_handle).is_none(),
+                "feature_tag_table already has an entry for cached handle \
+                 {:?} on cache-hit short-circuit — per-build reset invariant \
+                 violated",
+                cached_handle,
+            );
+            debug_assert!(
+                topology_attribute_table.lookup(cached_handle).is_none(),
+                "topology_attribute_table already has an entry for cached \
+                 handle {:?} on cache-hit short-circuit — per-build reset \
+                 invariant violated",
+                cached_handle,
+            );
+            step_handles.push(cached_handle);
+            named_steps.insert(name.to_string(), cached_handle);
+            return;
+        }
+
         let mut had_failure = false;
         // Captures the per-op `GeometryOp`s in lockstep with `step_handles`
         // for this realization. After the loop, if the realization succeeds
@@ -1113,31 +1634,38 @@ impl Engine {
         if rolled_back {
             step_handles.truncate(handle_start);
         } else {
-            // Phase A swept-body classification (task 2982): only runs on a
-            // fully-successful realization. `realization_ops` is parallel to
-            // `step_handles[handle_start..]` because every successful op
-            // pushed both in lockstep on the kernel-success branch above; on
-            // any failure (compile or kernel) the rolled_back branch is
-            // taken instead, so the assertion holds whenever we enter this
-            // arm.
-            if let Some(kind) =
-                classify_swept_body(&realization_ops, &step_handles[handle_start..])
+            // Fully-successful realization. Three things land here, all keyed
+            // on `step_handles[handle_start..].last()` so that an empty-ops
+            // realization (operations.len() == 0) contributes nothing rather
+            // than inheriting the final handle of the previous realization:
+            //
+            // 1. Phase A swept-body classification (task 2982) —
+            //    `realization_ops` is parallel to `step_handles[handle_start..]`
+            //    because every successful op pushed both in lockstep on the
+            //    kernel-success branch above; on any failure (compile or
+            //    kernel) the rolled_back branch is taken instead, so the
+            //    parallelism holds whenever we enter this arm.
+            // 2. `name → final_handle` recording (post-rollback so failed
+            //    realizations never leave a stale entry that would let later
+            //    realizations resolve a name whose geometry was never
+            //    successfully produced).
+            // 3. RealizationCache populate (task 2874, step-6) keyed on
+            //    `(entity_id, ReprKind::BRep, demanded_tol)` when a demanded
+            //    tolerance was threaded in. The bucket's partial-order rule
+            //    may reject this insert if a tighter or equal entry is
+            //    already cached; either way the post-condition "a satisfying
+            //    entry exists at `(entity, BRep, tol)`" holds.
+            if let Some(kind) = classify_swept_body(&realization_ops, &step_handles[handle_start..])
                 && let Some(&last) = step_handles[handle_start..].last()
             {
                 swept_kind_table.record(last, kind);
             }
-            if let Some(name) = realization_name {
-                // Record name → final handle only after a fully successful realization.
-                // Insertion happens AFTER the rollback check so failed realizations
-                // never leave a stale entry that would let later realizations resolve
-                // a name whose geometry was never successfully produced.
-                //
-                // Use `step_handles[handle_start..]` rather than `step_handles.last()` so
-                // that an empty-ops realization (operations.len() == 0) contributes nothing
-                // to named_steps instead of incorrectly inheriting the final handle of
-                // the previous realization.
-                if let Some(&last) = step_handles[handle_start..].last() {
+            if let Some(&last) = step_handles[handle_start..].last() {
+                if let Some(name) = realization_name {
                     named_steps.insert(name.to_string(), last);
+                }
+                if let Some(tol) = demanded_tol {
+                    realization_cache.insert(&realization_id.entity, ReprKind::BRep, tol, last);
                 }
             }
         }
@@ -1395,11 +1923,30 @@ impl Engine {
         let (constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
 
+        // Task 2874 (amendment): emit imported-tolerance-promise diagnostics
+        // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
+        // for every (Input × Output × active-purpose-binding) triple recognised
+        // in the post-eval snapshot. Mirrors the placement used by
+        // `build_snapshot` (after `check_constraints_against_templates`) — both
+        // surfaces operate on the existing snapshot without re-calling `eval()`,
+        // so the placement constraint that motivated the BEFORE-`check()` order
+        // in `build` / `tessellate_realizations` does not apply.
+        self.emit_imported_tolerance_promise_diagnostics_for_module(module, &mut diagnostics);
+
         // Execute geometry and tessellate. `values` is passed `&mut` so the
         // post-process inside `tessellate_from_values` can patch
         // conformance-query results (`is_watertight` / `is_manifold` /
         // `is_orientable`) before they're surfaced via `TessellateResult`
         // (task 2320 amendment).
+        // Task 2874 step-6: precompute per-realization demanded tolerance
+        // before the `&mut self.*` borrows. See sibling
+        // `tessellate_realizations` for rationale.
+        let demanded_tols = self.compute_demanded_tols(module);
+        // Task 2874 step-12: precompute per-realization tessellation budget.
+        // See `tessellate_realizations` for the budget-routing rationale.
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let tessellation_budgets =
+            self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
@@ -1413,6 +1960,9 @@ impl Engine {
             &mut self.feature_tag_table,
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
+            &mut self.realization_cache,
+            &demanded_tols,
+            &tessellation_budgets,
         );
 
         Some(TessellateResult {
@@ -1481,6 +2031,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
@@ -1575,6 +2127,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         assert_eq!(
@@ -1649,6 +2203,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         assert!(
@@ -1734,6 +2290,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // The real handle produced by op 0 must have been discarded.
@@ -1811,6 +2369,8 @@ mod tests {
             None,
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
@@ -1889,6 +2449,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // Filter to error-severity only: see comment in the happy-path test.
@@ -1985,6 +2547,8 @@ mod tests {
             Some("bad"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         assert!(
@@ -2065,6 +2629,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
@@ -2094,6 +2660,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
         let h2 = named_steps["body"];
 
@@ -2227,6 +2795,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
         let h1 = named_steps["body"];
         // Filter to error-severity only: see comment in the happy-path test.
@@ -2278,6 +2848,8 @@ mod tests {
             Some("body"),
             SourceSpan::new(0, 0),
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
@@ -2370,6 +2942,8 @@ mod tests {
             None,
             realization_span,
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // Find the compile-failure Error diagnostic.
@@ -2457,6 +3031,8 @@ mod tests {
             None,
             realization_span,
             &mut None,
+            &mut RealizationCache::new(),
+            None,
         );
 
         // Find the kernel-error Error diagnostic.
