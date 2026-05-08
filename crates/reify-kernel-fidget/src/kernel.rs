@@ -223,17 +223,28 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
         .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
 }
 
+/// Returns `true` iff `v` is both finite and strictly positive.
+///
+/// Centralises the `v.is_finite() && v > 0.0` predicate so that
+/// `validate_positive_finite` and the `Box` arm's combined-dimension check
+/// share a single definition; if the "positive-finite" contract ever tightens
+/// (e.g. to exclude subnormals) only this site needs updating.
+#[inline]
+fn is_positive_finite(v: f64) -> bool {
+    v.is_finite() && v > 0.0
+}
+
 /// Validate that `value` is finite and strictly positive.
 ///
 /// Returns `Err(GeometryError::OperationFailed)` with a message of the form
-/// `"{label} must be a finite positive value"` when the predicate
-/// `value.is_finite() && value > 0.0` is false.
+/// `"{label} must be a finite positive value"` when `is_positive_finite(value)`
+/// is false.
 ///
 /// Mirrors the OCCT kernel's `validate_positive_finite` helper
 /// (`crates/reify-kernel-occt/src/lib.rs:145-160`) but kept local to this
 /// crate to avoid expanding scope past the `#[cfg(has_occt)]` boundary.
 fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError> {
-    if value.is_finite() && value > 0.0 {
+    if is_positive_finite(value) {
         Ok(())
     } else {
         Err(GeometryError::OperationFailed(format!(
@@ -346,7 +357,7 @@ impl GeometryKernel for FidgetKernel {
                 // Combined check matches OCCT's single-message convention
                 // (`crates/reify-kernel-occt/src/lib.rs:1497-1507`) so the
                 // error string is byte-identical across kernels.
-                if !(w.is_finite() && w > 0.0 && h.is_finite() && h > 0.0 && d.is_finite() && d > 0.0) {
+                if !(is_positive_finite(w) && is_positive_finite(h) && is_positive_finite(d)) {
                     return Err(GeometryError::OperationFailed(
                         "box dimensions must be finite positive values".into(),
                     ));
