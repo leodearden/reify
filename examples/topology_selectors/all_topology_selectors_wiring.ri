@@ -1,0 +1,42 @@
+// Worked example: compile-time wiring for all 11 topology-selector names added
+// by task 2699 (PRD: docs/prds/topology-selectors.md §3.9)
+//
+// Scope: compile-time wiring only — runtime dispatch is task 2691.
+// Each let-binding exercises one registry-wired name so that
+//   crates/reify-eval/tests/topology_selector_smoke_tests.rs::
+//     all_topology_selectors_wiring_compiles_with_stdlib
+// can assert `errors_only(&compiled).is_empty()`.
+//
+// Argument shapes follow PRD §3.9 signatures verbatim. Compile-time wiring
+// keys only on the function name (not arg types), so `body, body` calls for
+// adjacent_faces / shared_edges are sufficient — this mirrors the
+// angle_between_surfaces(body, body) precedent in geometry_traits_tests.rs.
+//
+// Coverage:
+//   1.  edges(solid)                          → List<Geometry>
+//   2.  faces(solid)                          → List<Geometry>
+//   3.  edges_by_length(solid, range)         → List<Geometry>
+//   4.  faces_by_area(solid, range)           → List<Geometry>
+//   5.  faces_by_normal(solid, dir, tol)      → List<Geometry>
+//   6.  edges_parallel_to(solid, dir, tol)    → List<Geometry>
+//   7.  edges_at_height(solid, h, tol)        → List<Geometry>
+//   8.  adjacent_faces(solid, face)           → List<Geometry>
+//   9.  shared_edges(face1, face2)            → List<Geometry>
+//   10. center_of_mass(solid, density)        → Point3<Length>
+//   11. moment_of_inertia(solid, density)     → Tensor<2, 3, MomentOfInertia>
+
+structure def AllTopologySelectorsWiring {
+    let body = box(50mm, 30mm, 10mm)
+
+    let all_edges            = edges(body)
+    let all_faces            = faces(body)
+    let short_edges          = edges_by_length(body, 0mm..50mm)
+    let small_faces          = faces_by_area(body, 0mm * 1mm .. 1m * 1m)
+    let top_faces            = faces_by_normal(body, vec3(0.0, 0.0, 1.0), 1deg)
+    let vertical_edges       = edges_parallel_to(body, vec3(0.0, 0.0, 1.0), 1deg)
+    let bottom_edges         = edges_at_height(body, 0mm, 0.01mm)
+    let neighbors            = adjacent_faces(body, body)
+    let shared               = shared_edges(body, body)
+    let centroid             = center_of_mass(body, 7850.0)
+    let inertia_tensor       = moment_of_inertia(body, 7850.0)
+}
