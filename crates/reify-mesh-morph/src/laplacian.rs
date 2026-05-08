@@ -250,6 +250,76 @@ mod tests {
         assert!(out.normals.is_none());
     }
 
+    // ── Step-11: one iteration averages interior node to neighbour centroid ──
+
+    /// 4-tet "cone" fixture: 5 vertices `a, b, c, d, p` where `a, b, c, d` are
+    /// the four boundary nodes and `p` is the only interior node, shared by
+    /// every tet. After one Jacobi smoothing pass with `a, b, c, d` pinned
+    /// to displaced positions, `p` should be at exactly `(a + b + c + d) / 4`
+    /// — its only topological neighbours.
+    #[test]
+    fn laplacian_smooth_with_one_iteration_smooths_interior_node_to_centroid_of_its_topological_neighbors()
+     {
+        // Layout: nodes 0..3 = a, b, c, d; node 4 = p.
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // 0: a
+                1.0, 0.0, 0.0, // 1: b
+                0.0, 1.0, 0.0, // 2: c
+                0.0, 0.0, 1.0, // 3: d
+                0.5, 0.5, 0.5, // 4: p (off-centre)
+            ],
+            // Four tets all sharing p (node 4).
+            tet_indices: vec![
+                0, 1, 2, 4, // a, b, c, p
+                0, 1, 3, 4, // a, b, d, p
+                0, 2, 3, 4, // a, c, d, p
+                1, 2, 3, 4, // b, c, d, p
+            ],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // Pin a, b, c, d to displaced positions; leave p free.
+        let displaced_a = [0.1_f64, 0.0, 0.0];
+        let displaced_b = [1.1, 0.0, 0.0];
+        let displaced_c = [0.0, 1.1, 0.0];
+        let displaced_d = [0.0, 0.0, 1.1];
+        let prescribed = vec![
+            (0_u32, displaced_a),
+            (1, displaced_b),
+            (2, displaced_c),
+            (3, displaced_d),
+        ];
+
+        let out = laplacian_smooth(&mesh, &prescribed, 1).unwrap();
+
+        // p's neighbours in the topological-edge graph are exactly {a, b, c, d}
+        // — every tet contributes the unordered pairs (a,p), (b,p), (c,p),
+        // (d,p) and only those four pairs touch p.
+        let expected_p = [
+            (displaced_a[0] + displaced_b[0] + displaced_c[0] + displaced_d[0]) / 4.0,
+            (displaced_a[1] + displaced_b[1] + displaced_c[1] + displaced_d[1]) / 4.0,
+            (displaced_a[2] + displaced_b[2] + displaced_c[2] + displaced_d[2]) / 4.0,
+        ];
+
+        // f32-narrowed comparison; round-trip cast for tolerance ~ 1e-6_f32.
+        let tol = 1e-6_f32;
+
+        // a, b, c, d at their prescribed positions (cast to f32).
+        for (node_idx, prescribed_pos) in &prescribed {
+            let base = (*node_idx as usize) * 3;
+            assert!((out.vertices[base] - prescribed_pos[0] as f32).abs() <= tol);
+            assert!((out.vertices[base + 1] - prescribed_pos[1] as f32).abs() <= tol);
+            assert!((out.vertices[base + 2] - prescribed_pos[2] as f32).abs() <= tol);
+        }
+        // p at the centroid of its neighbours.
+        let p_base = 4 * 3;
+        assert!((out.vertices[p_base] - expected_p[0] as f32).abs() <= tol);
+        assert!((out.vertices[p_base + 1] - expected_p[1] as f32).abs() <= tol);
+        assert!((out.vertices[p_base + 2] - expected_p[2] as f32).abs() <= tol);
+    }
+
     // ── Step-3: exhaustive variant fence for LaplacianFailure ─────────────────
     //
     // No-wildcard match guarantees that adding/removing/renaming a variant
