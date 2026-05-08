@@ -821,9 +821,13 @@ mod tests {
     //
     // These tests ensure the prune predicate `branch_length / local_thickness < ratio`
     // is correctly sensitive to the configured threshold.  The spike fixture has
-    // ratio exactly 1.0; testing at 1.05 and 0.95 straddles the boundary.  A
-    // regression that flipped `<` to `<=` or changed the metric definition
-    // (e.g. min vs max edge length) would cause at least one of these to fail.
+    // ratio exactly 1.0; testing at `default + 0.05` and `default − 0.05` straddles
+    // both the live threshold boundary AND the current default.  A regression that
+    // flipped `<` to `<=` or changed the metric definition (e.g. min vs max edge
+    // length) would cause at least one of these to fail.  Deriving from the default
+    // also ensures that if the default drifts significantly (e.g. above 1.05), the
+    // retention test will fail — alerting developers that the default and these
+    // straddle tests need joint re-evaluation.
 
     /// Shared fixture for threshold-straddling tests.
     ///
@@ -843,19 +847,27 @@ mod tests {
         }
     }
 
-    /// With `shell_branch_prune_ratio = 1.05`, the spike (ratio 1.0 < 1.05) is
-    /// pruned; the body (ratio ≈ 10 ≫ 1.05) survives.
+    /// With `shell_branch_prune_ratio = default + 0.05`, the spike (ratio 1.0 <
+    /// default + 0.05) is pruned; the body (ratio ≈ 10 ≫ threshold) survives.
+    ///
+    /// Derives the threshold from `PruneOptions::default().shell_branch_prune_ratio + 0.05`
+    /// so that this test always straddles the actual default — coupled with the
+    /// complementary retention test below, any significant drift of the default
+    /// above ~1.05 will cause that test to fail (spike ratio 1.0 would no longer
+    /// be ≥ default − 0.05).
     #[test]
     fn prune_branches_prunes_spike_just_below_threshold() {
+        let default_ratio = PruneOptions::default().shell_branch_prune_ratio;
+        let threshold = default_ratio + 0.05;
         let mesh = threshold_straddle_fixture();
         let opts = PruneOptions {
-            shell_branch_prune_ratio: 1.05,
+            shell_branch_prune_ratio: threshold,
             ..PruneOptions::default()
         };
         let result = prune_branches(&mesh, &opts).expect("valid mesh");
         assert_eq!(
             result.metrics.pruned_triangle_count, 1,
-            "spike (ratio=1.0) must be pruned when threshold=1.05"
+            "spike (ratio=1.0) must be pruned when threshold={threshold} (default+0.05)"
         );
         assert_eq!(result.mesh.triangles.len(), 1, "body must survive");
         assert!(
@@ -864,19 +876,26 @@ mod tests {
         );
     }
 
-    /// With `shell_branch_prune_ratio = 0.95`, the spike (ratio 1.0 ≥ 0.95)
-    /// survives; no triangles are pruned.
+    /// With `shell_branch_prune_ratio = default − 0.05`, the spike (ratio 1.0 ≥
+    /// default − 0.05) survives; no triangles are pruned.
+    ///
+    /// Derives the threshold from `PruneOptions::default().shell_branch_prune_ratio − 0.05`
+    /// so that this test always straddles the actual default.  If the default were
+    /// to drift above ~1.05, this test would fail (spike ratio 1.0 < threshold),
+    /// signalling that the default and both straddle tests need joint re-evaluation.
     #[test]
     fn prune_branches_retains_spike_just_above_threshold() {
+        let default_ratio = PruneOptions::default().shell_branch_prune_ratio;
+        let threshold = default_ratio - 0.05;
         let mesh = threshold_straddle_fixture();
         let opts = PruneOptions {
-            shell_branch_prune_ratio: 0.95,
+            shell_branch_prune_ratio: threshold,
             ..PruneOptions::default()
         };
         let result = prune_branches(&mesh, &opts).expect("valid mesh");
         assert_eq!(
             result.metrics.pruned_triangle_count, 0,
-            "spike (ratio=1.0) must survive when threshold=0.95"
+            "spike (ratio=1.0) must survive when threshold={threshold} (default-0.05)"
         );
         assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
         assert!(
@@ -1116,13 +1135,19 @@ mod tests {
     /// field is renamed or removed, this test fails at compile time rather than
     /// silently passing with stale bindings.
     ///
-    /// `shell_branch_prune_ratio` is range-checked against `[0.5, 2.0]` and
-    /// `max_prune_iterations` against `[4, 16]`; both are documented "v0.4 empirical
-    /// defaults pending real-corpus tuning" — exact pinning would block tuning without
-    /// adding behaviour coverage beyond what the straddle tests already provide
-    /// (`prune_branches_prunes_spike_just_below_threshold`,
-    /// `prune_branches_retains_spike_just_above_threshold`,
-    /// `prune_branches_slab_end_to_end_pipeline`).
+    /// `shell_branch_prune_ratio` is range-checked against `[0.5, 2.0]`; it is a
+    /// documented "v0.4 empirical default pending real-corpus tuning" — exact pinning
+    /// would block tuning.  Behaviour coverage is provided by
+    /// `prune_branches_prunes_spike_just_below_threshold` and
+    /// `prune_branches_retains_spike_just_above_threshold`, which derive their
+    /// thresholds from `default ± 0.05` so they always straddle the live default
+    /// (if the default drifts significantly above ~1.05, the retention test will
+    /// self-enforce a failure, prompting joint re-evaluation of default and tests).
+    ///
+    /// `max_prune_iterations` is pinned exactly to 8: it is documented as twice the
+    /// ⌊log₂ 17⌋ = 4 chain-collapse minimum — a deliberate structural constant,
+    /// not a tuning parameter.  Behaviour coverage is provided by
+    /// `prune_branches_slab_end_to_end_pipeline`.
     ///
     /// `grid_alignment_tolerance` retains its exact `1e-9` pin because it is the
     /// T2→T3 shared-edge contract value, not an empirical default.
@@ -1142,9 +1167,10 @@ mod tests {
             (0.5..=2.0).contains(&shell_branch_prune_ratio),
             "shell_branch_prune_ratio default {shell_branch_prune_ratio} outside expected range [0.5, 2.0]"
         );
-        assert!(
-            (4..=16).contains(&max_prune_iterations),
-            "max_prune_iterations default {max_prune_iterations} outside expected range [4, 16]"
+        assert_eq!(
+            max_prune_iterations, 8,
+            "max_prune_iterations default must be 8 (twice the ⌊log₂ 17⌋ = 4 chain-collapse \
+             minimum; a deliberate structural constant, not a tuning parameter)"
         );
         assert_eq!(
             grid_alignment_tolerance, 1e-9,
