@@ -6047,6 +6047,65 @@ mod tests {
         );
     }
 
+    /// Pins the debug-mode panic in `dispatch_surface_angle`'s Scalar arm.
+    /// Uses the same LENGTH-dimensioned Scalar fixture as the sibling release
+    /// test; in debug builds the `debug_assert!` panics before the if-fall-through
+    /// runs, so the `#[should_panic]` attribute is the only assertion needed.
+    ///
+    /// Follows the dual-test pattern from `crates/reify-eval/src/kernel_registry.rs`
+    /// (see `emit_kernel_selection_panics_when_total_is_zero` at line 665 and
+    /// `warn_if_duplicate_op_repr_pairs_always_emits_warn_on_duplicate` at 685):
+    /// pair a `#[cfg(debug_assertions)] #[should_panic]` test with a
+    /// `#[cfg(not(debug_assertions))]` test for the release fall-through.
+    /// The `#[cfg(debug_assertions)]` guard is required because `debug_assert!`
+    /// compiles to a no-op in release builds — `#[should_panic]` would falsely
+    /// "pass" in a release build where the panic never fires.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "expected ANGLE")]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_panics_in_debug_build()
+     {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        // The debug_assert! in dispatch_surface_angle's Scalar arm must panic
+        // with a message containing "expected ANGLE". No assert_eq! after this
+        // call — the #[should_panic] attribute drives the assertion.
+        super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+    }
+
     #[test]
     fn try_eval_topology_selector_on_non_bool_kernel_reply_emits_warning_and_returns_undef() {
         use reify_test_support::mocks::MockGeometryKernel;
