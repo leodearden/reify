@@ -597,7 +597,16 @@ pub fn read_vdb_file(
 
     // Densify all active voxels into a flat f32 buffer (X-outermost,
     // row-major) and convert to f64 for the in-memory model.
-    let raw_buffer: Vec<f32> = openvdb_ffi::grid_densify_to_buffer(&grid_handle);
+    //
+    // The C++ side rejects bbox densifications exceeding
+    // `GRID_DENSIFY_MAX_VOXELS` (~256M voxels ≈ 1 GiB) by throwing a
+    // `std::runtime_error`; cxx maps it to `Err(cxx::Exception)` which we
+    // surface as `IngestError::FileReadError`.
+    let raw_buffer: Vec<f32> = openvdb_ffi::grid_densify_to_buffer(&grid_handle)
+        .map_err(|e| IngestError::FileReadError {
+            path: path.to_string(),
+            detail: e.to_string(),
+        })?;
     let data: Vec<f64> = raw_buffer.iter().map(|&v| v as f64).collect();
 
     // Build the in-memory source model.  Axis-0 = X, Axis-1 = Y, Axis-2 = Z.

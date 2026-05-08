@@ -87,6 +87,30 @@ std::unique_ptr<OpenVdbGridHandle> read_vdb_grid_ffi(
     rust::Str path,
     rust::Str grid_name);
 
+/// Materialise the active bounding box as a flat row-major X-outermost
+/// `Vec<float>` of length `nx * ny * nz`. Sparse grids whose active set
+/// occupies a small fraction of the bbox still pay the FULL bbox cost —
+/// background voxels get expanded into explicit values in the buffer. For
+/// a 1m³ slab at voxel_size=1mm this is 10⁹ floats ≈ 4 GB.
+///
+/// To prevent OOM on oversized inputs, the function rejects voxel counts
+/// that exceed `GRID_DENSIFY_MAX_VOXELS` by throwing
+/// `std::runtime_error` (which cxx maps to `Err(cxx::Exception)` on the
+/// Rust side; `read_vdb_file` then surfaces it as
+/// `IngestError::FileReadError { detail: "grid too large: …" }`). The cap
+/// is set to ~256M floats ≈ 1 GB which covers the v0.4 shells use-case
+/// (typical realize_voxel_from_mesh outputs are well under this) while
+/// rejecting accidental loads of dense terabyte-class .vdb files.
+///
+/// Future work: a sparse-aware materialisation that honours the active
+/// tile structure would let `lower_to_sampled` consume the grid without
+/// the bbox densification round-trip — see also the v0.4 shells PRD's
+/// "voxel-medial extractor" arm. Not blocking for v0.4.
 rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h);
+
+/// Maximum bbox voxel count accepted by [`grid_densify_to_buffer`].
+/// 256M voxels = 1 GiB at 4 bytes/float. Any larger and we throw rather
+/// than allocate.
+constexpr int64_t GRID_DENSIFY_MAX_VOXELS = 256LL * 1024LL * 1024LL;
 
 } // namespace reify_openvdb

@@ -223,8 +223,33 @@ rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h) {
     int64_t ny = static_cast<int64_t>(max.y()) - min.y() + 1;
     int64_t nz = static_cast<int64_t>(max.z()) - min.z() + 1;
 
+    // Cap densified-buffer size to GRID_DENSIFY_MAX_VOXELS to prevent OOM
+    // on oversized .vdb files. The check is performed in int64 arithmetic
+    // so a multiplication overflow on a malformed bbox cannot bypass the
+    // cap by wrapping to a small positive value. (Each operand is bounded
+    // by the OpenVDB Coord domain (~2e9), so nx*ny is bounded by ~4e18,
+    // still within int64 range; the cumulative product can overflow but
+    // the early cap on nx*ny catches it before nz multiplies in.)
+    int64_t total_voxels = nx;
+    if (ny != 0 && total_voxels > GRID_DENSIFY_MAX_VOXELS / ny) {
+        throw std::runtime_error(
+            std::string("grid_densify_to_buffer: grid too large: nx*ny=") +
+            std::to_string(nx * ny) + " exceeds budget " +
+            std::to_string(GRID_DENSIFY_MAX_VOXELS));
+    }
+    total_voxels *= ny;
+    if (nz != 0 && total_voxels > GRID_DENSIFY_MAX_VOXELS / nz) {
+        throw std::runtime_error(
+            std::string("grid_densify_to_buffer: grid too large: ") +
+            "nx*ny*nz exceeds budget " +
+            std::to_string(GRID_DENSIFY_MAX_VOXELS) + " (nx=" +
+            std::to_string(nx) + ", ny=" + std::to_string(ny) +
+            ", nz=" + std::to_string(nz) + ")");
+    }
+    total_voxels *= nz;
+
     rust::Vec<float> buf;
-    buf.reserve(static_cast<size_t>(nx * ny * nz));
+    buf.reserve(static_cast<size_t>(total_voxels));
 
     // Row-major axis-0 (X) outermost layout: buf[ix * ny * nz + iy * nz + iz]
     // contains the value at world-space coord (min.x()+ix, min.y()+iy, min.z()+iz).

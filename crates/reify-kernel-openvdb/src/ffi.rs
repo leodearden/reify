@@ -63,6 +63,13 @@ pub mod ffi {
         // outermost). The Rust caller derives per-axis dimensions from the
         // bbox + voxel_sizes; `lower_to_sampled` cross-checks the buffer
         // length against the product of axis-grid lengths.
-        fn grid_densify_to_buffer(h: &OpenVdbGridHandle) -> Vec<f32>;
+        //
+        // Throws `std::runtime_error` (mapped to `Err(cxx::Exception)`) if
+        // the active bbox would exceed `GRID_DENSIFY_MAX_VOXELS`
+        // (~256M voxels ≈ 1 GiB at 4 bytes/float) so a malformed or
+        // adversarially-large .vdb cannot OOM the host process. The Rust
+        // caller in `read_vdb_file` surfaces the exception as
+        // `IngestError::FileReadError { detail: "grid too large: …" }`.
+        fn grid_densify_to_buffer(h: &OpenVdbGridHandle) -> Result<Vec<f32>>;
     }
 }
