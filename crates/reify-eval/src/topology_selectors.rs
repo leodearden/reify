@@ -451,6 +451,11 @@ pub(crate) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 ///
 /// - Returns `QueryError::QueryFailed` if `target` is the zero vector or
 ///   contains a non-finite component (an undefined direction).
+/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
+///   outside the valid range `[0, π]`. The predicate uses `acos`, whose output
+///   is naturally bounded in `[0, π]`, making any value outside that range
+///   meaningless. Negative tol silently rejects everything; tol > π silently
+///   accepts everything — both are incorrect semantics.
 /// - Propagates any error from `extract_faces`.
 /// - Propagates any error from a per-face `FaceNormal` query.
 /// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal`
@@ -462,6 +467,14 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
     target: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    if !angular_tol_rad.is_finite()
+        || !(0.0..=std::f64::consts::PI).contains(&angular_tol_rad)
+    {
+        return Err(QueryError::QueryFailed(format!(
+            "faces_by_normal: angular_tol_rad must be finite and in [0, π] (got {})",
+            angular_tol_rad
+        )));
+    }
     let target = normalize3(target).ok_or_else(|| {
         QueryError::QueryFailed(
             "faces_by_normal: target direction must be non-zero and finite".into(),
