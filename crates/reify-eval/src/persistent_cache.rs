@@ -178,6 +178,46 @@ mod tests {
     }
 
     #[test]
+    fn elastic_result_format_version_is_one() {
+        let er = ElasticResult {
+            displacement: vec![],
+            stress: vec![],
+            max_von_mises: 0.0,
+            converged: false,
+            iterations: 0,
+            solve_time_ms: 0,
+        };
+        assert_eq!(er.format_version(), 1);
+    }
+
+    #[test]
+    fn elastic_result_solve_time_ms_returns_constructor_value() {
+        let nine_thousand_nine_hundred_ninety_nine = ElasticResult {
+            displacement: vec![],
+            stress: vec![],
+            max_von_mises: 0.0,
+            converged: false,
+            iterations: 0,
+            solve_time_ms: 9999,
+        };
+        assert_eq!(
+            nine_thousand_nine_hundred_ninety_nine.solve_time_ms(),
+            9999
+        );
+
+        // Pin that the accessor isn't returning a hard-coded constant.
+        let zero = ElasticResult {
+            displacement: vec![],
+            stress: vec![],
+            max_von_mises: 0.0,
+            converged: false,
+            iterations: 0,
+            solve_time_ms: 0,
+        };
+        assert_eq!(zero.solve_time_ms(), 0);
+    }
+
+    #[test]
     fn elastic_result_round_trips_all_six_fields() {
         let original = ElasticResult {
             displacement: vec![1.0, -2.5, 3.14159, 0.0, 1e-9],
