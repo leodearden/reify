@@ -1337,6 +1337,35 @@ mod tests {
         );
     }
 
+    /// RED test for `DataLengthMismatch`: constructs a 2×2×2 Regular3D
+    /// `SampledField` (so `nx*ny*nz = 8`) but provides only 4 data
+    /// values. Asserts that `compute_medial_mask` returns
+    /// `DataLengthMismatch { expected: 8, found: 4 }` rather than
+    /// panicking mid-loop with an opaque out-of-bounds index.
+    #[test]
+    fn compute_medial_mask_rejects_data_length_mismatch() {
+        let sdf = SampledField {
+            name: "test-data-len-mismatch".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![1.0, 1.0, 1.0],
+            spacing: vec![1.0, 1.0, 1.0],
+            axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]], // 2×2×2
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.0; 4], // should be 8
+            oob_emitted: AtomicBool::new(false),
+        };
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("data-length-mismatch input must be rejected");
+        assert_eq!(
+            err,
+            MedialError::DataLengthMismatch {
+                expected: 8,
+                found: 4,
+            }
+        );
+    }
+
     /// Positive coverage test for `EmptyAxisGrid`: constructs a
     /// Regular3D `SampledField` whose axis-0 grid is empty (outer
     /// length 3, inner length 0 on axis 0). Passes `AxisLengthMismatch`
