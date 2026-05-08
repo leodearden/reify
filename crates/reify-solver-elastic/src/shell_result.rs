@@ -430,6 +430,55 @@ mod tests {
         assert!(s.top[2][2].abs() < tol, "σ_zz = {}, expected 0", s.top[2][2]);
     }
 
+    /// Pure bending mode (θ_y at node 1 only) must produce anti-symmetric in-plane
+    /// stress across top/bottom and zero stress at mid-surface.
+    ///
+    /// For UNIT_TRI, dN_1/dx = 1, so κ_xx = −∂θ_y/∂x = −α·dN_1/dx = −α,
+    /// κ_yy = 2κ_xy = 0.  Analytical per-layer in-plane Voigt stress:
+    ///   σ_voigt(z) = z · D_pl · [−α, 0, 0]
+    ///
+    /// Asserted: top[0][0] ≈ −(t/2)·α·D_pl[0][0]; bottom = −top (in-plane);
+    /// mid in-plane block ≈ 0; top[0][1] ≈ 0 (no in-plane shear).
+    #[test]
+    fn shell_element_stress_pure_bending_mode_yields_anti_symmetric_through_thickness() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.002_f64;
+
+        let mut u = [0.0_f64; 18];
+        u[6 * 1 + 4] = alpha; // θ_y at node 1; all translations and other rotations zero
+
+        let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+        let d = plane_stress_d(&mat);
+
+        // κ_xx = −α (only dN_1/dx = 1 contributes), κ_yy = 0, 2κ_xy = 0.
+        // σ_bending_voigt = D_pl · [−α, 0, 0]
+        let sb0 = d[0][0] * (-alpha); // σ_xx per unit z
+        let sb1 = d[1][0] * (-alpha); // σ_yy per unit z (= D[0][1]·(−α))
+
+        let scale = (sb0 * t / 2.0).abs().max((sb1 * t / 2.0).abs()).max(1.0);
+        let tol = 1e-9 * scale;
+
+        // top: z = +t/2
+        assert!((s.top[0][0] - sb0 * (t / 2.0)).abs() < tol,
+            "top σ_xx = {}, expected {}", s.top[0][0], sb0 * (t / 2.0));
+        assert!((s.top[1][1] - sb1 * (t / 2.0)).abs() < tol,
+            "top σ_yy = {}, expected {}", s.top[1][1], sb1 * (t / 2.0));
+        assert!(s.top[0][1].abs() < tol, "top σ_xy = {}, expected 0", s.top[0][1]);
+        assert!(s.top[1][0].abs() < tol, "top σ_yx = {}, expected 0", s.top[1][0]);
+
+        // mid: z = 0 → in-plane stress = 0
+        assert!(s.mid[0][0].abs() < tol, "mid σ_xx = {}, expected 0", s.mid[0][0]);
+        assert!(s.mid[1][1].abs() < tol, "mid σ_yy = {}, expected 0", s.mid[1][1]);
+        assert!(s.mid[0][1].abs() < tol, "mid σ_xy = {}, expected 0", s.mid[0][1]);
+
+        // bottom: z = −t/2 → anti-symmetric vs top
+        assert!((s.bottom[0][0] + s.top[0][0]).abs() < tol,
+            "bottom σ_xx + top σ_xx = {} ≠ 0", s.bottom[0][0] + s.top[0][0]);
+        assert!((s.bottom[1][1] + s.top[1][1]).abs() < tol,
+            "bottom σ_yy + top σ_yy = {} ≠ 0", s.bottom[1][1] + s.top[1][1]);
+    }
+
     /// `ShellStress::homogeneous(field)` is the canonical tet-result constructor.
     /// It must set all three stress channels to the same field value.
     ///
