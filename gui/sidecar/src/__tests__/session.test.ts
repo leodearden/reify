@@ -2624,3 +2624,86 @@ describe('waitForOutput cancel hook', () => {
     expect(session.onOutput).toBe(originalOnOutput);
   });
 });
+
+// ---------------------------------------------------------------------------
+// proc error handling — ABORT_ERR suppression and non-ABORT logging
+// ---------------------------------------------------------------------------
+describe('SidecarSession proc error handling', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('ABORT_ERR from spawned ChildProcess on timeout abort does not crash and is suppressed silently', async () => {
+    vi.useFakeTimers();
+
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are a test assistant.',
+      timeoutMs: 1000,
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // Create a mock process that hangs forever
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          // Mimic Node's abortChildProcess: emit 'error' with ABORT_ERR BEFORE 'close'
+          const abortErr = Object.assign(new Error('The operation was aborted'), {
+            code: 'ABORT_ERR',
+            name: 'AbortError',
+          });
+          mockProc.emit('error', abortErr);
+          stdout.end();
+          mockProc.exitCode = null;
+          mockProc.emit('close', null);
+        });
+      }
+      return mockProc;
+    }) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    // Start a message — it will hang until the timeout fires
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-timeout-aborterr',
+      text: 'Hanging task',
+    });
+
+    // Advance past the 1000ms timeout
+    vi.advanceTimersByTime(1001);
+
+    // Await the message promise — if ABORT_ERR is not caught, this throws
+    await msgPromise;
+
+    // (a) Exactly one error outbound with 'timed out' message
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).message).toContain('timed out');
+    expect((errors[0] as any).id).toBe('msg-timeout-aborterr');
+
+    // (b) No done outbound (timeout, not clean completion)
+    const dones = outputs.filter((o) => o.type === 'done');
+    expect(dones).toHaveLength(0);
+
+    // (c) No spurious extra error outbounds beyond the timeout one
+    expect(outputs.filter((o) => o.type === 'error')).toHaveLength(1);
+  });
+});
