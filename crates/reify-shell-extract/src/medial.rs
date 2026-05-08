@@ -165,6 +165,17 @@ pub enum MedialError {
         /// Index of the offending axis (0/1/2 for x/y/z).
         axis: usize,
     },
+    /// The flat `data` vector length does not match `nx * ny * nz`
+    /// (where `nx/ny/nz = axis_grids[i].len()`). Defends the inner
+    /// triple-nested loop's `sample_at_index` (`data[i*nj*nk + j*nk + k]`)
+    /// from a caller-side construction error that would otherwise produce
+    /// an opaque out-of-bounds panic mid-iteration.
+    DataLengthMismatch {
+        /// The required flat-data length: `nx * ny * nz`.
+        expected: usize,
+        /// The actual length of `sdf.data`.
+        found: usize,
+    },
 }
 
 impl std::fmt::Display for MedialError {
@@ -192,6 +203,12 @@ impl std::fmt::Display for MedialError {
                 f,
                 "Regular3D SampledField axis_grids[{axis}] is empty \
                  (a non-empty per-axis grid is required for narrow-band iteration)"
+            ),
+            MedialError::DataLengthMismatch { expected, found } => write!(
+                f,
+                "Regular3D SampledField data length mismatch: \
+                 expected {expected} values (nx*ny*nz) but found {found} \
+                 (caller-side construction error: flat data does not match axis grid extents)"
             ),
         }
     }
@@ -249,6 +266,19 @@ pub fn compute_medial_mask(
     let nx = sdf.axis_grids[0].len();
     let ny = sdf.axis_grids[1].len();
     let nz = sdf.axis_grids[2].len();
+
+    // (5) Validate the flat data vector covers exactly nx*ny*nz voxels.
+    // Safe here because steps 3 and 4 confirmed nx, ny, nz ≥ 1.
+    // Without this check a caller-side construction error (mismatched
+    // data vs. axis grid extents) would produce an opaque OOB panic
+    // inside the inner loop's `sample_at_index`.
+    let expected_data_len = nx * ny * nz;
+    if sdf.data.len() != expected_data_len {
+        return Err(MedialError::DataLengthMismatch {
+            expected: expected_data_len,
+            found: sdf.data.len(),
+        });
+    }
 
     // Narrow band threshold uses the smallest axis spacing so that
     // anisotropic grids still cover the full thickness band.
