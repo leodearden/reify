@@ -720,50 +720,6 @@ pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3]
     [gx, gy, gz]
 }
 
-/// Parallel i-axis flatten: partition `i_indices` into chunks of `chunk_size`,
-/// spawn `f(chunk_owned)` for each chunk inside `std::thread::scope`, join
-/// handles in spawn order, and flatten results via `acc.extend(local)`.
-///
-/// This is the canonical location for the spawn/join/panic-forward determinism
-/// contract used by `compute_medial_mask` (and mirrored in
-/// `reify-solver-elastic::assembly::global`):
-///   (a) `i_indices.chunks(chunk_size)` partitions indices in stable ascending
-///       order;
-///   (b) handles are spawned in that chunk-iteration order, so handle slot `t`
-///       corresponds to chunk `t` regardless of OS thread assignment;
-///   (c) `for h in handles` joins in spawn order → results appended in that
-///       order → merged Vec is already ascending-i-sorted before any final sort;
-///   (d) panics in workers are forwarded via `resume_unwind` so the original
-///       payload reaches the caller intact (Task-2544 contract-explicitness
-///       convention).
-///
-/// `F: Sync` allows the same closure to be referenced from multiple spawned
-/// threads (each receives its own `owned: Vec<usize>` but shares `f` via an
-/// immutable borrow valid for the scope lifetime).
-fn par_chunks_flatten<T, F>(i_indices: &[usize], chunk_size: usize, f: F) -> Vec<T>
-where
-    T: Send,
-    F: Fn(Vec<usize>) -> Vec<T> + Sync,
-{
-    std::thread::scope(|s| {
-        let handles: Vec<_> = i_indices
-            .chunks(chunk_size)
-            .map(|chunk| {
-                let owned = chunk.to_vec();
-                s.spawn(|| f(owned))
-            })
-            .collect();
-        let mut acc: Vec<T> = Vec::new();
-        for h in handles {
-            match h.join() {
-                Ok(local) => acc.extend(local),
-                Err(p) => std::panic::resume_unwind(p),
-            }
-        }
-        acc
-    })
-}
-
 /// Pre-compute a dense gradient grid: one `[f64; 3]` entry per voxel,
 /// laid out row-major as `grid[i*ny*nz + j*nz + k]` matching the
 /// `SampledField::data` convention.
@@ -800,8 +756,8 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField) -> Vec<[f64; 3]> {
     //
     // Determinism: handles joined in spawn order = chunk-iteration order =
     // ascending i order; writes target non-overlapping slices. Per Task-2544:
-    // panics forwarded via `resume_unwind` (see `par_chunks_flatten` for the
-    // canonical contract rationale).
+    // panics forwarded via `resume_unwind` so the original payload reaches
+    // the caller intact (contract-explicitness convention).
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
