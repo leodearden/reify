@@ -160,14 +160,22 @@ fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// Returns an [`ElementStiffness`] with `n_dofs = 18`. DOF ordering is
 /// `6 · node_idx + i` with `i ∈ {0..5}` for `(u_x, u_y, u_z, θ_x, θ_y, θ_z)`.
 ///
-/// The drilling rotation `θ_z` (i=5) carries **zero stiffness** by
-/// construction: pure MITC3 has no in-plane rotational stiffness. Every
-/// drilling row and column of the returned matrix is zero, producing a zero
-/// pivot on each drilling DOF in the global assembled system. The global
-/// sparse-assembly consumer (PRD T#11) is responsible for handling these
-/// singular directions — either by constraining drilling DOFs explicitly or
-/// by adding an artificial Allman/Hughes drilling stiffness at the assembly
-/// layer.
+/// **Drilling singularity.** The local drilling rotation — rotation about the
+/// element normal — carries zero stiffness by construction (pure MITC3+, no
+/// Allman/Hughes enrichment).  In the *local* frame this is the `θ_z` DOF
+/// (i=5 in each node's rotation triple), i.e. row/column 5, 11, 17 of K_local
+/// are zero.  After rotation to global via R^T·K_local·R the singular
+/// direction is **not** global `θ_z` unless the shell is xy-aligned.  For a
+/// tilted element, the zero-stiffness eigenvector in each node's
+/// three-component rotation sub-block is `R\[2\]` — the local frame's normal
+/// axis expressed in global coordinates.  Equivalently, the 3×3 rotation
+/// sub-block of K_global for each node pair has a zero eigenvalue with
+/// eigenvector `R\[2\]ᵀ` (in local-rotation basis: `\[0, 0, 1\]`).
+///
+/// The global sparse-assembly consumer (PRD T#11) must either:
+/// (a) constrain each node's rotation about the per-element local normal
+///     `R\[2\]` explicitly, or
+/// (b) add Allman/Hughes drilling stabilization at the assembly layer.
 ///
 /// # Contributions
 ///
