@@ -32,6 +32,50 @@ pub fn eligible(old_brep: &BRep, new_brep: &BRep) -> bool {
     )
 }
 
+/// Morph `old_mesh` to the shape described by `new_brep`, returning the
+/// deformed [`reify_types::VolumeMesh`] on success.
+///
+/// ## API contract (task #4)
+///
+/// The function commits the full public signature. The engine logic is deferred:
+///
+/// | Path | Behaviour |
+/// |------|-----------|
+/// | Ineligible edit | Returns `Err(MorphFailure::Ineligible(reason))` immediately |
+/// | Eligible edit | **Panics** (`todo!`) until PRD tasks #5–#9 land the engine |
+///
+/// ## Parameters
+///
+/// - `old_mesh` — the current tetrahedral mesh to deform.
+/// - `old_brep` / `new_brep` — boundary-rep snapshots for eligibility and
+///   boundary-node projection (PRD task #5).
+/// - `options` — quality thresholds and fictitious-stiffness parameters;
+///   see [`MorphOptions`].
+///
+/// ## Failure modes
+///
+/// See [`MorphFailure`] for the four-variant taxonomy. Only `Ineligible` is
+/// produced by this skeleton; the remaining three variants are wired in PRD
+/// tasks #7 and #9.
+pub fn morph(
+    old_mesh: &reify_types::VolumeMesh,
+    old_brep: &BRep,
+    new_brep: &BRep,
+    options: &MorphOptions,
+) -> Result<reify_types::VolumeMesh, MorphFailure> {
+    let _ = old_mesh;
+    let _ = options;
+    match eligibility::morph_eligible(old_brep, new_brep) {
+        Eligibility::Ineligible(reason) => Err(MorphFailure::Ineligible(reason)),
+        Eligibility::Eligible(_correspondence_map) => {
+            todo!(
+                "morph engine not yet implemented \
+                 (PRD docs/prds/v0_3/mesh-morphing.md tasks #5–#9)"
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
