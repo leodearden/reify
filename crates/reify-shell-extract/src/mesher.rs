@@ -251,6 +251,21 @@ impl std::error::Error for MesherError {}
 /// `(round(x/tol), round(y/tol), round(z/tol))` is exact for binary-MC
 /// output (vertices at grid midpoints with unit spacing) but may fail to
 /// collapse near-boundary pairs for float-noisy producers.
+///
+/// **NaN / infinity saturation.** Bin keys are computed via
+/// `(coord * inv_tol).round() as i64`. Rust's `as` cast saturates:
+///
+/// - `NaN * inv_tol` is `NaN`, which rounds to `NaN`, which casts to `0` —
+///   all NaN coordinates land in the same bin at the origin.
+/// - `|coord * inv_tol| ≥ i64::MAX as f64` (≈ 9.22e18) saturates to
+///   `i64::MIN` or `i64::MAX`; multiple extreme-magnitude vertices will
+///   collide into the same boundary bin with averaged thickness.
+///
+/// At the default `merge_tolerance = 1e-9`, the saturation threshold is
+/// `|coord| ≈ 9.2e9` — far outside any practical CAD coordinate range. For
+/// typical inputs this is benign; for untrusted sources, callers should
+/// validate coordinates (finite, bounded magnitude) before invoking
+/// [`mesh_mid_surface`].
 fn dedup_vertices(
     mesh: &MidSurfaceMesh,
     merge_tolerance: f64,
@@ -370,6 +385,24 @@ fn triangle_min_angle_degrees(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3]) -> f64 {
 /// | [`MesherError::InconsistentInputMesh`] | `thickness.len() ≠ vertices.len()` |
 /// | [`MesherError::OutOfRangeTriangleIndex`] | any triangle index ≥ `vertices.len()` |
 /// | [`MesherError::QualityBelowThreshold`] | quality gate fails after all remesh iterations |
+///
+/// # Preconditions
+///
+/// Vertex coordinates in `mesh.vertices` are assumed to be finite and of
+/// bounded magnitude. The vertex-dedup step computes bin keys via
+/// `(coord * (1.0 / merge_tolerance)).round() as i64`; Rust's `as` cast
+/// saturates on overflow:
+///
+/// - `NaN` coordinates round to `NaN` and cast to `0` — all NaN vertices
+///   silently collapse into the origin bin.
+/// - Coordinates with `|coord / merge_tolerance| ≥ i64::MAX as f64` (~9.22e18)
+///   saturate to `i64::MIN` / `i64::MAX`, merging unrelated extreme-magnitude
+///   vertices with averaged thickness.
+///
+/// At the default `merge_tolerance = 1e-9` the saturation threshold is
+/// `|coord| ≈ 9.2e9`, far outside any practical CAD coordinate range.
+/// Inputs from untrusted sources should validate coordinates (finite and
+/// within reasonable magnitude) before calling this function.
 pub fn mesh_mid_surface(
     mesh: &MidSurfaceMesh,
     options: &MesherOptions,
