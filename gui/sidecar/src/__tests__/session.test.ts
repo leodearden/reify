@@ -9,7 +9,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { spawn } from 'node:child_process';
-import { SidecarSession } from '../session.js';
+import { SidecarSession, SPAWN_ERROR_LOG_PREFIX } from '../session.js';
 import { main } from '../index.js';
 
 /**
@@ -2712,7 +2712,7 @@ describe('SidecarSession proc error handling', () => {
 
       // (d) ABORT_ERR is suppressed silently — must NOT appear in console.error
       expect(consoleErrorSpy).not.toHaveBeenCalledWith(
-        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        SPAWN_ERROR_LOG_PREFIX,
         expect.anything()
       );
     } finally {
@@ -2768,13 +2768,16 @@ describe('SidecarSession proc error handling', () => {
 
       // (a) console.error was called with the diagnostic prefix and the error
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        SPAWN_ERROR_LOG_PREFIX,
         expect.objectContaining({ code: 'ENOENT' })
       );
 
-      // (b) The close-path still emits an error outbound (exitCode === 1)
+      // (b) The close-path emits exactly one error outbound (exitCode === 1)
       const errors = outputs.filter((o) => o.type === 'error');
-      expect(errors.length).toBeGreaterThanOrEqual(1);
+      expect(errors).toHaveLength(1);
+      if (errors[0].type !== 'error') throw new Error('Expected error message');
+      expect(errors[0].message).toMatch(/Claude CLI exited with code 1/);
+      expect(errors[0].id).toBe('msg-enoent');
     } finally {
       consoleErrorSpy.mockRestore();
     }
@@ -2829,8 +2832,18 @@ describe('SidecarSession proc error handling', () => {
         text: 'Hanging task',
       });
 
-      // Give it a tick to set up before aborting
-      await new Promise((r) => setTimeout(r, 10));
+      // Wait deterministically for the abortController to be initialised.
+      // handleSendMessage sets abortController synchronously before invokeSdk's first
+      // await, so this resolves within one microtask tick in practice; the deadline
+      // guard prevents a silent hang if the implementation ever adds an async step
+      // before that initialisation.
+      {
+        const deadline = Date.now() + 1000;
+        while (!session.isInvocationActive()) {
+          if (Date.now() > deadline) throw new Error('timed out waiting for abortController');
+          await Promise.resolve();
+        }
+      }
 
       // User-initiated abort (reason is undefined, NOT 'timeout')
       await session.handleMessage({ type: 'abort' });
@@ -2847,7 +2860,7 @@ describe('SidecarSession proc error handling', () => {
 
       // (c) ABORT_ERR was suppressed silently — must NOT appear in console.error
       expect(consoleErrorSpy).not.toHaveBeenCalledWith(
-        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        SPAWN_ERROR_LOG_PREFIX,
         expect.anything()
       );
     } finally {
