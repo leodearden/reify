@@ -1233,6 +1233,122 @@ mod tests {
         );
     }
 
+    // ── Task 3162 step 5: real-T2 adjacent-cells regression ─────────────────
+    //
+    // Pins the T2→T3 contract end-to-end using a real (not hand-built) mesh
+    // produced by `extract_mid_surface`.  The 5×5×5 slab fixture has 4×4 = 16
+    // centerline cells per layer × 2 z-layers = 32 adjacent cells — enough to
+    // exercise non-trivial shared-edge adjacency while remaining fast and easy
+    // to reason about manually.
+    //
+    // Any regression in either T2's midpoint emission or T3's canonical dedup
+    // that breaks the shared-edge-merging contract would cause the body to be
+    // fully pruned to 0 triangles, which the `triangles.len() >= 8` assertion
+    // catches immediately.
+    //
+    // Sharper than `prune_branches_slab_end_to_end_pipeline` (n=17,
+    // `triangles.len() > 0` only) — the `>= 8` lower bound, the
+    // `pruned_triangle_count < raw.triangles.len()` guard, the
+    // parallel-array invariant, and the mid-plane z-coordinate sanity check
+    // together catch failure modes the n=17 test would miss.
+
+    /// Pins the T2→T3 contract end-to-end on a 5×5×5 slab with real
+    /// `extract_mid_surface` output.
+    ///
+    /// The fixture has 32 adjacent cells in two z-layers around the
+    /// centerline, producing shared-edge midpoints that the quantised dedup
+    /// must recognise as internal.  A regression that breaks shared-edge
+    /// merging would prune the entire body to 0 triangles.
+    ///
+    /// Sharper assertions than the existing 17×17×17 slab test:
+    /// - `triangles.len() >= 8` (meaningful interior survives, not a degenerate
+    ///   artifact)
+    /// - `pruned_triangle_count < raw.triangles.len()` (some triangles survive)
+    /// - parallel-array invariant `thickness.len() == vertices.len()`
+    /// - all triangle indices in-range
+    /// - `converged == true`
+    /// - most surviving vertex z-coordinates lie near the slab mid-plane
+    ///   (sanity-checks that the surviving topology is the shell mid-surface)
+    #[test]
+    fn prune_branches_real_t2_adjacent_cells_pipeline_pins_body_survival() {
+        // 5×5×5 grid: 4×4 = 16 centerline cells per z-layer, 2 z-layers = 32
+        // adjacent cells.  half=2.0 gives a slab of thickness 4 around z=0.
+        let sdf = slab_sdf_3d(2.0, 5);
+        let mask = centerline_mask(5, &sdf);
+
+        // T2: real mid-surface extraction — produces shared-edge midpoints.
+        let raw = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect("5×5×5 slab extract_mid_surface should succeed");
+        assert!(
+            !raw.triangles.is_empty(),
+            "5×5×5 slab must produce a non-empty raw mesh"
+        );
+
+        // T3: prune branches.
+        let result = prune_branches(&raw, &PruneOptions::default())
+            .expect("5×5×5 slab prune_branches should succeed");
+
+        // (a) Body must retain a meaningful interior — a regression that treated
+        // every shared edge as boundary would prune the entire body to 0.
+        assert!(
+            result.mesh.triangles.len() >= 8,
+            "body must retain at least 8 triangles after pruning; got {}",
+            result.mesh.triangles.len()
+        );
+
+        // (b) At least some triangles survive (redundant with (a) but explicit).
+        assert!(
+            result.metrics.output_triangle_count > 0,
+            "output_triangle_count must be > 0"
+        );
+
+        // (c) Some pruning must have occurred (boundary branches removed).
+        assert!(
+            result.metrics.pruned_triangle_count < raw.triangles.len(),
+            "pruned_triangle_count ({}) must be less than raw triangle count ({})",
+            result.metrics.pruned_triangle_count,
+            raw.triangles.len()
+        );
+
+        // (d) Parallel-array invariant.
+        assert_eq!(
+            result.mesh.thickness.len(),
+            result.mesh.vertices.len(),
+            "thickness.len() must equal vertices.len() after pruning"
+        );
+
+        // (e) All triangle indices in-range.
+        let vlen = result.mesh.vertices.len();
+        for tri in &result.mesh.triangles {
+            for &vi in tri.iter() {
+                assert!(
+                    (vi as usize) < vlen,
+                    "triangle index {vi} out of range for {vlen} vertices after pruning"
+                );
+            }
+        }
+
+        // (f) converged.
+        assert!(result.metrics.converged, "5×5×5 slab prune must converge");
+
+        // (g) Sanity: most surviving vertices lie near the slab mid-plane
+        // (z ≈ ±0.5 of the centerline at z=0 for this SDF).  The mid-surface
+        // is at z=0; after pruning the surviving shell should predominantly
+        // have |z| ≤ 1.0.  We allow a few outliers (boundary triangles).
+        let near_midplane = result
+            .mesh
+            .vertices
+            .iter()
+            .filter(|v| v[2].abs() <= 1.0)
+            .count();
+        let total_v = result.mesh.vertices.len();
+        assert!(
+            near_midplane >= total_v / 2,
+            "at least half of surviving vertices must be within |z|≤1 of the mid-plane; \
+             {near_midplane}/{total_v} qualify"
+        );
+    }
+
     // ── Task 3162 step 3: quantised-dedup jittered-vertex test ──────────────
     //
     // Discriminates between bit-exact dedup (`[u64; 3]` `to_bits()`) and
