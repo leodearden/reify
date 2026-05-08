@@ -636,10 +636,17 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     };
     let mut single: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
     single.insert("occt".to_string(), occt);
+    // Amendment 2: `compute_realization_tolerance_budget` now takes the
+    // borrowed-value variant of the registry that `dispatch` requires —
+    // production callers build it once per build inside
+    // `compute_tessellation_budgets`. Direct test-seam callers build it at
+    // the call site.
+    let single_borrow: BTreeMap<String, &CapabilityDescriptor> =
+        single.iter().map(|(k, v)| (k.clone(), v)).collect();
 
     let demand = 1e-6_f64;
     assert_eq!(
-        engine.compute_realization_tolerance_budget(&single, demand),
+        engine.compute_realization_tolerance_budget(&single_borrow, demand),
         demand,
         "single-kernel registry yields a 0-conversion DispatchPlan under \
          dispatch(_, BooleanUnion, BRep, {{BRep}}); per_stage_tolerance_for_plan \

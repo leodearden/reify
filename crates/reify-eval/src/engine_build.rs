@@ -912,18 +912,25 @@ impl Engine {
     /// truth, and a single grep for `BUDGET_QUERY_TRIPLE_V02` surfaces every
     /// place the v0.2 placeholder is consumed.
     ///
-    /// **Signature** (amendment): takes the owned-value
-    /// `&BTreeMap<String, CapabilityDescriptor>` map directly — the
-    /// borrowed-value variant `BTreeMap<String, &CapabilityDescriptor>`
-    /// that [`dispatch`] requires is constructed inside the helper at the
-    /// single dispatch call site, so callers no longer need to clone every
-    /// kernel-name `String` to assemble a separate borrow-flavored map at
-    /// every `tessellate_*` invocation.
+    /// **Signature** (amendment 2): takes the borrowed-value
+    /// `&BTreeMap<String, &CapabilityDescriptor>` map that [`dispatch`]
+    /// already requires. The owned→borrowed conversion (one `String` clone
+    /// per kernel-name) lives at the **single** call site
+    /// [`Self::compute_tessellation_budgets`], where it runs **once per
+    /// build** rather than once per realization. The earlier "owned-value
+    /// at the boundary, borrow-build inside the helper" arrangement only
+    /// relocated the per-call clone — for a build with `R` realizations
+    /// and `K` kernels it allocated `R · K` strings; this signature keeps
+    /// the cost at `K` per build regardless of `R`. Direct callers (today
+    /// just the test seam) build the borrowed view themselves at the call
+    /// site.
     ///
     /// **Production wiring** (task 2874 step-12): `tessellate_from_values`
-    /// calls this via [`crate::kernel_registry::collect_registry`] to
-    /// compute the per-realization budget passed to
-    /// `kernel.tessellate(handle, budget)`. The integration test
+    /// calls this indirectly through `compute_tessellation_budgets`,
+    /// which collects the registry via
+    /// [`crate::kernel_registry::collect_registry`] and constructs the
+    /// borrowed-value view once before the per-realization loop. The
+    /// integration test
     /// `tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget`
     /// in `tests/tolerance_wiring_e2e.rs` pins that the demanded tolerance
     /// flows through the helper to the kernel rather than being replaced
@@ -936,18 +943,12 @@ impl Engine {
     #[allow(clippy::unused_self)]
     pub fn compute_realization_tolerance_budget(
         &self,
-        registry: &BTreeMap<String, CapabilityDescriptor>,
+        registry: &BTreeMap<String, &CapabilityDescriptor>,
         demanded_tol: f64,
     ) -> f64 {
         let (op, demanded, available_arr) = Self::BUDGET_QUERY_TRIPLE_V02;
         let available: HashSet<ReprKind> = available_arr.iter().copied().collect();
-        // Build the borrowed-value view that `dispatch` requires once,
-        // here — callers pass the owned-value map (typically the result of
-        // `kernel_registry::collect_registry()`) so the per-call kernel-
-        // name `String` clone in the prior signature is gone.
-        let borrowed: BTreeMap<String, &CapabilityDescriptor> =
-            registry.iter().map(|(k, v)| (k.clone(), v)).collect();
-        match dispatch(&borrowed, op, demanded, &available) {
+        match dispatch(registry, op, demanded, &available) {
             Some(plan) => per_stage_tolerance_for_plan(&plan, demanded_tol),
             None => demanded_tol,
         }
@@ -1012,6 +1013,16 @@ impl Engine {
     /// [`Engine::compute_realization_tolerance_budget`] against the supplied
     /// owned-value `registry` to obtain the budgeted tolerance.
     ///
+    /// **Borrow-map allocation cost** (amendment 2): the borrowed-value
+    /// view `BTreeMap<String, &CapabilityDescriptor>` that
+    /// [`crate::dispatcher::dispatch`] requires is built **once** here,
+    /// before the realization loop, and reused for every realization in
+    /// this build. The earlier arrangement built it inside
+    /// `compute_realization_tolerance_budget` per-realization, leaving the
+    /// per-build kernel-name-string allocation count at `R · K` (R
+    /// realizations × K registered kernels). Hoisting the construction
+    /// here drops the cost back to `K` per build regardless of `R`.
+    ///
     /// Extracted in the task 2874 amendment from inline blocks duplicated
     /// across `tessellate_realizations` / `tessellate_snapshot`.
     pub(crate) fn compute_tessellation_budgets(
@@ -1020,6 +1031,10 @@ impl Engine {
         demanded_tols: &HashMap<(String, String), Option<f64>>,
         registry: &BTreeMap<String, CapabilityDescriptor>,
     ) -> HashMap<(String, String), f64> {
+        // Build the borrowed-value view that `dispatch` requires ONCE per
+        // build — see the "Borrow-map allocation cost" note above.
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry.iter().map(|(k, v)| (k.clone(), v)).collect();
         let mut map: HashMap<(String, String), f64> = HashMap::new();
         for t in &module.templates {
             for r in &t.realizations {
@@ -1029,7 +1044,8 @@ impl Engine {
                     .copied()
                     .flatten()
                     .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
-                let budget = self.compute_realization_tolerance_budget(registry, req_tol);
+                let budget =
+                    self.compute_realization_tolerance_budget(&registry_borrowed, req_tol);
                 map.insert(key, budget);
             }
         }
