@@ -1980,4 +1980,90 @@ mod tests {
             .expect("result must have 'iterations' key");
         assert_eq!(*iterations, Value::Int(0));
     }
+
+    // ── linear_combine multi-case LRFD happy path ───────────────────────────
+
+    fn approx_eq_slice(a: &[f64], b: &[f64], tol: f64) -> bool {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b.iter())
+                .all(|(x, y)| (x - y).abs() <= tol)
+    }
+
+    #[test]
+    fn linear_combine_lrfd_d_and_l_produces_correct_weighted_sum() {
+        // Two cases "D" and "L" with the LRFD combination 1.4D + 1.7L.
+        // Expected combined disp: [1.4*1+1.7*10, 1.4*2+1.7*20] = [18.4, 36.8]
+        // Expected combined stress: [1.4*100+1.7*1000, 1.4*200+1.7*2000] = [1840, 3680]
+        let axis = vec![0.0, 1.0];
+
+        let d_disp = wrap_sampled_field(
+            make_sampled_1d("disp_d", axis.clone(), vec![1.0, 2.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let d_stress = wrap_sampled_field(
+            make_sampled_1d("stress_d", axis.clone(), vec![100.0, 200.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let l_disp = wrap_sampled_field(
+            make_sampled_1d("disp_l", axis.clone(), vec![10.0, 20.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let l_stress = wrap_sampled_field(
+            make_sampled_1d("stress_l", axis.clone(), vec![1000.0, 2000.0]),
+            Type::Real,
+            Type::Real,
+        );
+
+        let case_d = make_fixture_elastic_result_with_fields(d_disp, d_stress);
+        let case_l = make_fixture_elastic_result_with_fields(l_disp, l_stress);
+        let mcr = make_multi_case_result_value(&[("D", case_d), ("L", case_l)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("D".to_string()), Value::Real(1.4));
+        weights_map.insert(Value::String("L".to_string()), Value::Real(1.7));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+        assert!(!result.is_undef(), "linear_combine should return a Map");
+
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        let disp = result_map
+            .get(&Value::String("displacement".to_string()))
+            .expect("result must have 'displacement' key");
+        let disp_sf = extract_sampled(disp);
+        assert!(
+            approx_eq_slice(&disp_sf.data, &[18.4, 36.8], 1e-9),
+            "displacement data mismatch: {:?}",
+            disp_sf.data
+        );
+
+        let stress = result_map
+            .get(&Value::String("stress".to_string()))
+            .expect("result must have 'stress' key");
+        let stress_sf = extract_sampled(stress);
+        assert!(
+            approx_eq_slice(&stress_sf.data, &[1840.0, 3680.0], 1e-9),
+            "stress data mismatch: {:?}",
+            stress_sf.data
+        );
+
+        let mvm = result_map
+            .get(&Value::String("max_von_mises".to_string()))
+            .expect("result must have 'max_von_mises' key");
+        match mvm {
+            Value::Real(v) => assert!(
+                (v - 3680.0).abs() <= 1e-9,
+                "max_von_mises mismatch: {}",
+                v
+            ),
+            other => panic!("expected Value::Real for max_von_mises, got {:?}", other),
+        }
+    }
 }
