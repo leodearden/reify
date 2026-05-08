@@ -730,40 +730,9 @@ mod tests {
 
     // --- Bending t³ thickness scaling (amendment: suggestion 4) ---
 
-    /// Verify bending stiffness scales as t³: K_b(2t)·u = 8·K_b(t)·u.
-    ///
-    /// Strategy: Use a pure-curvature mode where the MITC3 projected shear is
-    /// exactly zero. For the unit triangle with all θ_x uniform (non-zero) and
-    /// all other DOFs zero, the curvature κ_yy = ∂θ_x/∂y = 0 (constant) and
-    /// κ_xy = ∂θ_x/∂x = 0 (constant), BUT we need ∂θ_x/∂y ≠ 0 for a bending
-    /// mode. A cleaner construction: set θ_x at node 2 only (node 2 is at y=1
-    /// for the unit triangle), leaving nodes 0 and 1 at θ_x=0. This gives
-    /// uniform κ_yy = -α (from ∂θ_x/∂y · dN_2/dy = α · 1 = α) with zero
-    /// curvature in the other directions.
-    ///
-    /// The covariant shear for this mode: γ_ηζ = Σ_i dn_ref[i][1]*0 - N_i*θ_x_i.
-    /// At tying point A=(½,0): N = [½,½,0], γ_ηζ = -N_2·α = 0.
-    /// At tying point B=(0,½): N = [½,0,½], γ_ηζ = -N_2·α = -α/2.
-    /// At tying point C=(½,½): N = [0,½,½], γ_ηζ = -N_2·α = -α/2.
-    /// After MITC3 interpolation, the projected shear is non-zero.
-    ///
-    /// To isolate bending t³ from shear t scaling, we compare the *ratio*
-    /// K(2t)·u / K(t)·u component-wise and assert it equals 8 (= 2³) for the
-    /// DOFs where bending dominates, or verify the total strain energy scales
-    /// correctly. We use the cleaner energy approach: fix α small enough that
-    /// shear is negligible compared to bending, and assert U(2t)/U(t) ≈ 8.
-    ///
-    /// Cleaner: we use a DOF pattern where the MITC3 shear projection is
-    /// exactly zero. For uniform θ_x = β (constant) at all nodes:
-    ///   γ_ηζ at A, B, C = -N_total · β = -1 · β (N sums to 1 everywhere).
-    /// Not zero. So there is always some shear for a pure-rotation mode.
-    ///
-    /// Instead, we isolate the bending t³ scaling by asserting that the
-    /// energy ratio U_K(2t) / U_K(t) approaches 8 in the limit where bending
-    /// dominates (large t). For steel-like material, with the curvature-only
-    /// bending mode (θ_y = α·x, all else zero), bending energy ~ t³ and shear
-    /// energy ~ t. At larger t, bending dominates and the ratio approaches 8.
-    /// We test at t = 1.0 (very thick) where t³/12·D·A >> κ·G·t·A·(α/2)².
+    /// Verifies the bending+shear energy partition by checking that K-energy at `t` and `2t`
+    /// both match the analytical `c_b·t³ + c_s·t` formula, and that the measured ratio
+    /// `U(2t)/U(t)` matches the analytical ratio.
     #[test]
     fn shell_thickness_scaling_bending_mode_scales_as_t_cubed() {
         // Use the bending-patch mode: θ_y(node_i) = α·x_i (node1→α, others→0).
