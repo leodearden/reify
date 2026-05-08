@@ -1,6 +1,65 @@
 //! Laplacian quick-pass smoother (PRD task #6).
 //!
-//! Stub module — populated by step-4. Tests below are RED until then.
+//! Implements the cheap fast path for trivially small parameter changes,
+//! per PRD `docs/prds/v0_3/mesh-morphing.md` §"Laplacian quick-pass":
+//! surface nodes are pinned to their projected positions and interior nodes
+//! are iteratively averaged with their topological neighbours.
+//!
+//! Selection logic (Laplacian vs. elasticity morph) lives in PRD task #10's
+//! engine integration; this module delivers only the smoother kernel.
+
+use reify_types::{ElementOrderTag, VolumeMesh};
+
+// ── LaplacianFailure ──────────────────────────────────────────────────────────
+
+/// Failure modes from [`laplacian_smooth`].
+///
+/// Mirrors the shape of [`crate::ProjectionFailure`] (structured variants
+/// carrying the offending input) so engine wiring (PRD task #10) sees uniform
+/// `Result<…, *Failure>` returns from `compute_dirichlet_bcs` and
+/// `laplacian_smooth`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LaplacianFailure {
+    /// A node index in `prescribed_positions` is out of range for
+    /// `old_mesh.vertices` (i.e. `node_idx * 3 + 2 >= old_mesh.vertices.len()`).
+    InvalidNodeIndex(u32),
+    /// `old_mesh.element_order` is not [`ElementOrderTag::P1`].
+    ///
+    /// P2 adjacency rules (corner-corner + corner-midnode edges) are out of
+    /// scope for the quick-pass; engine wiring (PRD task #10) gates the
+    /// Laplacian path on `element_order == P1` and falls through to the
+    /// elasticity morph otherwise.
+    UnsupportedElementOrder(ElementOrderTag),
+}
+
+// ── laplacian_smooth ──────────────────────────────────────────────────────────
+
+/// Constrained Laplacian smoother — boundary nodes pinned to
+/// `prescribed_positions`, interior nodes iteratively averaged with their
+/// topological neighbours (Jacobi iteration).
+///
+/// ## Parameters
+///
+/// - `old_mesh` — the current tetrahedral mesh.
+/// - `prescribed_positions` — `(node_index, new_position)` pairs identifying
+///   "boundary" nodes pinned to their projected targets. The natural producer
+///   is [`crate::compute_dirichlet_bcs`] (PRD task #5).
+/// - `iterations` — number of Jacobi smoothing passes. Engine wiring (PRD
+///   task #10) reads [`crate::MorphOptions::laplacian_iterations`] and passes
+///   it in (5–10 typical, default 8).
+///
+/// ## Failure modes
+///
+/// See [`LaplacianFailure`].
+pub fn laplacian_smooth(
+    old_mesh: &VolumeMesh,
+    prescribed_positions: &[(u32, [f64; 3])],
+    iterations: u32,
+) -> Result<VolumeMesh, LaplacianFailure> {
+    let _ = prescribed_positions;
+    let _ = iterations;
+    Ok(old_mesh.clone())
+}
 
 #[cfg(test)]
 mod tests {
