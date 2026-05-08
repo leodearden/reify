@@ -126,6 +126,8 @@ mod tests {
         assert!((opts.laplacian_quickpass_threshold - 0.01).abs() < 1e-12);
         assert!((opts.fictitious_youngs_modulus_base - 1.0).abs() < 1e-12);
         assert!((opts.fictitious_poisson_ratio - 0.3).abs() < 1e-12);
+        // PRD task #6 (Laplacian quick-pass): 5–10 typical, default 8.
+        assert_eq!(opts.laplacian_iterations, 8);
     }
 
     #[test]
