@@ -11,3 +11,15 @@ toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# Dev-only fan-in for cross-crate consistency tests. These crates are NOT
+# runtime dependencies of reify-config — adding them here keeps the
+# production library adapter-free. The single consumer is
+# tests/kernel_name_consistency.rs, which asserts that each adapter's
+# *_KERNEL_NAME const matches KernelId::*.to_string() at the reify-config
+# side (see task 3139 / esc-3123-85).
+reify-kernel-occt.workspace = true
+reify-kernel-manifold.workspace = true
+reify-kernel-fidget.workspace = true
+reify-kernel-openvdb.workspace = true
+reify-kernel-gmsh.workspace = true

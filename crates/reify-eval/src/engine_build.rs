@@ -18,6 +18,7 @@ use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
 use crate::realization_cache::RealizationCache;
+use crate::sweep_classifier::{SweptKindTable, classify_swept_body};
 use crate::topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes,
@@ -35,6 +36,43 @@ enum SingleParentSweepKind {
     Extrude,
     Revolve,
     Sweep,
+}
+
+/// Bundle of `&mut` per-realization output tables that
+/// `Engine::execute_realization_ops` writes into. Grouped (task 3119)
+/// so each new per-realization side-channel adds one struct field
+/// instead of growing the function signature by one parameter and
+/// the diff at every call site.
+struct RealizationOutputs<'a> {
+    step_handles: &'a mut Vec<GeometryHandleId>,
+    named_steps: &'a mut HashMap<String, GeometryHandleId>,
+    feature_tag_table: &'a mut FeatureTagTable,
+    topology_attribute_table: &'a mut TopologyAttributeTable,
+    swept_kind_table: &'a mut SweptKindTable,
+}
+
+impl<'a> RealizationOutputs<'a> {
+    /// Positional constructor mirroring struct-declaration field order
+    /// (tasks 3119 + 3133).  Call sites don't need to repeat field names;
+    /// argument order is fixed by the struct definition.  Line count at
+    /// each call site is unchanged from struct-literal form — the trade-off
+    /// is fewer redundant identifiers vs. the named-field self-documentation
+    /// of struct-literal syntax.
+    fn new(
+        step_handles: &'a mut Vec<GeometryHandleId>,
+        named_steps: &'a mut HashMap<String, GeometryHandleId>,
+        feature_tag_table: &'a mut FeatureTagTable,
+        topology_attribute_table: &'a mut TopologyAttributeTable,
+        swept_kind_table: &'a mut SweptKindTable,
+    ) -> Self {
+        Self {
+            step_handles,
+            named_steps,
+            feature_tag_table,
+            topology_attribute_table,
+            swept_kind_table,
+        }
+    }
 }
 
 /// Dispatch on `attribute_history` to populate `topology_attribute_table`
@@ -433,6 +471,7 @@ impl Engine {
 
             self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
+            self.swept_kind_table = SweptKindTable::default();
             for template in &module.templates {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -461,11 +500,14 @@ impl Engine {
                         &values,
                         &self.functions,
                         &self.meta_map,
-                        &mut step_handles,
+                        RealizationOutputs::new(
+                            &mut step_handles,
+                            &mut named_steps,
+                            &mut self.feature_tag_table,
+                            &mut self.topology_attribute_table,
+                            &mut self.swept_kind_table,
+                        ),
                         &mut diagnostics,
-                        &mut named_steps,
-                        &mut self.feature_tag_table,
-                        &mut self.topology_attribute_table,
                         &realization.id,
                         realization.name.as_deref(),
                         realization.span,
@@ -505,6 +547,19 @@ impl Engine {
                 // helpers can resolve each Snapshot body's `solid` String to
                 // a `GeometryHandleId`.
                 Engine::post_process_kinematic_queries(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
+                // Task 2324: topology-selector post-process (closest_point /
+                // on / angle_between_surfaces) — sibling to the conformance-
+                // query and kinematic-query wirings; runs after `named_steps`
+                // is populated so the helpers can resolve let-bound geometry
+                // names to a `GeometryHandleId` and let-bound point names to
+                // a `Value::Point`.
+                Engine::post_process_topology_selectors(
                     template,
                     &named_steps,
                     &mut values,
@@ -651,6 +706,7 @@ impl Engine {
 
             self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
+            self.swept_kind_table = SweptKindTable::default();
             for template in &module.templates {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -674,11 +730,14 @@ impl Engine {
                         &values,
                         &self.functions,
                         &self.meta_map,
-                        &mut step_handles,
+                        RealizationOutputs::new(
+                            &mut step_handles,
+                            &mut named_steps,
+                            &mut self.feature_tag_table,
+                            &mut self.topology_attribute_table,
+                            &mut self.swept_kind_table,
+                        ),
                         &mut diagnostics,
-                        &mut named_steps,
-                        &mut self.feature_tag_table,
-                        &mut self.topology_attribute_table,
                         &realization.id,
                         realization.name.as_deref(),
                         realization.span,
@@ -719,6 +778,19 @@ impl Engine {
                 // helpers can resolve each Snapshot body's `solid` String to
                 // a `GeometryHandleId`.
                 Engine::post_process_kinematic_queries(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    kernel.as_ref(),
+                    &mut diagnostics,
+                );
+                // Task 2324: topology-selector post-process (closest_point /
+                // on / angle_between_surfaces) — sibling to the conformance-
+                // query and kinematic-query wirings; runs after `named_steps`
+                // is populated so the helpers can resolve let-bound geometry
+                // names to a `GeometryHandleId` and let-bound point names to
+                // a `Value::Point`.
+                Engine::post_process_topology_selectors(
                     template,
                     &named_steps,
                     &mut values,
@@ -835,6 +907,7 @@ impl Engine {
         let mut values = check_result.values;
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
+        self.swept_kind_table = SweptKindTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernel,
             module,
@@ -844,6 +917,7 @@ impl Engine {
             &self.meta_map,
             &mut self.feature_tag_table,
             &mut self.topology_attribute_table,
+            &mut self.swept_kind_table,
             &mut self.realization_cache,
             &demanded_tols,
             &tessellation_budgets,
@@ -1095,6 +1169,7 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         feature_tag_table: &mut FeatureTagTable,
         topology_attribute_table: &mut TopologyAttributeTable,
+        swept_kind_table: &mut SweptKindTable,
         realization_cache: &mut RealizationCache<GeometryHandleId>,
         demanded_tols: &HashMap<(String, String), Option<f64>>,
         tessellation_budgets: &HashMap<(String, String), f64>,
@@ -1133,11 +1208,14 @@ impl Engine {
                     values,
                     functions,
                     meta_map,
-                    &mut step_handles,
+                    RealizationOutputs::new(
+                        &mut step_handles,
+                        &mut named_steps,
+                        &mut *feature_tag_table,
+                        &mut *topology_attribute_table,
+                        &mut *swept_kind_table,
+                    ),
                     diagnostics,
-                    &mut named_steps,
-                    feature_tag_table,
-                    topology_attribute_table,
                     &realization.id,
                     realization.name.as_deref(),
                     realization.span,
@@ -1189,6 +1267,21 @@ impl Engine {
             // surface exposes the same kernel-resolved kinematic-query
             // values as the build surface so GUI overlays stay consistent.
             Engine::post_process_kinematic_queries(
+                template,
+                &named_steps,
+                values,
+                kernel.as_ref(),
+                diagnostics,
+            );
+            // Task 2324: topology-selector post-process (closest_point /
+            // on / angle_between_surfaces) — sibling to the conformance-
+            // query and kinematic-query wirings; runs after `named_steps`
+            // is populated so the helpers can resolve let-bound geometry
+            // names to a `GeometryHandleId` and let-bound point names to
+            // a `Value::Point`. Tessellate surface exposes the same
+            // kernel-resolved values as the build surface so GUI overlays
+            // stay consistent.
+            Engine::post_process_topology_selectors(
                 template,
                 &named_steps,
                 values,
@@ -1311,24 +1404,8 @@ impl Engine {
         values: &ValueMap,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
-        step_handles: &mut Vec<GeometryHandleId>,
+        outputs: RealizationOutputs<'_>,
         diagnostics: &mut Vec<Diagnostic>,
-        named_steps: &mut HashMap<String, GeometryHandleId>,
-        // Precondition (cache-hit invariant): on entry this table must be
-        // either empty (post-build reset) or populated only by EARLIER
-        // realizations in the same build. The cache-hit short-circuit's
-        // `debug_assert!(feature_tag_table.lookup(cached_handle).is_none())`
-        // depends on this — a caller that runs `execute_realization_ops`
-        // twice without re-resetting the table OR routes a cached handle
-        // through a path that also populates the table will spuriously
-        // trip the assert. See the "Internal-consistency invariant"
-        // section in the long block above for rationale.
-        feature_tag_table: &mut FeatureTagTable,
-        // Precondition (cache-hit invariant): same contract as
-        // `feature_tag_table` — must be empty or populated only by
-        // earlier realizations in this build. The cache-hit
-        // short-circuit's `debug_assert!` on this table depends on it.
-        topology_attribute_table: &mut TopologyAttributeTable,
         realization_id: &RealizationNodeId,
         realization_name: Option<&str>,
         realization_span: SourceSpan,
@@ -1336,6 +1413,13 @@ impl Engine {
         realization_cache: &mut RealizationCache<GeometryHandleId>,
         demanded_tol: Option<f64>,
     ) {
+        let RealizationOutputs {
+            step_handles,
+            named_steps,
+            feature_tag_table,
+            topology_attribute_table,
+            swept_kind_table,
+        } = outputs;
         let handle_start = step_handles.len();
 
         // Task 2874, step-8: cache-hit short-circuit. When the caller has
@@ -1385,6 +1469,17 @@ impl Engine {
         }
 
         let mut had_failure = false;
+        // Captures the per-op `GeometryOp`s in lockstep with `step_handles`
+        // for this realization. After the loop, if the realization succeeds
+        // (no rollback), the parallel `(realization_ops, step_handles[handle_start..])`
+        // pair is fed to `classify_swept_body` for Phase A swept-body
+        // classification (task 2982). Cleared on rollback alongside
+        // `step_handles.truncate(handle_start)` below.
+        //
+        // Pre-sized to `operations.len()` so `Vec` growth never reallocates on
+        // the build hot path. Each successful op contributes exactly one entry,
+        // so this is the upper bound on capacity needed.
+        let mut realization_ops: Vec<GeometryOp> = Vec::with_capacity(operations.len());
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -1495,6 +1590,12 @@ impl Engine {
                             }
                             }
                             step_handles.push(handle.id);
+                            // Capture the compiled op parallel to step_handles for
+                            // post-loop classification (task 2982). Cleared on
+                            // rollback below. Pushed last in this arm so all the
+                            // earlier `&geom_op` borrows above have already
+                            // released — we move ownership rather than cloning.
+                            realization_ops.push(geom_op);
                         }
                         Err(e) => {
                             let err_msg = format!("geometry error: {}", e);
@@ -1533,25 +1634,37 @@ impl Engine {
         if rolled_back {
             step_handles.truncate(handle_start);
         } else {
-            // Fully-successful realization. Record `name → final_handle`
-            // (post-rollback to avoid stale `named_steps` entries) and
-            // populate the per-engine `RealizationCache` with the terminal
-            // handle keyed on `(entity_id, ReprKind::BRep, demanded_tol)`
-            // when a demanded tolerance was threaded in (task 2874, step-6).
+            // Fully-successful realization. Three things land here, all keyed
+            // on `step_handles[handle_start..].last()` so that an empty-ops
+            // realization (operations.len() == 0) contributes nothing rather
+            // than inheriting the final handle of the previous realization:
             //
-            // Use `step_handles[handle_start..]` rather than `step_handles.last()` so
-            // that an empty-ops realization (operations.len() == 0) contributes nothing
-            // to named_steps / cache instead of incorrectly inheriting the final
-            // handle of the previous realization.
+            // 1. Phase A swept-body classification (task 2982) —
+            //    `realization_ops` is parallel to `step_handles[handle_start..]`
+            //    because every successful op pushed both in lockstep on the
+            //    kernel-success branch above; on any failure (compile or
+            //    kernel) the rolled_back branch is taken instead, so the
+            //    parallelism holds whenever we enter this arm.
+            // 2. `name → final_handle` recording (post-rollback so failed
+            //    realizations never leave a stale entry that would let later
+            //    realizations resolve a name whose geometry was never
+            //    successfully produced).
+            // 3. RealizationCache populate (task 2874, step-6) keyed on
+            //    `(entity_id, ReprKind::BRep, demanded_tol)` when a demanded
+            //    tolerance was threaded in. The bucket's partial-order rule
+            //    may reject this insert if a tighter or equal entry is
+            //    already cached; either way the post-condition "a satisfying
+            //    entry exists at `(entity, BRep, tol)`" holds.
+            if let Some(kind) = classify_swept_body(&realization_ops, &step_handles[handle_start..])
+                && let Some(&last) = step_handles[handle_start..].last()
+            {
+                swept_kind_table.record(last, kind);
+            }
             if let Some(&last) = step_handles[handle_start..].last() {
                 if let Some(name) = realization_name {
                     named_steps.insert(name.to_string(), last);
                 }
                 if let Some(tol) = demanded_tol {
-                    // Tolerance bucket's partial-order rule may reject this
-                    // insert if a tighter or equal entry is already cached;
-                    // either way the post-condition "a satisfying entry
-                    // exists at `(entity, BRep, tol)`" holds.
                     realization_cache.insert(&realization_id.entity, ReprKind::BRep, tol, last);
                 }
             }
@@ -1736,6 +1849,58 @@ impl Engine {
         }
     }
 
+    /// Post-process value cells for a template after `execute_realization_ops`
+    /// has populated `named_steps`, dispatching the topology-selector helpers
+    /// `closest_point` / `on` / `angle_between_surfaces` (task 2324).
+    ///
+    /// Sibling to `post_process_conformance_queries` and
+    /// `post_process_kinematic_queries`. For each `ValueCellDecl` in
+    /// `template.value_cells` whose `default_expr` is a recognised
+    /// topology-selector helper, this writes the kernel-resolved value
+    /// (`Value::Point(_)` for `closest_point`, `Value::Bool(_)` for `on`,
+    /// `Value::Scalar { dimension: ANGLE, .. }` for `angle_between_surfaces`)
+    /// into `values`, overwriting the `Value::Undef` left behind by the pure
+    /// `eval_expr` path. Cells whose dispatch returns `None` (literal arg,
+    /// missing `named_steps` or `values` entry, non-helper function call)
+    /// are left untouched — see
+    /// [`crate::geometry_ops::try_eval_topology_selector`]'s `None`-return
+    /// contract.
+    ///
+    /// Called from the same three sites as `post_process_conformance_queries`
+    /// and `post_process_kinematic_queries` so build / build_snapshot /
+    /// tessellate paths agree on the patched value.
+    fn post_process_topology_selectors(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Iterate `values` directly without snapshotting (parallels the
+        // `post_process_kinematic_queries` sibling above). Safe because
+        // topology-selector helpers do not chain through value cells —
+        // each helper's args resolve to either a let-bound `Value::Point`
+        // already populated by `eval_expr` or a `named_steps` handle
+        // populated by `execute_realization_ops`, never to another
+        // topology-selector cell, so an earlier patch in this loop cannot
+        // influence a later dispatch's input.
+        for cell in &template.value_cells {
+            let default_expr = match &cell.default_expr {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(value) = crate::geometry_ops::try_eval_topology_selector(
+                default_expr,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
     /// Tessellate realizations from the current snapshot values, without
     /// re-calling eval().
     ///
@@ -1784,6 +1949,7 @@ impl Engine {
             self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
+        self.swept_kind_table = SweptKindTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernel,
             module,
@@ -1793,6 +1959,7 @@ impl Engine {
             &self.meta_map,
             &mut self.feature_tag_table,
             &mut self.topology_attribute_table,
+            &mut self.swept_kind_table,
             &mut self.realization_cache,
             &demanded_tols,
             &tessellation_budgets,
@@ -1843,6 +2010,7 @@ mod tests {
 
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -1851,11 +2019,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             None,
             SourceSpan::new(0, 0),
@@ -1935,6 +2106,7 @@ mod tests {
 
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -1943,11 +2115,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             None,
             SourceSpan::new(0, 0),
@@ -2007,6 +2182,7 @@ mod tests {
 
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2015,11 +2191,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             None,
             SourceSpan::new(0, 0),
@@ -2090,6 +2269,7 @@ mod tests {
 
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2098,11 +2278,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             None,
             SourceSpan::new(0, 0),
@@ -2165,6 +2348,7 @@ mod tests {
 
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2173,11 +2357,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             None,
             SourceSpan::new(0, 0),
@@ -2241,6 +2428,7 @@ mod tests {
 
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2249,11 +2437,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
@@ -2335,6 +2526,7 @@ mod tests {
 
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2343,11 +2535,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             Some("bad"),
             SourceSpan::new(0, 0),
@@ -2413,6 +2608,7 @@ mod tests {
         // First binding: let body = box(…)
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2421,11 +2617,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
@@ -2440,6 +2639,7 @@ mod tests {
         // Second binding: let body = cylinder(…) — same name, different primitive
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2448,11 +2648,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
@@ -2571,6 +2774,7 @@ mod tests {
         // First binding: let body = box(…) — succeeds, populates named_steps.
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2579,11 +2783,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
@@ -2620,6 +2827,7 @@ mod tests {
         // Second binding: let body = <invalid> — fails (rollback path).
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2628,11 +2836,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
@@ -2710,6 +2921,7 @@ mod tests {
 
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2718,11 +2930,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             None,
             realization_span,
@@ -2795,6 +3010,7 @@ mod tests {
 
         let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
             &mut kernel,
@@ -2803,11 +3019,14 @@ mod tests {
             &values,
             &functions,
             &meta_map,
-            &mut step_handles,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
             &mut diagnostics,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
             &test_realization_id,
             None,
             realization_span,

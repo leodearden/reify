@@ -494,6 +494,11 @@ pub(crate) fn compile_unit(
 // --- Type resolution ---
 
 /// Resolve a type name to a `Type`.
+///
+/// Named-dimension lookups delegate to `reify_types::NAMED_DIMENSIONS` (the single source of
+/// truth shared with `resolve_dimension_type`). Future named-dimension additions only require a
+/// one-line append to that table. `"Dimensionless"` is special-cased here — as in
+/// `resolve_dimension_type` — because it is intentionally absent from `NAMED_DIMENSIONS`.
 pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
     match name {
         "Scalar" => Some(Type::length()), // Default scalar is length-dimensioned in M1
@@ -502,109 +507,17 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Int" => Some(Type::Int),
         "Real" => Some(Type::Real),
         "String" => Some(Type::String),
-        // SI base dimensions
-        "Length" => Some(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        }),
-        "Mass" => Some(Type::Scalar {
-            dimension: DimensionVector::MASS,
-        }),
-        "Time" => Some(Type::Scalar {
-            dimension: DimensionVector::TIME,
-        }),
-        "Current" => Some(Type::Scalar {
-            dimension: DimensionVector::CURRENT,
-        }),
-        "Temperature" => Some(Type::Scalar {
-            dimension: DimensionVector::TEMPERATURE,
-        }),
-        "AmountOfSubstance" => Some(Type::Scalar {
-            dimension: DimensionVector::AMOUNT_OF_SUBSTANCE,
-        }),
-        "LuminousIntensity" => Some(Type::Scalar {
-            dimension: DimensionVector::LUMINOUS_INTENSITY,
-        }),
-        "Angle" => Some(Type::Scalar {
-            dimension: DimensionVector::ANGLE,
-        }),
-        "SolidAngle" => Some(Type::Scalar {
-            dimension: DimensionVector::SOLID_ANGLE,
-        }),
-        "Money" => Some(Type::Scalar {
-            dimension: DimensionVector::MONEY,
-        }),
-        // Geometric derived dimensions
-        "Area" => Some(Type::Scalar {
-            dimension: DimensionVector::AREA,
-        }),
-        "Volume" => Some(Type::Scalar {
-            dimension: DimensionVector::VOLUME,
-        }),
-        // SI derived dimensions
-        "Force" => Some(Type::Scalar {
-            dimension: DimensionVector::FORCE,
-        }),
-        "Energy" => Some(Type::Scalar {
-            dimension: DimensionVector::ENERGY,
-        }),
-        "Power" => Some(Type::Scalar {
-            dimension: DimensionVector::POWER,
-        }),
-        "Pressure" => Some(Type::Scalar {
-            dimension: DimensionVector::PRESSURE,
-        }),
-        "Frequency" => Some(Type::Scalar {
-            dimension: DimensionVector::FREQUENCY,
-        }),
-        "Voltage" => Some(Type::Scalar {
-            dimension: DimensionVector::VOLTAGE,
-        }),
-        "Charge" => Some(Type::Scalar {
-            dimension: DimensionVector::CHARGE,
-        }),
-        "Capacitance" => Some(Type::Scalar {
-            dimension: DimensionVector::CAPACITANCE,
-        }),
-        "Resistance" => Some(Type::Scalar {
-            dimension: DimensionVector::RESISTANCE,
-        }),
-        "Conductance" => Some(Type::Scalar {
-            dimension: DimensionVector::CONDUCTANCE,
-        }),
-        "Inductance" => Some(Type::Scalar {
-            dimension: DimensionVector::INDUCTANCE,
-        }),
-        "MagneticFlux" => Some(Type::Scalar {
-            dimension: DimensionVector::MAGNETIC_FLUX,
-        }),
-        "MagneticFluxDensity" => Some(Type::Scalar {
-            dimension: DimensionVector::MAGNETIC_FLUX_DENSITY,
-        }),
-        "LuminousFlux" => Some(Type::Scalar {
-            dimension: DimensionVector::LUMINOUS_FLUX,
-        }),
-        "Illuminance" => Some(Type::Scalar {
-            dimension: DimensionVector::ILLUMINANCE,
-        }),
-        "AbsorbedDose" => Some(Type::Scalar {
-            dimension: DimensionVector::ABSORBED_DOSE,
-        }),
-        "AngularVelocity" => Some(Type::Scalar {
-            dimension: DimensionVector::ANGULAR_VELOCITY,
-        }),
-        "DynamicViscosity" => Some(Type::Scalar {
-            dimension: DimensionVector::DYNAMIC_VISCOSITY,
-        }),
-        "MomentOfInertia" => Some(Type::Scalar {
-            dimension: DimensionVector::MOMENT_OF_INERTIA,
-        }),
-        "Density" => Some(Type::Scalar {
-            dimension: DimensionVector::MASS_DENSITY,
-        }),
+        // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
+        // None for it); mirror the special-case used in resolve_dimension_type.
         "Dimensionless" => Some(Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         }),
-        _ => None,
+        // All named-dimension singletons: delegate to the shared NAMED_DIMENSIONS table so
+        // future additions require only a one-line change there.
+        _ => reify_types::NAMED_DIMENSIONS
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(dim, _)| Type::Scalar { dimension: *dim }),
     }
 }
 
@@ -1232,7 +1145,12 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 }
 
 /// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
-/// Tensor, Matrix, Scalar, Vector3, Point3) within a type alias RHS expression.
+/// Tensor, Matrix, Scalar, Vector3, Point3, Field) within a type alias RHS expression.
+///
+/// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
+/// `resolve_type_expr_with_aliases` — the full-type resolver, **not** the
+/// dimension-only resolver — because Field's domain and codomain are full Types
+/// (Point3, Vector3, Tensor, structures, etc.), not bare dimensions.
 ///
 /// Each type argument is resolved recursively via `resolve_type_expr_with_aliases`,
 /// which allows inner type args to be trait names (e.g. `Option<MyTrait>`).
@@ -1389,6 +1307,31 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::matrix(m, n, quantity))
         }
+        "Field" if type_args.len() == 2 => {
+            // Field<D, C>: full-type domain and codomain (Point3, Vector3, Tensor, etc.),
+            // not bare dimensions. Use resolve_type_expr_with_aliases (full-type resolver)
+            // rather than resolve_type_alias_expr_to_dimension. Mirrors Map's two-arg shape.
+            let domain = resolve_type_expr_with_aliases(
+                &type_args[0],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            let codomain = resolve_type_expr_with_aliases(
+                &type_args[1],
+                &empty_type_params,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::Field {
+                domain: Box::new(domain),
+                codomain: Box::new(codomain),
+            })
+        }
         // Name did not match any known builtin parametric pattern.
         // Early-return here so the debug_assert below never fires for the
         // unmatched case: the assert only needs to hold when a named arm ran.
@@ -1442,7 +1385,11 @@ fn expect_integer_literal_type_arg(
 /// alias-DFS resolver is correct for this context.
 ///
 /// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Scalar<Q>`, `Vector3<Q>`,
-/// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`.
+/// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`, `Field<D,C>`.
+///
+/// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
+/// `resolve_type_alias_expr_with_subst` — the full-type resolver with substitutions,
+/// **not** the dimension-only resolver — because Field's args are full Types.
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
     type_args: &[reify_syntax::TypeExpr],
@@ -1551,6 +1498,28 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 depth,
             )?;
             Some(Type::matrix(m, n, quantity))
+        }
+        "Field" if type_args.len() == 2 => {
+            // Field<D, C>: full-type domain and codomain. Mirrors the non-subst variant
+            // (resolve_parameterized_builtin_type) but threads `subst` and `depth`.
+            let domain = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            let codomain = resolve_type_alias_expr_with_subst(
+                &type_args[1],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Field {
+                domain: Box::new(domain),
+                codomain: Box::new(codomain),
+            })
         }
         _ => None,
     }
@@ -1822,6 +1791,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_type_name_recognises_acceleration() {
+        assert_eq!(
+            resolve_type_name("Acceleration"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::ACCELERATION
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_type_name_recognises_force_density() {
+        assert_eq!(
+            resolve_type_name("ForceDensity"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::FORCE_DENSITY
+            })
+        );
+    }
+
+    #[test]
     fn resolve_dimension_type_recognises_money() {
         let te = named_type_expr("Money");
         let mut diagnostics = Vec::new();
@@ -1884,6 +1873,41 @@ mod tests {
             diagnostics.is_empty(),
             "resolve_dimension_type(\"Dimensionless\") should produce no diagnostics; got: {:?}",
             diagnostics,
+        );
+    }
+
+    /// Parity contract: `resolve_type_name` correctly maps every entry in
+    /// `reify_types::NAMED_DIMENSIONS` and the special-cased `"Dimensionless"`.
+    ///
+    /// This test is written BEFORE the implementation is switched to use the shared table
+    /// (step 2), so it serves as a regression-protection contract that will catch any
+    /// silent divergence between the old match-arm implementation and the new table-driven
+    /// one. It is expected to pass against both implementations.
+    #[test]
+    fn resolve_type_name_round_trips_all_named_dimensions() {
+        for &(dim, name) in reify_types::NAMED_DIMENSIONS {
+            assert_eq!(
+                resolve_type_name(name),
+                Some(Type::Scalar { dimension: dim }),
+                "resolve_type_name({:?}) should return Some(Type::Scalar {{ dimension: {:?} }})",
+                name,
+                dim,
+            );
+        }
+        // Special-case fallback: "Dimensionless" is intentionally absent from NAMED_DIMENSIONS
+        // but must still resolve to Type::Scalar { dimension: DIMENSIONLESS }.
+        assert_eq!(
+            resolve_type_name("Dimensionless"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS
+            }),
+            "resolve_type_name(\"Dimensionless\") should return Some(Type::Scalar {{ dimension: DIMENSIONLESS }})"
+        );
+        // Negative case: an unknown name must return None (default arm does not over-match).
+        assert_eq!(
+            resolve_type_name("ThisIsNotADimension"),
+            None,
+            "resolve_type_name(\"ThisIsNotADimension\") should return None"
         );
     }
 

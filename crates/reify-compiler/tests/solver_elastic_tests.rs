@@ -162,7 +162,7 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 // ─── step-5: ElasticOptions param shape ──────────────────────────────────────
 
 /// `ElasticOptions` is the FEA solver-input knob structure. It must declare
-/// exactly nine params with the canonical names and types:
+/// exactly eleven params with the canonical names and types:
 ///
 ///   - `element_order          : ElementOrder`   (selects P1 / P2 elements)
 ///   - `mesh_size              : Option<Length>`  (none = solver derives from tolerance)
@@ -176,6 +176,10 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 ///   - `shell_branch_prune_ratio : Real`          (medial-axis spurious-branch pruning
 ///     threshold; empirical placeholder)
 ///   - `shell_force            : ShellForce`      (off/auto/on tri-state forcing)
+///   - `force_tet              : Bool`            (disable hex/wedge promotion entirely;
+///     default false; PRD hex-wedge-meshing.md task #9)
+///   - `require_hex_wedge      : Bool`            (upgrade tet fall-back to hard error;
+///     default false; PRD hex-wedge-meshing.md task #9)
 ///
 /// `mesh_size`, `threads`, and `shell_voxel_size` are encoded as `Option<T> = none`
 /// rather than PRD-style sentinels (e.g., `auto`, `num_cpus::get()`) because the
@@ -190,8 +194,8 @@ fn elastic_options_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        9,
-        "ElasticOptions should have exactly 9 param cells, got: {:?}",
+        11,
+        "ElasticOptions should have exactly 11 param cells, got: {:?}",
         names
     );
 
@@ -215,6 +219,8 @@ fn elastic_options_struct_has_correct_param_shape() {
         ),
         ("shell_branch_prune_ratio", Type::Real),
         ("shell_force", Type::Enum("ShellForce".to_string())),
+        ("force_tet", Type::Bool),
+        ("require_hex_wedge", Type::Bool),
     ];
 
     for (member, expected_ty) in expected {
@@ -253,11 +259,15 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
 /// Each `ElasticOptions` param must carry the canonical default declared in
 /// the PRD (with the encoding adjustments documented in the file header):
 ///
-///   element_order = ElementOrder.P1
-///   mesh_size     = none
-///   max_iter      = 1000
-///   cg_tolerance  = 0.000001
-///   threads       = none
+///   element_order    = ElementOrder.P1
+///   mesh_size        = none
+///   max_iter         = 1000
+///   cg_tolerance     = 0.000001
+///   threads          = none
+///   force_tet        = false   (PRD hex-wedge-meshing.md task #9, §"Two opposing
+///                               escape hatches")
+///   require_hex_wedge = false  (PRD hex-wedge-meshing.md task #9, §"Two opposing
+///                               escape hatches")
 ///
 /// The defaults pin the standard solver setup so a bare `ElasticOptions()`
 /// instantiation compiles. `0.000001` is asserted with a 1e-9 tolerance to
@@ -351,6 +361,38 @@ fn elastic_options_param_defaults_match_spec() {
         "threads default's result_type should be Option<Int>, got: {:?}",
         threads_default.result_type
     );
+
+    // force_tet = false (PRD docs/prds/v0_3/hex-wedge-meshing.md task #9,
+    // §"Two opposing escape hatches"; default false preserves the
+    // "promotion is automatic when detection succeeds" policy)
+    let force_tet_default = require_default(template, "force_tet");
+    match &force_tet_default.kind {
+        CompiledExprKind::Literal(Value::Bool(v)) => assert!(
+            !v,
+            "force_tet default should be false, got: {}",
+            v
+        ),
+        other => panic!(
+            "force_tet default should be Literal(Value::Bool(false)), got: {:?}",
+            other
+        ),
+    }
+
+    // require_hex_wedge = false (PRD docs/prds/v0_3/hex-wedge-meshing.md task #9,
+    // §"Two opposing escape hatches"; default false preserves the
+    // "promotion is automatic when detection succeeds" policy)
+    let require_hex_wedge_default = require_default(template, "require_hex_wedge");
+    match &require_hex_wedge_default.kind {
+        CompiledExprKind::Literal(Value::Bool(v)) => assert!(
+            !v,
+            "require_hex_wedge default should be false, got: {}",
+            v
+        ),
+        other => panic!(
+            "require_hex_wedge default should be Literal(Value::Bool(false)), got: {:?}",
+            other
+        ),
+    }
 }
 
 // ─── step-5 (shell params): ElasticOptions shell defaults ────────────────────
@@ -666,6 +708,87 @@ fn elastic_options_constrains_shell_threshold_below_one() {
     );
 }
 
+// ─── task-2990: ElasticOptions force_tet / require_hex_wedge mutual-exclusion ──
+
+/// `ElasticOptions` must declare a mutual-exclusion constraint preventing
+/// `force_tet` and `require_hex_wedge` from both being `true`:
+///
+///   constraint !(force_tet && require_hex_wedge)
+///
+/// `force_tet` and `require_hex_wedge` are opposing escape hatches (PRD
+/// `docs/prds/v0_3/hex-wedge-meshing.md` task #9, §"Two opposing escape
+/// hatches"): `force_tet` disables hex/wedge promotion entirely; `require_hex_wedge`
+/// upgrades any tet fall-back to a hard error. Setting both `true` is a
+/// contradiction — the constraint flags it as a validation error at construction
+/// time, following the task-2544 convention: "the contract in production code is
+/// made explicit rather than relying solely on test coverage."
+///
+/// Both the **operator chain** (UnOp::Not over BinOp::And) and the **operand
+/// identity** (each child of the And must be a bare `CompiledExprKind::ValueRef`
+/// — no UnOp/BinOp wrapping) are pinned to close two regression windows:
+///   - a swap to `!(force_tet || require_hex_wedge)` (wrong semantics: would
+///     reject the legal "exactly one true" state) would pass on a name-and-op
+///     check alone;
+///   - a regression to `!(!force_tet && !require_hex_wedge)` (semantically
+///     `force_tet || require_hex_wedge`, same wrong semantics one negation
+///     deeper) would pass a `collect_value_ref_members` union check because
+///     that helper recurses into UnOp — direct ValueRef matching rejects it.
+///
+/// The test counts exactly ONE such constraint (`.filter(...).count() == 1`)
+/// rather than using `.any(...)` so a future duplicate addition is also caught.
+#[test]
+fn elastic_options_force_tet_and_require_hex_wedge_mutually_exclusive_constraint() {
+    let template = find_structure("ElasticOptions");
+
+    let count = template
+        .constraints
+        .iter()
+        .filter(|c| {
+            // Outer expression must be `!<operand>` (UnOp::Not).
+            let operand = match &c.expr.kind {
+                CompiledExprKind::UnOp { op, operand } if *op == UnOp::Not => operand,
+                _ => return false,
+            };
+            // Inner expression must be `<left> && <right>` (BinOp::And).
+            let (left, right) = match &operand.kind {
+                CompiledExprKind::BinOp { op, left, right } if *op == BinOp::And => {
+                    (left.as_ref(), right.as_ref())
+                }
+                _ => return false,
+            };
+            // Each child of the And must be a direct ValueRef — no UnOp/BinOp
+            // wrapping — so that `!(!force_tet && !require_hex_wedge)` is
+            // rejected. Either operand order is accepted (AST does not
+            // normalize commutative &&).
+            let left_name = match &left.kind {
+                CompiledExprKind::ValueRef(cell_id) => cell_id.member.as_str(),
+                _ => return false,
+            };
+            let right_name = match &right.kind {
+                CompiledExprKind::ValueRef(cell_id) => cell_id.member.as_str(),
+                _ => return false,
+            };
+            matches!(
+                (left_name, right_name),
+                ("force_tet", "require_hex_wedge") | ("require_hex_wedge", "force_tet")
+            )
+        })
+        .count();
+
+    assert_eq!(
+        count,
+        1,
+        "ElasticOptions should declare exactly 1 `constraint !(force_tet && require_hex_wedge)`; \
+         got {} matching constraints (full constraint list: {:?})",
+        count,
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ─── task-3044: ElasticResult non-negativity constraints ─────────────────────
 
 /// `ElasticResult` must declare non-negativity constraints on `iterations` and
@@ -734,20 +857,32 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 // ─── step-11: ElasticResult param shape ──────────────────────────────────────
 
 /// `ElasticResult` is the FEA solver-output container. It must declare
-/// exactly five params with the canonical names and types:
+/// exactly six params with the canonical names and types:
 ///
 ///   - `displacement  : Real`     (Real placeholder for Field<Point3<Length>, Vector3<Length>>)
 ///   - `stress        : Real`     (Real placeholder for Field<Point3<Length>, Tensor<2,3,Pressure>>)
+///   - `frame         : Real`     (Real placeholder for Field<Point3<Length>, Matrix<3,3,Real>>;
+///     per-element local-to-global rotation; T16)
 ///   - `max_von_mises : Pressure`
 ///   - `converged     : Bool`
 ///   - `iterations    : Int`
 ///
-/// `displacement` and `stress` use `Real` placeholders pending Field<X,Y>
-/// support in `param` positions (see plan.json design decision). The runtime
-/// FEA solver (PRD task #16) populates these as Field-typed Maps regardless
-/// of the static `param` annotation. This test pins the placeholder type so
-/// a future Field<X,Y> migration becomes a deliberate update rather than a
-/// silent type drift.
+/// `displacement`, `stress`, and `frame` use `Real` placeholders pending
+/// Field<X,Y> support in `param` positions (see the TODO(field-in-param,
+/// task #3117) block in `solver_elastic.ri`). The runtime FEA solver (PRD
+/// task #16) populates these as Field-typed Maps regardless of the static
+/// `param` annotation. This test pins the placeholder types so a future
+/// Field<X,Y> migration becomes a deliberate update rather than silent drift.
+///
+/// `frame` is the per-element local-to-global rotation
+/// (`Field<Point3<Length>, Matrix<3,3,Real>>` at runtime):
+///   - For tet results the engine sets `frame = Value::Undef` (tet stress is
+///     already in the global Cartesian frame; no per-element local frame).
+///   - For shell results the engine populates the per-element MITC3+ local
+///     frame from the mid-surface mesher.
+///
+/// PRD reference: docs/prds/v0_4/structural-analysis-shells.md §
+///     "Stress through thickness".
 #[test]
 fn elastic_result_struct_has_correct_param_shape() {
     let template = find_structure("ElasticResult");
@@ -756,14 +891,16 @@ fn elastic_result_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        5,
-        "ElasticResult should have exactly 5 param cells, got: {:?}",
+        6,
+        "ElasticResult should have exactly 6 param cells \
+         (displacement, stress, frame, max_von_mises, converged, iterations), got: {:?}",
         names
     );
 
     let expected: &[(&str, Type)] = &[
         ("displacement", Type::Real),
         ("stress", Type::Real),
+        ("frame", Type::Real),
         (
             "max_von_mises",
             Type::Scalar {
@@ -787,6 +924,71 @@ fn elastic_result_struct_has_correct_param_shape() {
         assert_eq!(
             cell.cell_type, *expected_ty,
             "ElasticResult.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
+
+// ─── T16 step-1: ShellStress struct param shape ──────────────────────────────
+
+/// `ShellStress` is the through-thickness stress container for shell elements
+/// (PRD task T16, `docs/prds/v0_4/structural-analysis-shells.md` §
+/// "Stress through thickness"). It must declare exactly three params:
+///
+///   - `top    : Real`   (top-surface stress layer)
+///   - `mid    : Real`   (mid-surface stress layer)
+///   - `bottom : Real`   (bottom-surface stress layer)
+///
+/// All three are declared as `Real` placeholders for
+/// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` at runtime, mirroring the
+/// existing `ElasticResult.stress` placeholder convention. The Real placeholder
+/// lets the runtime solver populate the actual Field-typed values regardless of
+/// the static `param` annotation; the TODO(field-in-param, task #3117) block
+/// in `solver_elastic.ri` enumerates these three slots alongside `displacement`
+/// and `stress` for the future migration pass. The `ShellStress` structure has
+/// no defaults and no constraints — it is a data-only output container
+/// analogous to `ElasticResult` (no user-configurable knobs).
+///
+/// For tet results the engine populates all three channels with the same field
+/// (no through-thickness variation); for shell results the MITC3+ kernel
+/// produces distinct top/mid/bottom integration-point stress distributions.
+///
+/// Rust-side sibling: `crates/reify-solver-elastic/src/shell_result.rs::ShellStress`.
+/// Both definitions must stay shape-aligned (top/mid/bottom only); a parity
+/// cross-check will be added in engine-integration tasks T18-T20 when both
+/// sides are actually consumed together.
+#[test]
+fn shell_stress_struct_has_top_mid_bottom_real_params() {
+    let template = find_structure("ShellStress");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        3,
+        "ShellStress should have exactly 3 param cells (top, mid, bottom), got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("top", Type::Real),
+        ("mid", Type::Real),
+        ("bottom", Type::Real),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "ShellStress missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ShellStress.{} should be {:?}, got {:?}",
             member, expected_ty, cell.cell_type
         );
     }

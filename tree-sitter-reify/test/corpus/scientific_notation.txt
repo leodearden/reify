@@ -1,0 +1,189 @@
+================================================================================
+scientific notation: negative exponent (1e-6)
+================================================================================
+
+structure S {
+  let x: Real = 1e-6
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (number_literal))))
+
+================================================================================
+scientific notation: uppercase E (1E-6)
+================================================================================
+
+structure S {
+  let x: Real = 1E-6
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (number_literal))))
+
+================================================================================
+scientific notation: positive exponent (1e+6)
+================================================================================
+
+structure S {
+  let x: Real = 1e+6
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (number_literal))))
+
+================================================================================
+scientific notation: bare positive exponent (1e6)
+================================================================================
+
+structure S {
+  let x: Real = 1e6
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (number_literal))))
+
+================================================================================
+scientific notation: decimal mantissa (1.5e2)
+================================================================================
+
+structure S {
+  let x: Real = 1.5e2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (number_literal))))
+
+================================================================================
+scientific notation: large negative exponent (1.0e-300)
+================================================================================
+
+structure S {
+  let x: Real = 1.0e-300
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (number_literal))))
+
+================================================================================
+scientific notation: zero exponent (1e0)
+================================================================================
+
+structure S {
+  let x: Real = 1e0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (number_literal))))
+
+================================================================================
+preserved quantity literal: 5mm
+================================================================================
+
+structure S {
+  let w = 5mm
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit)))))
+
+================================================================================
+hybrid scientific quantity: 5e6mm
+================================================================================
+
+structure S {
+  let x = 5e6mm
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit)))))
+
+================================================================================
+scientific notation in binary expression (1e-6 + 2e-6)
+================================================================================
+
+structure S {
+  let x = 1e-6 + 2e-6
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (number_literal)
+        right: (number_literal)))))

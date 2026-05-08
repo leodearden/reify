@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { viridisLut, magmaLut, rainbowLut, applyColormap, bakeColours, type Range } from '../../viewport/colormap';
 
 // ---------------------------------------------------------------------------
@@ -389,26 +389,27 @@ describe('bakeColours', () => {
 // Step 9 — barrel-export wiring through gui/src/viewport/index.ts
 // ---------------------------------------------------------------------------
 describe('barrel export wiring (viewport/index)', () => {
-  // The dynamic `import('../../viewport/index')` cold-loads a large module
-  // graph (~2.3 s in isolation). Under the full suite's concurrent load it
-  // can push past vitest's default 5 000 ms test timeout, so each barrel
-  // test gets an explicit 15 000 ms allowance. Once the first test resolves
-  // the import the module cache makes subsequent loads near-instant, but the
-  // override is applied uniformly to keep the tests robust to scheduling
-  // order (steward esc-3061-3).
-  it('applyColormap is re-exported from the viewport barrel', async () => {
-    const barrel = await import('../../viewport/index');
+  // The first cold import of the barrel triggers Solid JSX transformation of
+  // Viewport.tsx → FeaModeToolbar.tsx (added in task 2961) and a ~2.3 s
+  // module graph load. Global testTimeout (15 000 ms) and hookTimeout
+  // (30 000 ms) in gui/vitest.config.ts provide the necessary headroom —
+  // per-test overrides are no longer needed (task 3185 consolidation).
+  type BarrelModule = typeof import('../../viewport/index');
+  let barrel: BarrelModule;
+  beforeAll(async () => {
+    barrel = await import('../../viewport/index');
+  });
+
+  it('applyColormap is re-exported from the viewport barrel', () => {
     expect(typeof barrel.applyColormap).toBe('function');
-  }, 15_000);
+  });
 
-  it('bakeColours is re-exported from the viewport barrel', async () => {
-    const barrel = await import('../../viewport/index');
+  it('bakeColours is re-exported from the viewport barrel', () => {
     expect(typeof barrel.bakeColours).toBe('function');
-  }, 15_000);
+  });
 
-  it('applyColormap returns a proper 3-element Array for all palettes and range modes', async () => {
-    const barrel = await import('../../viewport/index');
-    const r: import('../../viewport/colormap').Range = { mode: 'fixed', min: 0, max: 1 };
+  it('applyColormap returns a proper 3-element Array for all palettes and range modes', () => {
+    const r: Range = { mode: 'fixed', min: 0, max: 1 };
 
     // All three palettes dispatch through the barrel correctly.
     for (const p of ['viridis', 'magma', 'rainbow'] as const) {
@@ -431,5 +432,5 @@ describe('barrel export wiring (viewport/index)', () => {
     const opts: import('../../viewport/colormap').ColormapOptions = { nanColor: [0, 0, 1] };
     const nanResult = barrel.applyColormap(NaN, r, 'viridis', opts);
     expect(nanResult).toEqual([0, 0, 1]);
-  }, 15_000);
+  });
 });

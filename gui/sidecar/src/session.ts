@@ -11,6 +11,12 @@ export interface SessionConfig {
 }
 
 /**
+ * Diagnostic log prefix used by the proc.on('error') handler for non-ABORT spawn errors.
+ * Exported so tests can reference it without hardcoding the string literal.
+ */
+export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
+
+/**
  * Manages a Claude Code SDK session, dispatching inbound messages
  * and emitting outbound messages via the onOutput callback.
  *
@@ -32,6 +38,11 @@ export class SidecarSession {
 
   /** Called when the session produces an outbound message. */
   onOutput: (msg: OutboundMessage) => void = () => {};
+
+  /** Returns true while a handleSendMessage invocation is in-flight. Exposed for tests. */
+  isInvocationActive(): boolean {
+    return this.abortController !== null;
+  }
 
   constructor(config: SessionConfig) {
     this.config = config;
@@ -157,6 +168,28 @@ export class SidecarSession {
       cwd: this.config.workingDirectory,
       signal: this.abortController?.signal,
       stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    // Required: 'error' listener on the ChildProcess itself (distinct from proc.stdin?.on('error')).
+    //
+    // When the spawn `signal` aborts (timeout setTimeout → abortController.abort('timeout'),
+    // or user handleAbort), Node's abortChildProcess calls child.emit('error', err) with
+    // err.code === 'ABORT_ERR' BEFORE the 'close' event (node:child_process abortChildProcess).
+    // Per Node's EventEmitter contract, an unlistened-to 'error' event is rethrown via
+    // `process.nextTick(() => { throw err })`, killing the entire sidecar process.
+    //
+    // ABORT_ERR is benign — it is the deliberate signal we caused. The close-path's exitCode
+    // check (see proc.on('close', ...) below) plus emitAbortOrDone already produce the correct
+    // outbound (timeout error or done). Swallow ABORT_ERR silently to avoid double-reporting.
+    //
+    // Other errors (ENOENT, EACCES — spawn-time failures before a 'close' is guaranteed) are
+    // logged via console.error for diagnosability. The close-path exit code remains the
+    // authoritative failure signal for outbound messages; do NOT emit an extra outbound here.
+    // Mirrors the orphan-stream-error convention used by proc.stdin?.on('error', ...) below.
+    proc.on('error', (err: Error & { code?: string }) => {
+      if (err.code !== 'ABORT_ERR') {
+        console.error(SPAWN_ERROR_LOG_PREFIX, err);
+      }
     });
 
     // Attach an 'error' listener so an unhandled stream error cannot crash the sidecar process.

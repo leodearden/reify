@@ -6,15 +6,18 @@ members = [
     "crates/reify-syntax",
     "crates/reify-compiler",
     "crates/reify-eval",
+    "crates/reify-mesh-morph",
     "crates/reify-constraints",
     "crates/reify-doc",
     "crates/reify-doc-build",
     "crates/reify-geometry",
     "crates/reify-kernel-fidget",
+    "crates/reify-kernel-gmsh",
     "crates/reify-kernel-manifold",
     "crates/reify-kernel-occt",
     "crates/reify-kernel-openvdb",
     "crates/reify-solver-elastic",
+    "crates/reify-shell-extract",
     "crates/reify-config",
     "crates/reify-runtime",
     "crates/reify-stdlib",
@@ -37,15 +40,18 @@ reify-expr = { path = "crates/reify-expr" }
 reify-syntax = { path = "crates/reify-syntax" }
 reify-compiler = { path = "crates/reify-compiler" }
 reify-eval = { path = "crates/reify-eval" }
+reify-mesh-morph = { path = "crates/reify-mesh-morph" }
 reify-constraints = { path = "crates/reify-constraints" }
 reify-doc = { path = "crates/reify-doc" }
 reify-doc-build = { path = "crates/reify-doc-build" }
 reify-geometry = { path = "crates/reify-geometry" }
 reify-kernel-fidget = { path = "crates/reify-kernel-fidget" }
+reify-kernel-gmsh = { path = "crates/reify-kernel-gmsh" }
 reify-kernel-manifold = { path = "crates/reify-kernel-manifold" }
 reify-kernel-occt = { path = "crates/reify-kernel-occt" }
 reify-kernel-openvdb = { path = "crates/reify-kernel-openvdb" }
 reify-solver-elastic = { path = "crates/reify-solver-elastic" }
+reify-shell-extract = { path = "crates/reify-shell-extract" }
 reify-config = { path = "crates/reify-config" }
 reify-runtime = { path = "crates/reify-runtime" }
 reify-stdlib = { path = "crates/reify-stdlib" }
@@ -54,6 +60,9 @@ reify-mcp = { path = "crates/reify-mcp" }
 reify-test-support = { path = "crates/reify-test-support" }
 
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+bincode = "=1.3" # wire-format pin: see ELASTIC_RESULT_FORMAT_VERSION docs; bumping minor requires FORMAT_VERSION bump
+bytemuck = "1"
 
 im = "15"
 indexmap = "2"
@@ -74,8 +83,17 @@ tempfile = "3"
 
 toml = "0.8"
 
+zstd = "0.13"
+
 tree-sitter = "0.24"
 tree-sitter-language = "0.1"
 tree-sitter-reify = { path = "tree-sitter-reify" }
 
 tracing = "0.1"
+
+# Sparse linear algebra for FEA assembly + CG solver pipeline
+# (PRD docs/prds/v0_3/structural-analysis-fea.md task #9). We disable
+# the default `rayon` feature because the project uses `std::thread::scope`
+# for ad-hoc parallelism (matches reify-kernel-occt and reify-test-support);
+# `npy`, `rand`, and `linalg` are unused by the assembly primitive.
+faer = { version = "0.24", default-features = false, features = ["std", "sparse"] }

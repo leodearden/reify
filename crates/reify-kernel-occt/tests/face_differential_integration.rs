@@ -47,29 +47,6 @@ fn cylinder_kernel(radius: f64, height: f64) -> (OcctKernel, GeometryHandleId) {
     (kernel, handle.id)
 }
 
-/// Parse all three components out of a `FaceNormal` JSON-encoded `Value::String`
-/// via `serde_json` — robust to key-ordering / whitespace / float-format
-/// changes. Today's format is `{"x":<f>,"y":<f>,"z":<f>}`.
-fn parse_face_normal(kernel: &OcctKernel, face_id: GeometryHandleId) -> [f64; 3] {
-    match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
-        Ok(Value::String(s)) => {
-            let v: serde_json::Value = serde_json::from_str(&s)
-                .unwrap_or_else(|e| panic!("FaceNormal JSON parse failed: {e}; raw = {s:?}"));
-            let get = |k: &str| -> f64 {
-                v.get(k).and_then(|x| x.as_f64()).unwrap_or_else(|| {
-                    panic!("FaceNormal JSON missing or non-numeric '{k}': {s:?}")
-                })
-            };
-            [get("x"), get("y"), get("z")]
-        }
-        other => panic!("FaceNormal returned unexpected value: {other:?}"),
-    }
-}
-
-/// Z-component of `FaceNormal`. Convenience for the cylinder cap/side filter.
-fn parse_face_normal_z(kernel: &OcctKernel, face_id: GeometryHandleId) -> f64 {
-    parse_face_normal(kernel, face_id)[2]
-}
 
 // ---------------------------------------------------------------------------
 // surface_normal_at — happy-path: sphere
@@ -130,7 +107,13 @@ fn surface_normal_at_on_cylinder_side_face_is_radial_perpendicular_to_z() {
     let side_face = faces
         .iter()
         .copied()
-        .find(|&f| parse_face_normal_z(&kernel, f).abs() < 0.5)
+        .find(|&f| {
+            kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("FaceNormal should succeed for cylinder face")[2]
+                .abs()
+                < 0.5
+        })
         .expect("cylinder should have a curved side face with |n_z| < 0.5");
 
     // At (u=π/2, v=5): OCCT cylinder parametrization P(u,v) = (r·cos u, r·sin u, v).
@@ -194,6 +177,85 @@ fn surface_normal_at_non_face_shape_returns_query_failed_with_not_a_face() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// face_outward_unit_normal_for_test — typed centroid normal
+// ---------------------------------------------------------------------------
+
+/// `face_outward_unit_normal_for_test` returns a unit outward normal as a
+/// typed `[f64; 3]` and agrees numerically with `kernel.query(FaceNormal)`.
+///
+/// Cross-check assertion (c) is the contract that the typed test helper
+/// does not drift from the JSON-encoded production query path. After this
+/// test, the `serde_json` dependency disappears from every other test in
+/// this file (see step-5's removal of `parse_face_normal{,_z}`).
+#[test]
+fn face_outward_unit_normal_for_test_returns_unit_outward_normal_for_sphere_face() {
+    let (mut kernel, sphere_id) = sphere_kernel(5.0);
+    let faces = kernel
+        .extract_faces(sphere_id)
+        .expect("extract_faces should succeed for sphere");
+    let face = faces[0];
+
+    let n = kernel
+        .face_outward_unit_normal_for_test(face)
+        .expect("face_outward_unit_normal_for_test should succeed for sphere face");
+
+    // (a) Result is [f64; 3] — implied by the type signature; no runtime check.
+
+    // (b) Unit length.
+    let mag_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+    assert!(
+        (mag_sq - 1.0).abs() < 1e-9,
+        "face_outward_unit_normal_for_test sphere: |n|² = {mag_sq}, expected 1.0"
+    );
+
+    // (c) Agrees with JSON-encoded query path within float tolerance.
+    let json = match kernel.query(&GeometryQuery::FaceNormal(face)) {
+        Ok(Value::String(s)) => s,
+        other => panic!("FaceNormal returned unexpected value: {other:?}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&json)
+        .unwrap_or_else(|e| panic!("FaceNormal JSON parse failed: {e}; raw = {json:?}"));
+    let from_json = [
+        v["x"].as_f64().expect("FaceNormal JSON missing 'x'"),
+        v["y"].as_f64().expect("FaceNormal JSON missing 'y'"),
+        v["z"].as_f64().expect("FaceNormal JSON missing 'z'"),
+    ];
+    for i in 0..3 {
+        assert!(
+            (n[i] - from_json[i]).abs() < 1e-9,
+            "typed helper component {i} = {} disagrees with JSON-encoded path = {}",
+            n[i],
+            from_json[i]
+        );
+    }
+}
+
+#[test]
+fn face_outward_unit_normal_for_test_unknown_handle_returns_invalid_handle() {
+    let (kernel, _) = sphere_kernel(5.0);
+    let unknown = GeometryHandleId(9999);
+    match kernel.face_outward_unit_normal_for_test(unknown) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
+}
+
+#[test]
+fn face_outward_unit_normal_for_test_non_face_shape_returns_query_failed() {
+    let (kernel, cyl_id) = cylinder_kernel(5.0, 10.0);
+    // cyl_id is the solid handle, not a face.
+    match kernel.face_outward_unit_normal_for_test(cyl_id) {
+        Err(QueryError::QueryFailed(_)) => {}
+        other => panic!(
+            "expected Err(QueryFailed(_)) for solid handle, got {other:?}"
+        ),
+    }
+}
+
 /// Cross-API agreement: `surface_normal_at` at the centroid's (u, v) agrees
 /// in direction with `query_face_normal` at the centroid (dot product ≈ 1).
 ///
@@ -214,7 +276,9 @@ fn surface_normal_at_matches_query_face_normal_at_centroid() {
     let face = faces[0];
 
     // FaceNormal returns the outward unit normal at the physical centroid.
-    let qfn = parse_face_normal(&kernel, face);
+    let qfn = kernel
+        .face_outward_unit_normal_for_test(face)
+        .expect("FaceNormal should succeed for sphere face");
 
     // For a sphere, the outward normal direction determines (u, v) uniquely:
     //   normal = (cos(v)·cos(u), cos(v)·sin(u), sin(v))
@@ -365,7 +429,13 @@ fn curvature_at_on_cylinder_side_face_yields_developable_curvature() {
     let side_face = faces
         .iter()
         .copied()
-        .find(|&f| parse_face_normal_z(&kernel, f).abs() < 0.5)
+        .find(|&f| {
+            kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("FaceNormal should succeed for cylinder face")[2]
+                .abs()
+                < 0.5
+        })
         .expect("cylinder should have a curved side face");
 
     let c = kernel
@@ -454,7 +524,13 @@ fn curvature_at_on_cylinder_cap_face_yields_zero_curvature() {
     let cap_face = faces
         .iter()
         .copied()
-        .find(|&f| parse_face_normal_z(&kernel, f).abs() > 0.99)
+        .find(|&f| {
+            kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("FaceNormal should succeed for cylinder face")[2]
+                .abs()
+                > 0.99
+        })
         .expect("cylinder should have a flat cap face");
 
     // The cap is a disk; query at (0, 0) as a stable interior parameter.
@@ -690,7 +766,9 @@ fn curvature_at_on_placed_cylinder_side_axial_principal_direction_aligns_with_ro
         .iter()
         .copied()
         .find(|&f| {
-            let n = parse_face_normal(&kernel, f);
+            let n = kernel
+                .face_outward_unit_normal_for_test(f)
+                .expect("FaceNormal should succeed for placed cylinder face");
             let dot = n[0] * rot_axis[0] + n[1] * rot_axis[1] + n[2] * rot_axis[2];
             dot.abs() < 0.5
         })
@@ -896,6 +974,91 @@ fn curvature_at_on_placed_sphere_principal_directions_perpendicular_to_world_nor
         dot_max_n.abs() < 1e-6,
         "placed sphere dir_max not in tangent plane: dot(dir_max, n) = {dot_max_n}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// NaN / Inf input rejection (validate_uv_finite guard)
+// ---------------------------------------------------------------------------
+
+/// Bad-input matrix shared by both NaN/Inf rejection tests.
+///
+/// Covers each axis individually (NaN-u, NaN-v, +Inf-u, −Inf-v) plus the
+/// "both bad" case (NaN, NaN). The `validate_uv_finite` helper short-circuits
+/// on the first non-finite component, so (NaN, NaN) is redundant from a
+/// *coverage* standpoint but makes the invariant explicit for readers.
+const NON_FINITE_UV: &[(f64, f64)] = &[
+    (f64::NAN, 0.0),
+    (0.0, f64::NAN),
+    (f64::INFINITY, 0.0),
+    (0.0, f64::NEG_INFINITY),
+    (f64::NAN, f64::NAN),
+];
+
+/// `surface_normal_at` rejects non-finite (u, v) inputs with
+/// `QueryError::NonFiniteParameter { u, v }` echoing the bad input.
+///
+/// The guard must fire before the FFI call so that NaN/Inf parametric
+/// coordinates never reach the C++ wrapper. The bad-input cases cover:
+/// NaN-u, NaN-v, +Inf-u, -Inf-v, and both-NaN — see [`NON_FINITE_UV`].
+#[test]
+fn surface_normal_at_rejects_non_finite_uv() {
+    let (mut kernel, sphere_id) = sphere_kernel(5.0);
+    let faces = kernel
+        .extract_faces(sphere_id)
+        .expect("extract_faces should succeed for sphere");
+    let face = faces[0];
+
+    for &(u, v) in NON_FINITE_UV {
+        match kernel.surface_normal_at(face, u, v) {
+            Err(QueryError::NonFiniteParameter { u: eu, v: ev }) => {
+                // Pin that the variant carries the same (u, v) the test passed in.
+                // bit-equality on NaN is false, so use is_nan-aware comparison:
+                let bit_eq = |a: f64, b: f64| (a.is_nan() && b.is_nan()) || a == b;
+                assert!(
+                    bit_eq(eu, u) && bit_eq(ev, v),
+                    "surface_normal_at(u={u}, v={v}): NonFiniteParameter {{ u: {eu}, v: {ev} }} \
+                     did not echo input"
+                );
+            }
+            other => panic!(
+                "surface_normal_at(u={u}, v={v}): expected \
+                 Err(NonFiniteParameter {{ ... }}), got {other:?}"
+            ),
+        }
+    }
+}
+
+/// `curvature_at` rejects non-finite (u, v) inputs with
+/// `QueryError::NonFiniteParameter { u, v }` echoing the bad input.
+///
+/// Mirrors `surface_normal_at_rejects_non_finite_uv` for the `curvature_at`
+/// entrypoint — both share the same `validate_uv_finite` helper.
+#[test]
+fn curvature_at_rejects_non_finite_uv() {
+    let (mut kernel, sphere_id) = sphere_kernel(5.0);
+    let faces = kernel
+        .extract_faces(sphere_id)
+        .expect("extract_faces should succeed for sphere");
+    let face = faces[0];
+
+    for &(u, v) in NON_FINITE_UV {
+        match kernel.curvature_at(face, u, v) {
+            Err(QueryError::NonFiniteParameter { u: eu, v: ev }) => {
+                // Pin that the variant carries the same (u, v) the test passed in.
+                // bit-equality on NaN is false, so use is_nan-aware comparison:
+                let bit_eq = |a: f64, b: f64| (a.is_nan() && b.is_nan()) || a == b;
+                assert!(
+                    bit_eq(eu, u) && bit_eq(ev, v),
+                    "curvature_at(u={u}, v={v}): NonFiniteParameter {{ u: {eu}, v: {ev} }} \
+                     did not echo input"
+                );
+            }
+            other => panic!(
+                "curvature_at(u={u}, v={v}): expected \
+                 Err(NonFiniteParameter {{ ... }}), got {other:?}"
+            ),
+        }
+    }
 }
 
 /// Cross-API agreement on a placed (non-identity-location) REVERSED face.

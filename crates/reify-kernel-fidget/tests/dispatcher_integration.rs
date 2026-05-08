@@ -28,7 +28,10 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
-use reify_types::{CapabilityDescriptor, Operation, ReprKind};
+use reify_kernel_fidget::FidgetKernel;
+use reify_types::{
+    CapabilityDescriptor, GeometryKernel, GeometryOp, Operation, ReprKind, Value,
+};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"fidget"`
 /// when the fidget adapter is linked in (i.e. the `inventory::submit!` in
@@ -109,4 +112,116 @@ fn fidget_dispatches_for_sdf_boolean_when_only_kernel() {
          got conversions = {:?}",
         plan.conversions,
     );
+}
+
+/// End-to-end pin proving done-criterion #4: a `field def`-shaped SDF
+/// realization flows dispatcher → fidget kernel → JIT eval without ever
+/// touching OCCT meshing.
+///
+/// The factory call proves the registry's inventory submission produces
+/// a working `Box<dyn GeometryKernel>`. We additionally drive a fresh
+/// `FidgetKernel` directly for the eval steps (the trait object alone is
+/// sufficient for execute, but `evaluate_sdf_at` is an inherent method
+/// not on the trait).
+#[test]
+fn fidget_dispatcher_to_kernel_chain_realizes_sdf_without_occt() {
+    // 1. Pull the registry and find the fidget entry.
+    let reg = kernel_registry::registry();
+    let fidget_entry = reg
+        .get("fidget")
+        .expect("registry must contain \"fidget\" — see linker-anchor pattern in companion test");
+
+    // 2. The factory must produce a working `Box<dyn GeometryKernel>`.
+    //    Use it to prove the boxed kernel can execute a Sphere op via the
+    //    trait surface — that's the contract the dispatcher relies on.
+    let mut boxed: Box<dyn reify_types::GeometryKernel> = (fidget_entry.factory)();
+    let _sphere_via_factory = boxed
+        .execute(&GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        })
+        .expect("execute(Sphere) on the boxed registry-factory kernel must succeed");
+
+    // 3. Re-pin the dispatcher selection: with `{Sdf}` available, fidget
+    //    wins (BooleanUnion, Sdf) zero-conversion. This is the precondition
+    //    for the chain — the test above proves it; we re-assert it locally
+    //    so a regression here does not silently fall through.
+    let owned: BTreeMap<String, CapabilityDescriptor> = reg
+        .iter()
+        .map(|(k, entry)| (k.clone(), (entry.descriptor)()))
+        .collect();
+    let view: BTreeMap<String, &CapabilityDescriptor> =
+        owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+    let available: HashSet<ReprKind> = HashSet::from([ReprKind::Sdf]);
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Sdf, &available)
+        .expect("dispatch must succeed for (BooleanUnion, Sdf)");
+    assert_eq!(plan.kernel, "fidget");
+    assert!(plan.conversions.is_empty());
+
+    // 4. Drive a fresh kernel for the eval chain. (The boxed factory kernel
+    //    above proved the registry entry works; here we use FidgetKernel
+    //    directly because evaluate_sdf_at is an inherent method, not part
+    //    of the dyn-safe trait.)
+    let mut kernel = FidgetKernel::new();
+
+    // Build two boxes with different proportions, both centred at the origin.
+    // Choosing different shapes (cube + long thin x-bar) means the union's
+    // sample points fall in different operands — the test actually exercises
+    // `min` across non-trivial geometry rather than degenerating into "the
+    // larger primitive always wins". Translate is not in the kernel's op
+    // surface yet, so we vary the box dimensions instead of the centres.
+    //
+    //   cube:  Box{2, 2, 2}   half-extents (1,    1,    1)
+    //   bar:   Box{4, 0.5, 0.5} half-extents (2,    0.25, 0.25)
+    let cube = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(2.0),
+            height: Value::Real(2.0),
+            depth: Value::Real(2.0),
+        })
+        .expect("Box cube")
+        .id;
+    let bar = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(4.0),
+            height: Value::Real(0.5),
+            depth: Value::Real(0.5),
+        })
+        .expect("Box bar")
+        .id;
+    let union = kernel
+        .execute(&GeometryOp::Union {
+            left: cube,
+            right: bar,
+        })
+        .expect("Union via Tree composition")
+        .id;
+
+    // 5. Evaluate at four sample points where the analytical answer for
+    //    each operand is known and where each operand wins at least once
+    //    so the `min` actually selects between them:
+    //
+    //      (0,   0,   0)  cube=−1,    bar=−0.25  → min = −1   (cube wins, deep interior)
+    //      (1.5, 0,   0)  cube=+0.5,  bar=−0.25  → min = −0.25 (bar wins, x-bar extends past cube face)
+    //      (0,   0.8, 0)  cube=−0.2,  bar=+0.55  → min = −0.2  (cube wins, bar is thin in y)
+    //      (3.0, 0,   0)  cube=+2.0,  bar=+1.0   → min = +1.0  (bar wins outside both, but closer)
+    //
+    //    See `kernel.rs::box_tree` for the SDF formula; manual sanity-check
+    //    in the plan-iteration history. This pins the composition contract
+    //    (Tree::min on two distinct trees) end-to-end through the dispatcher
+    //    → factory → JIT-eval pipeline.
+    let cases: &[(f32, f32, f32, f32)] = &[
+        (0.0, 0.0, 0.0, -1.0),
+        (1.5, 0.0, 0.0, -0.25),
+        (0.0, 0.8, 0.0, -0.2),
+        (3.0, 0.0, 0.0, 1.0),
+    ];
+    for &(x, y, z, expected) in cases {
+        let got = kernel
+            .evaluate_sdf_at(union, x, y, z)
+            .expect("evaluate_sdf_at must succeed on the union handle");
+        assert!(
+            (got - expected).abs() < 1e-5,
+            "union SDF({x},{y},{z}): expected {expected}, got {got}",
+        );
+    }
 }

@@ -4,10 +4,49 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "OpenVDB voxel-Boolean kernel adapter"
+build = "build.rs"
+
+[features]
+# Pure compile-gate: no implicit deps.  Activating this feature causes
+# `inventory::submit!` and `openvdb_factory()` in `src/register.rs` to
+# compile in, registering the OpenVDB kernel in the inventory-driven
+# multi-kernel registry even when `cfg(has_openvdb)` is unset.
+#
+# In production stub builds (no `/opt/reify-deps`, no `stub_register`) the
+# submit is OMITTED — the stub kernel is NOT registered, preventing
+# "openvdb" from silently winning a `(*, Voxel)` lex-min routing it cannot
+# actually execute.
+#
+# For integration test binaries in `tests/` (separate compilation units that
+# do NOT inherit `cfg(test)` from the parent crate) this feature is activated
+# via the self-dev-dep below — mirroring the pattern at:
+#   crates/reify-kernel-manifold/Cargo.toml:27
+#   crates/reify-eval/Cargo.toml      (`test-instrumentation`)
+#   crates/reify-kernel-occt/Cargo.toml (`test-fixtures`)
+#
+# When `has_openvdb` is set (real FFI build), the submit fires regardless of
+# this feature — the gate is `cfg(any(has_openvdb, feature = "stub_register"))`.
+stub_register = []
+
+# Pure compile-gate for integration-test-only entry points such as
+# `OpenVdbKernel::open_vdb_grid_for_test`. Hidden in production builds so
+# the test-only API surface does not leak into the public crate. Mirrors
+# the pattern at `crates/reify-kernel-occt/Cargo.toml`'s `test-fixtures`
+# (which gates the OCCT `store_*_for_test` family).
+#
+# Activated for integration tests via the self-dev-dep below — `cfg(test)`
+# alone is not sufficient because `tests/*.rs` are separate compilation
+# units that do NOT inherit the parent crate's `cfg(test)`.
+test-fixtures = []
 
 [dependencies]
 reify-types.workspace = true
 inventory.workspace = true
+cxx = "1"
+
+[build-dependencies]
+cxx-build = "1"
+cc = "1"
 
 # `reify-eval` is a dev-dependency (not a normal dep) for the same reason the
 # OCCT, Manifold, and Fidget adapters exclude it from production deps: adapter
@@ -19,4 +58,15 @@ inventory.workspace = true
 # the production library stays free of the eval dependency.
 [dev-dependencies]
 reify-eval.workspace = true
+reify-expr.workspace = true
 reify-test-support.workspace = true
+tempfile.workspace = true
+# Self-dev-dep: activates `stub_register` AND `test-fixtures` for all
+# integration test binaries in `tests/` (which are separate compilation
+# units — they do NOT inherit `cfg(test)` from the parent crate, so
+# `cfg(test)` alone cannot reach the gated `inventory::submit!` or
+# `open_vdb_grid_for_test`).  Same pattern used by:
+#   crates/reify-kernel-manifold/Cargo.toml:51
+#   crates/reify-eval/Cargo.toml:21         (test-instrumentation)
+#   crates/reify-kernel-occt/Cargo.toml:27  (test-fixtures)
+reify-kernel-openvdb = { path = ".", features = ["stub_register", "test-fixtures"] }

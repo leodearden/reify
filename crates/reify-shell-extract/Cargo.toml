@@ -1,0 +1,10 @@
+[package]
+name = "reify-shell-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Voxel-medial mid-surface extraction for v0.4 shell-element FEA (PRD docs/prds/v0_4/structural-analysis-shells.md)"
+
+[dependencies]
+reify-types.workspace = true
+rustc-hash = "2"

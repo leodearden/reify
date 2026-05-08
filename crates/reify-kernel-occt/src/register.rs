@@ -60,6 +60,11 @@ use reify_types::KernelRegistration;
 /// `(Op, BRep)` pair, the alphabetically earlier kernel wins per the
 /// dispatcher's tie-break rule.
 ///
+/// Must equal `KernelId::Occt.to_string()` (`"occt"`) so the project-pin
+/// lookup in `reify-config` matches the registered adapter at runtime.
+/// Enforced by
+/// `crates/reify-config/tests/kernel_name_consistency.rs::occt_kernel_name_const_matches_kernel_id_display`.
+///
 /// # Stub-mode behavior
 ///
 /// In stub mode (no `cfg(has_occt)`), no `inventory::submit!` fires; check

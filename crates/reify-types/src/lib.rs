@@ -16,6 +16,7 @@ pub mod identity;
 pub mod node_traits;
 pub mod persistent;
 pub mod provenance;
+pub mod sampled;
 pub mod source_location;
 pub mod spanned_ident;
 pub mod traits;
@@ -48,13 +49,14 @@ pub use expr::{
 };
 pub use geometry::{
     AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, BooleanOpParentsError,
-    CapKind, CapabilityDescriptor, DeletedRecord, ExportError, ExportFormat,
-    FeatureId,
+    CapKind, CapabilityDescriptor, DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError,
+    ExportFormat, FaceSurfaceKind, FeatureId,
     FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook, KernelAttributeOutcome,
     KernelRegistration, LoftOpHistoryRecords, Mesh,
     ModEntry, Operation, QueryError, BRepKind, ReprKind, Role, StepKind, SweepOpHistoryRecords,
-    TessError, TopologyAttribute, TopologyAttributeTable, debug_assert_query_many_invariant,
+    TessError, TopologyAttribute, TopologyAttributeTable, VolumeMesh,
+    debug_assert_query_many_invariant,
 };
 pub use hash::ContentHash;
 pub use identity::*;

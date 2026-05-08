@@ -22,11 +22,12 @@ pub struct TetP2;
 /// `(a,a,a), (b,a,a), (a,b,a), (a,a,b)` and equal weights `1/24`. The
 /// total weight `4/24 = 1/6` matches the reference-tet volume.
 ///
-/// Hard-coded to 17 significant figures rather than computed at runtime:
-/// `f64::sqrt` is not `const fn`, and a `OnceLock` for a 4-entry static
-/// slice would be needless ceremony. The literals match
-/// `(5 ± k √5) / 20` rounded to nearest representable `f64` (within 1 ulp
-/// of `5.0_f64.sqrt()` evaluated at runtime — see the
+/// Written as literals (rather than via runtime `sqrt` + a `OnceLock`) so the
+/// quadrature table is usable in `const` context regardless of MSRV's
+/// `f64::sqrt` const-stability status; a `OnceLock` for a 4-entry static
+/// slice would also be needless ceremony. The literals match
+/// `(5 ± k √5) / 20` rounded to nearest representable `f64` (within 4 ×
+/// `f64::EPSILON` of `(5 ± k √5) / 20` evaluated at runtime — see the
 /// `quad_points_is_four_point_stroud_rule` test).
 ///
 /// Degree-2 is sufficient for stiffness assembly with **straight-edge**
@@ -62,13 +63,16 @@ const TET_P2_QUAD: &[QuadraturePoint] = &[
 /// ordering: bottom-face edges first, then vertical edges to vertex 3).
 /// Both `shape_at` and `shape_grad_at` consult this table so the edge
 /// indexing stays single-sourced.
-pub const EDGES: [(usize, usize); 6] = [
-    (0, 1),
-    (1, 2),
-    (2, 0),
-    (0, 3),
-    (1, 3),
-    (2, 3),
+pub const EDGES: [(usize, usize); 6] = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)];
+
+/// Reference-coordinate gradients of the barycentric coordinates λ.
+/// `∇λ_0 = (-1,-1,-1)` (since `λ_0 = 1-ξ-η-ζ`), `∇λ_1 = e_x`,
+/// `∇λ_2 = e_y`, `∇λ_3 = e_z`.
+const GRAD_LAMBDA: [[f64; 3]; 4] = [
+    [-1.0, -1.0, -1.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
 ];
 
 impl ReferenceElement for TetP2 {
@@ -127,12 +131,6 @@ impl ReferenceElement for TetP2 {
     fn shape_grad_at(&self, coord: ReferenceCoord) -> Vec<[f64; 3]> {
         let ReferenceCoord { xi, eta, zeta } = coord;
         let lambda = [1.0 - xi - eta - zeta, xi, eta, zeta];
-        const GRAD_LAMBDA: [[f64; 3]; 4] = [
-            [-1.0, -1.0, -1.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ];
 
         let mut g = Vec::with_capacity(10);
         // Vertex-node gradients: ∇N_i = (4 λ_i − 1) ∇λ_i.
@@ -201,16 +199,6 @@ mod tests {
         }
     }
 
-    /// Reference-coordinate gradients of the barycentric coordinates λ.
-    /// `∇λ_0 = (-1,-1,-1)` (since `λ_0 = 1-ξ-η-ζ`), `∇λ_1 = e_x`,
-    /// `∇λ_2 = e_y`, `∇λ_3 = e_z`.
-    const GRAD_LAMBDA: [[f64; 3]; 4] = [
-        [-1.0, -1.0, -1.0],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, 1.0],
-    ];
-
     #[test]
     fn shape_grad_at_vertex_nodes_match_chain_rule_at_centroid() {
         // At centroid: λ_i = 1/4 for i=0..3, so 4λ_i − 1 = 0 ⇒ all
@@ -233,8 +221,12 @@ mod tests {
         let lambda_0 = 1.0 - p.xi - p.eta - p.zeta;
         let scalar = 4.0 * lambda_0 - 1.0;
         let g_p = TetP2.shape_grad_at(p);
+        // Hard-coded literal oracle for ∇λ_0 = (-1,-1,-1) so that a typo in
+        // GRAD_LAMBDA[0] is caught rather than silently passed; both sides of
+        // the assertion now reference independent sources of truth.
+        let grad_lambda_0_oracle = [-1.0_f64, -1.0, -1.0];
         for k in 0..3 {
-            let expected = scalar * GRAD_LAMBDA[0][k];
+            let expected = scalar * grad_lambda_0_oracle[k];
             assert!(
                 (g_p[0][k] - expected).abs() < TOL,
                 "∇N_0(p)[{k}] = {} expected {expected}",
@@ -260,10 +252,7 @@ mod tests {
                 }
             }
             for (k, s) in sum.iter().enumerate() {
-                assert!(
-                    s.abs() < TOL,
-                    "Σ_i ∇N_i({p:?})[{k}] = {s}, expected 0",
-                );
+                assert!(s.abs() < TOL, "Σ_i ∇N_i({p:?})[{k}] = {s}, expected 0",);
             }
         }
     }
@@ -302,9 +291,11 @@ mod tests {
         assert!((sum - 1.0).abs() < TOL, "Σ N_i(centroid) = {sum}");
     }
 
-    /// Quadrature tolerance — slightly looser than `TOL` because the
-    /// Stroud constants involve `√5`, which loses a couple of bits of
-    /// precision relative to closed-form rationals.
+    /// Quadrature tolerance for rule-property assertions: per-point weight,
+    /// total-weight sum, Stroud-point multiset match, and monomial-integration
+    /// checks.  The transcription of `TET_P2_STROUD_A`/`B` against the
+    /// canonical runtime formula is verified separately (with a tight 4 × ε
+    /// bound) in `quad_points_is_four_point_stroud_rule`.
     const QUAD_TOL: f64 = 1e-10;
 
     #[test]
@@ -317,10 +308,32 @@ mod tests {
         let sqrt5 = 5.0_f64.sqrt();
         let a = (5.0 - sqrt5) / 20.0;
         let b = (5.0 + 3.0 * sqrt5) / 20.0;
+
+        // Transcription guard: check the hard-coded literals against the
+        // runtime formula with a 4 × ε budget that covers the rounding chain
+        // (sqrt → sub → div).  This is a separate concern from the multiset
+        // check below — it locks the source-comment claim ("within 4 × ε of
+        // (5 ± k √5)/20 at runtime") into CI without coupling to any single bit pattern.
+        assert!(
+            (TET_P2_STROUD_A - a).abs() <= 4.0 * f64::EPSILON,
+            "TET_P2_STROUD_A ({}) is not within 4 × f64::EPSILON of (5-√5)/20 ({})",
+            TET_P2_STROUD_A,
+            a
+        );
+        assert!(
+            (TET_P2_STROUD_B - b).abs() <= 4.0 * f64::EPSILON,
+            "TET_P2_STROUD_B ({}) is not within 4 × f64::EPSILON of (5+3√5)/20 ({})",
+            TET_P2_STROUD_B,
+            b
+        );
+
         let expected_pts = [(a, a, a), (b, a, a), (a, b, a), (a, a, b)];
 
-        // Match each expected point to a quadrature entry (ordering
-        // unspecified — the rule is symmetric, only the multiset matters).
+        // Rule-property check: match each expected point to a quadrature
+        // entry (ordering unspecified — the rule is symmetric, only the
+        // multiset matters).  Uses the loose QUAD_TOL so this check is robust
+        // to re-derivation of the constants via a mathematically equivalent
+        // formula.
         for (xi_e, eta_e, zeta_e) in expected_pts {
             let found = qp.iter().any(|q| {
                 (q.coord.xi - xi_e).abs() < QUAD_TOL
@@ -458,5 +471,21 @@ mod tests {
             }
         }
         assert!((j_p2.det - j_p1.det).abs() < JAC_TOL);
+    }
+
+    /// Exercises the trait-default `jacobian` length precondition via TetP2
+    /// (N_NODES = 10).  Passing P1's 4-vertex layout catches a regression
+    /// where a future P2 `jacobian` override forgets the precondition check.
+    #[test]
+    #[should_panic(expected = "phys_nodes.len() must equal Self::N_NODES")]
+    fn jacobian_panics_on_p1_sized_phys_nodes_for_p2() {
+        // 4 nodes instead of 10 — the canonical P1 reference vertices
+        let phys: &[[f64; 3]] = &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        TetP2.jacobian(phys, ReferenceCoord::new(0.25, 0.25, 0.25));
     }
 }

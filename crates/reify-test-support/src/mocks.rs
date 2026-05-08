@@ -50,10 +50,15 @@ pub fn single_auto_param(cell_id: ValueCellId) -> AutoParam {
 ///    specific `ConstraintNodeId`.
 /// 3. **Default** — `with_default(satisfaction)` is the fallback for ids not
 ///    in the per-id map.
+/// 4. **Call tracking** — `calls()` / `calls_handle()` expose every
+///    `ConstraintNodeId` seen across all `check()` invocations, regardless of
+///    which response channel produced the verdict. Mirrors
+///    `MockOptimizedImpl::calls` / `calls_handle`.
 pub struct MockConstraintChecker {
     results: HashMap<ConstraintNodeId, Satisfaction>,
     default: Satisfaction,
     call_queue: Arc<Mutex<VecDeque<Satisfaction>>>,
+    calls: Arc<Mutex<Vec<ConstraintNodeId>>>,
 }
 
 impl MockConstraintChecker {
@@ -62,6 +67,7 @@ impl MockConstraintChecker {
             results: HashMap::new(),
             default: Satisfaction::Satisfied,
             call_queue: Arc::new(Mutex::new(VecDeque::new())),
+            calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -101,6 +107,33 @@ impl MockConstraintChecker {
         }
         self
     }
+
+    /// Snapshot of every `ConstraintNodeId` this checker has been invoked
+    /// with, in call order. A cloned `Vec` so callers can inspect it without
+    /// holding the internal lock.
+    pub fn calls(&self) -> Vec<ConstraintNodeId> {
+        self.calls
+            .lock()
+            .expect("MockConstraintChecker::calls: mutex poisoned")
+            .clone()
+    }
+
+    /// A clone of the shared call-tracking handle.
+    ///
+    /// Useful when the mock itself has been moved into a
+    /// `Box<dyn ConstraintChecker>` (or passed into a resolver by reference)
+    /// and is no longer reachable by the test after the call. Callers grab a
+    /// handle *before* boxing, then assert against it after the run:
+    ///
+    /// ```ignore
+    /// let mock = MockConstraintChecker::new();
+    /// let calls = mock.calls_handle();
+    /// resolve_auto_type_params_with_backtracking(..., &mock, ...);
+    /// assert_eq!(calls.lock().unwrap().len(), 5);
+    /// ```
+    pub fn calls_handle(&self) -> Arc<Mutex<Vec<ConstraintNodeId>>> {
+        Arc::clone(&self.calls)
+    }
 }
 
 impl Default for MockConstraintChecker {
@@ -122,23 +155,35 @@ impl ConstraintChecker for MockConstraintChecker {
             .expect("MockConstraintChecker::check: mutex poisoned")
             .pop_front();
         if let Some(satisfaction) = queued {
+            let mut calls = self
+                .calls
+                .lock()
+                .expect("MockConstraintChecker::check: mutex poisoned");
             return input
                 .constraints
                 .iter()
-                .map(|(id, _)| ConstraintResult {
-                    id: id.clone(),
-                    satisfaction,
-                    diagnostics: ConstraintDiagnostics::default(),
+                .map(|(id, _)| {
+                    calls.push(id.clone());
+                    ConstraintResult {
+                        id: id.clone(),
+                        satisfaction,
+                        diagnostics: ConstraintDiagnostics::default(),
+                    }
                 })
                 .collect();
         }
 
         // Priority 2 + 3: existing per-id map → default fallback. Unchanged
         // for callers that never populate the queue.
+        let mut calls = self
+            .calls
+            .lock()
+            .expect("MockConstraintChecker::check: mutex poisoned");
         input
             .constraints
             .iter()
             .map(|(id, _)| {
+                calls.push(id.clone());
                 let satisfaction = self.results.get(id).copied().unwrap_or(self.default);
                 ConstraintResult {
                     id: id.clone(),
@@ -446,6 +491,11 @@ enum QueryKey {
         shape: GeometryHandleId,
         face_index: usize,
     },
+    /// AncestorFacesOfEdge keys the handle + 0-based edge index.
+    AncestorFacesOfEdge {
+        shape: GeometryHandleId,
+        edge_index: usize,
+    },
     /// SharedEdges keys the handle + both 0-based face indices.
     SharedEdges {
         shape: GeometryHandleId,
@@ -471,6 +521,43 @@ enum QueryKey {
     EdgeTangent(GeometryHandleId),
     /// FaceNormal keys the (single) face handle.
     FaceNormal(GeometryHandleId),
+    /// FaceSurfaceKind keys the (single) face handle.
+    FaceSurfaceKind(GeometryHandleId),
+    /// EdgeCurveKind keys the (single) edge handle.
+    EdgeCurveKind(GeometryHandleId),
+    /// OwnerBody keys the (single) child sub-handle (the `extract_*`
+    /// product). The stored `Value` should be a `Value::Int` carrying the
+    /// parent body's `GeometryHandleId.0`.
+    OwnerBody(GeometryHandleId),
+    /// ClosestPointOnShape keys the geometry handle + query point (f64 bits
+    /// via `density_bits` so ±0.0 canonicalise and NaN debug-asserts).
+    /// Powers the v0.1 stdlib `closest_point` helper (task 2324).
+    ClosestPointOnShape {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+    },
+    /// PointOnShape keys the geometry handle + query point + tolerance.
+    /// Powers the v0.1 stdlib `on` helper (task 2324). Tolerance is bit-keyed
+    /// so a future explicit-tolerance overload can stage distinct results
+    /// without re-staging the same handle/point pair.
+    PointOnShape {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+        tol_bits: u64,
+    },
+    /// SurfaceAngle keys the two face handles. The angle is unsigned (the
+    /// kernel returns `acos(|n_a · n_b|)`-style absolute-cos), so face_a
+    /// and face_b are pair-canonicalised with `normalize_distance_pair` so
+    /// `(a, b)` and `(b, a)` map to the same key. Powers the v0.1 stdlib
+    /// `angle_between_surfaces` helper (task 2324).
+    SurfaceAngle {
+        face_a: GeometryHandleId,
+        face_b: GeometryHandleId,
+    },
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -527,6 +614,12 @@ impl QueryKey {
                 shape: *shape,
                 face_index: *face_index,
             },
+            GeometryQuery::AncestorFacesOfEdge { shape, edge_index } => {
+                QueryKey::AncestorFacesOfEdge {
+                    shape: *shape,
+                    edge_index: *edge_index,
+                }
+            }
             GeometryQuery::SharedEdges {
                 shape,
                 face_a,
@@ -558,6 +651,46 @@ impl QueryKey {
             GeometryQuery::EdgeLength(id) => QueryKey::EdgeLength(*id),
             GeometryQuery::EdgeTangent(id) => QueryKey::EdgeTangent(*id),
             GeometryQuery::FaceNormal(id) => QueryKey::FaceNormal(*id),
+            // Geometry-kind classification queries from task 2658 (PRD line 78);
+            // hashed by handle alone (no extra params).
+            GeometryQuery::FaceSurfaceKind(id) => QueryKey::FaceSurfaceKind(*id),
+            GeometryQuery::EdgeCurveKind(id) => QueryKey::EdgeCurveKind(*id),
+            // Owner-body provenance from task 2658 (PRD line 81); hashed by
+            // the child sub-handle alone.
+            GeometryQuery::OwnerBody(id) => QueryKey::OwnerBody(*id),
+            // Topology selectors from task 2324 (PRD §3.9). f64 fields hashed
+            // via density_bits for ±0.0 canonicalisation + NaN debug-assert.
+            GeometryQuery::ClosestPointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+            } => QueryKey::ClosestPointOnShape {
+                handle: *handle,
+                px_bits: density_bits(*px),
+                py_bits: density_bits(*py),
+                pz_bits: density_bits(*pz),
+            },
+            GeometryQuery::PointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => QueryKey::PointOnShape {
+                handle: *handle,
+                px_bits: density_bits(*px),
+                py_bits: density_bits(*py),
+                pz_bits: density_bits(*pz),
+                tol_bits: density_bits(*tolerance),
+            },
+            GeometryQuery::SurfaceAngle { face_a, face_b } => {
+                let (lo, hi) = normalize_distance_pair(*face_a, *face_b);
+                QueryKey::SurfaceAngle {
+                    face_a: lo,
+                    face_b: hi,
+                }
+            }
         }
     }
 }
@@ -806,6 +939,215 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a `ClosestPointOnShape` query result for a specific
+    /// (geometry handle, query point) pair.
+    ///
+    /// The `value` should be a `Value::String` containing a JSON-encoded
+    /// `{"x":..,"y":..,"z":..}` Point3, matching the OCCT kernel's wire
+    /// format and consumed by the eval-side dispatcher's
+    /// `parse_xyz_value` round-trip. The point coordinates `[px, py, pz]`
+    /// are routed through `density_bits` for stable hashing.
+    ///
+    /// Powers the v0.1 stdlib `closest_point` helper (task 2324).
+    pub fn with_closest_point_on_shape_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::ClosestPointOnShape {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `PointOnShape` query result for a specific
+    /// (geometry handle, query point, tolerance) triple.
+    ///
+    /// The `value` should be a `Value::Bool`. The `tolerance` is bit-keyed
+    /// (via `density_bits`) so the stub for `on(p, b)` (which the
+    /// dispatcher hard-codes to `1e-7`) is distinguishable from a future
+    /// explicit-tolerance `on(p, b, tol)` overload.
+    ///
+    /// Powers the v0.1 stdlib `on` helper (task 2324).
+    pub fn with_point_on_shape_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        tolerance: f64,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::PointOnShape {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+                tol_bits: density_bits(tolerance),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `SurfaceAngle` query result for a specific face pair.
+    ///
+    /// The `value` should be a `Value::Real(rad)` where `rad ∈ [0, π]`.
+    /// The face pair `(face_a, face_b)` is canonicalised so
+    /// `(a, b)` and `(b, a)` map to the same key, matching the kernel's
+    /// orientation-agnostic absolute-cos convention.
+    ///
+    /// Powers the v0.1 stdlib `angle_between_surfaces` helper (task 2324).
+    pub fn with_surface_angle_result(
+        mut self,
+        face_a: GeometryHandleId,
+        face_b: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        let (lo, hi) = normalize_distance_pair(face_a, face_b);
+        self.typed_queries.insert(
+            QueryKey::SurfaceAngle {
+                face_a: lo,
+                face_b: hi,
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `FaceSurfaceKind` query result for a specific face handle.
+    ///
+    /// The `value` should be a `Value::String` whose payload is one of the
+    /// canonical surface-kind names (`"Plane"`, `"Cylinder"`, `"Cone"`,
+    /// `"Sphere"`, `"Torus"`, `"BezierSurface"`, `"BSplineSurface"`,
+    /// `"OffsetSurface"`, `"Other"`) as documented on
+    /// [`GeometryQuery::FaceSurfaceKind`]. Decoded by the
+    /// `selector_vocabulary_v2::faces_by_surface_kind` selector via
+    /// [`reify_types::FaceSurfaceKind`]'s `TryFrom<&str>` impl.
+    pub fn with_face_surface_kind_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::FaceSurfaceKind(handle), value);
+        self
+    }
+
+    /// Configure an `EdgeCurveKind` query result for a specific edge handle.
+    ///
+    /// The `value` should be a `Value::String` whose payload is one of the
+    /// canonical curve-kind names (`"Line"`, `"Circle"`, `"Ellipse"`,
+    /// `"Hyperbola"`, `"Parabola"`, `"BezierCurve"`, `"BSplineCurve"`,
+    /// `"OffsetCurve"`, `"Other"`) as documented on
+    /// [`GeometryQuery::EdgeCurveKind`]. Decoded by the
+    /// `selector_vocabulary_v2::edges_by_curve_kind` selector via
+    /// [`reify_types::EdgeCurveKind`]'s `TryFrom<&str>` impl.
+    pub fn with_edge_curve_kind_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::EdgeCurveKind(handle), value);
+        self
+    }
+
+    /// Configure an `AdjacentFaces` query result for a specific (parent
+    /// shape, 0-based face index) pair.
+    ///
+    /// The `value` should be a `Value::List(Vec<Value::Int>)` of global
+    /// face indices into the same canonical TopExp_Explorer order returned
+    /// by `extract_faces(parent)`. Decoded by the
+    /// `selector_vocabulary_v2::adjacent_to_face` selector, which maps
+    /// each integer index back to a `GeometryHandleId` via the canonical
+    /// extract_faces list.
+    pub fn with_adjacent_faces_result(
+        mut self,
+        parent: GeometryHandleId,
+        face_index: usize,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::AdjacentFaces {
+                shape: parent,
+                face_index,
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure an `AncestorFacesOfEdge` query result for a specific (parent
+    /// shape, 0-based edge index) pair.
+    ///
+    /// The `value` should be a `Value::List(Vec<Value::Int>)` of global
+    /// face indices into the same canonical TopExp_Explorer order returned
+    /// by `extract_faces(parent)`. Decoded by the
+    /// `selector_vocabulary_v2::ancestor_faces_of_edge` selector, which
+    /// maps each integer index back to a `GeometryHandleId` via the
+    /// canonical extract_faces list.
+    pub fn with_ancestor_faces_result(
+        mut self,
+        parent: GeometryHandleId,
+        edge_index: usize,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::AncestorFacesOfEdge {
+                shape: parent,
+                edge_index,
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure an `OwnerBody` query result for a specific child sub-handle,
+    /// using the canonical encoding `Value::Int(parent.0 as i64)`.
+    ///
+    /// Pre-stages the answer that the OCCT kernel produces by recording a
+    /// `parent_handle: HashMap<…>` entry inside `extract_edges` /
+    /// `extract_faces`. Decoded by the
+    /// `selector_vocabulary_v2::owner_body_of` selector via a `Value::Int`
+    /// → `GeometryHandleId` round-trip.
+    ///
+    /// For tests that need to stage a non-`Value::Int` payload (e.g. the
+    /// defence-in-depth "expected Value::Int, got …" branch of the
+    /// selector), use [`Self::with_owner_body_value`] instead.
+    pub fn with_owner_body_result(
+        mut self,
+        child: GeometryHandleId,
+        parent: GeometryHandleId,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::OwnerBody(child),
+            Value::Int(parent.0 as i64),
+        );
+        self
+    }
+
+    /// Lower-level variant of [`Self::with_owner_body_result`] — stage a raw
+    /// [`Value`] for an `OwnerBody` query keyed by the child handle.
+    ///
+    /// Mainly useful for defence-in-depth tests asserting the selector
+    /// returns `QueryError::QueryFailed` on a non-`Value::Int` payload
+    /// (e.g. a `Value::String` from a hypothetical future kernel).
+    pub fn with_owner_body_value(
+        mut self,
+        child: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(QueryKey::OwnerBody(child), value);
+        self
+    }
+
     /// Get the operations received so far.
     pub fn operations(&self) -> Vec<GeometryOpRecord> {
         self.operations.lock().unwrap().clone()
@@ -903,6 +1245,18 @@ impl GeometryKernel for MockGeometryKernel {
             return Ok(value.clone());
         }
 
+        // OwnerBody is special: an unstaged child handle has no recorded
+        // parent, and we mirror the OcctKernel error shape so the v2
+        // selector vocabulary can match on a stable diagnostic regardless
+        // of which kernel is in play (mock or OCCT). Without this short
+        // circuit, the generic fallback below would return a "no mock
+        // result for …" message that the test contract does not match.
+        if let GeometryQuery::OwnerBody(id) = query {
+            return Err(QueryError::QueryFailed(format!(
+                "owner_body: handle {id:?} has no recorded parent (was extract_edges / extract_faces called?)"
+            )));
+        }
+
         // Fall back to generic handle-only map
         let handle_id = match query {
             GeometryQuery::Volume(id) => id,
@@ -912,6 +1266,7 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::Distance { from, .. } => from,
             GeometryQuery::MomentOfInertia { handle, .. } => handle,
             GeometryQuery::AdjacentFaces { shape, .. } => shape,
+            GeometryQuery::AncestorFacesOfEdge { shape, .. } => shape,
             GeometryQuery::SharedEdges { shape, .. } => shape,
             GeometryQuery::IsWatertight(id) => id,
             GeometryQuery::IsManifold(id) => id,
@@ -921,6 +1276,18 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::EdgeLength(id) => id,
             GeometryQuery::EdgeTangent(id) => id,
             GeometryQuery::FaceNormal(id) => id,
+            GeometryQuery::FaceSurfaceKind(id) => id,
+            GeometryQuery::EdgeCurveKind(id) => id,
+            // OwnerBody is handled above the generic fallback because its
+            // miss path produces a domain-specific error message. The
+            // exhaustiveness guard retains this arm so a future kernel
+            // change is forced to revisit the dispatch table.
+            GeometryQuery::OwnerBody(id) => id,
+            // Topology selectors (task 2324) — generic fallback returns the
+            // canonical first handle, parallel to the Distance arm.
+            GeometryQuery::ClosestPointOnShape { handle, .. } => handle,
+            GeometryQuery::PointOnShape { handle, .. } => handle,
+            GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
         };
 
         self.queries
@@ -1392,6 +1759,72 @@ mod tests {
         // Call 3: queue exhausted → fall back to `default = Satisfied`.
         let r3 = checker.check(&make_input());
         assert_eq!(r3[0].satisfaction, Satisfaction::Satisfied);
+    }
+
+    /// Pins the call-tracking observability contract for `MockConstraintChecker`.
+    ///
+    /// Four sub-contracts verified here:
+    /// (a) `calls()` is empty before any `check()` call.
+    /// (b) After a `check()` with two constraints, `calls()` contains both ids
+    ///     in input order.
+    /// (c) `calls_handle()` returns the same `Arc<Mutex<Vec>>` that is updated
+    ///     by subsequent `check()` calls — i.e. grabbing a handle before boxing
+    ///     the mock still allows inspection after the move.
+    /// (d) BOTH the call-queue branch (first pop from FIFO queue) AND the
+    ///     per-id/default fallback branch push ids — because the two backjumping
+    ///     tests use a one-element queue and leaves 2..N flow through the
+    ///     fallback.
+    #[test]
+    fn mock_constraint_checker_records_calls_handle_per_constraint_id() {
+        let id_a = ConstraintNodeId::new("S", 0);
+        let id_b = ConstraintNodeId::new("S", 1);
+        let checker = MockConstraintChecker::new();
+
+        // (a) No calls yet.
+        assert!(checker.calls().is_empty(), "no calls yet");
+
+        // (b) Multi-constraint input: two distinct ids.
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(id_a.clone(), &expr), (id_b.clone(), &expr)]),
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let _ = checker.check(&input);
+        let calls = checker.calls();
+        assert_eq!(calls.len(), 2, "two constraints → two call records");
+        assert_eq!(calls[0], id_a, "first id recorded first");
+        assert_eq!(calls[1], id_b, "second id recorded second");
+
+        // (c) calls_handle() returns the same Arc that updates on subsequent checks.
+        let handle = checker.calls_handle();
+        let _ = checker.check(&input);
+        assert_eq!(
+            handle.lock().unwrap().len(),
+            4,
+            "second check adds 2 more ids; handle must reflect live updates"
+        );
+
+        // (d) Queue branch also records ids.
+        // Fresh checker with a one-element queue: first check hits queue
+        // (Violated applied to both ids), second check falls through to
+        // default (Satisfied). Both checks must record their ids.
+        let fresh = MockConstraintChecker::new().with_call_queue(vec![Satisfaction::Violated]);
+        let _ = fresh.check(&input); // queue branch
+        let _ = fresh.check(&input); // fallback branch
+        let fresh_calls = fresh.calls();
+        assert_eq!(
+            fresh_calls.len(),
+            4,
+            "queue branch (2 ids) + fallback branch (2 ids) = 4 total records"
+        );
+        assert_eq!(fresh_calls[0], id_a, "queue branch: first id");
+        assert_eq!(fresh_calls[1], id_b, "queue branch: second id");
+        assert_eq!(fresh_calls[2], id_a, "fallback branch: first id");
+        assert_eq!(fresh_calls[3], id_b, "fallback branch: second id");
     }
 
     // step-7 (Task 273 — @optimized plumbing): failing tests for MockOptimizedImpl.
@@ -3402,6 +3835,72 @@ mod tests {
             .with_face_normal_result(handle, normal.clone());
         let result = kernel.query(&GeometryQuery::FaceNormal(handle)).unwrap();
         assert_eq!(result, normal);
+    }
+
+    #[test]
+    fn mock_with_closest_point_on_shape_result_returns_for_query() {
+        let handle = GeometryHandleId(1);
+        let payload = Value::String("{\"x\":5,\"y\":0,\"z\":0}".into());
+        let kernel = MockGeometryKernel::new()
+            .with_closest_point_on_shape_result(handle, [10.0, 0.0, 0.0], payload.clone());
+        let result = kernel
+            .query(&GeometryQuery::ClosestPointOnShape {
+                handle,
+                px: 10.0,
+                py: 0.0,
+                pz: 0.0,
+            })
+            .unwrap();
+        assert_eq!(result, payload);
+    }
+
+    #[test]
+    fn mock_with_point_on_shape_result_returns_for_query() {
+        let handle = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+            handle,
+            [5.0, 0.0, 0.0],
+            1e-7,
+            Value::Bool(true),
+        );
+        let result = kernel
+            .query(&GeometryQuery::PointOnShape {
+                handle,
+                px: 5.0,
+                py: 0.0,
+                pz: 0.0,
+                tolerance: 1e-7,
+            })
+            .unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn mock_with_surface_angle_result_returns_for_query_with_canonical_face_pair() {
+        let face_a = GeometryHandleId(7);
+        let face_b = GeometryHandleId(11);
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        );
+        // Forward order
+        let result = kernel
+            .query(&GeometryQuery::SurfaceAngle { face_a, face_b })
+            .unwrap();
+        assert_eq!(result, Value::Real(std::f64::consts::FRAC_PI_2));
+        // Reverse order — must hit the same key thanks to pair canonicalisation.
+        let result_rev = kernel
+            .query(&GeometryQuery::SurfaceAngle {
+                face_a: face_b,
+                face_b: face_a,
+            })
+            .unwrap();
+        assert_eq!(
+            result_rev,
+            Value::Real(std::f64::consts::FRAC_PI_2),
+            "SurfaceAngle keys must be face-pair-symmetric"
+        );
     }
 
     // ── CountingMockKernel tests ──────────────────────────────────────────────

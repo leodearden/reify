@@ -1589,6 +1589,11 @@ pub fn resolve_auto_type_params_with_backtracking(
 
     let mut current: Vec<String> = Vec::with_capacity(params.len());
     let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
+    // Return value discarded: at level 0 the DFS has already accumulated every
+    // feasible assignment into `feasible_assignments`. `Continue` and
+    // `EarlyTerminate` are observationally equivalent for a caller that reads
+    // only `feasible_assignments`, and `BackjumpTo(0)` is consumed by the
+    // `j == level` arm at level 0 — it cannot escape to this call site.
     let _ = dfs_search(
         0,
         &per_param_candidates,
@@ -1813,20 +1818,6 @@ fn render_witnesses(params: &[AutoTypeParam], leaves: &[Vec<String>]) -> Vec<Str
         .collect()
 }
 
-// ─── DFS recursion helpers (v0.2) ────────────────────────────────────────
-
-// Returns `true` iff any constraint in `constraints_template` is `Satisfied::Violated`
-// according to `checker`.
-//
-// # Semantics
-//
-// - Returns `true` iff at least one [`reify_types::ConstraintResult`] has
-//   `satisfaction == `[`reify_types::Satisfaction::Violated`]`.
-//   Feasibility is the **negation** of this predicate.
-// - [`reify_types::Satisfaction::Indeterminate`] does **NOT** cause a `true` return.
-//   Architecture §2.5 monotonic-feasible rule: undef does not falsify — only
-//   `Violated` makes a leaf infeasible.
-// - The borrowed-slice signature lets callers (especially the DFS hot path)
 // ─── Static blame extraction (task 2660) ─────────────────────────────────────
 
 /// Recursively collect every `Type::TypeParam(name)` string buried in a type.
@@ -1922,7 +1913,7 @@ fn collect_type_param_names_from_type(t: &Type, out: &mut BTreeSet<String>) {
 ///
 /// See PRD section *"Backjumping reuses existing 'rejected because' channel"*
 /// for the rationale.
-pub fn build_constraint_blame_map(
+pub(crate) fn build_constraint_blame_map(
     template: &TopologyTemplate,
     params: &[AutoTypeParam],
 ) -> HashMap<ConstraintNodeId, BTreeSet<usize>> {
@@ -2283,12 +2274,56 @@ fn dfs_search(
 
 #[cfg(test)]
 mod helper_tests {
-    use super::{build_constraints_template, check_constraints_leaf, dfs_search};
+    use super::{AutoTypeParam, build_constraint_blame_map, build_constraints_template, check_constraints_leaf, dfs_search};
     use reify_test_support::MockConstraintChecker;
     use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
 
     fn literal_expr() -> reify_types::CompiledExpr {
         reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool)
+    }
+
+    /// Construct a bare-bones [`crate::TopologyTemplate`] for testing, enumerating every
+    /// field in one place.
+    ///
+    /// All non-varying fields default to their empty/private/false/`None` equivalents.
+    /// This is the single source of truth for the exhaustive-field-enumeration pattern:
+    /// when `TopologyTemplate` gains a new field, add it here (default or empty is fine)
+    /// so tests pinning other contracts continue to compile unchanged.
+    ///
+    /// Note: does NOT use `TopologyTemplateBuilder` from `reify_test_support` — that
+    /// builder links against the compiled `reify_compiler` library artifact, causing a
+    /// "two versions of the same crate" mismatch inside `#[cfg(test)]`. Direct
+    /// construction from `crate::` types keeps both sides in the same compilation unit.
+    fn make_topology_template(
+        name: &str,
+        value_cells: Vec<crate::ValueCellDecl>,
+        constraints: Vec<crate::CompiledConstraint>,
+        content_hash_seed: &[u8],
+    ) -> crate::TopologyTemplate {
+        use reify_types::ContentHash;
+        crate::TopologyTemplate {
+            name: name.into(),
+            entity_kind: crate::EntityKind::Structure,
+            visibility: crate::Visibility::Private,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells,
+            constraints,
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: Default::default(),
+            objective: None,
+            meta: Default::default(),
+            content_hash: ContentHash::of(content_hash_seed),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+        }
     }
 
     /// Empty `constraints_template` slice → vacuously no violations → `feasible == true`.
@@ -2387,37 +2422,17 @@ mod helper_tests {
     /// `build_constraints_template` maps each `CompiledConstraint` in the
     /// `TopologyTemplate` to a `(ConstraintNodeId, &CompiledExpr)` pair,
     /// preserving order and borrowing (not cloning) the expr.
-    ///
-    /// Note: `TopologyTemplateBuilder` from `reify_test_support` cannot be used here
-    /// because it links against the compiled `reify_compiler` library artifact, causing
-    /// a "two versions of the same crate" mismatch in the `#[cfg(test)]` context.
-    /// Instead the template is constructed directly from `crate::` types so both sides
-    /// of the borrow refer to the same compilation unit.
     #[test]
     fn build_constraints_template_returns_pairs_for_each_template_constraint() {
-        use reify_types::{ContentHash, SourceSpan};
+        use reify_types::SourceSpan;
 
         let expr0 = literal_expr();
         let expr1 = reify_types::CompiledExpr::literal(Value::Bool(false), Type::Bool);
 
-        // Build TopologyTemplate directly from crate-internal types to avoid the
-        // "two versions of reify_compiler" diamond dependency that arises when
-        // using TopologyTemplateBuilder from reify_test_support inside cfg(test).
-        //
-        // Intentional construction surface: this test enumerates every field so it
-        // fails to compile when `TopologyTemplate` gains a new field without a
-        // corresponding addition here. The tested contract is narrow (id-order +
-        // ptr-equality of expr borrow), but exhaustive field coverage is the
-        // cheapest way to keep the fixture honest. When adding a new field to
-        // `TopologyTemplate`, add it here too (default or empty is fine).
-        let template = crate::TopologyTemplate {
-            name: "Bearing".into(),
-            entity_kind: crate::EntityKind::Structure,
-            visibility: crate::Visibility::Private,
-            type_params: vec![],
-            trait_bounds: vec![],
-            value_cells: vec![],
-            constraints: vec![
+        let template = make_topology_template(
+            "Bearing",
+            vec![],
+            vec![
                 crate::CompiledConstraint {
                     id: ConstraintNodeId::new("Bearing", 0),
                     label: None,
@@ -2435,21 +2450,8 @@ mod helper_tests {
                     optimized_target: None,
                 },
             ],
-            realizations: vec![],
-            sub_components: vec![],
-            ports: vec![],
-            connections: vec![],
-            guarded_groups: vec![],
-            structure_controlling: Default::default(),
-            objective: None,
-            meta: Default::default(),
-            content_hash: ContentHash::of(b"test-bearing"),
-            is_recursive: false,
-            annotations: vec![],
-            pragmas: vec![],
-            match_arm_groups: vec![],
-            forall_templates: vec![],
-        };
+            b"test-bearing",
+        );
 
         let pairs = build_constraints_template(&template);
 
@@ -2571,6 +2573,212 @@ mod helper_tests {
             functions,
             usize::MAX,
             &blame_map,
+        );
+    }
+
+    // ─── build_constraint_blame_map unit tests ────────────────────────────────
+
+    /// `build_constraint_blame_map` must return one entry per constraint that
+    /// references at least one in-scope `TypeParam`-typed cell. The entry maps
+    /// the `ConstraintNodeId` to the `BTreeSet<usize>` of referenced param indices.
+    ///
+    /// Setup: two cells (`field_t : TypeParam("T")`, `field_u : TypeParam("U")`),
+    /// one `BinOp(Eq)` constraint whose `ValueRef`s address both cells.
+    /// `params = [T(idx=0), U(idx=1)]` → blame set = `{0, 1}`.
+    ///
+    /// Pins the "at least one TypeParam ref → entry present" half of the contract.
+    /// The "no ref → absent" half is pinned by
+    /// `build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints`.
+    ///
+    #[test]
+    fn build_constraint_blame_map_returns_param_indices_referenced_by_constraint_expression() {
+        use std::collections::BTreeSet;
+        use reify_types::{BinOp, SourceSpan, ValueCellId};
+
+        let field_t = ValueCellId::new("Coupling", "field_t");
+        let field_u = ValueCellId::new("Coupling", "field_u");
+        let expr = reify_types::CompiledExpr::binop(
+            BinOp::Eq,
+            reify_types::CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into())),
+            reify_types::CompiledExpr::value_ref(field_u.clone(), Type::TypeParam("U".into())),
+            Type::Bool,
+        );
+
+        let template = make_topology_template(
+            "Coupling",
+            vec![
+                crate::ValueCellDecl {
+                    id: field_t.clone(),
+                    kind: crate::ValueCellKind::Param,
+                    visibility: crate::Visibility::Private,
+                    cell_type: Type::TypeParam("T".into()),
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span: SourceSpan::new(0, 0),
+                },
+                crate::ValueCellDecl {
+                    id: field_u.clone(),
+                    kind: crate::ValueCellKind::Param,
+                    visibility: crate::Visibility::Private,
+                    cell_type: Type::TypeParam("U".into()),
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span: SourceSpan::new(0, 0),
+                },
+            ],
+            vec![
+                crate::CompiledConstraint {
+                    id: ConstraintNodeId::new("Coupling", 0),
+                    label: None,
+                    expr,
+                    span: SourceSpan::new(0, 0),
+                    domain: None,
+                    optimized_target: None,
+                },
+            ],
+            b"test-coupling-blame",
+        );
+
+        let params = vec![
+            AutoTypeParam {
+                name: "T".to_string(),
+                bounds: vec![],
+                free: true,
+                use_site_span: SourceSpan::empty(0),
+            },
+            AutoTypeParam {
+                name: "U".to_string(),
+                bounds: vec![],
+                free: true,
+                use_site_span: SourceSpan::empty(0),
+            },
+        ];
+
+        let map = build_constraint_blame_map(&template, &params);
+
+        assert_eq!(
+            map.len(),
+            1,
+            "expect exactly one entry (one constraint with TypeParam refs); got: {:?}",
+            map
+        );
+        let cid = ConstraintNodeId::new("Coupling", 0);
+        assert_eq!(
+            map.get(&cid).cloned().unwrap_or_default(),
+            BTreeSet::from([0_usize, 1_usize]),
+            "constraint referencing both T(idx=0) and U(idx=1) cells must map to {{0, 1}}"
+        );
+    }
+
+    /// `build_constraint_blame_map` must NOT insert an entry for constraints whose
+    /// blame set would be empty. Two sub-cases:
+    ///
+    /// (a) A cell typed `Type::TypeParam("Z")` where `Z` is NOT in `params=[T,U]`
+    ///     contributes nothing — the constraint that only ValueRefs that cell must
+    ///     be absent from the result map.
+    ///
+    /// (b) A constraint whose expression is `CompiledExpr::literal(Value::Bool(true),
+    ///     Type::Bool)` (no ValueRef, no TypeParam anywhere) is also absent.
+    ///
+    /// Setup: three cells (`field_t:T`, `field_u:U`, `field_z:Z`), two constraints:
+    /// - c0: `ValueRef(field_z)` only  → blame={} (Z ∉ params) → absent
+    /// - c1: `Bool(true)` literal      → blame={} (no ValueRef)  → absent
+    ///
+    /// Pins the "empty blame → absent" invariant the DFS recursion relies on:
+    /// `compute_deepest_blame_level` returns `None` for absent constraints and falls
+    /// back to ordinary backtracking, so an accidental `map.insert(id, BTreeSet::new())`
+    /// would incorrectly block backjumping even when no TypeParam blame exists.
+    #[test]
+    fn build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints() {
+        use reify_types::{SourceSpan, ValueCellId};
+
+        let field_t = ValueCellId::new("Coupling", "field_t");
+        let field_u = ValueCellId::new("Coupling", "field_u");
+        let field_z = ValueCellId::new("Coupling", "field_z");
+
+        // c0: ValueRef of field_z (typed TypeParam("Z"), out-of-scope)
+        let expr_c0 = reify_types::CompiledExpr::value_ref(
+            field_z.clone(),
+            Type::TypeParam("Z".into()),
+        );
+        // c1: literal Bool(true) — no ValueRef, no TypeParam
+        let expr_c1 = reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool);
+
+        let template = make_topology_template(
+            "Coupling",
+            vec![
+                crate::ValueCellDecl {
+                    id: field_t.clone(),
+                    kind: crate::ValueCellKind::Param,
+                    visibility: crate::Visibility::Private,
+                    cell_type: Type::TypeParam("T".into()),
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span: SourceSpan::new(0, 0),
+                },
+                crate::ValueCellDecl {
+                    id: field_u.clone(),
+                    kind: crate::ValueCellKind::Param,
+                    visibility: crate::Visibility::Private,
+                    cell_type: Type::TypeParam("U".into()),
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span: SourceSpan::new(0, 0),
+                },
+                crate::ValueCellDecl {
+                    id: field_z.clone(),
+                    kind: crate::ValueCellKind::Param,
+                    visibility: crate::Visibility::Private,
+                    cell_type: Type::TypeParam("Z".into()),
+                    default_expr: None,
+                    solver_hints: vec![],
+                    span: SourceSpan::new(0, 0),
+                },
+            ],
+            vec![
+                crate::CompiledConstraint {
+                    id: ConstraintNodeId::new("Coupling", 0),
+                    label: None,
+                    expr: expr_c0,
+                    span: SourceSpan::new(0, 0),
+                    domain: None,
+                    optimized_target: None,
+                },
+                crate::CompiledConstraint {
+                    id: ConstraintNodeId::new("Coupling", 1),
+                    label: None,
+                    expr: expr_c1,
+                    span: SourceSpan::new(0, 0),
+                    domain: None,
+                    optimized_target: None,
+                },
+            ],
+            b"test-coupling-exclusion",
+        );
+
+        let params = vec![
+            AutoTypeParam {
+                name: "T".to_string(),
+                bounds: vec![],
+                free: true,
+                use_site_span: SourceSpan::empty(0),
+            },
+            AutoTypeParam {
+                name: "U".to_string(),
+                bounds: vec![],
+                free: true,
+                use_site_span: SourceSpan::empty(0),
+            },
+            // Z is intentionally NOT in params — it must be treated as out-of-scope
+        ];
+
+        let map = build_constraint_blame_map(&template, &params);
+
+        assert!(
+            map.is_empty(),
+            "constraints with empty blame sets must not appear in the map \
+             (empty map expected); got: {:?}",
+            map
         );
     }
 }

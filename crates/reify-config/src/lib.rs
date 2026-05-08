@@ -9,8 +9,9 @@
 //! # Schema
 //!
 //! A `reify.toml` may declare a `[kernels]` table mapping each kernel id to
-//! a pinned version. The four kernel ids supported in v0.2 are `occt`,
-//! `manifold`, `fidget`, and `openvdb` — see [`KernelId`]. Truck is
+//! a pinned version. The supported kernel ids are `occt`, `manifold`,
+//! `fidget`, and `openvdb` (introduced in v0.2) and `gmsh` (added in v0.3
+//! for surface-to-volume tet meshing) — see [`KernelId`]. Truck is
 //! intentionally rejected (the v0.2 PRD drops Truck), as is any other id;
 //! matching is canonical-lowercase only, so `OCCT` also surfaces as
 //! [`ManifestError::UnknownKernel`]. Empty / whitespace-only version
@@ -225,16 +226,46 @@ impl Manifest {
     }
 }
 
-/// Identifier for a kernel supported by Reify v0.2.
+/// Identifier for a kernel supported by Reify.
+///
+/// The four kernel ids introduced in v0.2 are `Occt`, `Manifold`, `Fidget`,
+/// and `OpenVdb`. v0.3 added `Gmsh` for surface-to-volume tet meshing.
 ///
 /// Truck is intentionally absent: the v0.2 PRD ("Truck dropped from v0.2")
 /// rejects truck as an unknown kernel id.
+///
+/// **Ordering:** Variant declaration order determines `BTreeMap<KernelId, _>`
+/// iteration order via the derived `Ord`; it is therefore a public API surface.
+/// Future variant additions must be deliberate about placement. See
+/// [`KernelId::ALL`] for the canonical ordered list.
+///
+/// **Cross-crate consistency:** `Display::fmt` on each variant must equal the
+/// corresponding adapter crate's `*_KERNEL_NAME` const (e.g.
+/// `KernelId::Occt.to_string() == reify_kernel_occt::register::OCCT_KERNEL_NAME`).
+/// Enforced by `tests/kernel_name_consistency.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KernelId {
     Occt,
     Manifold,
     Fidget,
     OpenVdb,
+    Gmsh,
+}
+
+impl KernelId {
+    /// Every supported kernel id, in variant declaration order.
+    ///
+    /// Declaration order equals `BTreeMap<KernelId, _>` iteration order (the
+    /// derived `Ord` follows variant position). This slice is the single source
+    /// of truth for validation and error messages; adding a new `KernelId`
+    /// variant requires updating this slice to stay in sync.
+    pub const ALL: &'static [KernelId] = &[
+        KernelId::Occt,
+        KernelId::Manifold,
+        KernelId::Fidget,
+        KernelId::OpenVdb,
+        KernelId::Gmsh,
+    ];
 }
 
 /// A pinned kernel version.
@@ -254,8 +285,8 @@ pub enum ManifestError {
     /// renderer-formatted diagnostic from the underlying `toml` crate
     /// (line/column information is preserved).
     Parse(String),
-    /// A `[kernels]` entry used a key that is not one of the four
-    /// kernel ids supported in v0.2 (occt, manifold, fidget, openvdb).
+    /// A `[kernels]` entry used a key that is not one of the supported
+    /// kernel ids (occt, manifold, fidget, openvdb, gmsh).
     /// The wrapped string is the offending key, verbatim, so callers
     /// can quote it back to the user. Lookup is canonical-lowercase
     /// only — `OCCT` and `truck` both surface as `UnknownKernel`.
@@ -294,10 +325,13 @@ impl fmt::Display for ManifestError {
                 write!(f, "failed to parse reify.toml: {}", msg)
             }
             ManifestError::UnknownKernel(key) => {
+                let expected: Vec<String> =
+                    KernelId::ALL.iter().map(|id| id.to_string()).collect();
                 write!(
                     f,
-                    "unknown kernel id '{}' in [kernels] (expected one of: occt, manifold, fidget, openvdb)",
-                    key
+                    "unknown kernel id '{}' in [kernels] (expected one of: {})",
+                    key,
+                    expected.join(", ")
                 )
             }
             ManifestError::EmptyVersion(id) => {
@@ -413,6 +447,7 @@ impl FromStr for KernelId {
             "manifold" => Ok(KernelId::Manifold),
             "fidget" => Ok(KernelId::Fidget),
             "openvdb" => Ok(KernelId::OpenVdb),
+            "gmsh" => Ok(KernelId::Gmsh),
             _ => Err(UnknownKernelId),
         }
     }
@@ -425,6 +460,7 @@ impl fmt::Display for KernelId {
             KernelId::Manifold => "manifold",
             KernelId::Fidget => "fidget",
             KernelId::OpenVdb => "openvdb",
+            KernelId::Gmsh => "gmsh",
         };
         f.write_str(s)
     }
@@ -511,12 +547,13 @@ mod tests {
     }
 
     #[test]
-    fn kernel_id_round_trips_for_all_four_v0_2_kernels() {
+    fn kernel_id_round_trips_for_all_supported_kernels() {
         let cases: &[(KernelId, &str)] = &[
             (KernelId::Occt, "occt"),
             (KernelId::Manifold, "manifold"),
             (KernelId::Fidget, "fidget"),
             (KernelId::OpenVdb, "openvdb"),
+            (KernelId::Gmsh, "gmsh"),
         ];
         for &(id, canonical) in cases {
             let displayed = format!("{}", id);
@@ -651,8 +688,9 @@ mod tests {
                     fidget = \"0.3.4\"\n\
                     occt = \"7.7.0\"\n\
                     openvdb = \"11.0\"\n\
-                    manifold = \"2.5\"\n";
-        let manifest = Manifest::from_toml_str(toml).expect("four-pin TOML should parse");
+                    manifold = \"2.5\"\n\
+                    gmsh = \"4.15.2\"\n";
+        let manifest = Manifest::from_toml_str(toml).expect("five-pin TOML should parse");
         let ids: Vec<KernelId> = manifest.kernel_pins().map(|(id, _)| *id).collect();
         // BTreeMap iteration follows the derived `Ord` on `KernelId`, which is
         // the variant declaration order.
@@ -663,7 +701,54 @@ mod tests {
                 KernelId::Manifold,
                 KernelId::Fidget,
                 KernelId::OpenVdb,
+                KernelId::Gmsh,
             ]
         );
+    }
+
+    #[test]
+    fn gmsh_pin_parses_to_typed_kernel_id() {
+        let manifest = Manifest::from_toml_str("[kernels]\ngmsh = \"4.15.2\"\n")
+            .expect("gmsh pin TOML should parse");
+        let entries: Vec<(&KernelId, &KernelPin)> = manifest.kernel_pins().collect();
+        assert_eq!(entries.len(), 1, "should have exactly one pinned kernel");
+        let (id, pin) = entries[0];
+        assert_eq!(*id, KernelId::Gmsh);
+        assert_eq!(pin.version, "4.15.2");
+    }
+
+    #[test]
+    fn unknown_kernel_message_lists_all_supported_kernels() {
+        let err = Manifest::from_toml_str("[kernels]\nfoobar = \"1.0\"\n")
+            .expect_err("unknown kernel id should be rejected");
+        let msg = format!("{}", err);
+        // Every current KernelId must appear in the error message so users
+        // can identify the correct id without reading source. Driven by
+        // KernelId::ALL so the test stays in sync automatically when new
+        // variants are added.
+        for id in KernelId::ALL {
+            let name = id.to_string();
+            assert!(
+                msg.contains(&name),
+                "error message must list '{}' as an expected id; got: {}",
+                name,
+                msg
+            );
+        }
+    }
+
+    #[test]
+    fn kernel_id_all_covers_every_variant() {
+        // Compile-time guard: adding a KernelId variant without listing it here is
+        // a compile error, signalling that KernelId::ALL must also be extended.
+        let _exhaustive_guard = |id: KernelId| match id {
+            KernelId::Occt
+            | KernelId::Manifold
+            | KernelId::Fidget
+            | KernelId::OpenVdb
+            | KernelId::Gmsh => (),
+        };
+        // Pin ALL.len() so adding a variant without extending ALL fails this test.
+        assert_eq!(KernelId::ALL.len(), 5);
     }
 }

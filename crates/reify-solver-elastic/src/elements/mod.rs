@@ -4,7 +4,7 @@
 //!
 //! # Canonical reference geometries
 //!
-//! This module contains two families of elements, each with its own
+//! This module contains three families of elements, each with its own
 //! canonical reference geometry and coordinate type:
 //!
 //! - **3D tetrahedral elements** ([`tet_p1::TetP1`], [`tet_p2::TetP2`]) —
@@ -13,19 +13,29 @@
 //!   (reference-tet volume `1/6`).  Use [`ReferenceCoord`] for these
 //!   elements.
 //!
+//! - **3D hexahedral elements** ([`hex_p1::HexP1`]) — defined on the
+//!   **reference cube** `[-1, 1]³` in `(ξ, η, ζ)` coordinates
+//!   (reference-cube volume `8`).  Use [`ReferenceCoord`] for these
+//!   elements.
+//!
 //! - **2D triangular shell elements** ([`mitc3_plus::Mitc3Plus`]) — defined
 //!   on the **unit reference triangle** with vertices at `(0,0), (1,0),
 //!   (0,1)` in local `(ξ, η)` mid-surface coordinates.  Use
 //!   [`mitc3_plus::ShellReferenceCoord`] for these elements.
 
+pub mod hex_p1;
 pub mod mitc3_plus;
 pub mod tet_p1;
 pub mod tet_p2;
 
-/// A point in the reference-tetrahedron's `(ξ, η, ζ)` coordinate space.
+/// A 3D reference-element coordinate triple `(ξ, η, ζ)`.
 ///
-/// The unit reference tet has vertices at `(0,0,0), (1,0,0), (0,1,0),
-/// (0,0,1)`; barycentric coordinates are `(1-ξ-η-ζ, ξ, η, ζ)`.
+/// The interpretation depends on the implementing element:
+///
+/// - **`TetP1` / `TetP2`** — unit-tet simplex with vertices at
+///   `(0,0,0), (1,0,0), (0,1,0), (0,0,1)`; barycentric coordinates are
+///   `(1-ξ-η-ζ, ξ, η, ζ)`.
+/// - **`HexP1`** — reference cube `[-1, 1]³` with corners at `{±1}³`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReferenceCoord {
     pub xi: f64,
@@ -68,15 +78,17 @@ impl Jacobian {
 
 /// A quadrature point: a reference-coordinate location and its weight.
 ///
-/// Weights sum to the reference-tet volume `1/6` for every rule defined
-/// in this crate.
+/// Weights sum to the implementing element's reference volume:
+/// `1/6` for `TetP1`/`TetP2` (unit-tet simplex), `8` for `HexP1`
+/// (reference cube `[-1, 1]³`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QuadraturePoint {
     pub coord: ReferenceCoord,
     pub weight: f64,
 }
 
-/// Reference-tetrahedron Lagrangian element trait.
+/// Reference-element Lagrangian trait for 3D volumetric elements
+/// (tetrahedral and hexahedral).
 ///
 /// Implementors expose:
 /// - the number of nodes (`N_NODES`),
@@ -84,7 +96,8 @@ pub struct QuadraturePoint {
 ///   (`shape_at`), returning a `Vec<f64>` of length `N_NODES`,
 /// - the shape-function gradients in reference coordinates
 ///   (`shape_grad_at`), returning a `Vec<[f64; 3]>` of length `N_NODES`,
-/// - a Gauss quadrature rule (`quad_points`) covering the reference tet.
+/// - a Gauss quadrature rule (`quad_points`) covering the implementing
+///   element's canonical reference geometry.
 ///
 /// The default `jacobian` method composes `shape_grad_at` with
 /// caller-supplied physical-node coordinates to produce the
@@ -129,9 +142,11 @@ pub trait ReferenceElement {
     /// ∂N/∂ζ]`. The returned `Vec` has length `N_NODES`.
     fn shape_grad_at(&self, coord: ReferenceCoord) -> Vec<[f64; 3]>;
 
-    /// Gauss quadrature rule for integration over the reference tet.
+    /// Gauss quadrature rule for integration over the implementing element's
+    /// canonical reference geometry.
     ///
-    /// Weights sum to the reference-tet volume `1/6`.
+    /// Weights sum to that geometry's volume: `1/6` for `TetP1`/`TetP2`,
+    /// `8` for `HexP1`.
     fn quad_points(&self) -> &'static [QuadraturePoint];
 
     /// Reference→physical Jacobian at `ref_coord`.
@@ -147,14 +162,23 @@ pub trait ReferenceElement {
     /// - **`TetP2`** — same vertex order followed by the 6 edge midpoints
     ///   in canonical Hughes/Gmsh order `(0,1), (1,2), (2,0), (0,3),
     ///   (1,3), (2,3)`.
+    /// - **`HexP1`** — 8 vertices at the corners `{±1}³` of the reference
+    ///   cube `[-1, 1]³` in canonical Hughes/Gmsh hex8 order: bottom face
+    ///   (ζ = −1) traversed counter-clockwise from `(-1,-1,-1)`, then top
+    ///   face (ζ = +1) in the same cyclic order.
     fn jacobian(&self, phys_nodes: &[[f64; 3]], ref_coord: ReferenceCoord) -> Jacobian {
-        debug_assert_eq!(
+        // Intentionally unconditional (`assert_eq!`, not `debug_assert_eq!`):
+        // the public contract is explicit in every build profile per the
+        // project's contract-explicitness convention (see Task 2544).  The
+        // cost is two `usize` comparisons against the 9·N flop Jacobian loop
+        // that follows — negligible relative to that work.
+        assert_eq!(
             phys_nodes.len(),
             Self::N_NODES,
             "phys_nodes.len() must equal Self::N_NODES",
         );
         let grads = self.shape_grad_at(ref_coord);
-        debug_assert_eq!(
+        assert_eq!(
             grads.len(),
             Self::N_NODES,
             "shape_grad_at must return N_NODES rows",

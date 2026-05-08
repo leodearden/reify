@@ -715,6 +715,34 @@ pub mod ffi {
             face_b_index: u32,
         ) -> Result<Vec<u32>>;
 
+        /// Faces that own the edge at `edge_index` (0-based, TopExp order
+        /// for both inputs and outputs). For a manifold solid every edge has
+        /// exactly two ancestor faces; degenerate / non-manifold edges may
+        /// surface 1 or > 2. Deduplicated; returned ascending. Errors if
+        /// `edge_index` is out of range.
+        fn ancestor_faces_of_edge(
+            shape: &OcctShape,
+            edge_index: u32,
+        ) -> Result<Vec<u32>>;
+
+        /// Classify the underlying surface of a face by its OCCT
+        /// `BRepAdaptor_Surface::GetType()` (`GeomAbs_*`) result. Returns a
+        /// canonical surface-kind name string (`"Plane"` / `"Cylinder"` /
+        /// `"Cone"` / `"Sphere"` / `"Torus"` / `"BezierSurface"` /
+        /// `"BSplineSurface"` / `"OffsetSurface"` / `"Other"`) decoded by
+        /// `reify_types::FaceSurfaceKind::try_from_str` on the Rust side.
+        /// Errors if `shape` is not a `TopAbs_FACE`.
+        fn face_surface_kind(shape: &OcctShape) -> Result<String>;
+
+        /// Classify the underlying curve of an edge by its OCCT
+        /// `BRepAdaptor_Curve::GetType()` (`GeomAbs_*`) result. Returns a
+        /// canonical curve-kind name string (`"Line"` / `"Circle"` /
+        /// `"Ellipse"` / `"Hyperbola"` / `"Parabola"` / `"BezierCurve"` /
+        /// `"BSplineCurve"` / `"OffsetCurve"` / `"Other"`) decoded by
+        /// `reify_types::EdgeCurveKind::try_from_str` on the Rust side.
+        /// Errors if `shape` is not a `TopAbs_EDGE`.
+        fn edge_curve_kind(shape: &OcctShape) -> Result<String>;
+
         /// Materialize the unique edges of `shape` into an OcctShapeVec
         /// (canonical TopExp::MapShapes order, deduplicated by IsSame).
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;

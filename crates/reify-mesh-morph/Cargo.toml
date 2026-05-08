@@ -1,0 +1,13 @@
+[package]
+name = "reify-mesh-morph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Mesh morphing classifier and engine for Reify"
+
+[dependencies]
+reify-types.workspace = true
+reify-eval.workspace = true
+
+[dev-dependencies]
+reify-compiler.workspace = true

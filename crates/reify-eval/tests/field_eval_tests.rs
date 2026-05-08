@@ -1970,6 +1970,147 @@ structure S {
     );
 }
 
+// ── Task 3060: excessive-axis cap diagnostic ─────────────────────────────
+
+/// Task 3060: `build_sampled_field` rejects an axis whose interval count
+/// exceeds [`reify_types::sampled::LINSPACE_MAX_INTERVALS`], emitting a
+/// `W_FIELD_SAMPLED_INVALID_CONFIG` warning whose message names the cap
+/// and returning `Undef` for the sample.
+///
+/// `bounds_max = 11_000_000 m` with `spacing = 1.0 m` gives
+/// `n_intervals = 11_000_000`, just above the 10_000_000 cap.  This is
+/// large enough to trip the cap but small enough that, without the cap,
+/// the allocation (~88 MB) would succeed, so the RED failure mode is
+/// deterministic: the data-shape-mismatch warning fires with the wrong
+/// message content, and the cap-specific assertion fails cleanly.
+#[test]
+fn eval_sampled_field_with_excessive_axis_emits_diagnostic_no_panic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(11000000.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    // Pin the cap phrase rather than the bare cap value — `msg.contains(&cap)` is
+    // fragile when bounds_max happens to be a numeric string that contains the cap
+    // as a substring (e.g. `bounds_max=110000000` contains "10000000").
+    let cap = reify_types::sampled::LINSPACE_MAX_INTERVALS.to_string();
+    assert!(
+        msg.contains(&format!("{cap} interval cap")),
+        "diagnostic should contain '{cap} interval cap', got: {msg:?}"
+    );
+    // Pin the n_intervals embedding: the diagnostic must embed the actual computed
+    // count (11000000) so users see how far over the cap they are.
+    assert!(
+        msg.contains("11000000 grid intervals"),
+        "diagnostic should embed the computed interval count '11000000 grid intervals', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("axis 0"),
+        "diagnostic should identify the offending axis (axis 0), got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on cap-exceeded sampled field, got {val:?}"
+    );
+}
+
+/// Task 3187 step-2 RED: an overflowing axis (span/spacing > usize::MAX as f64) must
+/// produce a *distinct* diagnostic from the cap-exceeded case.  The overflow phrasing
+/// "more intervals than usize can represent" must appear and "interval cap" must NOT —
+/// the cap phrase is reserved for the finite-too-large case.
+///
+/// Input: `bounds_max = 1e308 m`, `spacing = 1.0 m` → `(span / spacing) = 1e308`,
+/// which exceeds `usize::MAX as f64` ≈ 1.84e19 → `LinspaceError::Overflow`.
+#[test]
+fn eval_sampled_field_with_overflowing_axis_emits_distinct_diagnostic_no_panic() {
+    let source = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1e308m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0, 2.0] } }
+
+structure S {
+    let v = sample(f, 0.5m)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::FieldSampledInvalidConfig)
+        })
+        .collect();
+    assert_eq!(
+        invalid_warnings.len(),
+        1,
+        "expected exactly one W_FIELD_SAMPLED_INVALID_CONFIG warning, got {}: {:?}",
+        invalid_warnings.len(),
+        result.diagnostics
+    );
+    let msg = &invalid_warnings[0].message;
+    assert!(
+        msg.contains("'f'"),
+        "diagnostic should name field 'f', got: {msg:?}"
+    );
+    assert!(
+        msg.contains("axis 0"),
+        "diagnostic should identify the offending axis (axis 0), got: {msg:?}"
+    );
+    // Overflow case: distinct phrasing — not a cap-exceeded message.
+    assert!(
+        msg.contains("more intervals than usize can represent"),
+        "overflow diagnostic should say 'more intervals than usize can represent', got: {msg:?}"
+    );
+    // The cap phrase must NOT appear: it belongs only to the finite-too-large case.
+    assert!(
+        !msg.contains("interval cap"),
+        "overflow diagnostic must NOT contain 'interval cap' (cap-specific phrasing \
+         should be reserved for LinspaceError::Excessive), got: {msg:?}"
+    );
+
+    let val = result
+        .values
+        .get(&ValueCellId::new("S", "v"))
+        .expect("'S.v' not found in eval result values");
+    assert!(
+        val.is_undef(),
+        "expected S.v = Undef on overflowing-axis sampled field, got {val:?}"
+    );
+}
+
 // ── Plan 2913 step-21: end-to-end field reductions integration ───────────
 //
 // Pin the full parse → compile → eval pipeline for the four eager Field

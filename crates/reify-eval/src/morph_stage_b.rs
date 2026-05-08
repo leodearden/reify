@@ -188,23 +188,38 @@ pub fn stage_b_eligible(
 /// tables. On success the matched pairs are inserted into `out`. On
 /// failure the appropriate [`BijectionFailure`] variant is returned.
 ///
+/// ## Preconditions
+///
+/// Both `old` and `new` MUST contain distinct [`GeometryHandleId`] values
+/// (no duplicates within either slice). This mirrors the upstream kernel's
+/// `extract_faces` / `extract_edges` per-handle-once guarantee.
+///
+/// **Failure mode:** duplicates in `old` would silently overwrite earlier
+/// entries in `out` via [`HashMap::insert`] while the step-7
+/// `consumed.len() == new.len()` check still passes — the count-equality
+/// guard cannot detect the collision because both `old.len()` and
+/// `consumed.len()` inflate identically. The violation is caught in debug
+/// builds by the step-2 `debug_assert!` checks.
+///
 /// ## Algorithm
 ///
 /// 1. **Empty-input early-exit** — both slices empty → `Ok(())`; exactly one
 ///    side empty → `CountMismatch` (asymmetry rules out a bijection regardless
 ///    of attribution; bypasses the imported pre-pass to avoid mis-routing the
 ///    asymmetric case).
-/// 2. **Imported-geometry pre-pass** (mirrors `topology_attribute_resolver.rs:172`)
+/// 2. **Distinct-handle precondition** (debug builds only) — assert `old` and
+///    `new` each contain no duplicate `GeometryHandleId` values.
+/// 3. **Imported-geometry pre-pass** (mirrors `topology_attribute_resolver.rs:172`)
 ///    — reached only when BOTH sides are non-empty. If no handle on either side
 ///    carries an attribute, signal imported geometry as `NamingLayerError::Imported`.
-/// 3. **Partial-attribution guard** — if some handles are attributed and
+/// 4. **Partial-attribution guard** — if some handles are attributed and
 ///    others are not, signal malformed state as `NamingLayerError::Partial`.
-/// 4. **Count guard** — if `old.len() != new.len()`, return `CountMismatch`.
-/// 5. **Matching loop** — walk old handles in slice order. For each old
+/// 5. **Count guard** — if `old.len() != new.len()`, return `CountMismatch`.
+/// 6. **Matching loop** — walk old handles in slice order. For each old
 ///    handle look up its attribute and find the first unconsumed new handle
 ///    whose attribute is equal (linear O(n²) scan; see design decision on
 ///    !Hash). If no match → `UnmappedElement { Old, handle }`.
-/// 6. **Unconsumed-new scan** — any new handle not claimed by an old handle →
+/// 7. **Unconsumed-new scan** — any new handle not claimed by an old handle →
 ///    `UnmappedElement { New, handle }` (defensive; should not fire when
 ///    counts match and all old handles paired).
 fn match_one_kind(
@@ -228,7 +243,41 @@ fn match_one_kind(
         });
     }
 
-    // 2. Imported-geometry pre-pass.
+    // 2. Distinct-handle precondition (debug builds only).
+    // Duplicate handles in `old` would silently overwrite earlier entries in
+    // `out` (HashMap::insert) while the `consumed.len() == new.len()` count
+    // check in step 6 still passes — the count cannot detect the collision.
+    // The upstream kernel (`extract_faces` / `extract_edges`) guarantees
+    // uniqueness by construction; we assert it here to catch any future caller
+    // that violates the contract.
+    // Gated behind `#[cfg(debug_assertions)]` so the HashSet allocation and
+    // per-iteration insert are structurally absent (not merely DCE-eligible)
+    // in release builds. See task 3102 / Task 2727 (`tolerance_scope.rs`) for
+    // precedent.
+    #[cfg(debug_assertions)]
+    {
+        let mut seen = HashSet::with_capacity(old.len());
+        for &h in old {
+            assert!(
+                seen.insert(h),
+                "old slice passed to match_one_kind contains duplicate GeometryHandleId: {:?}",
+                h
+            );
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        let mut seen = HashSet::with_capacity(new.len());
+        for &h in new {
+            assert!(
+                seen.insert(h),
+                "new slice passed to match_one_kind contains duplicate GeometryHandleId: {:?}",
+                h
+            );
+        }
+    }
+
+    // 3. Imported-geometry pre-pass.
     let old_attributed = old
         .iter()
         .filter(|&&h| old_table.lookup(h).is_some())
@@ -245,7 +294,7 @@ fn match_one_kind(
         });
     }
 
-    // 3. Partial-attribution guard.
+    // 4. Partial-attribution guard.
     if old_attributed != old.len() || new_attributed != new.len() {
         return Err(BijectionFailure::NamingLayerError {
             kind,
@@ -253,7 +302,7 @@ fn match_one_kind(
         });
     }
 
-    // 4. Count guard.
+    // 5. Count guard.
     if old.len() != new.len() {
         return Err(BijectionFailure::CountMismatch {
             kind,
@@ -262,15 +311,13 @@ fn match_one_kind(
         });
     }
 
-    // 5. Matching loop.
+    // 6. Matching loop.
     // Track which new handles have already been claimed so 1-to-1 is enforced.
     let mut consumed: HashSet<GeometryHandleId> = HashSet::new();
 
     for &old_handle in old {
-        // The pre-pass guarantees all old handles are attributed. If the slice
-        // contains duplicate handles, lookup is idempotent — both the attributed
-        // count and old.len() inflate identically, so the invariant survives
-        // duplicates and .expect cannot fire.
+        // The step-3 pre-pass guarantees all old handles are attributed; the
+        // step-2 precondition check guarantees no duplicates in `old`.
         let old_attr = old_table
             .lookup(old_handle)
             .expect("all old handles attributed — guaranteed by pre-pass above");
@@ -302,8 +349,8 @@ fn match_one_kind(
         }
     }
 
-    // 6. Unconsumed-new invariant: given old.len() == new.len() (step 4 guard)
-    // and every old handle consuming exactly one distinct new handle (step 5
+    // 7. Unconsumed-new invariant: given old.len() == new.len() (step 5 guard)
+    // and every old handle consuming exactly one distinct new handle (step 6
     // loop), the consumed set must cover all of new. No Err can surface here.
     debug_assert_eq!(
         consumed.len(),
@@ -889,6 +936,114 @@ mod tests {
             }),
             "one unattributed old face vs empty new_faces must be CountMismatch, \
              not NamingLayerError::Imported"
+        );
+    }
+
+    // step-1 (task 3055): duplicate old handles → should panic in debug builds
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(
+        expected = "old slice passed to match_one_kind contains duplicate GeometryHandleId"
+    )]
+    fn match_one_kind_panics_in_debug_on_duplicate_old_handles() {
+        // old_table: one attribute under h(10); new_table: two attributes under
+        // h(20)/h(30). Both sides are attributed so the imported pre-pass is
+        // bypassed and execution reaches the precondition site.
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(h(30), attr(Role::Cap(CapKind::Bottom), 0, None));
+        // h(10) appears twice in old_faces — contract violation
+        let _ = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10), h(10)],
+            &[h(20), h(30)],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+    }
+
+    // step-3 (task 3055): duplicate new handles → should panic in debug builds
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(
+        expected = "new slice passed to match_one_kind contains duplicate GeometryHandleId"
+    )]
+    fn match_one_kind_panics_in_debug_on_duplicate_new_handles() {
+        // old_table: two attributes under h(10)/h(11); new_table: one attribute
+        // under h(20). Both sides are attributed so the imported pre-pass is
+        // bypassed and execution reaches the precondition site.
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(h(11), attr(Role::Cap(CapKind::Bottom), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        // h(20) appears twice in new_faces — contract violation
+        let _ = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10), h(11)],
+            &[h(20), h(20)],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+    }
+
+    // task 3102: release-mode contract — duplicate handles do NOT panic in release builds
+    /// In release builds, the distinct-handle precondition is structurally absent;
+    /// duplicate handles flow through to the matching loop where they may produce silent
+    /// overwrite or `UnmappedElement`. Callers must not rely on debug-mode panics for
+    /// input validation.
+    //
+    // NOTE: This test is gated `#[cfg(not(debug_assertions))]` and therefore only
+    // compiles when the test binary is built without debug_assertions — i.e. via
+    // `cargo test --release`. It is silently skipped by a plain `cargo test` (dev
+    // profile, debug_assertions = true). Verify it runs in CI by confirming a
+    // dedicated `cargo test --release -p reify-eval` step exists in the pipeline.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn match_one_kind_does_not_panic_on_duplicate_handles_in_release() {
+        // Mirror the fixture from match_one_kind_panics_in_debug_on_duplicate_old_handles:
+        // old_table has one attribute under h(10); new_table has two under h(20)/h(30).
+        // Both sides are attributed so the imported pre-pass is bypassed and execution
+        // reaches the precondition site — which must be structurally absent in release.
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(h(30), attr(Role::Cap(CapKind::Bottom), 0, None));
+        // h(10) appears twice — would panic in debug; must not panic in release.
+        // In the matching loop the second h(10) finds h(20) already consumed and
+        // h(30) with a non-matching attribute, so it returns UnmappedElement.
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[h(10), h(10)],
+            &[h(20), h(30)],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        // Pin the observed release-mode outcome: the second duplicate handle is
+        // unmapped (the first consumed h(20), leaving no Cap(Top) match for the
+        // second). This is tighter than a no-panic check and catches a regression
+        // where a plain `assert!` is reintroduced (which would panic before reaching
+        // the matching loop, changing the failure mode).
+        assert_eq!(
+            result,
+            Err(BijectionFailure::UnmappedElement {
+                kind: SubShapeKind::Face,
+                side: SubShapeSide::Old,
+                handle: h(10),
+            }),
+            "expected UnmappedElement for the second duplicate handle in release mode"
         );
     }
 

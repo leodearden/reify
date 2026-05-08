@@ -2626,6 +2626,71 @@ double surface_angle(const OcctShape& face_a, const OcctShape& face_b) {
     });
 }
 
+rust::String face_surface_kind(const OcctShape& shape) {
+    return wrap_occt_call("face_surface_kind", [&]() -> rust::String {
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error(
+                "face_surface_kind: shape is not a face"
+            );
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("face_surface_kind: face is null");
+        }
+        BRepAdaptor_Surface adaptor(face);
+        // Map OCCT's `GeomAbs_SurfaceType` to the canonical wire-format names
+        // documented on `GeometryQuery::FaceSurfaceKind` and decoded by
+        // `FaceSurfaceKind::try_from_str`. `GeomAbs_SurfaceOfRevolution` and
+        // `GeomAbs_SurfaceOfExtrusion` collapse into "Other" because the
+        // typed Rust enum (`FaceSurfaceKind`) intentionally omits them — the
+        // PRD line 78 vocabulary is `%Plane`/`%Cylinder`/`%Cone`/`%Sphere`/
+        // `%Torus` plus the spline/offset arms. Forward-compat for new
+        // GeomAbs variants is the same "Other" arm.
+        switch (adaptor.GetType()) {
+            case GeomAbs_Plane:           return rust::String("Plane");
+            case GeomAbs_Cylinder:        return rust::String("Cylinder");
+            case GeomAbs_Cone:            return rust::String("Cone");
+            case GeomAbs_Sphere:          return rust::String("Sphere");
+            case GeomAbs_Torus:           return rust::String("Torus");
+            case GeomAbs_BezierSurface:   return rust::String("BezierSurface");
+            case GeomAbs_BSplineSurface:  return rust::String("BSplineSurface");
+            case GeomAbs_OffsetSurface:   return rust::String("OffsetSurface");
+            default:                      return rust::String("Other");
+        }
+    });
+}
+
+rust::String edge_curve_kind(const OcctShape& shape) {
+    return wrap_occt_call("edge_curve_kind", [&]() -> rust::String {
+        if (shape.shape.ShapeType() != TopAbs_EDGE) {
+            throw std::runtime_error(
+                "edge_curve_kind: shape is not an edge"
+            );
+        }
+        TopoDS_Edge edge = TopoDS::Edge(shape.shape);
+        if (edge.IsNull()) {
+            throw std::runtime_error("edge_curve_kind: edge is null");
+        }
+        BRepAdaptor_Curve curve(edge);
+        // Map OCCT's `GeomAbs_CurveType` to the canonical wire-format names
+        // documented on `GeometryQuery::EdgeCurveKind` and decoded by
+        // `EdgeCurveKind::try_from_str`. The OCCT enum is exhaustive over the
+        // typed Rust enum (`EdgeCurveKind`); `GeomAbs_OtherCurve` and any
+        // future GeomAbs variant fall through to "Other".
+        switch (curve.GetType()) {
+            case GeomAbs_Line:         return rust::String("Line");
+            case GeomAbs_Circle:       return rust::String("Circle");
+            case GeomAbs_Ellipse:      return rust::String("Ellipse");
+            case GeomAbs_Hyperbola:    return rust::String("Hyperbola");
+            case GeomAbs_Parabola:     return rust::String("Parabola");
+            case GeomAbs_BezierCurve:  return rust::String("BezierCurve");
+            case GeomAbs_BSplineCurve: return rust::String("BSplineCurve");
+            case GeomAbs_OffsetCurve:  return rust::String("OffsetCurve");
+            default:                   return rust::String("Other");
+        }
+    });
+}
+
 Point3 surface_normal_at(const OcctShape& shape, double u, double v) {
     return wrap_occt_call("surface_normal_at", [&]() {
         if (shape.shape.ShapeType() != TopAbs_FACE) {
@@ -3570,6 +3635,57 @@ rust::Vec<uint32_t> shared_edges(const OcctShape& shape, uint32_t face_a_index, 
         throw std::runtime_error(std::string("OCCT shared_edges: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT shared_edges: unknown C++ exception");
+    }
+}
+
+rust::Vec<uint32_t> ancestor_faces_of_edge(const OcctShape& shape, uint32_t edge_index) {
+    try {
+        // Use the lazy cached edge / face maps (1-based IndexedMap,
+        // deduplicates by IsSame). Converts 1-based OCCT indices to 0-based
+        // for callers — same convention as adjacent_faces / shared_edges.
+        const TopTools_IndexedMapOfShape& edge_map = shape.edge_map();
+        const TopTools_IndexedMapOfShape& face_map = shape.face_map();
+
+        const uint32_t edge_count = static_cast<uint32_t>(edge_map.Extent());
+        if (edge_index >= edge_count) {
+            std::string msg = "ancestor_faces_of_edge: edge index "
+                + std::to_string(edge_index)
+                + " out of range; shape has "
+                + std::to_string(edge_count)
+                + " edges";
+            throw std::runtime_error(msg);
+        }
+
+        // Use the lazy cached edge -> faces incidence map.
+        const TopTools_IndexedDataMapOfShapeListOfShape& edge_face_map = shape.edge_face_map();
+
+        const TopoDS_Shape& target_edge =
+            edge_map.FindKey(static_cast<Standard_Integer>(edge_index + 1));
+
+        std::set<uint32_t> result;
+        if (edge_face_map.Contains(target_edge)) {
+            const TopTools_ListOfShape& parents = edge_face_map.FindFromKey(target_edge);
+            for (TopTools_ListIteratorOfListOfShape it(parents); it.More(); it.Next()) {
+                const TopoDS_Shape& parent_face = it.Value();
+                Standard_Integer one_based = face_map.FindIndex(parent_face);
+                if (one_based < 1) {
+                    continue;
+                }
+                result.insert(static_cast<uint32_t>(one_based - 1));
+            }
+        }
+
+        rust::Vec<uint32_t> out;
+        for (uint32_t i : result) {
+            out.push_back(i);
+        }
+        return out;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT ancestor_faces_of_edge: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT ancestor_faces_of_edge: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT ancestor_faces_of_edge: unknown C++ exception");
     }
 }
 

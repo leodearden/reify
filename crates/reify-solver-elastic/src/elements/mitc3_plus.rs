@@ -49,26 +49,23 @@ pub struct ShearStrain {
 /// Sampled covariant transverse-shear strains at the three MITC3+ tying
 /// points A, B, and C (see [`TyingPoint`] for the exact coordinates).
 ///
-/// # Which components are consumed by [`Mitc3Plus::interpolate_assumed_shear`]
-///
-/// The MITC3+ mixed-interpolation formula samples different components at
-/// each tying point.  Only the following fields are used; the others are
-/// **silently ignored**:
-///
-/// | Field | Component used | Component ignored |
-/// |-------|---------------|-------------------|
-/// | `at_a` | `gamma_xi_zeta` | `gamma_eta_zeta` |
-/// | `at_b` | `gamma_eta_zeta` | `gamma_xi_zeta` |
-/// | `at_c` | both | — |
-///
-/// Callers must ensure the *consumed* components are correctly populated.
-/// Populating only `at_a.gamma_eta_zeta` or `at_b.gamma_xi_zeta` will
-/// produce plausible-looking output with no warning.
+/// Each field name encodes both the tying-point location (`_at_a`, `_at_b`,
+/// `_at_c`) and the covariant component (`gamma_xi_zeta` or `gamma_eta_zeta`).
+/// The four fields correspond exactly to the four scalars consumed by
+/// [`Mitc3Plus::interpolate_assumed_shear`] — no more, no less.  The MITC3+
+/// mixed-interpolation formula (Bathe & Lee 2014) uses `γ_ξζ` from A and C
+/// and `γ_ηζ` from B and C; exposing only those four fields eliminates the
+/// silent-ignore class of bugs present in earlier designs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TyingShears {
-    pub at_a: ShearStrain,
-    pub at_b: ShearStrain,
-    pub at_c: ShearStrain,
+    /// Covariant `γ_ξζ` sampled at tying point A = (½, 0).
+    pub gamma_xi_zeta_at_a: f64,
+    /// Covariant `γ_ηζ` sampled at tying point B = (0, ½).
+    pub gamma_eta_zeta_at_b: f64,
+    /// Covariant `γ_ξζ` sampled at tying point C = (½, ½).
+    pub gamma_xi_zeta_at_c: f64,
+    /// Covariant `γ_ηζ` sampled at tying point C = (½, ½).
+    pub gamma_eta_zeta_at_c: f64,
 }
 
 /// An edge-midpoint tying point used for the assumed transverse-shear strain
@@ -89,9 +86,15 @@ pub struct TyingPoint {
 
 /// Static array of the three MITC3+ tying points in canonical A, B, C order.
 const TYING_POINTS: &[TyingPoint] = &[
-    TyingPoint { coord: ShellReferenceCoord::new(0.5, 0.0) }, // A
-    TyingPoint { coord: ShellReferenceCoord::new(0.0, 0.5) }, // B
-    TyingPoint { coord: ShellReferenceCoord::new(0.5, 0.5) }, // C
+    TyingPoint {
+        coord: ShellReferenceCoord::new(0.5, 0.0),
+    }, // A
+    TyingPoint {
+        coord: ShellReferenceCoord::new(0.0, 0.5),
+    }, // B
+    TyingPoint {
+        coord: ShellReferenceCoord::new(0.5, 0.5),
+    }, // C
 ];
 
 /// MITC3+ Reissner-Mindlin triangular shell element.
@@ -116,10 +119,7 @@ impl Mitc3Plus {
     /// interior maximum of the bubble function.
     pub fn bubble_grad_at(&self, coord: ShellReferenceCoord) -> [f64; 2] {
         let ShellReferenceCoord { xi, eta } = coord;
-        [
-            eta * (1.0 - 2.0 * xi - eta),
-            xi * (1.0 - xi - 2.0 * eta),
-        ]
+        [eta * (1.0 - 2.0 * xi - eta), xi * (1.0 - xi - 2.0 * eta)]
     }
 
     /// Cubic bubble enrichment at `coord`.
@@ -173,28 +173,29 @@ impl Mitc3Plus {
     /// reference coordinate by the affine blending formula:
     ///
     /// ```text
-    /// γ_ξζ(ξ, η) = at_a.γ_ξζ  +  η · c
-    /// γ_ηζ(ξ, η) = at_b.γ_ηζ  −  ξ · c
+    /// γ_ξζ(ξ, η) = gamma_xi_zeta_at_a  +  η · c
+    /// γ_ηζ(ξ, η) = gamma_eta_zeta_at_b  −  ξ · c
     ///
-    /// where c = (at_c.γ_ξζ − at_c.γ_ηζ) − (at_a.γ_ξζ − at_b.γ_ηζ)
+    /// where c = (gamma_xi_zeta_at_c − gamma_eta_zeta_at_c)
+    ///         − (gamma_xi_zeta_at_a − gamma_eta_zeta_at_b)
     /// ```
     ///
     /// Properties:
-    /// - At A=(½,0): output `γ_ξζ = at_a.γ_ξζ`  (tying identity for A).
-    /// - At B=(0,½): output `γ_ηζ = at_b.γ_ηζ`  (tying identity for B).
-    /// - Constant when `at_a == at_b == at_c`: `c = 0`, output is uniform.
-    /// - Linear in `(ξ, η)`: the formula is affine by construction.
+    /// - At A=(½,0): output `γ_ξζ = gamma_xi_zeta_at_a`  (tying identity for A).
+    /// - At B=(0,½): output `γ_ηζ = gamma_eta_zeta_at_b`  (tying identity for B).
+    /// - Constant when paired inputs match: `c = 0`, output is uniform.
+    /// - Affine in `(ξ, η)`: constant base term plus a linear `η·c` / `−ξ·c` correction.
     pub fn interpolate_assumed_shear(
         &self,
         sampled: TyingShears,
         coord: ShellReferenceCoord,
     ) -> ShearStrain {
         let ShellReferenceCoord { xi, eta } = coord;
-        let c = (sampled.at_c.gamma_xi_zeta - sampled.at_c.gamma_eta_zeta)
-            - (sampled.at_a.gamma_xi_zeta - sampled.at_b.gamma_eta_zeta);
+        let c = (sampled.gamma_xi_zeta_at_c - sampled.gamma_eta_zeta_at_c)
+            - (sampled.gamma_xi_zeta_at_a - sampled.gamma_eta_zeta_at_b);
         ShearStrain {
-            gamma_xi_zeta: sampled.at_a.gamma_xi_zeta + eta * c,
-            gamma_eta_zeta: sampled.at_b.gamma_eta_zeta - xi * c,
+            gamma_xi_zeta: sampled.gamma_xi_zeta_at_a + eta * c,
+            gamma_eta_zeta: sampled.gamma_eta_zeta_at_b - xi * c,
         }
     }
 
@@ -324,11 +325,11 @@ mod tests {
         // one of the three edges of the reference triangle, where one
         // barycentric coordinate is zero, so the bubble must vanish.
         let edge_probes = [
-            ShellReferenceCoord::new(0.5, 0.0),  // mid of edge v0-v1 (η=0)
-            ShellReferenceCoord::new(0.0, 0.5),  // mid of edge v0-v2 (ξ=0)
-            ShellReferenceCoord::new(0.5, 0.5),  // mid of edge v1-v2 (ξ+η=1)
-            ShellReferenceCoord::new(0.25, 0.0), // quarter of edge v0-v1
-            ShellReferenceCoord::new(0.0, 0.25), // quarter of edge v0-v2
+            ShellReferenceCoord::new(0.5, 0.0),   // mid of edge v0-v1 (η=0)
+            ShellReferenceCoord::new(0.0, 0.5),   // mid of edge v0-v2 (ξ=0)
+            ShellReferenceCoord::new(0.5, 0.5),   // mid of edge v1-v2 (ξ+η=1)
+            ShellReferenceCoord::new(0.25, 0.0),  // quarter of edge v0-v1
+            ShellReferenceCoord::new(0.0, 0.25),  // quarter of edge v0-v2
             ShellReferenceCoord::new(0.75, 0.25), // on edge v1-v2
         ];
         for p in edge_probes.iter() {
@@ -384,23 +385,25 @@ mod tests {
     fn interpolate_assumed_shear_satisfies_c_tying_identity() {
         // At C = (½, ½), the MITC3+ assumed-strain formula guarantees:
         //
-        //   γ_ξζ_out − γ_ηζ_out  =  at_c.γ_ξζ − at_c.γ_ηζ
+        //   γ_ξζ_out − γ_ηζ_out  =  gamma_xi_zeta_at_c − gamma_eta_zeta_at_c
         //
         // This identity pins the `c` parameter:
-        //   c = (at_c.γ_ξζ − at_c.γ_ηζ) − (at_a.γ_ξζ − at_b.γ_ηζ)
+        //   c = (gamma_xi_zeta_at_c − gamma_eta_zeta_at_c)
+        //     − (gamma_xi_zeta_at_a − gamma_eta_zeta_at_b)
         //
         // A sign flip or swapped terms in `c` would not be caught by the
         // A/B tying tests alone, because those identities evaluate at
         // η=0 and ξ=0 respectively (the `η·c` and `ξ·c` cross-terms vanish).
         let sampled = TyingShears {
-            at_a: ShearStrain { gamma_xi_zeta: 0.5, gamma_eta_zeta: 0.1 },
-            at_b: ShearStrain { gamma_xi_zeta: 0.2, gamma_eta_zeta: 0.8 },
-            at_c: ShearStrain { gamma_xi_zeta: 0.3, gamma_eta_zeta: 0.4 },
+            gamma_xi_zeta_at_a: 0.5,
+            gamma_eta_zeta_at_b: 0.8,
+            gamma_xi_zeta_at_c: 0.3,
+            gamma_eta_zeta_at_c: 0.4,
         };
         let c_coord = ShellReferenceCoord::new(0.5, 0.5);
         let out_c = Mitc3Plus.interpolate_assumed_shear(sampled, c_coord);
         let lhs = out_c.gamma_xi_zeta - out_c.gamma_eta_zeta;
-        let rhs = sampled.at_c.gamma_xi_zeta - sampled.at_c.gamma_eta_zeta;
+        let rhs = sampled.gamma_xi_zeta_at_c - sampled.gamma_eta_zeta_at_c;
         assert!(
             (lhs - rhs).abs() < TOL,
             "at C: γ_ξζ − γ_ηζ = {lhs}, expected {rhs}",
@@ -410,34 +413,45 @@ mod tests {
     #[test]
     fn interpolate_assumed_shear_reproduces_gamma_xi_zeta_at_a_and_gamma_eta_zeta_at_b() {
         let sampled = TyingShears {
-            at_a: ShearStrain { gamma_xi_zeta: 0.5, gamma_eta_zeta: 0.1 },
-            at_b: ShearStrain { gamma_xi_zeta: 0.2, gamma_eta_zeta: 0.8 },
-            at_c: ShearStrain { gamma_xi_zeta: 0.3, gamma_eta_zeta: 0.4 },
+            gamma_xi_zeta_at_a: 0.5,
+            gamma_eta_zeta_at_b: 0.8,
+            gamma_xi_zeta_at_c: 0.3,
+            gamma_eta_zeta_at_c: 0.4,
         };
-        // At tying point A = (½, 0): γ_ξζ output must equal at_a.gamma_xi_zeta.
+        // At tying point A = (½, 0): γ_ξζ output must equal gamma_xi_zeta_at_a.
         let a = ShellReferenceCoord::new(0.5, 0.0);
         let out_a = Mitc3Plus.interpolate_assumed_shear(sampled, a);
         assert!(
-            (out_a.gamma_xi_zeta - sampled.at_a.gamma_xi_zeta).abs() < TOL,
+            (out_a.gamma_xi_zeta - sampled.gamma_xi_zeta_at_a).abs() < TOL,
             "at A: gamma_xi_zeta = {}, expected {}",
             out_a.gamma_xi_zeta,
-            sampled.at_a.gamma_xi_zeta,
+            sampled.gamma_xi_zeta_at_a,
         );
-        // At tying point B = (0, ½): γ_ηζ output must equal at_b.gamma_eta_zeta.
+        // At tying point B = (0, ½): γ_ηζ output must equal gamma_eta_zeta_at_b.
         let b = ShellReferenceCoord::new(0.0, 0.5);
         let out_b = Mitc3Plus.interpolate_assumed_shear(sampled, b);
         assert!(
-            (out_b.gamma_eta_zeta - sampled.at_b.gamma_eta_zeta).abs() < TOL,
+            (out_b.gamma_eta_zeta - sampled.gamma_eta_zeta_at_b).abs() < TOL,
             "at B: gamma_eta_zeta = {}, expected {}",
             out_b.gamma_eta_zeta,
-            sampled.at_b.gamma_eta_zeta,
+            sampled.gamma_eta_zeta_at_b,
         );
     }
 
     #[test]
-    fn interpolate_assumed_shear_is_constant_when_all_tying_inputs_match() {
-        let k = ShearStrain { gamma_xi_zeta: 0.7, gamma_eta_zeta: -0.4 };
-        let sampled = TyingShears { at_a: k, at_b: k, at_c: k };
+    fn interpolate_assumed_shear_is_constant_when_paired_tying_inputs_match() {
+        // c = (gamma_xi_zeta_at_c - gamma_eta_zeta_at_c)
+        //   - (gamma_xi_zeta_at_a - gamma_eta_zeta_at_b)
+        // Setting the paired inputs gamma_xi_zeta_at_a == gamma_xi_zeta_at_c and
+        //                            gamma_eta_zeta_at_b == gamma_eta_zeta_at_c gives c = 0.
+        let gx = 0.7_f64;
+        let ge = -0.4_f64;
+        let sampled = TyingShears {
+            gamma_xi_zeta_at_a: gx,
+            gamma_eta_zeta_at_b: ge,
+            gamma_xi_zeta_at_c: gx,
+            gamma_eta_zeta_at_c: ge,
+        };
         let probes = [
             ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
             ShellReferenceCoord::new(0.5, 0.0),
@@ -448,24 +462,29 @@ mod tests {
         for p in probes.iter() {
             let out = Mitc3Plus.interpolate_assumed_shear(sampled, *p);
             assert!(
-                (out.gamma_xi_zeta - k.gamma_xi_zeta).abs() < TOL,
+                (out.gamma_xi_zeta - gx).abs() < TOL,
                 "at {:?}: gamma_xi_zeta = {}, expected {}",
-                p, out.gamma_xi_zeta, k.gamma_xi_zeta,
+                p,
+                out.gamma_xi_zeta,
+                gx,
             );
             assert!(
-                (out.gamma_eta_zeta - k.gamma_eta_zeta).abs() < TOL,
+                (out.gamma_eta_zeta - ge).abs() < TOL,
                 "at {:?}: gamma_eta_zeta = {}, expected {}",
-                p, out.gamma_eta_zeta, k.gamma_eta_zeta,
+                p,
+                out.gamma_eta_zeta,
+                ge,
             );
         }
     }
 
     #[test]
-    fn interpolate_assumed_shear_is_linear_in_reference_coords() {
+    fn interpolate_assumed_shear_is_affine_in_reference_coords() {
         let sampled = TyingShears {
-            at_a: ShearStrain { gamma_xi_zeta: 1.0, gamma_eta_zeta: 0.0 },
-            at_b: ShearStrain { gamma_xi_zeta: 0.0, gamma_eta_zeta: 1.0 },
-            at_c: ShearStrain { gamma_xi_zeta: 0.5, gamma_eta_zeta: 0.5 },
+            gamma_xi_zeta_at_a: 1.0,
+            gamma_eta_zeta_at_b: 1.0,
+            gamma_xi_zeta_at_c: 0.5,
+            gamma_eta_zeta_at_c: 0.5,
         };
         let p1 = ShellReferenceCoord::new(0.1, 0.2);
         let p2 = ShellReferenceCoord::new(0.4, 0.3);
@@ -478,12 +497,14 @@ mod tests {
         assert!(
             (rm.gamma_xi_zeta - mid_xi).abs() < TOL,
             "linearity: gamma_xi_zeta at midpoint = {}, expected {}",
-            rm.gamma_xi_zeta, mid_xi,
+            rm.gamma_xi_zeta,
+            mid_xi,
         );
         assert!(
             (rm.gamma_eta_zeta - mid_eta).abs() < TOL,
             "linearity: gamma_eta_zeta at midpoint = {}, expected {}",
-            rm.gamma_eta_zeta, mid_eta,
+            rm.gamma_eta_zeta,
+            mid_eta,
         );
     }
 

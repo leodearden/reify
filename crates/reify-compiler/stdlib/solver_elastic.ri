@@ -70,7 +70,7 @@ enum ShellForce { Off, Auto, On }
 // ── ElasticOptions ───────────────────────────────────────────────────────────
 
 // `ElasticOptions` is the configuration object passed to the FEA solver.
-// All nine params have sensible defaults so a bare `ElasticOptions()`
+// All eleven params have sensible defaults so a bare `ElasticOptions()`
 // instantiation compiles and yields the standard solver setup; callers
 // override individual fields at construction (e.g.,
 // `ElasticOptions(element_order: ElementOrder.P2, max_iter: 5000)`).
@@ -101,9 +101,14 @@ enum ShellForce { Off, Auto, On }
 //                            classified as shell-eligible (Auto mode).
 //                            Default 0.2 (PRD T17, §"Resolved design
 //                            decisions", structural-analysis-shells.md).
-//                            Must be in (0, 1): non-positive would prevent
-//                            all auto-classification; ≥ 1 would classify
-//                            every body as shell-eligible. Enforced by
+//                            Must be in (0, 1): non-positive prevents all
+//                            auto-classification; > 1 silently defeats Auto
+//                            mode (every body classifies as shell-eligible);
+//                            exactly 1.0 is a knife-edge (only affects
+//                            perfect-cube/sphere bodies where thickness ==
+//                            max_extent — edge case, not recommended).
+//                            Strict `< 1` cap excludes both > 1 and == 1.0
+//                            under one rule (esc-3030-68). Enforced by
 //                            `constraint shell_threshold > 0` and
 //                            `constraint shell_threshold < 1`.
 //   shell_voxel_size       — voxel resolution for medial-axis extraction.
@@ -119,21 +124,54 @@ enum ShellForce { Off, Auto, On }
 //                            PRD T3 will revise). Non-positive values would
 //                            silently disable pruning; enforced by
 //                            `constraint shell_branch_prune_ratio > 0`.
+//                            TODO(parser-quirk, esc-3030-68): the default is
+//                            1.01, NOT 1.0 — do not "normalize" it back to
+//                            1.0. Whole-number Real literals like `1.0` are
+//                            stored as `Int(1)` due to a tokenizer quirk: the
+//                            lexer reads `1` as an Int token, then `.0` as a
+//                            member-access that resolves to nothing, so `1.0`
+//                            silently re-types the field as Int. The 1.01 value
+//                            was chosen specifically to exercise the Real parser
+//                            path and avoid this bug. Cross-ref: the
+//                            `elastic_options_shell_param_defaults_match_spec`
+//                            test docstring documents the same quirk. PRD T3
+//                            will revise the empirical default; until then,
+//                            any change must keep the value non-integer.
 //   shell_force            — off/auto/on tri-state forcing. `Auto` (default)
 //                            classifies by `shell_threshold`; `Off` forces
 //                            3-D solid formulation for all bodies; `On`
 //                            forces shell formulation for all bodies.
 //                            See `ShellForce` enum doc.
+//   force_tet              — when `true`, disables hex/wedge promotion entirely
+//                            and forces a pure tetrahedral mesh. Default `false`
+//                            (promotion is automatic when detection succeeds).
+//                            Useful for debugging or A/B accuracy studies at
+//                            equal DOF count. PRD `docs/prds/v0_3/hex-wedge-
+//                            meshing.md` task #9, §"Two opposing escape hatches".
+//                            Mutual exclusion: `!(force_tet && require_hex_wedge)`
+//                            is enforced by a structure-level constraint.
+//   require_hex_wedge      — when `true`, upgrades any tet fall-back to a hard
+//                            error ("tell me if my geometry doesn't qualify").
+//                            Default `false` (fall-back to tets is silent).
+//                            Designed for thin-body performance-tuning workflows
+//                            where the caller needs confirmation that hex/wedge
+//                            elements were actually generated. PRD `docs/prds/
+//                            v0_3/hex-wedge-meshing.md` task #9, §"Two opposing
+//                            escape hatches". Mutual exclusion: same constraint
+//                            as `force_tet` above.
 structure def ElasticOptions {
     param element_order : ElementOrder = ElementOrder.P1
     param mesh_size : Option<Length> = none
     param max_iter : Int = 1000
-    param cg_tolerance : Real = 0.000001
+    param cg_tolerance : Real = 0.000001 // dimensionless
     param threads : Option<Int> = none
-    param shell_threshold : Real = 0.2
+    param shell_threshold : Real = 0.2 // dimensionless
     param shell_voxel_size : Option<Length> = none
-    param shell_branch_prune_ratio : Real = 1.01
+    // NOTE(parser-quirk, esc-3030-68): do NOT normalize to 1.0 — see doc above.
+    param shell_branch_prune_ratio : Real = 1.01 // dimensionless
     param shell_force : ShellForce = ShellForce.Auto
+    param force_tet : Bool = false
+    param require_hex_wedge : Bool = false
 
     // A non-positive `max_iter` would let the solver exit before doing any
     // work; declaring the lower bound at the structure-def level makes the
@@ -160,13 +198,20 @@ structure def ElasticOptions {
     // `thickness/extent < threshold`, so no body would be treated as
     // shell-eligible. Mirrors the `cg_tolerance > 0` discipline.
     constraint shell_threshold > 0
-    // `shell_threshold` also has a natural upper bound of 1: the ratio
-    // `thickness/extent` is in [0, 1] for any non-degenerate body (thickness
-    // is always ≤ the body's maximum extent), so a threshold ≥ 1 would
-    // classify every body as shell-eligible regardless of its actual shape,
-    // silently defeating the purpose of Auto mode. The constraint prevents
-    // this silent misuse. PRD T17, §"Resolved design decisions",
-    // structural-analysis-shells.md (classification rule).
+    // `shell_threshold` also has a natural upper bound strictly below 1.
+    // `thickness/extent` ∈ [0, 1] for any non-degenerate body (thickness is
+    // always ≤ maximum extent). Two distinct hazard zones:
+    //   threshold > 1  — silently defeats Auto mode: every body satisfies
+    //                    `thickness/extent < threshold` regardless of shape,
+    //                    so every body is classified shell-eligible. This
+    //                    inverts the predicate's polarity and is catastrophic.
+    //   threshold == 1 — knife-edge: only perfect-cube or perfect-sphere
+    //                    bodies (where thickness == max_extent exactly) are
+    //                    affected. Not catastrophic for Auto mode in practice,
+    //                    but a degenerate and unexpected configuration.
+    // The strict `< 1` cap excludes both hazard zones under one rule —
+    // conservative but unambiguous (esc-3030-68). PRD T17, §"Resolved design
+    // decisions", structural-analysis-shells.md (classification rule).
     constraint shell_threshold < 1
     // `shell_branch_prune_ratio` is a length ratio for medial-axis spurious-
     // branch removal: branches whose length is less than
@@ -176,6 +221,17 @@ structure def ElasticOptions {
     // than a non-positive length times thickness). Mirrors the
     // `cg_tolerance > 0` discipline.
     constraint shell_branch_prune_ratio > 0
+    // `force_tet` and `require_hex_wedge` are opposing escape hatches: the
+    // former disables hex/wedge promotion entirely; the latter upgrades any
+    // tet fall-back to a hard error. Setting both true is a contradiction —
+    // flag it as a validation error at construction time. Encoded as
+    // `!(force_tet && require_hex_wedge)` rather than the De Morgan
+    // equivalent `!force_tet || !require_hex_wedge` because the negated-
+    // conjunction form directly matches the spec language ("not both true").
+    // PRD `docs/prds/v0_3/hex-wedge-meshing.md` task #9, §"Two opposing
+    // escape hatches"; same task-2544 explicit-contract convention as the
+    // positivity/upper-bound constraints above.
+    constraint !(force_tet && require_hex_wedge)
 }
 
 // ── ElasticResult ────────────────────────────────────────────────────────────
@@ -184,18 +240,23 @@ structure def ElasticOptions {
 // has no defaults — every field is populated by the solver at run time;
 // constructing one outside that flow is meaningless.
 //
-// TODO(field-in-param): once `resolve_parameterized_builtin_type`
+// TODO(field-in-param, task #3117): once `resolve_parameterized_builtin_type`
 // (`crates/reify-compiler/src/type_resolution.rs:1340-1398`) accepts
-// `Field<X, Y>` in `param` positions, tighten `displacement` to
-// `Field<Point3<Length>, Vector3<Length>>` and `stress` to
-// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` per the PRD spec
-// (`docs/prds/v0_3/structural-analysis-fea.md` task #4). Until then the
-// `Real` placeholder lets a buggy runtime implementation accidentally
-// write a scalar into these slots and type-check successfully — the
-// runtime FEA solver in PRD task #16 is the only writer, so the hazard
-// is contained, but a follow-up task should revisit these types when the
-// type resolver gains Field-in-param support so the placeholder doesn't
-// quietly become permanent.
+// `Field<X, Y>` in `param` positions, tighten the following six field-typed
+// slots in a single migration pass:
+//   displacement     → Field<Point3<Length>, Vector3<Length>>
+//   stress           → Field<Point3<Length>, Tensor<2, 3, Pressure>>
+//   frame            → Field<Point3<Length>, Matrix<3, 3, Real>>
+//   ShellStress.top    → Field<Point3<Length>, Tensor<2, 3, Pressure>>
+//   ShellStress.mid    → Field<Point3<Length>, Tensor<2, 3, Pressure>>
+//   ShellStress.bottom → Field<Point3<Length>, Tensor<2, 3, Pressure>>
+// Until then the `Real` placeholder lets the runtime implementation write
+// Field-typed values regardless of the static `param` annotation — the
+// runtime FEA solver in PRD task #16 is the only writer, so the hazard is
+// contained. Task #3117 investigates whether the existing Field arm at
+// type_resolution.rs:1397 already handles param-position Field<X,Y> (the
+// TODO may be stale) and either tightens these sites or extends the resolver.
+// Real-placeholder audit: docs/notes/stdlib-real-placeholder-audit.md
 //
 // Field semantics:
 //   displacement  — per-mesh-node displacement vector, returned as a
@@ -212,6 +273,27 @@ structure def ElasticOptions {
 //                   runtime. Same Real-placeholder rationale as
 //                   `displacement` above; covered by the same
 //                   TODO(field-in-param).
+//   frame         — per-mesh-element local-to-global rotation matrix,
+//                   returned as a `Field<Point3<Length>, Matrix<3, 3, Real>>`
+//                   at runtime (one 3×3 orthogonal matrix per element).
+//                   Statically declared as `Real` — same placeholder
+//                   rationale and TODO(field-in-param) as `displacement` /
+//                   `stress` above.
+//                   Tet population convention: the engine sets
+//                   `frame = Value::Undef` because tet stress is already in
+//                   the global Cartesian frame — no per-element local frame
+//                   exists for solid elements. Using Undef (rather than a
+//                   synthesised identity field) signals the absence cleanly
+//                   and prevents silent mistreatment by shell pipeline code
+//                   that forgets to check element type.
+//                   Shell population convention: the engine populates the
+//                   per-element MITC3+ local frame derived from the
+//                   mid-surface mesher (the frame whose z-axis is the
+//                   element normal). Callers can apply `to_global(stress,
+//                   frame)` (engine-integration task T18-T20) to transform
+//                   shell stress into the global frame.
+//                   PRD reference: docs/prds/v0_4/structural-analysis-shells.md
+//                   § "Stress through thickness".
 //   max_von_mises — peak von-Mises equivalent stress over the mesh.
 //                   Convenience scalar for safety-factor / yield-margin
 //                   comparisons; equivalent to
@@ -227,6 +309,7 @@ structure def ElasticOptions {
 structure def ElasticResult {
     param displacement : Real
     param stress : Real
+    param frame : Real
     param max_von_mises : Pressure
     param converged : Bool
     param iterations : Int
@@ -244,4 +327,44 @@ structure def ElasticResult {
     // of the deviatoric stress tensor, hence a magnitude. Negative values are
     // physically impossible. Same task-2544 rationale as above.
     constraint max_von_mises >= 0
+}
+
+// ── ShellStress ──────────────────────────────────────────────────────────────
+
+// `ShellStress` is the through-thickness stress container for shell elements.
+// It carries three stress channels, one per integration layer:
+//
+//   top    — top-surface stress (outer fibre in the solver's local-z direction).
+//   mid    — mid-surface (neutral-plane) stress. For tet results, this is
+//            equal to `top` and `bottom` (no through-thickness gradient).
+//            The backward-compatible alias `result.stress` targets this channel
+//            for tet→shell migration; the alias semantics are implemented by
+//            engine-integration tasks T18-T20.
+//   bottom — bottom-surface stress (inner fibre opposite to `top`).
+//
+// At runtime each channel is a `Field<Point3<Length>, Tensor<2, 3, Pressure>>`
+// — a per-mesh-node Cauchy stress tensor. These are declared as `Real`
+// placeholders for the same reason as `ElasticResult.displacement` and
+// `ElasticResult.stress`: Reify's `resolve_parameterized_builtin_type` does
+// not yet support `Field<X, Y>` in `param` positions. See the
+// TODO(field-in-param, task #3117) block above (in ElasticResult) for the
+// planned migration pass that will tighten all six field-typed slots
+// (displacement, stress, frame, top, mid, bottom) in a single diff.
+//
+// Tet-result population convention: the engine calls
+// `ShellStress::homogeneous(field)` (Rust constructor in
+// `crates/reify-solver-elastic/src/shell_result.rs`), which sets
+// top == mid == bottom == the single tet stress field. This preserves the
+// invariant that `ShellStress` always has all three channels populated even
+// for solid-element results that have no through-thickness variation.
+//
+// No defaults, no constraints — output container only, populated exclusively
+// by the solver. Mirrors the `ElasticResult` shape discipline.
+//
+// PRD reference: docs/prds/v0_4/structural-analysis-shells.md §
+// "Stress through thickness".
+structure def ShellStress {
+    param top : Real
+    param mid : Real
+    param bottom : Real
 }

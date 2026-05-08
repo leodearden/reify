@@ -94,7 +94,7 @@ fn check_query_many_len(
 /// kernel and is callable from `&self`/`&K` contexts. Callers that hold
 /// `&mut K` (needed for the preceding `extract_edges`/`extract_faces` call)
 /// compile unchanged because `&mut K` coerces to `&K` automatically.
-fn query_per_subshape<K: GeometryKernel + ?Sized, F>(
+pub(crate) fn query_per_subshape<K: GeometryKernel + ?Sized, F>(
     kernel: &K,
     ids: &[GeometryHandleId],
     selector: &'static str,
@@ -122,7 +122,7 @@ where
 ///
 /// `id` is supplied so predicate-side error messages can name the offending
 /// sub-shape; predicates that don't need it may use `_id`.
-fn filter_by_value<K, Q, F>(
+pub(crate) fn filter_by_value<K, Q, F>(
     kernel: &K,
     ids: &[GeometryHandleId],
     selector_label: &'static str,
@@ -334,7 +334,7 @@ pub fn faces_by_area_with_tags<K: GeometryKernel + ?Sized>(
 ///
 /// Returns `QueryError::QueryFailed` on any deviation from the expected
 /// shape (non-string Value, malformed JSON, missing numeric fields).
-fn parse_xyz_value(value: &Value, query_label: &str) -> Result<[f64; 3], QueryError> {
+pub(crate) fn parse_xyz_value(value: &Value, query_label: &str) -> Result<[f64; 3], QueryError> {
     let s = match value {
         Value::String(s) => s,
         other => {
@@ -358,7 +358,7 @@ fn parse_xyz_value(value: &Value, query_label: &str) -> Result<[f64; 3], QueryEr
 /// into `[x, y, z]`. Returns `None` on any structural deviation. Used
 /// internally by the filter selectors to read the kernel's Point3 JSON
 /// without taking on a serde_json dependency.
-fn parse_xyz_json(s: &str) -> Option<[f64; 3]> {
+pub(crate) fn parse_xyz_json(s: &str) -> Option<[f64; 3]> {
     let mut x: Option<f64> = None;
     let mut y: Option<f64> = None;
     let mut z: Option<f64> = None;
@@ -390,7 +390,7 @@ fn parse_xyz_json(s: &str) -> Option<[f64; 3]> {
 /// missing colon between key and value, or a value that fails to parse
 /// as `f64`. The kernel never emits nested objects or string values for
 /// the payloads consumed here, so a naive comma-split is safe.
-fn parse_flat_number_object<F>(s: &str, mut on_pair: F) -> Option<()>
+pub(crate) fn parse_flat_number_object<F>(s: &str, mut on_pair: F) -> Option<()>
 where
     F: FnMut(&str, f64) -> bool,
 {
@@ -417,7 +417,7 @@ where
 /// The `!mag.is_finite()` guard rejects NaN and ±∞ inputs before they
 /// poison downstream `acos` / `clamp` arithmetic — `mag < f64::EPSILON`
 /// alone does not catch NaN (any comparison with NaN is false).
-fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
+pub(crate) fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
     let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if !mag.is_finite() || mag < f64::EPSILON {
         return None;
@@ -426,8 +426,31 @@ fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
 }
 
 /// Dot product of two 3-vectors.
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+pub(crate) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Validate that `angular_tol_rad` is finite and in the inclusive range
+/// `[0, max]`, returning `Err(QueryError::QueryFailed)` on violation.
+///
+/// `fn_name` names the calling selector in the diagnostic.  `max_label` is
+/// the human-readable form of `max` (e.g. `"π/2"` or `"π"`) so the error
+/// message uses Unicode rather than a raw float literal.
+///
+/// Used by all five angular-tolerance selectors to guard NaN, ±∞, and
+/// out-of-range values **before** any kernel touch or tag-table mutation.
+pub(crate) fn validate_angular_tol(
+    fn_name: &'static str,
+    tol: f64,
+    max: f64,
+    max_label: &'static str,
+) -> Result<(), QueryError> {
+    if !tol.is_finite() || !(0.0..=max).contains(&tol) {
+        return Err(QueryError::QueryFailed(format!(
+            "{fn_name}: angular_tol_rad must be finite and in [0, {max_label}] (got {tol})"
+        )));
+    }
+    Ok(())
 }
 
 /// Return the subset of `extract_faces(handle)` whose surface normal at
@@ -451,6 +474,11 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 ///
 /// - Returns `QueryError::QueryFailed` if `target` is the zero vector or
 ///   contains a non-finite component (an undefined direction).
+/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
+///   outside the valid range `[0, π]`. The predicate uses `acos`, whose output
+///   is naturally bounded in `[0, π]`, making any value outside that range
+///   meaningless. Negative tol silently rejects everything; tol > π silently
+///   accepts everything — both are incorrect semantics.
 /// - Propagates any error from `extract_faces`.
 /// - Propagates any error from a per-face `FaceNormal` query.
 /// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal`
@@ -462,6 +490,7 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
     target: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    validate_angular_tol("faces_by_normal", angular_tol_rad, std::f64::consts::PI, "π")?;
     let target = normalize3(target).ok_or_else(|| {
         QueryError::QueryFailed(
             "faces_by_normal: target direction must be non-zero and finite".into(),
@@ -506,6 +535,10 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
 ///
 /// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
 ///   contains a non-finite component (an undefined direction).
+/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
+///   outside the valid range `[0, π/2]`. Values beyond π/2 cause `cos` to go
+///   negative, making the `|dot| >= cos(tol)` predicate trivially true for all
+///   edges (silent over-acceptance). Only `[0, π/2]` has well-defined semantics.
 /// - Propagates any error from `extract_edges`.
 /// - Propagates any error from a per-edge `EdgeTangent` query.
 /// - Returns `QueryError::QueryFailed` on a malformed tangent payload
@@ -516,6 +549,12 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    validate_angular_tol(
+        "edges_parallel_to",
+        angular_tol_rad,
+        std::f64::consts::FRAC_PI_2,
+        "π/2",
+    )?;
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "edges_parallel_to: axis direction must be non-zero and finite".into(),
@@ -556,8 +595,9 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
 /// whose `source_span` and `step_kind` are copied from `parent_tag` and whose
 /// `sub_index` is `i as u32`.
 ///
-/// **Axis validation happens before extraction:** if `axis` is the zero vector
-/// or contains a non-finite component, the function returns a
+/// **Both tolerance and axis are validated before extraction:** if
+/// `angular_tol_rad` is out of range or non-finite, or if `axis` is the zero
+/// vector or contains a non-finite component, the function returns a
 /// `QueryError::QueryFailed` immediately, before calling `extract_edges` or
 /// touching `table`. This matches the baseline's "fail before kernel touch"
 /// contract.
@@ -574,7 +614,13 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
 ///
 /// # Errors
 ///
-/// Same as [`edges_parallel_to`].
+/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
+///   outside the valid range `[0, π/2]`. Fires before any kernel touch or
+///   table mutation.
+/// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
+///   contains a non-finite component. Fires before any kernel touch or table
+///   mutation.
+/// - Otherwise same as [`edges_parallel_to`].
 pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     table: &mut FeatureTagTable,
@@ -583,9 +629,15 @@ pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
-    // Axis validation happens BEFORE extract_edges / table mutation:
-    // "fail before kernel touch" contract pinned by
-    // edges_parallel_to_with_tags_zero_axis_errors_before_table_mutation.
+    // Tolerance validation is FIRST — before axis normalization, extract_edges,
+    // and table mutation. "Fail before kernel touch" contract pinned by
+    // edges_parallel_to_with_tags_*_errors_before_table_mutation tests.
+    validate_angular_tol(
+        "edges_parallel_to_with_tags",
+        angular_tol_rad,
+        std::f64::consts::FRAC_PI_2,
+        "π/2",
+    )?;
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "edges_parallel_to_with_tags: axis direction must be non-zero and finite".into(),
@@ -762,7 +814,7 @@ pub fn resolve_unique_by_tag(
 ///
 /// Returns `QueryError::QueryFailed` on any deviation from the expected
 /// shape (non-string Value, malformed JSON, missing zmin/zmax fields).
-fn parse_bbox_z_extents(value: &Value) -> Result<(f64, f64), QueryError> {
+pub(crate) fn parse_bbox_z_extents(value: &Value) -> Result<(f64, f64), QueryError> {
     let s = match value {
         Value::String(s) => s,
         other => {
@@ -781,7 +833,7 @@ fn parse_bbox_z_extents(value: &Value) -> Result<(f64, f64), QueryError> {
 /// Parse `{"xmin":NUMBER,...,"zmax":NUMBER}` (with arbitrary whitespace)
 /// for the `zmin` and `zmax` keys, ignoring the other axis extents.
 /// Returns `None` on any structural deviation.
-fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
+pub(crate) fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
     let mut zmin: Option<f64> = None;
     let mut zmax: Option<f64> = None;
     parse_flat_number_object(s, |key, num| match key {
@@ -799,6 +851,66 @@ fn parse_bbox_z_extents_json(s: &str) -> Option<(f64, f64)> {
         _ => false,
     })?;
     Some((zmin?, zmax?))
+}
+
+/// Parse a `Value::String` BoundingBox payload (the kernel's
+/// `{"xmin":..,"ymin":..,"zmin":..,"xmax":..,"ymax":..,"zmax":..}` JSON
+/// encoding) and return `(min, max)` for the requested axis.
+///
+/// Generalises [`parse_bbox_z_extents`] to all three axes — the
+/// `extremal_by_bbox` selector dispatches on `Axis::{X, Y, Z}` and reads
+/// either the `*min` or `*max` extent depending on `ExtremalSense`.
+///
+/// Returns `QueryError::QueryFailed` on any deviation from the expected
+/// shape (non-string `Value`, malformed JSON, missing fields for the
+/// requested axis).
+pub(crate) fn parse_bbox_axis_extents(value: &Value, axis: u8) -> Result<(f64, f64), QueryError> {
+    let s = match value {
+        Value::String(s) => s,
+        other => {
+            return Err(QueryError::QueryFailed(format!(
+                "BoundingBox returned non-string value: {other:?}"
+            )));
+        }
+    };
+    parse_bbox_axis_extents_json(s, axis).ok_or_else(|| {
+        QueryError::QueryFailed(format!(
+            "BoundingBox returned malformed JSON payload: {s:?}"
+        ))
+    })
+}
+
+/// Parse `{"xmin":..,"ymin":..,"zmin":..,"xmax":..,"ymax":..,"zmax":..}`
+/// for the requested axis (`b'x' | b'y' | b'z'`), returning `(min, max)`.
+/// Returns `None` on structural deviation or unexpected `axis` byte.
+pub(crate) fn parse_bbox_axis_extents_json(s: &str, axis: u8) -> Option<(f64, f64)> {
+    let (min_key, max_key): (&str, &str) = match axis {
+        b'x' => ("xmin", "xmax"),
+        b'y' => ("ymin", "ymax"),
+        b'z' => ("zmin", "zmax"),
+        _ => return None,
+    };
+    let mut min_v: Option<f64> = None;
+    let mut max_v: Option<f64> = None;
+    parse_flat_number_object(s, |key, num| {
+        if key == min_key {
+            min_v = Some(num);
+            true
+        } else if key == max_key {
+            max_v = Some(num);
+            true
+        } else if matches!(
+            key,
+            "xmin" | "xmax" | "ymin" | "ymax" | "zmin" | "zmax"
+        ) {
+            // Other-axis extents are part of the well-formed payload
+            // but not needed for this caller; tolerate them silently.
+            true
+        } else {
+            false
+        }
+    })?;
+    Some((min_v?, max_v?))
 }
 
 #[cfg(test)]

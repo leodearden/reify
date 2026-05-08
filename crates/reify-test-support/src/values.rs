@@ -598,16 +598,13 @@ impl Default for TypeAliasMap {
 /// - `Velocity`: LENGTH / TIME (m/s)
 /// - `Acceleration`: LENGTH / TIME² (m/s²)
 pub fn common_type_aliases() -> HashMap<String, Type> {
-    let pressure_dim = FORCE.div(&DimensionVector::AREA);
     let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
-    let acceleration_dim =
-        DimensionVector::LENGTH.div(&DimensionVector::TIME.mul(&DimensionVector::TIME));
 
     TypeAliasMap::new()
         .alias(
             "Pressure",
             Type::Scalar {
-                dimension: pressure_dim,
+                dimension: DimensionVector::PRESSURE,
             },
         )
         .alias(
@@ -619,7 +616,7 @@ pub fn common_type_aliases() -> HashMap<String, Type> {
         .alias(
             "Acceleration",
             Type::Scalar {
-                dimension: acceleration_dim,
+                dimension: DimensionVector::ACCELERATION,
             },
         )
         .build()
@@ -1371,12 +1368,38 @@ mod tests {
             aliases.contains_key("Acceleration"),
             "should have Acceleration"
         );
-        // Pressure should be a Scalar with FORCE/AREA dimension
+        // Pressure must be a Scalar with the canonical PRESSURE dimension (kg·m⁻¹·s⁻²)
         match aliases["Pressure"] {
-            reify_types::Type::Scalar { dimension } => {
-                assert_ne!(dimension, reify_types::DimensionVector::DIMENSIONLESS);
+            Type::Scalar { dimension } => {
+                assert_eq!(
+                    dimension,
+                    DimensionVector::PRESSURE,
+                    "Pressure alias dimension should equal DimensionVector::PRESSURE"
+                );
             }
             _ => panic!("Pressure should be a Scalar type"),
+        }
+        // Velocity must be a Scalar with LENGTH/TIME dimension (m/s)
+        match aliases["Velocity"] {
+            Type::Scalar { dimension } => {
+                assert_eq!(
+                    dimension,
+                    DimensionVector::LENGTH.div(&DimensionVector::TIME),
+                    "Velocity alias dimension should equal LENGTH/TIME"
+                );
+            }
+            _ => panic!("Velocity should be a Scalar type"),
+        }
+        // Acceleration must be a Scalar with the canonical ACCELERATION dimension (m·s⁻²)
+        match aliases["Acceleration"] {
+            Type::Scalar { dimension } => {
+                assert_eq!(
+                    dimension,
+                    DimensionVector::ACCELERATION,
+                    "Acceleration alias dimension should equal DimensionVector::ACCELERATION"
+                );
+            }
+            _ => panic!("Acceleration should be a Scalar type"),
         }
     }
 

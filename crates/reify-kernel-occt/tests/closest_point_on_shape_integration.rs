@@ -17,7 +17,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, QueryError, Value};
+use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -338,4 +338,61 @@ fn closest_point_on_shape_unknown_handle_returns_invalid_handle() {
         ),
         other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// query() round-trip — task 2324 stdlib wiring
+// ---------------------------------------------------------------------------
+
+/// Round-trip the new `GeometryQuery::ClosestPointOnShape` variant via the
+/// generic `kernel.query(...)` dispatch. The wire format is the same JSON-Point3
+/// `{"x":_,"y":_,"z":_}` that `Centroid` / `FaceNormal` / `EdgeTangent` emit,
+/// so the eval-side dispatcher can reuse `parse_xyz_value`.
+///
+/// External point (10, 0, 0) → closest point on +X face ≈ (5, 0, 0).
+#[test]
+fn query_closest_point_on_shape_returns_xyz_json_for_external_point() {
+    let (kernel, box_id) = box_kernel();
+    let value = kernel
+        .query(&GeometryQuery::ClosestPointOnShape {
+            handle: box_id,
+            px: 10.0,
+            py: 0.0,
+            pz: 0.0,
+        })
+        .expect("query(ClosestPointOnShape) should succeed for valid box handle");
+
+    let json = match value {
+        Value::String(s) => s,
+        other => panic!(
+            "query(ClosestPointOnShape) must return Value::String for cross-arm \
+             format equality with Centroid/FaceNormal/EdgeTangent, got {other:?}"
+        ),
+    };
+
+    // Manually parse the {"x":_,"y":_,"z":_} payload — keep the test
+    // independent of the eval-side parse_xyz_value helper.
+    let parse = |key: &str| -> f64 {
+        let needle = format!("\"{key}\":");
+        let start = json
+            .find(&needle)
+            .unwrap_or_else(|| panic!("expected key {key:?} in {json:?}"))
+            + needle.len();
+        let tail = &json[start..];
+        let end = tail
+            .find([',', '}'])
+            .unwrap_or(tail.len());
+        tail[..end]
+            .trim()
+            .parse::<f64>()
+            .unwrap_or_else(|e| panic!("parse {key} from {json:?}: {e}"))
+    };
+    let (x, y, z) = (parse("x"), parse("y"), parse("z"));
+
+    assert!(
+        (x - 5.0).abs() < 1e-6,
+        "expected x≈5.0 (closest +X-face hit), got {x}"
+    );
+    assert!(y.abs() < 1e-6, "expected y≈0.0, got {y}");
+    assert!(z.abs() < 1e-6, "expected z≈0.0, got {z}");
 }

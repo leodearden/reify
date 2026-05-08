@@ -37,6 +37,7 @@ pub mod source_location;
 pub use source_location::resolve_entity_source_location;
 pub mod field_import_provenance;
 pub mod morph_stage_b;
+pub mod persistent_cache;
 pub mod test_runner;
 pub mod tolerance_bucket;
 pub mod tolerance_budget;
@@ -52,6 +53,15 @@ pub use morph_stage_b::{
 pub mod structural_classifier;
 pub use structural_classifier::{
     ParameterClass, classify_cell, realization_graph_shape_hash, stage_a_eligible,
+};
+pub mod sweep_classifier;
+pub use sweep_classifier::{SweptKind, SweptKindTable, classify_swept_body};
+pub mod selector_vocabulary_v2;
+pub use selector_vocabulary_v2::{
+    Axis, ExtremalSense, adjacent_to_face, ancestor_faces_of_edge, complement, created_by_feature,
+    edges_by_curve_kind, edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
+    faces_by_surface_kind, faces_perpendicular_to, geom_universal, has_user_label, intersect,
+    owner_body_of, siblings_of_face, split_by_feature, union, user_label_eq,
 };
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
@@ -487,6 +497,23 @@ pub struct Engine {
     /// `feature_tag_table` once the attribute path covers all selector
     /// vocabulary.
     topology_attribute_table: TopologyAttributeTable,
+    /// Phase A swept-body classifications keyed by realization-final
+    /// `GeometryHandleId`. Mirrors the `feature_tag_table` /
+    /// `topology_attribute_table` shape and lifecycle.
+    ///
+    /// Populated by `Engine::execute_realization_ops` after a successful
+    /// realization completes — the realization's last `step_handles` entry is
+    /// the key, and the value is whatever `classify_swept_body(...)` returns
+    /// for the parallel `(ops, handles)` slice. Cleared and repopulated on
+    /// every `build()` / `build_snapshot()` / `tessellate_realizations()` /
+    /// `tessellate_snapshot()` call (per-build, not per-realization). Exposed
+    /// via `Engine::swept_kind_table()` for GUI / mesh-morphing consumers
+    /// that want to look up a Phase A `SweptKind` for a realized body.
+    ///
+    /// Phase B (axial-finishing recognition, PRD task #14) extends
+    /// `SweptKind` via additional fields/variants; the enum is
+    /// `#[non_exhaustive]` so that extension is non-breaking.
+    swept_kind_table: SweptKindTable,
     /// Per-engine realization cache keyed on `(entity_id, repr_kind, demanded_tol)`.
     ///
     /// Populated by `execute_realization_ops` after a fully-successful realization

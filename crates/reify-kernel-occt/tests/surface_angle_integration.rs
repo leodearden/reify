@@ -327,23 +327,16 @@ fn cylinder_curved_face_returns_finite_angle() {
         }
     }
 
-    // FaceNormal returns Value::String (JSON), e.g. `{"x":0.0,"y":0.0,"z":1.0}`.
-    // Parse the z component to identify the two flat caps (|n_z| ≈ 1).
-    let parse_nz = |face_id| -> f64 {
-        match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
-            Ok(Value::String(s)) => {
-                // Parse the JSON and extract the z component.
-                // Format is `{"x":<f>,"y":<f>,"z":<f>}`.
-                let parsed: serde_json::Value = serde_json::from_str(&s)
-                    .unwrap_or_else(|e| panic!("failed to parse FaceNormal JSON {s:?}: {e}"));
-                parsed["z"].as_f64().expect("FaceNormal JSON missing z component")
-            }
-            other => panic!("FaceNormal returned unexpected value: {other:?}"),
-        }
-    };
-
+    // Identify the two flat caps: their outward normals are (anti-)parallel to Z,
+    // so |n_z| ≈ 1. Use the typed helper to avoid hand-parsing FaceNormal JSON.
     let cap_indices: Vec<usize> = (0..3)
-        .filter(|&i| parse_nz(faces[i]).abs() > 0.99)
+        .filter(|&i| {
+            kernel
+                .face_outward_unit_normal_for_test(faces[i])
+                .expect("face_outward_unit_normal_for_test should succeed")[2]
+                .abs()
+                > 0.99
+        })
         .collect();
     assert_eq!(
         cap_indices.len(),
@@ -375,4 +368,47 @@ fn cylinder_curved_face_returns_finite_angle() {
             PI / 2.0
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// query() round-trip — task 2324 stdlib wiring
+// ---------------------------------------------------------------------------
+
+/// Round-trip `GeometryQuery::SurfaceAngle` via the generic `kernel.query(...)`
+/// dispatch. Picks one perpendicular box-face pair via the existing adjacency
+/// helper and asserts the kernel emits `Value::Real(rad)` ≈ π/2.
+///
+/// Mirrors the structure of `box_adjacent_faces_yield_pi_over_two` but goes
+/// through the typed-query interface that the eval-side dispatcher uses.
+#[test]
+fn query_surface_angle_returns_pi_over_two_for_adjacent_faces() {
+    let (mut kernel, box_id) = box_kernel();
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces should succeed");
+    assert_eq!(faces.len(), 6, "expected 6 faces for a box");
+
+    // Pick face[0] and one of its 4 adjacent neighbours — perpendicular by
+    // construction in a box.
+    let neighbors = neighbors_of(&kernel, box_id, 0);
+    let &j = neighbors
+        .iter()
+        .next()
+        .expect("face 0 must have at least one adjacent face");
+
+    let value = kernel
+        .query(&GeometryQuery::SurfaceAngle {
+            face_a: faces[0],
+            face_b: faces[j],
+        })
+        .expect("query(SurfaceAngle) should succeed for valid face handles");
+    let rad = match value {
+        Value::Real(r) => r,
+        other => panic!("expected Value::Real from SurfaceAngle, got {other:?}"),
+    };
+    assert!(
+        (rad - PI / 2.0).abs() < 1e-9,
+        "adjacent box faces (0, {j}): expected π/2 ≈ {:.10}, got {rad:.10}",
+        PI / 2.0
+    );
 }

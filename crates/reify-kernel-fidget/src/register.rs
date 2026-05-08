@@ -24,8 +24,10 @@
 //! - `(BooleanIntersection, Sdf)`
 //!
 //! Deliberately excluded from the v0.2 descriptor:
-//! - SDF primitives: deferred to avoid routing `field def` evaluations through
-//!   the stub kernel on every primitive build.
+//! - SDF primitives: kernel-only support (callers can `execute(Sphere|Box)`
+//!   directly to build SDF inputs), but not declared on the descriptor — the
+//!   task spec keeps descriptor side unchanged so the dispatcher does not
+//!   route primitive builds through fidget.
 //! - SDF→Mesh feature-preserving meshing (`Convert { from: Sdf } → Mesh`):
 //!   Fidget's signature feature (arch §10.8), deferred as a follow-up task
 //!   that requires a Mesh-native consumer.
@@ -33,51 +35,32 @@
 //!
 //! # Unconditional `inventory::submit!` decision
 //!
-//! Fidget has only a stub in this v0.2 task, so a `cfg(has_fidget)` gate
-//! would never fire — the registration would be dead code, defeating the point
-//! of "second integration in the sequence". Submitting unconditionally keeps
-//! the cross-crate integration test (step-7) clean and gives the dispatcher
-//! BFS a third real registered kernel. A follow-up task introducing real
-//! Fidget Rust JIT FFI can add `cfg(has_fidget)` gating to switch the factory
-//! without changing the registration shape.
+//! Fidget is pure-Rust with no FFI, no system lib, and no platform without it
+//! — the historical `cfg(has_fidget)` gate that would have mirrored OCCT's
+//! `has_occt` is unnecessary; submitting unconditionally is correct. The
+//! cross-crate integration test (`fidget_dispatches_for_sdf_boolean_when_only_kernel`)
+//! pins this and gives the dispatcher BFS a third real registered kernel to
+//! exercise on the Sdf repr family.
 //!
 //! # Design template
 //!
 //! `crates/reify-kernel-manifold/src/register.rs` — same `KERNEL_NAME` const,
 //! `*_capability_descriptor()` factory, `*_factory()`, and `inventory::submit!`
 //! pattern. Only the kernel name string, supports table contents (Sdf vs Mesh),
-//! the stub error string, and the doc comments' references differ.
+//! the kernel implementation, and the doc comments' references differ.
 
 use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
 
-/// Factory invoked by the engine once at startup, returning the stub
-/// [`FidgetKernel`](crate::kernel::FidgetKernel).
-///
-/// Real Fidget Rust JIT FFI is deferred to a follow-up task; this stub factory
-/// ensures the `inventory::submit!` below compiles and the registration
-/// materialises in `reify_eval::kernel_registry::registry()`. When the
-/// follow-up task adds real FFI, this function can switch behind
-/// `cfg(has_fidget)` without changing the registration shape.
+/// Factory invoked by the engine once at startup, returning a fresh
+/// [`FidgetKernel`](crate::kernel::FidgetKernel) backed by fidget 0.4's
+/// pure-Rust JIT (Tree storage + per-call `JitShape` evaluation).
 fn fidget_factory() -> Box<dyn GeometryKernel> {
     Box::new(crate::kernel::FidgetKernel::new())
 }
 
-// Unconditional submit — no `cfg(has_fidget)` gate (see design decisions in
-// the module doc). Fidget has only a stub in this v0.2 task, so a
-// `cfg(has_fidget)` gate would never fire and the registration would be dead
-// code. Submitting unconditionally keeps the cross-crate integration test
-// (step-7) clean and gives the dispatcher BFS a third real registered kernel
-// to exercise on the Sdf repr family.
-//
-// TODO(has_fidget): When real Fidget Rust JIT FFI lands (follow-up task), flip
-// this submit to `#[cfg(any(has_fidget, test))]` so the stub registers only
-// when Fidget is actually available or within this crate's own tests. Without
-// that gate, any binary that adds `reify-kernel-fidget` as a non-dev dep will
-// unconditionally register the stub kernel — which will, lex-min-wise, win over
-// manifold/occt for any future `(op, Sdf)` claim added during implementation
-// drift. The cross-crate isolation in the test layout (fidget dev-deps on
-// reify-eval, not the reverse) blocks that today, but the gate is the
-// structural enforcement that must land alongside the real FFI.
+// No `cfg(has_fidget)` gate needed — fidget is pure-Rust and always builds
+// (see the "Unconditional `inventory::submit!` decision" rationale in the
+// module doc).
 inventory::submit! {
     KernelRegistration {
         name: FIDGET_KERNEL_NAME,
@@ -93,6 +76,8 @@ inventory::submit! {
 ///
 /// Must equal `KernelId::Fidget.to_string()` (`"fidget"`) so the project-pin
 /// lookup in `reify-config` matches the registered adapter at runtime.
+/// Enforced by
+/// `crates/reify-config/tests/kernel_name_consistency.rs::fidget_kernel_name_const_matches_kernel_id_display`.
 ///
 /// # Lex-min note
 ///

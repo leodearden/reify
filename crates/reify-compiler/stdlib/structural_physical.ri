@@ -1,7 +1,12 @@
 // Stdlib: Structural & Physical Traits
 // Provides core trait definitions for physical and structural characterization
-// of engineering components. All dimensioned quantities use Real (dimensionless)
-// pending dedicated type system extensions in a future task.
+// of engineering components.
+//
+// Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
+// Tightenable-now params: volume, centroid_x/y/z, moment_of_inertia, max_deflection,
+// hardening_modulus, max_service_temp, seal_pressure_rating (task #3114).
+// Blocked-composite params: stiffness (N/m), thermal_conductivity, electrical_conductivity,
+// resistivity — pending named-dim aliases (task #3115).
 
 // ── Physical body trait ─────────────────────────────────────────────────────
 
@@ -58,7 +63,7 @@ trait Flexible {
 // Forcing those moduli onto every ED-conforming structure would duplicate the
 // material-slot machinery; the prior `: Elastic` edge was therefore redundant.
 trait ElasticallyDeformable : Flexible {
-    param max_elastic_strain : Real
+    param max_elastic_strain : Real // dimensionless
     constraint max_elastic_strain > 0
 }
 
@@ -75,7 +80,7 @@ trait ElasticallyDeformable : Flexible {
 // perfectly-plastic behaviour (no strain hardening), which is outside the scope
 // of this trait. Use a separate trait if perfectly-plastic models are required.
 trait Plastic : Flexible {
-    param plastic_strain : Real
+    param plastic_strain : Real // dimensionless
     param hardening_modulus : Real
     constraint hardening_modulus > 0
     constraint plastic_strain >= 0

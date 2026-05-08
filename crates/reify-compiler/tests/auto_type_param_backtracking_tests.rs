@@ -44,18 +44,18 @@
 //! `dfs_free_mode_exactly_sixteen_feasibles_emits_non_unique_without_elision_marker`,
 //! and `dfs_mixed_strict_and_free_with_two_feasibles_emits_ambiguous_not_non_unique`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use reify_compiler::auto_type_param::{
     AutoTypeParam, MAX_AUTO_TYPE_PARAM_CANDIDATES, MultiParamResolutionOutcome,
-    NON_UNIQUE_DISPLAY_CAP, SelectionResult, build_constraint_blame_map, resolve_auto_type_params,
+    NON_UNIQUE_DISPLAY_CAP, SelectionResult, resolve_auto_type_params,
     resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 use reify_types::{
-    BinOp, CompiledExpr, CompiledFunction, ConstraintNodeId, DiagnosticCode, Satisfaction,
-    Severity, SourceSpan, Type, Value, ValueCellId,
+    CompiledExpr, CompiledFunction, DiagnosticCode, Satisfaction, Severity, SourceSpan, Type,
+    Value, ValueCellId,
 };
 
 /// Build the `(template_registry, trait_registry)` pair that
@@ -3743,26 +3743,44 @@ structure def WaterCooled : Cooled {
         diagnostics[0].message
     );
     // (b2) Exactly NON_UNIQUE_DISPLAY_CAP witnesses are rendered — not more, not fewer.
-    // Count `; T=` separators: witnesses are joined by `"; "` so inter-witness
-    // separators = (witness count - 1).  With NON_UNIQUE_DISPLAY_CAP displayed witnesses
-    // the separator count is NON_UNIQUE_DISPLAY_CAP - 1.  (The
-    // `selected lexicographically-first '...'` suffix also contains `T=` but is preceded
-    // by `; selected`, not `; T=`, so it is not counted here.)
+    // Extract the witnesses section by splitting on structural delimiters that are
+    // intrinsic to the diagnostic format and independent of param-name spelling:
+    //   - prefix delimiter `"assignments: "` bounds the start of the witnesses_join section.
+    //   - elision delimiter `"; ("` bounds the end (the parenthesised elision marker starts
+    //     with `(more than … feasibles exist; rest elided)`).
+    // Witnesses produced by render_witnesses use only `=` and `,` separators (no `;` or `(`),
+    // so `"; ("` is unambiguous — it cannot appear inside a witness.
+    // Precondition: `"; ("` only appears when the total exceeds NON_UNIQUE_DISPLAY_CAP
+    // (elided branch). This fixture guarantees it by construction (5×5 = 25 > cap = 16);
+    // the assert below makes that dependency explicit so a future fixture-size or cap change
+    // surfaces a purposeful failure rather than a confusing `split_once` panic.
     {
-        let sep_count = diagnostics[0]
-            .message
-            .matches("; T=")
-            .count();
-        assert_eq!(
-            sep_count,
-            NON_UNIQUE_DISPLAY_CAP - 1,
-            "message must contain exactly {} '; T=' separators (== NON_UNIQUE_DISPLAY_CAP-1 \
-             inter-witness separators for {} displayed witnesses), \
-             got {} — a regression here means the display window was not applied; message: {:?}",
-            NON_UNIQUE_DISPLAY_CAP - 1,
+        let msg = &diagnostics[0].message;
+        assert!(
+            msg.contains("; ("),
+            "elision-marker boundary `\"; (\"` must be present in the diagnostic — \
+             this test exercises the elided branch (25 feasibles > NON_UNIQUE_DISPLAY_CAP {}); \
+             if NON_UNIQUE_DISPLAY_CAP was raised past 25 or the fixture shrank, \
+             update the fixture to restore total > cap; message: {:?}",
             NON_UNIQUE_DISPLAY_CAP,
-            sep_count,
-            diagnostics[0].message
+            msg
+        );
+        let witnesses_section = msg
+            .split_once("assignments: ")
+            .expect("diagnostic message must contain 'assignments: ' prefix")
+            .1
+            .split_once("; (")
+            .expect("diagnostic message must contain '; (' elision-marker boundary")
+            .0;
+        let witness_count = witnesses_section.split("; ").count();
+        assert_eq!(
+            witness_count,
+            NON_UNIQUE_DISPLAY_CAP,
+            "expected exactly {} witnesses rendered (display window not applied); \
+             witnesses section: {:?}; full message: {:?}",
+            NON_UNIQUE_DISPLAY_CAP,
+            witnesses_section,
+            msg
         );
     }
     // (c) Lex-first T candidate appears in the message.
@@ -4121,127 +4139,6 @@ structure def WaterCooled : Cooled {
     );
 }
 
-// ─── build_constraint_blame_map — basic TypeParam blame ─────────────────────
-
-/// `build_constraint_blame_map` must return one entry per constraint that
-/// references at least one in-scope `TypeParam`-typed cell. The entry maps
-/// the `ConstraintNodeId` to the `BTreeSet<usize>` of referenced param indices.
-///
-/// Setup: two cells (`field_t : TypeParam("T")`, `field_u : TypeParam("U")`),
-/// one `BinOp(Eq)` constraint whose `ValueRef`s address both cells.
-/// `params = [T(idx=0), U(idx=1)]` → blame set = `{0, 1}`.
-///
-/// Pins the "at least one TypeParam ref → entry present" half of the contract.
-/// The "no ref → absent" half is pinned by
-/// `build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints`.
-#[test]
-fn build_constraint_blame_map_returns_param_indices_referenced_by_constraint_expression() {
-    let field_t = ValueCellId::new("Coupling", "field_t");
-    let field_u = ValueCellId::new("Coupling", "field_u");
-    let expr = CompiledExpr::binop(
-        BinOp::Eq,
-        CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into())),
-        CompiledExpr::value_ref(field_u.clone(), Type::TypeParam("U".into())),
-        Type::Bool,
-    );
-    let template = TopologyTemplateBuilder::new("Coupling")
-        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
-        .param("Coupling", "field_u", Type::TypeParam("U".into()), None)
-        .constraint("Coupling", 0, None, expr)
-        .build();
-
-    let params = vec![
-        AutoTypeParam {
-            name: "T".to_string(),
-            bounds: vec![],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-        AutoTypeParam {
-            name: "U".to_string(),
-            bounds: vec![],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-    ];
-
-    let map = build_constraint_blame_map(&template, &params);
-
-    assert_eq!(
-        map.len(),
-        1,
-        "expect exactly one entry (one constraint with TypeParam refs); got: {:?}",
-        map
-    );
-    let cid = ConstraintNodeId::new("Coupling", 0);
-    assert_eq!(
-        map.get(&cid).cloned().unwrap_or_default(),
-        BTreeSet::from([0_usize, 1_usize]),
-        "constraint referencing both T(idx=0) and U(idx=1) cells must map to {{0, 1}}"
-    );
-}
-
-// ─── build_constraint_blame_map — exclusion invariants ──────────────────────
-
-/// `build_constraint_blame_map` must NOT insert an entry for constraints whose
-/// blame set would be empty. Two sub-cases:
-///
-/// (a) A cell typed `Type::TypeParam("Z")` where `Z` is NOT in `params=[T,U]`
-///     contributes nothing — the constraint that only ValueRefs that cell must
-///     be absent from the result map.
-///
-/// (b) A constraint whose expression is `CompiledExpr::literal(Value::Bool(true),
-///     Type::Bool)` (no ValueRef, no TypeParam anywhere) is also absent.
-///
-/// Setup: three cells (`field_t:T`, `field_u:U`, `field_z:Z`), two constraints:
-/// - c0: `ValueRef(field_z)` only  → blame={} (Z ∉ params) → absent
-/// - c1: `Bool(true)` literal      → blame={} (no ValueRef)  → absent
-///
-/// Pins the "empty blame → absent" invariant the DFS recursion relies on:
-/// `compute_deepest_blame_level` returns `None` for absent constraints and falls
-/// back to ordinary backtracking, so an accidental `map.insert(id, BTreeSet::new())`
-/// would incorrectly block backjumping even when no TypeParam blame exists.
-#[test]
-fn build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints() {
-    let field_z = ValueCellId::new("Coupling", "field_z");
-    // c0: ValueRef of field_z (typed TypeParam("Z"), out-of-scope)
-    let expr_c0 = CompiledExpr::value_ref(field_z.clone(), Type::TypeParam("Z".into()));
-    // c1: literal Bool(true) — no ValueRef, no TypeParam
-    let expr_c1 = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-
-    let template = TopologyTemplateBuilder::new("Coupling")
-        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
-        .param("Coupling", "field_u", Type::TypeParam("U".into()), None)
-        .param("Coupling", "field_z", Type::TypeParam("Z".into()), None)
-        .constraint("Coupling", 0, None, expr_c0)
-        .constraint("Coupling", 1, None, expr_c1)
-        .build();
-
-    let params = vec![
-        AutoTypeParam {
-            name: "T".to_string(),
-            bounds: vec![],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-        AutoTypeParam {
-            name: "U".to_string(),
-            bounds: vec![],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-        // Z is intentionally NOT in params — it must be treated as out-of-scope
-    ];
-
-    let map = build_constraint_blame_map(&template, &params);
-
-    assert!(
-        map.is_empty(),
-        "constraints with empty blame sets must not appear in the map (empty map expected); got: {:?}",
-        map
-    );
-}
-
 // ─── DFS backjumps to lex-first-param blame ─────────────────────────────────
 
 /// When the first leaf's constraint violation blames only `T` (the lex-first /
@@ -4406,6 +4303,22 @@ structure def Hot2 : Hot {
          message must contain 'RubberSeal'; got: {:?}",
         diagnostics[0].message
     );
+    // Pins the optimization's actual trace: WITH backjumping, exactly 5 leaves
+    // are visited × 1 constraint per leaf = 5 id records.
+    //   Leaf 1 (ORingSeal, AirCooled, Hot1) → Violated → blame={T(0)} → backjump to T
+    //   → skips the entire ORingSeal sub-tree (leaves 2–4 under ORingSeal never visited)
+    //   Leaves 2–5 under RubberSeal → Satisfied (4 leaves)
+    // Without backjumping: all 8 leaves × 1 constraint = 8 id records.
+    // Assumes resolver evaluates ALL constraints per leaf (no within-leaf
+    // short-circuit). If that changes, update the expected count, not the
+    // backjumping logic.
+    assert_eq!(
+        checker.calls().len(),
+        5,
+        "WITH backjumping: 5 leaves visited × 1 constraint = 5 id records \
+         (vs 8 without backjumping); got: {:?}",
+        checker.calls().len()
+    );
 }
 
 /// Backjumping uses `max` over the **union** of all violated constraints' blame
@@ -4553,6 +4466,24 @@ structure def Hot2 : Hot {
         "diagnostic must be AutoTypeParamNonUnique; got: {:?}",
         diagnostics[0].code
     );
+    // Pins the optimization's actual trace: WITH max-over-union backjumping,
+    // exactly 7 leaves are visited × 2 constraints per leaf = 14 id records.
+    //   Leaf 1 (ORingSeal, AirCooled, Hot1) → Violated → conflict {T(0),U(1)} →
+    //     J = max{0,1} = 1 = U → BackjumpTo(U) → skips (ORingSeal, AirCooled, Hot2) only
+    //   Leaves 2–7 (ORingSeal WaterCooled + 4×RubberSeal) → Satisfied (6 leaves)
+    //   Total: 7 leaves × 2 constraints = 14 id records
+    // Without backjumping: 8 leaves × 2 constraints = 16 id records.
+    // With min-over-union (J=0=T, incorrect): 4 leaves × 2 constraints = 8 id records.
+    // Assumes resolver evaluates ALL constraints per leaf (no within-leaf
+    // short-circuit). If that changes, update the expected count, not the
+    // backjumping logic.
+    assert_eq!(
+        checker.calls().len(),
+        14,
+        "WITH max-over-union backjumping: 7 leaves × 2 constraints = 14 id records \
+         (vs 16 no-backjump, vs 8 min-over-union); got: {:?}",
+        checker.calls().len()
+    );
 }
 
 /// When the parameterized template's only constraint has no `ValueRef` nodes
@@ -4615,14 +4546,10 @@ structure def WaterCooled : Cooled {
         },
     ];
 
-    // Verify the blame map is empty for this template + params combination.
-    let blame_map = build_constraint_blame_map(&template, &params);
-    assert!(
-        blame_map.is_empty(),
-        "Bool(true) literal constraint has no ValueRef / TypeParam refs; \
-         blame map must be empty; got: {:?}",
-        blame_map
-    );
+    // Bool(true) literal → empty blame in build_constraint_blame_map; see in-module
+    // `build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints`
+    // which pins that contract. The consequence asserted below is the end-to-end
+    // behavioral implication: empty blame map → DfsControl::Continue → ordinary backtrack.
 
     // Queue: [Violated, Satisfied]; default: Satisfied.
     // Leaf 1 = (ORingSeal, AirCooled) → Violated → blame empty → Continue

@@ -18,4 +18,5 @@ tracing.workspace = true
 pkg-config = "0.3"
 
 [dev-dependencies]
+reify-compiler.workspace = true
 reify-test-support.workspace = true

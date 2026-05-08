@@ -77,12 +77,17 @@ pub enum BRepKind {
 /// (Solid / Shell / Wire / Compound / Edge / Face) used by the OCCT kernel.
 ///
 /// `Ord` / `PartialOrd` are derived (in declaration order: BRep < Mesh < Sdf
-/// < Voxel) so the dispatcher can seed its BFS frontier in a deterministic
-/// order via `BTreeSet<ReprKind>` even when the caller passes
+/// < Voxel < VolumeMesh) so the dispatcher can seed its BFS frontier in a
+/// deterministic order via `BTreeSet<ReprKind>` even when the caller passes
 /// `&HashSet<ReprKind>` of `available` reprs. Without this, the seeding loop
 /// would inherit HashMap salt order and selection across multi-seed cases
 /// would depend on hashing rather than the registered kernel set, breaking
 /// the PRD's "Selection deterministic" contract.
+///
+/// `VolumeMesh` is appended last in the v0.3 extension so the existing
+/// `BRep < Mesh < Sdf < Voxel` ordering stays unchanged for callers that
+/// pass legacy four-variant `available` sets — kernel selection on the
+/// surface-mesh path remains bit-identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReprKind {
     /// Boundary-representation solid (OCCT / OpenCASCADE B-rep kernel).
@@ -93,6 +98,11 @@ pub enum ReprKind {
     Sdf,
     /// Volumetric voxel grid (e.g. OpenVDB).
     Voxel,
+    /// Volumetric tetrahedral mesh (e.g. Gmsh HXT). Distinct from [`ReprKind::Mesh`]
+    /// (boundary-only triangulation) — `VolumeMesh` carries interior tet
+    /// elements for FEA assembly. Produced by the v0.3 surface→volume
+    /// meshing pipeline (`reify-kernel-gmsh`).
+    VolumeMesh,
 }
 
 /// Multi-kernel operation classifier.
@@ -732,6 +742,220 @@ pub enum GeometryQuery {
     /// surface's parametric +N — callers needing direction-agnostic
     /// comparisons should accept either sign).
     FaceNormal(GeometryHandleId),
+    /// Classify the underlying surface of a face by its OCCT
+    /// `BRepAdaptor_Surface::GetType()` (`GeomAbs_*`) result.
+    ///
+    /// Returns `Value::String` whose payload is the canonical surface-kind
+    /// name (`"Plane"`, `"Cylinder"`, `"Cone"`, `"Sphere"`, `"Torus"`,
+    /// `"BezierSurface"`, `"BSplineSurface"`, `"OffsetSurface"`, or
+    /// `"Other"`). Decoded by the Rust caller into [`FaceSurfaceKind`] via
+    /// `TryFrom<&str>`. The string-based wire format is intentional: cxx
+    /// bridge does not natively support shared enums with a fixed tag set,
+    /// and a canonical string is self-documenting and forward-compatible
+    /// with new OCCT GeomAbs variants.
+    ///
+    /// Powers PRD line 78's `%Plane`/`%Cylinder`/… geometry-type filters
+    /// via `selector_vocabulary_v2::faces_by_surface_kind`.
+    FaceSurfaceKind(GeometryHandleId),
+    /// Classify the underlying curve of an edge by its OCCT
+    /// `BRepAdaptor_Curve::GetType()` (`GeomAbs_*`) result.
+    ///
+    /// Returns `Value::String` whose payload is the canonical curve-kind
+    /// name (`"Line"`, `"Circle"`, `"Ellipse"`, `"Hyperbola"`, `"Parabola"`,
+    /// `"BezierCurve"`, `"BSplineCurve"`, `"OffsetCurve"`, or `"Other"`).
+    /// Decoded by the Rust caller into [`EdgeCurveKind`] via
+    /// `TryFrom<&str>`.
+    ///
+    /// Powers PRD line 78's `%Line`/`%Circle`/… geometry-type filters
+    /// via `selector_vocabulary_v2::edges_by_curve_kind`.
+    EdgeCurveKind(GeometryHandleId),
+    /// List the faces that own a given edge of a solid (the edge's "ancestor"
+    /// faces in topology terms).
+    ///
+    /// `edge_index` is the 0-based index into the shape's edge enumeration
+    /// (canonical `TopExp::MapShapes(.., TopAbs_EDGE, ..)` order — same as
+    /// `extract_edges`). Returns a `Value::List` of `Value::Int` global face
+    /// indices into the canonical face enumeration. For a manifold solid every
+    /// edge has exactly two ancestor faces, but the kernel does not enforce
+    /// this — degenerate edges may surface 1 or > 2.
+    ///
+    /// Powers PRD line 81's `ancestors(edge)` topological walk via
+    /// `selector_vocabulary_v2::ancestor_faces_of_edge`.
+    AncestorFacesOfEdge {
+        shape: GeometryHandleId,
+        edge_index: usize,
+    },
+    /// Recover the parent body handle of a sub-shape produced by
+    /// [`GeometryKernel::extract_edges`] / [`GeometryKernel::extract_faces`].
+    ///
+    /// The kernel records the parent on every `extract_*` call so any
+    /// sub-handle can answer "what solid did I come from?" without
+    /// re-extraction. Returns a `Value::Int(parent_id.0 as i64)`; the
+    /// caller decodes back into a `GeometryHandleId`. A handle without a
+    /// recorded parent (e.g. one produced directly by `execute`) surfaces
+    /// as `QueryError::QueryFailed`.
+    ///
+    /// Powers PRD line 81's `owner_body(sub)` topological walk via
+    /// `selector_vocabulary_v2::owner_body_of`.
+    OwnerBody(GeometryHandleId),
+    /// Project an arbitrary world-space point onto a shape and return the
+    /// closest surface (or curve / vertex) point.
+    ///
+    /// Backed by `BRepExtrema_DistShapeShape` between the geometry handle and
+    /// a `Vertex`-shape constructed from `(px, py, pz)`. Returns
+    /// `Value::String` with JSON encoding `{"x":_,"y":_,"z":_}`, identical to
+    /// the `Centroid` / `FaceNormal` / `EdgeTangent` wire format. The
+    /// dispatcher decodes back into `Value::Point(vec![length(x), length(y),
+    /// length(z)])` via the existing
+    /// `reify_eval::topology_selectors::parse_xyz_value` helper.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `closest_point<G: Geometry>(point: Point3<Length>, geometry: G) ->
+    /// Point3<Length>` (PRD §3.9). Eval-time wiring lives in
+    /// `reify_eval::geometry_ops::try_eval_topology_selector`.
+    ClosestPointOnShape {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    },
+    /// Test whether a world-space point lies on (or inside) a shape, within a
+    /// kernel-supplied tolerance.
+    ///
+    /// Backed by `BRepExtrema_DistShapeShape` between the handle and a
+    /// `Vertex` built from `(px, py, pz)`; "on" is `distance ≤ tolerance`.
+    /// Returns `Value::Bool`. The OCCT `Precision::Confusion()` (~1e-7) is
+    /// the recommended default, supplied by the dispatcher; an explicit
+    /// `on(point, geometry, tol: Length)` overload is deferred per PRD §3.9.
+    ///
+    /// Note: the underlying primitive returns `true` for any interior solid
+    /// point at any positive tolerance (because the closest point on a
+    /// closed solid is the point itself once it's inside) — this is the v0.1
+    /// contract and is documented at the kernel-side `point_on_shape`
+    /// rustdoc.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool`.
+    PointOnShape {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        tolerance: f64,
+    },
+    /// Compute the unsigned dihedral angle between two surfaces (faces) of a
+    /// solid (or two distinct solids) in radians ∈ `[0, π]`.
+    ///
+    /// Backed by `BRepAdaptor_Surface::D1` evaluated at each face's centroid,
+    /// taking `acos(|n_a · n_b|)`-style absolute-cos to keep the result
+    /// orientation-agnostic. Returns `Value::Real(rad)`; the eval-side
+    /// dispatcher wraps as `Value::angle(rad)`.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `angle_between_surfaces(a: Surface, b: Surface) -> Angle` (PRD §3.9).
+    SurfaceAngle {
+        face_a: GeometryHandleId,
+        face_b: GeometryHandleId,
+    },
+}
+
+/// Geometric kind of a face's underlying surface, matching OCCT's
+/// `GeomAbs_*` taxonomy via `BRepAdaptor_Surface::GetType()`.
+///
+/// Returned (or implied via the `Value::String` wire format) by
+/// [`GeometryQuery::FaceSurfaceKind`]. Consumed by
+/// `selector_vocabulary_v2::faces_by_surface_kind` to implement PRD
+/// line 78's `%Plane`/`%Cylinder`/`%Cone`/`%Sphere`/`%Torus` slots.
+///
+/// The `BezierSurface`/`BSplineSurface` arms are kept distinct (rather
+/// than collapsed under a generic `Spline`) because OCCT's classification
+/// distinguishes them at the type level; the `OffsetSurface` arm is
+/// preserved for completeness against the OCCT taxonomy. `Other` is the
+/// safety-net arm for forward compatibility — a future OCCT version that
+/// adds a new GeomAbs variant will surface as `Other` here, not silently
+/// classify as one of the existing arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FaceSurfaceKind {
+    Plane,
+    Cylinder,
+    Cone,
+    Sphere,
+    Torus,
+    BezierSurface,
+    BSplineSurface,
+    OffsetSurface,
+    Other,
+}
+
+impl FaceSurfaceKind {
+    /// Decode a canonical surface-kind name into a [`FaceSurfaceKind`].
+    ///
+    /// Mirrors the wire format produced by
+    /// [`GeometryQuery::FaceSurfaceKind`] and consumed by
+    /// `selector_vocabulary_v2::faces_by_surface_kind`. Returns the
+    /// originating string (so callers can embed it in error diagnostics)
+    /// when the name is not one of the documented canonical strings.
+    pub fn try_from_str(s: &str) -> Result<Self, &str> {
+        match s {
+            "Plane" => Ok(FaceSurfaceKind::Plane),
+            "Cylinder" => Ok(FaceSurfaceKind::Cylinder),
+            "Cone" => Ok(FaceSurfaceKind::Cone),
+            "Sphere" => Ok(FaceSurfaceKind::Sphere),
+            "Torus" => Ok(FaceSurfaceKind::Torus),
+            "BezierSurface" => Ok(FaceSurfaceKind::BezierSurface),
+            "BSplineSurface" => Ok(FaceSurfaceKind::BSplineSurface),
+            "OffsetSurface" => Ok(FaceSurfaceKind::OffsetSurface),
+            "Other" => Ok(FaceSurfaceKind::Other),
+            _ => Err(s),
+        }
+    }
+}
+
+/// Geometric kind of an edge's underlying curve, matching OCCT's
+/// `GeomAbs_*` taxonomy via `BRepAdaptor_Curve::GetType()`.
+///
+/// Returned (or implied via the `Value::String` wire format) by
+/// [`GeometryQuery::EdgeCurveKind`]. Consumed by
+/// `selector_vocabulary_v2::edges_by_curve_kind` to implement PRD line
+/// 78's `%Line`/`%Circle`/`%Ellipse`/etc. slots.
+///
+/// `Other` is the safety-net arm for forward compatibility against new
+/// OCCT GeomAbs variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EdgeCurveKind {
+    Line,
+    Circle,
+    Ellipse,
+    Hyperbola,
+    Parabola,
+    BezierCurve,
+    BSplineCurve,
+    OffsetCurve,
+    Other,
+}
+
+impl EdgeCurveKind {
+    /// Decode a canonical curve-kind name into an [`EdgeCurveKind`].
+    ///
+    /// Mirrors the wire format produced by
+    /// [`GeometryQuery::EdgeCurveKind`] and consumed by
+    /// `selector_vocabulary_v2::edges_by_curve_kind`. Returns the
+    /// originating string (so callers can embed it in error diagnostics)
+    /// when the name is not one of the documented canonical strings.
+    pub fn try_from_str(s: &str) -> Result<Self, &str> {
+        match s {
+            "Line" => Ok(EdgeCurveKind::Line),
+            "Circle" => Ok(EdgeCurveKind::Circle),
+            "Ellipse" => Ok(EdgeCurveKind::Ellipse),
+            "Hyperbola" => Ok(EdgeCurveKind::Hyperbola),
+            "Parabola" => Ok(EdgeCurveKind::Parabola),
+            "BezierCurve" => Ok(EdgeCurveKind::BezierCurve),
+            "BSplineCurve" => Ok(EdgeCurveKind::BSplineCurve),
+            "OffsetCurve" => Ok(EdgeCurveKind::OffsetCurve),
+            "Other" => Ok(EdgeCurveKind::Other),
+            _ => Err(s),
+        }
+    }
 }
 
 /// Export formats for geometry.
@@ -750,6 +974,58 @@ pub struct Mesh {
     /// Triangle indices, flat [i0, i1, i2, i3, i4, i5, ...].
     pub indices: Vec<u32>,
     /// Optional vertex normals, flat like vertices.
+    pub normals: Option<Vec<f32>>,
+}
+
+/// FEA element-order discriminator for a tet-based [`VolumeMesh`].
+///
+/// `P1` tetrahedra carry 4 corner nodes per element (linear shape functions,
+/// 4 indices in `tet_indices` per element). `P2` tetrahedra carry 10 nodes
+/// per element — 4 corners plus 6 edge midpoints in Gmsh's canonical local
+/// ordering (quadratic shape functions, 10 indices per element).
+///
+/// Used both as an explicit field on [`VolumeMesh`] and as one of the inputs
+/// to the volume-mesh cache key (`reify_kernel_gmsh::cache_key`), so changing
+/// element order between two otherwise-identical mesh requests produces a
+/// distinct cache entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElementOrderTag {
+    /// 4-node tetrahedral element (linear shape functions).
+    P1,
+    /// 10-node tetrahedral element (quadratic shape functions; 4 corners +
+    /// 6 edge midpoints in Gmsh canonical order).
+    P2,
+}
+
+/// Volumetric tetrahedral mesh produced by the v0.3 surface→volume meshing
+/// pipeline (e.g. Gmsh HXT).
+///
+/// Mirrors [`Mesh`]'s field shape (`vertices: Vec<f32>` flat XYZ triples,
+/// optional flat `normals`) so existing helpers that walk vertex positions
+/// can share code. The structural difference is `tet_indices`: a flat array
+/// of **4 indices per element for P1** (one tet = 4 corner indices), or
+/// **10 indices per element for P2** (4 corner + 6 edge-midpoint indices in
+/// Gmsh's canonical local ordering). Distinct from `Mesh::indices` (3
+/// indices per surface triangle).
+///
+/// `element_order` tags the per-element arity so downstream consumers
+/// (`reify-solver-elastic` for FEA stiffness assembly, future GUI volume
+/// renderers) can read the index stride without round-tripping through a
+/// separate metadata channel.
+#[derive(Debug, Clone)]
+pub struct VolumeMesh {
+    /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
+    pub vertices: Vec<f32>,
+    /// Tet element indices: 4 per element for P1, 10 per element for P2
+    /// (4 corner + 6 edge midpoints in Gmsh canonical order).
+    pub tet_indices: Vec<u32>,
+    /// Element order discriminator (P1 = 4 nodes/elem, P2 = 10 nodes/elem).
+    pub element_order: ElementOrderTag,
+    /// Optional per-vertex normals (flat, same layout as `vertices`); seldom
+    /// populated for volume meshes since interior nodes have no canonical
+    /// surface-normal direction, but kept here as an `Option` so a future
+    /// boundary-extraction step can carry surface normals through without
+    /// changing the type's shape.
     pub normals: Option<Vec<f32>>,
 }
 
@@ -804,6 +1080,7 @@ impl std::error::Error for ExportError {}
 
 /// Errors from tessellation.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum TessError {
     InvalidHandle(GeometryHandleId),
     TessellationFailed(String),
@@ -822,9 +1099,17 @@ impl std::error::Error for TessError {}
 
 /// Errors from geometry queries.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum QueryError {
     InvalidHandle(GeometryHandleId),
     QueryFailed(String),
+    /// A surface-differential query received a non-finite parametric input.
+    ///
+    /// Emitted by FFI guards (`OcctKernel::surface_normal_at`,
+    /// `OcctKernel::curvature_at`) when `u` or `v` is NaN or ±Infinity.
+    /// The variant echoes back the bad inputs so callers can surface
+    /// structured diagnostics without parsing message strings.
+    NonFiniteParameter { u: f64, v: f64 },
 }
 
 impl fmt::Display for QueryError {
@@ -832,6 +1117,10 @@ impl fmt::Display for QueryError {
         match self {
             QueryError::InvalidHandle(id) => write!(f, "invalid handle for query: {:?}", id),
             QueryError::QueryFailed(msg) => write!(f, "geometry query failed: {}", msg),
+            QueryError::NonFiniteParameter { u, v } => write!(
+                f,
+                "geometry query received non-finite parameter: u={u}, v={v}"
+            ),
         }
     }
 }
@@ -2432,6 +2721,73 @@ mod tests {
     }
 
     #[test]
+    fn closest_point_on_shape_variant_is_constructible_and_matchable() {
+        // Pin the shape of the new ClosestPointOnShape variant — the eval-side
+        // dispatcher (task 2324) builds and reads back exactly these fields.
+        let cp = GeometryQuery::ClosestPointOnShape {
+            handle: GeometryHandleId(17),
+            px: 1.0,
+            py: 2.0,
+            pz: 3.0,
+        };
+        match &cp {
+            GeometryQuery::ClosestPointOnShape { handle, px, py, pz } => {
+                assert_eq!(*handle, GeometryHandleId(17));
+                assert_eq!(*px, 1.0);
+                assert_eq!(*py, 2.0);
+                assert_eq!(*pz, 3.0);
+            }
+            _ => panic!("expected ClosestPointOnShape variant"),
+        }
+    }
+
+    #[test]
+    fn point_on_shape_variant_is_constructible_and_matchable() {
+        // Pin the shape of the new PointOnShape variant — the dispatcher
+        // supplies tolerance from `Precision::Confusion()` (~1e-7) by default.
+        let pos = GeometryQuery::PointOnShape {
+            handle: GeometryHandleId(19),
+            px: 4.0,
+            py: 5.0,
+            pz: 6.0,
+            tolerance: 1e-7,
+        };
+        match &pos {
+            GeometryQuery::PointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => {
+                assert_eq!(*handle, GeometryHandleId(19));
+                assert_eq!(*px, 4.0);
+                assert_eq!(*py, 5.0);
+                assert_eq!(*pz, 6.0);
+                assert_eq!(*tolerance, 1e-7);
+            }
+            _ => panic!("expected PointOnShape variant"),
+        }
+    }
+
+    #[test]
+    fn surface_angle_variant_is_constructible_and_matchable() {
+        // Pin the shape of the new SurfaceAngle variant — kernel returns
+        // the unsigned angle in radians ∈ [0, π].
+        let sa = GeometryQuery::SurfaceAngle {
+            face_a: GeometryHandleId(23),
+            face_b: GeometryHandleId(29),
+        };
+        match &sa {
+            GeometryQuery::SurfaceAngle { face_a, face_b } => {
+                assert_eq!(*face_a, GeometryHandleId(23));
+                assert_eq!(*face_b, GeometryHandleId(29));
+            }
+            _ => panic!("expected SurfaceAngle variant"),
+        }
+    }
+
+    #[test]
     fn debug_assert_query_many_invariant_passes_when_lengths_match() {
         // Empty batch: the boundary case most likely to expose an off-by-one
         // bug if the helper's comparison were inverted.
@@ -3718,8 +4074,9 @@ mod tests {
         }
     }
 
-    /// Verify that the new multi-kernel `ReprKind` (BRep | Mesh | Sdf | Voxel) has
-    /// `Hash + Eq + Copy + Debug` and that all four variants are pairwise distinct.
+    /// Verify that the v0.3 multi-kernel `ReprKind` (BRep | Mesh | Sdf | Voxel |
+    /// VolumeMesh) has `Hash + Eq + Copy + Debug` and that all five variants are
+    /// pairwise distinct.
     ///
     /// The compile-time `match` arm at the end proves exhaustiveness — any future
     /// variant addition will cause a compile error here, prompting the developer to
@@ -3732,9 +4089,10 @@ mod tests {
             ReprKind::Mesh,
             ReprKind::Sdf,
             ReprKind::Voxel,
+            ReprKind::VolumeMesh,
         ];
 
-        // All four variants are pairwise distinct (6 pairs).
+        // All five variants are pairwise distinct (10 pairs).
         for i in 0..variants.len() {
             for j in 0..variants.len() {
                 if i != j {
@@ -3743,12 +4101,12 @@ mod tests {
             }
         }
 
-        // All four variants survive a HashMap round-trip (requires Hash + Eq + Copy).
+        // All five variants survive a HashMap round-trip (requires Hash + Eq + Copy).
         let mut map: HashMap<ReprKind, u32> = HashMap::new();
         for (idx, v) in variants.iter().enumerate() {
             map.insert(*v, idx as u32); // *v requires Copy
         }
-        assert_eq!(map.len(), 4, "all 4 ReprKind variants must be stored as distinct keys");
+        assert_eq!(map.len(), 5, "all 5 ReprKind variants must be stored as distinct keys");
         for (idx, v) in variants.iter().enumerate() {
             assert_eq!(map[v], idx as u32, "HashMap lookup must recover inserted value for {v:?}");
         }
@@ -3761,6 +4119,7 @@ mod tests {
             ReprKind::Mesh => {}
             ReprKind::Sdf => {}
             ReprKind::Voxel => {}
+            ReprKind::VolumeMesh => {}
         }
     }
 
@@ -3819,11 +4178,12 @@ mod tests {
             Operation::CurveInterpCurve,
             Operation::CurveBezierCurve,
             Operation::CurveNurbsCurve,
-            // Convert (4 — one per ReprKind)
+            // Convert (5 — one per ReprKind)
             Operation::Convert { from: ReprKind::BRep },
             Operation::Convert { from: ReprKind::Mesh },
             Operation::Convert { from: ReprKind::Sdf },
             Operation::Convert { from: ReprKind::Voxel },
+            Operation::Convert { from: ReprKind::VolumeMesh },
         ];
 
         // (No count-pinning assertion: the compile-time exhaustive `match`
@@ -4020,5 +4380,170 @@ mod tests {
              enforces PRD line 70 'Fidget/OpenVDB selectors fall through to computed selectors' \
              without per-kernel opt-out code",
         );
+    }
+
+    /// Verify the v0.3 `VolumeMesh` struct and `ElementOrderTag` enum round-trip
+    /// through both P1 (4-node tetrahedron) and P2 (10-node tetrahedron) element
+    /// orders, and that `Clone` + `Debug` derives are intact so the type can be
+    /// stored in `RealizationCache<VolumeMesh>` and logged through tracing.
+    ///
+    /// The struct is the surface→volume meshing pipeline's output payload —
+    /// `reify-solver-elastic` (sibling task #2914) reads it to assemble FEA
+    /// stiffness matrices, so the field shape and element-order discriminator
+    /// are part of the public API contract.
+    #[test]
+    fn volume_mesh_struct_round_trip_with_p1_and_p2_element_order_tags() {
+        // P1 tetrahedron: 4 corner vertices, 4 indices per element.
+        let p1_mesh = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+                0.0, 0.0, 1.0, // v3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        assert_eq!(
+            p1_mesh.vertices.len(),
+            12,
+            "P1 tet has 4 vertices × 3 floats = 12 flat coordinates"
+        );
+        assert_eq!(
+            p1_mesh.tet_indices.len(),
+            4,
+            "P1 tet has 4 corner indices (one tetrahedron)"
+        );
+        assert_eq!(p1_mesh.element_order, ElementOrderTag::P1);
+
+        // P2 tetrahedron: 4 corner + 6 edge-midpoint vertices = 10 nodes per element.
+        let p2_mesh = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 0.0, // v0 (corner)
+                1.0, 0.0, 0.0, // v1 (corner)
+                0.0, 1.0, 0.0, // v2 (corner)
+                0.0, 0.0, 1.0, // v3 (corner)
+                0.5, 0.0, 0.0, // v4 (mid 0-1)
+                0.5, 0.5, 0.0, // v5 (mid 1-2)
+                0.0, 0.5, 0.0, // v6 (mid 0-2)
+                0.0, 0.0, 0.5, // v7 (mid 0-3)
+                0.5, 0.0, 0.5, // v8 (mid 1-3)
+                0.0, 0.5, 0.5, // v9 (mid 2-3)
+            ],
+            tet_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            element_order: ElementOrderTag::P2,
+            normals: None,
+        };
+        assert_eq!(
+            p2_mesh.tet_indices.len(),
+            10,
+            "P2 tet has 10 indices per element (4 corner + 6 edge midpoints, Gmsh canonical order)"
+        );
+        assert_ne!(
+            ElementOrderTag::P1,
+            ElementOrderTag::P2,
+            "P1 and P2 are distinct discriminants"
+        );
+
+        // Clone + Debug derives are part of the public surface so the type can
+        // be stored in caches and logged through tracing.
+        let cloned = p1_mesh.clone();
+        let _ = format!("{:?}", cloned);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // FaceSurfaceKind / EdgeCurveKind — geometry-type filter enums (PRD line 78)
+    //
+    // Mirror OCCT's `GeomAbs_*` taxonomy: surface kinds and curve kinds
+    // are distinct enums (their `Bezier`/`BSpline` arms come from
+    // `GeomAbs_BezierSurface`/`GeomAbs_BSplineCurve` and are not
+    // interchangeable). The selectors `faces_by_surface_kind` and
+    // `edges_by_curve_kind` carry their input-type constraint in the type
+    // signature — passing a curve kind to the face selector is a compile
+    // error.
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn face_surface_kind_variants_distinct_and_derive_required_traits() {
+        use std::collections::HashSet;
+
+        // Variant-distinctness: each constructor must inhabit a unique
+        // discriminant. `HashSet` capacity == 9 (one per variant) proves
+        // every arm is reachable and pairwise distinct under `Eq + Hash`.
+        let variants = [
+            FaceSurfaceKind::Plane,
+            FaceSurfaceKind::Cylinder,
+            FaceSurfaceKind::Cone,
+            FaceSurfaceKind::Sphere,
+            FaceSurfaceKind::Torus,
+            FaceSurfaceKind::BezierSurface,
+            FaceSurfaceKind::BSplineSurface,
+            FaceSurfaceKind::OffsetSurface,
+            FaceSurfaceKind::Other,
+        ];
+        let set: HashSet<FaceSurfaceKind> = variants.iter().copied().collect();
+        assert_eq!(
+            set.len(),
+            9,
+            "FaceSurfaceKind must have 9 distinct variants — got {:?}",
+            set
+        );
+
+        // Copy + Debug derives are part of the public surface (Copy lets
+        // the selector pass kinds by value through the closure boundary;
+        // Debug renders them in error messages).
+        let k = FaceSurfaceKind::Plane;
+        let copied: FaceSurfaceKind = k; // needs Copy
+        let _ = format!("{:?}", copied);
+    }
+
+    #[test]
+    fn edge_curve_kind_variants_distinct_and_derive_required_traits() {
+        use std::collections::HashSet;
+
+        let variants = [
+            EdgeCurveKind::Line,
+            EdgeCurveKind::Circle,
+            EdgeCurveKind::Ellipse,
+            EdgeCurveKind::Hyperbola,
+            EdgeCurveKind::Parabola,
+            EdgeCurveKind::BezierCurve,
+            EdgeCurveKind::BSplineCurve,
+            EdgeCurveKind::OffsetCurve,
+            EdgeCurveKind::Other,
+        ];
+        let set: HashSet<EdgeCurveKind> = variants.iter().copied().collect();
+        assert_eq!(
+            set.len(),
+            9,
+            "EdgeCurveKind must have 9 distinct variants — got {:?}",
+            set
+        );
+
+        let k = EdgeCurveKind::Line;
+        let copied: EdgeCurveKind = k;
+        let _ = format!("{:?}", copied);
+    }
+
+    #[test]
+    fn geometry_query_face_surface_kind_and_edge_curve_kind_variants_exist() {
+        // Construct + pattern-match the new GeometryQuery::FaceSurfaceKind variant.
+        let face_kind = GeometryQuery::FaceSurfaceKind(GeometryHandleId(17));
+        match &face_kind {
+            GeometryQuery::FaceSurfaceKind(id) => {
+                assert_eq!(*id, GeometryHandleId(17));
+            }
+            _ => panic!("expected FaceSurfaceKind variant"),
+        }
+
+        // Construct + pattern-match the new GeometryQuery::EdgeCurveKind variant.
+        let edge_kind = GeometryQuery::EdgeCurveKind(GeometryHandleId(19));
+        match &edge_kind {
+            GeometryQuery::EdgeCurveKind(id) => {
+                assert_eq!(*id, GeometryHandleId(19));
+            }
+            _ => panic!("expected EdgeCurveKind variant"),
+        }
     }
 }

@@ -160,6 +160,26 @@ fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError
 }
 
 #[cfg(has_occt)]
+/// Validate that `u` and `v` are both finite (not NaN and not ±Inf).
+///
+/// This is the shared NaN/Inf rejection idiom for surface differential FFI
+/// primitives (`surface_normal_at`, `curvature_at`). The check runs at the
+/// Rust FFI boundary so the C++ wrapper never receives non-finite parametric
+/// inputs — OCCT may silently produce nonsensical output for NaN/Inf inputs
+/// rather than reporting a structured error, so we reject upfront.
+///
+/// Returns `QueryError::NonFiniteParameter { u, v }` if either component
+/// is non-finite (NaN or ±Infinity). The variant echoes the bad inputs
+/// so callers can surface structured diagnostics without inspecting a
+/// message string.
+fn validate_uv_finite(u: f64, v: f64) -> Result<(), QueryError> {
+    if !u.is_finite() || !v.is_finite() {
+        return Err(QueryError::NonFiniteParameter { u, v });
+    }
+    Ok(())
+}
+
+#[cfg(has_occt)]
 /// Tolerance for the pipe start-tangent +Z check.
 ///
 /// The guard is symmetric: `|t.z - 1| < PIPE_START_TANGENT_Z_EPSILON`.
@@ -460,6 +480,34 @@ pub struct OcctKernel {
     /// repopulate this map (best-effort: post-restore queries return `None`
     /// until the handle is re-stored locally).
     reprs: HashMap<u64, BRepKind>,
+    /// Idempotency cache for [`Self::extract_edges`]: parent handle id →
+    /// previously-minted edge handle list (in canonical
+    /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` order). On a cache hit, the
+    /// stored vec is returned verbatim; on a miss, fresh handles are minted
+    /// via `store_with_repr` and stored here.
+    ///
+    /// Required by the v0.2 selector vocabulary v2 (task 2658, step-26):
+    /// `selector_vocabulary_v2::adjacent_to_face` re-calls `extract_faces`
+    /// internally to recover the face_handle → face_index mapping. Without
+    /// idempotency the second call would mint a fresh set of ids and the
+    /// caller's pre-extracted handles would no longer match. The cache
+    /// makes `extract_*` deterministic per (kernel, parent) pair.
+    extracted_edges: HashMap<u64, Vec<GeometryHandleId>>,
+    /// Idempotency cache for [`Self::extract_faces`]: parent handle id →
+    /// previously-minted face handle list (canonical `TopExp::MapShapes`
+    /// order). Sister to `extracted_edges`; same rationale.
+    extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
+    /// Provenance map: child handle id → parent (body) handle id, populated
+    /// inside [`Self::extract_edges`] / [`Self::extract_faces`] so a later
+    /// `OwnerBody(child)` query can answer "what body did this sub-shape come
+    /// from?" without re-extraction.
+    ///
+    /// Required by the v0.2 selector vocabulary v2 (task 2658, step-30):
+    /// `selector_vocabulary_v2::owner_body_of` issues a single `OwnerBody`
+    /// query and unwraps the `Value::Int(parent.0 as i64)` reply. Handles
+    /// produced directly by `execute` (i.e. body handles themselves) have no
+    /// recorded parent and surface as `QueryError::QueryFailed`.
+    parent_handle: HashMap<u64, GeometryHandleId>,
     next_id: u64,
     /// Number of shapes that failed deserialization during the last `with_warm_state()` call.
     last_warm_start_failures: usize,
@@ -475,6 +523,9 @@ impl OcctKernel {
         Self {
             shapes: HashMap::new(),
             reprs: HashMap::new(),
+            extracted_edges: HashMap::new(),
+            extracted_faces: HashMap::new(),
+            parent_handle: HashMap::new(),
             next_id: 1,
             last_warm_start_failures: 0,
         }
@@ -535,15 +586,29 @@ impl OcctKernel {
         Ok(ffi::ffi::topology_cache_build_counts(shape))
     }
 
-    /// Extract every unique edge of `handle` as a fresh handle with
+    /// Extract every unique edge of `handle` as a handle with
     /// `BRepKind::Edge`. Order follows the canonical
     /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration.
+    ///
+    /// **Idempotent per parent**: a second call with the same `handle`
+    /// returns the same handle list as the first call (cached in
+    /// `extracted_edges`). This is required by the v0.2 selector
+    /// vocabulary v2's `adjacent_to_face` (and forthcoming
+    /// `ancestor_faces_of_edge`), which re-calls `extract_*` to recover
+    /// the canonical sub-shape index of a caller-supplied handle. Without
+    /// idempotency the second call would mint a fresh set of ids and the
+    /// caller's pre-extracted handles would no longer match. The cache is
+    /// invalidated on `with_warm_state` (when the kernel's shape table is
+    /// swapped wholesale).
     ///
     /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
     pub fn extract_edges(
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        if let Some(cached) = self.extracted_edges.get(&handle.0) {
+            return Ok(cached.clone());
+        }
         // Collect into a Vec<UniquePtr<OcctShape>> in a scope where the
         // immutable borrow of `self` (via get_shape) drops before we mutate
         // self via store_with_repr.
@@ -566,20 +631,30 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Edge);
+            // Record provenance so `OwnerBody(child)` can answer
+            // "what body did this edge come from?" without re-extraction.
+            self.parent_handle.insert(h.id.0, handle);
             ids.push(h.id);
         }
+        self.extracted_edges.insert(handle.0, ids.clone());
         Ok(ids)
     }
 
-    /// Extract every unique face of `handle` as a fresh handle with
+    /// Extract every unique face of `handle` as a handle with
     /// `BRepKind::Face`. Order follows the canonical
     /// `TopExp::MapShapes(.., TopAbs_FACE, ..)` enumeration.
+    ///
+    /// **Idempotent per parent**: see [`Self::extract_edges`] for the
+    /// rationale and cache-invalidation contract.
     ///
     /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
     pub fn extract_faces(
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        if let Some(cached) = self.extracted_faces.get(&handle.0) {
+            return Ok(cached.clone());
+        }
         let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
             let shape = self
                 .get_shape(handle)
@@ -599,8 +674,12 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Face);
+            // Record provenance — sister to `extract_edges`. See
+            // `parent_handle` field doc for the design contract.
+            self.parent_handle.insert(h.id.0, handle);
             ids.push(h.id);
         }
+        self.extracted_faces.insert(handle.0, ids.clone());
         Ok(ids)
     }
 
@@ -752,8 +831,10 @@ impl OcctKernel {
     /// # Errors
     ///
     /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::NonFiniteParameter` — if `(u, v)` contains NaN or ±Inf.
     /// - `QueryError::QueryFailed` — if the shape is not a face, has no
-    ///   underlying surface, yields a degenerate normal, or any OCCT call fails.
+    ///   underlying surface, yields a degenerate normal, or any OCCT call
+    ///   fails.
     pub fn surface_normal_at(
         &self,
         handle: GeometryHandleId,
@@ -763,6 +844,7 @@ impl OcctKernel {
         let s = self
             .get_shape(handle)
             .map_err(|_| QueryError::InvalidHandle(handle))?;
+        validate_uv_finite(u, v)?;
         let p = ffi::ffi::surface_normal_at(s, u, v)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
@@ -786,6 +868,7 @@ impl OcctKernel {
     /// # Errors
     ///
     /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::NonFiniteParameter` — if `(u, v)` contains NaN or ±Inf.
     /// - `QueryError::QueryFailed` — if the shape is not a face, has no
     ///   underlying surface, curvature is undefined at `(u, v)`, or any OCCT
     ///   call fails.
@@ -798,6 +881,7 @@ impl OcctKernel {
         let s = self
             .get_shape(handle)
             .map_err(|_| QueryError::InvalidHandle(handle))?;
+        validate_uv_finite(u, v)?;
         let c = ffi::ffi::curvature_at(s, u, v)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok(Curvature {
@@ -934,10 +1018,13 @@ impl OcctKernel {
                     "local-feature operation requires a BRepKind::Solid input shape, got {other:?}"
                 )))
             }
-            // repr unknown (e.g. handle whose repr was lost on warm-start round-trip):
-            // fall through to get_shape below, which returns InvalidReference for
-            // genuinely missing handles without conflating "repr-lost-but-shape-present"
-            // with "handle not found" (esc-2655-26 suggestion #4 / task 2821 amendment).
+            // `repr_of` returns `None` iff `shape_id` is unknown to this kernel.
+            // The "repr-lost-but-shape-present" case is unreachable: `store_with_repr`
+            // and `with_warm_state` keep `self.shapes` and `self.reprs` in lock-step
+            // (see `repr_of` doc).  Fall through to `get_shape` below, which returns
+            // `InvalidReference` for genuinely unknown handles rather than a false
+            // "requires Solid" rejection (esc-2655-26 suggestion #4 / task 2821
+            // amendment; comment aligned by task 2905 / esc-2821-61 #1).
             None => {}
         }
         let (result_shape, records) = {
@@ -2258,19 +2345,117 @@ impl OcctKernel {
                 )))
             }
             GeometryQuery::FaceNormal(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
-                let n = ffi::ffi::query_face_normal(shape)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                let [x, y, z] = self.face_outward_unit_normal(*id)?;
                 // Encode as the same JSON-string format as Centroid so
                 // downstream filters share a single parse routine.
                 Ok(Value::String(format!(
-                    "{{\"x\":{},\"y\":{},\"z\":{}}}",
-                    n.x, n.y, n.z
+                    "{{\"x\":{x},\"y\":{y},\"z\":{z}}}"
                 )))
             }
+            GeometryQuery::FaceSurfaceKind(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                // FFI returns a canonical name string from OCCT's GeomAbs_*
+                // enumeration (`"Plane"` / `"Cylinder"` / …). Decoded
+                // downstream by `FaceSurfaceKind::try_from_str` in
+                // `selector_vocabulary_v2::faces_by_surface_kind`.
+                let name = ffi::ffi::face_surface_kind(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::String(name))
+            }
+            GeometryQuery::EdgeCurveKind(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                // FFI returns a canonical name string from OCCT's GeomAbs_*
+                // enumeration (`"Line"` / `"Circle"` / …). Decoded
+                // downstream by `EdgeCurveKind::try_from_str` in
+                // `selector_vocabulary_v2::edges_by_curve_kind`.
+                let name = ffi::ffi::edge_curve_kind(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::String(name))
+            }
+            GeometryQuery::AncestorFacesOfEdge { shape, edge_index } => {
+                let s = self
+                    .get_shape(*shape)
+                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let idx_u32: u32 = (*edge_index).try_into().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "ancestor_faces_of_edge: edge_index {} exceeds u32::MAX",
+                        edge_index
+                    ))
+                })?;
+                let parents = ffi::ffi::ancestor_faces_of_edge(s, idx_u32)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::List(
+                    parents
+                        .into_iter()
+                        .map(|i| Value::Int(i as i64))
+                        .collect(),
+                ))
+            }
+            GeometryQuery::OwnerBody(id) => {
+                // Look up the recorded parent populated inside
+                // `extract_edges` / `extract_faces`. Handles produced
+                // directly by `execute` (i.e. body handles) have no
+                // recorded parent and surface as QueryFailed.
+                let parent = self.parent_handle.get(&id.0).copied().ok_or_else(|| {
+                    QueryError::QueryFailed(format!(
+                        "owner_body: handle {id:?} has no recorded parent (was extract_edges / extract_faces called?)"
+                    ))
+                })?;
+                Ok(Value::Int(parent.0 as i64))
+            }
+            GeometryQuery::ClosestPointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+            } => {
+                // Reuse the direct-method wrapper for InvalidHandle / QueryFailed
+                // surfacing, then re-encode the [f64; 3] as JSON-Point3 so the wire
+                // format matches Centroid / FaceNormal / EdgeTangent — the
+                // eval-side dispatcher reuses `parse_xyz_value` on this string.
+                let [x, y, z] = self.closest_point_on_shape(*handle, *px, *py, *pz)?;
+                Ok(Value::String(format!(
+                    "{{\"x\":{x},\"y\":{y},\"z\":{z}}}"
+                )))
+            }
+            GeometryQuery::PointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => self
+                .point_on_shape(*handle, *px, *py, *pz, *tolerance)
+                .map(Value::Bool),
+            GeometryQuery::SurfaceAngle { face_a, face_b } => self
+                .surface_angle(*face_a, *face_b)
+                .map(Value::Real),
         }
+    }
+
+    /// Outward unit normal at the centroid of `face` as a typed `[f64; 3]`.
+    ///
+    /// Single source of truth shared by the `GeometryQuery::FaceNormal`
+    /// production arm and the `face_outward_unit_normal_for_test` shim, so
+    /// the equivalence is structural rather than enforced by a cross-check
+    /// test.
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, or yields a degenerate normal.
+    fn face_outward_unit_normal(&self, id: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        let s = self
+            .get_shape(id)
+            .map_err(|_| QueryError::InvalidHandle(id))?;
+        let p = ffi::ffi::query_face_normal(s)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok([p.x, p.y, p.z])
     }
 
     pub fn export(
@@ -2412,6 +2597,11 @@ impl WarmStartable for OcctKernel {
             self.shapes = staged;
             self.reprs = new_reprs;
             self.next_id = warm.next_id;
+            // Wholesale shape replacement invalidates any cached parent →
+            // children mapping (the cached child ids may not correspond to
+            // any face/edge of the freshly-restored parent shapes).
+            self.extracted_edges.clear();
+            self.extracted_faces.clear();
         }
     }
 }
@@ -2457,6 +2647,29 @@ impl OcctKernel {
 /// real isolation comes from the cfg gate above.
 #[cfg(all(has_occt, feature = "test-fixtures"))]
 impl OcctKernel {
+    /// Outward unit normal at the centroid of `face` as a typed `[f64; 3]`.
+    ///
+    /// Test-side counterpart to `kernel.query(GeometryQuery::FaceNormal(id))`
+    /// that bypasses the `Value::String` JSON encoding. Useful for tests that
+    /// filter faces by their outward-normal direction (e.g. cylinder cap vs.
+    /// side) without coupling to the FaceNormal JSON shape.
+    ///
+    /// Calls the same `query_face_normal` FFI as the production query path,
+    /// so semantics (REVERSED-aware outward direction, unit length, centroid
+    /// sampling) are identical.
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, has no
+    ///   underlying surface, or yields a degenerate normal.
+    pub fn face_outward_unit_normal_for_test(
+        &self,
+        face: GeometryHandleId,
+    ) -> Result<[f64; 3], QueryError> {
+        self.face_outward_unit_normal(face)
+    }
+
     /// Create a circle face at the given z-height via the OCCT FFI and store
     /// it in the kernel, returning its `GeometryHandleId`.
     ///
@@ -3716,138 +3929,52 @@ mod tests {
     }
 
     #[test]
-    fn fillet_with_history_zero_radius_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
-        let result = kernel.fillet_with_history(box_h.id, 0.0);
-        match &result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("fillet") && msg.contains("radius"),
-                    "error message should mention 'fillet' and 'radius', got: {msg}"
-                );
+    fn fillet_with_history_invalid_radius_returns_error() {
+        let cases: &[(&str, f64)] = &[
+            ("zero", 0.0),
+            ("negative", -1.0e-3),
+            ("NaN", f64::NAN),
+            ("infinity", f64::INFINITY),
+        ];
+        for &(label, radius) in cases {
+            let mut kernel = OcctKernel::new();
+            let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+            let result = kernel.fillet_with_history(box_h.id, radius);
+            match &result {
+                Err(GeometryError::OperationFailed(msg)) => {
+                    assert!(
+                        msg.contains("fillet") && msg.contains("radius"),
+                        "fillet {label}: error should mention 'fillet' and 'radius', got: {msg}"
+                    );
+                }
+                Err(other) => panic!("fillet {label}: expected OperationFailed, got {:?}", other),
+                Ok(_) => panic!("fillet {label}: expected error for {label}-radius fillet_with_history"),
             }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for zero-radius fillet_with_history"),
         }
     }
 
     #[test]
-    fn fillet_with_history_negative_radius_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
-        let result = kernel.fillet_with_history(box_h.id, -1.0e-3);
-        match &result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("fillet") && msg.contains("radius"),
-                    "error message should mention 'fillet' and 'radius', got: {msg}"
-                );
+    fn chamfer_with_history_invalid_distance_returns_error() {
+        let cases: &[(&str, f64)] = &[
+            ("zero", 0.0),
+            ("negative", -1.0e-3),
+            ("NaN", f64::NAN),
+            ("infinity", f64::INFINITY),
+        ];
+        for &(label, distance) in cases {
+            let mut kernel = OcctKernel::new();
+            let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
+            let result = kernel.chamfer_with_history(box_h.id, distance);
+            match &result {
+                Err(GeometryError::OperationFailed(msg)) => {
+                    assert!(
+                        msg.contains("chamfer") && msg.contains("distance"),
+                        "chamfer {label}: error should mention 'chamfer' and 'distance', got: {msg}"
+                    );
+                }
+                Err(other) => panic!("chamfer {label}: expected OperationFailed, got {:?}", other),
+                Ok(_) => panic!("chamfer {label}: expected error for {label}-distance chamfer_with_history"),
             }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for negative-radius fillet_with_history"),
-        }
-    }
-
-    #[test]
-    fn fillet_with_history_nan_radius_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
-        let result = kernel.fillet_with_history(box_h.id, f64::NAN);
-        match &result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("fillet") && msg.contains("radius"),
-                    "error message should mention 'fillet' and 'radius', got: {msg}"
-                );
-            }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for NaN-radius fillet_with_history"),
-        }
-    }
-
-    #[test]
-    fn fillet_with_history_infinity_radius_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
-        let result = kernel.fillet_with_history(box_h.id, f64::INFINITY);
-        match &result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("fillet") && msg.contains("radius"),
-                    "error message should mention 'fillet' and 'radius', got: {msg}"
-                );
-            }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for infinity-radius fillet_with_history"),
-        }
-    }
-
-    #[test]
-    fn chamfer_with_history_zero_distance_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
-        let result = kernel.chamfer_with_history(box_h.id, 0.0);
-        match &result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("chamfer") && msg.contains("distance"),
-                    "error message should mention 'chamfer' and 'distance', got: {msg}"
-                );
-            }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for zero-distance chamfer_with_history"),
-        }
-    }
-
-    #[test]
-    fn chamfer_with_history_negative_distance_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
-        let result = kernel.chamfer_with_history(box_h.id, -1.0e-3);
-        match &result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("chamfer") && msg.contains("distance"),
-                    "error message should mention 'chamfer' and 'distance', got: {msg}"
-                );
-            }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for negative-distance chamfer_with_history"),
-        }
-    }
-
-    #[test]
-    fn chamfer_with_history_nan_distance_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
-        let result = kernel.chamfer_with_history(box_h.id, f64::NAN);
-        match &result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("chamfer") && msg.contains("distance"),
-                    "error message should mention 'chamfer' and 'distance', got: {msg}"
-                );
-            }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for NaN-distance chamfer_with_history"),
-        }
-    }
-
-    #[test]
-    fn chamfer_with_history_infinity_distance_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let box_h = make_10mm_box_for_local_feature_test(&mut kernel);
-        let result = kernel.chamfer_with_history(box_h.id, f64::INFINITY);
-        match &result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("chamfer") && msg.contains("distance"),
-                    "error message should mention 'chamfer' and 'distance', got: {msg}"
-                );
-            }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for infinity-distance chamfer_with_history"),
         }
     }
 

@@ -30,6 +30,7 @@ use reify_types::{
     Diagnostic, DiagnosticCode, DimensionVector, InterpolationKind, SampledField, SampledGridKind,
     Type,
 };
+use reify_types::sampled::{LINSPACE_MAX_INTERVALS, LinspaceError, linspace_inclusive};
 
 /// Spatial-grid shape of an OpenVDB source grid.
 ///
@@ -189,6 +190,47 @@ pub enum IngestError {
         /// `spacing[axis]` that produced the collapse.
         spacing: f64,
     },
+    /// An axis interval count exceeds [`reify_types::sampled::LINSPACE_MAX_INTERVALS`].
+    ///
+    /// A legitimately-finite but enormous combination such as
+    /// `bounds_min=0.0`, `bounds_max=1e308`, `spacing=1.0` would make
+    /// `(span / spacing).round() as usize` saturate on overflow and attempt
+    /// to allocate an astronomically large `Vec`.  This variant surfaces
+    /// before any allocation when [`linspace_inclusive`] returns `None`.
+    ///
+    /// Distinct from [`IngestError::DegenerateAxis`]: the cap rejects axes
+    /// that are too **long**, `DegenerateAxis` rejects axes that are too
+    /// **short** (collapsed to 1 node).
+    ExcessiveAxisLength {
+        /// Index of the offending axis (0 = outermost).
+        axis: usize,
+        /// Computed interval count that exceeded the cap.  Always a finite,
+        /// representable `usize` — when the ratio overflows `usize`, the
+        /// `OverflowingAxisLength` variant is used instead.
+        n_intervals: usize,
+    },
+    /// An axis interval count exceeds `usize::MAX` (i.e. `(span/spacing) > usize::MAX as f64`).
+    ///
+    /// Distinct from [`IngestError::ExcessiveAxisLength`]: this variant indicates
+    /// the count cannot be meaningfully represented in `usize`, so no `n_intervals`
+    /// payload is carried — embedding the saturated `usize::MAX` value in a
+    /// user-facing message would falsely imply a precise (though absurd) count.
+    OverflowingAxisLength {
+        /// Index of the offending axis (0 = outermost).
+        axis: usize,
+    },
+    /// Returned by [`read_vdb_file`] (cfg(has_openvdb) mode) when the
+    /// underlying `openvdb::io::File` layer fails — file not found, wrong
+    /// grid type, missing grid name, etc.
+    ///
+    /// The `path` payload names the file the caller asked to read so the
+    /// error message can identify it concretely in a multi-import workflow.
+    FileReadError {
+        /// The path the caller asked to read.
+        path: String,
+        /// Detail string from the underlying FFI exception.
+        detail: String,
+    },
 }
 
 /// v0.2 OpenVDB units → [`DimensionVector`] lookup table.
@@ -325,9 +367,18 @@ pub fn lower_to_sampled(
         OpenVdbGridKind::Regular3D => SampledGridKind::Regular3D,
     };
 
-    let axis_grids: Vec<Vec<f64>> = (0..axis_count)
-        .map(|i| linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]))
-        .collect();
+    let mut axis_grids: Vec<Vec<f64>> = Vec::with_capacity(axis_count);
+    for i in 0..axis_count {
+        match linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], grid.spacing[i]) {
+            Ok(g) => axis_grids.push(g),
+            Err(LinspaceError::Excessive { n_intervals }) => {
+                return Err(IngestError::ExcessiveAxisLength { axis: i, n_intervals });
+            }
+            Err(LinspaceError::Overflow) => {
+                return Err(IngestError::OverflowingAxisLength { axis: i });
+            }
+        }
+    }
 
     // Guard (4): each axis must have ≥ 2 nodes after linspace construction.
     // Catches bounds_min == bounds_max and spacing-larger-than-span — both
@@ -420,30 +471,6 @@ fn map_interpolation(
     }
 }
 
-/// Inclusive linspace from `start` to `stop` with step `spacing`.
-///
-/// Produces `[start, start+spacing, …, stop]` (or as close as
-/// `floor((stop-start)/spacing)` admits). Returns `[start]` for
-/// degenerate-but-valid inputs (non-positive spacing or `stop < start`).
-///
-/// Mirrors `engine_eval::linspace_inclusive` byte-identically so that
-/// OpenVDB-imported and user-supplied sampled fields share one axis-grid
-/// layout — keeping all downstream interp assumptions transferable.
-fn linspace_inclusive(start: f64, stop: f64, spacing: f64) -> Vec<f64> {
-    if spacing <= 0.0 || !spacing.is_finite() || !start.is_finite() || !stop.is_finite() {
-        return vec![start];
-    }
-    let span = stop - start;
-    if span < 0.0 {
-        return vec![start];
-    }
-    // Round to nearest integer to avoid floating-point cliff effects on
-    // exact-fit cases (e.g. (2.0 - 0.0) / 1.0 → 1.999… instead of 2).
-    let n_intervals = (span / spacing).round() as usize;
-    let count = n_intervals + 1;
-    (0..count).map(|i| start + (i as f64) * spacing).collect()
-}
-
 /// Validate that the OpenVDB grid's declared units are dimensionally
 /// compatible with the field declaration's codomain type.
 ///
@@ -488,24 +515,31 @@ pub fn validate_grid_units(
     Ok(())
 }
 
-/// v0.2 stub for the file-read entry point.
+/// Read a `.vdb` file and lower the named `FloatGrid` to a [`SampledField`].
 ///
-/// Real OpenVDB FFI is deferred to a follow-up task per the
-/// `reify-kernel-openvdb` crate doc. This function returns
-/// [`IngestError::FfiNotImplemented`] carrying `path` so the caller can
-/// distinguish the v0.2 surface-scaffold case from a real read failure.
-/// The signature is final — once the FFI lands, only the body changes.
+/// When `cfg(has_openvdb)` is set (i.e. `/opt/reify-deps` is present), this
+/// function opens the file via the OpenVDB FFI, extracts grid metadata and
+/// active-voxel data, and delegates downstream validation/lowering to
+/// [`lower_to_sampled`].
+///
+/// When `cfg(has_openvdb)` is NOT set (stub build), the function returns
+/// [`IngestError::FfiNotImplemented`] so callers can distinguish the
+/// stub-mode surface-scaffold from a real read failure.
 ///
 /// # Parameters
 ///
-/// - `path`: filesystem path to the `.vdb` file. The stub names this back
-///   in the error variant and Display message.
-/// - `grid_name`: name of the grid inside the multi-grid `.vdb` file.
-///   Currently unused (the stub returns before reading); pinned in the
-///   public signature so the follow-up FFI body has the contract.
-/// - `codomain_type`: codomain type the field declaration declared.
-///   Currently unused (the stub returns before validation); pinned in the
-///   public signature so the follow-up FFI body can pre-validate units.
+/// - `path`: filesystem path to the `.vdb` file.
+/// - `grid_name`: name of the `FloatGrid` inside the `.vdb` file.
+/// - `codomain_type`: codomain type declared by the field definition;
+///   used to validate grid units via [`lower_to_sampled`].
+///
+/// # Errors
+///
+/// - `cfg(has_openvdb)`: returns [`IngestError::FileReadError`] for
+///   file-not-found, missing/wrong-type grid, or other FFI-layer failures;
+///   propagates all [`IngestError`] variants from [`lower_to_sampled`].
+/// - `cfg(not(has_openvdb))`: always returns [`IngestError::FfiNotImplemented`].
+#[cfg(not(has_openvdb))]
 pub fn read_vdb_file(
     path: &str,
     _grid_name: &str,
@@ -514,6 +548,105 @@ pub fn read_vdb_file(
     Err(IngestError::FfiNotImplemented {
         path: path.to_string(),
     })
+}
+
+/// Real `read_vdb_file` body — compiled only when `cfg(has_openvdb)` is set.
+///
+/// Opens the named `FloatGrid` from `path` via the cxx-bridge FFI, densifies
+/// active voxels into a row-major f64 buffer over the active bounding box,
+/// and calls [`lower_to_sampled`] to produce the final [`IngestOutcome`].
+///
+/// # Layout
+///
+/// The densified buffer from `grid_densify_to_buffer` is X-outermost
+/// (axis-0 = X, axis-1 = Y, axis-2 = Z, row-major); axis-0 corresponds to
+/// `bounds_min/max[0]` (world X). The `OpenVdbGridSource` is constructed
+/// accordingly so `lower_to_sampled`'s axis-count × data-shape checks always
+/// match. This matches the workspace-wide row-major-axis-0-outermost
+/// convention used by `reify_expr::interp::interpolate_3d`,
+/// `engine_eval::build_sampled_field`, and `reify-expr`'s
+/// `field_reductions`/`sampled`/`interp` modules.
+///
+/// # Library initialisation
+///
+/// Calls [`crate::init::ensure_initialized`] before any FFI access so callers
+/// that invoke `read_vdb_file` directly — without first instantiating an
+/// `OpenVdbKernel` — still register the built-in grid types in OpenVDB's
+/// I/O dispatch table. Without this, `gridPtrCast<FloatGrid>` returns null
+/// and the read path emits a misleading "is not a FloatGrid" error.
+#[cfg(has_openvdb)]
+pub fn read_vdb_file(
+    path: &str,
+    grid_name: &str,
+    codomain_type: &Type,
+) -> Result<IngestOutcome, IngestError> {
+    use crate::ffi::ffi as openvdb_ffi;
+
+    // Ensure OpenVDB's I/O dispatch table is populated before any FFI access.
+    // Idempotent — guarded by a OnceLock in `crate::init`.
+    crate::init::ensure_initialized();
+
+    // Open and read the named FloatGrid from the .vdb file.
+    let grid_handle = openvdb_ffi::read_vdb_grid_ffi(path, grid_name)
+        .map_err(|e| IngestError::FileReadError {
+            path: path.to_string(),
+            detail: e.to_string(),
+        })?;
+
+    // Extract grid metadata via FFI accessors.
+    //
+    // `grid_voxel_sizes` returns the per-axis diagonal of the grid's linear
+    // transform. For meshToVolume-built grids these are isotropic (all three
+    // equal) but external `.vdb` imports may carry an anisotropic transform;
+    // propagating the per-axis values into `SampledField.spacing` keeps the
+    // axis grids consistent with `bounds_min/max` regardless. (Earlier
+    // revisions called the FFI as `grid_voxel_size` returning a single
+    // scalar, which silently replaced Y/Z spacing with X spacing for any
+    // anisotropic grid — producing axis grids whose lengths did not match
+    // the densified buffer length and yielding `DataShapeMismatch`.)
+    let voxel_sizes = openvdb_ffi::grid_voxel_sizes(&grid_handle);
+    let bbox_min_arr = openvdb_ffi::grid_bbox_min(&grid_handle);
+    let bbox_max_arr = openvdb_ffi::grid_bbox_max(&grid_handle);
+    let units_str = openvdb_ffi::grid_units(&grid_handle);
+
+    // Densify all active voxels into a flat f32 buffer (X-outermost,
+    // row-major) and convert to f64 for the in-memory model.
+    //
+    // The C++ side rejects bbox densifications exceeding
+    // `GRID_DENSIFY_MAX_VOXELS` (~256M voxels ≈ 1 GiB) by throwing a
+    // `std::runtime_error`; cxx maps it to `Err(cxx::Exception)` which we
+    // surface as `IngestError::FileReadError`.
+    let raw_buffer: Vec<f32> = openvdb_ffi::grid_densify_to_buffer(&grid_handle)
+        .map_err(|e| IngestError::FileReadError {
+            path: path.to_string(),
+            detail: e.to_string(),
+        })?;
+    // `into_iter()` (consuming) — not `iter()` (borrowing) — so the f32
+    // buffer is freed as soon as the f64 collect finishes.  At the C++-side
+    // cap (~256M voxels = 1 GiB f32) the long-lived storage paid by
+    // `SampledField` is ~2 GiB f64; consuming the f32 keeps the transient
+    // peak at ~3 GiB instead of holding both buffers live afterwards.
+    // See task 3095 review esc-3095-97 suggestion 2.
+    let data: Vec<f64> = raw_buffer.into_iter().map(|v| v as f64).collect();
+
+    // Build the in-memory source model.  Axis-0 = X, Axis-1 = Y, Axis-2 = Z.
+    // bounds_min/max come from the world-space voxel-center coordinates of the
+    // active bounding box; spacing carries the per-axis voxel sizes.
+    let source = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular3D,
+        bounds_min: bbox_min_arr.to_vec(),
+        bounds_max: bbox_max_arr.to_vec(),
+        spacing: voxel_sizes.to_vec(),
+        data,
+        units: if units_str.is_empty() {
+            None
+        } else {
+            Some(units_str.to_string())
+        },
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+
+    lower_to_sampled(&source, grid_name, codomain_type)
 }
 
 impl std::fmt::Display for IngestError {
@@ -590,6 +723,20 @@ impl std::fmt::Display for IngestError {
                 "OpenVDB grid axis {axis} produced only {node_count} node(s); need at least 2 \
                  (check bounds and spacing — bounds_min={bounds_min} bounds_max={bounds_max} \
                  spacing={spacing})"
+            ),
+            IngestError::ExcessiveAxisLength { axis, n_intervals } => write!(
+                f,
+                "OpenVDB grid axis {axis} requires {n_intervals} intervals, which exceeds the \
+                 maximum of {LINSPACE_MAX_INTERVALS}; reduce the axis span or increase the spacing"
+            ),
+            IngestError::OverflowingAxisLength { axis } => write!(
+                f,
+                "OpenVDB grid axis {axis} requires more intervals than usize can represent; \
+                 reduce the axis span or increase the spacing"
+            ),
+            IngestError::FileReadError { path, detail } => write!(
+                f,
+                "OpenVDB file read failed for '{path}': {detail}"
             ),
         }
     }

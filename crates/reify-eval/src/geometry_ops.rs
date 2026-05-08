@@ -1624,6 +1624,330 @@ fn kernel_distance(
     }
 }
 
+// ── Topology-selector dispatch (task 2324) ──────────────────────────────────
+//
+// `try_eval_topology_selector` is the kernel-aware eval-time dispatch for the
+// stdlib helpers `closest_point`, `on`, and `angle_between_surfaces` (PRD
+// `docs/prds/topology-selectors.md` §3.9). Sibling to
+// `try_eval_conformance_query` and `try_eval_kinematic_query` — same
+// arg-shape / fall-through contract.
+//
+// Helper-name → kernel-query mapping:
+//   `closest_point(point, geometry)` → `GeometryQuery::ClosestPointOnShape`
+//   `on(point, geometry)`            → `GeometryQuery::PointOnShape`
+//   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
+//
+// Arg-shape contract:
+//   - Both args must be `ValueRef`s — literal / inline-call shapes fall
+//     through to `None` so the cell stays at its compiled default
+//     (`Value::Undef`). Pinned by the
+//     `try_eval_topology_selector_*_literal_args_falls_through_to_none`
+//     unit tests.
+//   - For `closest_point` / `on`: args[0] must resolve in `values` to a
+//     `Value::Point` of three Length-dimensioned scalars; args[1] must
+//     resolve in `named_steps` to a `GeometryHandleId` (let-bound geometry).
+//   - For `angle_between_surfaces`: both args must resolve in `named_steps`
+//     to a `GeometryHandleId`.
+//
+// Returns:
+//   `Some(Value::Point(vec![length, length, length]))` for `closest_point`
+//                          (parsed from the kernel's JSON-Point3 reply).
+//   `Some(Value::Bool(_))` for `on`.
+//   `Some(Value::Scalar { dimension: ANGLE, .. })` for
+//                          `angle_between_surfaces`.
+//   `Some(Value::Undef)`   on a kernel error or a malformed kernel reply
+//                          (defensive downgrade with a Warning diagnostic).
+//   `None`                 when the expression is not a recognised
+//                          topology-selector helper, or the arg shape is
+//                          unsupported. Callers fall through to the cell's
+//                          compiled default.
+pub(crate) fn try_eval_topology_selector(
+    expr: &reify_types::CompiledExpr,
+    named_steps: &HashMap<String, GeometryHandleId>,
+    values: &reify_types::ValueMap,
+    kernel: &dyn reify_types::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // (1) Must be a FunctionCall — anything else is unsupported.
+    let (function, args) = match &expr.kind {
+        reify_types::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        _ => return None,
+    };
+
+    // (2) Must be one of the three recognised helper names.
+    let helper = match function.name.as_str() {
+        "closest_point" => TopologySelectorHelper::ClosestPoint,
+        "on" => TopologySelectorHelper::On,
+        "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
+        _ => return None,
+    };
+
+    // (3) All v0.1 helpers are 2-arg; non-2-arg call sites fall through.
+    if args.len() != 2 {
+        return None;
+    }
+
+    match helper {
+        TopologySelectorHelper::ClosestPoint | TopologySelectorHelper::On => {
+            // args[0]: point ValueRef → values map → Value::Point of three Length scalars.
+            let point = resolve_point3_length_arg(&args[0], values)?;
+            // args[1]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[1], named_steps)?;
+
+            match helper {
+                TopologySelectorHelper::ClosestPoint => {
+                    let query = reify_types::GeometryQuery::ClosestPointOnShape {
+                        handle,
+                        px: point[0],
+                        py: point[1],
+                        pz: point[2],
+                    };
+                    dispatch_closest_point(kernel, &query, &function.name, diagnostics)
+                }
+                TopologySelectorHelper::On => {
+                    // Hard-code OCCT's `Precision::Confusion()` (~1e-7) as the
+                    // default tolerance for the v0.1 2-arg `on(point, geometry)`
+                    // surface. Kernel docstring at
+                    // `crates/reify-kernel-occt/src/lib.rs` (`OcctKernel::point_on_shape`)
+                    // recommends this value. A future explicit-tolerance
+                    // overload `on(point, geometry, tol)` will plumb the user-
+                    // supplied tolerance through here.
+                    const DEFAULT_ON_TOLERANCE_M: f64 = 1e-7;
+                    let query = reify_types::GeometryQuery::PointOnShape {
+                        handle,
+                        px: point[0],
+                        py: point[1],
+                        pz: point[2],
+                        tolerance: DEFAULT_ON_TOLERANCE_M,
+                    };
+                    dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
+                }
+                TopologySelectorHelper::AngleBetweenSurfaces => unreachable!(
+                    "angle_between_surfaces is handled in the outer match"
+                ),
+            }
+        }
+        TopologySelectorHelper::AngleBetweenSurfaces => {
+            // Both args: geometry ValueRefs → named_steps map → GeometryHandleId.
+            let face_a = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            let query = reify_types::GeometryQuery::SurfaceAngle { face_a, face_b };
+            dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TopologySelectorHelper {
+    ClosestPoint,
+    On,
+    AngleBetweenSurfaces,
+}
+
+/// Resolve a `CompiledExprKind::ValueRef` arg to a `Value::Point` of three
+/// Length-dimensioned scalars and return their SI-metres components.
+/// Returns `None` for any non-`ValueRef` shape, missing cell, non-Point
+/// payload, wrong length, or non-scalar component — caller maps to the
+/// "unsupported arg shape → fall through" behaviour.
+fn resolve_point3_length_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<[f64; 3]> {
+    let id = match &expr.kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    let value = values.get(id)?;
+    let components = match value {
+        reify_types::Value::Point(items) => items,
+        _ => return None,
+    };
+    if components.len() != 3 {
+        return None;
+    }
+    let mut out = [0.0_f64; 3];
+    for (i, comp) in components.iter().enumerate() {
+        match comp {
+            // The cell type is fixed at `Type::Point<Length>` by the
+            // compile-time wiring in `expr.rs`, so a well-formed
+            // `Value::Scalar` component MUST carry `DimensionVector::LENGTH`.
+            // A wrong-dimensioned Scalar slipping through here would silently
+            // be reinterpreted as metres at the kernel boundary — debug-assert
+            // to surface the violation in tests; in release we still fall
+            // through to `None` rather than feeding the kernel garbage.
+            reify_types::Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                debug_assert!(
+                    *dimension == reify_types::DimensionVector::LENGTH,
+                    "resolve_point3_length_arg: expected LENGTH-dimensioned Scalar, \
+                     got dimension {:?} (si_value={}); cell type is Point<Length> per \
+                     compile-time wiring in expr.rs",
+                    dimension,
+                    si_value
+                );
+                if *dimension != reify_types::DimensionVector::LENGTH {
+                    return None;
+                }
+                out[i] = *si_value;
+            }
+            // Bare `Real` is intentionally accepted for mock test fixtures
+            // that may store points as raw `Real`s without a Length wrap.
+            reify_types::Value::Real(v) => out[i] = *v,
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Resolve a `CompiledExprKind::ValueRef` geometry-arg to a `GeometryHandleId`
+/// via `named_steps`. Returns `None` for any non-`ValueRef` shape or missing
+/// `named_steps` entry — caller maps to the "unsupported arg shape → fall
+/// through" behaviour.
+fn resolve_geometry_handle_arg(
+    expr: &reify_types::CompiledExpr,
+    named_steps: &HashMap<String, GeometryHandleId>,
+) -> Option<GeometryHandleId> {
+    let cell_id = match &expr.kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    named_steps.get(&cell_id.member).copied()
+}
+
+/// Issue a `ClosestPointOnShape` query and unwrap to a
+/// `Value::Point(vec![length, length, length])`. Returns
+/// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
+/// malformed JSON-Point3 reply.
+fn dispatch_closest_point(
+    kernel: &dyn reify_types::GeometryKernel,
+    query: &reify_types::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match kernel.query(query) {
+        Ok(value) => match crate::topology_selectors::parse_xyz_value(&value, helper_name) {
+            Ok([x, y, z]) => Some(reify_types::Value::Point(vec![
+                reify_types::Value::length(x),
+                reify_types::Value::length(y),
+                reify_types::Value::length(z),
+            ])),
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{} kernel reply parse failed: {}",
+                    helper_name, err
+                )));
+                Some(reify_types::Value::Undef)
+            }
+        },
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
+}
+
+/// Issue a `PointOnShape` query and unwrap to a `Value::Bool(_)`. Returns
+/// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
+/// non-Bool reply.
+fn dispatch_point_on_shape(
+    kernel: &dyn reify_types::GeometryKernel,
+    query: &reify_types::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match kernel.query(query) {
+        Ok(reify_types::Value::Bool(b)) => Some(reify_types::Value::Bool(b)),
+        Ok(other) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel returned non-Bool value {:?}; treating as undefined",
+                helper_name, other
+            )));
+            Some(reify_types::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
+}
+
+/// Issue a `SurfaceAngle` query and unwrap to a `Value::angle(rad)`. Returns
+/// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
+/// non-numeric reply.
+fn dispatch_surface_angle(
+    kernel: &dyn reify_types::GeometryKernel,
+    query: &reify_types::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match kernel.query(query) {
+        Ok(reify_types::Value::Real(rad)) => Some(reify_types::Value::angle(rad)),
+        // Some mock kernels store the angle as an angle-dimensioned Scalar
+        // — accept either form so the dispatch is kernel-implementation
+        // agnostic (mirrors `kernel_distance`'s Real|Scalar leniency).
+        // Bind `dimension` (not `..`) so a wrong-dimensioned Scalar (e.g.
+        // LENGTH) is caught rather than silently reinterpreted as radians.
+        // Mirrors `resolve_point3_length_arg`'s tightened LENGTH check
+        // introduced in commit 8c464177db (task 2324): debug_assert FIRST,
+        // then if-fall-through in release.
+        //
+        // DIMENSIONLESS is accepted alongside ANGLE as a deliberate
+        // compatibility trade-off: some mock kernels return raw f64 values
+        // without attaching a dimension tag (see
+        // `MockGeometryKernel::with_surface_angle_result`). A production kernel
+        // returning DIMENSIONLESS for an angle would itself violate the type
+        // contract — this leniency is intentional test-support compatibility,
+        // not because DIMENSIONLESS is a valid angle dimension in real kernels.
+        Ok(reify_types::Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            debug_assert!(
+                dimension == reify_types::DimensionVector::ANGLE
+                    || dimension == reify_types::DimensionVector::DIMENSIONLESS,
+                "dispatch_surface_angle: expected ANGLE- or DIMENSIONLESS-dimensioned Scalar, \
+                 got dimension {:?} (si_value={}); kernel cell type is Type::angle() per \
+                 compile-time wiring",
+                dimension,
+                si_value
+            );
+            if dimension != reify_types::DimensionVector::ANGLE
+                && dimension != reify_types::DimensionVector::DIMENSIONLESS
+            {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{} kernel returned wrong-dimensioned Scalar \
+                     (dimension={}, si_value={}); treating as undefined",
+                    helper_name, dimension, si_value
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+            Some(reify_types::Value::angle(si_value))
+        }
+        Ok(other) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel returned non-numeric value {:?}; treating as undefined",
+                helper_name, other
+            )));
+            Some(reify_types::Value::Undef)
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5199,6 +5523,749 @@ mod tests {
         assert!(
             diag.message.contains("kernel query failed"),
             "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
+        );
+    }
+
+    // ── try_eval_topology_selector unit tests (task 2324) ────────────────────
+    //
+    // These tests pin the contract of `try_eval_topology_selector`, the
+    // kernel-aware eval-time dispatch surface for the `closest_point`, `on`,
+    // and `angle_between_surfaces` stdlib helpers. Sibling to the
+    // `try_eval_conformance_query_*` and (integration-only) kinematic-query
+    // tests above. The function lives in this module (rather than
+    // `eval_expr`) because the build pipeline owns both the kernel and the
+    // per-realization name → handle map (`named_steps`).
+
+    /// Build a `CompiledExpr` for a stdlib call `helper(<entity>.<member_a>,
+    /// <entity>.<member_b>)` with two `ValueRef` args resolving to let-bound
+    /// cells. Mirrors `conformance_call` above.
+    fn topology_selector_call_two_value_refs(
+        helper_name: &str,
+        entity: &str,
+        member_a: &str,
+        type_a: reify_types::Type,
+        member_b: &str,
+        type_b: reify_types::Type,
+        result_type: reify_types::Type,
+    ) -> reify_types::CompiledExpr {
+        let arg_a = reify_types::CompiledExpr::value_ref(
+            reify_types::ValueCellId::new(entity, member_a),
+            type_a,
+        );
+        let arg_b = reify_types::CompiledExpr::value_ref(
+            reify_types::ValueCellId::new(entity, member_b),
+            type_b,
+        );
+        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
+            .combine(reify_types::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg_a.content_hash);
+        content_hash = content_hash.combine(arg_b.content_hash);
+        reify_types::CompiledExpr {
+            kind: reify_types::CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_a, arg_b],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Build a `CompiledExpr` for `helper(<literal_real>, <literal_real>)` —
+    /// used for the literal-arg fall-through defensive tests. Mirrors
+    /// `conformance_call_literal_arg` above.
+    fn topology_selector_call_literal_args(helper_name: &str) -> reify_types::CompiledExpr {
+        let arg_a = reify_types::CompiledExpr::literal(
+            reify_types::Value::Real(1.0),
+            reify_types::Type::Real,
+        );
+        let arg_b = reify_types::CompiledExpr::literal(
+            reify_types::Value::Real(2.0),
+            reify_types::Type::Real,
+        );
+        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
+            .combine(reify_types::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg_a.content_hash);
+        content_hash = content_hash.combine(arg_b.content_hash);
+        reify_types::CompiledExpr {
+            kind: reify_types::CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_a, arg_b],
+            },
+            // result_type is unused on the dispatch path — set to a
+            // representative value to keep the literal hand-built expression
+            // structurally well-formed.
+            result_type: reify_types::Type::Bool,
+            content_hash,
+        }
+    }
+
+    /// Build a Value::Point with three Length scalars, mirroring how a
+    /// let-bound `point3(x_mm, y_mm, z_mm)` realises in the `values` map.
+    fn point3_length_value(x_m: f64, y_m: f64, z_m: f64) -> reify_types::Value {
+        reify_types::Value::Point(vec![
+            reify_types::Value::length(x_m),
+            reify_types::Value::length(y_m),
+            reify_types::Value::length(z_m),
+        ])
+    }
+
+    #[test]
+    fn try_eval_topology_selector_closest_point_kernel_reply_parses_to_point3_length() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let body_handle = reify_types::GeometryHandleId(7);
+        // The kernel reply mirrors the `OcctKernel::query()` arm for
+        // `ClosestPointOnShape` (lib.rs JSON-Point3 encoding). The dispatcher
+        // is expected to parse it and produce a `Value::Point(vec![length(...),
+        // length(...), length(...)])`.
+        let kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+            body_handle,
+            [10.0, 0.0, 0.0],
+            reify_types::Value::String("{\"x\":5.0,\"y\":0.0,\"z\":0.0}".to_string()),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), body_handle);
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(10.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "closest_point",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::point3(reify_types::Type::length()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(point3_length_value(5.0, 0.0, 0.0)),
+            "closest_point(p, body) with kernel JSON-Point3 reply must \
+             produce Some(Value::Point(vec![length, length, length])) parsed \
+             from the JSON; got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_on_kernel_reply_returns_bool_with_default_tolerance() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let body_handle = reify_types::GeometryHandleId(11);
+        // The dispatcher must use the default `1e-7` tolerance for the 2-arg
+        // `on(point, geometry)` form per the kernel docstring's
+        // `Precision::Confusion()` recommendation. Recording the mock under
+        // exactly this tolerance pins the contract — if the dispatcher ever
+        // changes the default, the recorded reply would not be served and
+        // the test would fail with `None`.
+        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+            body_handle,
+            [5.0, 0.0, 0.0],
+            1e-7,
+            reify_types::Value::Bool(true),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), body_handle);
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(5.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "on",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Bool(true)),
+            "on(p, body) with kernel reply Bool(true) must produce \
+             Some(Value::Bool(true)) (default tolerance 1e-7); got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_returns_angle_scalar() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        // Kernel returns a raw f64 (radians) — the dispatcher is expected to
+        // wrap as `Value::angle(rad)` to match the cell type
+        // `Type::angle()`.
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Real(std::f64::consts::FRAC_PI_2),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            "angle_between_surfaces(face_a, face_b) with kernel reply \
+             Real(PI/2) must produce Some(Value::angle(PI/2)); got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_closest_point_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // `closest_point(<literal>, <literal>)` — literal args, no `let`
+        // bindings to resolve. The dispatcher must return None *and* never
+        // consult the kernel, mirroring `try_eval_conformance_query`'s
+        // literal-arg-fall-through contract.
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("closest_point");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "closest_point(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_on_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("on");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "on(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("angle_between_surfaces");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "angle_between_surfaces(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_non_helper_name_returns_none_no_kernel_call() {
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let kernel = CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), reify_types::GeometryHandleId(7));
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+
+        // `volume` is a real stdlib function name but NOT one of the three
+        // recognised topology-selector helpers. The dispatch must return
+        // None, mirroring the conformance-query contract.
+        let expr = topology_selector_call_two_value_refs(
+            "volume",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::dimensionless_scalar(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "non-helper name 'volume' must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-helper names"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_resolves_identically_to_real()
+     {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the dispatch's `Real | Scalar` leniency for `dispatch_surface_angle`:
+        // a kernel reply of `Value::Scalar { dimension: ANGLE, si_value: PI/2 }`
+        // must resolve to `Value::angle(PI/2)`, identically to the `Value::Real(PI/2)`
+        // reply pinned by the sibling `..._returns_angle_scalar` test above. Mirrors
+        // `kernel_distance`'s Real|Scalar leniency so a future kernel returning a
+        // dimensioned Scalar does not regress silently.
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Scalar {
+                si_value: std::f64::consts::FRAC_PI_2,
+                dimension: reify_types::DimensionVector::ANGLE,
+            },
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            "angle_between_surfaces with kernel Scalar(ANGLE, PI/2) reply must \
+             resolve identically to a Real(PI/2) reply; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Scalar reply on the happy path must NOT emit diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Shared fixture for the two wrong-dim-Scalar tests below. Builds a
+    /// `MockGeometryKernel` wired to return a LENGTH-dimensioned Scalar for the
+    /// `angle_between_surfaces(face_a, face_b)` call, together with the
+    /// `named_steps` map, empty `ValueMap`, and the compiled `expr`. Each test
+    /// owns its own `diagnostics` Vec and call site, which is all that differs
+    /// between the debug-panic and release-warn cases.
+    fn wrong_dim_scalar_fixture() -> (
+        reify_types::CompiledExpr,
+        HashMap<String, reify_types::GeometryHandleId>,
+        reify_types::ValueMap,
+        reify_test_support::mocks::MockGeometryKernel,
+    ) {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        // LENGTH is the real-world bug class: metres silently reinterpreted as
+        // radians. Using LENGTH (not e.g. MASS) ties the fixture to the actual
+        // failure mode described in the task analysis.
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+        );
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+        let values = reify_types::ValueMap::new();
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        (expr, named_steps, values, kernel)
+    }
+
+    /// Pins the defensive dim-check in `dispatch_surface_angle`'s Scalar arm —
+    /// mirrors `resolve_point3_length_arg`'s tightened LENGTH check from commit
+    /// 8c464177db. A LENGTH-dimensioned Scalar reply must NOT be silently
+    /// reinterpreted as radians; the dispatcher must emit a Warning naming the
+    /// helper and return Undef. Gated `#[cfg(not(debug_assertions))]` because in
+    /// debug builds the same fixture trips the sibling
+    /// `..._panics_in_debug_build` test's debug_assert.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_emits_warning_and_returns_undef()
+     {
+        let (expr, named_steps, values, kernel) = wrong_dim_scalar_fixture();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "angle_between_surfaces with LENGTH-dimensioned Scalar reply must yield \
+             Some(Value::Undef), NOT Some(Value::angle(1.0)); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "wrong-dim Scalar reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("angle_between_surfaces"),
+            "diagnostic must mention the helper name 'angle_between_surfaces', got: {}",
+            diag.message
+        );
+        // DimensionVector::LENGTH displays as "m" (via its fmt::Display impl).
+        // Asserting "dimension=m" pins that the warning names the actual
+        // offending dimension rather than just any wording about dimensions.
+        assert!(
+            diag.message.contains("dimension=m"),
+            "diagnostic must mention the offending dimension (LENGTH displays as 'm'); \
+             got: {}",
+            diag.message
+        );
+    }
+
+    /// Pins the debug-mode panic in `dispatch_surface_angle`'s Scalar arm.
+    /// Uses the same LENGTH-dimensioned Scalar fixture as the sibling release
+    /// test; in debug builds the `debug_assert!` panics before the if-fall-through
+    /// runs, so the `#[should_panic]` attribute is the only assertion needed.
+    ///
+    /// Follows the dual-test pattern from `crates/reify-eval/src/kernel_registry.rs`
+    /// (see `emit_kernel_selection_panics_when_total_is_zero` at line 665 and
+    /// `warn_if_duplicate_op_repr_pairs_always_emits_warn_on_duplicate` at 685):
+    /// pair a `#[cfg(debug_assertions)] #[should_panic]` test with a
+    /// `#[cfg(not(debug_assertions))]` test for the release fall-through.
+    /// The `#[cfg(debug_assertions)]` guard is required because `debug_assert!`
+    /// compiles to a no-op in release builds — `#[should_panic]` would falsely
+    /// "pass" in a release build where the panic never fires.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "expected ANGLE")]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_panics_in_debug_build()
+     {
+        let (expr, named_steps, values, kernel) = wrong_dim_scalar_fixture();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        // The debug_assert! in dispatch_surface_angle's Scalar arm must panic
+        // with a message containing "expected ANGLE". No assert_eq! after this
+        // call — the #[should_panic] attribute drives the assertion.
+        super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_on_non_bool_kernel_reply_emits_warning_and_returns_undef() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the `Ok(other)` warning arm of `dispatch_point_on_shape`: a kernel
+        // reply that is neither `Value::Bool(_)` nor an Err must produce
+        // `Some(Value::Undef)` with a Warning diagnostic naming the helper. Defends
+        // the contract against a future kernel that mistakenly returns the
+        // wrong-typed Value.
+        let body_handle = reify_types::GeometryHandleId(11);
+        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+            body_handle,
+            [5.0, 0.0, 0.0],
+            1e-7,
+            // Wrong type — should trigger the non-Bool warning arm.
+            reify_types::Value::Real(0.5),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), body_handle);
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(5.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "on",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "on(...) with non-Bool kernel reply must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Bool reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("on"),
+            "diagnostic must mention the helper name 'on', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("non-Bool"),
+            "diagnostic must indicate the non-Bool reply, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_closest_point_malformed_json_reply_emits_warning_and_returns_undef()
+     {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the `Err(err)` parse-failure arm of `dispatch_closest_point`: a
+        // kernel reply whose `Value::String(_)` payload is not parseable as a
+        // JSON-Point3 must produce `Some(Value::Undef)` with a Warning
+        // diagnostic naming the helper. Defends the contract against a future
+        // kernel that emits a malformed JSON string.
+        let body_handle = reify_types::GeometryHandleId(7);
+        let kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+            body_handle,
+            [10.0, 0.0, 0.0],
+            // Not a JSON-Point3 payload — should trigger the parse-failure
+            // warning arm.
+            reify_types::Value::String("not a valid json point".to_string()),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), body_handle);
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(10.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "closest_point",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::point3(reify_types::Type::length()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "closest_point with malformed JSON reply must yield \
+             Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "malformed reply must emit exactly one Warning, got {} \
+             diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("closest_point"),
+            "diagnostic must mention the helper name 'closest_point', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("parse failed"),
+            "diagnostic must indicate the parse failure, got: {}",
             diag.message
         );
     }

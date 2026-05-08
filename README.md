@@ -13,7 +13,7 @@ Think OpenSCAD's text-first philosophy meets SolidWorks' constraint-driven param
 Reify is in active development. Two things to set expectations:
 
 - **Linux only right now.** Specifically Ubuntu 24.04. The setup script uses `apt` and the FreeCAD PPA for OCCT 7.8. macOS and Windows don't work yet.
-- **First-time build is slow.** 5–15 minutes for `cargo build --release` on a cold cache, plus apt installs. Once warm, incremental rebuilds are fast.
+- **First-time build is slow.** 5–15 minutes for `cargo build --release` on a cold cache, plus apt installs. Once warm, incremental rebuilds are fast. The first `cargo build` of `reify-kernel-manifold` pulls and compiles the elalish/manifold C++ tree via cmake (~3–5 min cold); `manifold-csg-sys` caches by version+patch stamp and subsequent builds reuse the cache.
 - **Things will break.** This is the first time anyone outside the core team has installed it. Please report what fails — see "Feedback" below.
 
 What does work, end-to-end:

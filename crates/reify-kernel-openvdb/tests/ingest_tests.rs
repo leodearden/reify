@@ -584,6 +584,97 @@ fn lower_to_sampled_spacing_exceeds_span_returns_degenerate_axis() {
 }
 
 // ---------------------------------------------------------------------------
+// Step-3060: ExcessiveAxisLength cap guard
+// ---------------------------------------------------------------------------
+
+/// Task 3060 / 3187: `lower_to_sampled` rejects an axis whose interval count is
+/// **finite but exceeds** [`reify_types::sampled::LINSPACE_MAX_INTERVALS`].
+///
+/// This test covers the **finite-too-large** case: `bounds_max = LINSPACE_MAX_INTERVALS + 1`,
+/// `spacing = 1.0` → `n_intervals = LINSPACE_MAX_INTERVALS + 1` exactly.
+/// The `ExcessiveAxisLength` payload carries the precise count (not a saturated sentinel),
+/// in parity with `LinspaceError::Excessive { n_intervals }` in `reify-types`.
+///
+/// Pre-flight pipeline for `bounds_min=[0.0]`, `bounds_max=[(LINSPACE_MAX_INTERVALS+1) as f64]`,
+/// `spacing=[1.0]`:
+///   - AxisLengthMismatch: 1 == 1 ✓
+///   - EmptyGrid: 4 elements ≠ 0 ✓
+///   - InvalidSpacing: 1.0 > 0 and finite ✓
+///   - InvalidBounds: both finite, not inverted ✓
+///   - axis_grids: linspace_inclusive → Err(Excessive { n_intervals }) → ExcessiveAxisLength
+#[test]
+fn lower_to_sampled_excessive_axis_returns_excessive_axis_length() {
+    use reify_types::sampled::LINSPACE_MAX_INTERVALS;
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        // Just over the production cap (10_000_001) — finite interval count,
+        // triggers LinspaceError::Excessive (not Overflow).
+        bounds_max: vec![(LINSPACE_MAX_INTERVALS + 1) as f64],
+        spacing: vec![1.0],
+        data: vec![0.0; 4],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let result = lower_to_sampled(&grid, "huge", &Type::length());
+    match result {
+        Err(IngestError::ExcessiveAxisLength { axis, n_intervals }) => {
+            assert_eq!(axis, 0);
+            assert_eq!(
+                n_intervals,
+                LINSPACE_MAX_INTERVALS + 1,
+                "expected n_intervals == {} (exact finite count), got {}",
+                LINSPACE_MAX_INTERVALS + 1,
+                n_intervals
+            );
+        }
+        other => panic!(
+            "expected Err(IngestError::ExcessiveAxisLength {{ … }}), got {other:?}"
+        ),
+    }
+}
+
+/// Task 3187 step-4 RED: `lower_to_sampled` with a truly overflowing axis
+/// (`bounds_max = 1e308`, `spacing = 1.0` → ratio ≈ 1e308 ≫ usize::MAX as f64)
+/// must emit an error whose Display says "more intervals than usize can represent",
+/// NOT the saturated `usize::MAX` count (18446744073709551615).
+///
+/// Currently RED: step-1 maps `LinspaceError::Overflow` to
+/// `ExcessiveAxisLength { n_intervals: usize::MAX }`, so the Display message
+/// leaks "18446744073709551615" and does not say "more intervals than…".
+/// Step-5 adds `IngestError::OverflowingAxisLength { axis }` to fix this.
+#[test]
+fn lower_to_sampled_overflow_axis_display_says_more_intervals_than_usize() {
+    let grid = OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![1e308],
+        spacing: vec![1.0],
+        data: vec![0.0; 4],
+        units: Some("m".to_string()),
+        interpolation: OpenVdbInterpolation::Linear,
+    };
+    let err = lower_to_sampled(&grid, "huge", &Type::length())
+        .expect_err("expected Err for overflow input, got Ok");
+    let msg = err.to_string();
+    // Distinct overflow phrasing — not a numeric "requires N intervals" message.
+    assert!(
+        msg.contains("more intervals than usize can represent"),
+        "overflow Display should say 'more intervals than usize can represent', got: {msg:?}"
+    );
+    // Must NOT leak the saturated usize::MAX sentinel value.
+    assert!(
+        !msg.contains("18446744073709551615"),
+        "overflow Display must not contain the saturated usize::MAX sentinel, got: {msg:?}"
+    );
+    // Axis identification preserved across the two ExcessiveAxisLength siblings.
+    assert!(
+        msg.contains("axis 0"),
+        "overflow Display should identify the offending axis (axis 0), got: {msg:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Step-11 RED: read_vdb_file v0.2 stub contract
 // ---------------------------------------------------------------------------
 
@@ -597,6 +688,11 @@ fn lower_to_sampled_spacing_exceeds_span_returns_degenerate_axis() {
 /// The surrounding prose ("OpenVDB", task ID, etc.) is incidental and
 /// intentionally not pinned, so future rewording (or the FFI body landing)
 /// doesn't have to update test assertions.
+///
+/// This test is gated `cfg(not(has_openvdb))` because when the real FFI is
+/// present the stub body is replaced by the real read path (see task 3095
+/// step-8). The parallel `cfg(has_openvdb)` test is added in step-9.
+#[cfg(not(has_openvdb))]
 #[test]
 fn read_vdb_file_returns_ffi_not_implemented_with_path() {
     let result = read_vdb_file("path/to/example.vdb", "voxel_grid", &Type::length());
@@ -617,6 +713,35 @@ fn read_vdb_file_returns_ffi_not_implemented_with_path() {
         msg.contains("path/to/example.vdb"),
         "Display message must include the path; got {msg:?}"
     );
+}
+
+/// Step-9 (`cfg(has_openvdb)`): `read_vdb_file` with a non-existent path must
+/// return `IngestError::FileReadError { path, .. }` — NOT `FfiNotImplemented`.
+///
+/// Pins the new error contract that the real FFI body introduces: the OpenVDB
+/// I/O layer raises a C++ exception (`std::runtime_error`) which the cxx bridge
+/// maps to a Rust `cxx::Exception`; `read_vdb_file` converts it to
+/// `IngestError::FileReadError { path: <the caller's path>, detail: <ex.what()> }`.
+///
+/// The `detail` field is intentionally not asserted — its prose comes from the
+/// OpenVDB C++ layer and may differ across library versions.
+#[cfg(has_openvdb)]
+#[test]
+fn read_vdb_file_missing_path_returns_file_read_error() {
+    let missing = "/nonexistent/path/does-not-exist.vdb";
+    let result = read_vdb_file(missing, "any_grid", &Type::Real);
+    match result {
+        Err(IngestError::FileReadError { path, detail: _ }) => {
+            assert_eq!(
+                path, missing,
+                "FileReadError must carry the requested path; got path={path:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(IngestError::FileReadError {{ path: {:?}, .. }}), got {other:?}",
+            missing
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------

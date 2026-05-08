@@ -112,13 +112,13 @@ echo ""
 echo "--- Test 10: debug pass is gated by cargo-test-occt-gated.sh ---"
 
 assert "test_command contains gated debug pass with -p reify-kernel-occt" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -- --test-threads=1'"
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config -- --test-threads=1'"
 
 echo ""
 echo "--- Test 11: release pass is gated by cargo-test-occt-gated.sh ---"
 
 assert "test_command contains gated release pass with -p reify-kernel-occt" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli --release -- --test-threads=1'"
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release -- --test-threads=1'"
 
 echo ""
 echo "--- Test 12: no bare ungated 'cargo test --workspace' in test_command ---"
@@ -241,7 +241,7 @@ assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=2700" \
     bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt'"
 
 assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli --release'"
+    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release'"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a

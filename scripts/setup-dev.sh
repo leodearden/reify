@@ -202,9 +202,10 @@ fi
 #   - Otherwise, install micromamba (single static binary, ~13 MB) into
 #     /usr/local/bin.
 #   - Create the env at /opt/reify-deps from environment.yml.
-#   - Add /opt/reify-deps/lib to ld.so.conf.d so libgmsh + libopenvdb +
-#     their transitive deps (TBB, Imath, Blosc) resolve at runtime
-#     without per-developer LD_LIBRARY_PATH gymnastics.
+#   - Per-crate build.rs in reify-kernel-{gmsh,openvdb} embeds RPATH to
+#     /opt/reify-deps/lib so libgmsh + libopenvdb + their transitive deps
+#     (TBB, Imath, Blosc) resolve at runtime, scoped to just the crates that
+#     need them (no global linker-cache change).
 #   - build.rs scripts in reify-kernel-{gmsh,openvdb} probe
 #     /opt/reify-deps/include for headers.
 
@@ -248,15 +249,9 @@ else
     ok "reify-deps env created"
 fi
 
-# ld.so.conf.d entry — makes libgmsh.so + libopenvdb.so visible system-wide.
-ldso_conf="/etc/ld.so.conf.d/reify-deps.conf"
-if [ ! -f "$ldso_conf" ] || ! grep -q "/opt/reify-deps/lib" "$ldso_conf"; then
-    info "Wiring $ldso_conf..."
-    need_sudo=true
-    echo "/opt/reify-deps/lib" | sudo tee "$ldso_conf" > /dev/null
-    sudo ldconfig
-    ok "ldconfig refreshed"
-fi
+# Note: libgmsh + libopenvdb resolution is handled by per-crate RPATH (see
+# crates/reify-kernel-{gmsh,openvdb}/build.rs); no global ld.so.conf.d wiring
+# needed.
 
 # ---------- sccache ----------
 
