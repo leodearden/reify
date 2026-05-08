@@ -8,7 +8,6 @@ description = "Mesh morphing classifier and engine for Reify"
 [dependencies]
 reify-types.workspace = true
 reify-eval.workspace = true
-reify-solver-elastic.workspace = true
 
 [dev-dependencies]
 reify-compiler.workspace = true
