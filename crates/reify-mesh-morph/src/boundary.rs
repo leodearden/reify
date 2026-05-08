@@ -339,10 +339,6 @@ mod tests {
         face_responses: HashMap<GeometryHandleId, Result<[f64; 3], ProjectorPayload>>,
         edge_responses: HashMap<GeometryHandleId, Result<[f64; 3], ProjectorPayload>>,
         vertex_responses: HashMap<GeometryHandleId, Result<[f64; 3], ProjectorPayload>>,
-        /// If set, panics when `project_onto_face` is called with a handle other
-        /// than this one. Face-only scope: edge/vertex calls are not guarded.
-        /// Use `expected_face_handle` to make the intent explicit at call sites.
-        expected_face_handle: Option<GeometryHandleId>,
     }
 
     impl RecordingProjector {
@@ -352,7 +348,6 @@ mod tests {
                 face_responses: HashMap::new(),
                 edge_responses: HashMap::new(),
                 vertex_responses: HashMap::new(),
-                expected_face_handle: None,
             }
         }
 
@@ -368,12 +363,6 @@ mod tests {
             self.vertex_responses.insert(vertex, result);
         }
 
-        /// Assert that every `project_onto_face` call uses this exact handle.
-        /// Guards face dispatch only — edge/vertex calls are not checked.
-        fn set_expected_face_handle(&mut self, expected: GeometryHandleId) {
-            self.expected_face_handle = Some(expected);
-        }
-
         fn captured_calls(&self) -> Vec<ProjectorCall> {
             self.calls.lock().unwrap().clone()
         }
@@ -385,12 +374,6 @@ mod tests {
             face: GeometryHandleId,
             point: [f64; 3],
         ) -> Result<[f64; 3], ProjectorPayload> {
-            if let Some(expected) = self.expected_face_handle {
-                assert_eq!(
-                    face, expected,
-                    "must project onto mapped counterpart of attached face, NOT closest globally"
-                );
-            }
             self.calls.lock().unwrap().push(ProjectorCall::Face { face, point });
             self.face_responses
                 .get(&face)
