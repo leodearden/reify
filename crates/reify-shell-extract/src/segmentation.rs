@@ -201,20 +201,14 @@ pub fn segment_regions(
         });
     }
 
-    use std::collections::{HashMap, HashSet, VecDeque};
-
-    // PERF (deferred): uses the default SipHash hasher, which is correct but
-    // slower than necessary on 12-byte `[i32; 3]` keys.  For PRD-realistic
-    // 256³ grids (~16 M active voxels), switching to `FxHashMap`/`FxHashSet`
-    // (rustc-hash crate) or a dense index-based representation would be
-    // worthwhile.  Cross-reference: medial.rs carries the same note in its
-    // deferred-optimization list.
+    use std::collections::VecDeque;
+    use rustc_hash::{FxHashMap, FxHashSet};
 
     // Build O(1) membership lookup.
-    let mask_set: HashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
+    let mask_set: FxHashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
 
     // BFS 6-face connected-component labelling.
-    let mut voxel_to_label: HashMap<[i32; 3], u32> = HashMap::new();
+    let mut voxel_to_label: FxHashMap<[i32; 3], u32> = FxHashMap::default();
     let mut region_voxels: Vec<Vec<[i32; 3]>> = Vec::new();
     let mut next_label: u32 = 0;
 
