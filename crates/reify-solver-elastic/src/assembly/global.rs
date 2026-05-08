@@ -167,9 +167,21 @@ pub fn assemble_global_stiffness(
     // `emit_element_triplets` scatter primitive in slice order; the
     // parallel arm partitions into `threads` chunks via
     // `std::thread::scope` and merges per-thread Vecs in spawn order.
+    //
+    // Each element emits a full dense block of `9 · n_local²` triplets
+    // (3 axes × 3 axes × n_local² local DOF pairs). Pre-sizing both the
+    // merged accumulator and per-thread local Vecs to the exact triplet
+    // count avoids the O(log N) reallocs `Vec::new()` would walk through
+    // on the FEA hot path — for ~10K P1 elements at 144 triplets each
+    // (24 B per `Triplet<usize, usize, f64>`), that's ~34 MB of
+    // allocator churn the worker would otherwise perform per chunk.
+    let total_triplets: usize = elements
+        .iter()
+        .map(|e| 9 * e.connectivity.len() * e.connectivity.len())
+        .sum();
     let triplets: Vec<Triplet<usize, usize, f64>> = match mode {
         AssemblyMode::Deterministic => {
-            let mut acc = Vec::new();
+            let mut acc = Vec::with_capacity(total_triplets);
             for element in elements {
                 emit_element_triplets(element, &mut acc);
             }
@@ -217,14 +229,22 @@ pub fn assemble_global_stiffness(
                 let mut handles = Vec::with_capacity(threads);
                 for chunk in elements.chunks(chunk_size) {
                     handles.push(s.spawn(move || {
-                        let mut local: Vec<Triplet<usize, usize, f64>> = Vec::new();
+                        // Pre-size to the exact per-chunk triplet count;
+                        // see the rationale on `total_triplets` above.
+                        let cap: usize = chunk
+                            .iter()
+                            .map(|e| 9 * e.connectivity.len() * e.connectivity.len())
+                            .sum();
+                        let mut local: Vec<Triplet<usize, usize, f64>> =
+                            Vec::with_capacity(cap);
                         for element in chunk {
                             emit_element_triplets(element, &mut local);
                         }
                         local
                     }));
                 }
-                let mut acc: Vec<Triplet<usize, usize, f64>> = Vec::new();
+                let mut acc: Vec<Triplet<usize, usize, f64>> =
+                    Vec::with_capacity(total_triplets);
                 for h in handles {
                     // Joining in handle-vector order = spawn order =
                     // chunk-iteration order in `elements`. A worker
