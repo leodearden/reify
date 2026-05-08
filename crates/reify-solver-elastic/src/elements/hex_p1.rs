@@ -72,7 +72,7 @@ pub struct HexP1;
 ///
 /// Single-source: used by both `shape_at` and `shape_grad_at` to prevent
 /// per-method ordering drift.
-pub const VERTEX_SIGNS: [[f64; 3]; 8] = [
+pub(crate) const VERTEX_SIGNS: [[f64; 3]; 8] = [
     [-1.0, -1.0, -1.0], // v_0
     [ 1.0, -1.0, -1.0], // v_1
     [ 1.0,  1.0, -1.0], // v_2
