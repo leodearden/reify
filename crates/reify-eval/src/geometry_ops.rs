@@ -1768,11 +1768,32 @@ fn resolve_point3_length_arg(
     let mut out = [0.0_f64; 3];
     for (i, comp) in components.iter().enumerate() {
         match comp {
-            // Accept either dimensionless `Real` or any `Scalar` (the
-            // dimension is fixed at the `Type::Point<Length>` cell-type
-            // level; allowing both keeps the dispatch resilient to mock
-            // test fixtures that may store points as raw `Real`s).
-            reify_types::Value::Scalar { si_value, .. } => out[i] = *si_value,
+            // The cell type is fixed at `Type::Point<Length>` by the
+            // compile-time wiring in `expr.rs`, so a well-formed
+            // `Value::Scalar` component MUST carry `DimensionVector::LENGTH`.
+            // A wrong-dimensioned Scalar slipping through here would silently
+            // be reinterpreted as metres at the kernel boundary — debug-assert
+            // to surface the violation in tests; in release we still fall
+            // through to `None` rather than feeding the kernel garbage.
+            reify_types::Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                debug_assert!(
+                    *dimension == reify_types::DimensionVector::LENGTH,
+                    "resolve_point3_length_arg: expected LENGTH-dimensioned Scalar, \
+                     got dimension {:?} (si_value={}); cell type is Point<Length> per \
+                     compile-time wiring in expr.rs",
+                    dimension,
+                    si_value
+                );
+                if *dimension != reify_types::DimensionVector::LENGTH {
+                    return None;
+                }
+                out[i] = *si_value;
+            }
+            // Bare `Real` is intentionally accepted for mock test fixtures
+            // that may store points as raw `Real`s without a Length wrap.
             reify_types::Value::Real(v) => out[i] = *v,
             _ => return None,
         }
@@ -5860,6 +5881,223 @@ mod tests {
             kernel.total_query_count(),
             0,
             "kernel must NOT be consulted for non-helper names"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_resolves_identically_to_real()
+     {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the dispatch's `Real | Scalar` leniency for `dispatch_surface_angle`:
+        // a kernel reply of `Value::Scalar { dimension: ANGLE, si_value: PI/2 }`
+        // must resolve to `Value::angle(PI/2)`, identically to the `Value::Real(PI/2)`
+        // reply pinned by the sibling `..._returns_angle_scalar` test above. Mirrors
+        // `kernel_distance`'s Real|Scalar leniency so a future kernel returning a
+        // dimensioned Scalar does not regress silently.
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Scalar {
+                si_value: std::f64::consts::FRAC_PI_2,
+                dimension: reify_types::DimensionVector::ANGLE,
+            },
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            "angle_between_surfaces with kernel Scalar(ANGLE, PI/2) reply must \
+             resolve identically to a Real(PI/2) reply; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Scalar reply on the happy path must NOT emit diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_on_non_bool_kernel_reply_emits_warning_and_returns_undef() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the `Ok(other)` warning arm of `dispatch_point_on_shape`: a kernel
+        // reply that is neither `Value::Bool(_)` nor an Err must produce
+        // `Some(Value::Undef)` with a Warning diagnostic naming the helper. Defends
+        // the contract against a future kernel that mistakenly returns the
+        // wrong-typed Value.
+        let body_handle = reify_types::GeometryHandleId(11);
+        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+            body_handle,
+            [5.0, 0.0, 0.0],
+            1e-7,
+            // Wrong type — should trigger the non-Bool warning arm.
+            reify_types::Value::Real(0.5),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), body_handle);
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(5.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "on",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "on(...) with non-Bool kernel reply must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Bool reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("on"),
+            "diagnostic must mention the helper name 'on', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("non-Bool"),
+            "diagnostic must indicate the non-Bool reply, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_closest_point_malformed_json_reply_emits_warning_and_returns_undef()
+     {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the `Err(err)` parse-failure arm of `dispatch_closest_point`: a
+        // kernel reply whose `Value::String(_)` payload is not parseable as a
+        // JSON-Point3 must produce `Some(Value::Undef)` with a Warning
+        // diagnostic naming the helper. Defends the contract against a future
+        // kernel that emits a malformed JSON string.
+        let body_handle = reify_types::GeometryHandleId(7);
+        let kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+            body_handle,
+            [10.0, 0.0, 0.0],
+            // Not a JSON-Point3 payload — should trigger the parse-failure
+            // warning arm.
+            reify_types::Value::String("not a valid json point".to_string()),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), body_handle);
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(10.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "closest_point",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::point3(reify_types::Type::length()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "closest_point with malformed JSON reply must yield \
+             Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "malformed reply must emit exactly one Warning, got {} \
+             diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("closest_point"),
+            "diagnostic must mention the helper name 'closest_point', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("parse failed"),
+            "diagnostic must indicate the parse failure, got: {}",
+            diag.message
         );
     }
 }
