@@ -415,19 +415,36 @@ fn build_registry() -> BTreeMap<String, &'static KernelRegistration> {
 // `cargo test --lib` builds for this crate but are invisible to integration
 // test binaries (which compile the lib without `cfg(test)`).
 //
-// Three synthetics are registered:
+// Four synthetics are registered:
 //
-//   __a_kernel  — lex-min in the test build; descriptor: PrimitiveBox/BRep
-//   __b_kernel  — second; descriptor: PrimitiveCylinder/BRep
-//   __test_synthetic_kernel — third; descriptor: PrimitiveSphere/BRep (unique per synthetic)
+//   __0_mesh_kernel — lex-min (BTreeMap key order) in the test build;
+//                     descriptor: BooleanUnion/Mesh (NO BRep entry).
+//                     Added in task 3224 to exercise the BRep filter in
+//                     pick_lexmin_brep_kernel(): this entry sorts before
+//                     __a_kernel but must not win the brep-preferring pick.
+//   __a_kernel      — second in lex order; descriptor: PrimitiveBox/BRep.
+//                     BRep-capable → must be returned by pick_lexmin_brep_kernel().
+//   __b_kernel      — third; descriptor: PrimitiveCylinder/BRep.
+//   __test_synthetic_kernel — fourth; descriptor: PrimitiveSphere/BRep.
 //
-// ASCII sort order: '_' = 0x5F, 'a' = 0x61, 'b' = 0x62, 't' = 0x74.
-// Therefore: __a_kernel < __b_kernel < __test_synthetic_kernel.
+// ASCII sort order:
+//   '0' = 0x30, '_' = 0x5F, 'a' = 0x61, 'b' = 0x62, 't' = 0x74.
+// For names starting with "__":
+//   __0_mesh_kernel < __a_kernel < __b_kernel < __test_synthetic_kernel
+// because '0' (0x30) < 'a' (0x61).
 //
-// This means the lex-min test (`pick_lexmin_kernel_returns_lex_smaller_of_known_pair`)
-// can assert pick_lexmin_kernel() == __a_kernel non-tautologically, and the
-// smoke test (`collect_registry_returns_typed_btreemap_smoke`) still finds
-// __test_synthetic_kernel by its stable NAME constant.
+// Impact on existing tests:
+//   pick_lexmin_kernel_returns_lex_smaller_of_known_pair:
+//     Assertion (2): `lexmin.name <= NAME_A` — still satisfied because
+//       __0_mesh_kernel < __a_kernel, so lexmin.name == "__0_mesh_kernel" ≤ __a_kernel.
+//     Assertion (2b): `lexmin.name < NAME_B` — still satisfied for the same reason.
+//     Assertion (3): `lexmin.name == registry().keys().next()` — still satisfied
+//       because __0_mesh_kernel is now the BTreeMap minimum, and pick_lexmin_kernel()
+//       returns values().next() = the BTreeMap minimum. All three assertions hold.
+//
+//   collect_registry_returns_typed_btreemap_smoke:
+//     The distinctness and content assertions reference NAME_A and NAME_B by their
+//     stable names; adding __0_mesh_kernel as a fourth entry doesn't affect them.
 //
 // All factories are `unreachable!()`: any code path that instantiates a
 // synthetic as a real kernel (e.g. Engine::with_registered_kernel from a unit
@@ -439,9 +456,23 @@ mod test_synthetic_kernel {
     use super::*;
     use reify_types::{GeometryKernel, Operation, ReprKind};
 
+    // ── __0_mesh_kernel ────────────────────────────────────────────────────
+    // BTreeMap-minimum synthetic (task 3224). Uses BooleanUnion/Mesh so it
+    // claims NO BRep entry — pick_lexmin_brep_kernel() must skip it and return
+    // __a_kernel instead. Name prefix '0' (0x30) sorts before 'a' (0x61), so
+    // __0_mesh_kernel is lex-smaller than __a_kernel.
+    pub(super) const NAME_MESH_ONLY: &str = "__0_mesh_kernel";
+
+    fn descriptor_mesh_only() -> CapabilityDescriptor {
+        CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        }
+    }
+
     // ── __a_kernel ─────────────────────────────────────────────────────────
-    // Lex-smallest synthetic in the test build. Used by the lex-min contract
-    // test to assert pick_lexmin_kernel() returns the smaller of a known pair.
+    // Lex-second synthetic (after __0_mesh_kernel) in the test build. Used by
+    // the lex-min contract test and the BRep-preference test to verify
+    // pick_lexmin_brep_kernel() returns the lex-smallest BRep-capable entry.
     pub(super) const NAME_A: &str = "__a_kernel";
 
     fn descriptor_a() -> CapabilityDescriptor {
@@ -488,6 +519,14 @@ mod test_synthetic_kernel {
              reify-eval) misused Engine::with_registered_kernel — a synthetic was \
              instantiated as if it were a real kernel."
         );
+    }
+
+    inventory::submit! {
+        KernelRegistration {
+            name: NAME_MESH_ONLY,
+            descriptor: descriptor_mesh_only,
+            factory: unreachable_factory,
+        }
     }
 
     inventory::submit! {
