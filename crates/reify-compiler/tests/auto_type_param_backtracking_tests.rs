@@ -3750,8 +3750,21 @@ structure def WaterCooled : Cooled {
     //     with `(more than … feasibles exist; rest elided)`).
     // Witnesses produced by render_witnesses use only `=` and `,` separators (no `;` or `(`),
     // so `"; ("` is unambiguous — it cannot appear inside a witness.
+    // Precondition: `"; ("` only appears when the total exceeds NON_UNIQUE_DISPLAY_CAP
+    // (elided branch). This fixture guarantees it by construction (5×5 = 25 > cap = 16);
+    // the assert below makes that dependency explicit so a future fixture-size or cap change
+    // surfaces a purposeful failure rather than a confusing `split_once` panic.
     {
         let msg = &diagnostics[0].message;
+        assert!(
+            msg.contains("; ("),
+            "elision-marker boundary `\"; (\"` must be present in the diagnostic — \
+             this test exercises the elided branch (25 feasibles > NON_UNIQUE_DISPLAY_CAP {}); \
+             if NON_UNIQUE_DISPLAY_CAP was raised past 25 or the fixture shrank, \
+             update the fixture to restore total > cap; message: {:?}",
+            NON_UNIQUE_DISPLAY_CAP,
+            msg
+        );
         let witnesses_section = msg
             .split_once("assignments: ")
             .expect("diagnostic message must contain 'assignments: ' prefix")
