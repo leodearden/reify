@@ -746,8 +746,11 @@ mod tests {
             }
         }
         let _ = count; // silence unused-function warning
-        // Deliberately wrong constant — verify the runtime safeguard catches drift
-        // in KernelId::ALL. Step-2 corrects this to 5 (the true count).
-        assert_eq!(KernelId::ALL.len(), 99);
+        // Dual safeguard: the exhaustive `match` above is the compile-time check
+        // (adding a new KernelId variant without listing it here is a compile
+        // error); this assertion is the runtime check (adding a variant to both
+        // the enum and the match without updating KernelId::ALL will flip this
+        // red). Both must be updated when a new variant is introduced.
+        assert_eq!(KernelId::ALL.len(), 5);
     }
 }
