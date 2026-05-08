@@ -657,6 +657,37 @@ pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3]
     [gx, gy, gz]
 }
 
+/// Pre-compute a dense gradient grid: one `[f64; 3]` entry per voxel,
+/// laid out row-major as `grid[i*ny*nz + j*nz + k]` matching the
+/// `SampledField::data` convention.
+///
+/// Each entry equals `gradient_at_index(sdf, [i, j, k])` — a faithful hoist
+/// of the central-difference (with axis-boundary forward/backward fallbacks)
+/// that the main loop performs per voxel. The cache is intentionally dense
+/// (one entry for every grid point, including out-of-band voxels) so that
+/// lookup is an O(1) slice index rather than a hash probe. Memory cost at
+/// 256³ is ~384 MB (16 M voxels × 24 B); flagged for replacement with a
+/// sparse representation once the OpenVDB FFI lands and
+/// `narrow_band_half_width_voxels` becomes a true sparse-iterator gate.
+///
+/// **Index formula.** The formula `i*nj*nk + j*nk + k` is identical to
+/// [`sample_at_index`]'s layout so cache reads in the main loop are
+/// cache-line-friendly for the innermost (k) sweep.
+pub(crate) fn precompute_gradient_grid(sdf: &SampledField) -> Vec<[f64; 3]> {
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+    let mut grid = Vec::with_capacity(nx * ny * nz);
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                grid.push(gradient_at_index(sdf, [i, j, k]));
+            }
+        }
+    }
+    grid
+}
+
 /// Gradient at a world coordinate via central finite differences over
 /// `sample_at_world`. Returns `[0, 0, 0]` (caller treats as degenerate)
 /// if either side falls outside the grid.
