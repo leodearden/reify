@@ -12,7 +12,8 @@
 // these fields from the MITC3+ kernel and wiring the `to_global(stress,
 // frame)` dispatch helper.
 
-use crate::shell_assembly::build_shell_frame;
+use crate::constitutive::IsotropicElastic;
+use crate::shell_assembly::{build_shell_frame, plane_stress_d};
 use reify_types::Value;
 
 /// Returns the local-to-global rotation matrix for a three-node MITC3+ shell element.
@@ -130,6 +131,77 @@ mod tests {
                 "result row {i} norm² = {norm_sq}, expected 1.0",
             );
         }
+    }
+
+    // Helpers shared across shell_element_stress tests.
+    fn steel_like() -> IsotropicElastic {
+        IsotropicElastic { youngs_modulus: 200.0e9, poisson_ratio: 0.3 }
+    }
+
+    const UNIT_TRI: [[f64; 3]; 3] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
+
+    /// Pure membrane mode (u_x at node 1 = a, u_y at node 2 = b, all rotations zero)
+    /// should produce uniform stress through thickness with no curvature contribution.
+    ///
+    /// For UNIT_TRI, local = global frame, dN_1/dx = 1, dN_2/dy = 1, all other
+    /// relevant gradients are zero.  Voigt strain = [a, b, 0], so:
+    ///   σ_voigt = D_pl · [a, b, 0]
+    ///
+    /// Asserted: top == mid == bottom; σ_xx ≈ σ_voigt[0]; σ_yy ≈ σ_voigt[1];
+    /// σ_xy = 0 (since γ_xy = 0); all σ_xz/σ_yz/σ_zz = 0.
+    #[test]
+    fn shell_element_stress_pure_membrane_mode_yields_uniform_through_thickness() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let a = 0.001_f64;
+        let b = -0.0005_f64;
+
+        let mut u = [0.0_f64; 18];
+        u[6 * 1 + 0] = a; // u_x at node 1
+        u[6 * 2 + 1] = b; // u_y at node 2
+
+        let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+
+        // Analytical stress via plane-stress D-matrix.
+        let d = plane_stress_d(&mat);
+        let sv0 = d[0][0] * a + d[0][1] * b; // σ_xx
+        let sv1 = d[1][0] * a + d[1][1] * b; // σ_yy
+
+        let scale = sv0.abs().max(sv1.abs()).max(1.0);
+        let tol = 1e-9 * scale;
+
+        // top, mid, bottom must be equal (no through-thickness gradient).
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (s.top[i][j] - s.mid[i][j]).abs() < tol,
+                    "top[{i}][{j}] = {} ≠ mid[{i}][{j}] = {}",
+                    s.top[i][j], s.mid[i][j],
+                );
+                assert!(
+                    (s.top[i][j] - s.bottom[i][j]).abs() < tol,
+                    "top[{i}][{j}] = {} ≠ bottom[{i}][{j}] = {}",
+                    s.top[i][j], s.bottom[i][j],
+                );
+            }
+        }
+
+        // In-plane normal components.
+        assert!((s.top[0][0] - sv0).abs() < tol, "σ_xx = {}, expected {sv0}", s.top[0][0]);
+        assert!((s.top[1][1] - sv1).abs() < tol, "σ_yy = {}, expected {sv1}", s.top[1][1]);
+
+        // In-plane shear and transverse components must be zero.
+        assert!(s.top[0][1].abs() < tol, "σ_xy = {}, expected 0", s.top[0][1]);
+        assert!(s.top[1][0].abs() < tol, "σ_yx = {}, expected 0", s.top[1][0]);
+        assert!(s.top[0][2].abs() < tol, "σ_xz = {}, expected 0", s.top[0][2]);
+        assert!(s.top[2][0].abs() < tol, "σ_zx = {}, expected 0", s.top[2][0]);
+        assert!(s.top[1][2].abs() < tol, "σ_yz = {}, expected 0", s.top[1][2]);
+        assert!(s.top[2][1].abs() < tol, "σ_zy = {}, expected 0", s.top[2][1]);
+        assert!(s.top[2][2].abs() < tol, "σ_zz = {}, expected 0", s.top[2][2]);
     }
 
     /// `ShellStress::homogeneous(field)` is the canonical tet-result constructor.
