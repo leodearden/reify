@@ -248,11 +248,23 @@ pub fn assemble_global_stiffness(
                 for h in handles {
                     // Joining in handle-vector order = spawn order =
                     // chunk-iteration order in `elements`. A worker
-                    // panic propagates via `expect`; per the project's
-                    // contract-explicitness convention, we surface the
-                    // worker panic at the caller rather than swallowing
-                    // it into a generic error.
-                    acc.extend(h.join().expect("global-assembly worker thread panicked"));
+                    // panic is forwarded to the caller via
+                    // `resume_unwind` rather than being swallowed by
+                    // `.expect(...)`: `expect` would format the boxed
+                    // `Any` payload as `Any { .. }` (losing the
+                    // original panic text and backtrace location),
+                    // whereas `resume_unwind` propagates the original
+                    // payload intact so the caller sees the worker's
+                    // exact panic message (e.g. "index out of bounds").
+                    // Per the Task-2544 contract-explicitness
+                    // convention: make the contract explicit in
+                    // production code rather than relying on test
+                    // coverage. Mirrors `run_with_deadlock_timeout` in
+                    // `crates/reify-test-support/src/mocks.rs:1452-1474`.
+                    match h.join() {
+                        Ok(local) => acc.extend(local),
+                        Err(payload) => std::panic::resume_unwind(payload),
+                    }
                 }
                 acc
             })
