@@ -35,6 +35,20 @@ use serde::{Deserialize, Serialize};
 /// Reify convention that 0 means "uninitialised / unknown".
 const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
 
+/// Upper bound on `Vec<f64>` length accepted from a serialized header during
+/// [`ElasticResult::deserialize_from_reader`]. A corrupted or tampered cache
+/// entry could otherwise advertise a near-`u64::MAX` length, triggering a
+/// multi-gigabyte `Vec::with_capacity` allocation (or, on 32-bit hosts,
+/// silently truncating via `as usize` and producing a smaller-than-claimed
+/// buffer that still allocates billions of bytes' worth of garbage). The
+/// limit is sized for FEA solver outputs at workstation scale: `1 << 30`
+/// ≈ 1.07 billion `f64`s ≈ 8 GiB — orders of magnitude above any plausible
+/// per-result workload, but low enough to fail-fast on garbage. The value
+/// also fits in `u32::MAX`, so the post-check `as usize` cast is safe on
+/// 32-bit targets. Pinned by
+/// `elastic_result_deserialize_rejects_oversize_lengths`.
+const MAX_F64_ELEMENTS: u64 = 1 << 30;
+
 // Compile-time assertion that `ElasticResult: PersistentlyCacheable`. Lives at
 // module scope (outside `#[cfg(test)]`) so the trait-bound is enforced on every
 // build, not only when `cargo test` links. Replaces a previous
@@ -111,6 +125,24 @@ pub struct ElasticResult {
     pub solve_time_ms: u64,
 }
 
+/// Validate a header-declared `Vec<f64>` length against [`MAX_F64_ELEMENTS`]
+/// before it is fed to [`Vec::with_capacity`]. Returns the length cast to
+/// `usize` on success, or `io::Error(InvalidData)` with a descriptive message
+/// on overflow. The cast is safe post-check because `MAX_F64_ELEMENTS = 1<<30`
+/// fits in `u32`, so it cannot truncate even on a 32-bit `usize`.
+fn check_f64_vec_len(field_name: &str, len: u64) -> io::Result<usize> {
+    if len > MAX_F64_ELEMENTS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "ElasticResult {field_name} length {len} exceeds limit {MAX_F64_ELEMENTS} \
+                 (corrupted or tampered cache entry?)"
+            ),
+        ));
+    }
+    Ok(len as usize)
+}
+
 impl PersistentlyCacheable for ElasticResult {
     const FORMAT_VERSION: u32 = ELASTIC_RESULT_FORMAT_VERSION;
 
@@ -162,13 +194,19 @@ impl PersistentlyCacheable for ElasticResult {
         let mut decoder = zstd::Decoder::new(r)?;
         let header: ElasticResultHeader =
             bincode::deserialize_from(&mut decoder).map_err(io::Error::other)?;
-        let mut displacement = Vec::with_capacity(header.displacement_len as usize);
+        // Bound length-prefix fields BEFORE `Vec::with_capacity` to defend
+        // against corrupted/tampered cache entries claiming `u64::MAX` (or
+        // values that silently truncate via `as usize` on a 32-bit target).
+        // See `MAX_F64_ELEMENTS` for the rationale on the limit value.
+        let displacement_cap = check_f64_vec_len("displacement", header.displacement_len)?;
+        let stress_cap = check_f64_vec_len("stress", header.stress_len)?;
+        let mut displacement = Vec::with_capacity(displacement_cap);
         for _ in 0..header.displacement_len {
             let mut bytes = [0u8; 8];
             decoder.read_exact(&mut bytes)?;
             displacement.push(f64::from_le_bytes(bytes));
         }
-        let mut stress = Vec::with_capacity(header.stress_len as usize);
+        let mut stress = Vec::with_capacity(stress_cap);
         for _ in 0..header.stress_len {
             let mut bytes = [0u8; 8];
             decoder.read_exact(&mut bytes)?;
@@ -352,6 +390,92 @@ mod tests {
             "unexpected io::ErrorKind from truncated read: {:?} (full error: {:?})",
             kind,
             err,
+        );
+    }
+
+    /// Helper used by the oversize-length and (later) garbage-bytes tests:
+    /// emit a zstd frame containing a hand-built header so we can simulate a
+    /// tampered cache entry without going through the public `serialize_to_writer`
+    /// path. Returns the encoded bytes.
+    fn encode_header(header: &ElasticResultHeader) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut encoder = zstd::Encoder::new(&mut buf, 0).unwrap();
+        bincode::serialize_into(&mut encoder, header).unwrap();
+        encoder.finish().unwrap();
+        buf
+    }
+
+    #[test]
+    fn elastic_result_deserialize_rejects_oversize_displacement_len() {
+        // A tampered/corrupted cache entry advertises a displacement_len just
+        // past the limit. The decoder must refuse with `InvalidData` BEFORE
+        // attempting `Vec::with_capacity(huge)` (which would either OOM-panic
+        // or silently truncate on 32-bit hosts).
+        let header = ElasticResultHeader {
+            max_von_mises_bits: 0,
+            converged: false,
+            iterations: 0,
+            solve_time_ms: 0,
+            displacement_len: MAX_F64_ELEMENTS + 1,
+            stress_len: 0,
+        };
+        let buf = encode_header(&header);
+        let err = ElasticResult::deserialize_from_reader(&mut &buf[..])
+            .expect_err("oversize displacement_len must be rejected");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "expected InvalidData, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn elastic_result_deserialize_rejects_oversize_stress_len() {
+        // Symmetric pin for the stress field — both length-prefix paths must
+        // be guarded.
+        let header = ElasticResultHeader {
+            max_von_mises_bits: 0,
+            converged: false,
+            iterations: 0,
+            solve_time_ms: 0,
+            displacement_len: 0,
+            stress_len: u64::MAX,
+        };
+        let buf = encode_header(&header);
+        let err = ElasticResult::deserialize_from_reader(&mut &buf[..])
+            .expect_err("oversize stress_len must be rejected");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "expected InvalidData, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn elastic_result_deserialize_accepts_lengths_at_the_limit() {
+        // Boundary pin: `MAX_F64_ELEMENTS` itself is permitted; only `> MAX`
+        // is rejected. We cannot realistically materialise a 1<<30-element
+        // Vec in a unit test, so we exercise the boundary by claiming the
+        // limit in the header and then truncating the slab — the decoder
+        // must traverse the bound check successfully and only fail later on
+        // the short slab read (UnexpectedEof from `read_exact`), NOT on the
+        // bound check (which would surface `InvalidData`).
+        let header = ElasticResultHeader {
+            max_von_mises_bits: 0,
+            converged: false,
+            iterations: 0,
+            solve_time_ms: 0,
+            displacement_len: MAX_F64_ELEMENTS,
+            stress_len: 0,
+        };
+        let buf = encode_header(&header);
+        let err = ElasticResult::deserialize_from_reader(&mut &buf[..])
+            .expect_err("zero-payload slab must EOF, not InvalidData");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::UnexpectedEof,
+            "expected UnexpectedEof on slab read, got {err:?} \
+             (regression: bound check may be off-by-one rejecting the limit)"
         );
     }
 
