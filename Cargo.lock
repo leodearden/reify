@@ -4408,6 +4408,7 @@ name = "reify-eval"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "bytemuck",
  "inventory",
  "reify-compiler",
  "reify-constraints",
