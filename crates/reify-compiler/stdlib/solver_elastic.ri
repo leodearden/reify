@@ -242,17 +242,21 @@ structure def ElasticOptions {
 //
 // TODO(field-in-param, task #3117): once `resolve_parameterized_builtin_type`
 // (`crates/reify-compiler/src/type_resolution.rs:1340-1398`) accepts
-// `Field<X, Y>` in `param` positions, tighten `displacement` to
-// `Field<Point3<Length>, Vector3<Length>>` and `stress` to
-// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` per the PRD spec
-// (`docs/prds/v0_3/structural-analysis-fea.md` task #4). Until then the
-// `Real` placeholder lets a buggy runtime implementation accidentally
-// write a scalar into these slots and type-check successfully — the
-// runtime FEA solver in PRD task #16 is the only writer, so the hazard
-// is contained. Task #3117 investigates whether the existing Field arm
-// at type_resolution.rs:1397 already handles param-position Field<X,Y>
-// (the TODO may be stale) and either tightens these two sites or extends
-// the resolver. Real-placeholder audit: docs/notes/stdlib-real-placeholder-audit.md
+// `Field<X, Y>` in `param` positions, tighten the following six field-typed
+// slots in a single migration pass:
+//   displacement     → Field<Point3<Length>, Vector3<Length>>
+//   stress           → Field<Point3<Length>, Tensor<2, 3, Pressure>>
+//   frame            → Field<Point3<Length>, Matrix<3, 3, Real>>
+//   ShellStress.top    → Field<Point3<Length>, Tensor<2, 3, Pressure>>
+//   ShellStress.mid    → Field<Point3<Length>, Tensor<2, 3, Pressure>>
+//   ShellStress.bottom → Field<Point3<Length>, Tensor<2, 3, Pressure>>
+// Until then the `Real` placeholder lets the runtime implementation write
+// Field-typed values regardless of the static `param` annotation — the
+// runtime FEA solver in PRD task #16 is the only writer, so the hazard is
+// contained. Task #3117 investigates whether the existing Field arm at
+// type_resolution.rs:1397 already handles param-position Field<X,Y> (the
+// TODO may be stale) and either tightens these sites or extends the resolver.
+// Real-placeholder audit: docs/notes/stdlib-real-placeholder-audit.md
 //
 // Field semantics:
 //   displacement  — per-mesh-node displacement vector, returned as a
@@ -269,6 +273,27 @@ structure def ElasticOptions {
 //                   runtime. Same Real-placeholder rationale as
 //                   `displacement` above; covered by the same
 //                   TODO(field-in-param).
+//   frame         — per-mesh-element local-to-global rotation matrix,
+//                   returned as a `Field<Point3<Length>, Matrix<3, 3, Real>>`
+//                   at runtime (one 3×3 orthogonal matrix per element).
+//                   Statically declared as `Real` — same placeholder
+//                   rationale and TODO(field-in-param) as `displacement` /
+//                   `stress` above.
+//                   Tet population convention: the engine sets
+//                   `frame = Value::Undef` because tet stress is already in
+//                   the global Cartesian frame — no per-element local frame
+//                   exists for solid elements. Using Undef (rather than a
+//                   synthesised identity field) signals the absence cleanly
+//                   and prevents silent mistreatment by shell pipeline code
+//                   that forgets to check element type.
+//                   Shell population convention: the engine populates the
+//                   per-element MITC3+ local frame derived from the
+//                   mid-surface mesher (the frame whose z-axis is the
+//                   element normal). Callers can apply `to_global(stress,
+//                   frame)` (engine-integration task T18-T20) to transform
+//                   shell stress into the global frame.
+//                   PRD reference: docs/prds/v0_4/structural-analysis-shells.md
+//                   § "Stress through thickness".
 //   max_von_mises — peak von-Mises equivalent stress over the mesh.
 //                   Convenience scalar for safety-factor / yield-margin
 //                   comparisons; equivalent to
@@ -284,6 +309,7 @@ structure def ElasticOptions {
 structure def ElasticResult {
     param displacement : Real
     param stress : Real
+    param frame : Real
     param max_von_mises : Pressure
     param converged : Bool
     param iterations : Int
