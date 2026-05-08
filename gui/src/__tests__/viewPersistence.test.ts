@@ -107,7 +107,9 @@ describe('PersistentViewState — runtime constructor shape', () => {
       timestamp: '2026-04-22T00:00:00.000Z',
     };
     expect(state.version).toBe('2');
-    expect(state.version).not.toBe(2); // must be string, not number
+    // Note: the string-vs-number constraint is enforced by the `version: '2'`
+    // literal type in types.ts; the runtime check is exercised in the
+    // loadViewPersistence '(e3)' test below where the type guard actually runs.
   });
 
   it('userViews array holds ViewDefinition objects with all required fields', () => {
@@ -245,20 +247,50 @@ describe('loadViewPersistence', () => {
     expect(loadViewPersistence(TEST_PATH)).toBeNull();
   });
 
-  it('returns null for legacy v1 schema (Task 3233 — invalidate Y-up cameras)', () => {
-    // Direct JSON injection bypasses the TS-typed PersistentViewState literal
-    // (which carries the new `version: '2'` constraint after the bump).
-    // This mirrors the raw-JSON pattern in test (e) above.
+  it('(e3) returns null when version is numeric 2 instead of string "2"', () => {
+    // Exercises the real production type guard via the localStorage path.
+    // Strict equality `v['version'] !== '2'` rejects the number 2 without
+    // type coercion, so this asserts a concrete runtime behaviour rather than
+    // restating a compile-time invariant.
     localStorage.setItem(
       `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
       JSON.stringify({
-        version: '1',
+        version: 2, // numeric — strict equality guard rejects this
         activeViewId: 'auto:default',
         userViews: [],
         explicit: {},
-        viewportCameras: { 'design-main': { position: [0, 10, 0], target: [0, 0, 0], up: [0, 1, 0], zoom: 1 } },
+        viewportCameras: {},
         timestamp: '2026-04-22T00:00:00.000Z',
       }),
+    );
+    expect(loadViewPersistence(TEST_PATH)).toBeNull();
+  });
+
+  it('returns null for legacy v1 schema — version is the sole differentiator (Task 3233)', () => {
+    // Construct the same payload twice, differing only in the `version` field.
+    // The positive case (v2) must load; the negative case (v1) must be rejected.
+    // This pins the guard to the version field specifically — if a future
+    // regression accepts any non-empty string in `version`, the positive case
+    // would still pass but only for the right reason.
+    const sharedPayload = {
+      activeViewId: 'auto:default',
+      userViews: [] as unknown[],
+      explicit: {},
+      viewportCameras: { 'design-main': { position: [0, 10, 0], target: [0, 0, 0], up: [0, 1, 0], zoom: 1 } },
+      timestamp: '2026-04-22T00:00:00.000Z',
+    };
+
+    // v2 — must load successfully
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
+      JSON.stringify({ version: '2', ...sharedPayload }),
+    );
+    expect(loadViewPersistence(TEST_PATH)).not.toBeNull();
+
+    // v1 — identical payload, only version differs; must be rejected
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
+      JSON.stringify({ version: '1', ...sharedPayload }),
     );
     expect(loadViewPersistence(TEST_PATH)).toBeNull();
   });
