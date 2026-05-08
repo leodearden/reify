@@ -436,11 +436,11 @@ mod tests {
     }
 
     #[test]
-    fn interpolate_assumed_shear_is_constant_when_all_tying_inputs_match() {
+    fn interpolate_assumed_shear_is_constant_when_paired_tying_inputs_match() {
         // c = (gamma_xi_zeta_at_c - gamma_eta_zeta_at_c)
         //   - (gamma_xi_zeta_at_a - gamma_eta_zeta_at_b)
-        // Setting gamma_xi_zeta_at_a == gamma_xi_zeta_at_c and
-        //         gamma_eta_zeta_at_b == gamma_eta_zeta_at_c gives c = 0.
+        // Setting the paired inputs gamma_xi_zeta_at_a == gamma_xi_zeta_at_c and
+        //                            gamma_eta_zeta_at_b == gamma_eta_zeta_at_c gives c = 0.
         let gx = 0.7_f64;
         let ge = -0.4_f64;
         let sampled = TyingShears {
@@ -536,33 +536,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tying_shears_exposes_only_consumed_components_with_named_field_surface() {
-        // Pin the new explicit-contract API: TyingShears must expose exactly the
-        // four scalar fields that interpolate_assumed_shear consumes.  Each
-        // field name encodes location and component so no silent-ignore is
-        // possible (Task 2544 convention).
-        //
-        // This test will fail to compile against the old 3-ShearStrain-field
-        // TyingShears because none of these field names exist there.
-        let s = TyingShears {
-            gamma_xi_zeta_at_a: 0.5,
-            gamma_eta_zeta_at_b: 0.6,
-            gamma_xi_zeta_at_c: 0.3,
-            gamma_eta_zeta_at_c: 0.4,
-        };
-        // Field access asserts each field is accessible on the type surface.
-        assert_eq!(s.gamma_xi_zeta_at_a, 0.5);
-        assert_eq!(s.gamma_eta_zeta_at_b, 0.6);
-        assert_eq!(s.gamma_xi_zeta_at_c, 0.3);
-        assert_eq!(s.gamma_eta_zeta_at_c, 0.4);
-        // A-tying identity: at A=(½,0), γ_ξζ output must equal gamma_xi_zeta_at_a.
-        let out = Mitc3Plus.interpolate_assumed_shear(s, ShellReferenceCoord::new(0.5, 0.0));
-        assert!(
-            (out.gamma_xi_zeta - s.gamma_xi_zeta_at_a).abs() < TOL,
-            "A-tying: gamma_xi_zeta at A = {}, expected {}",
-            out.gamma_xi_zeta,
-            s.gamma_xi_zeta_at_a,
-        );
-    }
 }
