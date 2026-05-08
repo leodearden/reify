@@ -196,12 +196,15 @@ pub(crate) fn pick_lexmin_brep_kernel_in<V>(
     registered: &BTreeMap<String, V>,
     descriptor_of: impl Fn(&V) -> CapabilityDescriptor,
 ) -> Option<&V> {
-    registered.values().find(|v| {
-        descriptor_of(v)
-            .supports
-            .iter()
-            .any(|(_, r)| *r == ReprKind::BRep)
-    })
+    registered
+        .values()
+        .find(|v| {
+            descriptor_of(v)
+                .supports
+                .iter()
+                .any(|(_, r)| *r == ReprKind::BRep)
+        })
+        .or_else(|| registered.values().next())
 }
 
 /// Iterate the static linker-collected set of [`KernelRegistration`] records
