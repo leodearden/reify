@@ -179,7 +179,7 @@ pub fn shell_element_stiffness(
     thickness: f64,
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    use crate::elements::mitc3_plus::{Mitc3Plus, ShearStrain, TyingShears};
+    use crate::elements::mitc3_plus::{Mitc3Plus, TyingShears};
     assert!(thickness > 0.0, "shell_element_stiffness: thickness must be positive, got {thickness}");
     // Element-size constants — avoid hard-coding 18/6/3 throughout.
     const NDOF: usize = Mitc3Plus::N_DOFS;        // 18 total DOFs
@@ -367,7 +367,7 @@ pub fn shell_element_stiffness(
 
     // We treat this as a linear operator on the 18-DOF vector and build
     // a 2×18 matrix B_cov_tp for each tying point. Then we assemble
-    // TyingShears from {at_a: B_cov_tp[0], at_b: B_cov_tp[1], at_c: B_cov_tp[2]}.
+    // TyingShears flat fields gamma_<comp>_at_<point> sourced from B_cov_tp[tp][component][dof].
     // Actually the interpolation formula takes scalar inputs, so we must
     // handle the linearity differently: we propagate the whole B matrix.
 
@@ -406,19 +406,12 @@ pub fn shell_element_stiffness(
         let mut b_s_cov_qp = [[0.0_f64; NDOF]; 2];
         for dof in 0..NDOF {
             // For column `dof`, the covariant strain at each tying point is b_cov[tp][comp][dof].
+            // TyingShears flat fields: gamma_<comp>_at_<point> = b_cov[tp][component][dof].
             let sampled = TyingShears {
-                at_a: ShearStrain {
-                    gamma_xi_zeta: b_cov[0][0][dof],
-                    gamma_eta_zeta: b_cov[0][1][dof],
-                },
-                at_b: ShearStrain {
-                    gamma_xi_zeta: b_cov[1][0][dof],
-                    gamma_eta_zeta: b_cov[1][1][dof],
-                },
-                at_c: ShearStrain {
-                    gamma_xi_zeta: b_cov[2][0][dof],
-                    gamma_eta_zeta: b_cov[2][1][dof],
-                },
+                gamma_xi_zeta_at_a:  b_cov[0][0][dof],
+                gamma_eta_zeta_at_b: b_cov[1][1][dof],
+                gamma_xi_zeta_at_c:  b_cov[2][0][dof],
+                gamma_eta_zeta_at_c: b_cov[2][1][dof],
             };
             let projected = Mitc3Plus.interpolate_assumed_shear(sampled, qp.coord);
             b_s_cov_qp[0][dof] = projected.gamma_xi_zeta;
