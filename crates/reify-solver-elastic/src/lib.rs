@@ -83,4 +83,4 @@ pub use elements::{
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
 };
 pub use shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness};
-pub use shell_result::{ShellStress, shell_element_frame};
+pub use shell_result::{ShellStress, ShellElementStress, shell_element_frame, shell_element_stress};
