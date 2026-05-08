@@ -8,13 +8,16 @@
 //!   2. `result_for(mcr, "operating")` returns the correct per-case value.
 //!   3. `result_for(mcr, "missing")` returns `Value::Undef` (silent-Undef
 //!      per PRD task #10 deferral).
+//!   4. Stage 1 tracking: `LoadCase(...)` and `MultiCaseResult(...)` ctor
+//!      calls currently evaluate to `Value::Undef` (tripwire assertion —
+//!      flips RED when struct-constructor eval lands; see coverage note).
 //!
 //! # Runtime shape
 //!
 //! `MultiCaseResult` struct instances are `Value::Map{"cases" -> Value::Map}`
 //! at runtime — there is no `Value::StructureInstance` variant. Structure
 //! constructors (e.g. `ElasticResult(...)`) are not builtins and evaluate to
-//! `Value::Undef` (confirmed by `engine_eval.rs:115-125`). Therefore this
+//! `Value::Undef` (confirmed by `engine_eval.rs:114-125`). Therefore this
 //! smoke test constructs the runtime-shape Maps **directly via map literals**,
 //! bypassing the struct-constructor path that would Undef-out.
 //!
@@ -40,24 +43,31 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// # Coverage note
 ///
 /// This file does NOT exercise `LoadCase` or `MultiCaseResult` struct
-/// *definitions* through the parse→compile→eval pipeline. Struct constructors
-/// (e.g. `LoadCase(...)`, `MultiCaseResult(...)`) evaluate to `Value::Undef`
-/// in the current engine, so attempting to assert their fields would always
-/// observe Undef regardless of struct validity. Struct-presence coverage
-/// (template existence, param shapes, defaults) is delegated to the
-/// compiler-level test in
+/// *definitions* through the parse→compile→eval pipeline for their field
+/// values. Struct constructors (e.g. `LoadCase(...)`, `MultiCaseResult(...)`)
+/// evaluate to `Value::Undef` in the current engine, so attempting to assert
+/// their fields would always observe Undef regardless of struct validity.
+/// Struct-presence coverage (template existence, param shapes, defaults) is
+/// delegated to the compiler-level test in
 /// `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`, which
-/// inspects the compiled module directly via `load_stdlib_module()`. Future
-/// maintainers: if struct constructors are wired to produce real Values,
-/// promote the struct-construction assertions from the compiler test into
-/// this smoke test.
+/// inspects the compiled module directly via `load_stdlib_module()`.
+///
+/// Stage 1 tracking bindings (`lc_ctor`, `mcr_ctor`) ARE present below to
+/// pin the current `Value::Undef` runtime behavior of struct ctor calls. When
+/// these assertions flip RED, struct-constructor eval has landed and Stage 2
+/// becomes unblocked: swap the hand-built map literals (`cases`/`mcr`) for
+/// actual `LoadCase(...)` / `MultiCaseResult(...)` calls and assert against
+/// the resulting `Value::Map` shape. See `engine_eval.rs:114-125` for the
+/// Undef-fallthrough documentation.
 ///
 /// Bindings:
-///   `cases`      = `map{"operating" => 42, "overload" => 99}` (inner Map)
-///   `mcr`        = `map{"cases" => cases}` (struct-shaped outer Map)
-///   `names`      = `case_names(mcr)` → `["operating", "overload"]` (lexicographic)
-///   `op_result`  = `result_for(mcr, "operating")` → `42`
+///   `cases`       = `map{"operating" => 42, "overload" => 99}` (inner Map)
+///   `mcr`         = `map{"cases" => cases}` (struct-shaped outer Map)
+///   `names`       = `case_names(mcr)` → `["operating", "overload"]` (lexicographic)
+///   `op_result`   = `result_for(mcr, "operating")` → `42`
 ///   `miss_result` = `result_for(mcr, "missing")` → `Undef`
+///   `lc_ctor`     = `LoadCase(name: "tracking", loads: [], supports: [])` → `Undef` (Stage 1 tripwire)
+///   `mcr_ctor`    = `MultiCaseResult(cases: map{})` → `Undef` (Stage 1 tripwire)
 const SMOKE_SOURCE: &str = r#"
 structure def SmokeFixture {
     let cases = map{"operating" => 42, "overload" => 99}
@@ -65,6 +75,8 @@ structure def SmokeFixture {
     let names      = case_names(mcr)
     let op_result  = result_for(mcr, "operating")
     let miss_result = result_for(mcr, "missing")
+    let lc_ctor  = LoadCase(name: "tracking", loads: [], supports: [])
+    let mcr_ctor = MultiCaseResult(cases: map{})
 }
 "#;
 
@@ -129,5 +141,35 @@ fn multi_load_case_stdlib_smoke_e2e() {
         miss_result.is_undef(),
         "result_for(mcr, \"missing\") should return Undef for a missing key, \
          got: {miss_result:?}"
+    );
+
+    // ── Stage 1 tracking assertion: struct ctor calls → Undef ─────────────────
+    // `LoadCase(...)` and `MultiCaseResult(...)` are user-defined struct
+    // constructors. In the current engine they are not builtins:
+    // `reify_stdlib::eval_builtin` returns `Value::Undef` for unknown names
+    // (see `crates/reify-eval/src/engine_eval.rs:114-125`). This assertion
+    // pins that contract as a tripwire.
+    //
+    // When struct-constructor eval lands and produces real `Value::Map`
+    // instances, BOTH of these assertions will FAIL. That is the signal to
+    // perform Stage 2: swap the hand-built map literals (`cases`/`mcr` above)
+    // for actual `LoadCase(...)` / `MultiCaseResult(...)` calls and update the
+    // assertions to inspect the resulting `Value::Map` shape.
+    let lc_ctor = get_value(v, "lc_ctor");
+    assert!(
+        lc_ctor.is_undef(),
+        "Stage 1 tripwire: LoadCase(...) ctor should currently return Undef \
+         (struct-constructor eval not yet implemented); got: {lc_ctor:?}. \
+         If this assertion FAILS, struct-ctor eval has landed — perform the \
+         Stage 2 migration (swap map literals for ctor calls)."
+    );
+
+    let mcr_ctor = get_value(v, "mcr_ctor");
+    assert!(
+        mcr_ctor.is_undef(),
+        "Stage 1 tripwire: MultiCaseResult(...) ctor should currently return Undef \
+         (struct-constructor eval not yet implemented); got: {mcr_ctor:?}. \
+         If this assertion FAILS, struct-ctor eval has landed — perform the \
+         Stage 2 migration (swap map literals for ctor calls)."
     );
 }
