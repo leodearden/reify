@@ -72,6 +72,7 @@ import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
 import type { PersistentViewState } from './types';
 import styles from './App.module.css';
 
+const NEW_FILE_TEMPLATE = '// New design\n';
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
 const DEFAULT_EDITOR_WIDTH = 300;
@@ -494,6 +495,32 @@ const App: Component = () => {
     }
   }
 
+  async function handleNew() {
+    try {
+      const path = await pickSavePath('untitled.ri', 'ri');
+      if (!path) return;
+      await bridgeSaveFile(path, NEW_FILE_TEMPLATE);
+      const fileData = await bridgeOpenFile(path);
+      editorStore.openFile(fileData);
+      const guiState = await bridgeOpenFileEngine(path);
+      engineStore.initFromState(guiState);
+      const persisted = await loadPersistedViews(path);
+      batch(() => {
+        setCurrentFilePath(path);
+        if (persisted !== null) {
+          viewStateStore.applyPersistedState(persisted);
+          for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
+            viewportStore.updateCamera(id, camera);
+          }
+        }
+      });
+    } catch (err) {
+      const msg = errorMessage(err);
+      console.error('New file failed:', msg);
+      showToast(`New file failed: ${msg}`, 'error');
+    }
+  }
+
   /**
    * Save the current view state to the sidecar file (.ri.views.json).
    * Called when the user clicks "Save views" in the ViewSelector dropdown.
@@ -537,6 +564,7 @@ const App: Component = () => {
 
   // Keyboard shortcuts
   useKeyboardShortcuts({
+    onNew: handleNew,
     onOpen: handleOpen,
     onSave: handleSave,
     onReEvaluate: handleReEvaluate,
@@ -1085,6 +1113,7 @@ const App: Component = () => {
             </div>
           </Show>
           <MenuBar
+            onNew={handleNew}
             onOpen={handleOpen}
             onSave={handleSave}
             onExport={handleExport}
