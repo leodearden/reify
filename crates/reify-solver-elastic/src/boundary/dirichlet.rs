@@ -349,6 +349,95 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Step 3 — inhomogeneous BC subtracts the constrained column into f
+    // -----------------------------------------------------------------------
+
+    /// Inhomogeneous BC (`u ≠ 0`) subtracts `K_before[j][i] · u` from `f[j]`
+    /// for every unconstrained row `j ≠ i`, in addition to zeroing the
+    /// constrained row/col and setting the diagonal.
+    ///
+    /// The assertion is analytic: for a single prescribed BC at DOF `d` with
+    /// value `u`, the expected `f_after[j] = f_before[j] - k_before[j][d] * u`
+    /// is computed from the pre-call snapshots.  This is a single-summand
+    /// FP subtract (no reordering ambiguity), so bit-for-bit equality holds.
+    ///
+    /// Test fails (step-4 implementation) because the column-into-RHS step
+    /// is not yet implemented — `f[j]` for j ≠ d will not change, so the
+    /// assertion `f_after[j] == f_before[j] - k_before[j][d] * u` fails
+    /// whenever `k_before[j][d] != 0.0`.
+    #[test]
+    fn inhomogeneous_bc_subtracts_column_into_rhs() {
+        let mut k = single_p1_k();
+        let mut f: Vec<f64> = (1..=12).map(|i| i as f64).collect();
+
+        // Snapshot K and f before the call.
+        let k_before: Vec<Vec<f64>> = (0..12)
+            .map(|i| (0..12).map(|j| read(&k, i, j)).collect())
+            .collect();
+        let f_before = f.clone();
+
+        let d = 3usize;
+        let u = 0.5_f64;
+        apply_dirichlet_row_elimination(
+            &mut k,
+            &mut f,
+            &[DirichletBc { dof: d, value: u }],
+        );
+
+        // (a) For every j ≠ d: f_after[j] == f_before[j] - K_before[j][d] * u.
+        //     Single-summand subtraction — bit-for-bit equal (no reordering).
+        for j in 0..12 {
+            if j != d {
+                let expected = f_before[j] - k_before[j][d] * u;
+                assert_eq!(
+                    f[j].to_bits(),
+                    expected.to_bits(),
+                    "f[{j}]: expected {expected} (f_before={} - K[{j}][{d}]={} * u={u}), \
+                     got {}",
+                    f_before[j],
+                    k_before[j][d],
+                    f[j],
+                );
+            }
+        }
+
+        // (b) f[d] must be pinned to u.
+        assert_eq!(
+            f[d], u,
+            "f[{d}] should be {u} (prescribed value), got {}",
+            f[d],
+        );
+
+        // (c) Row d zeroed, column d zeroed, diagonal = 1.0 (same as homogeneous).
+        for j in 0..12 {
+            if j != d {
+                assert_eq!(read(&k, d, j), 0.0, "K[{d}][{j}] not zero");
+                assert_eq!(read(&k, j, d), 0.0, "K[{j}][{d}] not zero");
+            }
+        }
+        assert_eq!(
+            read(&k, d, d).to_bits(),
+            1.0_f64.to_bits(),
+            "K[{d}][{d}] = {} (expected 1.0)",
+            read(&k, d, d),
+        );
+
+        // (d) Unconstrained block must be bit-for-bit identical.
+        for i in 0..12 {
+            for j in 0..12 {
+                if i != d && j != d {
+                    let after = read(&k, i, j);
+                    assert_eq!(
+                        after.to_bits(),
+                        k_before[i][j].to_bits(),
+                        "K[{i}][{j}] changed unexpectedly",
+                    );
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Step 1 — empty BC list is a no-op
     // -----------------------------------------------------------------------
 
