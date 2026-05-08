@@ -90,6 +90,23 @@ fn linear_combine(args: &[Value]) -> Value {
     if args.len() != 2 {
         return Value::Undef;
     }
+
+    // Unwrap args[0] as a MultiCaseResult (via extract_cases_map).
+    let cases_map = match extract_cases_map(&args[0]) {
+        Some(m) => m,
+        None => return Value::Undef,
+    };
+
+    // args[1] must be a non-empty Map<String, numeric>.
+    let weights_map = match &args[1] {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+    if weights_map.is_empty() {
+        return Value::Undef;
+    }
+
+    let _ = cases_map; // used in subsequent steps
     Value::Undef
 }
 
