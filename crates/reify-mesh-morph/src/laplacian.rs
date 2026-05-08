@@ -369,6 +369,175 @@ mod tests {
         assert!((out.vertices[p_base + 2] - expected_p[2] as f32).abs() <= tol);
     }
 
+    // ── Step-13: multi-iteration Jacobi propagates through interior chain ────
+
+    /// Two interior nodes `p` and `q` connected to each other and each to a
+    /// disjoint subset of pinned boundary nodes. Builds the topology so that
+    /// `p`'s neighbours = `{a, b, c, q}` and `q`'s neighbours = `{p, d, e, f}`,
+    /// then asserts the closed-form Jacobi iterates after 1 and 2 passes.
+    /// Comparing iter=1 vs. iter=2 also pins that more iterations move the
+    /// interior nodes further from their initial positions toward the boundary
+    /// — i.e. the iteration count is genuinely consumed by the loop.
+    #[test]
+    fn laplacian_smooth_with_multiple_iterations_jacobi_propagates_interior_displacement_through_chain()
+     {
+        // Layout: 0=a, 1=b, 2=c, 3=p, 4=q, 5=d, 6=e, 7=f.
+        // p (3) is the only interior node in tets {a,b,c,p} and {a,b,p,q};
+        // q (4) is the only interior node in tets {p,q,d,e} and {q,d,e,f}.
+        //
+        // Per-tet edge contributions (each tet's C(4,2) = 6 unordered pairs):
+        //   {a,b,c,p}: ab ac ap bc bp cp
+        //   {a,b,p,q}: ab ap aq bp bq pq
+        //   {p,q,d,e}: pq pd pe qd qe de
+        //   {q,d,e,f}: qd qe qf de df ef
+        //
+        // p's unique neighbours (across all tets): a, b, c, q  ✓
+        // q's unique neighbours: a, b, p, d, e, f
+        //
+        // To make q's neighbours exactly {p, d, e, f}, drop the {a,b,p,q} tet
+        // and use {p,q,c,?} instead. Re-design with a simpler two-tet topology:
+        //
+        // Tet 1: {a, b, c, p}  → p neighbours = {a, b, c}
+        // Tet 2: {p, q, d, e}  → adds {p, q} and gives q neighbours = {p, d, e}
+        //                       adds q to p's neighbours
+        // Result: p's neighbours = {a, b, c, q}; q's neighbours = {p, d, e}.
+        //
+        // For symmetry and to reach 4 neighbours per node, add Tet 3:
+        // Tet 3: {q, d, e, f}  → q's neighbours = {p, d, e, f}.
+        //
+        // 8 vertices: 0=a, 1=b, 2=c, 3=p, 4=q, 5=d, 6=e, 7=f.
+        let mesh = VolumeMesh {
+            vertices: vec![
+                10.0_f32, 0.0, 0.0, // 0: a
+                0.0, 10.0, 0.0, // 1: b
+                0.0, 0.0, 10.0, // 2: c
+                1.0, 1.0, 1.0, // 3: p (interior)
+                2.0, 2.0, 2.0, // 4: q (interior)
+                20.0, 0.0, 0.0, // 5: d
+                0.0, 20.0, 0.0, // 6: e
+                0.0, 0.0, 20.0, // 7: f
+            ],
+            tet_indices: vec![
+                0, 1, 2, 3, // a, b, c, p
+                3, 4, 5, 6, // p, q, d, e
+                4, 5, 6, 7, // q, d, e, f
+            ],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // Pin all six boundary nodes to themselves (no displacement) — the
+        // test focus is the interior propagation, not the boundary motion.
+        let a = [10.0_f64, 0.0, 0.0];
+        let b = [0.0, 10.0, 0.0];
+        let c = [0.0, 0.0, 10.0];
+        let d = [20.0, 0.0, 0.0];
+        let e = [0.0, 20.0, 0.0];
+        let f = [0.0, 0.0, 20.0];
+        let prescribed = vec![
+            (0_u32, a),
+            (1, b),
+            (2, c),
+            (5, d),
+            (6, e),
+            (7, f),
+        ];
+
+        // Initial interior positions (cast from the f32 mesh).
+        let p0 = [1.0_f64, 1.0, 1.0];
+        let q0 = [2.0_f64, 2.0, 2.0];
+
+        // Topological neighbours:
+        //   p's neighbours = {a, b, c, q}      (from tets 1 and 2 above)
+        //   q's neighbours = {p, d, e, f}      (from tets 2 and 3 above)
+        // (Tet 2 also adds d, e to p's neighbours? Let's recompute:
+        //   Tet 2 = {p, q, d, e} → pairs pq, pd, pe, qd, qe, de
+        //   So p's neighbours include {q, d, e}, plus from Tet 1 {a, b, c}.
+        //   p's full neighbours = {a, b, c, q, d, e} (6 neighbours).
+        //   q's neighbours from Tet 2 = {p, d, e}, from Tet 3 = {d, e, f}.
+        //   q's full neighbours = {p, d, e, f}.
+        // )
+        // Recompute the Jacobi iterates with the CORRECT neighbour sets.
+        //
+        // p's neighbours = {a, b, c, q, d, e} (6 nodes)
+        // q's neighbours = {p, d, e, f}       (4 nodes)
+
+        // Iteration 1:
+        let p1 = [
+            (a[0] + b[0] + c[0] + q0[0] + d[0] + e[0]) / 6.0,
+            (a[1] + b[1] + c[1] + q0[1] + d[1] + e[1]) / 6.0,
+            (a[2] + b[2] + c[2] + q0[2] + d[2] + e[2]) / 6.0,
+        ];
+        let q1 = [
+            (p0[0] + d[0] + e[0] + f[0]) / 4.0,
+            (p0[1] + d[1] + e[1] + f[1]) / 4.0,
+            (p0[2] + d[2] + e[2] + f[2]) / 4.0,
+        ];
+        // Iteration 2 (Jacobi: reads from iter-1 values):
+        let p2 = [
+            (a[0] + b[0] + c[0] + q1[0] + d[0] + e[0]) / 6.0,
+            (a[1] + b[1] + c[1] + q1[1] + d[1] + e[1]) / 6.0,
+            (a[2] + b[2] + c[2] + q1[2] + d[2] + e[2]) / 6.0,
+        ];
+        let q2 = [
+            (p1[0] + d[0] + e[0] + f[0]) / 4.0,
+            (p1[1] + d[1] + e[1] + f[1]) / 4.0,
+            (p1[2] + d[2] + e[2] + f[2]) / 4.0,
+        ];
+
+        let tol = 1e-5_f32;
+
+        // iter = 1
+        let out1 = laplacian_smooth(&mesh, &prescribed, 1).unwrap();
+        let p_at = |out: &VolumeMesh, idx: usize| -> [f32; 3] {
+            let b = idx * 3;
+            [out.vertices[b], out.vertices[b + 1], out.vertices[b + 2]]
+        };
+        let p_out1 = p_at(&out1, 3);
+        let q_out1 = p_at(&out1, 4);
+        for axis in 0..3 {
+            assert!(
+                (p_out1[axis] - p1[axis] as f32).abs() <= tol,
+                "iter=1 p[{axis}]: out={} expected={}",
+                p_out1[axis],
+                p1[axis] as f32
+            );
+            assert!(
+                (q_out1[axis] - q1[axis] as f32).abs() <= tol,
+                "iter=1 q[{axis}]: out={} expected={}",
+                q_out1[axis],
+                q1[axis] as f32
+            );
+        }
+
+        // iter = 2
+        let out2 = laplacian_smooth(&mesh, &prescribed, 2).unwrap();
+        let p_out2 = p_at(&out2, 3);
+        let q_out2 = p_at(&out2, 4);
+        for axis in 0..3 {
+            assert!(
+                (p_out2[axis] - p2[axis] as f32).abs() <= tol,
+                "iter=2 p[{axis}]: out={} expected={}",
+                p_out2[axis],
+                p2[axis] as f32
+            );
+            assert!(
+                (q_out2[axis] - q2[axis] as f32).abs() <= tol,
+                "iter=2 q[{axis}]: out={} expected={}",
+                q_out2[axis],
+                q2[axis] as f32
+            );
+        }
+
+        // Iter=1 and iter=2 must produce *different* interior positions
+        // (otherwise the loop's iteration parameter is a no-op).
+        assert!(
+            p_out1 != p_out2 || q_out1 != q_out2,
+            "iter=1 and iter=2 should produce different interior positions; \
+             got p1={p_out1:?} p2={p_out2:?} q1={q_out1:?} q2={q_out2:?}"
+        );
+    }
+
     // ── Step-3: exhaustive variant fence for LaplacianFailure ─────────────────
     //
     // No-wildcard match guarantees that adding/removing/renaming a variant
