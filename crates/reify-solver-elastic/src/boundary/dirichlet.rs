@@ -117,10 +117,32 @@ pub fn apply_dirichlet_row_elimination(
 
         // ORDERING: column-into-RHS (step 1 of the algorithm) reads the
         // still-original K[j][i] values and MUST run before the row/col
-        // zeroing (steps 2-3) that overwrites them.  The column-into-RHS
-        // step is implemented in step-6; here we handle steps 2-5 so that
-        // homogeneous BCs (u = 0) are correct (the column-into-RHS
-        // contribution is K[j][i] * 0.0 = 0.0, a no-op).
+        // zeroing (steps 2-3) that overwrites them.  Reversing this order
+        // would silently zero the column-into-RHS contribution because
+        // K[j][i] == 0 after step 3 runs.
+        {
+            let (sym, vals) = k.parts_mut();
+            let row_ptr = sym.row_ptr();
+            let col_idx = sym.col_idx();
+            let n = sym.nrows();
+
+            // Step 1: f[j] -= K[j][i] * u for every row j ≠ i.
+            // Skipping j == i because f[i] is overwritten in step 5 anyway.
+            for j in 0..n {
+                if j != i {
+                    let start = row_ptr[j];
+                    let end = row_ptr[j + 1];
+                    for idx in start..end {
+                        if col_idx[idx] == i {
+                            // Read the still-original K[j][i], subtract.
+                            f[j] -= vals[idx] * u;
+                            // At most one match per row in CSR.
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         {
             let (sym, vals) = k.parts_mut();
