@@ -52,3 +52,33 @@ pub struct MetricsBreached {
     /// [`crate::MorphOptions::quality_aspect_ratio_increase_max`].
     pub max_aspect_ratio_increase: Option<f64>,
 }
+
+/// Opaque payload for [`crate::MorphFailure::SolverError`].
+///
+/// Wraps the error message in a named struct so future tasks can add fields
+/// (e.g. a structured kernel-error code from `reify-solver-elastic`) without
+/// a breaking API change. Use [`SolverErrorPayload::new`] to construct and
+/// [`SolverErrorPayload::message`] to read the message text.
+///
+/// The `message` field is private; callers can read via `message()` and
+/// construct via `new(...)`. When PRD task #7 lands a structured kernel-error
+/// type, additional fields (e.g. `source: reify_solver_elastic::SolverError`)
+/// can be added without breaking existing `SolverError(payload)` match arms.
+#[derive(Debug, Clone)]
+pub struct SolverErrorPayload {
+    message: String,
+}
+
+impl SolverErrorPayload {
+    /// Create a new payload from an error message.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// The error message text.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}

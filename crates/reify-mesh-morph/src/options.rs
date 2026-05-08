@@ -5,7 +5,7 @@
 //! surface for the morph engine.
 
 use crate::eligibility::Reason;
-use crate::types::{InversionDetails, MetricsBreached};
+use crate::types::{InversionDetails, MetricsBreached, SolverErrorPayload};
 
 // ── MorphFailure ──────────────────────────────────────────────────────────────
 
@@ -47,10 +47,10 @@ pub enum MorphFailure {
     /// The elastic-solve kernel failed (e.g. singular stiffness matrix).
     ///
     /// Produced by PRD task #7's `solve_elastic_static` integration.
-    /// The payload is a free-form message until task #7 lands a structured
-    /// kernel-error type; upgrading to `SolverError(reify_solver_elastic::SolverError)`
-    /// is a focused one-line diff at that point.
-    SolverError(String),
+    /// The payload is wrapped in [`SolverErrorPayload`] so future tasks can
+    /// add structured fields (e.g. a kernel-error code from
+    /// `reify-solver-elastic`) without a breaking change to match arms.
+    SolverError(SolverErrorPayload),
 }
 
 // ── MorphOptions ──────────────────────────────────────────────────────────────
@@ -141,15 +141,20 @@ mod tests {
                 pct_below_025: Some(0.02),
                 max_aspect_ratio_increase: Some(2.5),
             }),
-            MorphFailure::SolverError("singular stiffness matrix".to_string()),
+            MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix")),
         ];
 
         for failure in variants {
             // Exhaustive match — no wildcard arm. Adding or renaming a variant
             // in MorphFailure breaks this test, which is the intended contract lock.
+            // Each arm asserts on the carried payload.
             match failure {
-                MorphFailure::Ineligible(Reason::StructuralChange) => {}
-                MorphFailure::Ineligible(_) => {}
+                MorphFailure::Ineligible(reason) => {
+                    assert!(
+                        matches!(reason, Reason::StructuralChange),
+                        "unexpected reason: {reason:?}"
+                    );
+                }
                 MorphFailure::QualityHardFail(InversionDetails {
                     element_index: idx,
                     jacobian: j,
@@ -166,8 +171,8 @@ mod tests {
                     assert!((pct_below_025.unwrap() - 0.02).abs() < 1e-12);
                     assert!((max_aspect_ratio_increase.unwrap() - 2.5).abs() < 1e-12);
                 }
-                MorphFailure::SolverError(msg) => {
-                    assert_eq!(msg, "singular stiffness matrix");
+                MorphFailure::SolverError(payload) => {
+                    assert_eq!(payload.message(), "singular stiffness matrix");
                 }
             }
         }
