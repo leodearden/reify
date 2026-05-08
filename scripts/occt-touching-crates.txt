@@ -30,3 +30,4 @@
 reify-kernel-occt
 reify-eval
 reify-cli
+reify-config
