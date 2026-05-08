@@ -67,6 +67,7 @@ const _SHORTCUTS_DEF = [
   // shift: false on Ctrl-only bindings prevents them from firing on Ctrl+Shift+<letter>,
   // which produces an uppercase key that the case-insensitive comparison would otherwise
   // accept. This restores the behavior of the original per-key equality checks.
+  { id: 'new',        key: 'Ctrl+N',       description: 'New file',             bind: { key: 'n', ctrl: true, shift: false } },
   { id: 'open',       key: 'Ctrl+O',       description: 'Open file',            bind: { key: 'o', ctrl: true, shift: false } },
   { id: 'save',       key: 'Ctrl+S',       description: 'Save file',            bind: { key: 's', ctrl: true, shift: false } },
   { id: 'export',     key: 'Ctrl+E',       description: 'Export',               bind: { key: 'e', ctrl: true, shift: false } },

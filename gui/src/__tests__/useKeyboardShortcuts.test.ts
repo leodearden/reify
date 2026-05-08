@@ -285,7 +285,7 @@ describe('useKeyboardShortcuts', () => {
   it('dispatching Ctrl+N keydown on document calls onNew callback', () => {
     const onNew = vi.fn();
     dispose = createRoot((d) => {
-      useKeyboardShortcuts({ onNew } as Parameters<typeof useKeyboardShortcuts>[0]);
+      useKeyboardShortcuts({ onNew });
       return d;
     });
 
@@ -298,7 +298,7 @@ describe('useKeyboardShortcuts', () => {
   it('Ctrl+N is skipped when target is an <input>', () => {
     const onNew = vi.fn();
     dispose = createRoot((d) => {
-      useKeyboardShortcuts({ onNew } as Parameters<typeof useKeyboardShortcuts>[0]);
+      useKeyboardShortcuts({ onNew });
       return d;
     });
 
