@@ -4,6 +4,7 @@
 //! (PRD `docs/prds/v0_3/mesh-morphing.md`, tasks #3 and #10).
 
 pub mod eligibility;
+pub mod options;
 
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 
