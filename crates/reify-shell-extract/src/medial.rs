@@ -239,19 +239,38 @@ impl std::fmt::Display for MedialError {
                 bounds_min,
                 bounds_max,
             } => {
-                if !(spacing.is_finite() && *spacing > 0.0) {
-                    write!(
+                let sp_bad = !(spacing.is_finite() && *spacing > 0.0);
+                let bn_bad = !bounds_min.is_finite()
+                    || !bounds_max.is_finite()
+                    || bounds_min > bounds_max;
+                match (sp_bad, bn_bad) {
+                    (true, true) => write!(
+                        f,
+                        "Regular3D SampledField axis {axis} has invalid spacing {spacing} \
+                         AND invalid bounds (bounds_min={bounds_min}, bounds_max={bounds_max}): \
+                         spacing must be finite and positive; \
+                         bounds must be finite and non-inverted"
+                    ),
+                    (true, false) => write!(
                         f,
                         "Regular3D SampledField axis {axis} has invalid spacing {spacing}: \
                          spacing must be finite and positive (got {spacing}); \
                          bounds_min={bounds_min}, bounds_max={bounds_max}"
-                    )
-                } else {
-                    write!(
+                    ),
+                    (false, true) => write!(
                         f,
-                        "Regular3D SampledField axis {axis} has inverted bounds: \
-                         bounds_min={bounds_min} > bounds_max={bounds_max} (spacing={spacing})"
-                    )
+                        "Regular3D SampledField axis {axis} has invalid bounds: \
+                         bounds_min={bounds_min}, bounds_max={bounds_max} \
+                         (bounds must be finite and bounds_min ≤ bounds_max; \
+                         spacing={spacing})"
+                    ),
+                    (false, false) => write!(
+                        f,
+                        "Regular3D SampledField axis {axis}: InvalidAxisGeometry \
+                         constructed with spacing={spacing}, \
+                         bounds_min={bounds_min}, bounds_max={bounds_max} \
+                         (no violation detected — variant was constructed outside the validator)"
+                    ),
                 }
             }
             MedialError::DataLengthMismatch { expected, found } => write!(
@@ -312,10 +331,11 @@ pub fn compute_medial_mask(
     // through fractional-index math). The single predicate
     // `is_finite() && > 0.0` covers all four classes.
     //
-    // Bound rule — rejects bounds_min > bounds_max (geometrically
-    // inverted grid); bounds_min == bounds_max (zero-extent, single-
-    // voxel axis) is explicitly allowed because the existing doctest
-    // and one_voxel_field fixture both use that configuration.
+    // Bound rule — rejects non-finite bounds (NaN bounds bypass the
+    // `bmin > bmax` comparison via IEEE-754 false return) and inverted
+    // bounds (geometrically inverted grid). Equal bounds (zero-extent,
+    // single-voxel axis) is explicitly allowed because the existing
+    // doctest and one_voxel_field fixture both use that configuration.
     //
     // Both failures produce the same variant because they arise from
     // the same root cause (corrupt axis geometry) and both have the
@@ -325,7 +345,7 @@ pub fn compute_medial_mask(
         let sp = sdf.spacing[axis];
         let bmin = sdf.bounds_min[axis];
         let bmax = sdf.bounds_max[axis];
-        if !(sp.is_finite() && sp > 0.0) || bmin > bmax {
+        if !(sp.is_finite() && sp > 0.0) || !bmin.is_finite() || !bmax.is_finite() || bmin > bmax {
             return Err(MedialError::InvalidAxisGeometry {
                 axis,
                 spacing: sp,
@@ -355,7 +375,18 @@ pub fn compute_medial_mask(
     // Without this check a caller-side construction error (mismatched
     // data vs. axis grid extents) would produce an opaque OOB panic
     // inside the inner loop's `sample_at_index`.
-    let expected_data_len = nx * ny * nz;
+    //
+    // checked_mul guards against wrapping overflow on a malformed input
+    // with astronomically large axis_grids (e.g. nx=ny=nz=2_000_000
+    // wraps to a small product on 64-bit usize and could pass a naive
+    // equality check with a tiny data.len()). On overflow we use
+    // usize::MAX as the sentinel expected value: no real data vector can
+    // have length usize::MAX, so the DataLengthMismatch error is still
+    // surfaced.
+    let expected_data_len = nx
+        .checked_mul(ny)
+        .and_then(|p| p.checked_mul(nz))
+        .unwrap_or(usize::MAX);
     if sdf.data.len() != expected_data_len {
         return Err(MedialError::DataLengthMismatch {
             expected: expected_data_len,
@@ -1591,6 +1622,32 @@ mod tests {
             } if spacing.is_nan() => {}
             other => panic!(
                 "expected InvalidAxisGeometry {{ axis: 0, spacing: NaN, .. }}, got {other:?}"
+            ),
+        }
+    }
+
+    /// NaN bounds_min on axis 0 must return `InvalidAxisGeometry`.
+    /// `f64::NAN > f64::NAN` evaluates to false under IEEE-754, so a
+    /// naive `bmin > bmax` check silently passes NaN bounds. The
+    /// `!bmin.is_finite()` predicate catches this class.
+    /// Uses pattern-match + `is_nan()` because NaN ≠ NaN under `PartialEq`.
+    #[test]
+    fn compute_medial_mask_rejects_nan_bounds() {
+        let sdf = geometry_test_field(
+            [1.0, 1.0, 1.0],
+            [f64::NAN, 0.0, 0.0], // bounds_min[0] = NaN
+            [1.0, 1.0, 1.0],
+        );
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("NaN bounds_min must be rejected");
+        match err {
+            MedialError::InvalidAxisGeometry {
+                axis: 0,
+                bounds_min,
+                ..
+            } if bounds_min.is_nan() => {}
+            other => panic!(
+                "expected InvalidAxisGeometry {{ axis: 0, bounds_min: NaN, .. }}, got {other:?}"
             ),
         }
     }
