@@ -1189,6 +1189,11 @@ mod tests {
     /// 0.001` test would have missed (see code-review suggestion #2).
     #[test]
     fn tightening_distance_tolerance_reduces_slab_mask_size() {
+        // std HashSet deliberately: FxHash is scoped to production code
+        // where [i32;3] voxel sets reach ~16 M entries on the 256³
+        // workload. This fixture produces at most a few hundred voxels;
+        // the hasher difference is unmeasurable at that scale, and the
+        // rest of the crate's test code (segmentation.rs) uses std types.
         use std::collections::HashSet;
 
         let n = 16usize;
