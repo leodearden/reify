@@ -1167,3 +1167,71 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
          purposes between every build"
     );
 }
+
+/// Task 3103, step-4 — lifecycle-consolidation pin for the post-check helper
+/// placement established in step-5.
+///
+/// Mirrors `build_emits_imported_tolerance_promise_insufficient_warning_when_
+/// demand_strictly_tighter_than_promise` but exercises the deactivate→re-activate
+/// path so the binding is visible only through what eval() preserved (task 3103)
+/// + what activate_purpose populated after eval finished.  This makes the test a
+/// regression guard: it fails iff someone re-introduces the BEFORE-check workaround
+/// AND removes the eval preservation, leaving an inconsistent lifecycle where the
+/// helper observes empty bindings at the post-check site.
+///
+/// NOTE: GREEN after step-2 ships (BEFORE-check helper still sees the re-activated
+/// binding at its current placement), and remains GREEN after step-5 moves the
+/// helper to AFTER-check (eval preservation keeps the binding alive through
+/// build()'s internal eval round-trip).
+#[test]
+fn engine_build_emits_imported_tolerance_promise_warning_in_canonical_user_flow_without_pre_check_helper_workaround(
+) {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_canonical_flow_no_pre_check_workaround".to_string(),
+    ]))
+    .template(step_input_template(50e-6))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+    // Deactivate then re-activate: the only binding visible to the post-check
+    // helper is what eval() preserved + what activate_purpose populated after
+    // eval finished.  At the AFTER-check placement (post step-5), the helper
+    // sees the preserved/re-injected binding and emits the diagnostic.
+    engine.deactivate_purpose("manufacturing");
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let build = engine.build(&module, ExportFormat::Step);
+
+    let matched: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::ImportedTolerancePromiseInsufficient)
+        })
+        .collect();
+
+    assert_eq!(
+        matched.len(),
+        1,
+        "expected exactly one ImportedTolerancePromiseInsufficient warning in \
+         BuildResult.diagnostics after deactivate→re-activate canonical flow; \
+         got {} matching diagnostics. Full diagnostic set: {:?}",
+        matched.len(),
+        build.diagnostics,
+    );
+    assert!(
+        matched[0].message.contains("STEPInput"),
+        "warning message must name the input template so authors can locate \
+         the import site (got: {:?})",
+        matched[0].message,
+    );
+}
