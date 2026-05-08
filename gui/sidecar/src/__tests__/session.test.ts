@@ -2831,8 +2831,18 @@ describe('SidecarSession proc error handling', () => {
         text: 'Hanging task',
       });
 
-      // Give it a tick to set up before aborting
-      await new Promise((r) => setTimeout(r, 10));
+      // Wait deterministically for the abortController to be initialised.
+      // handleSendMessage sets abortController synchronously before invokeSdk's first
+      // await, so this resolves within one microtask tick in practice; the deadline
+      // guard prevents a silent hang if the implementation ever adds an async step
+      // before that initialisation.
+      {
+        const deadline = Date.now() + 1000;
+        while ((session as any).abortController === null) {
+          if (Date.now() > deadline) throw new Error('timed out waiting for abortController');
+          await Promise.resolve();
+        }
+      }
 
       // User-initiated abort (reason is undefined, NOT 'timeout')
       await session.handleMessage({ type: 'abort' });
