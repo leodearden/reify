@@ -464,6 +464,83 @@ mod tests {
         }
     }
 
+    // ── Step-9: max_aspect_ratio_increase soft-fail threshold ─────────────────
+
+    #[test]
+    fn quality_check_with_morphed_aspect_ratio_more_than_threshold_x_source_returns_soft_fail_with_max_aspect_ratio_increase_populated(
+    ) {
+        // source: regular unit tet (0,0,0),(1,0,0),(0,1,0),(0,0,1)
+        //   AR_source ≈ max_edge / min_height
+        //   max_edge = sqrt(2) ≈ 1.414, min_height = 1/sqrt(3) * 3 ≈ 1/sqrt(3)
+        //   (rough, not needed — just need morphed AR >> 2× source AR)
+        //
+        // morphed: same connectivity, but node 3 moved from (0,0,1) to (0,0,5).
+        //   max_edge ≈ sqrt(1+25) = sqrt(26) ≈ 5.1
+        //   Volume = |det((1,0,0),(0,1,0),(0,0,5))| / 6 = 5/6
+        //   Heights: computed below, but morphed AR >> 2× source AR.
+        //
+        // min scaled J check: morphed tet has det = 5 > 0, and a stretched tet
+        // stays well above 0.25 in scaled J → min_scaled_jacobian=None,
+        // pct_below_025=None. Only AR increase trips.
+
+        // source
+        #[rustfmt::skip]
+        let src_vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ];
+        let tet_indices = vec![0u32, 1, 2, 3];
+        let source = VolumeMesh {
+            vertices: src_vertices,
+            tet_indices: tet_indices.clone(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // morphed: node 3 at (0,0,5) to greatly increase aspect ratio
+        #[rustfmt::skip]
+        let morphed_vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 5.0,
+        ];
+        let morphed = VolumeMesh {
+            vertices: morphed_vertices,
+            tet_indices,
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        let opts = MorphOptions::default(); // quality_aspect_ratio_increase_max = 2.0
+
+        let result = quality_check(&morphed, &source, &opts);
+        match &result {
+            QualityVerdict::SoftFail(metrics) => {
+                assert!(
+                    metrics.min_scaled_jacobian.is_none(),
+                    "min_scaled_jacobian should be None, got {:?}",
+                    metrics.min_scaled_jacobian
+                );
+                assert!(
+                    metrics.pct_below_025.is_none(),
+                    "pct_below_025 should be None, got {:?}",
+                    metrics.pct_below_025
+                );
+                let ar_increase = metrics
+                    .max_aspect_ratio_increase
+                    .expect("max_aspect_ratio_increase should be Some");
+                assert!(
+                    ar_increase > 2.0,
+                    "expected max_aspect_ratio_increase > 2.0, got {ar_increase}"
+                );
+            }
+            other => panic!("expected SoftFail, got: {other:?}"),
+        }
+    }
+
     // ── Compile fence: exhaustive variant match (no wildcard arm) ─────────────
     //
     // Adding, removing, or renaming any QualityVerdict variant breaks
