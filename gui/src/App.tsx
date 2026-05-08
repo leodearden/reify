@@ -455,39 +455,53 @@ const App: Component = () => {
     }
   }
 
+  /**
+   * Shared post-open load sequence: reads file content + engine state into
+   * their stores and restores persisted view state atomically.
+   *
+   * Called from both handleOpen (after picking a path) and handleNew (after
+   * writing the starter template).  Keeping this in one place ensures the
+   * batch() ordering invariant is never accidentally diverged between the two
+   * callers — the subtle race it prevents is documented in the batch() block
+   * below.
+   */
+  async function loadPathIntoStores(path: string): Promise<void> {
+    const fileData = await bridgeOpenFile(path);
+    editorStore.openFile(fileData);
+    // Load into engine for evaluation (meshes, values, constraints)
+    const guiState = await bridgeOpenFileEngine(path);
+    engineStore.initFromState(guiState);
+
+    // Load persisted view state (sidecar > localStorage > null).
+    // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
+    // user views are in place when auto views are generated.
+    const persisted = await loadPersistedViews(path);
+    // Wrap the three store writes in a single batch so the debounced-save
+    // effect observes the path transition AND the new view/camera state
+    // atomically.  Without batch(), a future refactor that reorders or
+    // interleaves these updates could cause the effect to schedule a write
+    // with (oldPath, newState) — which the path-transition branch would
+    // then flush into the OUTGOING file's localStorage key, silently
+    // cross-corrupting sidecars.  Setting currentFilePath first inside the
+    // batch is the critical ordering: the effect sees `path !== activePath`
+    // and swaps the saver before any schedule() runs against the new state.
+    batch(() => {
+      setCurrentFilePath(path);
+      if (persisted !== null) {
+        viewStateStore.applyPersistedState(persisted);
+        // Restore per-viewport camera positions
+        for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
+          viewportStore.updateCamera(id, camera);
+        }
+      }
+    });
+  }
+
   async function handleOpen() {
     try {
       const path = await pickOpenPath();
       if (!path) return;
-      const fileData = await bridgeOpenFile(path);
-      editorStore.openFile(fileData);
-      // Load into engine for evaluation (meshes, values, constraints)
-      const guiState = await bridgeOpenFileEngine(path);
-      engineStore.initFromState(guiState);
-
-      // Load persisted view state (sidecar > localStorage > null).
-      // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
-      // user views are in place when auto views are generated.
-      const persisted = await loadPersistedViews(path);
-      // Wrap the three store writes in a single batch so the debounced-save
-      // effect observes the path transition AND the new view/camera state
-      // atomically.  Without batch(), a future refactor that reorders or
-      // interleaves these updates could cause the effect to schedule a write
-      // with (oldPath, newState) — which the path-transition branch would
-      // then flush into the OUTGOING file's localStorage key, silently
-      // cross-corrupting sidecars.  Setting currentFilePath first inside the
-      // batch is the critical ordering: the effect sees `path !== activePath`
-      // and swaps the saver before any schedule() runs against the new state.
-      batch(() => {
-        setCurrentFilePath(path);
-        if (persisted !== null) {
-          viewStateStore.applyPersistedState(persisted);
-          // Restore per-viewport camera positions
-          for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
-            viewportStore.updateCamera(id, camera);
-          }
-        }
-      });
+      await loadPathIntoStores(path);
     } catch (err) {
       const msg = errorMessage(err);
       console.error('Open file failed:', msg);
@@ -500,20 +514,12 @@ const App: Component = () => {
       const path = await pickSavePath('untitled.ri', 'ri');
       if (!path) return;
       await bridgeSaveFile(path, NEW_FILE_TEMPLATE);
-      const fileData = await bridgeOpenFile(path);
-      editorStore.openFile(fileData);
-      const guiState = await bridgeOpenFileEngine(path);
-      engineStore.initFromState(guiState);
-      const persisted = await loadPersistedViews(path);
-      batch(() => {
-        setCurrentFilePath(path);
-        if (persisted !== null) {
-          viewStateStore.applyPersistedState(persisted);
-          for (const [id, camera] of Object.entries(persisted.viewportCameras)) {
-            viewportStore.updateCamera(id, camera);
-          }
-        }
-      });
+      // Partial-failure note: if bridgeSaveFile succeeds but loadPathIntoStores
+      // throws (e.g. the engine rejects the new file), the stub .ri template is
+      // left on disk at the user-chosen path.  This is intentional — the file is
+      // a valid .ri starting point and the error toast lets the user open it
+      // manually via File→Open once the underlying issue is resolved.
+      await loadPathIntoStores(path);
     } catch (err) {
       const msg = errorMessage(err);
       console.error('New file failed:', msg);
