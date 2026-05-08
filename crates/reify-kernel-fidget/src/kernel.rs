@@ -719,13 +719,10 @@ mod tests {
             });
             match result {
                 Err(GeometryError::OperationFailed(msg)) => {
-                    assert!(
-                        msg.contains("box dimensions"),
-                        "message must name 'box dimensions'; triple=({width:?},{height:?},{depth:?}), got {msg:?}",
-                    );
-                    assert!(
-                        msg.contains("finite positive"),
-                        "message must contain 'finite positive'; triple=({width:?},{height:?},{depth:?}), got {msg:?}",
+                    assert_eq!(
+                        msg.as_str(),
+                        BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE,
+                        "box-dimensions rejection message must be byte-identical to the shared const; triple=({width:?},{height:?},{depth:?}), got {msg:?}",
                     );
                 }
                 Ok(handle) => panic!(
