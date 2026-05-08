@@ -88,8 +88,48 @@ pub fn laplacian_smooth(
         }
     }
 
-    let _ = iterations;
-    Ok(old_mesh.clone())
+    let vertex_count = old_mesh.vertices.len() / 3;
+
+    // f32 → f64 widening at the read boundary — all interior arithmetic in
+    // f64. Same discipline as boundary.rs (compute_dirichlet_bcs).
+    let mut current: Vec<[f64; 3]> = (0..vertex_count)
+        .map(|i| {
+            let base = i * 3;
+            [
+                old_mesh.vertices[base] as f64,
+                old_mesh.vertices[base + 1] as f64,
+                old_mesh.vertices[base + 2] as f64,
+            ]
+        })
+        .collect();
+
+    // Boundary classification — node is "boundary" iff it appears in
+    // prescribed_positions. Materialised as a Vec<bool> for O(1) lookup
+    // inside future iteration loops.
+    let mut is_boundary = vec![false; vertex_count];
+    for (node_idx, position) in prescribed_positions {
+        let i = *node_idx as usize;
+        is_boundary[i] = true;
+        current[i] = *position;
+    }
+
+    let _ = iterations; // step-12+ will introduce the iteration loop.
+
+    // f64 → f32 narrowing at the write boundary, restoring the canonical
+    // [x0,y0,z0,x1,…] flat layout.
+    let mut out_vertices = Vec::with_capacity(old_mesh.vertices.len());
+    for p in &current {
+        out_vertices.push(p[0] as f32);
+        out_vertices.push(p[1] as f32);
+        out_vertices.push(p[2] as f32);
+    }
+
+    Ok(VolumeMesh {
+        vertices: out_vertices,
+        tet_indices: old_mesh.tet_indices.clone(),
+        element_order: old_mesh.element_order,
+        normals: old_mesh.normals.clone(),
+    })
 }
 
 #[cfg(test)]
