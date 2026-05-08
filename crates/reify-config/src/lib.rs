@@ -259,8 +259,8 @@ pub enum ManifestError {
     /// renderer-formatted diagnostic from the underlying `toml` crate
     /// (line/column information is preserved).
     Parse(String),
-    /// A `[kernels]` entry used a key that is not one of the four
-    /// kernel ids supported in v0.2 (occt, manifold, fidget, openvdb).
+    /// A `[kernels]` entry used a key that is not one of the supported
+    /// kernel ids (occt, manifold, fidget, openvdb, gmsh).
     /// The wrapped string is the offending key, verbatim, so callers
     /// can quote it back to the user. Lookup is canonical-lowercase
     /// only — `OCCT` and `truck` both surface as `UnknownKernel`.
@@ -301,7 +301,7 @@ impl fmt::Display for ManifestError {
             ManifestError::UnknownKernel(key) => {
                 write!(
                     f,
-                    "unknown kernel id '{}' in [kernels] (expected one of: occt, manifold, fidget, openvdb)",
+                    "unknown kernel id '{}' in [kernels] (expected one of: occt, manifold, fidget, openvdb, gmsh)",
                     key
                 )
             }
