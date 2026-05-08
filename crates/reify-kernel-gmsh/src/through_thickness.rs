@@ -147,6 +147,26 @@ pub fn through_thickness_check(
         tet_extents_sum += max_axis - min_axis;
     }
 
+    // Fail-closed: NaN poisons the partial_cmp sort (NaN treated as Equal
+    // against every value), silently corrupting the layer-counting walk that
+    // follows. A NaN centroid signals upstream pathology in the volume mesh
+    // vertex data — a condition that must surface to operators rather than
+    // producing a meaningless layer count that the FEA pipeline trusts.
+    // Emit a WARN and early-return with no findings so the pipeline doesn't
+    // receive garbage results. Operators can filter via
+    // `RUST_LOG=reify_kernel_gmsh::through_thickness=warn`.
+    if let Some(_) = centroids.iter().find(|c| c.is_nan()) {
+        tracing::warn!(
+            target: "reify_kernel_gmsh::through_thickness",
+            reason = "nan_centroid",
+            n_tets = n_tets,
+            "Through-thickness diagnostic skipped: encountered NaN centroid \
+             (likely upstream pathology in volume mesh vertex data); returning \
+             no warnings to avoid silently corrupting the layer-counting walk"
+        );
+        return Vec::new();
+    }
+
     centroids.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     // Bin width: average per-tet extent along the thinnest axis. This is the
