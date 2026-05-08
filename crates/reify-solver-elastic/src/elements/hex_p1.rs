@@ -55,14 +55,38 @@ const HEX_P1_GAUSS_PT: f64 = 0.5773502691896257; // ≈ 1/√3
 /// remaining reference coordinates, so `Bᵀ D B` has per-axis degree ≤ 2,
 /// well within the rule's degree-3-per-axis exactness).
 const HEX_P1_QUAD: &[QuadraturePoint] = &[
-    QuadraturePoint { coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT), weight: 1.0 },
-    QuadraturePoint { coord: ReferenceCoord::new( HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT), weight: 1.0 },
-    QuadraturePoint { coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT), weight: 1.0 },
-    QuadraturePoint { coord: ReferenceCoord::new( HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT), weight: 1.0 },
-    QuadraturePoint { coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT), weight: 1.0 },
-    QuadraturePoint { coord: ReferenceCoord::new( HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT), weight: 1.0 },
-    QuadraturePoint { coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT), weight: 1.0 },
-    QuadraturePoint { coord: ReferenceCoord::new( HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT,  HEX_P1_GAUSS_PT), weight: 1.0 },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT),
+        weight: 1.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT),
+        weight: 1.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT, HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT),
+        weight: 1.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(HEX_P1_GAUSS_PT, HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT),
+        weight: 1.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT, HEX_P1_GAUSS_PT),
+        weight: 1.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(HEX_P1_GAUSS_PT, -HEX_P1_GAUSS_PT, HEX_P1_GAUSS_PT),
+        weight: 1.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(-HEX_P1_GAUSS_PT, HEX_P1_GAUSS_PT, HEX_P1_GAUSS_PT),
+        weight: 1.0,
+    },
+    QuadraturePoint {
+        coord: ReferenceCoord::new(HEX_P1_GAUSS_PT, HEX_P1_GAUSS_PT, HEX_P1_GAUSS_PT),
+        weight: 1.0,
+    },
 ];
 
 /// First-order Lagrangian hexahedron (trilinear hex8).
@@ -75,13 +99,13 @@ pub struct HexP1;
 /// per-method ordering drift.
 pub(crate) const VERTEX_SIGNS: [[f64; 3]; 8] = [
     [-1.0, -1.0, -1.0], // v_0
-    [ 1.0, -1.0, -1.0], // v_1
-    [ 1.0,  1.0, -1.0], // v_2
-    [-1.0,  1.0, -1.0], // v_3
-    [-1.0, -1.0,  1.0], // v_4
-    [ 1.0, -1.0,  1.0], // v_5
-    [ 1.0,  1.0,  1.0], // v_6
-    [-1.0,  1.0,  1.0], // v_7
+    [1.0, -1.0, -1.0],  // v_1
+    [1.0, 1.0, -1.0],   // v_2
+    [-1.0, 1.0, -1.0],  // v_3
+    [-1.0, -1.0, 1.0],  // v_4
+    [1.0, -1.0, 1.0],   // v_5
+    [1.0, 1.0, 1.0],    // v_6
+    [-1.0, 1.0, 1.0],   // v_7
 ];
 
 impl ReferenceElement for HexP1 {
@@ -116,9 +140,9 @@ impl ReferenceElement for HexP1 {
         for s in &VERTEX_SIGNS {
             let (sx, sy, sz) = (s[0], s[1], s[2]);
             g.push([
-                (sx / 8.0) * (1.0 + sy * eta)  * (1.0 + sz * zeta),
-                (sy / 8.0) * (1.0 + sx * xi)   * (1.0 + sz * zeta),
-                (sz / 8.0) * (1.0 + sx * xi)   * (1.0 + sy * eta),
+                (sx / 8.0) * (1.0 + sy * eta) * (1.0 + sz * zeta),
+                (sy / 8.0) * (1.0 + sx * xi) * (1.0 + sz * zeta),
+                (sz / 8.0) * (1.0 + sx * xi) * (1.0 + sy * eta),
             ]);
         }
         g
@@ -142,13 +166,13 @@ mod tests {
     /// outer module.
     const REF_VERTICES: [ReferenceCoord; 8] = [
         ReferenceCoord::new(-1.0, -1.0, -1.0), // v_0
-        ReferenceCoord::new( 1.0, -1.0, -1.0), // v_1
-        ReferenceCoord::new( 1.0,  1.0, -1.0), // v_2
-        ReferenceCoord::new(-1.0,  1.0, -1.0), // v_3
-        ReferenceCoord::new(-1.0, -1.0,  1.0), // v_4
-        ReferenceCoord::new( 1.0, -1.0,  1.0), // v_5
-        ReferenceCoord::new( 1.0,  1.0,  1.0), // v_6
-        ReferenceCoord::new(-1.0,  1.0,  1.0), // v_7
+        ReferenceCoord::new(1.0, -1.0, -1.0),  // v_1
+        ReferenceCoord::new(1.0, 1.0, -1.0),   // v_2
+        ReferenceCoord::new(-1.0, 1.0, -1.0),  // v_3
+        ReferenceCoord::new(-1.0, -1.0, 1.0),  // v_4
+        ReferenceCoord::new(1.0, -1.0, 1.0),   // v_5
+        ReferenceCoord::new(1.0, 1.0, 1.0),    // v_6
+        ReferenceCoord::new(-1.0, 1.0, 1.0),   // v_7
     ];
 
     #[test]
@@ -323,10 +347,14 @@ mod tests {
         // Each point must sit at one of the 8 sign-combinations of ±1/√3.
         let g = 1.0_f64 / 3.0_f64.sqrt();
         let expected_signs: [[f64; 3]; 8] = [
-            [-1.0, -1.0, -1.0], [ 1.0, -1.0, -1.0],
-            [-1.0,  1.0, -1.0], [ 1.0,  1.0, -1.0],
-            [-1.0, -1.0,  1.0], [ 1.0, -1.0,  1.0],
-            [-1.0,  1.0,  1.0], [ 1.0,  1.0,  1.0],
+            [-1.0, -1.0, -1.0],
+            [1.0, -1.0, -1.0],
+            [-1.0, 1.0, -1.0],
+            [1.0, 1.0, -1.0],
+            [-1.0, -1.0, 1.0],
+            [1.0, -1.0, 1.0],
+            [-1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
         ];
         // Verify each of the 8 sign-patterns is covered by exactly one qp.
         // Using a `seen` bitfield guarantees no duplicate coverage (a degenerate
@@ -338,9 +366,9 @@ mod tests {
             let idx = expected_signs
                 .iter()
                 .position(|s| {
-                    (c.xi   - s[0] * g).abs() < QUAD_TOL &&
-                    (c.eta  - s[1] * g).abs() < QUAD_TOL &&
-                    (c.zeta - s[2] * g).abs() < QUAD_TOL
+                    (c.xi - s[0] * g).abs() < QUAD_TOL
+                        && (c.eta - s[1] * g).abs() < QUAD_TOL
+                        && (c.zeta - s[2] * g).abs() < QUAD_TOL
                 })
                 .unwrap_or_else(|| {
                     panic!(
@@ -380,14 +408,22 @@ mod tests {
     #[test]
     fn quad_rule_integrates_linear_xi_to_zero() {
         // ∫_{[-1,1]³} ξ dV = 0  (odd integrand on symmetric domain).
-        let i: f64 = HexP1.quad_points().iter().map(|q| q.weight * q.coord.xi).sum();
+        let i: f64 = HexP1
+            .quad_points()
+            .iter()
+            .map(|q| q.weight * q.coord.xi)
+            .sum();
         assert!(i.abs() < QUAD_TOL, "∫ ξ dV = {i}, expected 0.0");
     }
 
     #[test]
     fn quad_rule_integrates_xi_squared_to_eight_thirds() {
         // ∫_{[-1,1]³} ξ² dV = (2/3)·2·2 = 8/3.
-        let i: f64 = HexP1.quad_points().iter().map(|q| q.weight * q.coord.xi.powi(2)).sum();
+        let i: f64 = HexP1
+            .quad_points()
+            .iter()
+            .map(|q| q.weight * q.coord.xi.powi(2))
+            .sum();
         assert!(
             (i - 8.0 / 3.0).abs() < QUAD_TOL,
             "∫ ξ² dV = {i}, expected {}",
@@ -479,7 +515,11 @@ mod tests {
                     );
                 }
             }
-            assert!((j.det - 1.0).abs() < JAC_TOL, "det J = {}, expected 1.0", j.det);
+            assert!(
+                (j.det - 1.0).abs() < JAC_TOL,
+                "det J = {}, expected 1.0",
+                j.det
+            );
         }
     }
 
@@ -504,7 +544,12 @@ mod tests {
                     );
                 }
             }
-            assert!((j.det - s.powi(3)).abs() < JAC_TOL, "det J = {}, expected {}", j.det, s.powi(3));
+            assert!(
+                (j.det - s.powi(3)).abs() < JAC_TOL,
+                "det J = {}, expected {}",
+                j.det,
+                s.powi(3)
+            );
         }
     }
 

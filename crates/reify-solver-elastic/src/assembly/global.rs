@@ -237,16 +237,14 @@ pub fn assemble_global_stiffness(
                             .iter()
                             .map(|e| 9 * e.connectivity.len() * e.connectivity.len())
                             .sum();
-                        let mut local: Vec<Triplet<usize, usize, f64>> =
-                            Vec::with_capacity(cap);
+                        let mut local: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(cap);
                         for element in chunk {
                             emit_element_triplets(element, &mut local);
                         }
                         local
                     }));
                 }
-                let mut acc: Vec<Triplet<usize, usize, f64>> =
-                    Vec::with_capacity(total_triplets);
+                let mut acc: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(total_triplets);
                 for h in handles {
                     // Joining in handle-vector order = spawn order =
                     // chunk-iteration order in `elements`. A worker
@@ -328,10 +326,7 @@ pub fn assemble_global_stiffness(
 /// `n_local` and `k_e`, so this primitive accepts any element shape whose
 /// K_e satisfies that invariant. Pinned by the
 /// `single_p2_element_identity_connectivity_matches_k_e_bit_for_bit` test.
-fn emit_element_triplets(
-    element: &AssemblyElement<'_>,
-    out: &mut Vec<Triplet<usize, usize, f64>>,
-) {
+fn emit_element_triplets(element: &AssemblyElement<'_>, out: &mut Vec<Triplet<usize, usize, f64>>) {
     let n_local = element.connectivity.len();
     // Iteration order is `(a, α, b, β)` so row = 3*conn[a]+α stays fixed
     // for the inner `(b, β)` sweep — that's the row-major traversal of
@@ -359,8 +354,8 @@ fn emit_element_triplets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assembly::tet::{element_stiffness_p1, element_stiffness_p2};
     use crate::assembly::test_support::scaled_p2_phys_nodes;
+    use crate::assembly::tet::{element_stiffness_p1, element_stiffness_p2};
     use crate::constitutive::IsotropicElastic;
 
     /// Steel-like dimensionless material reused across the global-assembly
@@ -637,8 +632,7 @@ mod tests {
         assert_eq!(k_e.n_dofs, 12);
 
         // 4 disjoint tets, each on its own block of 4 nodes.
-        let conns: [[usize; 4]; 4] =
-            [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]];
+        let conns: [[usize; 4]; 4] = [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]];
         let n_nodes = 16;
         let elements: Vec<AssemblyElement<'_>> = conns
             .iter()
@@ -651,21 +645,12 @@ mod tests {
             .collect();
 
         let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
-        let par1 = assemble_global_stiffness(
-            n_nodes,
-            &elements,
-            AssemblyMode::Parallel { threads: 1 },
-        );
-        let par2 = assemble_global_stiffness(
-            n_nodes,
-            &elements,
-            AssemblyMode::Parallel { threads: 2 },
-        );
-        let par4 = assemble_global_stiffness(
-            n_nodes,
-            &elements,
-            AssemblyMode::Parallel { threads: 4 },
-        );
+        let par1 =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 1 });
+        let par2 =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 2 });
+        let par4 =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
         assert_eq!(det.nrows(), 3 * n_nodes);
         assert_eq!(det.ncols(), 3 * n_nodes);
 
@@ -726,12 +711,7 @@ mod tests {
         assert_eq!(k_e.n_dofs, 12);
 
         // 4 tets fanning around central node 0.
-        let conns: [[usize; 4]; 4] = [
-            [0, 1, 2, 3],
-            [0, 4, 5, 6],
-            [0, 7, 8, 9],
-            [0, 10, 11, 12],
-        ];
+        let conns: [[usize; 4]; 4] = [[0, 1, 2, 3], [0, 4, 5, 6], [0, 7, 8, 9], [0, 10, 11, 12]];
         let n_nodes = 13;
         let elements: Vec<AssemblyElement<'_>> = conns
             .iter()
@@ -744,16 +724,10 @@ mod tests {
             .collect();
 
         let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
-        let par_a = assemble_global_stiffness(
-            n_nodes,
-            &elements,
-            AssemblyMode::Parallel { threads: 4 },
-        );
-        let par_b = assemble_global_stiffness(
-            n_nodes,
-            &elements,
-            AssemblyMode::Parallel { threads: 4 },
-        );
+        let par_a =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
+        let par_b =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
 
         let dim = 3 * n_nodes;
         assert_eq!(det.nrows(), dim);
@@ -826,12 +800,7 @@ mod tests {
         let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
 
         // Same fan-around-central-node mesh as step-13.
-        let conns: [[usize; 4]; 4] = [
-            [0, 1, 2, 3],
-            [0, 4, 5, 6],
-            [0, 7, 8, 9],
-            [0, 10, 11, 12],
-        ];
+        let conns: [[usize; 4]; 4] = [[0, 1, 2, 3], [0, 4, 5, 6], [0, 7, 8, 9], [0, 10, 11, 12]];
         let n_nodes = 13;
         let elements: Vec<AssemblyElement<'_>> = conns
             .iter()
@@ -843,16 +812,10 @@ mod tests {
             })
             .collect();
 
-        let par2 = assemble_global_stiffness(
-            n_nodes,
-            &elements,
-            AssemblyMode::Parallel { threads: 2 },
-        );
-        let par4 = assemble_global_stiffness(
-            n_nodes,
-            &elements,
-            AssemblyMode::Parallel { threads: 4 },
-        );
+        let par2 =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 2 });
+        let par4 =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
 
         let dim = 3 * n_nodes;
         for i in 0..dim {
@@ -931,7 +894,10 @@ mod tests {
         let n_nodes = N_ELEMENTS + 3; // 140
 
         let k_e = element_stiffness_p1(&UNIT_TET_P1, &dimensionless_steel_like());
-        assert_eq!(k_e.n_dofs, 12, "P1 tet must have 12 DOFs (4 nodes × 3 axes)");
+        assert_eq!(
+            k_e.n_dofs, 12,
+            "P1 tet must have 12 DOFs (4 nodes × 3 axes)"
+        );
 
         // Sliding-window connectivity: tet i → [i, i+1, i+2, i+3].
         // Each consecutive pair shares a 3-node face, so every interior face
@@ -960,11 +926,8 @@ mod tests {
         // slot layout: (threads, i, j, p, d, delta, tol)
 
         for threads in [1_usize, 2, 3, 5, 7, 8] {
-            let par = assemble_global_stiffness(
-                n_nodes,
-                &elements,
-                AssemblyMode::Parallel { threads },
-            );
+            let par =
+                assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads });
             for i in 0..dim {
                 for j in 0..dim {
                     let d = read(&det, i, j);
@@ -1019,12 +982,7 @@ mod tests {
         let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
 
         // Same fan-around-central-node mesh as step-13.
-        let conns: [[usize; 4]; 4] = [
-            [0, 1, 2, 3],
-            [0, 4, 5, 6],
-            [0, 7, 8, 9],
-            [0, 10, 11, 12],
-        ];
+        let conns: [[usize; 4]; 4] = [[0, 1, 2, 3], [0, 4, 5, 6], [0, 7, 8, 9], [0, 10, 11, 12]];
         let n_nodes = 13;
         let elements: Vec<AssemblyElement<'_>> = conns
             .iter()

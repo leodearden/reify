@@ -122,8 +122,8 @@ pub fn shell_element_stress(
     // --- Rotate 18 global DOFs → local frame (6 blocks of 3 DOFs) ---
     // Block order per node: translations (6n+0..2) then rotations (6n+3..5).
     let mut u_loc = [0.0_f64; 18];
-    let n_nodes = Mitc3Plus::N_NODES;       // 3
-    let ndp = Mitc3Plus::N_DOFS_PER_NODE;  // 6
+    let n_nodes = Mitc3Plus::N_NODES; // 3
+    let ndp = Mitc3Plus::N_DOFS_PER_NODE; // 6
     for node in 0..n_nodes {
         for triple in 0..2 {
             let off = ndp * node + 3 * triple;
@@ -138,7 +138,11 @@ pub fn shell_element_stress(
     let p0 = frame.origin;
     let mut xloc = [[0.0_f64; 2]; 3];
     for i in 0..n_nodes {
-        let d = [nodes[i][0] - p0[0], nodes[i][1] - p0[1], nodes[i][2] - p0[2]];
+        let d = [
+            nodes[i][0] - p0[0],
+            nodes[i][1] - p0[1],
+            nodes[i][2] - p0[2],
+        ];
         xloc[i][0] = r[0][0] * d[0] + r[0][1] * d[1] + r[0][2] * d[2];
         xloc[i][1] = r[1][0] * d[0] + r[1][1] * d[1] + r[1][2] * d[2];
     }
@@ -157,10 +161,10 @@ pub fn shell_element_stress(
     // --- Membrane Voigt strain: ε = [ε_xx, ε_yy, γ_xy] ---
     let mut eps = [0.0_f64; 3];
     for i in 0..n_nodes {
-        let ux = u_loc[ndp * i];       // u_x in local frame
-        let uy = u_loc[ndp * i + 1];   // u_y in local frame
-        eps[0] += dn[i][0] * ux;  // ε_xx
-        eps[1] += dn[i][1] * uy;  // ε_yy
+        let ux = u_loc[ndp * i]; // u_x in local frame
+        let uy = u_loc[ndp * i + 1]; // u_y in local frame
+        eps[0] += dn[i][0] * ux; // ε_xx
+        eps[1] += dn[i][1] * uy; // ε_yy
         eps[2] += dn[i][1] * ux + dn[i][0] * uy; // γ_xy
     }
 
@@ -180,9 +184,9 @@ pub fn shell_element_stress(
     for i in 0..n_nodes {
         let tx = u_loc[ndp * i + 3]; // θ_x in local frame
         let ty = u_loc[ndp * i + 4]; // θ_y in local frame
-        kappa[0] += -dn[i][0] * ty;  // κ_xx = -∂θ_y/∂x
-        kappa[1] +=  dn[i][1] * tx;  // κ_yy = +∂θ_x/∂y
-        kappa[2] +=  dn[i][0] * tx - dn[i][1] * ty; // 2κ_xy
+        kappa[0] += -dn[i][0] * ty; // κ_xx = -∂θ_y/∂x
+        kappa[1] += dn[i][1] * tx; // κ_yy = +∂θ_x/∂y
+        kappa[2] += dn[i][0] * tx - dn[i][1] * ty; // 2κ_xy
     }
 
     // --- Bending Voigt stress: σ_bending = D_pl · κ ---
@@ -208,9 +212,9 @@ pub fn shell_element_stress(
             let dof_tx = ndp * node + 3;
             let dof_ty = ndp * node + 4;
             b_cov[tp_idx][0][dof_uz] += dn_ref_tp[node][0]; // γ_ξζ ← dn_ref·u_z
-            b_cov[tp_idx][0][dof_ty] += n_at_tp[node];      // γ_ξζ ← N·θ_y
+            b_cov[tp_idx][0][dof_ty] += n_at_tp[node]; // γ_ξζ ← N·θ_y
             b_cov[tp_idx][1][dof_uz] += dn_ref_tp[node][1]; // γ_ηζ ← dn_ref·u_z
-            b_cov[tp_idx][1][dof_tx] -= n_at_tp[node];      // γ_ηζ ← −N·θ_x
+            b_cov[tp_idx][1][dof_tx] -= n_at_tp[node]; // γ_ηζ ← −N·θ_x
         }
     }
 
@@ -227,24 +231,21 @@ pub fn shell_element_stress(
     // Project covariant shears at centroid (ξ=1/3, η=1/3) via MITC3+.
     let centroid = crate::elements::mitc3_plus::ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0);
     let sampled = TyingShears {
-        gamma_xi_zeta_at_a:  g_cov_tp[0][0],
+        gamma_xi_zeta_at_a: g_cov_tp[0][0],
         gamma_eta_zeta_at_b: g_cov_tp[1][1],
-        gamma_xi_zeta_at_c:  g_cov_tp[2][0],
+        gamma_xi_zeta_at_c: g_cov_tp[2][0],
         gamma_eta_zeta_at_c: g_cov_tp[2][1],
     };
     let g_cov_ctr = Mitc3Plus.interpolate_assumed_shear(sampled, centroid);
 
     // Covariant → physical: γ_phys = J2⁻ᵀ · γ_cov
     // J2 = [[x1-x0, x2-x0], [y1-y0, y2-y0]] in local 2D coords.
-    let jac2 = [
-        [x[1] - x[0], x[2] - x[0]],
-        [y[1] - y[0], y[2] - y[0]],
-    ];
+    let jac2 = [[x[1] - x[0], x[2] - x[0]], [y[1] - y[0], y[2] - y[0]]];
     let det2 = jac2[0][0] * jac2[1][1] - jac2[0][1] * jac2[1][0];
     // J2⁻ᵀ (= (J2⁻¹)ᵀ)
     let inv_t = [
-        [ jac2[1][1] / det2, -jac2[1][0] / det2],
-        [-jac2[0][1] / det2,  jac2[0][0] / det2],
+        [jac2[1][1] / det2, -jac2[1][0] / det2],
+        [-jac2[0][1] / det2, jac2[0][0] / det2],
     ];
     let g_phys_xz = inv_t[0][0] * g_cov_ctr.gamma_xi_zeta + inv_t[0][1] * g_cov_ctr.gamma_eta_zeta;
     let g_phys_yz = inv_t[1][0] * g_cov_ctr.gamma_xi_zeta + inv_t[1][1] * g_cov_ctr.gamma_eta_zeta;
@@ -263,16 +264,12 @@ pub fn shell_element_stress(
         let sv0 = sv_mem[0] + z * sv_bend[0]; // σ_xx(z)
         let sv1 = sv_mem[1] + z * sv_bend[1]; // σ_yy(z)
         let sv2 = sv_mem[2] + z * sv_bend[2]; // σ_xy(z) (= γ_xy(z)·G in Voigt)
-        [
-            [sv0,  sv2,  s_xz],
-            [sv2,  sv1,  s_yz],
-            [s_xz, s_yz, 0.0 ],
-        ]
+        [[sv0, sv2, s_xz], [sv2, sv1, s_yz], [s_xz, s_yz, 0.0]]
     };
 
     ShellElementStress {
-        top:    make_layer(t / 2.0),
-        mid:    make_layer(0.0),
+        top: make_layer(t / 2.0),
+        mid: make_layer(0.0),
         bottom: make_layer(-t / 2.0),
     }
 }
@@ -366,14 +363,13 @@ mod tests {
 
     // Helpers shared across shell_element_stress tests.
     fn steel_like() -> IsotropicElastic {
-        IsotropicElastic { youngs_modulus: 200.0e9, poisson_ratio: 0.3 }
+        IsotropicElastic {
+            youngs_modulus: 200.0e9,
+            poisson_ratio: 0.3,
+        }
     }
 
-    const UNIT_TRI: [[f64; 3]; 3] = [
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-    ];
+    const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
 
     /// Pure membrane mode (u_x at node 1 = a, u_y at node 2 = b, all rotations zero)
     /// should produce uniform stress through thickness with no curvature contribution.
@@ -411,28 +407,66 @@ mod tests {
                 assert!(
                     (s.top[i][j] - s.mid[i][j]).abs() < tol,
                     "top[{i}][{j}] = {} ≠ mid[{i}][{j}] = {}",
-                    s.top[i][j], s.mid[i][j],
+                    s.top[i][j],
+                    s.mid[i][j],
                 );
                 assert!(
                     (s.top[i][j] - s.bottom[i][j]).abs() < tol,
                     "top[{i}][{j}] = {} ≠ bottom[{i}][{j}] = {}",
-                    s.top[i][j], s.bottom[i][j],
+                    s.top[i][j],
+                    s.bottom[i][j],
                 );
             }
         }
 
         // In-plane normal components.
-        assert!((s.top[0][0] - sv0).abs() < tol, "σ_xx = {}, expected {sv0}", s.top[0][0]);
-        assert!((s.top[1][1] - sv1).abs() < tol, "σ_yy = {}, expected {sv1}", s.top[1][1]);
+        assert!(
+            (s.top[0][0] - sv0).abs() < tol,
+            "σ_xx = {}, expected {sv0}",
+            s.top[0][0]
+        );
+        assert!(
+            (s.top[1][1] - sv1).abs() < tol,
+            "σ_yy = {}, expected {sv1}",
+            s.top[1][1]
+        );
 
         // In-plane shear and transverse components must be zero.
-        assert!(s.top[0][1].abs() < tol, "σ_xy = {}, expected 0", s.top[0][1]);
-        assert!(s.top[1][0].abs() < tol, "σ_yx = {}, expected 0", s.top[1][0]);
-        assert!(s.top[0][2].abs() < tol, "σ_xz = {}, expected 0", s.top[0][2]);
-        assert!(s.top[2][0].abs() < tol, "σ_zx = {}, expected 0", s.top[2][0]);
-        assert!(s.top[1][2].abs() < tol, "σ_yz = {}, expected 0", s.top[1][2]);
-        assert!(s.top[2][1].abs() < tol, "σ_zy = {}, expected 0", s.top[2][1]);
-        assert!(s.top[2][2].abs() < tol, "σ_zz = {}, expected 0", s.top[2][2]);
+        assert!(
+            s.top[0][1].abs() < tol,
+            "σ_xy = {}, expected 0",
+            s.top[0][1]
+        );
+        assert!(
+            s.top[1][0].abs() < tol,
+            "σ_yx = {}, expected 0",
+            s.top[1][0]
+        );
+        assert!(
+            s.top[0][2].abs() < tol,
+            "σ_xz = {}, expected 0",
+            s.top[0][2]
+        );
+        assert!(
+            s.top[2][0].abs() < tol,
+            "σ_zx = {}, expected 0",
+            s.top[2][0]
+        );
+        assert!(
+            s.top[1][2].abs() < tol,
+            "σ_yz = {}, expected 0",
+            s.top[1][2]
+        );
+        assert!(
+            s.top[2][1].abs() < tol,
+            "σ_zy = {}, expected 0",
+            s.top[2][1]
+        );
+        assert!(
+            s.top[2][2].abs() < tol,
+            "σ_zz = {}, expected 0",
+            s.top[2][2]
+        );
     }
 
     /// Pure bending mode (θ_y at node 1 only) must produce anti-symmetric in-plane
@@ -465,23 +499,57 @@ mod tests {
         let tol = 1e-9 * scale;
 
         // top: z = +t/2
-        assert!((s.top[0][0] - sb0 * (t / 2.0)).abs() < tol,
-            "top σ_xx = {}, expected {}", s.top[0][0], sb0 * (t / 2.0));
-        assert!((s.top[1][1] - sb1 * (t / 2.0)).abs() < tol,
-            "top σ_yy = {}, expected {}", s.top[1][1], sb1 * (t / 2.0));
-        assert!(s.top[0][1].abs() < tol, "top σ_xy = {}, expected 0", s.top[0][1]);
-        assert!(s.top[1][0].abs() < tol, "top σ_yx = {}, expected 0", s.top[1][0]);
+        assert!(
+            (s.top[0][0] - sb0 * (t / 2.0)).abs() < tol,
+            "top σ_xx = {}, expected {}",
+            s.top[0][0],
+            sb0 * (t / 2.0)
+        );
+        assert!(
+            (s.top[1][1] - sb1 * (t / 2.0)).abs() < tol,
+            "top σ_yy = {}, expected {}",
+            s.top[1][1],
+            sb1 * (t / 2.0)
+        );
+        assert!(
+            s.top[0][1].abs() < tol,
+            "top σ_xy = {}, expected 0",
+            s.top[0][1]
+        );
+        assert!(
+            s.top[1][0].abs() < tol,
+            "top σ_yx = {}, expected 0",
+            s.top[1][0]
+        );
 
         // mid: z = 0 → in-plane stress = 0
-        assert!(s.mid[0][0].abs() < tol, "mid σ_xx = {}, expected 0", s.mid[0][0]);
-        assert!(s.mid[1][1].abs() < tol, "mid σ_yy = {}, expected 0", s.mid[1][1]);
-        assert!(s.mid[0][1].abs() < tol, "mid σ_xy = {}, expected 0", s.mid[0][1]);
+        assert!(
+            s.mid[0][0].abs() < tol,
+            "mid σ_xx = {}, expected 0",
+            s.mid[0][0]
+        );
+        assert!(
+            s.mid[1][1].abs() < tol,
+            "mid σ_yy = {}, expected 0",
+            s.mid[1][1]
+        );
+        assert!(
+            s.mid[0][1].abs() < tol,
+            "mid σ_xy = {}, expected 0",
+            s.mid[0][1]
+        );
 
         // bottom: z = −t/2 → anti-symmetric vs top
-        assert!((s.bottom[0][0] + s.top[0][0]).abs() < tol,
-            "bottom σ_xx + top σ_xx = {} ≠ 0", s.bottom[0][0] + s.top[0][0]);
-        assert!((s.bottom[1][1] + s.top[1][1]).abs() < tol,
-            "bottom σ_yy + top σ_yy = {} ≠ 0", s.bottom[1][1] + s.top[1][1]);
+        assert!(
+            (s.bottom[0][0] + s.top[0][0]).abs() < tol,
+            "bottom σ_xx + top σ_xx = {} ≠ 0",
+            s.bottom[0][0] + s.top[0][0]
+        );
+        assert!(
+            (s.bottom[1][1] + s.top[1][1]).abs() < tol,
+            "bottom σ_yy + top σ_yy = {} ≠ 0",
+            s.bottom[1][1] + s.top[1][1]
+        );
     }
 
     /// Uniform θ_y = α at all nodes should produce uniform transverse shear
@@ -516,19 +584,49 @@ mod tests {
 
         // σ_xz = (5/6)·G·α, uniform across all three layers.
         for (name, layer) in [("top", s.top), ("mid", s.mid), ("bottom", s.bottom)] {
-            assert!((layer[0][2] - expected_sxz).abs() < tol,
-                "{name} σ_xz = {}, expected {expected_sxz}", layer[0][2]);
-            assert!((layer[2][0] - expected_sxz).abs() < tol,
-                "{name} σ_zx = {}, expected {expected_sxz}", layer[2][0]);
+            assert!(
+                (layer[0][2] - expected_sxz).abs() < tol,
+                "{name} σ_xz = {}, expected {expected_sxz}",
+                layer[0][2]
+            );
+            assert!(
+                (layer[2][0] - expected_sxz).abs() < tol,
+                "{name} σ_zx = {}, expected {expected_sxz}",
+                layer[2][0]
+            );
             // σ_yz = 0
-            assert!(layer[1][2].abs() < tol, "{name} σ_yz = {}, expected 0", layer[1][2]);
-            assert!(layer[2][1].abs() < tol, "{name} σ_zy = {}, expected 0", layer[2][1]);
+            assert!(
+                layer[1][2].abs() < tol,
+                "{name} σ_yz = {}, expected 0",
+                layer[1][2]
+            );
+            assert!(
+                layer[2][1].abs() < tol,
+                "{name} σ_zy = {}, expected 0",
+                layer[2][1]
+            );
             // σ_zz = 0
-            assert!(layer[2][2].abs() < tol_abs, "{name} σ_zz = {}, expected 0", layer[2][2]);
+            assert!(
+                layer[2][2].abs() < tol_abs,
+                "{name} σ_zz = {}, expected 0",
+                layer[2][2]
+            );
             // In-plane block = 0 (uniform θ_y → zero curvature via partition of unity).
-            assert!(layer[0][0].abs() < tol_abs, "{name} σ_xx = {}, expected 0", layer[0][0]);
-            assert!(layer[1][1].abs() < tol_abs, "{name} σ_yy = {}, expected 0", layer[1][1]);
-            assert!(layer[0][1].abs() < tol_abs, "{name} σ_xy = {}, expected 0", layer[0][1]);
+            assert!(
+                layer[0][0].abs() < tol_abs,
+                "{name} σ_xx = {}, expected 0",
+                layer[0][0]
+            );
+            assert!(
+                layer[1][1].abs() < tol_abs,
+                "{name} σ_yy = {}, expected 0",
+                layer[1][1]
+            );
+            assert!(
+                layer[0][1].abs() < tol_abs,
+                "{name} σ_xy = {}, expected 0",
+                layer[0][1]
+            );
         }
     }
 

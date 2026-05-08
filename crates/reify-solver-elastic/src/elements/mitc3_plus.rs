@@ -86,9 +86,15 @@ pub struct TyingPoint {
 
 /// Static array of the three MITC3+ tying points in canonical A, B, C order.
 const TYING_POINTS: &[TyingPoint] = &[
-    TyingPoint { coord: ShellReferenceCoord::new(0.5, 0.0) }, // A
-    TyingPoint { coord: ShellReferenceCoord::new(0.0, 0.5) }, // B
-    TyingPoint { coord: ShellReferenceCoord::new(0.5, 0.5) }, // C
+    TyingPoint {
+        coord: ShellReferenceCoord::new(0.5, 0.0),
+    }, // A
+    TyingPoint {
+        coord: ShellReferenceCoord::new(0.0, 0.5),
+    }, // B
+    TyingPoint {
+        coord: ShellReferenceCoord::new(0.5, 0.5),
+    }, // C
 ];
 
 /// MITC3+ Reissner-Mindlin triangular shell element.
@@ -113,10 +119,7 @@ impl Mitc3Plus {
     /// interior maximum of the bubble function.
     pub fn bubble_grad_at(&self, coord: ShellReferenceCoord) -> [f64; 2] {
         let ShellReferenceCoord { xi, eta } = coord;
-        [
-            eta * (1.0 - 2.0 * xi - eta),
-            xi * (1.0 - xi - 2.0 * eta),
-        ]
+        [eta * (1.0 - 2.0 * xi - eta), xi * (1.0 - xi - 2.0 * eta)]
     }
 
     /// Cubic bubble enrichment at `coord`.
@@ -322,11 +325,11 @@ mod tests {
         // one of the three edges of the reference triangle, where one
         // barycentric coordinate is zero, so the bubble must vanish.
         let edge_probes = [
-            ShellReferenceCoord::new(0.5, 0.0),  // mid of edge v0-v1 (η=0)
-            ShellReferenceCoord::new(0.0, 0.5),  // mid of edge v0-v2 (ξ=0)
-            ShellReferenceCoord::new(0.5, 0.5),  // mid of edge v1-v2 (ξ+η=1)
-            ShellReferenceCoord::new(0.25, 0.0), // quarter of edge v0-v1
-            ShellReferenceCoord::new(0.0, 0.25), // quarter of edge v0-v2
+            ShellReferenceCoord::new(0.5, 0.0),   // mid of edge v0-v1 (η=0)
+            ShellReferenceCoord::new(0.0, 0.5),   // mid of edge v0-v2 (ξ=0)
+            ShellReferenceCoord::new(0.5, 0.5),   // mid of edge v1-v2 (ξ+η=1)
+            ShellReferenceCoord::new(0.25, 0.0),  // quarter of edge v0-v1
+            ShellReferenceCoord::new(0.0, 0.25),  // quarter of edge v0-v2
             ShellReferenceCoord::new(0.75, 0.25), // on edge v1-v2
         ];
         for p in edge_probes.iter() {
@@ -461,12 +464,16 @@ mod tests {
             assert!(
                 (out.gamma_xi_zeta - gx).abs() < TOL,
                 "at {:?}: gamma_xi_zeta = {}, expected {}",
-                p, out.gamma_xi_zeta, gx,
+                p,
+                out.gamma_xi_zeta,
+                gx,
             );
             assert!(
                 (out.gamma_eta_zeta - ge).abs() < TOL,
                 "at {:?}: gamma_eta_zeta = {}, expected {}",
-                p, out.gamma_eta_zeta, ge,
+                p,
+                out.gamma_eta_zeta,
+                ge,
             );
         }
     }
@@ -490,12 +497,14 @@ mod tests {
         assert!(
             (rm.gamma_xi_zeta - mid_xi).abs() < TOL,
             "linearity: gamma_xi_zeta at midpoint = {}, expected {}",
-            rm.gamma_xi_zeta, mid_xi,
+            rm.gamma_xi_zeta,
+            mid_xi,
         );
         assert!(
             (rm.gamma_eta_zeta - mid_eta).abs() < TOL,
             "linearity: gamma_eta_zeta at midpoint = {}, expected {}",
-            rm.gamma_eta_zeta, mid_eta,
+            rm.gamma_eta_zeta,
+            mid_eta,
         );
     }
 

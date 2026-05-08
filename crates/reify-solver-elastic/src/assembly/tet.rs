@@ -569,11 +569,7 @@ mod tests {
             omega[axis] = 1.0;
             let mut u = vec![0.0; 30];
             for (node, x) in phys.iter().enumerate() {
-                let r = [
-                    x[0] - centroid[0],
-                    x[1] - centroid[1],
-                    x[2] - centroid[2],
-                ];
+                let r = [x[0] - centroid[0], x[1] - centroid[1], x[2] - centroid[2]];
                 u[3 * node] = omega[1] * r[2] - omega[2] * r[1];
                 u[3 * node + 1] = omega[2] * r[0] - omega[0] * r[2];
                 u[3 * node + 2] = omega[0] * r[1] - omega[1] * r[0];

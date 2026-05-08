@@ -235,11 +235,7 @@ mod tests {
     #[should_panic(expected = "phys_nodes.len() must equal Self::N_NODES")]
     fn jacobian_panics_on_too_short_phys_nodes() {
         // 3 nodes instead of 4 — one row short
-        let phys: &[[f64; 3]] = &[
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ];
+        let phys: &[[f64; 3]] = &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         TetP1.jacobian(phys, ReferenceCoord::new(0.25, 0.25, 0.25));
     }
 
