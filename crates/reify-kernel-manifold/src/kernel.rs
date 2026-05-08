@@ -441,9 +441,16 @@ mod tests {
     /// contract. Currently fails because the `Intersection` arm of
     /// `execute` returns the stub error; step-6 wires it to
     /// `Manifold::intersection`.
+    ///
+    /// Renamed during amendment round 2 (was
+    /// `…_returns_ok_handle_with_nonempty_volume`) so the name matches what
+    /// the assertions actually pin: the structural Ok-handle shape, not the
+    /// non-empty volume. The disjoint-input empty-mesh contract is exercised
+    /// separately by
+    /// [`tessellate_of_intersection_of_disjoint_cubes_returns_empty_mesh`].
     #[cfg(feature = "test-fixtures")]
     #[test]
-    fn intersection_of_two_overlapping_cubes_returns_ok_handle_with_nonempty_volume() {
+    fn intersection_of_two_overlapping_cubes_returns_ok_handle() {
         let mut kernel = ManifoldKernel::new();
         let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
         let r = kernel.store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]));
@@ -454,6 +461,54 @@ mod tests {
         });
 
         assert_ok_handle(result, "Intersection");
+    }
+
+    /// Pins the empty-/degenerate-manifold short-circuit in
+    /// [`ManifoldKernel::tessellate`] (kernel.rs `n_props == 0 ||
+    /// vert_props_f64.is_empty()` branch).
+    ///
+    /// Two cubes offset 5 units in x cannot overlap, so
+    /// `Manifold::intersection` returns an empty Manifold. Without the
+    /// short-circuit, `tessellate` would panic with a divide-by-zero in
+    /// release builds when computing `vert_props_f64.len() / n_props`. The
+    /// structurally honest answer is an empty `Mesh` (no vertices, no
+    /// indices) — callers detect it via `mesh.vertices.is_empty()`.
+    ///
+    /// Added during amendment round 2 (was previously uncovered: a
+    /// regression that removed the short-circuit would only surface as a
+    /// release-build panic on disjoint-input boolean callers).
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn tessellate_of_intersection_of_disjoint_cubes_returns_empty_mesh() {
+        let mut kernel = ManifoldKernel::new();
+        let l = kernel.store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]));
+        // Offset >> 1.0 so the two cubes share no volume.
+        let r = kernel.store_mesh_for_test(&unit_cube_mesh([5.0, 0.0, 0.0]));
+
+        let intersection_handle = kernel
+            .execute(&GeometryOp::Intersection {
+                left: l,
+                right: r,
+            })
+            .expect("Intersection of two valid (disjoint) cubes must Ok-return a handle");
+
+        let mesh = kernel
+            .tessellate(intersection_handle.id, 0.0)
+            .expect(
+                "tessellate of empty/degenerate Manifold must Ok-return an empty Mesh, \
+                 not panic via the divide-by-zero short-circuit guard",
+            );
+
+        assert!(
+            mesh.vertices.is_empty(),
+            "tessellated empty intersection must have zero vertices; got {} f32s",
+            mesh.vertices.len(),
+        );
+        assert!(
+            mesh.indices.is_empty(),
+            "tessellated empty intersection must have zero indices; got {} u32s",
+            mesh.indices.len(),
+        );
     }
 
     /// RED for step-9 of task 3093: pins that `execute(GeometryOp::Union
@@ -483,6 +538,34 @@ mod tests {
             other => panic!(
                 "execute(Union) with unknown handles must return \
                  Err(GeometryError::InvalidReference(99 or 100)); got {other:?}"
+            ),
+        }
+    }
+
+    /// Pins the per-trait error variant choice for the `tessellate` lookup
+    /// path: an unknown handle surfaces as
+    /// `Err(TessError::InvalidHandle(handle))`, NOT
+    /// `GeometryError::InvalidReference` (which is the sibling variant
+    /// reserved for `execute`'s handle-lookup path).
+    ///
+    /// `execute_union_with_unknown_handle_returns_invalid_reference` above
+    /// pins the `execute` side; this test pins the `tessellate` side so
+    /// the asymmetry between the two trait surfaces (`GeometryError` vs
+    /// `TessError`) is locked in. A regression that unifies the two error
+    /// types or reroutes `tessellate` through `get_manifold` (which returns
+    /// `GeometryError`) would silently change the surfaced variant.
+    ///
+    /// Added during amendment round 2 (was previously uncovered).
+    #[test]
+    fn tessellate_with_unknown_handle_returns_invalid_handle() {
+        let kernel = ManifoldKernel::new();
+        let result = kernel.tessellate(GeometryHandleId(99), 0.0);
+
+        match result {
+            Err(TessError::InvalidHandle(GeometryHandleId(99))) => {}
+            other => panic!(
+                "tessellate(GeometryHandleId(99), …) on an empty kernel must return \
+                 Err(TessError::InvalidHandle(GeometryHandleId(99))); got {other:?}"
             ),
         }
     }
