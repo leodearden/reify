@@ -87,13 +87,11 @@ pub struct MesherOptions {
 
 impl Default for MesherOptions {
     fn default() -> Self {
-        // NOTE: these are placeholder values — step-3 pins the final values
-        // and step-4 adjusts this impl to match.
         Self {
-            merge_tolerance: 1e-6,
-            min_aspect_ratio: 0.5,
-            min_angle_degrees: 30.0,
-            max_remesh_iterations: 1,
+            merge_tolerance: 1e-9,
+            min_aspect_ratio: 0.1,
+            min_angle_degrees: 20.0,
+            max_remesh_iterations: 0,
         }
     }
 }
