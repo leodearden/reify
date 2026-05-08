@@ -808,8 +808,7 @@ mod tests {
     /// `degenerate_morphed_element` field makes the AR signal redundant for
     /// failure detection.
     #[test]
-    fn quality_check_with_degenerate_morphed_tet_returns_soft_fail_with_degenerate_morphed_element_populated(
-    ) {
+    fn quality_check_degenerate_morphed_element_populated_when_floors_disabled() {
         // Morphed: coplanar tet (all z=0) — AR = INFINITY, scaled J = 0 (not inverted).
         #[rustfmt::skip]
         let morphed_vertices: Vec<f32> = vec![
