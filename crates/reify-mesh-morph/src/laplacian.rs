@@ -72,7 +72,22 @@ pub fn laplacian_smooth(
             old_mesh.element_order,
         ));
     }
-    let _ = prescribed_positions;
+
+    // Validate every prescribed_positions index up front (before any
+    // allocation) — same overflow-safe pattern as boundary.rs:222-227.
+    for (node_idx, _) in prescribed_positions {
+        let i = *node_idx as usize;
+        let base = i
+            .checked_mul(3)
+            .ok_or(LaplacianFailure::InvalidNodeIndex(*node_idx))?;
+        let end = base
+            .checked_add(3)
+            .ok_or(LaplacianFailure::InvalidNodeIndex(*node_idx))?;
+        if end > old_mesh.vertices.len() {
+            return Err(LaplacianFailure::InvalidNodeIndex(*node_idx));
+        }
+    }
+
     let _ = iterations;
     Ok(old_mesh.clone())
 }
