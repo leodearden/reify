@@ -266,9 +266,10 @@ mod tests {
         // can be looked up before any value materialises. Pins the project
         // convention that FORMAT_VERSION starts at 1 because 0 means
         // "uninitialised / unknown" (see `ELASTIC_RESULT_FORMAT_VERSION` doc).
-        // Relaxed to `>= 1` so intentional format bumps don't require
-        // hand-editing this assertion.
-        assert!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION >= 1);
+        // An intentional format bump must touch this assertion — that is the
+        // point: it forces a deliberate acknowledgement that cached bytes from
+        // the previous version are now incompatible.
+        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 1);
     }
 
     #[test]
