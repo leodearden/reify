@@ -877,3 +877,140 @@ fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_bui
         engine.realization_cache(),
     );
 }
+
+/// Build a `MyDesign`-shaped template carrying a single named realization
+/// producing one `Box` primitive with caller-specified dimensions (in mm).
+///
+/// Mirrors `my_design_template_with_box_realization()` but parametrises the
+/// box dimensions so step-19 can build two structurally-identical modules
+/// that differ only in geometry literals (the "different parameter defaults,
+/// structurally identical realization graph" shape the plan asks for to
+/// pin edit_source's auto-invalidation behaviour against a non-trivial
+/// content-diff).
+fn my_design_template_with_box_realization_dims(
+    width_mm: f64,
+    height_mm: f64,
+    depth_mm: f64,
+) -> reify_compiler::TopologyTemplate {
+    let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_lit(width_mm)),
+            ("height".into(), mm_lit(height_mm)),
+            ("depth".into(), mm_lit(depth_mm)),
+        ],
+    };
+    TopologyTemplateBuilder::new("MyDesign")
+        .param("MyDesign", "thickness", Type::Real, None)
+        .realization_named("MyDesign", 0, "body", vec![box_op])
+        .build()
+}
+
+/// Step-19 (failing initially; passes against the wiring landed by step-18,
+/// which adds the analogous `self.realization_cache = RealizationCache::new()`
+/// reset to `Engine::edit_source` at the same near-entry placement as
+/// `Engine::edit_param`).
+///
+/// Pins the parallel auto-invalidation contract for the source-edit hot
+/// path, mirroring step-17's contract for the parameter-edit hot path. The
+/// plan calls for both resets (in `edit_param` and `edit_source`) to land
+/// in step-18, but a separate test pin guards against a future refactor
+/// that resets in one of the two functions and silently regresses the
+/// other.
+///
+/// Setup mirrors step-17 but exercises `engine.edit_source(&new_module)`
+/// instead of `engine.edit_param(...)`. The "second module" is built with
+/// the same template shape as the first but with different box-primitive
+/// dimensions — a "different parameter defaults, structurally identical
+/// realization graph" content diff that is realistic for a source-edit
+/// hot path (the user changes geometry literals, not just one param value).
+///
+/// Sequence:
+///   (a) `engine.eval(&module1)` → `engine.activate_purpose("manufacturing",
+///       "MyDesign")` → `engine.build(&module1, ExportFormat::Step)` →
+///       assert `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
+///       1e-6).is_some()` (cache populated; pins the test premise).
+///   (b) Build a second `CompiledModule` with the same templates and
+///       purposes, but a `MyDesign` realization carrying different Box
+///       dimensions. Call `engine.edit_source(&module2).unwrap()`.
+///   (c) Without calling `build_snapshot` yet, assert
+///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
+///       1e-6).is_none()` — the entry was cleared on edit_source.
+///
+/// Today (pre step-18) `edit_source` does NOT touch `realization_cache`, so
+/// the cache entry persists across the source edit and a subsequent
+/// `build()` / `build_snapshot()` would silently return a stale
+/// `GeometryHandleId` pointing at the OLD geometry. After step-18's wiring,
+/// `edit_source` resets the cache near function entry — symmetric with
+/// `edit_param` — and this assertion passes.
+#[test]
+fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build() {
+    let module1 = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_edit_source_clears_realization_cache_v1".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization_dims(10.0, 20.0, 5.0))
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (a) Cold-start eval, activate purpose, build → cache populated by step-6.
+    let _eval = engine.eval(&module1);
+    engine.activate_purpose("manufacturing", "MyDesign");
+    let _build = engine.build(&module1, ExportFormat::Step);
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .is_some(),
+        "test premise: expected RealizationCache to contain an entry at \
+         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per step-5/step-6 \
+         wiring). Without this premise the post-edit assertion is vacuous. \
+         Cache len={}, dump: {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+
+    // (b) Build a structurally-similar second module with different Box
+    // dimensions. The geometry literals differ from module1, so the
+    // realization output would change — but the test does NOT depend on
+    // the content diff: edit_source's auto-invalidation is unconditional
+    // (mirrors edit_param). The diff just makes the test scenario realistic.
+    let module2 = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_edit_source_clears_realization_cache_v2".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization_dims(15.0, 25.0, 7.5))
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+    let _diff = engine
+        .edit_source(&module2)
+        .expect("edit_source must succeed against a structurally-valid second module");
+
+    // (c) Assert the cache was cleared by edit_source. This pins the
+    // auto-invalidation contract step-18 establishes for edit_source —
+    // symmetric with the edit_param contract pinned by step-17. Without
+    // it, the entry persists and a subsequent build()/build_snapshot()
+    // would silently return a stale GeometryHandleId from the
+    // (entity, repr, tol) bucket pointing at the OLD geometry.
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .is_none(),
+        "expected edit_source to auto-invalidate the RealizationCache so a \
+         subsequent build()/build_snapshot() cannot return a stale \
+         GeometryHandleId. Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) \
+         returned Some(_) after edit_source — the entry survived the edit, \
+         breaking the auto-invalidation contract step-18 establishes (the \
+         reset must fire in BOTH edit_param and edit_source; this test \
+         guards against a future refactor that resets in only one of the \
+         two functions). Cache len={}, dump: {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+}
