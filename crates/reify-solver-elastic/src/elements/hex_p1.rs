@@ -232,6 +232,110 @@ mod tests {
         }
     }
 
+    // ── quad_points tests ────────────────────────────────────────────────────
+
+    const QUAD_TOL: f64 = 1e-10;
+
+    #[test]
+    fn quad_points_is_two_by_two_by_two_gauss_legendre_rule() {
+        let qps = HexP1.quad_points();
+        assert_eq!(qps.len(), 8, "2×2×2 Gauss rule must have 8 points");
+
+        // All weights must be 1.0.
+        for (i, qp) in qps.iter().enumerate() {
+            assert!(
+                (qp.weight - 1.0).abs() < QUAD_TOL,
+                "qp[{i}].weight = {}, expected 1.0",
+                qp.weight,
+            );
+        }
+
+        // Each point must sit at one of the 8 sign-combinations of ±1/√3.
+        let g = 1.0_f64 / 3.0_f64.sqrt();
+        let expected_signs: [[f64; 3]; 8] = [
+            [-1.0, -1.0, -1.0], [ 1.0, -1.0, -1.0],
+            [-1.0,  1.0, -1.0], [ 1.0,  1.0, -1.0],
+            [-1.0, -1.0,  1.0], [ 1.0, -1.0,  1.0],
+            [-1.0,  1.0,  1.0], [ 1.0,  1.0,  1.0],
+        ];
+        for (i, qp) in qps.iter().enumerate() {
+            let c = qp.coord;
+            // Find a matching sign pattern by absolute-difference search.
+            let found = expected_signs.iter().any(|s| {
+                (c.xi   - s[0] * g).abs() < QUAD_TOL &&
+                (c.eta  - s[1] * g).abs() < QUAD_TOL &&
+                (c.zeta - s[2] * g).abs() < QUAD_TOL
+            });
+            assert!(
+                found,
+                "qp[{i}] = ({}, {}, {}) does not match any ±1/√3 sign-pattern",
+                c.xi, c.eta, c.zeta,
+            );
+        }
+    }
+
+    #[test]
+    fn quad_points_total_weight_is_cube_volume_eight() {
+        let total: f64 = HexP1.quad_points().iter().map(|q| q.weight).sum();
+        assert!(
+            (total - 8.0).abs() < QUAD_TOL,
+            "Σ weights = {total}, expected 8.0 (reference-cube volume)",
+        );
+    }
+
+    #[test]
+    fn quad_rule_integrates_constant_to_cube_volume() {
+        // ∫_{[-1,1]³} 1 dV = 8.
+        let i: f64 = HexP1.quad_points().iter().map(|q| q.weight * 1.0).sum();
+        assert!((i - 8.0).abs() < QUAD_TOL, "∫ 1 dV = {i}, expected 8.0");
+    }
+
+    #[test]
+    fn quad_rule_integrates_linear_xi_to_zero() {
+        // ∫_{[-1,1]³} ξ dV = 0  (odd integrand on symmetric domain).
+        let i: f64 = HexP1.quad_points().iter().map(|q| q.weight * q.coord.xi).sum();
+        assert!(i.abs() < QUAD_TOL, "∫ ξ dV = {i}, expected 0.0");
+    }
+
+    #[test]
+    fn quad_rule_integrates_xi_squared_to_eight_thirds() {
+        // ∫_{[-1,1]³} ξ² dV = (2/3)·2·2 = 8/3.
+        let i: f64 = HexP1.quad_points().iter().map(|q| q.weight * q.coord.xi.powi(2)).sum();
+        assert!(
+            (i - 8.0 / 3.0).abs() < QUAD_TOL,
+            "∫ ξ² dV = {i}, expected {}",
+            8.0 / 3.0,
+        );
+    }
+
+    #[test]
+    fn quad_rule_integrates_xi_eta_cross_term_to_zero() {
+        // ∫_{[-1,1]³} ξη dV = 0  (odd in ξ and η independently).
+        let i: f64 = HexP1
+            .quad_points()
+            .iter()
+            .map(|q| q.weight * q.coord.xi * q.coord.eta)
+            .sum();
+        assert!(i.abs() < QUAD_TOL, "∫ ξη dV = {i}, expected 0.0");
+    }
+
+    #[test]
+    fn quad_rule_integrates_xi_squared_eta_squared_zeta_squared_exactly() {
+        // ∫_{[-1,1]³} ξ²η²ζ² dV = (2/3)³ = 8/27.
+        // Verifies the rule is exact for the highest-degree monomial in
+        // the trilinear Bᵀ D B stiffness integrand.
+        let i: f64 = HexP1
+            .quad_points()
+            .iter()
+            .map(|q| q.weight * q.coord.xi.powi(2) * q.coord.eta.powi(2) * q.coord.zeta.powi(2))
+            .sum();
+        assert!(
+            (i - 8.0 / 27.0).abs() < QUAD_TOL,
+            "∫ ξ²η²ζ² dV = {i}, expected {}",
+            8.0 / 27.0,
+        );
+    }
+
     #[test]
     fn shape_grad_at_d_by_d_xi_is_independent_of_xi() {
         // ∂N_i/∂ξ = (ξ_i/8)(1 + η_i η)(1 + ζ_i ζ) has no ξ dependency.
