@@ -164,15 +164,30 @@ pub fn assemble_global_stiffness(
             // threads spawn (one per non-empty chunk); the requested
             // `threads` count is an upper bound, not a lower bound.
             //
-            // Determinism contract: the merge order is the thread-spawn
-            // order, which is also the chunk order in `elements`.
+            // # Determinism contract
+            //
+            // **The merge order is the thread spawn order, which is also
+            // the thread-id order.** Concretely:
+            //
+            //   (a) `elements.chunks(chunk_size)` is called once with a
+            //       stable chunk size, so the chunk-iteration order is
+            //       deterministic and matches `elements`'s slice order.
+            //   (b) Threads spawn sequentially in chunk-iteration order,
+            //       so the thread-id `t` for the worker handling chunk
+            //       `t` is fixed.
+            //   (c) `handles[t].join()` is called in `t`-ascending order,
+            //       and `acc.extend(...)` appends each worker's local
+            //       Vec in that order — preserving thread-spawn order
+            //       in the merged Vec.
+            //
             // Reordering the spawn loop, switching to a non-stable chunk
             // dispatch (e.g. work-stealing), or joining handles in any
             // order other than spawn order would break the
-            // fixed-thread-count bit-stability contract that
+            // fixed-thread-count bit-stability contract pinned by
             // `parallel_mode_bit_equal_to_deterministic_on_disjoint_mesh`
             // (step-11) and the back-to-back determinism check in
-            // step-13 pin. See PRD `docs/prds/v0_3/structural-analysis-fea.md`
+            // `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`
+            // (step-13). See PRD `docs/prds/v0_3/structural-analysis-fea.md`
             // task #9 for the user-facing contract.
             let chunk_size = elements.len().div_ceil(threads).max(1);
             std::thread::scope(|s| {
