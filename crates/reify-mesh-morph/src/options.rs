@@ -65,6 +65,8 @@ impl Default for MorphOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eligibility::Reason;
+    use crate::types::{InversionDetails, MetricsBreached};
 
     #[test]
     fn morph_options_default_returns_prd_calibrated_quality_and_stiffness_values() {
@@ -75,5 +77,50 @@ mod tests {
         assert!((opts.laplacian_quickpass_threshold - 0.01).abs() < 1e-12);
         assert!((opts.fictitious_youngs_modulus_base - 1.0).abs() < 1e-12);
         assert!((opts.fictitious_poisson_ratio - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn morph_failure_four_variants_construct_and_pattern_match_exhaustively() {
+        let variants = [
+            MorphFailure::Ineligible(Reason::StructuralChange),
+            MorphFailure::QualityHardFail(InversionDetails {
+                element_index: 7,
+                jacobian: -1.0,
+            }),
+            MorphFailure::QualitySoftFail(MetricsBreached {
+                min_scaled_jacobian: Some(0.10),
+                pct_below_025: Some(0.02),
+                max_aspect_ratio_increase: Some(2.5),
+            }),
+            MorphFailure::SolverError("singular stiffness matrix".to_string()),
+        ];
+
+        for failure in variants {
+            // Exhaustive match — no wildcard arm. Adding or renaming a variant
+            // in MorphFailure breaks this test, which is the intended contract lock.
+            match failure {
+                MorphFailure::Ineligible(Reason::StructuralChange) => {}
+                MorphFailure::Ineligible(_) => {}
+                MorphFailure::QualityHardFail(InversionDetails {
+                    element_index: idx,
+                    jacobian: j,
+                }) => {
+                    assert_eq!(idx, 7);
+                    assert!((j - -1.0).abs() < 1e-12);
+                }
+                MorphFailure::QualitySoftFail(MetricsBreached {
+                    min_scaled_jacobian,
+                    pct_below_025,
+                    max_aspect_ratio_increase,
+                }) => {
+                    assert!((min_scaled_jacobian.unwrap() - 0.10).abs() < 1e-12);
+                    assert!((pct_below_025.unwrap() - 0.02).abs() < 1e-12);
+                    assert!((max_aspect_ratio_increase.unwrap() - 2.5).abs() < 1e-12);
+                }
+                MorphFailure::SolverError(msg) => {
+                    assert_eq!(msg, "singular stiffness matrix");
+                }
+            }
+        }
     }
 }
