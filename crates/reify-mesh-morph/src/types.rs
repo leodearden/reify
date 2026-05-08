@@ -48,8 +48,11 @@ pub struct MetricsBreached {
     /// Observed fraction of elements below 0.25 if it exceeded
     /// [`crate::MorphOptions::quality_floor_pct_below_025`].
     pub pct_below_025: Option<f64>,
-    /// Observed maximum aspect-ratio increase if it exceeded
-    /// [`crate::MorphOptions::quality_aspect_ratio_increase_max`].
+    /// Observed maximum multiplicative aspect-ratio ratio (morphed_AR / source_AR)
+    /// when it exceeds [`crate::MorphOptions::quality_aspect_ratio_increase_max`].
+    /// A value > 1 means morphed AR worsened relative to source; only `Some` when
+    /// the ratio crosses the configured threshold. `None` when connectivity is
+    /// mismatched, either AR is non-finite, or the ratio is within threshold.
     pub max_aspect_ratio_increase: Option<f64>,
 }
 

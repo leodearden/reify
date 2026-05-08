@@ -197,9 +197,9 @@ pub fn quality_check(
     // Single pass over morphed elements: track inversions and soft-fail metrics.
     let mut hard_fail: Option<InversionDetails> = None;
     let mut global_min_scaled_j = f64::INFINITY;
-    let mut total_well_formed: usize = 0;
+    let mut total_evaluated: usize = 0;
     let mut count_below_025: usize = 0;
-    let mut max_ar_increase: f64 = 0.0;
+    let mut max_ar_ratio: f64 = 0.0;
 
     // Build a lazy source iterator when connectivity matches; None otherwise.
     // Using an iterator (rather than collecting a Vec) avoids an O(n) heap
@@ -240,7 +240,7 @@ pub fn quality_check(
 
         // Use element_scaled_jacobian (per-element min over 4 corners).
         let sj = element_scaled_jacobian(&p);
-        total_well_formed += 1;
+        total_evaluated += 1;
         if sj < global_min_scaled_j {
             global_min_scaled_j = sj;
         }
@@ -251,13 +251,18 @@ pub fn quality_check(
         }
 
         if sj < 0.0 {
-            // First inverted element wins for HardFail.
-            if hard_fail.is_none() {
-                hard_fail = Some(InversionDetails {
-                    element_index: elem_idx,
-                    jacobian: sj,
-                });
-            }
+            // First inverted element wins for HardFail. The `break` below
+            // ensures the loop cannot reach a second inversion, so the
+            // `is_none()` guard was dead-defensive. The debug_assert! makes
+            // the invariant explicit without runtime cost in release builds.
+            debug_assert!(hard_fail.is_none());
+            hard_fail = Some(InversionDetails {
+                element_index: elem_idx,
+                jacobian: sj,
+            });
+            // Exit the loop — soft-fail bookkeeping after this point would
+            // be discarded by the early-return at the HardFail check below.
+            break;
         }
 
         // Aspect-ratio increase comparison (only when connectivity matches).
@@ -286,11 +291,21 @@ pub fn quality_check(
             });
             let morphed_ar = element_aspect_ratio(&p);
             let source_ar = element_aspect_ratio(&sp);
-            // Skip comparison when source is degenerate.
-            if source_ar > 0.0 && source_ar.is_finite() && !source_ar.is_nan() {
+            // Skip comparison when either AR is degenerate.
+            // source degenerate: zero-volume source tet → undefined ratio baseline.
+            // morphed degenerate: AR=INFINITY (zero-volume coplanar/collapsed tet).
+            //   Surfacing +inf in the public MetricsBreached.max_aspect_ratio_increase
+            //   field is awkward for serialization (JSON/MessagePack lack standard
+            //   +inf encoding). A degenerate morphed tet also typically trips the
+            //   min-scaled-J floor or HardFail, so the AR signal is redundant.
+            // is_finite() already excludes NaN, so the redundant !is_nan() check
+            // is dropped. Order: is_finite() first short-circuits the > 0.0 compare
+            // on the rare NaN/Inf input.
+            if source_ar.is_finite() && source_ar > 0.0 && morphed_ar.is_finite()
+            {
                 let ratio = morphed_ar / source_ar;
-                if ratio > max_ar_increase {
-                    max_ar_increase = ratio;
+                if ratio > max_ar_ratio {
+                    max_ar_ratio = ratio;
                 }
             }
         }
@@ -309,8 +324,8 @@ pub fn quality_check(
         None
     };
 
-    let pct = if total_well_formed > 0 {
-        count_below_025 as f64 / total_well_formed as f64
+    let pct = if total_evaluated > 0 {
+        count_below_025 as f64 / total_evaluated as f64
     } else {
         0.0
     };
@@ -322,8 +337,8 @@ pub fn quality_check(
 
     // Aspect-ratio increase threshold (threshold 3).
     let max_aspect_ratio_increase =
-        if matched_connectivity && max_ar_increase > options.quality_aspect_ratio_increase_max {
-            Some(max_ar_increase)
+        if matched_connectivity && max_ar_ratio > options.quality_aspect_ratio_increase_max {
+            Some(max_ar_ratio)
         } else {
             None
         };
@@ -747,6 +762,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Step-1: degenerate morphed tet (coplanar) skips AR comparison ────────
+
+    /// Regression guard: when the morphed tet is coplanar (all z=0),
+    /// `element_aspect_ratio` returns `f64::INFINITY`. Before the fix the code
+    /// propagates INFINITY to `max_aspect_ratio_increase`, returning `SoftFail`.
+    /// After the fix (step-2), the AR comparison is skipped when
+    /// `morphed_ar.is_infinite()`.
+    ///
+    /// Why scaled J = 0 (not inverted → reaches AR block):
+    /// All 4 nodes lie in the z=0 plane, so every corner's det(ea,eb,ec) = 0
+    /// (dot of a planar cross-product with a planar vector is zero). The
+    /// degenerate fallback is 0.0, which is not < 0 → no HardFail.
+    ///
+    /// Why AR = INFINITY: vol = 0 → all face heights = 0 → min_height = 0 →
+    /// `element_aspect_ratio` returns `f64::INFINITY`.
+    #[test]
+    fn quality_check_with_degenerate_morphed_tet_skips_ar_comparison() {
+        // Morphed: coplanar tet (all z=0) — AR = INFINITY, scaled J = 0 (not inverted).
+        #[rustfmt::skip]
+        let morphed_vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0,  // node 0
+            1.0, 0.0, 0.0,  // node 1
+            0.0, 1.0, 0.0,  // node 2
+            0.5, 0.5, 0.0,  // node 3 — coplanar with 0,1,2 (z=0 plane)
+        ];
+        let tet_indices = vec![0u32, 1, 2, 3];
+        let morphed = VolumeMesh {
+            vertices: morphed_vertices,
+            tet_indices: tet_indices.clone(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // Source: regular unit tet — finite positive AR.
+        #[rustfmt::skip]
+        let source_vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ];
+        let source = VolumeMesh {
+            vertices: source_vertices,
+            tet_indices,
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // Isolate the AR check: disable min-J and pct thresholds.
+        // Scaled J = 0 → floor 0.0: 0 < 0 is false → min_scaled_jacobian = None.
+        // pct = 1.0 (1/1 below 0.25) → threshold 1.01: 1.0 > 1.01 is false → pct_below_025 = None.
+        // Before fix: ratio = INFINITY / source_ar = INFINITY > 2.0 → SoftFail.
+        // After fix: AR skipped (morphed_ar.is_infinite()) → all None → Pass.
+        let mut opts = MorphOptions::default();
+        opts.quality_floor_min_scaled_jacobian = 0.0;
+        opts.quality_floor_pct_below_025 = 1.01;
+        // quality_aspect_ratio_increase_max stays at 2.0 (default).
+
+        assert_eq!(
+            quality_check(&morphed, &source, &opts),
+            QualityVerdict::Pass,
+            "degenerate morphed tet (coplanar, AR=INFINITY) must not surface INFINITY \
+             in max_aspect_ratio_increase; AR comparison must be skipped"
+        );
     }
 
     // ── Step-11: HardFail preempts SoftFail (regression guard) ──────────────
