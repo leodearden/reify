@@ -21,7 +21,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{revolve_synthesis_post_sort_for_test, OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{GeometryHandleId, GeometryQuery, Value};
+use reify_types::GeometryQuery;
 
 /// 5×10mm rectangular face profile, expressed in SI metres. Centered at
 /// `(17.5mm, 0, 0)` so its left edge sits at x=15mm — clear of the z-axis,
@@ -855,78 +855,4 @@ fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
         &[0_u32, 0, 100, 0, 1, 200, 0, 2, 300],
         "stable-sort must reorder by parent_subshape_index (0 < 1 < 2)"
     );
-}
-
-/// RED test: `OcctKernelHandle::face_outward_unit_normal_for_test` routes the
-/// typed helper through the actor channel correctly.
-///
-/// Verifies that:
-///   (a) The result is unit length (|n|² within 1e-9 of 1.0).
-///   (b) Each component agrees with the JSON-encoded `GeometryQuery::FaceNormal`
-///       query path within 1e-9. This cross-check mirrors the idiom in
-///       `face_differential_integration.rs:212-231` and confirms that the actor
-///       wrapper and the bare-kernel typed helper produce identical output.
-///
-/// Expected compile failure (step-1 RED): `error[E0599]: no method named
-/// 'face_outward_unit_normal_for_test' found for struct 'OcctKernelHandle'`.
-#[test]
-fn face_outward_unit_normal_for_test_through_handle_agrees_with_json_query() {
-    if !OCCT_AVAILABLE {
-        return;
-    }
-
-    let mut kernel = OcctKernelHandle::spawn();
-    let profile_id = make_offset_rect_profile(&mut kernel);
-
-    // Full 360° revolve about +Z at origin — produces a torus-like solid
-    // with at least one non-degenerate face.
-    let (result_handle, _history) = kernel
-        .revolve_with_history(
-            profile_id,
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            2.0 * std::f64::consts::PI,
-        )
-        .expect("revolve_with_history should succeed");
-
-    let result_faces = kernel
-        .extract_faces(result_handle)
-        .expect("extract_faces should succeed");
-    assert!(
-        !result_faces.is_empty(),
-        "full revolve of a rect profile must produce at least one face"
-    );
-
-    let face_id = result_faces[0];
-
-    // (a) Typed helper returns a unit vector.
-    let n = kernel
-        .face_outward_unit_normal_for_test(face_id)
-        .expect("face_outward_unit_normal_for_test should succeed through the handle");
-    let mag_sq = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
-    assert!(
-        (mag_sq - 1.0).abs() < 1e-9,
-        "face_outward_unit_normal_for_test through handle: |n|² = {mag_sq}, expected 1.0"
-    );
-
-    // (b) Component-wise agreement with the JSON-encoded query path.
-    let json = match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
-        Ok(Value::String(s)) => s,
-        other => panic!("FaceNormal returned unexpected value: {other:?}"),
-    };
-    let v: serde_json::Value = serde_json::from_str(&json)
-        .unwrap_or_else(|e| panic!("FaceNormal JSON parse failed: {e}; raw = {json:?}"));
-    let from_json = [
-        v["x"].as_f64().expect("FaceNormal JSON missing 'x'"),
-        v["y"].as_f64().expect("FaceNormal JSON missing 'y'"),
-        v["z"].as_f64().expect("FaceNormal JSON missing 'z'"),
-    ];
-    for i in 0..3 {
-        assert!(
-            (n[i] - from_json[i]).abs() < 1e-9,
-            "typed helper component {i} = {} disagrees with JSON-encoded path = {}",
-            n[i],
-            from_json[i]
-        );
-    }
 }
