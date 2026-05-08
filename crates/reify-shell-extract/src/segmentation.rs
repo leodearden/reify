@@ -276,10 +276,11 @@ pub fn segment_regions(
         let f: [f64; 3] = std::array::from_fn(|a| {
             (world[a] - mask.origin[a]) / mask.spacing[a]
         });
-        // Enumerate the 8 floor/ceil corner candidates.
-        'candidate: for dz in [f[2].floor() as i32, f[2].ceil() as i32] {
-            for dy in [f[1].floor() as i32, f[1].ceil() as i32] {
-                for dx in [f[0].floor() as i32, f[0].ceil() as i32] {
+        // Enumerate unique floor/ceil corner candidates (1–8 per vertex).
+        // Integer-aligned axes yield one candidate; fractional axes yield two.
+        'candidate: for dz in axis_floor_ceil_unique(f[2]) {
+            for dy in axis_floor_ceil_unique(f[1]) {
+                for dx in axis_floor_ceil_unique(f[0]) {
                     let candidate = [dx, dy, dz];
                     if let Some(&lbl) = voxel_to_label.get(&candidate) {
                         vertex_labels[vi] = lbl;
@@ -402,6 +403,20 @@ pub fn segment_regions(
         vertex_labels,
         triangle_labels,
     })
+}
+
+/// Yield the unique integer voxel indices that bracket `coord` on one axis.
+///
+/// - If `coord` is integer-aligned (`floor == ceil`), yields a single value.
+/// - If `coord` is fractional, yields `floor` then `ceil` (two distinct values).
+///
+/// Allocation-free: returns a chained iterator of at most two elements.
+pub(crate) fn axis_floor_ceil_unique(
+    coord: f64,
+) -> impl Iterator<Item = i32> {
+    let floor = coord.floor() as i32;
+    let ceil = coord.ceil() as i32;
+    std::iter::once(floor).chain((floor != ceil).then_some(ceil))
 }
 
 #[cfg(test)]
