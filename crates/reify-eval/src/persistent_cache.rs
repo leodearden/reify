@@ -815,4 +815,71 @@ mod tests {
             "expected InvalidData, got {err:?}"
         );
     }
+
+    /// Direct round-trip test for the `write_f64_slab` and `read_f64_slab`
+    /// helpers, independent of the zstd/bincode wrapper. The slab contains
+    /// values whose byte patterns expose any LE-vs-native-endian bug AND any
+    /// uninitialised-byte leak: a bit-scrambled integer, NaN, ±∞, and ±0.
+    #[test]
+    fn write_f64_slab_then_read_f64_slab_round_trips_bit_patterns_directly() {
+        let slab: Vec<f64> = vec![
+            1.0_f64,
+            -2.5,
+            f64::from_bits(0xDEAD_BEEF_CAFE_BABE),
+            f64::NAN,
+            f64::INFINITY,
+            -0.0,
+            0.0,
+        ];
+        let mut buf: Vec<u8> = Vec::new();
+        write_f64_slab(&mut buf, &slab, "test").unwrap();
+        // Buffer length must equal slab.len() * 8 bytes.
+        assert_eq!(buf.len(), slab.len() * 8);
+        // First 8 bytes must equal `1.0_f64.to_le_bytes()` — pins LE on-disk
+        // byte order independent of host endianness (mirrors
+        // `elastic_result_serialized_slab_section_is_little_endian_bytewise`).
+        assert_eq!(&buf[..8], &1.0_f64.to_le_bytes());
+        // Read back and compare bit patterns (NaN-safe: to_bits() compares raw
+        // 64-bit values, so signaling-NaN payloads, signed zeros, etc. are
+        // preserved exactly — mirrors the pattern in
+        // `elastic_result_round_trip_preserves_nan_and_infinity_bit_patterns`).
+        let decoded = read_f64_slab(&mut &buf[..], slab.len()).unwrap();
+        assert_eq!(decoded.len(), slab.len());
+        for (d, o) in decoded.iter().zip(slab.iter()) {
+            assert_eq!(d.to_bits(), o.to_bits(), "bit pattern drift");
+        }
+    }
+
+    /// Pins that the LE `unsafe { set_len }` path does NOT silently return
+    /// uninitialised data on short reads: `read_exact` must fail loudly with
+    /// `UnexpectedEof` rather than returning a partially-initialised `Vec`.
+    /// This is a runtime verification of SAFETY-comment item (c) on the
+    /// `set_len` call in `read_f64_slab`.
+    #[test]
+    fn read_f64_slab_returns_unexpected_eof_on_short_input() {
+        // 7-byte buffer — one byte short of one f64 (which needs 8 bytes).
+        // We request `len=4`, meaning 32 bytes are required, so the short-read
+        // fault occurs at the very first element boundary.
+        let short = [0u8; 7];
+        let err = read_f64_slab(&mut &short[..], 4)
+            .expect_err("short input must return Err");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::UnexpectedEof,
+            "expected UnexpectedEof, got {err:?}"
+        );
+    }
+
+    /// Pins the empty-input edge case for the helpers independently of the
+    /// `ElasticResult` wrapper: zero-length slab → zero bytes written →
+    /// `read_f64_slab(_, 0)` returns `Vec::new()`.
+    #[test]
+    fn write_f64_slab_round_trips_empty_slice() {
+        let empty: &[f64] = &[];
+        let mut buf: Vec<u8> = Vec::new();
+        write_f64_slab(&mut buf, empty, "test").unwrap();
+        assert_eq!(buf.len(), 0, "zero-element slab must produce zero bytes");
+        let decoded = read_f64_slab(&mut &buf[..], 0).unwrap();
+        assert!(decoded.is_empty(), "read of zero-length slab must return empty Vec");
+    }
 }
