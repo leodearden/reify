@@ -164,6 +164,7 @@ impl PersistentlyCacheable for ElasticResult {
         // `elastic_result_reserialize_after_deserialize_is_byte_identical`;
         // bump the level if a future zstd release breaks default-level
         // determinism.
+        // Single-threaded only — Encoder::multithread() breaks byte-determinism.
         let mut encoder = zstd::Encoder::new(w, 0)?;
         let header = ElasticResultHeader {
             max_von_mises_bits: self.max_von_mises.to_bits(),
