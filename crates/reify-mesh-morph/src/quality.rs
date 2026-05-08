@@ -98,6 +98,50 @@ mod tests {
         );
     }
 
+    // ── Step-3: single inverted tet → HardFail ───────────────────────────────
+
+    #[test]
+    fn quality_check_with_single_inverted_tet_returns_hard_fail_with_element_index_and_negative_jacobian(
+    ) {
+        // Left-handed tet: swap nodes 2 and 3 of the canonical right-handed tet
+        // (0,0,0),(1,0,0),(0,1,0),(0,0,1) → (0,0,0),(1,0,0),(0,0,1),(0,1,0).
+        // Corner-0 determinant = det(e1,e2,e3) where e1=(1,0,0), e2=(0,0,1),
+        // e3=(0,1,0) = 1*(0*0 - 1*1) - 0 + 0 = -1 < 0 → inverted.
+        #[rustfmt::skip]
+        let vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0, // node 0
+            1.0, 0.0, 0.0, // node 1
+            0.0, 0.0, 1.0, // node 2  (swapped from canonical)
+            0.0, 1.0, 0.0, // node 3  (swapped from canonical)
+        ];
+        let tet_indices: Vec<u32> = vec![0, 1, 2, 3];
+        let morphed = VolumeMesh {
+            vertices: vertices.clone(),
+            tet_indices: tet_indices.clone(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let source = VolumeMesh {
+            vertices,
+            tet_indices,
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let opts = MorphOptions::default();
+        let result = quality_check(&morphed, &source, &opts);
+        match result {
+            QualityVerdict::HardFail(details) => {
+                assert_eq!(details.element_index, 0, "expected element_index 0");
+                assert!(
+                    details.jacobian < 0.0,
+                    "expected negative jacobian, got {}",
+                    details.jacobian
+                );
+            }
+            other => panic!("expected HardFail, got: {other:?}"),
+        }
+    }
+
     // ── Compile fence: exhaustive variant match (no wildcard arm) ─────────────
     //
     // Adding, removing, or renaming any QualityVerdict variant breaks
