@@ -9,7 +9,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { spawn } from 'node:child_process';
-import { SidecarSession } from '../session.js';
+import { SidecarSession, SPAWN_ERROR_LOG_PREFIX } from '../session.js';
 import { main } from '../index.js';
 
 /**
@@ -2712,7 +2712,7 @@ describe('SidecarSession proc error handling', () => {
 
       // (d) ABORT_ERR is suppressed silently — must NOT appear in console.error
       expect(consoleErrorSpy).not.toHaveBeenCalledWith(
-        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        SPAWN_ERROR_LOG_PREFIX,
         expect.anything()
       );
     } finally {
@@ -2768,7 +2768,7 @@ describe('SidecarSession proc error handling', () => {
 
       // (a) console.error was called with the diagnostic prefix and the error
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        SPAWN_ERROR_LOG_PREFIX,
         expect.objectContaining({ code: 'ENOENT' })
       );
 
@@ -2847,7 +2847,7 @@ describe('SidecarSession proc error handling', () => {
 
       // (c) ABORT_ERR was suppressed silently — must NOT appear in console.error
       expect(consoleErrorSpy).not.toHaveBeenCalledWith(
-        expect.stringMatching(/\[sidecar\] spawned claude error:/),
+        SPAWN_ERROR_LOG_PREFIX,
         expect.anything()
       );
     } finally {
