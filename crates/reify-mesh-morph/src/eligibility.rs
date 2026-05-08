@@ -534,4 +534,47 @@ mod tests {
             other => panic!("expected top-level NamingLayerError(Partial), got {other:?}"),
         }
     }
+
+    // ── step-1: by-value + Copy contract ─────────────────────────────────
+
+    #[test]
+    fn morph_eligible_accepts_snapshots_by_value() {
+        // Mirrors the happy-path setup (single ValueCellId, identical old/new
+        // graph, empty TopologyAttributeTable, empty handle slices).
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = old_graph.clone();
+
+        let mut old_values = ValueMap::new();
+        old_values.insert(id.clone(), Value::length(0.05));
+        let new_values = old_values.clone();
+
+        let old_table = TopologyAttributeTable::default();
+        let new_table = TopologyAttributeTable::default();
+
+        let old_snap = MorphSnapshot {
+            graph: &old_graph,
+            values: &old_values,
+            topology_attributes: &old_table,
+            faces: &[],
+            edges: &[],
+            vertices: &[],
+        };
+        let new_snap = MorphSnapshot {
+            graph: &new_graph,
+            values: &new_values,
+            topology_attributes: &new_table,
+            faces: &[],
+            edges: &[],
+            vertices: &[],
+        };
+
+        // First call — no `&` at either argument position.
+        let result1 = morph_eligible(old_snap, new_snap);
+        // Second call reuses the same bindings — only compiles if MorphSnapshot: Copy.
+        let result2 = morph_eligible(old_snap, new_snap);
+
+        assert_eq!(result1, Eligibility::Eligible(CorrespondenceMap::default()));
+        assert_eq!(result2, Eligibility::Eligible(CorrespondenceMap::default()));
+    }
 }
