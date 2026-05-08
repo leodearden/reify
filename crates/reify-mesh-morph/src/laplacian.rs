@@ -70,6 +70,19 @@ pub enum LaplacianFailure {
 /// path and falls through to the elasticity morph otherwise. P2 input
 /// returns [`LaplacianFailure::UnsupportedElementOrder`].
 ///
+/// ## Output normals
+///
+/// The returned mesh always has `normals: None`, regardless of whether the
+/// input mesh carried per-vertex normals. Vertex positions change during
+/// smoothing, so any pre-existing normals would be geometrically stale after
+/// the pass. Silently forwarding them would cause downstream consumers (engine
+/// integration, PRD task #10) to render with incorrect lighting rather than
+/// triggering an obvious failure. Dropping them instead fails closed: a
+/// consumer that needs surface normals must recompute them after morphing.
+///
+/// Pinned by
+/// `laplacian_smooth_drops_normals_on_output_even_when_input_has_some_normals`.
+///
 /// ## Failure modes
 ///
 /// See [`LaplacianFailure`].
@@ -199,7 +212,7 @@ pub fn laplacian_smooth(
         vertices: out_vertices,
         tet_indices: old_mesh.tet_indices.clone(),
         element_order: old_mesh.element_order,
-        normals: old_mesh.normals.clone(),
+        normals: None,
     })
 }
 
@@ -279,8 +292,10 @@ mod tests {
     /// With `iterations = 0`, every node listed in `prescribed_positions` must
     /// be at its prescribed position in the output (boundary nodes are pinned
     /// at the start of every pass, including the zero'th). Structural fields
-    /// (`tet_indices`, `element_order`, `normals`) must be carried through
-    /// unchanged.
+    /// (`tet_indices`, `element_order`) must be carried through unchanged.
+    /// `normals` is always `None` on output regardless of input — vertex motion
+    /// invalidates per-vertex normals; see
+    /// `laplacian_smooth_drops_normals_on_output_even_when_input_has_some_normals`.
     #[test]
     fn laplacian_smooth_with_zero_iterations_pins_boundary_nodes_and_preserves_structural_fields() {
         // Single-tet mesh: 4 vertices, 1 tet, P1, no normals.
