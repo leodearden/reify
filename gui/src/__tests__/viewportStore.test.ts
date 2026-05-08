@@ -354,7 +354,7 @@ describe('viewportStore', () => {
         expect(storeB.state.viewports['design-main'].camera).toEqual({
           position: [5, 5, 5],
           target: [0, 0, 0],
-          up: [0, 1, 0],
+          up: [0, 0, 1],
           zoom: 1,
         });
         dispose();
@@ -402,7 +402,7 @@ describe('viewportStore', () => {
         expect(storeB.state.viewports['design-main'].camera).toEqual({
           position: [5, 5, 5],
           target: [0, 0, 0],
-          up: [0, 1, 0],
+          up: [0, 0, 1],
           zoom: 1,
         });
         dispose();
