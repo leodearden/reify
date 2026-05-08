@@ -163,6 +163,53 @@ mod tests {
         }
     }
 
+    // ── Step-9: prescribed positions applied; structural fields preserved ────
+
+    /// With `iterations = 0`, every node listed in `prescribed_positions` must
+    /// be at its prescribed position in the output (boundary nodes are pinned
+    /// at the start of every pass, including the zero'th). Structural fields
+    /// (`tet_indices`, `element_order`, `normals`) must be carried through
+    /// unchanged.
+    #[test]
+    fn laplacian_smooth_with_zero_iterations_pins_boundary_nodes_and_preserves_structural_fields() {
+        // Single-tet mesh: 4 vertices, 1 tet, P1, no normals.
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // node 0
+                1.0, 0.0, 0.0, // node 1
+                0.0, 1.0, 0.0, // node 2
+                0.0, 0.0, 1.0, // node 3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // All 4 nodes pinned to displaced positions.
+        let prescribed = vec![
+            (0, [0.1_f64, 0.2, 0.3]),
+            (1, [1.1, 0.2, 0.3]),
+            (2, [0.1, 1.2, 0.3]),
+            (3, [0.1, 0.2, 1.3]),
+        ];
+
+        let out = laplacian_smooth(&mesh, &prescribed, 0).unwrap();
+
+        // Expected vertices: f64 prescribed values cast to f32, in flat layout.
+        let expected: Vec<f32> = vec![
+            0.1, 0.2, 0.3, // node 0
+            1.1, 0.2, 0.3, // node 1
+            0.1, 1.2, 0.3, // node 2
+            0.1, 0.2, 1.3, // node 3
+        ];
+        assert_eq!(out.vertices, expected);
+
+        // Structural fields carry through bit-equal.
+        assert_eq!(out.tet_indices, vec![0u32, 1, 2, 3]);
+        assert_eq!(out.element_order, ElementOrderTag::P1);
+        assert!(out.normals.is_none());
+    }
+
     // ── Step-3: exhaustive variant fence for LaplacianFailure ─────────────────
     //
     // No-wildcard match guarantees that adding/removing/renaming a variant
