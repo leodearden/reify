@@ -92,14 +92,13 @@ pub fn eligible(old_brep: BRep, new_brep: BRep) -> bool {
 /// tasks #7 and #9.
 pub fn morph(
     old_mesh: &reify_types::VolumeMesh,
-    old_brep: &BRep,
-    new_brep: &BRep,
+    old_brep: BRep,
+    new_brep: BRep,
     options: &MorphOptions,
 ) -> Result<reify_types::VolumeMesh, MorphFailure> {
     let _ = old_mesh;
     let _ = options;
-    // Deref — see note in `eligible()` above.
-    match eligibility::morph_eligible(*old_brep, *new_brep) {
+    match eligibility::morph_eligible(old_brep, new_brep) {
         Eligibility::Ineligible(reason) => Err(MorphFailure::Ineligible(reason)),
         Eligibility::Eligible(_correspondence_map) => Err(MorphFailure::SolverError(
             SolverErrorPayload::new(
@@ -238,7 +237,7 @@ mod tests {
         let new_brep = make_brep(&new_graph, &values, &table);
         let mesh = empty_mesh();
         let options = MorphOptions::default();
-        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        let result = morph(&mesh, old_brep, new_brep, &options);
         assert!(
             matches!(result, Err(MorphFailure::SolverError(_))),
             "eligible path should return SolverError (unimplemented), got: {result:?}"
@@ -257,7 +256,7 @@ mod tests {
         let new_brep = make_brep(&new_graph, &values, &table);
         let mesh = empty_mesh();
         let options = MorphOptions::default();
-        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        let result = morph(&mesh, old_brep, new_brep, &options);
         assert!(matches!(
             result,
             Err(MorphFailure::Ineligible(Reason::StructuralChange))
@@ -404,7 +403,7 @@ mod tests {
 
         let mesh = empty_mesh();
         let options = MorphOptions::default();
-        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        let result = morph(&mesh, old_brep, new_brep, &options);
         assert!(
             matches!(result, Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))),
             "Stage-B CountMismatch should project to MorphFailure::Ineligible(BijectionFailure), got: {result:?}"
@@ -447,7 +446,7 @@ mod tests {
 
         let mesh = empty_mesh();
         let options = MorphOptions::default();
-        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        let result = morph(&mesh, old_brep, new_brep, &options);
         assert!(
             matches!(
                 result,
