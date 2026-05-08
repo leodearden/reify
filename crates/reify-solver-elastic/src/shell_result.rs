@@ -18,12 +18,12 @@ use reify_types::Value;
 ///
 /// - `top`    — top-surface stress (outer fibre in the element's local-z).
 /// - `mid`    — mid-surface (neutral-plane) stress. For tet results all three
-///              channels are equal (no through-thickness gradient).
+///   channels are equal (no through-thickness gradient).
 /// - `bottom` — bottom-surface stress (inner fibre opposite to `top`).
 /// - `frame`  — per-element local-to-global rotation
-///              (`Field<Point3<Length>, Matrix<3,3,Real>>` at runtime).
-///              Set to `Value::Undef` for tet results (tet stress is already
-///              in the global Cartesian frame; no local frame exists).
+///   (`Field<Point3<Length>, Matrix<3,3,Real>>` at runtime).
+///   Set to `Value::Undef` for tet results (tet stress is already
+///   in the global Cartesian frame; no local frame exists).
 ///
 /// # Note on `Eq`
 ///
