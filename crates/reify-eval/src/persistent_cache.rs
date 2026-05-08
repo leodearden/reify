@@ -118,6 +118,10 @@ impl PersistentlyCacheable for ElasticResult {
             stress_len: self.stress.len() as u64,
         };
         bincode::serialize_into(&mut encoder, &header).map_err(io::Error::other)?;
+        // Iterate-by-reference so empty `Vec`s emit zero slab bytes cleanly
+        // (no `.first().unwrap()` / `.chunks(8).next()` patterns that would
+        // panic on len = 0). Pinned by
+        // `elastic_result_round_trips_with_empty_field_arrays`.
         for v in &self.displacement {
             encoder.write_all(&v.to_le_bytes())?;
         }
