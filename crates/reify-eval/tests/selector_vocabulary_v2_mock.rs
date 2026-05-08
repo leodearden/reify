@@ -12,8 +12,8 @@
 use reify_eval::selector_vocabulary_v2::{
     Axis, ExtremalSense, complement, created_by_feature, edges_by_curve_kind,
     edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
-    faces_by_surface_kind, faces_perpendicular_to, geom_universal, intersect, split_by_feature,
-    union,
+    faces_by_surface_kind, faces_perpendicular_to, geom_universal, has_user_label, intersect,
+    split_by_feature, union, user_label_eq,
 };
 use reify_test_support::MockGeometryKernel;
 use reify_types::{
@@ -1083,4 +1083,183 @@ fn split_by_feature_empty_table_returns_empty() {
         split_by_feature(&table, &[GeometryHandleId(1)], &f).is_empty(),
         "empty table must yield empty result"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// has_user_label / user_label_eq — attribute primitives (PRD line 82)
+//
+// `has_user_label(table, candidates)` retains handles whose attribute carries
+// a `user_label = Some(_)` (i.e. the user has assigned a stable name).
+// `user_label_eq(table, candidates, label)` retains handles whose attribute
+// carries `user_label = Some(label)` exactly. Both are pure-Rust readers
+// over `TopologyAttributeTable`; they implement the `has_attribute(key)` /
+// `attribute_eq(key, value)` PRD slots where the only currently-supported
+// "key" in v0.2 is `user_label` (other attribute fields like `feature_id`,
+// `role`, `local_index`, `mod_history` are positional and addressed by the
+// named selectors above).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a fixture with three handles:
+/// - A (id=10) `user_label = None`
+/// - B (id=20) `user_label = Some("top")`
+/// - C (id=30) `user_label = Some("bottom")`
+fn fixture_label_table() -> (
+    TopologyAttributeTable,
+    GeometryHandleId,
+    GeometryHandleId,
+    GeometryHandleId,
+) {
+    let f1 = FeatureId::new("F-label");
+    let a = GeometryHandleId(10);
+    let b = GeometryHandleId(20);
+    let c = GeometryHandleId(30);
+
+    let mut table = TopologyAttributeTable::default();
+    table.record(
+        a,
+        TopologyAttribute {
+            feature_id: f1.clone(),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        },
+    );
+    table.record(
+        b,
+        TopologyAttribute {
+            feature_id: f1.clone(),
+            role: Role::Cap(CapKind::Top),
+            local_index: 0,
+            user_label: Some("top".into()),
+            mod_history: Vec::new(),
+        },
+    );
+    table.record(
+        c,
+        TopologyAttribute {
+            feature_id: f1.clone(),
+            role: Role::Cap(CapKind::Bottom),
+            local_index: 0,
+            user_label: Some("bottom".into()),
+            mod_history: Vec::new(),
+        },
+    );
+    (table, a, b, c)
+}
+
+#[test]
+fn has_user_label_returns_only_handles_with_some_label() {
+    let (table, a, b, c) = fixture_label_table();
+    let candidates = vec![a, b, c];
+    assert_eq!(
+        has_user_label(&table, &candidates),
+        vec![b, c],
+        "has_user_label retains only handles whose user_label is Some(_)"
+    );
+}
+
+#[test]
+fn has_user_label_dedupes_duplicate_candidates() {
+    let (table, a, b, c) = fixture_label_table();
+    let candidates = vec![b, b, c, b];
+    assert_eq!(
+        has_user_label(&table, &candidates),
+        vec![b, c],
+        "duplicate candidates must dedupe on first-seen"
+    );
+    let _ = a;
+}
+
+#[test]
+fn has_user_label_handle_with_no_table_entry_does_not_match() {
+    // A handle missing from the table cannot have a user_label by
+    // construction — it must not appear in the result.
+    let (table, _a, _b, _c) = fixture_label_table();
+    let unknown = GeometryHandleId(999);
+    assert!(
+        has_user_label(&table, &[unknown]).is_empty(),
+        "missing table entry must yield empty result"
+    );
+}
+
+#[test]
+fn has_user_label_empty_candidates_returns_empty() {
+    let (table, _a, _b, _c) = fixture_label_table();
+    let candidates: Vec<GeometryHandleId> = vec![];
+    assert!(has_user_label(&table, &candidates).is_empty());
+}
+
+#[test]
+fn user_label_eq_returns_only_exact_match() {
+    let (table, a, b, c) = fixture_label_table();
+    let candidates = vec![a, b, c];
+
+    // Exact match → only B.
+    assert_eq!(
+        user_label_eq(&table, &candidates, "top"),
+        vec![b],
+        "user_label_eq(\"top\") must return only B"
+    );
+    // Different exact match → only C.
+    assert_eq!(
+        user_label_eq(&table, &candidates, "bottom"),
+        vec![c],
+        "user_label_eq(\"bottom\") must return only C"
+    );
+}
+
+#[test]
+fn user_label_eq_unknown_label_returns_empty() {
+    let (table, a, b, c) = fixture_label_table();
+    let candidates = vec![a, b, c];
+    assert!(
+        user_label_eq(&table, &candidates, "nope").is_empty(),
+        "an unrecognised label must yield empty"
+    );
+}
+
+#[test]
+fn user_label_eq_is_case_sensitive() {
+    // The user_label is stored as-typed; equality is exact (no
+    // case-folding). "Top" must NOT match the entry storing "top".
+    let (table, a, b, c) = fixture_label_table();
+    let candidates = vec![a, b, c];
+    assert!(
+        user_label_eq(&table, &candidates, "Top").is_empty(),
+        "user_label_eq must be case-sensitive"
+    );
+}
+
+#[test]
+fn user_label_eq_dedupes_duplicate_candidates() {
+    let (table, _a, b, _c) = fixture_label_table();
+    let candidates = vec![b, b, b];
+    assert_eq!(
+        user_label_eq(&table, &candidates, "top"),
+        vec![b],
+        "duplicate candidates must dedupe on first-seen"
+    );
+}
+
+#[test]
+fn user_label_eq_handle_without_label_does_not_match() {
+    // A handle whose attribute has user_label = None must not match any
+    // user_label_eq query, regardless of the requested label.
+    let (table, a, _b, _c) = fixture_label_table();
+    assert!(
+        user_label_eq(&table, &[a], "top").is_empty(),
+        "user_label = None must not match any non-empty query"
+    );
+    assert!(
+        user_label_eq(&table, &[a], "").is_empty(),
+        "even an empty-string query must not match user_label = None"
+    );
+}
+
+#[test]
+fn user_label_eq_empty_candidates_returns_empty() {
+    let (table, _a, _b, _c) = fixture_label_table();
+    let candidates: Vec<GeometryHandleId> = vec![];
+    assert!(user_label_eq(&table, &candidates, "top").is_empty());
 }
