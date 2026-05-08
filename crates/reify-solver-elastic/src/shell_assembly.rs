@@ -84,7 +84,7 @@ pub fn build_shell_frame(nodes: &[[f64; 3]; 3]) -> ShellFrame {
     let cy = d01[2] * d02[0] - d01[0] * d02[2];
     let cz = d01[0] * d02[1] - d01[1] * d02[0];
     let len_n = (cx * cx + cy * cy + cz * cz).sqrt();
-    debug_assert!(len_n > 1e-30, "degenerate shell element: collinear nodes");
+    assert!(len_n > 1e-30, "degenerate shell element: collinear nodes");
     let area = 0.5 * len_n;
 
     // e3: unit normal
