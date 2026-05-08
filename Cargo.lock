@@ -4134,6 +4134,9 @@ dependencies = [
 [[package]]
 name = "reify-solver-elastic"
 version = "0.1.0"
+dependencies = [
+ "reify-types",
+]
 
 [[package]]
 name = "reify-stdlib"
