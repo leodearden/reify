@@ -2115,6 +2115,72 @@ describe('App Ctrl+O open file', () => {
   });
 });
 
+describe('App handleOpen dirty-check confirmation', () => {
+  function setupHappyPathMocks() {
+    vi.mocked((bridge as any).pickOpenPath).mockResolvedValue('/project/other.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/other.ri', content: 'structure Other {}' });
+    vi.mocked(bridge.openFileEngine).mockResolvedValue({
+      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
+    });
+  }
+
+  it('Ctrl+O with dirty buffer and confirm cancelled: pickOpenPath not called', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await flushMacrotasks();
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect((bridge as any).pickOpenPath).not.toHaveBeenCalled();
+      expect(bridge.openFile).not.toHaveBeenCalled();
+      expect(bridge.openFileEngine).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('Ctrl+O with dirty buffer and confirm accepted: bridge sequence fires', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await waitFor(() => {
+        expect((bridge as any).pickOpenPath).toHaveBeenCalled();
+      });
+      await waitFor(() => {
+        expect(bridge.openFile).toHaveBeenCalledWith('/project/other.ri');
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('Ctrl+O with clean buffer: window.confirm not called, bridge sequence fires', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    // No markDirty — buffer is clean
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await waitFor(() => {
+        expect((bridge as any).pickOpenPath).toHaveBeenCalled();
+      });
+      expect(confirmSpy).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+});
+
 describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
   const newPath = '/user/chosen/new.ri';
   const newContent = NEW_FILE_TEMPLATE;
