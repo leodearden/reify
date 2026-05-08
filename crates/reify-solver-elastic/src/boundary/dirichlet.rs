@@ -113,6 +113,15 @@ pub struct DirichletBc {
 /// twice) are caller error; the result is unspecified and, in debug builds,
 /// caught by an explicit assertion.
 ///
+/// # Complexity
+///
+/// O(nnz × |bcs|) where nnz is the number of stored entries in K. Each BC
+/// drives one full row-scan to locate the column-i entries. For FEA matrices
+/// (O(n) nnz, |bcs| ≪ n) this is dominated by the global solve cost and is
+/// not a bottleneck in practice. At pinned-surface scale (|bcs| ~ O(n)),
+/// a precomputed CSC mirror would reduce work to O(nnz_col_i) per BC; that
+/// optimisation is left for a future pass when profiling warrants it.
+///
 /// # Panics
 ///
 /// - `f.len() != k.nrows()` — the load vector length must equal the matrix
@@ -191,6 +200,8 @@ pub fn apply_dirichlet_row_elimination(
         vals[row_ptr[i]..row_ptr[i + 1]].fill(0.0);
 
         // Fused steps 1, 3, and 4: single pass over all rows.
+        // Complexity: O(nnz) per BC (scans all n rows once); see the function-level
+        // `# Complexity` note for guidance on when this becomes a bottleneck.
         //
         // For each row j, locate the stored K[j][i] entry (at most one per
         // row in CSR — the uniqueness invariant required by this function):
@@ -652,6 +663,110 @@ mod tests {
         let mut k = single_p1_k(); // 12 × 12
         let mut f = vec![0.0_f64; 7]; // wrong length
         apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: 0, value: 0.0 }]);
+    }
+
+    // -----------------------------------------------------------------------
+    // End-to-end solve: equilibrium verification
+    // -----------------------------------------------------------------------
+
+    /// Applying BCs + solving the eliminated system recovers the correct
+    /// equilibrium: original `K · u = f` is satisfied at all unconstrained
+    /// DOFs after solving `K_after · u = f_after`.
+    ///
+    /// This end-to-end test verifies the *column-into-RHS* step by checking a
+    /// property that only holds when the step has the correct sign and
+    /// magnitude.  The setup is:
+    ///
+    /// - Single-tet P1 mesh (12 DOFs), E = 1, ν = 0.3, no body forces.
+    /// - 7 BCs: fix node 0 (x, y, z), node 1 (y, z) and node 2 (z) to zero
+    ///   (removes all 6 rigid body modes), plus an **inhomogeneous** BC at
+    ///   node 1 x = 0.1 that drives the free DOFs via the column-into-RHS
+    ///   term.
+    ///
+    /// After solving K_after · u = f_after, algebraic manipulation shows that
+    /// for every unconstrained DOF j the equation reduces to
+    /// `K_original[j, :] · u = f_original[j]`.  Here f_original = 0, so the
+    /// assertion is `|K_original[j, :] · u| < tol`.
+    ///
+    /// A wrong sign in the column-into-RHS step produces an incorrect
+    /// f_after, which in turn produces incorrect free-DOF displacements that
+    /// violate the equilibrium condition above.
+    ///
+    /// Note: checking the free-DOF displacements against analytic values for
+    /// a uniaxial-stretch scenario is deferred to the downstream PRD task #12
+    /// (CG solver integration), which owns the full solve pipeline.
+    #[test]
+    fn dirichlet_bc_elimination_satisfies_original_equilibrium_at_free_dofs() {
+        use faer::linalg::solvers::Solve;
+
+        let mut k = single_p1_k();
+        let n = k.nrows(); // 12
+
+        // Snapshot K before modification (need the original entries to compute K_orig * u).
+        let k_orig: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| read(&k, i, j)).collect())
+            .collect();
+
+        // No external body forces.
+        let f_original = vec![0.0_f64; n];
+
+        // BCs: fix node 0 (DOFs 0,1,2), node 1 y (DOF 4), node 1 z (DOF 5),
+        // node 2 z (DOF 8) — removes all 6 rigid body modes.
+        // Plus inhomogeneous BC: node 1 x (DOF 3) = 0.1.
+        let bcs = [
+            DirichletBc { dof: 0, value: 0.0 },
+            DirichletBc { dof: 1, value: 0.0 },
+            DirichletBc { dof: 2, value: 0.0 },
+            DirichletBc { dof: 3, value: 0.1 }, // inhomogeneous
+            DirichletBc { dof: 4, value: 0.0 },
+            DirichletBc { dof: 5, value: 0.0 },
+            DirichletBc { dof: 8, value: 0.0 },
+        ];
+        let constrained: std::collections::HashSet<usize> = bcs.iter().map(|bc| bc.dof).collect();
+
+        let mut f = f_original.clone();
+        apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
+
+        // Dense LU solve: K_after · u = f_after.
+        // PartialPivLu works for any invertible matrix; the BC-eliminated K is
+        // non-singular because the 7 constrained DOFs span all 6 rigid body modes.
+        let k_dense = k.to_dense();
+        let plu = k_dense.partial_piv_lu();
+        let mut rhs = faer::Mat::<f64>::from_fn(n, 1, |i, _| f[i]);
+        plu.solve_in_place(&mut rhs);
+        let u = rhs.col_as_slice(0_usize); // &[f64] of length n
+
+        // (a) Each prescribed DOF must match its prescribed value.
+        for bc in &bcs {
+            assert!(
+                (u[bc.dof] - bc.value).abs() < 1e-12,
+                "u[{}] = {} ≠ {} (prescribed value)",
+                bc.dof,
+                u[bc.dof],
+                bc.value,
+            );
+        }
+
+        // (b) For each unconstrained DOF j, the original equilibrium
+        //     K_original[j, :] · u = f_original[j] = 0 must hold.
+        //     This is the key invariant: a correct column-into-RHS step
+        //     encodes the inhomogeneous BC contribution into f_after so that
+        //     the solved u satisfies the ORIGINAL balance at free DOFs.
+        //     A sign flip in column-into-RHS produces the wrong f_after →
+        //     wrong free-DOF displacements → non-zero residual here.
+        for j in 0..n {
+            if constrained.contains(&j) {
+                continue;
+            }
+            let ku_j: f64 = (0..n).map(|col| k_orig[j][col] * u[col]).sum();
+            let residual = (ku_j - f_original[j]).abs();
+            assert!(
+                residual < 1e-12,
+                "K_orig[{j}, :] · u = {ku_j} ≠ f_orig[{j}] = {}; \
+                 column-into-RHS may have wrong sign or magnitude",
+                f_original[j],
+            );
+        }
     }
 
     /// Missing diagonal entry panics with a message naming the dof.
