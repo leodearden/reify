@@ -238,6 +238,11 @@ impl Manifest {
 /// iteration order via the derived `Ord`; it is therefore a public API surface.
 /// Future variant additions must be deliberate about placement. See
 /// [`KernelId::ALL`] for the canonical ordered list.
+///
+/// **Cross-crate consistency:** `Display::fmt` on each variant must equal the
+/// corresponding adapter crate's `*_KERNEL_NAME` const (e.g.
+/// `KernelId::Occt.to_string() == reify_kernel_occt::register::OCCT_KERNEL_NAME`).
+/// Enforced by `tests/kernel_name_consistency.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KernelId {
     Occt,
