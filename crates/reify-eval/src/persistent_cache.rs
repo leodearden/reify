@@ -117,4 +117,20 @@ mod tests {
         assert_eq!(er.iterations, 17);
         assert_eq!(er.solve_time_ms, 250);
     }
+
+    #[test]
+    fn elastic_result_round_trips_all_six_fields() {
+        let original = ElasticResult {
+            displacement: vec![1.0, -2.5, 3.14159, 0.0, 1e-9],
+            stress: vec![100e6, -50e6, 0.0, 250e6],
+            max_von_mises: 250e6,
+            converged: true,
+            iterations: 423,
+            solve_time_ms: 1234,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
+        assert_eq!(decoded, original);
+    }
 }
