@@ -12,7 +12,7 @@
 
 use reify_compiler::DefaultKind;
 use reify_test_support::{compile_source, errors_only};
-use reify_types::{Diagnostic, DimensionVector, Type};
+use reify_types::{CompiledExprKind, Diagnostic, DimensionVector, Type, Value};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -1015,4 +1015,142 @@ structure S : T {
          expression. Diagnostics: {:?}",
         trait_member_mismatch_a
     );
+}
+
+// ── task 3184: int-vs-real AST distinction — compiler-level tests ─────────────
+
+/// RED test for task 3184: `1.0` (a whole-number decimal literal) must lower to
+/// `Value::Real(1.0)` with `result_type == Type::Real`, not `Value::Int(1)`.
+///
+/// Before the fix, `expr.rs` used a value-based heuristic: any f64 that equals
+/// its integer cast becomes `Int`. So `1.0` → `Int(1)`. This test FAILS until
+/// step-4 replaces the heuristic with the `is_real` flag added to the AST in
+/// step-2.
+///
+/// The `cell_type` assertion (annotation authoritative) passes both before and
+/// after the fix. Only `default_expr.result_type` and `default_expr.kind` are
+/// the RED assertions.
+#[test]
+fn whole_number_real_literal_compiles_as_real() {
+    let source = r#"
+trait HasX {
+    let x : Real = 1.0
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait HasX");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Real,
+        "cell_type must be Type::Real (annotation authoritative)"
+    );
+
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("expected a default_expr on the let cell for 'x'");
+
+    assert_eq!(
+        default_expr.result_type,
+        Type::Real,
+        "default_expr.result_type must be Type::Real for `1.0`; \
+         before task 3184 step-4 it was Type::Int (value-based heuristic). Got: {:?}",
+        default_expr.result_type
+    );
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v,
+            1.0,
+            "default_expr.kind must be Literal(Value::Real(1.0)), got value {}",
+            v
+        ),
+        other => panic!(
+            "default_expr.kind must be Literal(Value::Real(1.0)) — \
+             before task 3184 step-4 it was Literal(Value::Int(1)); got: {:?}",
+            other
+        ),
+    }
+}
+
+/// Regression guard for task 3184 step-4: `let x : Real = 42` (bare integer token,
+/// no `.`/`e`/`E`) must continue to compile cleanly via Int→Real widening.
+///
+/// The `is_real` flag for `42` is false, so the expression lowers as `Int(42)`.
+/// The annotation `: Real` is accepted via `type_compatible` at the cross-check site.
+///
+/// Pins two invariants:
+///   1. No error diagnostic — widening still works after the fix.
+///   2. The raw `default_expr` carries `Value::Int(42)`, not `Value::Real(42.0)`.
+///      Widening happens at the annotation cross-check layer, not at literal lowering.
+#[test]
+fn integer_literal_in_real_param_still_widens() {
+    let source = r#"
+trait HasX {
+    let x : Real = 42
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors — `let x : Real = 42` must widen Int to Real via \
+         `type_compatible` at the annotation cross-check site. Got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait HasX");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Real,
+        "cell_type must be Type::Real (annotation authoritative)"
+    );
+
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("expected a default_expr on the let cell for 'x'");
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
+            *v,
+            42,
+            "default_expr.kind must be Literal(Value::Int(42)), got value {}",
+            v
+        ),
+        other => panic!(
+            "default_expr.kind must be Literal(Value::Int(42)) — integer tokens \
+             (no `.`/`e`/`E`) always lower as Int even with a Real annotation; got: {:?}",
+            other
+        ),
+    }
 }
