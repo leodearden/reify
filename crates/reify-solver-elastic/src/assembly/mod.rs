@@ -9,6 +9,8 @@
 pub mod global;
 pub mod tet;
 
+pub use global::{AssemblyElement, AssemblyMode, assemble_global_stiffness};
+
 #[cfg(test)]
 pub(crate) mod test_support;
 

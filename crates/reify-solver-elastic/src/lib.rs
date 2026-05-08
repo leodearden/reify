@@ -98,7 +98,10 @@ pub mod elements;
 pub mod shell_assembly;
 pub mod shell_result;
 
-pub use assembly::{ElementOrder, ElementStiffness, element_stiffness};
+pub use assembly::{
+    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
+    element_stiffness,
+};
 pub use constitutive::IsotropicElastic;
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, tet_p1::TetP1, tet_p2::TetP2,
