@@ -905,20 +905,31 @@ fn shell_stress_struct_has_top_mid_bottom_real_params() {
 // ─── step-11: ElasticResult param shape ──────────────────────────────────────
 
 /// `ElasticResult` is the FEA solver-output container. It must declare
-/// exactly five params with the canonical names and types:
+/// exactly six params with the canonical names and types:
 ///
 ///   - `displacement  : Real`     (Real placeholder for Field<Point3<Length>, Vector3<Length>>)
 ///   - `stress        : Real`     (Real placeholder for Field<Point3<Length>, Tensor<2,3,Pressure>>)
+///   - `frame         : Real`     (Real placeholder for Field<Point3<Length>, Matrix<3,3,Real>>;
+///                                 per-element local-to-global rotation; T16)
 ///   - `max_von_mises : Pressure`
 ///   - `converged     : Bool`
 ///   - `iterations    : Int`
 ///
-/// `displacement` and `stress` use `Real` placeholders pending Field<X,Y>
-/// support in `param` positions (see plan.json design decision). The runtime
-/// FEA solver (PRD task #16) populates these as Field-typed Maps regardless
-/// of the static `param` annotation. This test pins the placeholder type so
-/// a future Field<X,Y> migration becomes a deliberate update rather than a
-/// silent type drift.
+/// `displacement`, `stress`, and `frame` use `Real` placeholders pending
+/// Field<X,Y> support in `param` positions (see the TODO(field-in-param,
+/// task #3117) block in `solver_elastic.ri`). The runtime FEA solver (PRD
+/// task #16) populates these as Field-typed Maps regardless of the static
+/// `param` annotation. This test pins the placeholder types so a future
+/// Field<X,Y> migration becomes a deliberate update rather than silent drift.
+///
+/// `frame` is the per-element local-to-global rotation
+/// (`Field<Point3<Length>, Matrix<3,3,Real>>` at runtime):
+///   - For tet results the engine sets `frame = Value::Undef` (tet stress is
+///     already in the global Cartesian frame; no per-element local frame).
+///   - For shell results the engine populates the per-element MITC3+ local
+///     frame from the mid-surface mesher.
+/// PRD reference: docs/prds/v0_4/structural-analysis-shells.md §
+/// "Stress through thickness".
 #[test]
 fn elastic_result_struct_has_correct_param_shape() {
     let template = find_structure("ElasticResult");
@@ -927,14 +938,16 @@ fn elastic_result_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        5,
-        "ElasticResult should have exactly 5 param cells, got: {:?}",
+        6,
+        "ElasticResult should have exactly 6 param cells \
+         (displacement, stress, frame, max_von_mises, converged, iterations), got: {:?}",
         names
     );
 
     let expected: &[(&str, Type)] = &[
         ("displacement", Type::Real),
         ("stress", Type::Real),
+        ("frame", Type::Real),
         (
             "max_von_mises",
             Type::Scalar {
