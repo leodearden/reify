@@ -585,6 +585,65 @@ mod tests {
     }
 
     #[test]
+    fn elastic_result_round_trips_one_million_element_vectors() {
+        // 1<<20 ≈ 1 million f64 elements — well below MAX_F64_ELEMENTS (1<<24)
+        // so try_reserve_exact defence does not fire, but large enough to exercise
+        // the bulk-transfer code path at workload-realistic scale (required by the
+        // task description: "add at least one bench or assertion covering large-N
+        // (e.g. 1M elements) to demonstrate the path is exercised").
+        //
+        // Bit-scrambled pattern (golden-ratio multiplier + XOR) rather than a
+        // monotonic ramp: a naive byte-order bug that happens to be invariant on
+        // small or structured inputs (e.g. all-zero / all-integer-valued floats)
+        // would still be caught here because the scrambled pattern produces values
+        // with significant entropy in every byte of every f64.
+        let n = 1usize << 20;
+        let displacement: Vec<f64> = (0..n)
+            .map(|i| {
+                f64::from_bits(
+                    (i as u64)
+                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        ^ 0xDEAD_BEEF_CAFE_BABE,
+                )
+            })
+            .collect();
+        // Smaller stress vector derived from a different scramble constant so
+        // both slab paths are exercised without doubling the allocation.
+        let stress: Vec<f64> = (0..1024u64)
+            .map(|i| {
+                f64::from_bits(
+                    i.wrapping_mul(0x6C62_272E_07BB_0142) ^ 0xFEED_FACE_DEAD_BEEF,
+                )
+            })
+            .collect();
+        let original = ElasticResult {
+            displacement,
+            stress,
+            max_von_mises: f64::from_bits(0xDEAD_BEEF_CAFE_BABE),
+            converged: true,
+            iterations: 1,
+            solve_time_ms: 42,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut buf).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &buf[..]).unwrap();
+        // Assert length first so a length mismatch surfaces a clear error
+        // before any per-element bit-pattern check.
+        assert_eq!(decoded.displacement.len(), 1 << 20);
+        assert_eq!(decoded.stress.len(), original.stress.len());
+        // NaN-safe comparison: to_bits() compares raw bit patterns so NaN
+        // payloads, signaling-NaN bits, and signed zeros survive the assertion.
+        // Reuses the pattern from
+        // elastic_result_round_trip_preserves_nan_and_infinity_bit_patterns.
+        for (d, o) in decoded.displacement.iter().zip(original.displacement.iter()) {
+            assert_eq!(d.to_bits(), o.to_bits(), "displacement bit pattern drift");
+        }
+        for (d, o) in decoded.stress.iter().zip(original.stress.iter()) {
+            assert_eq!(d.to_bits(), o.to_bits(), "stress bit pattern drift");
+        }
+    }
+
+    #[test]
     fn check_f64_vec_len_rejects_value_above_workload_limit() {
         // Portable boundary pin: exercises the bound check without any Vec
         // allocation, so it remains stable on memory-constrained CI runners.
