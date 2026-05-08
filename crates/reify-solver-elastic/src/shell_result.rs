@@ -110,7 +110,7 @@ pub fn shell_element_stress(
     material: &IsotropicElastic,
     u_global: &[f64; 18],
 ) -> ShellElementStress {
-    use crate::elements::mitc3_plus::{Mitc3Plus, ShearStrain, TyingShears};
+    use crate::elements::mitc3_plus::{Mitc3Plus, TyingShears};
 
     let frame = build_shell_frame(nodes);
     let r = frame.r; // rows = local basis in global coords: R · v_global = v_local
@@ -225,9 +225,10 @@ pub fn shell_element_stress(
     // Project covariant shears at centroid (ξ=1/3, η=1/3) via MITC3+.
     let centroid = crate::elements::mitc3_plus::ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0);
     let sampled = TyingShears {
-        at_a: ShearStrain { gamma_xi_zeta: g_cov_tp[0][0], gamma_eta_zeta: g_cov_tp[0][1] },
-        at_b: ShearStrain { gamma_xi_zeta: g_cov_tp[1][0], gamma_eta_zeta: g_cov_tp[1][1] },
-        at_c: ShearStrain { gamma_xi_zeta: g_cov_tp[2][0], gamma_eta_zeta: g_cov_tp[2][1] },
+        gamma_xi_zeta_at_a:  g_cov_tp[0][0],
+        gamma_eta_zeta_at_b: g_cov_tp[1][1],
+        gamma_xi_zeta_at_c:  g_cov_tp[2][0],
+        gamma_eta_zeta_at_c: g_cov_tp[2][1],
     };
     let g_cov_ctr = Mitc3Plus.interpolate_assumed_shear(sampled, centroid);
 
