@@ -88,6 +88,5 @@ std::unique_ptr<OpenVdbGridHandle> read_vdb_grid_ffi(
     rust::Str grid_name);
 
 rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h);
-std::array<uint64_t, 3> grid_active_bbox_dims(const OpenVdbGridHandle& h);
 
 } // namespace reify_openvdb

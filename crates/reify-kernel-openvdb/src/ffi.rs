@@ -59,8 +59,10 @@ pub mod ffi {
             grid_name: &str,
         ) -> Result<UniquePtr<OpenVdbGridHandle>>;
 
-        // Densify active voxels into flat row-major f32 buffer (X fastest).
+        // Densify active voxels into flat row-major f32 buffer (axis-0 = X
+        // outermost). The Rust caller derives per-axis dimensions from the
+        // bbox + voxel_sizes; `lower_to_sampled` cross-checks the buffer
+        // length against the product of axis-grid lengths.
         fn grid_densify_to_buffer(h: &OpenVdbGridHandle) -> Vec<f32>;
-        fn grid_active_bbox_dims(h: &OpenVdbGridHandle) -> [u64; 3];
     }
 }

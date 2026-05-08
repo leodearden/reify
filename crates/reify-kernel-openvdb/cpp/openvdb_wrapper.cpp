@@ -250,18 +250,4 @@ rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h) {
     return buf;
 }
 
-std::array<uint64_t, 3> grid_active_bbox_dims(const OpenVdbGridHandle& h) {
-    auto bbox = h.grid->evalActiveVoxelBoundingBox();
-    if (bbox.empty()) {
-        return {0, 0, 0};
-    }
-    auto min = bbox.min();
-    auto max = bbox.max();
-    return {
-        static_cast<uint64_t>(max.x() - min.x() + 1),
-        static_cast<uint64_t>(max.y() - min.y() + 1),
-        static_cast<uint64_t>(max.z() - min.z() + 1)
-    };
-}
-
 } // namespace reify_openvdb
