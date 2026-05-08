@@ -10,7 +10,8 @@
 //! mirrors `topology_filtered_selectors_mock.rs`.
 
 use reify_eval::selector_vocabulary_v2::{
-    complement, edges_perpendicular_to, except, faces_perpendicular_to, intersect, union,
+    Axis, ExtremalSense, complement, edges_perpendicular_to, except, extremal_by_bbox,
+    faces_perpendicular_to, intersect, union,
 };
 use reify_test_support::MockGeometryKernel;
 use reify_types::{GeometryHandleId, QueryError, Value};
@@ -435,5 +436,143 @@ fn edges_perpendicular_to_degenerate_tangent_returns_query_failed() {
         matches!(result, Err(QueryError::QueryFailed(_))),
         "degenerate tangent must produce QueryFailed, got {:?}",
         result
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// extremal_by_bbox — `>axis` extremal selector by BoundingBox extents (PRD line 77)
+//
+// Returns the cluster of candidates whose extent along the requested axis
+// (using bbox.max[axis] for `Max` and bbox.min[axis] for `Min`) is within
+// `tol_m` of the global extreme. Tie cluster is returned in input order;
+// dedup-on-first-seen is preserved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Helper to format a bbox JSON payload in the kernel's canonical encoding.
+fn bbox_json(min: [f64; 3], max: [f64; 3]) -> Value {
+    Value::String(format!(
+        "{{\"xmin\":{},\"ymin\":{},\"zmin\":{},\"xmax\":{},\"ymax\":{},\"zmax\":{}}}",
+        min[0], min[1], min[2], max[0], max[1], max[2]
+    ))
+}
+
+#[test]
+fn extremal_by_bbox_unique_max_along_y_returns_single_face() {
+    // Stage four faces with bbox ymax = 5e-3, 8e-3, 8.0001e-3, 12e-3.
+    // The 12e-3 face is the unique global maximum; with a tight tol_m=1e-6
+    // it is the only face in the result cluster.
+    let f1 = GeometryHandleId(2); // ymax = 5e-3
+    let f2 = GeometryHandleId(3); // ymax = 8e-3
+    let f3 = GeometryHandleId(4); // ymax = 8.0001e-3
+    let f4 = GeometryHandleId(5); // ymax = 12e-3 (unique max)
+    let candidates = vec![f1, f2, f3, f4];
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_bbox_result(f1, bbox_json([0.0, 0.0, 0.0], [1.0, 0.005, 1.0]))
+        .with_bbox_result(f2, bbox_json([0.0, 0.0, 0.0], [1.0, 0.008, 1.0]))
+        .with_bbox_result(f3, bbox_json([0.0, 0.0, 0.0], [1.0, 0.0080001, 1.0]))
+        .with_bbox_result(f4, bbox_json([0.0, 0.0, 0.0], [1.0, 0.012, 1.0]));
+
+    let result = extremal_by_bbox(&mut kernel, &candidates, Axis::Y, ExtremalSense::Max, 1e-6)
+        .expect("extremal_by_bbox should succeed for unique max");
+    assert_eq!(
+        result,
+        vec![f4],
+        "unique max along Y (tol=1e-6) should be only the 12e-3 face"
+    );
+}
+
+#[test]
+fn extremal_by_bbox_tied_cluster_returned_in_input_order() {
+    // Three faces with ymax = 5e-3, 8e-3, 8.0001e-3. Global max is 8.0001e-3;
+    // with tol_m = 1e-3 the cluster around the max captures both 8e-3 and
+    // 8.0001e-3 (their absolute difference is 1e-7 ≪ tol). The cluster is
+    // returned in input order.
+    let f1 = GeometryHandleId(2); // ymax = 5e-3
+    let f2 = GeometryHandleId(3); // ymax = 8e-3
+    let f3 = GeometryHandleId(4); // ymax = 8.0001e-3 (global max)
+    let candidates = vec![f1, f2, f3];
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_bbox_result(f1, bbox_json([0.0, 0.0, 0.0], [1.0, 0.005, 1.0]))
+        .with_bbox_result(f2, bbox_json([0.0, 0.0, 0.0], [1.0, 0.008, 1.0]))
+        .with_bbox_result(f3, bbox_json([0.0, 0.0, 0.0], [1.0, 0.0080001, 1.0]));
+
+    let result = extremal_by_bbox(&mut kernel, &candidates, Axis::Y, ExtremalSense::Max, 1e-3)
+        .expect("extremal_by_bbox should succeed for tied cluster");
+    assert_eq!(
+        result,
+        vec![f2, f3],
+        "tied cluster around max along Y (tol=1e-3) returned in input order"
+    );
+}
+
+#[test]
+fn extremal_by_bbox_min_sense_uses_bbox_min_for_axis() {
+    // Three faces with ymin = 0.0, 5e-3, 1e-2. Min sense → global min is 0.0;
+    // with tol = 1e-6 the result is the unique f1.
+    let f1 = GeometryHandleId(2);
+    let f2 = GeometryHandleId(3);
+    let f3 = GeometryHandleId(4);
+    let candidates = vec![f1, f2, f3];
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_bbox_result(f1, bbox_json([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]))
+        .with_bbox_result(f2, bbox_json([0.0, 0.005, 0.0], [1.0, 1.0, 1.0]))
+        .with_bbox_result(f3, bbox_json([0.0, 0.01, 0.0], [1.0, 1.0, 1.0]));
+
+    let result = extremal_by_bbox(&mut kernel, &candidates, Axis::Y, ExtremalSense::Min, 1e-6)
+        .expect("extremal_by_bbox should succeed for min sense");
+    assert_eq!(
+        result,
+        vec![f1],
+        "Min sense along Y picks the candidate with the smallest ymin"
+    );
+}
+
+#[test]
+fn extremal_by_bbox_axis_x_picks_along_x_only() {
+    // Two faces with the same ymax/zmax but different xmax — only the
+    // xmax differentiates. Confirms axis selection is wired correctly.
+    let f1 = GeometryHandleId(2);
+    let f2 = GeometryHandleId(3);
+    let candidates = vec![f1, f2];
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_bbox_result(f1, bbox_json([0.0, 0.0, 0.0], [0.003, 1.0, 1.0]))
+        .with_bbox_result(f2, bbox_json([0.0, 0.0, 0.0], [0.009, 1.0, 1.0]));
+
+    let result = extremal_by_bbox(&mut kernel, &candidates, Axis::X, ExtremalSense::Max, 1e-6)
+        .expect("extremal_by_bbox should succeed along X");
+    assert_eq!(result, vec![f2], "Max along X picks the candidate with xmax=0.009");
+}
+
+#[test]
+fn extremal_by_bbox_axis_z_picks_along_z_only() {
+    // Confirms Axis::Z routes through bbox zmin/zmax (the existing axis
+    // already covered by parse_bbox_z_extents, but exercised end-to-end here
+    // through the new generalised parse_bbox_axis_extents helper).
+    let f1 = GeometryHandleId(2);
+    let f2 = GeometryHandleId(3);
+    let candidates = vec![f1, f2];
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_bbox_result(f1, bbox_json([0.0, 0.0, 0.0], [1.0, 1.0, 0.002]))
+        .with_bbox_result(f2, bbox_json([0.0, 0.0, 0.0], [1.0, 1.0, 0.011]));
+
+    let result = extremal_by_bbox(&mut kernel, &candidates, Axis::Z, ExtremalSense::Max, 1e-6)
+        .expect("extremal_by_bbox should succeed along Z");
+    assert_eq!(result, vec![f2], "Max along Z picks the candidate with zmax=0.011");
+}
+
+#[test]
+fn extremal_by_bbox_empty_candidates_returns_empty() {
+    let mut kernel = MockGeometryKernel::new();
+    let candidates: Vec<GeometryHandleId> = vec![];
+    let result = extremal_by_bbox(&mut kernel, &candidates, Axis::Z, ExtremalSense::Max, 1e-6)
+        .expect("extremal_by_bbox on empty candidates should succeed");
+    assert!(
+        result.is_empty(),
+        "empty candidate slice yields empty cluster"
     );
 }
