@@ -483,11 +483,22 @@ impl SidecarHandle {
 
     /// Send an abort signal to the sidecar (cancels the current message).
     ///
-    /// This method is idempotent against a dead sidecar: if the sidecar has
-    /// already exited and its stdin pipe is closed, the write will return
-    /// `BrokenPipe`, which is silently converted to `Ok(())` — the
-    /// user-visible action ("stop the request") is already complete.
+    /// This method is idempotent against a dead sidecar:
+    /// - Returns `Ok(())` immediately if the sidecar is known not running
+    ///   (`NotStarted` or `Crashed`), without touching stdin.
+    /// - If the sidecar's stdin pipe happens to be closed (race window between
+    ///   pipe closure and state transition to `Crashed`), the resulting
+    ///   `BrokenPipe` error is also silently converted to `Ok(())` — the
+    ///   user-visible action ("stop the request") is already complete.
     pub async fn abort(&mut self) -> Result<(), String> {
+        // State pre-check: if the sidecar is known-gone, abort is trivially complete.
+        // Clone out of the lock before the next await to avoid holding two locks simultaneously
+        // (matches the lock-ordering hygiene in claude_send_message_impl).
+        let state = self.state.lock().await.clone();
+        if matches!(state, SidecarState::NotStarted | SidecarState::Crashed(_)) {
+            return Ok(());
+        }
+
         let mut writer = self.stdin.lock().await;
         let line = format_inbound(&InboundMessage::Abort);
         match writer.write_all(line.as_bytes()).await {
