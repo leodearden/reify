@@ -135,8 +135,143 @@ fn linear_combine(args: &[Value]) -> Value {
         weighted_cases.push((weight, case_map));
     }
 
-    let _ = weighted_cases; // used in subsequent steps
-    Value::Undef
+    // Extract Sampled Fields from the first weighted case as the reference.
+    // Helper closure: extracts (domain_type, codomain_type, &SampledField)
+    // from a case Map's field by name; returns None on any mismatch.
+    let extract_case_sampled_field = |case_map: &BTreeMap<Value, Value>,
+                                      key: &str|
+     -> Option<(Type, Type, SampledField)> {
+        let field_val = case_map.get(&Value::String(key.to_string()))?;
+        match field_val {
+            Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda,
+                domain_type,
+                codomain_type,
+            } => match lambda.as_ref() {
+                Value::SampledField(sf) => Some((
+                    domain_type.clone(),
+                    codomain_type.clone(),
+                    sf.clone(),
+                )),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+
+    // Use first weighted case as the reference for grid metadata and types.
+    let (ref_disp_dom, ref_disp_cod, ref_disp_sf) = match weighted_cases
+        .first()
+        .and_then(|(_, cm)| extract_case_sampled_field(cm, "displacement"))
+    {
+        Some(t) => t,
+        None => return Value::Undef,
+    };
+    let (ref_stress_dom, ref_stress_cod, ref_stress_sf) = match weighted_cases
+        .first()
+        .and_then(|(_, cm)| extract_case_sampled_field(cm, "stress"))
+    {
+        Some(t) => t,
+        None => return Value::Undef,
+    };
+
+    let n_disp = ref_disp_sf.data.len();
+    let n_stress = ref_stress_sf.data.len();
+
+    // Initialise accumulators to 0.0.
+    let mut combined_disp: Vec<f64> = vec![0.0; n_disp];
+    let mut combined_stress: Vec<f64> = vec![0.0; n_stress];
+
+    // Outer loop over weighted cases; inner loop over indices.
+    // Mirrors envelope_reduce's outer-cases / inner-indices nesting for
+    // vectorisation and bounds-check-free iteration.
+    for (i, (weight, case_map)) in weighted_cases.iter().enumerate() {
+        let (dom_d, cod_d, sf_d) = match extract_case_sampled_field(case_map, "displacement") {
+            Some(t) => t,
+            None => return Value::Undef,
+        };
+        let (dom_s, cod_s, sf_s) = match extract_case_sampled_field(case_map, "stress") {
+            Some(t) => t,
+            None => return Value::Undef,
+        };
+
+        // Validate metadata against reference (skip first case — it IS the ref).
+        if i > 0 {
+            if !metadata_matches(&ref_disp_sf, &sf_d, &ref_disp_dom, &ref_disp_cod, &dom_d, &cod_d) {
+                return Value::Undef;
+            }
+            if !metadata_matches(&ref_stress_sf, &sf_s, &ref_stress_dom, &ref_stress_cod, &dom_s, &cod_s) {
+                return Value::Undef;
+            }
+        }
+
+        for (out, &v) in combined_disp.iter_mut().zip(sf_d.data.iter()) {
+            *out += weight * v;
+        }
+        for (out, &v) in combined_stress.iter_mut().zip(sf_s.data.iter()) {
+            *out += weight * v;
+        }
+    }
+
+    // Compute max_von_mises: max(|combined_stress|) over finite values.
+    // Scalar interpretation (pre-task-#3117); finite-only for NaN-safety.
+    let max_von_mises = combined_stress
+        .iter()
+        .filter(|v| v.is_finite())
+        .map(|v| v.abs())
+        .fold(0.0_f64, f64::max);
+
+    // Build output Fields with name="linear_combine", types/grids from reference.
+    let out_disp_sf = SampledField {
+        name: "linear_combine".to_string(),
+        kind: ref_disp_sf.kind,
+        bounds_min: ref_disp_sf.bounds_min.clone(),
+        bounds_max: ref_disp_sf.bounds_max.clone(),
+        spacing: ref_disp_sf.spacing.clone(),
+        axis_grids: ref_disp_sf.axis_grids.clone(),
+        interpolation: ref_disp_sf.interpolation,
+        data: combined_disp,
+        oob_emitted: AtomicBool::new(false),
+    };
+    let out_stress_sf = SampledField {
+        name: "linear_combine".to_string(),
+        kind: ref_stress_sf.kind,
+        bounds_min: ref_stress_sf.bounds_min.clone(),
+        bounds_max: ref_stress_sf.bounds_max.clone(),
+        spacing: ref_stress_sf.spacing.clone(),
+        axis_grids: ref_stress_sf.axis_grids.clone(),
+        interpolation: ref_stress_sf.interpolation,
+        data: combined_stress,
+        oob_emitted: AtomicBool::new(false),
+    };
+
+    let out_disp_field = Value::Field {
+        domain_type: ref_disp_dom,
+        codomain_type: ref_disp_cod,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(out_disp_sf)),
+    };
+    let out_stress_field = Value::Field {
+        domain_type: ref_stress_dom,
+        codomain_type: ref_stress_cod,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(out_stress_sf)),
+    };
+
+    // Build the synthesised ElasticResult Map.
+    let mut result_map = BTreeMap::new();
+    result_map.insert(Value::String("displacement".to_string()), out_disp_field);
+    result_map.insert(Value::String("stress".to_string()), out_stress_field);
+    result_map.insert(Value::String("frame".to_string()), Value::Undef);
+    result_map.insert(
+        Value::String("max_von_mises".to_string()),
+        Value::Real(max_von_mises),
+    );
+    result_map.insert(Value::String("converged".to_string()), Value::Bool(true));
+    result_map.insert(Value::String("iterations".to_string()), Value::Int(0));
+
+    Value::Map(result_map)
 }
 
 /// Extract the inner `cases` `BTreeMap` from a `MultiCaseResult` struct
