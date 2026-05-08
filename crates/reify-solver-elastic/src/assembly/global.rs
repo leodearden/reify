@@ -98,6 +98,35 @@ pub fn assemble_global_stiffness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assembly::tet::element_stiffness_p1;
+    use crate::constitutive::IsotropicElastic;
+
+    /// Steel-like dimensionless material reused across the global-assembly
+    /// tests. Mirrors the convention from `assembly::tests::dimensionless_steel_like`
+    /// and `tet::tests::dimensionless_steel_like` so K_e numerics stay in
+    /// O(1) range for human-readable failure messages.
+    fn dimensionless_steel_like() -> IsotropicElastic {
+        IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        }
+    }
+
+    /// Canonical 4-node P1 phys layout (unit reference tet).
+    const UNIT_TET_P1: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+
+    /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>` as a plain `f64`,
+    /// returning `0.0` if the entry is not stored. Lets test code densify
+    /// the global K with one read per `(row, col)` regardless of whether
+    /// the assembly path bothered to store explicit zero entries.
+    fn read(k: &SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
+        k.get(i, j).copied().unwrap_or(0.0)
+    }
 
     /// Empty `elements` slice → `3N × 3N` all-zero sparse matrix.
     ///
@@ -116,5 +145,44 @@ mod tests {
         assert_eq!(k.nrows(), 3 * n_nodes);
         assert_eq!(k.ncols(), 3 * n_nodes);
         assert_eq!(k.compute_nnz(), 0, "no triplets ⇒ zero stored entries");
+    }
+
+    /// Single P1 element with identity connectivity `[0,1,2,3]` → K_global
+    /// equals K_e bit-for-bit at every entry.
+    ///
+    /// Pins the DOF-mapping rule:
+    /// `K_global[3*conn[a]+α][3*conn[b]+β] = K_e[3*a+α][3*b+β]`. With
+    /// identity connectivity the rule degenerates to identity, so the
+    /// densified 12×12 must match K_e exactly. A future regression that
+    /// transposes the row/col mapping (or shifts axis-major vs node-major
+    /// indexing) will surface here.
+    #[test]
+    fn single_p1_element_identity_connectivity_matches_k_e_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        assert_eq!(k_e.n_dofs, 12);
+
+        let connectivity = [0usize, 1, 2, 3];
+        let element = AssemblyElement {
+            id: 0,
+            connectivity: &connectivity,
+            k_e: &k_e,
+        };
+        let k = assemble_global_stiffness(4, &[element], AssemblyMode::Deterministic);
+        assert_eq!(k.nrows(), 12);
+        assert_eq!(k.ncols(), 12);
+
+        for i in 0..12 {
+            for j in 0..12 {
+                let actual = read(&k, i, j);
+                let expected = k_e.get(i, j);
+                // Bit-for-bit: identity mapping ⇒ no FP-summation reordering.
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] = {actual} but K_e[{i}][{j}] = {expected}",
+                );
+            }
+        }
     }
 }
