@@ -28,7 +28,7 @@ This is a smaller scope than shell elements — no new formulation surface, no m
 
 ## Sketch of approach
 
-1. **Sweep detection** — geometry-kernel pass walks the construction history of each body and tags it with `swept_kind = Extrude { axis, length } | Revolve { axis, angle } | Loft { profile, path }` when the body is the result of exactly one extrude/revolve/single-profile-loft op with no subsequent modifications. The tag persists on the realized body so other systems (mesh morphing, GUI) can read it.
+1. **Sweep detection** — geometry-kernel pass walks the construction history of each body and tags it with `swept_kind = Extrude { axis, length } | Revolve { axis, angle } | SweepLinear { profile, path }` when the body is the result of exactly one extrude/revolve/single-profile-loft op with no subsequent modifications. The tag persists on the realized body so other systems (mesh morphing, GUI) can read it.
 2. **Sweep meshing** — for a tagged swept body, generate 2D mesh on cross-section via Gmsh, then sweep that 2D mesh along the axis to produce wedge (from triangle base) or hex (from quad base) elements ourselves. Element count = base_mesh_count × sweep_subdivisions.
 3. **Element kernel** — implement P1 hex (8-node) and P1 wedge (6-node) reference elements + stiffness assembly in `reify-solver-elastic`. P2 variants (20-node hex, 15-node wedge) deferred unless demand surfaces.
 4. **Mixed-element assembly** — global assembly path needs to handle hex and wedge alongside tet, since multi-body assemblies routinely combine swept thin parts with tet-meshed blocky parts. Within a single body, only one element type is used (no within-body mixing in v0.3.x).
@@ -68,7 +68,7 @@ For hex generation, the 2D mesh is produced as a quad mesh (Gmsh's recombine alg
 
 Distinct fall-back causes worth naming separately in the diagnostic:
 
-- Twisted loft / non-orthogonal sweep path — body construction qualifies syntactically, but the sweep is geometrically ill-defined.
+- Twisted linear sweep / non-orthogonal sweep path — body construction qualifies syntactically, but the sweep is geometrically ill-defined.
 - Cross-section 2D meshing failed — degenerate corners, slivers in the profile.
 - Body has post-sweep modifications (Phase A only) — drilled holes, fillets, etc. Diagnostic notes Phase B as the path that will eventually handle this case.
 
@@ -95,7 +95,7 @@ Thirteen tasks for the v0.3.x first cut (Phase A); one further task for the Phas
 
 **Detection (geometry-kernel side, independent of element kernel):**
 
-1. Sweep classifier pass: walks the construction history of a `Body` and returns `Option<SweptKind>` where `SweptKind = Extrude { axis, length } | Revolve { axis, angle } | Loft { profile, path }`. Phase A only — single extrude/revolve/single-profile-loft op with no subsequent modifications. Includes geometric validity check (orthogonal sweep direction for extrude, non-degenerate revolve angle, non-twisted loft). Tag persists as metadata on the realized body so morphing and GUI can read it.
+1. Sweep classifier pass: walks the construction history of a `Body` and returns `Option<SweptKind>` where `SweptKind = Extrude { axis, length } | Revolve { axis, angle } | SweepLinear { profile, path }`. Phase A only — single extrude/revolve/single-profile-loft op with no subsequent modifications. Includes geometric validity check (orthogonal sweep direction for extrude, non-degenerate revolve angle, non-twisted linear sweep). Tag persists as metadata on the realized body so morphing and GUI can read it.
 
 **Element kernel (extends `reify-solver-elastic`, depends on FEA tet kernel landed):**
 
@@ -107,19 +107,19 @@ Thirteen tasks for the v0.3.x first cut (Phase A); one further task for the Phas
 **Meshing (depends on classifier + Gmsh integration from FEA task 17):**
 
 6. 2D cross-section extraction + Gmsh 2D meshing: given a `swept_kind`-tagged body, extract the cross-section profile (curve set) and feed to Gmsh as a 2D meshing request. Triangle output for wedge target; quad output via Gmsh recombine algorithm for hex target. Hex preferred; wedge fallback when recombine doesn't produce a clean quad mesh.
-7. Sweep step: given a 2D mesh and sweep parameters (axis+length for extrude, axis+angle for revolve, profile+path for loft), generate the 3D node grid and wedge/hex connectivity. K layers controlled by `ElasticOptions.mesh_size` derivation (same auto-from-feature-size logic as FEA task 17) or explicit `sweep_subdivisions` override. Through-thickness check: at least 2 layers across the sweep direction by default; warn otherwise.
+7. Sweep step: given a 2D mesh and sweep parameters (axis+length for extrude, axis+angle for revolve, profile+path for linear sweep), generate the 3D node grid and wedge/hex connectivity. K layers controlled by `ElasticOptions.mesh_size` derivation (same auto-from-feature-size logic as FEA task 17) or explicit `sweep_subdivisions` override. Through-thickness check: at least 2 layers across the sweep direction by default; warn otherwise.
 8. Volume-mesh integration: hook the swept-mesh path into the realization pipeline. When sweep classifier returns `Some(_)` AND `force_tet = false` AND 2D mesh succeeds AND sweep step succeeds, return swept hex/wedge mesh; else fall back to tet path. Cache key composition unchanged — element-type composition is determined by geometry hash + `force_tet`.
 
 **Options + diagnostics:**
 
 9. Extend `ElasticOptions` with `force_tet: bool` (default false) and `require_hex_wedge: bool` (default false). Wire into mesh-selection logic in task 8. Mutually exclusive — setting both is an `ElasticOptions` validation error.
 10. P2 element-order interaction: when `element_order = P2` is set and a body qualifies for hex/wedge promotion, produce P1 hex/wedge and emit one-shot info diagnostic per body. Document the substitution in the PRD-derived stdlib doc.
-11. Fall-back diagnostic mapping: distinct diagnostics for each fall-back cause — twisted loft / non-orthogonal sweep path, cross-section 2D meshing failure, post-sweep modifications detected (Phase B note), `force_tet = true` (debug-only suppression of promotion), and the success path ("Body X meshed as N hex / M wedge"). Info-level by default; `require_hex_wedge = true` upgrades fall-backs to errors.
+11. Fall-back diagnostic mapping: distinct diagnostics for each fall-back cause — twisted linear sweep / non-orthogonal sweep path, cross-section 2D meshing failure, post-sweep modifications detected (Phase B note), `force_tet = true` (debug-only suppression of promotion), and the success path ("Body X meshed as N hex / M wedge"). Info-level by default; `require_hex_wedge = true` upgrades fall-backs to errors.
 
 **Validation:**
 
 12. Extend FEA validation suite: re-run the swept analytical cases (cantilever beam as extruded body, pressurized thick-walled cylinder as revolved body) with hex/wedge meshing. Assert (a) numerical agreement with the analytical reference within tolerance, and (b) convergence-vs-DOF curve is materially steeper than the same case with tet meshing. Regression test enforces both. **Gate:** FEA PRD validation suite (FEA task 20) shipped first.
-13. Mesh-quality and structural test: synthetic swept-body fixtures (extruded plate, revolved disc, simple non-twisted loft). Assert hex/wedge generation succeeds, element count matches `base_mesh_count × sweep_subdivisions`, through-thickness check is satisfied at default `mesh_size`, and `force_tet`/`require_hex_wedge` produce expected diagnostics.
+13. Mesh-quality and structural test: synthetic swept-body fixtures (extruded plate, revolved disc, simple non-twisted linear sweep). Assert hex/wedge generation succeeds, element count matches `base_mesh_count × sweep_subdivisions`, through-thickness check is satisfied at default `mesh_size`, and `force_tet`/`require_hex_wedge` produce expected diagnostics.
 
 **Phase B follow-on (deferred, recorded but not in v0.3.x first cut):**
 
