@@ -144,6 +144,15 @@ enum OcctRequest {
         cy: f64,
         reply: oneshot::Sender<GeometryHandleId>,
     },
+    /// Test-fixture: return the outward unit normal for a face without
+    /// going through the JSON-encoded `GeometryQuery::FaceNormal` path.
+    /// Mirrors `OcctKernel::face_outward_unit_normal_for_test`; used by
+    /// integration tests to avoid hand-rolling serde_json parsing.
+    #[cfg(feature = "test-fixtures")]
+    FaceOutwardUnitNormalForTest {
+        face: GeometryHandleId,
+        reply: oneshot::Sender<Result<[f64; 3], QueryError>>,
+    },
 }
 
 /// Thread-safe handle to an OCCT kernel running on a dedicated thread.
@@ -697,6 +706,37 @@ impl OcctKernelHandle {
         )
     }
 
+    /// Test-fixture: return the outward unit normal `[nx, ny, nz]` for the
+    /// face identified by `face`, routed through the actor channel to the
+    /// dedicated kernel thread.
+    ///
+    /// Mirrors [`OcctKernel::face_outward_unit_normal_for_test`] and is
+    /// intended for integration tests that previously hand-parsed the
+    /// `{"x":.., "y":.., "z":..}` JSON returned by
+    /// `GeometryQuery::FaceNormal`. Replacing that ad-hoc serde_json parse
+    /// with this typed helper decouples tests from the wire encoding.
+    ///
+    /// # Errors
+    ///
+    /// Propagates `QueryError::InvalidHandle` or `QueryError::QueryFailed`
+    /// from the underlying kernel call. Returns
+    /// `QueryError::QueryFailed("kernel thread died")` if the kernel thread
+    /// has exited.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    #[cfg(feature = "test-fixtures")]
+    pub fn face_outward_unit_normal_for_test(
+        &self,
+        face: GeometryHandleId,
+    ) -> Result<[f64; 3], QueryError> {
+        self.send_request_blocking(
+            |reply| OcctRequest::FaceOutwardUnitNormalForTest { face, reply },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )?
+    }
+
     /// Execute a geometry operation on the kernel thread.
     ///
     /// # Panics
@@ -878,6 +918,11 @@ impl OcctKernelHandle {
                         let id =
                             kernel.store_triangle_face_at_for_test(x1, z1, x2, z2, x3, z3, cy);
                         let _ = reply.send(id);
+                    }
+                    #[cfg(feature = "test-fixtures")]
+                    OcctRequest::FaceOutwardUnitNormalForTest { face, reply } => {
+                        let result = kernel.face_outward_unit_normal_for_test(face);
+                        let _ = reply.send(result);
                     }
                 }
             }
