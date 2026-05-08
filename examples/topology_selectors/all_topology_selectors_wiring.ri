@@ -9,8 +9,10 @@
 //
 // Argument shapes follow PRD §3.9 signatures verbatim. Compile-time wiring
 // keys only on the function name (not arg types), so `body, body` calls for
-// adjacent_faces / shared_edges are sufficient — this mirrors the
+// adjacent_faces / shared_edges are sufficient today — this mirrors the
 // angle_between_surfaces(body, body) precedent in geometry_traits_tests.rs.
+// TODO(2691): once runtime dispatch lands, replace those two `body, body`
+// calls with real face handles so the example stays semantically valid.
 //
 // Coverage:
 //   1.  edges(solid)                          → List<Geometry>
@@ -35,8 +37,8 @@ structure def AllTopologySelectorsWiring {
     let top_faces            = faces_by_normal(body, vec3(0.0, 0.0, 1.0), 1deg)
     let vertical_edges       = edges_parallel_to(body, vec3(0.0, 0.0, 1.0), 1deg)
     let bottom_edges         = edges_at_height(body, 0mm, 0.01mm)
-    let neighbors            = adjacent_faces(body, body)
-    let shared               = shared_edges(body, body)
+    let neighbors            = adjacent_faces(body, body)  // TODO(2691): pass a real face handle once runtime dispatch lands
+    let shared               = shared_edges(body, body)    // TODO(2691): pass real face handles once runtime dispatch lands
     let centroid             = center_of_mass(body, 7850.0)
     let inertia_tensor       = moment_of_inertia(body, 7850.0)
 }
