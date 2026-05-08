@@ -287,7 +287,7 @@ pub fn segment_regions(
         // and can silently match a real voxel near the origin in release builds;
         // debug builds would instead panic via axis_floor_ceil_unique's
         // debug_assert!.  Mirrors the !is_finite() pattern in medial.rs.
-        if !world[0].is_finite() || !world[1].is_finite() || !world[2].is_finite() {
+        if !world.iter().all(|c| c.is_finite()) {
             continue;
         }
         // Fractional voxel index along each axis.
@@ -1062,13 +1062,16 @@ mod tests {
                 [0.0, 0.0, nan],         // 3: NaN z-component
                 [inf, neg_inf, nan],     // 4: all non-finite
             ],
-            triangles: vec![],
+            // tri 0: all three vertices non-finite → triangle must receive u32::MAX
+            // tri 1: one finite vertex (0) + two non-finite (1, 2) → inherits label 0
+            triangles: vec![[1, 2, 3], [0, 1, 2]],
             thickness: vec![1.0; 5],
         };
 
         let result = segment_regions(&mask, &mesh, &SegmentationOptions::default())
             .expect("segment_regions must not error or panic on non-finite vertex coords");
 
+        // ── vertex labels ────────────────────────────────────────────────────
         assert_eq!(
             result.vertex_labels[0],
             0,
@@ -1094,6 +1097,23 @@ mod tests {
             result.vertex_labels[4],
             u32::MAX,
             "vertex with all-non-finite coords (±Inf, NaN) must receive sentinel u32::MAX"
+        );
+
+        // ── triangle labels ──────────────────────────────────────────────────
+        // A triangle whose every vertex is non-finite (all sentinel) must itself
+        // receive the u32::MAX sentinel — the `find(non-sentinel)` in the
+        // triangle-label builder returns None.
+        assert_eq!(
+            result.triangle_labels[0],
+            u32::MAX,
+            "triangle [1, 2, 3] — all non-finite vertices — must propagate u32::MAX sentinel"
+        );
+        // A triangle with at least one finite vertex must inherit that vertex's
+        // region label, even when the others carry the sentinel.
+        assert_eq!(
+            result.triangle_labels[1],
+            0,
+            "triangle [0, 1, 2] — finite vertex 0 (label 0) + two non-finite — must label 0"
         );
     }
 
