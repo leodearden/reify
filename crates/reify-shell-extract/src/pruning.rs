@@ -392,6 +392,52 @@ mod tests {
     use super::*;
     use crate::mid_surface::MidSurfaceMesh;
 
+    // ── Step 7: input-mesh validation tests ──────────────────────────────────
+
+    /// `prune_branches` rejects a mesh where `thickness.len() != vertices.len()`.
+    ///
+    /// Mirrors `mesh_mid_surface_rejects_inconsistent_mesh_lengths` (mesher.rs).
+    #[test]
+    fn prune_branches_rejects_inconsistent_mesh_lengths() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0]],
+            triangles: vec![],
+            thickness: vec![], // len 0 ≠ vertices len 1
+        };
+        match prune_branches(&mesh, &PruneOptions::default()) {
+            Err(PruneError::InconsistentInputMesh {
+                vertices_len: 1,
+                thickness_len: 0,
+            }) => {}
+            other => panic!(
+                "expected InconsistentInputMesh {{vertices_len:1, thickness_len:0}}, got {other:?}"
+            ),
+        }
+    }
+
+    /// `prune_branches` rejects a triangle whose vertex index is out of range.
+    ///
+    /// Mirrors `mesh_mid_surface_rejects_out_of_range_triangle_index` (mesher.rs).
+    #[test]
+    fn prune_branches_rejects_out_of_range_triangle_index() {
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0]],             // only index 0 is valid
+            triangles: vec![[0, 1, 0]],                   // index 1 is out of range
+            thickness: vec![1.0],
+        };
+        match prune_branches(&mesh, &PruneOptions::default()) {
+            Err(PruneError::OutOfRangeTriangleIndex {
+                triangle_index: 0,
+                vertex_index: 1,
+                vertices_len: 1,
+            }) => {}
+            other => panic!(
+                "expected OutOfRangeTriangleIndex {{triangle_index:0, vertex_index:1, vertices_len:1}}, \
+                 got {other:?}"
+            ),
+        }
+    }
+
     // ── Step 5: options-validation tests ─────────────────────────────────────
 
     /// `prune_branches` rejects non-positive, non-finite, and NaN ratio values.
