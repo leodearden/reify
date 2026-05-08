@@ -493,6 +493,24 @@ const TRI_TABLE: [[i8; 16]; 256] = [
 /// clarify the downstream latency budget. See the parallel note in
 /// `medial::compute_medial_mask` which makes the same tradeoff for dense
 /// voxel iteration.
+///
+/// # T2 → T3 shared-edge contract
+///
+/// Downstream T3 (`prune_branches`) canonicalises shared-edge midpoints by
+/// quantising coordinates to `PruneOptions::grid_alignment_tolerance` (default
+/// `1e-9`, mirroring [`MidSurfaceOptions::grid_alignment_tolerance`]).  Two
+/// vertices whose coordinates round to the same integer grid cell at that
+/// tolerance are merged into a single canonical index before edge-incidence
+/// counting.
+///
+/// **Obligation for future T2 changes:** any change to the midpoint-emission
+/// formula `(wa + wb) * 0.5` (see the binary-MC midpoint computation in the
+/// per-cell loop) must keep shared-edge midpoints from adjacent cells within
+/// `grid_alignment_tolerance` of each other.  If midpoints from adjacent cells
+/// diverge beyond that tolerance, T3 mis-classifies the shared edges as
+/// boundary edges and spuriously prunes the mesh body.  The regression test
+/// `prune_branches_real_t2_adjacent_cells_pipeline_pins_body_survival` in
+/// `pruning.rs` catches this failure mode end-to-end.
 pub fn extract_mid_surface(
     sdf: &SampledField,
     mask: &MedialMask,
