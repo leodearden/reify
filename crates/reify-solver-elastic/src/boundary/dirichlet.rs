@@ -507,6 +507,70 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Step 5 — multiple BCs are order-independent within FP tolerance
+    // -----------------------------------------------------------------------
+
+    /// Applying the same multi-BC list in two different orders produces
+    /// bit-identical K and tolerance-equal f.
+    ///
+    /// K is bit-identical because the row/col zeroing is a set operation
+    /// (not accumulate) — writing 0.0 twice gives the same result as once,
+    /// regardless of order.  f is tolerance-equal rather than bit-identical
+    /// because the column-into-RHS subtraction `f[j] -= K[j][i] * u` is
+    /// applied at different K states in the two orderings; after BC₁'s
+    /// row-zero zeros `K[k₁][k₂]`, BC₂'s column-into-RHS reads 0.0 from
+    /// that entry, so the total f delta is O(ulp · max|f|), well below
+    /// `1e-12 · max(|fa|, |fb|, 1)`.
+    #[test]
+    fn multiple_bcs_are_order_independent_within_fp_tolerance() {
+        let bcs_forward = [
+            DirichletBc { dof: 0, value: 0.0 },    // homogeneous
+            DirichletBc { dof: 14, value: 0.001 },  // inhomogeneous
+            DirichletBc { dof: 7, value: -0.002 },  // inhomogeneous
+        ];
+        let bcs_reverse = [
+            DirichletBc { dof: 7, value: -0.002 },
+            DirichletBc { dof: 14, value: 0.001 },
+            DirichletBc { dof: 0, value: 0.0 },
+        ];
+
+        // Pipeline A: forward order.
+        let mut k_a = two_element_shared_face_k();
+        let mut f_a: Vec<f64> = (0..15).map(|i| (i + 1) as f64 / 10.0).collect();
+        apply_dirichlet_row_elimination(&mut k_a, &mut f_a, &bcs_forward);
+
+        // Pipeline B: reverse order.
+        let mut k_b = two_element_shared_face_k();
+        let mut f_b: Vec<f64> = (0..15).map(|i| (i + 1) as f64 / 10.0).collect();
+        apply_dirichlet_row_elimination(&mut k_b, &mut f_b, &bcs_reverse);
+
+        // K must be bit-identical across both orderings.
+        for i in 0..15 {
+            for j in 0..15 {
+                let ka = read(&k_a, i, j);
+                let kb = read(&k_b, i, j);
+                assert_eq!(
+                    ka.to_bits(),
+                    kb.to_bits(),
+                    "K[{i}][{j}]: forward={ka} but reverse={kb}",
+                );
+            }
+        }
+
+        // f must agree within FP tolerance.
+        for j in 0..15 {
+            let fa = f_a[j];
+            let fb = f_b[j];
+            let tol = 1e-12 * fa.abs().max(fb.abs()).max(1.0);
+            let delta = (fa - fb).abs();
+            assert!(
+                delta <= tol,
+                "f[{j}]: forward={fa} reverse={fb} |Δ|={delta} > tol={tol}",
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Step 1 — empty BC list is a no-op
     // -----------------------------------------------------------------------
 
