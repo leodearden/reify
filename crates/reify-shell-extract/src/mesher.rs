@@ -1068,4 +1068,140 @@ mod tests {
             "expected QualityBelowThreshold even with max_remesh_iterations=5, got {err:?}"
         );
     }
+
+    // ── Steps 15-16: slab end-to-end pipeline test ────────────────────────────
+    //
+    // Test helpers (mirrored from mid_surface.rs and segmentation.rs).
+    // Duplication is intentional: mesher.rs must be self-contained, mirroring
+    // the established pattern between mid_surface.rs and segmentation.rs.
+
+    use crate::mid_surface::{extract_mid_surface, MidSurfaceOptions};
+    use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+    use crate::medial::MedialMask;
+    use std::sync::atomic::AtomicBool;
+
+    /// Build an analytic-slab Regular3D SampledField:
+    /// `φ(x,y,z) = |z| - half_thickness_voxels` on an N×N×N grid
+    /// centred at the origin with unit spacing.
+    fn slab_sdf_3d(half_thickness_voxels: f64, voxel_count: usize) -> SampledField {
+        let n = voxel_count;
+        let spacing: f64 = 1.0;
+        let half_extent = (n as f64 - 1.0) / 2.0;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+        let axis_grid: Vec<f64> = (0..n)
+            .map(|idx| bounds_min + (idx as f64) * spacing)
+            .collect();
+        let mut data = Vec::with_capacity(n * n * n);
+        for &_x in &axis_grid {
+            for &_y in &axis_grid {
+                for &z in &axis_grid {
+                    data.push(z.abs() - half_thickness_voxels);
+                }
+            }
+        }
+        SampledField {
+            name: format!("slab-{half_thickness_voxels}-{voxel_count}"),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![spacing, spacing, spacing],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build the centerline MedialMask for a z-slab on an N×N×N grid:
+    /// every voxel `(i, j, center_k)` for `i, j ∈ 0..n`.
+    fn centerline_mask(n: usize, sdf: &SampledField) -> MedialMask {
+        let center_k = (n as i32 - 1) / 2;
+        let voxels: Vec<[i32; 3]> = (0..n as i32)
+            .flat_map(|i| (0..n as i32).map(move |j| [i, j, center_k]))
+            .collect();
+        MedialMask {
+            spacing: [sdf.spacing[0], sdf.spacing[1], sdf.spacing[2]],
+            origin: [sdf.bounds_min[0], sdf.bounds_min[1], sdf.bounds_min[2]],
+            voxels,
+        }
+    }
+
+    /// Full T2 → T9 pipeline on a 17×17×17 slab.
+    ///
+    /// Validates:
+    /// - `Ok(_)` from `mesh_mid_surface`
+    /// - `metrics.vertex_count > 0` (non-trivial mesh)
+    /// - `metrics.vertex_count < raw.vertices.len()` (dedup actually reduced count)
+    /// - `metrics.triangle_count == raw.triangles.len()` (topology preserved)
+    /// - All metrics are finite
+    /// - `remesh_iterations == 0`
+    /// - All triangle indices in result are `< result.mesh.vertices.len()`
+    #[test]
+    fn mesh_mid_surface_slab_end_to_end_pipeline() {
+        let n = 17usize;
+        let half_thickness = 3.0;
+
+        let sdf = slab_sdf_3d(half_thickness, n);
+        let mask = centerline_mask(n, &sdf);
+
+        // T2: extract raw mid-surface mesh (may contain duplicate vertices).
+        let raw = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect("slab mid-surface extraction should succeed");
+
+        assert!(
+            !raw.vertices.is_empty(),
+            "17×17×17 slab must produce a non-empty raw mesh"
+        );
+
+        // T9: mesh with relaxed quality thresholds so the noisy MC mesh passes
+        // the gate (the MC triangles may be non-equilateral).
+        let opts = MesherOptions {
+            min_aspect_ratio: 1e-6,
+            min_angle_degrees: 0.001,
+            ..MesherOptions::default()
+        };
+        let result = mesh_mid_surface(&raw, &opts)
+            .expect("slab mesh_mid_surface with relaxed thresholds should succeed");
+
+        assert!(
+            result.metrics.vertex_count > 0,
+            "de-duplicated slab mesh must have at least one vertex"
+        );
+        assert!(
+            result.metrics.vertex_count < raw.vertices.len(),
+            "binary-MC produces 3 vertices per triangle (one per edge), so \
+             de-duplication must reduce vertex_count below raw.vertices.len() \
+             ({} raw → {} dedup)",
+            raw.vertices.len(),
+            result.metrics.vertex_count
+        );
+        assert_eq!(
+            result.metrics.triangle_count,
+            raw.triangles.len(),
+            "de-duplication must preserve triangle count"
+        );
+        assert!(
+            result.metrics.min_aspect_ratio.is_finite(),
+            "min_aspect_ratio must be finite on a non-empty mesh"
+        );
+        assert!(
+            result.metrics.min_angle_degrees.is_finite(),
+            "min_angle_degrees must be finite on a non-empty mesh"
+        );
+        assert_eq!(
+            result.remesh_iterations, 0,
+            "no remeshing iterations on first-pass quality success"
+        );
+        // Internal consistency: all triangle indices in range.
+        let vlen = result.mesh.vertices.len();
+        for tri in &result.mesh.triangles {
+            for &vi in tri.iter() {
+                assert!(
+                    (vi as usize) < vlen,
+                    "triangle index {vi} is out of range for {vlen} de-duplicated vertices"
+                );
+            }
+        }
+    }
 }
