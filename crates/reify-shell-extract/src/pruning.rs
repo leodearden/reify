@@ -1217,4 +1217,85 @@ mod tests {
             "only the body triangle must survive"
         );
     }
+
+    // ── Task 3162 step 3: quantised-dedup jittered-vertex test ──────────────
+    //
+    // Discriminates between bit-exact dedup (`[u64; 3]` `to_bits()`) and
+    // quantised dedup (`[i64; 3]` `(coord * inv_tol).round()`).
+    //
+    // With bit-exact dedup, vertices whose coordinates differ by `1e-12`
+    // get different canonical keys and are treated as separate vertices.
+    // With quantised dedup at default `grid_alignment_tolerance = 1e-9`,
+    // `(1e-12 * 1e9).round() = 0.001.round() = 0`, which is the same key
+    // as `0.0`, so near-tolerance jitter is collapsed into the same canonical
+    // index — three orders of magnitude of safety margin.
+    //
+    // See the COUPLING NOTE block in `prune_branches` (above the canonical-
+    // index map) for the T2→T3 shared-edge contract this test exercises.
+
+    /// Quantised dedup merges spike-side shared-edge vertices even when they
+    /// carry a near-tolerance jitter (`1e-12`) relative to the body-side
+    /// positions.
+    ///
+    /// Layout (mirrors `prune_branches_handles_duplicate_vertex_positions`):
+    ///   body  = [v0, v1, v2] where v0=[0,0,0], v1=[0.5,0,0], v2=[0.25,10,0]
+    ///   spike = [v3, v4, v5] where v3=[0+1e-12,0,0], v4=[0.5+1e-12,0,0],
+    ///                              v5=[0.25,-0.1,0]
+    /// v3 ≈ v0 and v4 ≈ v1 with jitter `1e-12`.
+    ///
+    /// With `grid_alignment_tolerance = 1e-9` (default):
+    ///   - Quantised dedup collapses {v0,v3} and {v1,v4} to the same key →
+    ///     shared edge (v0,v1)~(v3,v4) has incidence 2 (internal).
+    ///   - Spike has 2 boundary edges → is a tip; ratio≈0.125 < 1.0 → pruned.
+    ///   - Body has 2 boundary edges → is a tip; ratio≈10 >> 1.0 → survives.
+    ///
+    /// This validates that quantised dedup correctly handles the jitter between
+    /// T2's shared-edge midpoints, which are bit-exact today but may diverge
+    /// by small amounts (≤ `grid_alignment_tolerance`) in future T2 variants.
+    #[test]
+    fn prune_branches_quantised_dedup_merges_within_tolerance_jittered_vertices() {
+        const JITTER: f64 = 1e-12; // 3 orders of magnitude below default tol 1e-9
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],          // v0 — body side of shared edge
+                [0.5, 0.0, 0.0],          // v1 — body side of shared edge
+                [0.25, 10.0, 0.0],        // v2 — body apex (tall → ratio ≫ 1)
+                [0.0 + JITTER, 0.0, 0.0], // v3 ≈ v0 (jittered spike side)
+                [0.5 + JITTER, 0.0, 0.0], // v4 ≈ v1 (jittered spike side)
+                [0.25, -0.1, 0.0],        // v5 — spike apex
+            ],
+            triangles: vec![[0, 1, 2], [3, 4, 5]],
+            // spike apex has thickness 10 → local_t ≈ 4 → ratio ≈ 0.125 < 1.0 → pruned
+            thickness: vec![1.0, 1.0, 1.0, 1.0, 1.0, 10.0],
+        };
+
+        let result = prune_branches(&mesh, &PruneOptions::default())
+            .expect("jittered-vertex mesh should not error");
+
+        // Spike [3,4,5]: shared edge must be recognized as internal; spike has
+        // 2 boundary edges → tip; branch_length≈0.5, local_t≈4 → ratio≈0.125 <
+        // 1.0 → pruned.
+        assert_eq!(
+            result.metrics.pruned_triangle_count, 1,
+            "spike triangle must be pruned (shared-edge recognized via quantised dedup)"
+        );
+
+        // Body [0,1,2]: branch_length≈10, local_t=1.0 → ratio≈10 ≫ 1.0 → survives.
+        assert_eq!(
+            result.mesh.triangles.len(), 1,
+            "body triangle must survive (ratio >> prune_ratio)"
+        );
+
+        // Parallel-array invariant.
+        assert_eq!(
+            result.mesh.thickness.len(),
+            result.mesh.vertices.len(),
+            "thickness.len() must equal vertices.len() after pruning"
+        );
+
+        assert!(
+            result.metrics.converged,
+            "jittered-vertex fixture must converge naturally"
+        );
+    }
 }
