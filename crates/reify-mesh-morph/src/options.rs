@@ -96,6 +96,15 @@ pub struct MorphOptions {
     ///
     /// PRD §"Spatially-varying fictitious stiffness": default 0.3.
     pub fictitious_poisson_ratio: f64,
+
+    /// Number of Jacobi iterations the Laplacian quick-pass runs before
+    /// returning the smoothed mesh.
+    ///
+    /// PRD task #6 ("Laplacian quick-pass for trivially small changes"):
+    /// 5–10 iterations is the typical range; default 8. Engine wiring
+    /// (PRD task #10) reads this value and forwards it to
+    /// [`crate::laplacian::laplacian_smooth`].
+    pub laplacian_iterations: u32,
 }
 
 impl Default for MorphOptions {
@@ -107,6 +116,7 @@ impl Default for MorphOptions {
             laplacian_quickpass_threshold: 0.01,
             fictitious_youngs_modulus_base: 1.0,
             fictitious_poisson_ratio: 0.3,
+            laplacian_iterations: 8,
         }
     }
 }
