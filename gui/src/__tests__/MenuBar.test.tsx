@@ -266,3 +266,66 @@ describe('MenuBar — interaction behaviors', () => {
     expect(screen.getByRole('menu')).not.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// File→New item (task-3209)
+// ---------------------------------------------------------------------------
+
+describe('MenuBar — File→New item', () => {
+  function clickMenuItem(label: string) {
+    const item = screen.getAllByRole('menuitem').find((el) => el.textContent?.includes(label));
+    expect(item).toBeTruthy();
+    fireEvent.click(item!);
+  }
+
+  it('File dropdown contains a New item', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByText('File'));
+    const items = screen.getAllByRole('menuitem');
+    const labels = items.map((el) => el.textContent ?? '');
+    expect(labels.some((l) => l.includes('New'))).toBe(true);
+  });
+
+  it('New is the first item in the File dropdown, above Open', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByText('File'));
+    const items = screen.getAllByRole('menuitem');
+    const labels = items.map((el) => el.textContent ?? '');
+    const newIdx = labels.findIndex((l) => l.includes('New'));
+    const openIdx = labels.findIndex((l) => l.includes('Open'));
+    expect(newIdx).toBeGreaterThanOrEqual(0);
+    expect(newIdx).toBeLessThan(openIdx);
+  });
+
+  it('New item shows Ctrl+N shortcut annotation', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByText('File'));
+    const items = screen.getAllByRole('menuitem');
+    const newItem = items.find((el) => el.textContent?.includes('New'));
+    expect(newItem?.textContent).toContain('Ctrl+N');
+  });
+
+  it('clicking New calls onNew callback', () => {
+    const onNew = vi.fn();
+    render(() => <MenuBar onNew={onNew} />);
+    fireEvent.click(screen.getByText('File'));
+    clickMenuItem('New');
+    expect(onNew).toHaveBeenCalledTimes(1);
+  });
+
+  it('menu closes after clicking New', () => {
+    render(() => <MenuBar onNew={vi.fn()} />);
+    fireEvent.click(screen.getByText('File'));
+    clickMenuItem('New');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('New item is enabled (not disabled) per registry derivation', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByText('File'));
+    const items = screen.getAllByRole('menuitem');
+    const newItem = items.find((el) => el.textContent?.includes('New')) as HTMLButtonElement;
+    expect(newItem).toBeDefined();
+    expect(newItem.disabled).toBe(false);
+  });
+});
