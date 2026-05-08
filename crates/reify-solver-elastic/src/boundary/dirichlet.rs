@@ -460,6 +460,48 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Step 4 — multiple BCs preserve K symmetry (SPD preservation regression)
+    // -----------------------------------------------------------------------
+
+    /// Multi-BC row-elimination on a real FEA-assembled K preserves symmetry
+    /// within FP tolerance.
+    ///
+    /// The algorithm zeros both row `i` and column `i` (not just one), so
+    /// symmetric K stays symmetric.  A regression where, say, only the row is
+    /// zeroed but not the column, or vice-versa, produces a visibly asymmetric
+    /// K on a multi-element mesh and surfaces here.
+    ///
+    /// Tolerance: `|K_after[i][j] - K_after[j][i]| ≤ 1e-9 · max(|…|, 1)`,
+    /// mirroring `global_k_is_symmetric_within_fp_tolerance` from Task 2916.
+    #[test]
+    fn multiple_bcs_preserve_k_symmetry_within_fp_tolerance() {
+        let mut k = two_element_shared_face_k(); // 15 × 15
+        let mut f: Vec<f64> = (0..15).map(|i| (i + 1) as f64 / 10.0).collect();
+
+        let bcs = [
+            DirichletBc { dof: 0, value: 0.0 },    // homogeneous
+            DirichletBc { dof: 14, value: 0.001 },  // inhomogeneous
+            DirichletBc { dof: 7, value: -0.002 },  // inhomogeneous
+        ];
+        apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
+
+        // Check symmetry of K_after over the upper triangle.
+        for i in 0..15 {
+            for j in i..15 {
+                let kij = read(&k, i, j);
+                let kji = read(&k, j, i);
+                let tol = 1e-9 * kij.abs().max(kji.abs()).max(1.0);
+                let delta = (kij - kji).abs();
+                assert!(
+                    delta <= tol,
+                    "K_after[{i}][{j}] = {kij} but K_after[{j}][{i}] = {kji}; \
+                     |Δ| = {delta} > tol = {tol}",
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Step 1 — empty BC list is a no-op
     // -----------------------------------------------------------------------
 
