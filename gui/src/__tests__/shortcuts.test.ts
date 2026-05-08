@@ -331,6 +331,46 @@ describe('shortcuts — switchViewByIndex entry', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// 'new' shortcut entry (task-3209)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — new entry', () => {
+  it('SHORTCUTS registry contains a new entry', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'new');
+    expect(entry).toBeDefined();
+  });
+
+  it('new entry has key "Ctrl+N" and non-empty description', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'new');
+    expect(entry?.key).toBe('Ctrl+N');
+    expect(entry?.description).toBeTruthy();
+  });
+
+  it('new entry is not disabled', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'new');
+    expect(entry?.disabled).not.toBe(true);
+  });
+
+  it('new bind matches Ctrl+N keydown event', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'new');
+    expect(entry?.bind).toBeDefined();
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'n', ctrlKey: true }))).toBe(true);
+  });
+
+  it('new bind does NOT match Ctrl+Shift+N (shift: false convention)', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'new');
+    expect(entry?.bind).toBeDefined();
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'N', ctrlKey: true, shiftKey: true }))).toBe(false);
+  });
+
+  it('new bind does NOT match bare N without Ctrl', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'new');
+    expect(entry?.bind).toBeDefined();
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'n', ctrlKey: false }))).toBe(false);
+  });
+});
+
 describe('shortcuts.ts source documentation', () => {
   it('does not contain brittle KeyboardHelp.tsx: file:line reference', () => {
     expect(SRC).not.toContain('KeyboardHelp.tsx:');
