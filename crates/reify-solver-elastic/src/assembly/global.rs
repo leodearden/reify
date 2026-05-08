@@ -477,6 +477,88 @@ mod tests {
         let _ = assemble_global_stiffness(4, &[], AssemblyMode::Parallel { threads: 0 });
     }
 
+    /// Parallel mode produces the bit-identical dense matrix as deterministic
+    /// mode on a 4-element disjoint-tet mesh, for thread counts 1, 2, and 4.
+    ///
+    /// The mesh has no shared nodes (4 tets, each on 4 fresh nodes for
+    /// `n_nodes = 16`), so every global DOF receives at most one element's
+    /// contribution. Without duplicate summation there is no FP
+    /// non-associativity, so bit-equality is achievable across any
+    /// partition / merge order — this is the strongest possible bit-stability
+    /// claim, applicable to *any* thread count, not just to a fixed thread
+    /// count.
+    ///
+    /// Pinning all four results to bit-identical means a future regression
+    /// that introduces an out-of-order accumulation in the parallel path
+    /// (even on disjoint meshes) surfaces here. Step-13 covers the
+    /// shared-DOF case where bit-equality across threads is impossible and
+    /// only tolerance-equivalence holds.
+    #[test]
+    fn parallel_mode_bit_equal_to_deterministic_on_disjoint_mesh() {
+        let mat = dimensionless_steel_like();
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        assert_eq!(k_e.n_dofs, 12);
+
+        // 4 disjoint tets, each on its own block of 4 nodes.
+        let conns: [[usize; 4]; 4] =
+            [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]];
+        let n_nodes = 16;
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| AssemblyElement {
+                id: i,
+                connectivity: c,
+                k_e: &k_e,
+            })
+            .collect();
+
+        let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        let par1 = assemble_global_stiffness(
+            n_nodes,
+            &elements,
+            AssemblyMode::Parallel { threads: 1 },
+        );
+        let par2 = assemble_global_stiffness(
+            n_nodes,
+            &elements,
+            AssemblyMode::Parallel { threads: 2 },
+        );
+        let par4 = assemble_global_stiffness(
+            n_nodes,
+            &elements,
+            AssemblyMode::Parallel { threads: 4 },
+        );
+        assert_eq!(det.nrows(), 3 * n_nodes);
+        assert_eq!(det.ncols(), 3 * n_nodes);
+
+        for i in 0..3 * n_nodes {
+            for j in 0..3 * n_nodes {
+                let d = read(&det, i, j);
+                let p1 = read(&par1, i, j);
+                let p2 = read(&par2, i, j);
+                let p4 = read(&par4, i, j);
+                // Bit-equality across all four — disjoint mesh ⇒ no
+                // duplicate summation ⇒ no FP non-associativity.
+                assert_eq!(
+                    d.to_bits(),
+                    p1.to_bits(),
+                    "K[{i}][{j}] det={d} != par1={p1}",
+                );
+                assert_eq!(
+                    d.to_bits(),
+                    p2.to_bits(),
+                    "K[{i}][{j}] det={d} != par2={p2}",
+                );
+                assert_eq!(
+                    d.to_bits(),
+                    p4.to_bits(),
+                    "K[{i}][{j}] det={d} != par4={p4}",
+                );
+            }
+        }
+    }
+
     /// Single P2 element with identity connectivity `[0..10]` → K_global
     /// equals K_e bit-for-bit at every entry.
     ///
