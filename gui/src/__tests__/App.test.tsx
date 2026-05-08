@@ -2230,6 +2230,83 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
   });
 });
 
+describe('App handleNew dirty-check confirmation', () => {
+  const newPath = '/user/chosen/new.ri';
+  const newContent = NEW_FILE_TEMPLATE;
+
+  function setupHappyPathMocks() {
+    vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: newPath, content: newContent });
+    vi.mocked(bridge.openFileEngine).mockResolvedValue({
+      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
+    });
+  }
+
+  it('Ctrl+N with dirty buffer and confirm cancelled: pickSavePath not called', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+      await flushMacrotasks();
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(bridge.pickSavePath).not.toHaveBeenCalled();
+      expect(bridge.saveFile).not.toHaveBeenCalled();
+      expect(bridge.openFile).not.toHaveBeenCalled();
+      expect(bridge.openFileEngine).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('Ctrl+N with dirty buffer and confirm accepted: bridge sequence fires', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+      await waitFor(() => {
+        expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
+      });
+      await waitFor(() => {
+        expect(bridge.saveFile).toHaveBeenCalledWith(newPath, newContent);
+      });
+      await waitFor(() => {
+        expect(bridge.openFile).toHaveBeenCalledWith(newPath);
+      });
+      await waitFor(() => {
+        expect(bridge.openFileEngine).toHaveBeenCalledWith(newPath);
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('Ctrl+N with clean buffer: window.confirm not called, bridge sequence fires', async () => {
+    setupHappyPathMocks();
+    await renderAndWaitForReady();
+    // No markDirty — buffer is clean
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
+      await waitFor(() => {
+        expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
+      });
+      expect(confirmSpy).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+});
+
 describe('App end-to-end toast integration', () => {
   it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
     await withSuppressedRejections(async () => {
