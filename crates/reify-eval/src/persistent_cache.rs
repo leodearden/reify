@@ -188,40 +188,25 @@ fn check_f64_vec_len(field_name: &str, len: u64) -> io::Result<usize> {
 /// `&[f64]` buffer as `&[u8]` without any copy — a zero-copy fast path. On
 /// big-endian hosts a temporary `Vec<u8>` is built via `to_le_bytes()` per
 /// element (per-element CPU byte-swap, single bulk `write_all` to `w`). The
-/// BE path uses `try_reserve_exact` + `checked_mul(8)` for OOM-safe sizing,
-/// symmetric with the read side.
+/// BE path uses `try_reserve_exact` for OOM-safe sizing; overflow of the byte
+/// count is impossible because the slab is already in memory and bounded by
+/// `MAX_F64_ELEMENTS = 1<<24` (so `len * 8 <= 1<<27`, well within `usize`).
 ///
-/// Empty-safety: `cast_slice::<f64, u8>(&[])` returns `&[]`; `write_all(&[])`
-/// is a no-op — empty slabs produce zero bytes on disk. Pinned by
-/// `write_f64_slab_round_trips_empty_slice`.
-///
-/// Large-N: the 1<<20-element bulk path is exercised by
-/// `elastic_result_round_trips_one_million_element_vectors`.
-///
-/// Byte-order: the on-disk slab format is unconditionally little-endian,
-/// pinned by `elastic_result_serialized_slab_section_is_little_endian_bytewise`
-/// (integration) and `write_f64_slab_then_read_f64_slab_round_trips_bit_patterns_directly`
-/// (direct helper test).
-///
-/// The `field` parameter feeds only the BE byte-size-overflow error message,
-/// preserving per-field diagnostics (e.g. `"BE write: displacement byte size
-/// overflow"` vs `"BE write: stress byte size overflow"`).
-fn write_f64_slab<W: Write>(w: &mut W, slab: &[f64], field: &str) -> io::Result<()> {
+/// Empty input produces zero bytes on disk. The on-disk format is
+/// unconditionally little-endian regardless of host byte order.
+fn write_f64_slab<W: Write>(w: &mut W, slab: &[f64]) -> io::Result<()> {
     #[cfg(target_endian = "little")]
     {
-        // `field` is only used in the BE error path; silence the unused-variable
-        // warning on LE hosts without renaming the parameter (the BE arm needs it).
-        let _ = field;
         w.write_all(bytemuck::cast_slice::<f64, u8>(slab))
     }
     #[cfg(target_endian = "big")]
     {
-        let cap = slab
-            .len()
-            .checked_mul(8)
-            .ok_or_else(|| io::Error::other(format!("BE write: {field} byte size overflow")))?;
+        // slab.len() is an in-memory Vec already accepted by the allocator and
+        // bounded by MAX_F64_ELEMENTS = 1<<24, so len * 8 <= 1<<27 cannot
+        // overflow usize on any supported target.
+        let byte_count = slab.len() * 8;
         let mut buf: Vec<u8> = Vec::new();
-        buf.try_reserve_exact(cap).map_err(io::Error::other)?;
+        buf.try_reserve_exact(byte_count).map_err(io::Error::other)?;
         for v in slab {
             buf.extend_from_slice(&v.to_le_bytes());
         }
@@ -237,63 +222,53 @@ fn write_f64_slab<W: Write>(w: &mut W, slab: &[f64], field: &str) -> io::Result<
 /// function; `len: usize` arrives pre-validated so no field-name parameter
 /// is needed here.
 ///
-/// On little-endian hosts `bytemuck::cast_slice_mut::<f64, u8>` reinterprets
-/// the `Vec<f64>` backing store as `&mut [u8]` and `read_exact` fills it in a
-/// single call — no intermediate byte buffer, keeping peak per-slab memory at
-/// 1× slab size (the `Vec<f64>` alone). The previous LE path called
+/// On little-endian hosts `read_exact` fills the `Vec<f64>` backing store
+/// directly in a single call via `spare_capacity_mut` — no intermediate byte
+/// buffer and no zero-initialisation pass. The previous LE path called
 /// `resize(cap, 0.0_f64)` before the cast, which zeroed up to 128 MiB per
 /// slab at the `MAX_F64_ELEMENTS = 1<<24` cap — immediately overwritten by
-/// `read_exact`. `set_len` eliminates that memset, saving up to 256 MiB of
-/// zeroing per cache lookup (displacement + stress). On big-endian hosts a
+/// `read_exact`. `set_len` is called only after `read_exact` returns `Ok`,
+/// saving up to 256 MiB of zeroing per cache lookup (displacement + stress)
+/// and keeping the `unsafe` scope as narrow as possible. On big-endian hosts a
 /// temporary `Vec<u8>` byte buffer is allocated, filled via `read_exact`,
 /// then converted element-by-element via `f64::from_le_bytes` (byte-swap on
 /// BE — the BE path already avoids zero-init: it `push`es each `f64` directly
-/// from `chunks_exact(8)`, so no equivalent waste existed there).
+/// from `chunks_exact(8)`).
 ///
-/// Defence-in-depth: `try_reserve_exact` is used on every allocation path to
-/// surface allocation failure as `io::Error` rather than aborting via
-/// `Vec::with_capacity`'s panic-on-OOM path. `MAX_F64_ELEMENTS = 1<<24` caps
-/// each slab at 128 MiB, but honest reservations may still fail on
-/// memory-constrained hosts (no overcommit, small CI sandbox).
+/// `try_reserve_exact` surfaces allocation failure as `io::Error` rather than
+/// aborting via `Vec::with_capacity`'s panic-on-OOM path. `checked_mul(8)` on
+/// the BE byte-buffer sizing guards against a future increase to
+/// `MAX_F64_ELEMENTS` silently overflowing the byte count.
 ///
-/// `checked_mul(8)` on the BE byte-buffer sizing is explicit defence-in-depth:
-/// `1<<24 * 8 = 1<<27` cannot overflow `usize` even on a 32-bit host, but the
-/// checked path ensures a future increase to `MAX_F64_ELEMENTS` does not
-/// silently overflow.
-///
-/// Large-N: pinned by `elastic_result_round_trips_one_million_element_vectors`.
-/// LE byte order: pinned by
-/// `elastic_result_serialized_slab_section_is_little_endian_bytewise` and
-/// directly by
-/// `write_f64_slab_then_read_f64_slab_round_trips_bit_patterns_directly`.
-/// Error-propagation: `read_exact` returns `Err(UnexpectedEof)` on a short
-/// slab read — pinned by `elastic_result_deserialize_accepts_lengths_at_the_limit`
-/// (integration) and `read_f64_slab_returns_unexpected_eof_on_short_input`
-/// (direct helper test).
+/// `read_exact` returns `Err(UnexpectedEof)` on a short slab; the `?`
+/// propagates before `set_len` is reached, so no partially-initialised `Vec`
+/// is ever observed.
 fn read_f64_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<f64>> {
     let mut vec: Vec<f64> = Vec::new();
     vec.try_reserve_exact(len).map_err(io::Error::other)?;
     #[cfg(target_endian = "little")]
     {
-        // SAFETY: Three invariants hold:
-        // (a) Capacity ≥ len: `try_reserve_exact(len)` above succeeded, so
-        //     `vec.capacity() >= len` is guaranteed before this call.
-        // (b) f64 is `bytemuck::AnyBitPattern` / `Pod`: any 64-bit pattern is
-        //     a valid f64 (including signaling NaNs — the same property the LE
-        //     write path already relies on for `cast_slice`). There is no
-        //     invalid-bit-pattern UB for f64 in Rust.
-        // (c) Initialisation before observation: `read_exact` either fully
-        //     overwrites the entire slice before returning `Ok(())` — every
-        //     element is initialised before any caller can read it — or returns
-        //     `Err(UnexpectedEof)`. The `?` propagates `Err` immediately,
-        //     dropping the partially-uninitialised `Vec` without any element
-        //     ever being observed. `Vec<f64>::drop` does not read element
-        //     values (it only frees the backing allocation), so no UB occurs on
-        //     the error path. This invariant is pinned as a runtime behaviour by
-        //     `read_f64_slab_returns_unexpected_eof_on_short_input` and by
-        //     `elastic_result_deserialize_accepts_lengths_at_the_limit`.
+        // Fill via spare_capacity_mut so that set_len is only called after
+        // read_exact succeeds. This avoids materialising &mut [f64] to
+        // uninitialised memory: spare_capacity_mut() yields
+        // &mut [MaybeUninit<f64>], which is always legal to hold regardless of
+        // the underlying bytes' state.
+        let spare = vec.spare_capacity_mut(); // &mut [MaybeUninit<f64>], len >= len
+        // SAFETY: MaybeUninit<f64> has the same size (8 bytes) and no stricter
+        // alignment than u8. from_raw_parts_mut with len*8 covers the same
+        // memory region as the first `len` MaybeUninit<f64> slots. Materialising
+        // &mut [u8] to uninitialised bytes is sound because u8 has no validity
+        // invariants; we immediately overwrite every byte via read_exact.
+        let byte_slice: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, len * 8)
+        };
+        r.read_exact(byte_slice)?;
+        // SAFETY: (a) capacity >= len after the successful try_reserve_exact
+        // above; (b) all len*8 bytes are now initialised — read_exact returned
+        // Ok(()), so every byte in the backing store was written; (c) f64 is
+        // Pod / AnyBitPattern so any bit pattern is a valid f64. set_len is
+        // only reached on the Ok path, so no partially-uninitialised Vec exists.
         unsafe { vec.set_len(len); }
-        r.read_exact(bytemuck::cast_slice_mut::<f64, u8>(vec.as_mut_slice()))?;
     }
     #[cfg(target_endian = "big")]
     {
@@ -340,8 +315,8 @@ impl PersistentlyCacheable for ElasticResult {
         // Bulk slab writes — see `write_f64_slab` for the full rationale on
         // LE zero-copy, BE byte-swap, OOM-safe sizing, empty-slab safety, and
         // the byte-order pin tests.
-        write_f64_slab(&mut encoder, &self.displacement, "displacement")?;
-        write_f64_slab(&mut encoder, &self.stress, "stress")?;
+        write_f64_slab(&mut encoder, &self.displacement)?;
+        write_f64_slab(&mut encoder, &self.stress)?;
         encoder.finish()?;
         Ok(())
     }
@@ -847,7 +822,7 @@ mod tests {
             0.0,
         ];
         let mut buf: Vec<u8> = Vec::new();
-        write_f64_slab(&mut buf, &slab, "test").unwrap();
+        write_f64_slab(&mut buf, &slab).unwrap();
         // Buffer length must equal slab.len() * 8 bytes.
         assert_eq!(buf.len(), slab.len() * 8);
         // First 8 bytes must equal `1.0_f64.to_le_bytes()` — pins LE on-disk
@@ -892,7 +867,7 @@ mod tests {
     fn write_f64_slab_round_trips_empty_slice() {
         let empty: &[f64] = &[];
         let mut buf: Vec<u8> = Vec::new();
-        write_f64_slab(&mut buf, empty, "test").unwrap();
+        write_f64_slab(&mut buf, empty).unwrap();
         assert_eq!(buf.len(), 0, "zero-element slab must produce zero bytes");
         let decoded = read_f64_slab(&mut &buf[..], 0).unwrap();
         assert!(decoded.is_empty(), "read of zero-length slab must return empty Vec");
