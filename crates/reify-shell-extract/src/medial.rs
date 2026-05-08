@@ -1688,6 +1688,79 @@ mod tests {
         }
     }
 
+    /// Contract test: `compute_medial_mask` must return voxels in strict
+    /// lexicographic ascending order (element-wise `[i32; 3]` comparison).
+    ///
+    /// **Why pin this now?** The serial triple-nested loop (i → j → k)
+    /// produces lex-sorted output by construction; downstream consumers
+    /// (e.g. binary-search-style mask queries) already rely on this.
+    /// Pinning the contract here ensures that step-6's parallel
+    /// chunk-merge + `sort_unstable` cannot silently regress it: if the
+    /// final sort is ever accidentally removed, or the per-chunk Vecs are
+    /// concatenated in a non-deterministic order, this test will catch the
+    /// regression before any downstream consumer is affected.
+    ///
+    /// The `windows(2).all(|w| w[0] < w[1])` check enforces *strict*
+    /// ordering (no duplicates); each voxel is visited at most once so
+    /// equality would indicate a bug in the parallelisation logic.
+    #[test]
+    fn compute_medial_mask_voxels_are_sorted_in_lex_order_on_slab() {
+        let sdf = slab_sdf_3d(3.0, 16);
+        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect("slab compute succeeds");
+
+        // The slab fixture produces at least 128 medial voxels (asserted by
+        // the existing slab test), so the windows(2) check is load-bearing.
+        assert!(
+            mask.voxels.len() >= 2,
+            "need ≥ 2 voxels for ordering check; got {}",
+            mask.voxels.len()
+        );
+
+        let out_of_order = mask.voxels.windows(2).find(|w| w[0] >= w[1]);
+        assert!(
+            out_of_order.is_none(),
+            "medial mask voxels must be strictly lex-ordered; \
+             found {:?} ≥ {:?}",
+            out_of_order.unwrap()[0],
+            out_of_order.unwrap()[1]
+        );
+    }
+
+    /// Contract test: `compute_medial_mask` must return bit-identical output
+    /// across two independent calls on the same input.
+    ///
+    /// **Why pin this now?** The serial impl is trivially deterministic; but
+    /// the upcoming parallel impl (step-6) concatenates per-thread Vecs and
+    /// applies `sort_unstable`. If the concatenation order ever depended on
+    /// OS scheduling, or if `sort_unstable` was applied only sometimes, the
+    /// two runs could diverge. This test catches that regression before it
+    /// can affect downstream determinism (FEA reproducibility,
+    /// regression-test stability).
+    ///
+    /// Checks full Vec equality (including ordering) plus `spacing` and
+    /// `origin` for completeness.
+    #[test]
+    fn compute_medial_mask_is_deterministic_across_runs_on_slab() {
+        let sdf = slab_sdf_3d(3.0, 16);
+        let opts = MedialOptions::default();
+        let mask_a = compute_medial_mask(&sdf, &opts).expect("first run succeeds");
+        let mask_b = compute_medial_mask(&sdf, &opts).expect("second run succeeds");
+
+        assert_eq!(
+            mask_a.voxels, mask_b.voxels,
+            "medial mask voxels must be identical across runs"
+        );
+        assert_eq!(
+            mask_a.spacing, mask_b.spacing,
+            "medial mask spacing must be identical across runs"
+        );
+        assert_eq!(
+            mask_a.origin, mask_b.origin,
+            "medial mask origin must be identical across runs"
+        );
+    }
+
     /// Contract test: `precompute_gradient_grid` must return a flat Vec
     /// whose entry at `i*ny*nz + j*nz + k` equals
     /// `gradient_at_index(sdf, [i, j, k])` exactly (bit-for-bit, not
