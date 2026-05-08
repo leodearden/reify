@@ -850,7 +850,7 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 ///   - `displacement  : Real`     (Real placeholder for Field<Point3<Length>, Vector3<Length>>)
 ///   - `stress        : Real`     (Real placeholder for Field<Point3<Length>, Tensor<2,3,Pressure>>)
 ///   - `frame         : Real`     (Real placeholder for Field<Point3<Length>, Matrix<3,3,Real>>;
-///                                 per-element local-to-global rotation; T16)
+///     per-element local-to-global rotation; T16)
 ///   - `max_von_mises : Pressure`
 ///   - `converged     : Bool`
 ///   - `iterations    : Int`
@@ -868,8 +868,9 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 ///     already in the global Cartesian frame; no per-element local frame).
 ///   - For shell results the engine populates the per-element MITC3+ local
 ///     frame from the mid-surface mesher.
+///
 /// PRD reference: docs/prds/v0_4/structural-analysis-shells.md §
-/// "Stress through thickness".
+///     "Stress through thickness".
 #[test]
 fn elastic_result_struct_has_correct_param_shape() {
     let template = find_structure("ElasticResult");
