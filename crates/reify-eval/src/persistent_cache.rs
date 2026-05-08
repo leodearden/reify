@@ -563,7 +563,7 @@ mod tests {
     fn check_f64_vec_len_rejects_value_above_workload_limit() {
         // Portable boundary pin: exercises the bound check without any Vec
         // allocation, so it remains stable on memory-constrained CI runners.
-        let just_above_limit = (1u64 << 24) + 1;
+        let just_above_limit = MAX_F64_ELEMENTS + 1;
         let err = check_f64_vec_len("test", just_above_limit)
             .expect_err("value above 1<<24 must be rejected");
         assert_eq!(
