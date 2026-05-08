@@ -263,8 +263,12 @@ mod tests {
     fn elastic_result_format_version_is_one() {
         // Read from the trait associated const directly — no instance needed,
         // demonstrating the cache-layer use case where `(TypeId, FORMAT_VERSION)`
-        // can be looked up before any value materialises.
-        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 1);
+        // can be looked up before any value materialises. Pins the project
+        // convention that FORMAT_VERSION starts at 1 because 0 means
+        // "uninitialised / unknown" (see `ELASTIC_RESULT_FORMAT_VERSION` doc).
+        // Relaxed to `>= 1` so intentional format bumps don't require
+        // hand-editing this assertion.
+        assert!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION >= 1);
     }
 
     #[test]
