@@ -10,10 +10,10 @@
 //! mirrors `topology_filtered_selectors_mock.rs`.
 
 use reify_eval::selector_vocabulary_v2::{
-    Axis, ExtremalSense, adjacent_to_face, complement, created_by_feature, edges_by_curve_kind,
-    edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
+    Axis, ExtremalSense, adjacent_to_face, ancestor_faces_of_edge, complement, created_by_feature,
+    edges_by_curve_kind, edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
     faces_by_surface_kind, faces_perpendicular_to, geom_universal, has_user_label, intersect,
-    split_by_feature, union, user_label_eq,
+    siblings_of_face, split_by_feature, union, user_label_eq,
 };
 use reify_test_support::MockGeometryKernel;
 use reify_types::{
@@ -1412,4 +1412,207 @@ fn adjacent_to_face_returns_query_failed_on_out_of_range_index() {
         .with_adjacent_faces_result(parent, 0, Value::List(vec![Value::Int(99)]));
     let result = adjacent_to_face(&mut kernel, parent, f0);
     assert!(matches!(result, Err(QueryError::QueryFailed(_))));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ancestor_faces_of_edge — `ancestors(edge) on faces` topological walk
+// (PRD line 81)
+//
+// Composes `extract_edges(parent)` (to map a caller-supplied edge_handle
+// → 0-based edge_index) with `GeometryQuery::AncestorFacesOfEdge` (which
+// returns a `Value::List(Vec<Value::Int>)` of global face indices into
+// the canonical `extract_faces(parent)` order). The selector maps each
+// returned index back through `extract_faces(parent)` to surface
+// `Vec<GeometryHandleId>` results.
+//
+// In a 12-edge box, every edge is shared between exactly two faces; the
+// selector must return both face handles in the order the kernel
+// reports them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn ancestor_faces_of_edge_returns_owning_faces_in_kernel_order() {
+    // 12-edge / 6-face box: edge 3 belongs to faces 0 and 2 (canonical
+    // TopExp_Explorer ordering). The ordering of the returned vec must
+    // match the kernel's `Value::List` ordering — we assert
+    // `[f0, f2]`, not the sorted set.
+    let parent = GeometryHandleId(1);
+    let e0 = GeometryHandleId(2);
+    let e1 = GeometryHandleId(3);
+    let e2 = GeometryHandleId(4);
+    let e3 = GeometryHandleId(5);
+    let e4 = GeometryHandleId(6);
+    let e5 = GeometryHandleId(7);
+    let e6 = GeometryHandleId(8);
+    let e7 = GeometryHandleId(9);
+    let e8 = GeometryHandleId(10);
+    let e9 = GeometryHandleId(11);
+    let e10 = GeometryHandleId(12);
+    let e11 = GeometryHandleId(13);
+    let f0 = GeometryHandleId(14);
+    let f1 = GeometryHandleId(15);
+    let f2 = GeometryHandleId(16);
+    let f3 = GeometryHandleId(17);
+    let f4 = GeometryHandleId(18);
+    let f5 = GeometryHandleId(19);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(
+            parent,
+            vec![e0, e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11],
+        )
+        .with_extracted_faces(parent, vec![f0, f1, f2, f3, f4, f5])
+        .with_ancestor_faces_result(
+            parent,
+            3,
+            Value::List(vec![Value::Int(0), Value::Int(2)]),
+        );
+
+    let result = ancestor_faces_of_edge(&mut kernel, parent, e3)
+        .expect("ancestor_faces_of_edge should succeed for a child edge");
+    assert_eq!(
+        result,
+        vec![f0, f2],
+        "owning face handles must be returned in kernel index order"
+    );
+}
+
+#[test]
+fn ancestor_faces_of_edge_with_non_child_handle_returns_query_failed() {
+    // `foreign` is not in `extract_edges(parent)` — the selector cannot
+    // map it into a 0-based edge index, so it must error rather than
+    // silently returning an empty result.
+    let parent = GeometryHandleId(1);
+    let e0 = GeometryHandleId(2);
+    let f0 = GeometryHandleId(10);
+    let foreign = GeometryHandleId(99);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e0])
+        .with_extracted_faces(parent, vec![f0]);
+
+    let result = ancestor_faces_of_edge(&mut kernel, parent, foreign);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("not a child of parent"),
+                "error must mention 'not a child of parent', got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for non-child edge, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn ancestor_faces_of_edge_returns_query_failed_on_non_list_payload() {
+    // The kernel reports a non-List payload — the selector must surface
+    // this as QueryFailed rather than panicking on the type mismatch.
+    let parent = GeometryHandleId(1);
+    let e0 = GeometryHandleId(2);
+    let f0 = GeometryHandleId(10);
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e0])
+        .with_extracted_faces(parent, vec![f0])
+        .with_ancestor_faces_result(parent, 0, Value::Int(42));
+    let result = ancestor_faces_of_edge(&mut kernel, parent, e0);
+    assert!(matches!(result, Err(QueryError::QueryFailed(_))));
+}
+
+#[test]
+fn ancestor_faces_of_edge_returns_query_failed_on_out_of_range_index() {
+    // The kernel returns an index outside the extract_faces array — the
+    // selector cannot map it back to a face handle, so it errors rather
+    // than panicking on a slice index.
+    let parent = GeometryHandleId(1);
+    let e0 = GeometryHandleId(2);
+    let f0 = GeometryHandleId(10);
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e0])
+        .with_extracted_faces(parent, vec![f0])
+        .with_ancestor_faces_result(parent, 0, Value::List(vec![Value::Int(99)]));
+    let result = ancestor_faces_of_edge(&mut kernel, parent, e0);
+    assert!(matches!(result, Err(QueryError::QueryFailed(_))));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// siblings_of_face — `siblings(face)` topological walk (PRD line 81)
+//
+// Pure-Rust composition of `extract_faces(parent)` and `except`: returns
+// every face of `parent` other than `face_handle`, preserving canonical
+// face order. A `face_handle` not in `extract_faces(parent)` errors with
+// "not a child of parent" — symmetric with `adjacent_to_face`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn siblings_of_face_returns_all_other_faces_in_canonical_order() {
+    // 6-face box, drop f2 — expect the remaining five in canonical order.
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+    let f1 = GeometryHandleId(3);
+    let f2 = GeometryHandleId(4);
+    let f3 = GeometryHandleId(5);
+    let f4 = GeometryHandleId(6);
+    let f5 = GeometryHandleId(7);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f0, f1, f2, f3, f4, f5]);
+
+    let result = siblings_of_face(&mut kernel, parent, f2)
+        .expect("siblings_of_face should succeed for a child face");
+    assert_eq!(
+        result,
+        vec![f0, f1, f3, f4, f5],
+        "siblings must contain every other face in canonical order, with f2 omitted"
+    );
+}
+
+#[test]
+fn siblings_of_face_with_non_child_handle_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+    let foreign = GeometryHandleId(99);
+
+    let mut kernel = MockGeometryKernel::new().with_extracted_faces(parent, vec![f0]);
+
+    let result = siblings_of_face(&mut kernel, parent, foreign);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("not a child of parent"),
+                "error must mention 'not a child of parent', got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for non-child face, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn siblings_of_face_propagates_extract_faces_error() {
+    // No `with_extracted_faces` configured → extract_faces fails. The
+    // error must propagate (not be masked by the not-a-child check).
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+    let mut kernel = MockGeometryKernel::new();
+    let result = siblings_of_face(&mut kernel, parent, f0);
+    assert!(matches!(result, Err(QueryError::QueryFailed(_))));
+}
+
+#[test]
+fn siblings_of_face_with_single_face_parent_returns_empty() {
+    // Degenerate: parent has exactly one face (the queried face itself).
+    // siblings_of_face must return an empty vec, not error.
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new().with_extracted_faces(parent, vec![f0]);
+
+    let result = siblings_of_face(&mut kernel, parent, f0)
+        .expect("siblings_of_face should succeed when the only face is the queried one");
+    assert!(result.is_empty());
 }
