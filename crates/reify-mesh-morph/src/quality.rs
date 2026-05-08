@@ -75,6 +75,59 @@ fn element_scaled_jacobian(nodes: &[[f64; 3]; 4]) -> f64 {
     min_j
 }
 
+// ── Aspect-ratio helpers ─────────────────────────────────────────────────────
+
+/// Pairs of corner indices for the 6 tetrahedral edges.
+const EDGE_PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+
+/// Face vertex triplets for each of the 4 tet faces (vertices NOT including the
+/// opposite corner k). Indices into the 4-node array.
+///
+/// Face opposite corner k = the 3 nodes other than k.
+/// Corner 0 → nodes 1,2,3; corner 1 → nodes 0,2,3; …
+const FACE_VERTICES: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
+
+/// Compute the aspect ratio of a tetrahedron: `max_edge / min_height`.
+///
+/// Heights are computed via `h_k = 3V / face_area_k` where `V = |det| / 6`
+/// and `face_area_k = ½ ||(b-a) × (c-a)||`.
+///
+/// Returns `f64::INFINITY` if `min_height == 0` (degenerate).
+fn element_aspect_ratio(nodes: &[[f64; 3]; 4]) -> f64 {
+    // Maximum edge length.
+    let max_edge = EDGE_PAIRS
+        .iter()
+        .map(|&(i, j)| norm(sub(nodes[j], nodes[i])))
+        .fold(0.0_f64, f64::max);
+
+    // Volume from corner-0 determinant.
+    let e1 = sub(nodes[1], nodes[0]);
+    let e2 = sub(nodes[2], nodes[0]);
+    let e3 = sub(nodes[3], nodes[0]);
+    let vol = dot(e1, cross(e2, e3)).abs() / 6.0;
+
+    // Minimum height across the 4 faces.
+    let min_height = FACE_VERTICES
+        .iter()
+        .map(|&[a, b, c]| {
+            let ab = sub(nodes[b], nodes[a]);
+            let ac = sub(nodes[c], nodes[a]);
+            let face_area = norm(cross(ab, ac)) / 2.0;
+            if face_area > 0.0 {
+                3.0 * vol / face_area
+            } else {
+                f64::INFINITY
+            }
+        })
+        .fold(f64::INFINITY, f64::min);
+
+    if min_height <= 0.0 || min_height.is_infinite() {
+        f64::INFINITY
+    } else {
+        max_edge / min_height
+    }
+}
+
 // ── Geometry helpers ─────────────────────────────────────────────────────────
 
 #[inline]
@@ -137,15 +190,24 @@ pub fn quality_check(
     source: &VolumeMesh,
     options: &MorphOptions,
 ) -> QualityVerdict {
-    let _ = source;
-
-    let vertex_count = morphed.vertices.len() / 3;
+    let morphed_vertex_count = morphed.vertices.len() / 3;
+    let source_vertex_count = source.vertices.len() / 3;
+    let matched_connectivity = morphed.tet_indices.len() == source.tet_indices.len();
 
     // Single pass over morphed elements: track inversions and soft-fail metrics.
     let mut hard_fail: Option<InversionDetails> = None;
     let mut global_min_scaled_j = f64::INFINITY;
     let mut total_well_formed: usize = 0;
     let mut count_below_025: usize = 0;
+    let mut max_ar_increase: f64 = 0.0;
+
+    // Build source iterator only when connectivity matches.
+    // When lengths differ we pair with an empty iterator by using a flag.
+    let source_chunks: Vec<&[u32]> = if matched_connectivity {
+        source.tet_indices.chunks_exact(4).collect()
+    } else {
+        Vec::new()
+    };
 
     for (elem_idx, chunk) in morphed.tet_indices.chunks_exact(4).enumerate() {
         // Read 4 corner positions, widening f32 → f64 at the read boundary.
@@ -157,7 +219,7 @@ pub fn quality_check(
         ];
         // Skip elements with out-of-range indices (defensive; same discipline
         // as laplacian.rs:141-149).
-        if idx.iter().any(|&i| i >= vertex_count) {
+        if idx.iter().any(|&i| i >= morphed_vertex_count) {
             continue;
         }
         let p: [[f64; 3]; 4] = std::array::from_fn(|k| {
@@ -190,6 +252,37 @@ pub fn quality_check(
                 });
             }
         }
+
+        // Aspect-ratio increase comparison (only when connectivity matches).
+        if matched_connectivity {
+            let src_chunk = source_chunks[elem_idx];
+            let src_idx = [
+                src_chunk[0] as usize,
+                src_chunk[1] as usize,
+                src_chunk[2] as usize,
+                src_chunk[3] as usize,
+            ];
+            if src_idx.iter().any(|&i| i >= source_vertex_count) {
+                continue;
+            }
+            let sp: [[f64; 3]; 4] = std::array::from_fn(|k| {
+                let base = src_idx[k] * 3;
+                [
+                    source.vertices[base] as f64,
+                    source.vertices[base + 1] as f64,
+                    source.vertices[base + 2] as f64,
+                ]
+            });
+            let morphed_ar = element_aspect_ratio(&p);
+            let source_ar = element_aspect_ratio(&sp);
+            // Skip comparison when source is degenerate.
+            if source_ar > 0.0 && source_ar.is_finite() && !source_ar.is_nan() {
+                let ratio = morphed_ar / source_ar;
+                if ratio > max_ar_increase {
+                    max_ar_increase = ratio;
+                }
+            }
+        }
     }
 
     if let Some(details) = hard_fail {
@@ -216,10 +309,18 @@ pub fn quality_check(
         None
     };
 
+    // Aspect-ratio increase threshold (threshold 3).
+    let max_aspect_ratio_increase =
+        if matched_connectivity && max_ar_increase > options.quality_aspect_ratio_increase_max {
+            Some(max_ar_increase)
+        } else {
+            None
+        };
+
     let metrics = MetricsBreached {
         min_scaled_jacobian,
         pct_below_025,
-        max_aspect_ratio_increase: None,
+        max_aspect_ratio_increase,
     };
 
     if metrics.min_scaled_jacobian.is_some()
