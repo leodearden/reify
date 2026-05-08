@@ -37,7 +37,16 @@ export interface InboundToolResult {
   result: unknown;
 }
 
-export type InboundMessage = SendMessage | Abort | ClearSession | InboundToolResult;
+export interface PermissionDecision {
+  type: 'permission_decision';
+  request_id: string;
+  behavior: 'allow' | 'deny';
+  message?: string;
+  updated_input?: Record<string, unknown>;
+  remember?: boolean;
+}
+
+export type InboundMessage = SendMessage | Abort | ClearSession | InboundToolResult | PermissionDecision;
 
 // --- Outbound messages (Sidecar -> GUI) ---
 
@@ -94,6 +103,14 @@ export interface Ready {
   type: 'ready';
 }
 
+export interface PermissionRequest {
+  type: 'permission_request';
+  id: string;
+  request_id: string;
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+}
+
 export type OutboundMessage =
   | TextDelta
   | ThinkingDelta
@@ -102,4 +119,5 @@ export type OutboundMessage =
   | Done
   | ErrorMessage
   | NoticeMessage
-  | Ready;
+  | Ready
+  | PermissionRequest;
