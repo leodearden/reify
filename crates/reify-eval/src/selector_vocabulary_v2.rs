@@ -731,3 +731,87 @@ pub fn user_label_eq(
     }
     out
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Topological walks (PRD line 81)
+//
+// `adjacent_to_face(parent, face)` returns the faces of `parent` that share
+// at least one edge with `face` (PRD line 81's `adjacent_to` slot for face
+// adjacency). Composes:
+//   1. `extract_faces(parent)` to get the canonical face list, and to map
+//      `face_handle` → 0-based `face_index` for the kernel call.
+//   2. `GeometryQuery::AdjacentFaces { shape: parent, face_index }` which
+//      returns a `Value::List(Vec<Value::Int>)` of global face indices.
+//   3. Map each returned index back to a `GeometryHandleId` via the
+//      canonical face list.
+//
+// A `face_handle` not present in `extract_faces(parent)` cannot be mapped
+// to a 0-based index without a re-extraction; the selector errors with
+// `"not a child of parent"` rather than silently returning an empty result.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Return the subset of `extract_faces(parent)` that share at least one
+/// edge with `face_handle` (i.e. are face-adjacent to it).
+///
+/// Implements PRD line 81's `adjacent_to(face)` slot. Issues exactly one
+/// `extract_faces` call (to recover the canonical face list / face_index
+/// mapping) and one `AdjacentFaces` query (which under OCCT walks the
+/// cached `edge_face_map`).
+///
+/// # Errors
+///
+/// - Propagates any error from `extract_faces`.
+/// - Returns `QueryError::QueryFailed("… not a child of parent (was extract_faces(parent) called?)")`
+///   if `face_handle` does not appear in `extract_faces(parent)`.
+/// - Propagates any error from the `AdjacentFaces` query.
+/// - Returns `QueryError::QueryFailed` on a malformed `AdjacentFaces`
+///   payload (non-`Value::List`, non-`Value::Int` element, or an index
+///   outside the `extract_faces` range).
+pub fn adjacent_to_face<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    parent: GeometryHandleId,
+    face_handle: GeometryHandleId,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let faces = kernel.extract_faces(parent)?;
+    let face_index = faces.iter().position(|id| *id == face_handle).ok_or_else(|| {
+        QueryError::QueryFailed(format!(
+            "adjacent_to_face: face {face_handle:?} is not a child of parent {parent:?} (was extract_faces(parent) called?)"
+        ))
+    })?;
+    let value = kernel.query(&GeometryQuery::AdjacentFaces {
+        shape: parent,
+        face_index,
+    })?;
+    let indices = match &value {
+        Value::List(items) => items,
+        other => {
+            return Err(QueryError::QueryFailed(format!(
+                "adjacent_to_face: expected Value::List from AdjacentFaces, got {other:?}"
+            )));
+        }
+    };
+    let mut out: Vec<GeometryHandleId> = Vec::with_capacity(indices.len());
+    for item in indices {
+        let idx = match item {
+            Value::Int(i) => *i,
+            other => {
+                return Err(QueryError::QueryFailed(format!(
+                    "adjacent_to_face: expected Value::Int element in AdjacentFaces list, got {other:?}"
+                )));
+            }
+        };
+        let usize_idx: usize = idx.try_into().map_err(|_| {
+            QueryError::QueryFailed(format!(
+                "adjacent_to_face: AdjacentFaces returned negative index {idx}"
+            ))
+        })?;
+        let neighbour = *faces.get(usize_idx).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "adjacent_to_face: AdjacentFaces index {usize_idx} is out of range for extract_faces(parent) (len = {})",
+                faces.len()
+            ))
+        })?;
+        out.push(neighbour);
+    }
+    Ok(out)
+}

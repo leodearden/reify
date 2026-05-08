@@ -884,6 +884,31 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure an `AdjacentFaces` query result for a specific (parent
+    /// shape, 0-based face index) pair.
+    ///
+    /// The `value` should be a `Value::List(Vec<Value::Int>)` of global
+    /// face indices into the same canonical TopExp_Explorer order returned
+    /// by `extract_faces(parent)`. Decoded by the
+    /// `selector_vocabulary_v2::adjacent_to_face` selector, which maps
+    /// each integer index back to a `GeometryHandleId` via the canonical
+    /// extract_faces list.
+    pub fn with_adjacent_faces_result(
+        mut self,
+        parent: GeometryHandleId,
+        face_index: usize,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::AdjacentFaces {
+                shape: parent,
+                face_index,
+            },
+            value,
+        );
+        self
+    }
+
     /// Get the operations received so far.
     pub fn operations(&self) -> Vec<GeometryOpRecord> {
         self.operations.lock().unwrap().clone()
