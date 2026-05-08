@@ -108,6 +108,8 @@ impl CliToolContext {
         let engine = ensure_engine(&mut state);
         engine.clear_param_overrides();
         engine.eval(&compiled);
+        // Maintain state.files.keys() == {active_file} — see task 3183 audit.
+        state.files.retain(|key, _| key == &abs_path);
         state.files.insert(
             abs_path.clone(),
             FileEntry {
