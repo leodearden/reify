@@ -455,7 +455,7 @@ mod tests {
     use crate::mid_surface::{extract_mid_surface, MidSurfaceOptions};
     use crate::{
         segment_regions, MedialMask, MidSurfaceMesh, RegionClassification, RegionInfo,
-        SegmentationError, SegmentationOptions, SegmentationResult,
+        SegmentationError, SegmentationOptions, SegmentationResult, SingleBodyMask,
     };
     use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
@@ -1130,5 +1130,24 @@ mod tests {
             0.2,
             "shell_threshold default must match PRD ElasticOptions.shell_threshold (L/t > 5)"
         );
+    }
+
+    // ── Task 3137 step 1: SingleBodyMask newtype wrapper ─────────────────────
+
+    /// `SingleBodyMask::new` wraps a `MedialMask` by value; `inner()` returns
+    /// a `&MedialMask` borrow with all fields preserved.
+    #[test]
+    fn single_body_mask_wraps_medial_mask_via_new_and_inner() {
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[1, 2, 3]],
+        };
+        let wrapped = SingleBodyMask::new(mask.clone());
+        assert_eq!(wrapped.inner().spacing, [1.0, 1.0, 1.0]);
+        assert_eq!(wrapped.inner().origin, [0.0, 0.0, 0.0]);
+        assert_eq!(wrapped.inner().voxels, vec![[1, 2, 3]]);
+        // Type-ascription: inner() must return a borrow of MedialMask.
+        let _: &MedialMask = wrapped.inner();
     }
 }
