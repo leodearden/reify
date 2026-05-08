@@ -1752,4 +1752,97 @@ mod tests {
                 .is_undef()
         );
     }
+
+    // ── linear_combine test helpers ─────────────────────────────────────────
+
+    /// Build a fixture `ElasticResult`-shaped Map with Field-typed
+    /// displacement and stress fields. Used by linear_combine tests.
+    ///
+    /// Unlike `make_fixture_elastic_result` (which uses Value::Real(0.0)
+    /// placeholders), this variant accepts actual Field-typed Values for
+    /// displacement and stress — required for linear_combine which reads
+    /// and arithmetic-combines those Fields.
+    fn make_fixture_elastic_result_with_fields(
+        displacement: Value,
+        stress: Value,
+    ) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("displacement".to_string()), displacement);
+        m.insert(Value::String("stress".to_string()), stress);
+        m.insert(Value::String("max_von_mises".to_string()), Value::Real(0.0));
+        m.insert(Value::String("converged".to_string()), Value::Bool(true));
+        m.insert(Value::String("iterations".to_string()), Value::Int(0));
+        Value::Map(m)
+    }
+
+    // ── linear_combine happy path ────────────────────────────────────────────
+
+    #[test]
+    fn linear_combine_single_case_weight_two_doubles_displacement_and_stress() {
+        // Single-case MultiCaseResult where case "A" has Sampled 1-D Real-codomain
+        // fields. Calling linear_combine with weight=2.0 should double all data.
+        let axis = vec![0.0, 1.0, 2.0];
+
+        let disp_sf = make_sampled_1d("disp", axis.clone(), vec![1.0, 2.0, 3.0]);
+        let disp_field = wrap_sampled_field(disp_sf, Type::Real, Type::Real);
+
+        let stress_sf = make_sampled_1d("stress", axis.clone(), vec![10.0, 20.0, 30.0]);
+        let stress_field = wrap_sampled_field(stress_sf, Type::Real, Type::Real);
+
+        let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
+        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("A".to_string()), Value::Real(2.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+
+        // Result must be a Map (struct instance), not Undef.
+        assert!(
+            !result.is_undef(),
+            "linear_combine should return a Map, not Undef"
+        );
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        // Check displacement field: data should be [2.0, 4.0, 6.0].
+        let disp = result_map
+            .get(&Value::String("displacement".to_string()))
+            .expect("result must have 'displacement' key");
+        let disp_sf = extract_sampled(disp);
+        assert_eq!(disp_sf.data, vec![2.0, 4.0, 6.0], "displacement data should be 2x input");
+
+        // Check stress field: data should be [20.0, 40.0, 60.0].
+        let stress = result_map
+            .get(&Value::String("stress".to_string()))
+            .expect("result must have 'stress' key");
+        let stress_sf = extract_sampled(stress);
+        assert_eq!(stress_sf.data, vec![20.0, 40.0, 60.0], "stress data should be 2x input");
+
+        // frame must be Undef (tet-elastic convention).
+        let frame = result_map
+            .get(&Value::String("frame".to_string()))
+            .expect("result must have 'frame' key");
+        assert!(frame.is_undef(), "frame must be Value::Undef");
+
+        // max_von_mises = max(|[20,40,60]|) = 60.0.
+        let mvm = result_map
+            .get(&Value::String("max_von_mises".to_string()))
+            .expect("result must have 'max_von_mises' key");
+        assert_eq!(*mvm, Value::Real(60.0), "max_von_mises should be 60.0");
+
+        // converged = true.
+        let converged = result_map
+            .get(&Value::String("converged".to_string()))
+            .expect("result must have 'converged' key");
+        assert_eq!(*converged, Value::Bool(true));
+
+        // iterations = 0 (synthesised, not solved).
+        let iterations = result_map
+            .get(&Value::String("iterations".to_string()))
+            .expect("result must have 'iterations' key");
+        assert_eq!(*iterations, Value::Int(0));
+    }
 }
