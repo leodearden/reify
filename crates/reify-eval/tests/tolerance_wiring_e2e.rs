@@ -1168,21 +1168,19 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
     );
 }
 
-/// Task 3103, step-4 — lifecycle-consolidation pin for the post-check helper
-/// placement established in step-5.
+/// Task 3103, step-4 — smoke test that the imported-tolerance-promise warning is
+/// emitted in a deactivate→re-activate flow.
 ///
 /// Mirrors `build_emits_imported_tolerance_promise_insufficient_warning_when_
 /// demand_strictly_tighter_than_promise` but exercises the deactivate→re-activate
-/// path so the binding is visible only through what eval() preserved (task 3103)
-/// + what activate_purpose populated after eval finished.  This makes the test a
-/// regression guard: it fails iff someone re-introduces the BEFORE-check workaround
-/// AND removes the eval preservation, leaving an inconsistent lifecycle where the
-/// helper observes empty bindings at the post-check site.
-///
-/// NOTE: GREEN after step-2 ships (BEFORE-check helper still sees the re-activated
-/// binding at its current placement), and remains GREEN after step-5 moves the
-/// helper to AFTER-check (eval preservation keeps the binding alive through
-/// build()'s internal eval round-trip).
+/// path.  Note (S3, reviewer): because the re-activation happens *before* `build()`
+/// (not after), the binding is non-empty at both BEFORE-check and AFTER-check helper
+/// placement sites — this test does not discriminate between the two placements.  It
+/// serves as a smoke test confirming the diagnostic is emitted in the
+/// deactivate→re-activate user flow; the placement-specific regression is covered by
+/// `eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_internal_eval`
+/// (step-3, which pins `active_tolerance_for` post-build and would detect a helper
+/// regression that left the scope empty after the internal eval round-trip).
 #[test]
 fn engine_build_emits_imported_tolerance_promise_warning_in_canonical_user_flow_without_pre_check_helper_workaround(
 ) {
