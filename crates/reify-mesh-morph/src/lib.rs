@@ -21,6 +21,7 @@ pub mod boundary;
 pub mod eligibility;
 pub mod laplacian;
 pub mod options;
+pub mod quality;
 pub mod types;
 
 pub use boundary::{
