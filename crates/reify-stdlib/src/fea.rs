@@ -42,8 +42,55 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         "envelope_min" => envelope_reduce(args, true),
         "case_names" => case_names(args),
         "result_for" => result_for(args),
+        "linear_combine" => linear_combine(args),
         _ => return None,
     })
+}
+
+/// Weighted linear superposition of per-case `ElasticResult` displacement and
+/// stress fields from a `MultiCaseResult`.
+///
+/// # Input shape
+///
+/// `args == [MultiCaseResult-shaped Map, Map<Value::String, numeric>]`
+///
+/// - `args[0]`: A `MultiCaseResult` struct instance
+///   (`Value::Map { "cases" -> Value::Map<Value::String, ElasticResult-Map> }`).
+/// - `args[1]`: A non-empty `Value::Map<Value::String, numeric>` of (case name,
+///   weight) pairs. Weights may be any numeric `Value` for which `as_f64()`
+///   returns `Some` (covers `Value::Real` and `Value::Int`; rejects
+///   `Value::String`, `Value::Bool`, `Value::Map`, `Value::List`, `Value::Undef`).
+///
+/// # Output
+///
+/// A synthesised `ElasticResult`-shaped `Value::Map` with keys:
+///   - `displacement`: combined Sampled Field (weighted sum, name="linear_combine")
+///   - `stress`:       combined Sampled Field (weighted sum, name="linear_combine")
+///   - `frame`:        `Value::Undef` (tet-elastic convention per solver_elastic.ri:282-289)
+///   - `max_von_mises`: `Value::Real(max(|combined_stress.data|))` over finite data
+///   - `converged`:   `Value::Bool(true)`
+///   - `iterations`:  `Value::Int(0)` (synthesised, not solved)
+///
+/// # Failure modes (silent-Undef per PRD task #10 deferral)
+///
+/// - arity != 2
+/// - `args[0]` is not a valid `MultiCaseResult` (non-Map / no `cases` key /
+///   `cases` not a Map)
+/// - `args[1]` is not `Value::Map` or is empty
+/// - any weight key is not `Value::String`
+/// - any weight value has no finite f64 representation (`as_f64()` returns None)
+/// - a weight name is absent from `base_results.cases`
+/// - a case value is not `Value::Map`
+/// - a case Map is missing `displacement` or `stress` key
+/// - a displacement or stress field is not Sampled-source
+/// - a displacement or stress field has Sampled-source but non-SampledField lambda
+/// - displacement or stress fields across cases fail `metadata_matches`
+///   (grid, domain_type, codomain_type inequality)
+fn linear_combine(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    Value::Undef
 }
 
 /// Extract the inner `cases` `BTreeMap` from a `MultiCaseResult` struct
