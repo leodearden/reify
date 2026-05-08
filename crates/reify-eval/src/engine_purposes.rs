@@ -22,24 +22,25 @@ impl Engine {
     /// Requires a prior call to `eval()` so an evaluation state exists.
     /// If the purpose is already active, this is a no-op.
     ///
-    /// **Re-activation requirement across `build()` / `tessellate_realizations()`**
-    /// (task 2874 amendment): both surfaces internally call `check()` →
-    /// `eval()`, and `eval()` clears `active_purpose_bindings`
-    /// (engine_eval.rs:1149-1150). Production callers that drive the
-    /// pattern `build(); ...; build();` (or `tessellate_realizations()`
-    /// twice) will observe an empty binding set on the second call's
-    /// pre-`check()` precompute, yielding `demanded_tol = None` for every
-    /// realization — the `RealizationCache` lookup at the top of
-    /// `execute_realization_ops` is bypassed (its `Some` guard fails) and
-    /// the kernel re-executes every op even when a cached handle exists.
-    /// To exercise the cache-hit short-circuit across multiple builds the
-    /// caller MUST `activate_purpose(...)` again between builds. The
-    /// snapshot surfaces (`build_snapshot` / `tessellate_snapshot`) do NOT
-    /// share this footgun because they do not call `eval()` — bindings
-    /// persist across snapshot rebuilds. A follow-up task that preserves
-    /// `active_purpose_bindings` across `eval()` (treating bindings as a
-    /// user-intent surface rather than eval-state) would close the gap;
-    /// today the re-activation dance is the documented workaround.
+    /// **Persistence across `eval()` (task 3103):** `Engine::eval` preserves
+    /// the per-purpose binding set across the call by snapshotting
+    /// `active_purpose_bindings` (user intent) before clearing the derived
+    /// state (`active_purposes`, `active_objective_map`,
+    /// `active_tolerance_scope`), then re-applying each captured binding via
+    /// this method after the fresh snapshot is stored. The canonical user flow
+    /// `engine.eval → activate_purpose → engine.build` therefore keeps purpose
+    /// state intact across `build()`'s internal `check() → eval()` round-trip;
+    /// production callers do **not** need to re-activate purposes between
+    /// consecutive builds. The snapshot surfaces (`build_snapshot` /
+    /// `tessellate_snapshot`) participate in the same contract — bindings
+    /// persist across all three flow shapes. See `engine_eval.rs` for the
+    /// preservation site.
+    ///
+    /// **Idempotency:** calling `activate_purpose` twice for the same
+    /// `(purpose_name, entity_ref)` pair is a no-op via the
+    /// `active_purposes.contains_key` early return below. This means existing
+    /// callers that manually re-activate between consecutive builds continue
+    /// to work harmlessly — the second call is silently skipped.
     pub fn activate_purpose(&mut self, purpose_name: &str, entity_ref: &str) {
         // No-op if already active
         if self.active_purposes.contains_key(purpose_name) {
