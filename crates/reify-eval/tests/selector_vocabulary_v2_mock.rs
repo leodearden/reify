@@ -10,12 +10,16 @@
 //! mirrors `topology_filtered_selectors_mock.rs`.
 
 use reify_eval::selector_vocabulary_v2::{
-    Axis, ExtremalSense, complement, edges_by_curve_kind, edges_perpendicular_to, except,
-    extremal_by_bbox, extremal_by_centroid, faces_by_surface_kind, faces_perpendicular_to,
-    geom_universal, intersect, union,
+    Axis, ExtremalSense, complement, created_by_feature, edges_by_curve_kind,
+    edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
+    faces_by_surface_kind, faces_perpendicular_to, geom_universal, intersect, split_by_feature,
+    union,
 };
 use reify_test_support::MockGeometryKernel;
-use reify_types::{EdgeCurveKind, FaceSurfaceKind, GeometryHandleId, QueryError, Value};
+use reify_types::{
+    CapKind, EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, ModEntry, QueryError,
+    Role, TopologyAttribute, TopologyAttributeTable, Value,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // intersect — set intersection over Vec<GeometryHandleId>
@@ -854,4 +858,229 @@ fn geom_universal_returns_input_slice_unchanged() {
 fn geom_universal_empty_input_returns_empty() {
     let handles: Vec<GeometryHandleId> = vec![];
     assert!(geom_universal(&handles).is_empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// created_by_feature — `qCreatedBy(feature_id)` history selector (PRD line 80)
+//
+// Returns the candidates whose `attr.feature_id == feature_id` — the
+// origin-feature of the topology entity. Pure-Rust; consults a
+// `TopologyAttributeTable` rather than the kernel.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a fixture with three handles:
+/// - A (id=10) produced by F1, no mod_history
+/// - B (id=20) produced by F2, mod_history = [F3 split=0]
+/// - C (id=30) produced by F2, mod_history = [F3 split=1, F4 split=0]
+fn fixture_history_table() -> (
+    TopologyAttributeTable,
+    GeometryHandleId,
+    GeometryHandleId,
+    GeometryHandleId,
+    FeatureId,
+    FeatureId,
+    FeatureId,
+    FeatureId,
+) {
+    let f1 = FeatureId::new("F1");
+    let f2 = FeatureId::new("F2");
+    let f3 = FeatureId::new("F3");
+    let f4 = FeatureId::new("F4");
+
+    let a = GeometryHandleId(10);
+    let b = GeometryHandleId(20);
+    let c = GeometryHandleId(30);
+
+    let mut table = TopologyAttributeTable::default();
+    table.record(
+        a,
+        TopologyAttribute {
+            feature_id: f1.clone(),
+            role: Role::Cap(CapKind::Top),
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        },
+    );
+    table.record(
+        b,
+        TopologyAttribute {
+            feature_id: f2.clone(),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![ModEntry {
+                splitting_feature_id: f3.clone(),
+                split_index: 0,
+            }],
+        },
+    );
+    table.record(
+        c,
+        TopologyAttribute {
+            feature_id: f2.clone(),
+            role: Role::Side,
+            local_index: 1,
+            user_label: None,
+            mod_history: vec![
+                ModEntry {
+                    splitting_feature_id: f3.clone(),
+                    split_index: 1,
+                },
+                ModEntry {
+                    splitting_feature_id: f4.clone(),
+                    split_index: 0,
+                },
+            ],
+        },
+    );
+    (table, a, b, c, f1, f2, f3, f4)
+}
+
+#[test]
+fn created_by_feature_returns_handles_whose_origin_feature_matches() {
+    let (table, a, b, c, f1, f2, _f3, _f4) = fixture_history_table();
+    let candidates = vec![a, b, c];
+
+    // F1 produced only A.
+    assert_eq!(
+        created_by_feature(&table, &candidates, &f1),
+        vec![a],
+        "created_by_feature(F1) must return only handles whose origin is F1"
+    );
+    // F2 produced both B and C — order follows the candidate slice.
+    assert_eq!(
+        created_by_feature(&table, &candidates, &f2),
+        vec![b, c],
+        "created_by_feature(F2) must return [B, C] in candidate order"
+    );
+}
+
+#[test]
+fn created_by_feature_dedupes_duplicate_candidates() {
+    let (table, a, b, c, _f1, f2, _f3, _f4) = fixture_history_table();
+    // Duplicate B in the candidate list — dedup must drop the second copy.
+    let candidates = vec![b, c, b, b];
+
+    assert_eq!(
+        created_by_feature(&table, &candidates, &f2),
+        vec![b, c],
+        "duplicate candidates must dedupe on first-seen"
+    );
+    // Sanity: A is not in the candidate slice, so requesting F1 returns empty.
+    let f1 = FeatureId::new("F1");
+    let _ = a;
+    let candidates_no_a = vec![b, c];
+    assert!(
+        created_by_feature(&table, &candidates_no_a, &f1).is_empty(),
+        "candidates not produced by F1 must yield empty"
+    );
+}
+
+#[test]
+fn created_by_feature_unknown_feature_returns_empty() {
+    let (table, a, b, c, _f1, _f2, _f3, _f4) = fixture_history_table();
+    let candidates = vec![a, b, c];
+
+    let f99 = FeatureId::new("F99-never-existed");
+    assert!(
+        created_by_feature(&table, &candidates, &f99).is_empty(),
+        "unknown feature id must yield empty"
+    );
+}
+
+#[test]
+fn created_by_feature_handles_missing_table_entries() {
+    // A handle with no entry in the table simply does not match — should
+    // not panic, should not appear in the result.
+    let table = TopologyAttributeTable::default();
+    let h = GeometryHandleId(42);
+    let f = FeatureId::new("F1");
+    assert!(
+        created_by_feature(&table, &[h], &f).is_empty(),
+        "missing table entry must yield empty result, not panic"
+    );
+}
+
+#[test]
+fn created_by_feature_empty_candidates_returns_empty() {
+    let (table, _a, _b, _c, f1, _f2, _f3, _f4) = fixture_history_table();
+    let candidates: Vec<GeometryHandleId> = vec![];
+    assert!(
+        created_by_feature(&table, &candidates, &f1).is_empty(),
+        "empty candidate slice must yield empty"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// split_by_feature — `qSplitBy(feature_id)` history selector (PRD line 80)
+//
+// Returns the candidates whose `mod_history` contains an entry naming
+// `feature_id` as the splitting feature, **at any position** (not just the
+// most recent). Aligns with OnShape's `qSplitBy` semantics: a topology
+// entity that was split-by-F3-then-split-by-F4 should still match
+// `split_by_feature(F3)` because F3 is part of its lineage.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn split_by_feature_matches_any_position_in_mod_history() {
+    let (table, a, b, c, _f1, _f2, f3, f4) = fixture_history_table();
+    let candidates = vec![a, b, c];
+
+    // F3 split both B and C (B's only entry; C's first entry).
+    assert_eq!(
+        split_by_feature(&table, &candidates, &f3),
+        vec![b, c],
+        "split_by_feature(F3) matches any-position in mod_history"
+    );
+    // F4 split only C (its second mod_history entry).
+    assert_eq!(
+        split_by_feature(&table, &candidates, &f4),
+        vec![c],
+        "split_by_feature(F4) matches the deeper mod_history entry"
+    );
+}
+
+#[test]
+fn split_by_feature_unmatched_feature_returns_empty() {
+    let (table, a, b, c, f1, _f2, _f3, _f4) = fixture_history_table();
+    let candidates = vec![a, b, c];
+
+    // F1 is the origin of A but never appears as a splitting feature in
+    // any mod_history — split_by_feature(F1) must be empty.
+    assert!(
+        split_by_feature(&table, &candidates, &f1).is_empty(),
+        "F1 never splits, so split_by_feature(F1) is empty"
+    );
+}
+
+#[test]
+fn split_by_feature_handle_with_empty_mod_history_does_not_match() {
+    let (table, a, _b, _c, _f1, _f2, f3, _f4) = fixture_history_table();
+    // A has no mod_history — split_by_feature(F3) over [A] alone is empty.
+    assert!(
+        split_by_feature(&table, &[a], &f3).is_empty(),
+        "handle with empty mod_history must not match any split_by query"
+    );
+}
+
+#[test]
+fn split_by_feature_dedupes_duplicate_candidates() {
+    let (table, _a, b, c, _f1, _f2, f3, _f4) = fixture_history_table();
+    let candidates = vec![b, c, b, b, c];
+    assert_eq!(
+        split_by_feature(&table, &candidates, &f3),
+        vec![b, c],
+        "duplicate candidates must dedupe on first-seen"
+    );
+}
+
+#[test]
+fn split_by_feature_empty_table_returns_empty() {
+    let table = TopologyAttributeTable::default();
+    let f = FeatureId::new("F1");
+    assert!(
+        split_by_feature(&table, &[GeometryHandleId(1)], &f).is_empty(),
+        "empty table must yield empty result"
+    );
 }
