@@ -63,7 +63,7 @@ pub enum FaceOrder {
 ///   load vector.
 pub fn apply_point_load(f: &mut [f64], node: usize, force: [f64; 3]) {
     assert!(
-        f.len() % 3 == 0,
+        f.len().is_multiple_of(3),
         "apply_point_load: f.len() = {} is not a multiple of 3; \
          the global load vector must have exactly 3 DOFs per node",
         f.len(),
@@ -126,7 +126,7 @@ fn integrate_body_force_generic<E: ReferenceElement>(
         E::N_NODES,
     );
     assert!(
-        f.len() % 3 == 0,
+        f.len().is_multiple_of(3),
         "integrate_body_force_generic: f.len() = {} is not a multiple of 3; \
          the global load vector must have exactly 3 DOFs per node",
         f.len(),
@@ -384,7 +384,7 @@ pub fn apply_traction_load(
         face_order,
     );
     assert!(
-        f.len() % 3 == 0,
+        f.len().is_multiple_of(3),
         "apply_traction_load: f.len() = {} is not a multiple of 3; \
          the global load vector must have exactly 3 DOFs per node",
         f.len(),
