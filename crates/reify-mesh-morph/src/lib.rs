@@ -26,6 +26,7 @@ pub use reify_eval::{
 /// callers that need it for failure-mode visibility counters (PRD task #11)
 /// should call [`morph_eligible`] directly.
 pub fn eligible(old_brep: &BRep, new_brep: &BRep) -> bool {
+    // BRep<'a> = MorphSnapshot<'a> (Copy); deref-copy is cheap.
     matches!(
         eligibility::morph_eligible(*old_brep, *new_brep),
         Eligibility::Eligible(_)

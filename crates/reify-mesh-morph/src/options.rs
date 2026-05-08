@@ -156,9 +156,12 @@ mod tests {
                 }
                 MorphFailure::QualityHardFail(d) => {
                     assert_eq!(d.element_index, 7);
+                    assert_eq!(d.jacobian, -1.0);
                 }
                 MorphFailure::QualitySoftFail(m) => {
                     assert_eq!(m.min_scaled_jacobian, Some(0.10));
+                    assert_eq!(m.pct_below_025, Some(0.02));
+                    assert_eq!(m.max_aspect_ratio_increase, Some(2.5));
                 }
                 MorphFailure::SolverError(p) => {
                     assert_eq!(p.message(), "singular stiffness matrix");
