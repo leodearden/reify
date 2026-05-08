@@ -245,6 +245,24 @@ describe('loadViewPersistence', () => {
     expect(loadViewPersistence(TEST_PATH)).toBeNull();
   });
 
+  it('returns null for legacy v1 schema (Task 3233 — invalidate Y-up cameras)', () => {
+    // Direct JSON injection bypasses the TS-typed PersistentViewState literal
+    // (which carries the new `version: '2'` constraint after the bump).
+    // This mirrors the raw-JSON pattern in test (e) above.
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${TEST_PATH}`,
+      JSON.stringify({
+        version: '1',
+        activeViewId: 'auto:default',
+        userViews: [],
+        explicit: {},
+        viewportCameras: { 'design-main': { position: [0, 10, 0], target: [0, 0, 0], up: [0, 1, 0], zoom: 1 } },
+        timestamp: '2026-04-22T00:00:00.000Z',
+      }),
+    );
+    expect(loadViewPersistence(TEST_PATH)).toBeNull();
+  });
+
   it('(f) multi-path isolation — save on path A does not affect path B', () => {
     const stateA = makeState({ activeViewId: 'user:alpha' });
     const stateB = makeState({ activeViewId: 'user:beta' });

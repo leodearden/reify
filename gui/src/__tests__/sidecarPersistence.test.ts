@@ -44,6 +44,22 @@ describe('loadSidecar', () => {
     expect(result).toEqual(validState);
   });
 
+  it('returns null when bridge returns a legacy v1 payload (Task 3233 — invalidate Y-up cameras)', async () => {
+    const legacyPayload = {
+      version: '1',
+      activeViewId: 'auto:default',
+      userViews: [],
+      explicit: {},
+      viewportCameras: { 'design-main': { position: [0, 10, 0], target: [0, 0, 0], up: [0, 1, 0], zoom: 1 } },
+      timestamp: '2026-04-22T00:00:00.000Z',
+    } as unknown as PersistentViewState;
+    mockReadViewSidecar.mockResolvedValue(legacyPayload);
+
+    const result = await loadSidecar('/project/bracket.ri');
+
+    expect(result).toBeNull();
+  });
+
   it('returns null when payload fails shape validation (defensive guard)', async () => {
     // Bridge returns a payload that looks JSON-valid but is missing required fields
     // (simulates wire-format drift between the TS type and what the Rust backend sends).
