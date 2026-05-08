@@ -629,15 +629,12 @@ fn extremal_by_centroid_unique_max_along_y_returns_single_face() {
 
 #[test]
 fn extremal_by_centroid_min_sense_returns_tied_cluster_in_input_order() {
-    // Stage four faces with centroid Y values 0.0, 5e-3, 5e-3, 10e-3.
+    // Fixture: four faces with centroid Y values 0.0, 5e-4, 5e-4, 10e-3.
     // With Min sense and tol=1e-3 the cluster around the global min (0.0)
-    // captures both 0.0 and 5e-3 (their absolute difference is 5e-3 ≪ 1e-3? NO).
-    // Re-check: |0.005 - 0.0| = 5e-3 > 1e-3 → 5e-3 is OUT. Reset fixture.
-    //
-    // Use centroid Y values 0.0, 5e-4, 5e-4, 10e-3 so the cluster around
-    // the global min (0.0) at tol=1e-3 captures both 0.0 and 5e-4 (twice).
-    // Dedup-on-first-seen yields [f1, f2] (the two distinct handles whose
-    // centroid Y is within 1e-3 of 0.0), in input order.
+    // captures three distinct handles (f1, f2, f3) whose centroid Y is
+    // within 1e-3 of 0.0; f4 at 10e-3 is excluded (|0.010 - 0| > 1e-3).
+    // Result is in input order — f2 and f3 are distinct handles with the
+    // same centroid value, so dedup-on-first-seen does NOT collapse them.
     let f1 = GeometryHandleId(2);
     let f2 = GeometryHandleId(3);
     let f3 = GeometryHandleId(4);

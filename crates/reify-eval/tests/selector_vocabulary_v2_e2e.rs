@@ -16,12 +16,10 @@
 //! handles ONCE and reuse" discipline (each `extract_*` allocates fresh
 //! kernel handle ids).
 //!
-//! Step-17 RED scope: every test in this file fails today because
-//! `OcctKernel::query` for `FaceSurfaceKind` / `EdgeCurveKind` returns
-//! the step-14 stub `QueryFailed("face_surface_kind not yet wired" /
-//! "edge_curve_kind not yet wired")`. Step-18 will replace the stubs
-//! with FFI calls to OCCT's `BRepAdaptor_Surface::GetType()` and
-//! `BRepAdaptor_Curve::GetType()` and these tests must turn green.
+//! These tests cover the OCCT FFI wiring landed in steps 17–18
+//! (`face_surface_kind` / `edge_curve_kind`), the `adjacent_to_face`
+//! integration (steps 25–26), the `owner_body` provenance (step-29),
+//! and the compositional smoke chain (step-31).
 
 use reify_eval::selector_vocabulary_v2::{adjacent_to_face, owner_body_of};
 // Step-31 / step-32 cross-reference: the compositional smoke test below
