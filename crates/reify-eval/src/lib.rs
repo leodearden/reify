@@ -75,7 +75,7 @@ pub use dispatcher::{
     per_stage_tolerance_for_plan,
 };
 pub use kernel_attribute_hook::propagate_via_kernel_attribute_hook;
-pub use kernel_registry::{collect_registry, pick_lexmin_kernel, registry};
+pub use kernel_registry::{collect_registry, pick_lexmin_brep_kernel, pick_lexmin_kernel, registry};
 pub use primitive_attribute_seed::seed_primitive_attributes;
 pub use realization_cache::RealizationCache;
 pub use test_runner::{TestResult, TestStatus, run_tests};
