@@ -33,6 +33,14 @@ use serde::{Deserialize, Serialize};
 /// format changes (separate from `engine_version_hash`, which invalidates
 /// result semantics rather than the wire format). Starting at 1 follows the
 /// Reify convention that 0 means "uninitialised / unknown".
+///
+/// **Wire-format contract:** the `bincode` major version in use at serialise
+/// time is part of this contract. Bumping `bincode` past major 1 (for example
+/// the 1.x → 2.x transition, which changes default integer encoding) MUST be
+/// accompanied by a bump of this constant in the same commit; otherwise cache
+/// entries written under the previous `bincode` major will silently decode as
+/// garbage. The same logic applies to `zstd`'s frame-format major (currently
+/// the 0.13.x line). Pinned by `elastic_result_format_version_is_one`.
 const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
 
 /// Upper bound on `Vec<f64>` length accepted from a serialized header during
@@ -96,6 +104,13 @@ pub trait PersistentlyCacheable: Sized {
     /// On-disk-layout version. Bumped when the encoding format changes,
     /// independently of any `engine_version_hash` (which invalidates result
     /// semantics rather than the wire format).
+    ///
+    /// **Wire-format contract:** the major version of the underlying
+    /// byte-encoder library (e.g. `bincode`) is part of the wire-format
+    /// contract for any implementation of this trait. If an impl's encoder
+    /// library takes a major version bump that changes its default encoding,
+    /// `FORMAT_VERSION` MUST be bumped in the same commit. See
+    /// `ELASTIC_RESULT_FORMAT_VERSION` for the bincode/zstd specifics.
     ///
     /// Associated const (no `&self`) so the cache layer can read the format
     /// version directly from the type — keying entries by `(TypeId, FORMAT_VERSION)`
