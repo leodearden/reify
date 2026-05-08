@@ -10,7 +10,7 @@
 //! mirrors `topology_filtered_selectors_mock.rs`.
 
 use reify_eval::selector_vocabulary_v2::{
-    Axis, ExtremalSense, complement, created_by_feature, edges_by_curve_kind,
+    Axis, ExtremalSense, adjacent_to_face, complement, created_by_feature, edges_by_curve_kind,
     edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
     faces_by_surface_kind, faces_perpendicular_to, geom_universal, has_user_label, intersect,
     split_by_feature, union, user_label_eq,
@@ -1262,4 +1262,154 @@ fn user_label_eq_empty_candidates_returns_empty() {
     let (table, _a, _b, _c) = fixture_label_table();
     let candidates: Vec<GeometryHandleId> = vec![];
     assert!(user_label_eq(&table, &candidates, "top").is_empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// adjacent_to_face — `adjacent_to(face)` topological walk (PRD line 81)
+//
+// Composes `extract_faces(parent)` (to recover the canonical face list and
+// thereby map a face_handle → 0-based index) with `GeometryQuery::AdjacentFaces`
+// (which returns a `Value::List(Vec<Value::Int>)` of global face indices).
+// The selector maps the index reply back through the canonical face list to
+// surface `Vec<GeometryHandleId>` results.
+//
+// Errors: passing a `face_handle` that is not in `extract_faces(parent)`
+// must surface `QueryError::QueryFailed` with "not a child of parent" in
+// the message — the selector cannot map a foreign handle into the kernel's
+// 0-based face index space without a re-extraction.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn adjacent_to_face_returns_neighbours_in_kernel_order() {
+    // Box has 6 faces; face 0 is adjacent to faces 1, 2, 3, 4 (the four
+    // side faces of the canonical TopExp_Explorer order).
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+    let f1 = GeometryHandleId(3);
+    let f2 = GeometryHandleId(4);
+    let f3 = GeometryHandleId(5);
+    let f4 = GeometryHandleId(6);
+    let f5 = GeometryHandleId(7);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f0, f1, f2, f3, f4, f5])
+        .with_adjacent_faces_result(
+            parent,
+            0,
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]),
+        );
+
+    let result = adjacent_to_face(&mut kernel, parent, f0)
+        .expect("adjacent_to_face should succeed for a child face");
+    assert_eq!(
+        result,
+        vec![f1, f2, f3, f4],
+        "adjacent face handles must be returned in kernel index order"
+    );
+}
+
+#[test]
+fn adjacent_to_face_with_non_child_handle_returns_query_failed() {
+    // `foreign` is not in `extract_faces(parent)` — the selector cannot
+    // map it into a 0-based face index, so it must error rather than
+    // silently returning an empty result (which would mask the bug).
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+    let foreign = GeometryHandleId(99);
+
+    let mut kernel = MockGeometryKernel::new().with_extracted_faces(parent, vec![f0]);
+
+    let result = adjacent_to_face(&mut kernel, parent, foreign);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("not a child of parent"),
+                "error must mention 'not a child of parent', got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for non-child face, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn adjacent_to_face_with_no_neighbours_returns_empty() {
+    // A degenerate box-with-one-face: the AdjacentFaces query returns an
+    // empty list, and the selector surfaces that as an empty Vec.
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f0])
+        .with_adjacent_faces_result(parent, 0, Value::List(vec![]));
+
+    let result = adjacent_to_face(&mut kernel, parent, f0)
+        .expect("adjacent_to_face should succeed for an empty neighbour list");
+    assert!(result.is_empty());
+}
+
+#[test]
+fn adjacent_to_face_propagates_extract_faces_error() {
+    // `extract_faces` errors must propagate rather than producing a panic
+    // or a misleading "not a child of parent" message.
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+    let mut kernel = MockGeometryKernel::new();
+    // No `with_extracted_faces` configured → extract_faces fails.
+    let result = adjacent_to_face(&mut kernel, parent, f0);
+    assert!(matches!(result, Err(QueryError::QueryFailed(_))));
+}
+
+#[test]
+fn adjacent_to_face_indexes_face_handle_correctly() {
+    // The face_handle is the second face (index 1), and AdjacentFaces is
+    // staged for that index. Confirms the selector picks the right
+    // face_index for the query, not just always 0.
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(10);
+    let f1 = GeometryHandleId(20);
+    let f2 = GeometryHandleId(30);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f0, f1, f2])
+        .with_adjacent_faces_result(parent, 1, Value::List(vec![Value::Int(0), Value::Int(2)]));
+
+    let result = adjacent_to_face(&mut kernel, parent, f1)
+        .expect("adjacent_to_face should succeed for index 1");
+    assert_eq!(
+        result,
+        vec![f0, f2],
+        "selector must use the face_handle's own index for the AdjacentFaces query"
+    );
+}
+
+#[test]
+fn adjacent_to_face_returns_query_failed_on_non_list_payload() {
+    // The kernel reports a non-List payload (e.g. an integer) — the
+    // selector must surface this as QueryFailed rather than panicking on
+    // the type mismatch.
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f0])
+        .with_adjacent_faces_result(parent, 0, Value::Int(42));
+    let result = adjacent_to_face(&mut kernel, parent, f0);
+    assert!(matches!(result, Err(QueryError::QueryFailed(_))));
+}
+
+#[test]
+fn adjacent_to_face_returns_query_failed_on_out_of_range_index() {
+    // The kernel returns an index outside the extract_faces array — the
+    // selector cannot map it back to a handle, so it errors rather than
+    // panicking on a slice index.
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+    let f1 = GeometryHandleId(3);
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f0, f1])
+        .with_adjacent_faces_result(parent, 0, Value::List(vec![Value::Int(99)]));
+    let result = adjacent_to_face(&mut kernel, parent, f0);
+    assert!(matches!(result, Err(QueryError::QueryFailed(_))));
 }
