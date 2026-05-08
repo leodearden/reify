@@ -842,6 +842,66 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
     }
 }
 
+// ─── T16 step-1: ShellStress struct param shape ──────────────────────────────
+
+/// `ShellStress` is the through-thickness stress container for shell elements
+/// (PRD task T16, `docs/prds/v0_4/structural-analysis-shells.md` §
+/// "Stress through thickness"). It must declare exactly three params:
+///
+///   - `top    : Real`   (top-surface stress layer)
+///   - `mid    : Real`   (mid-surface stress layer)
+///   - `bottom : Real`   (bottom-surface stress layer)
+///
+/// All three are declared as `Real` placeholders for
+/// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` at runtime, mirroring the
+/// existing `ElasticResult.stress` placeholder convention. The Real placeholder
+/// lets the runtime solver populate the actual Field-typed values regardless of
+/// the static `param` annotation; the TODO(field-in-param, task #3117) block
+/// in `solver_elastic.ri` enumerates these three slots alongside `displacement`
+/// and `stress` for the future migration pass. The `ShellStress` structure has
+/// no defaults and no constraints — it is a data-only output container
+/// analogous to `ElasticResult` (no user-configurable knobs).
+///
+/// For tet results the engine populates all three channels with the same field
+/// (no through-thickness variation); for shell results the MITC3+ kernel
+/// produces distinct top/mid/bottom integration-point stress distributions.
+#[test]
+fn shell_stress_struct_has_top_mid_bottom_real_params() {
+    let template = find_structure("ShellStress");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        3,
+        "ShellStress should have exactly 3 param cells (top, mid, bottom), got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("top", Type::Real),
+        ("mid", Type::Real),
+        ("bottom", Type::Real),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "ShellStress missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ShellStress.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
+
 // ─── step-11: ElasticResult param shape ──────────────────────────────────────
 
 /// `ElasticResult` is the FEA solver-output container. It must declare
