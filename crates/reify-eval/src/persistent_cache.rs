@@ -43,6 +43,9 @@ const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
 /// step-9.
 #[derive(Serialize, Deserialize)]
 struct ElasticResultHeader {
+    /// Encoded as raw u64 bit-pattern (NOT f64) to preserve NaN payloads
+    /// through round-trip; pinned by
+    /// `elastic_result_round_trip_preserves_nan_and_infinity_bit_patterns`.
     max_von_mises_bits: u64,
     converged: bool,
     iterations: u32,
