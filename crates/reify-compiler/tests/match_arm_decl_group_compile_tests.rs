@@ -2899,3 +2899,113 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         "second label must point to the FIRST outside-let declaration (not the second)"
     );
 }
+
+/// Task 2877 step-5: when two `sub head` declarations share the same name,
+/// the collision diagnostic's second label must anchor to the FIRST declaration's
+/// span — not the last.
+///
+/// Constructs:
+/// ```text
+/// enum HeadType { Hex, Socket }
+/// structure DefaultHead {}
+/// structure Bolt {
+///     sub head : DefaultHead     // first  — span_at(1, 5)
+///     sub head : DefaultHead     // second — span_at(7, 11), duplicate name
+///     param head_type : HeadType
+///     match head_type {
+///         Hex    => sub head : HexHead
+///         Socket => sub head : SocketHead
+///     }                          // cluster — span_at(20, 30)
+/// }
+/// ```
+///
+/// Pre-fix: `outside_decl_spans.insert` overwrites, so the second sub's span wins
+/// → test fails RED.  Post-fix: `entry().or_insert()` at the Sub site → GREEN.
+#[test]
+fn match_arm_decl_group_duplicate_outside_sub_anchors_to_first_decl() {
+    let first_sub_span = span_at(1, 5);
+    let second_sub_span = span_at(7, 11);
+    let cluster_span = span_at(20, 30);
+
+    let first_sub = sub_member_with_span("head", "DefaultHead", first_sub_span);
+    let second_sub = sub_member_with_span("head", "DefaultHead", second_sub_span);
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: make_ident_expr("head_type"),
+        arms: vec![
+            match_arm_decl("Hex", sub_member("head", "HexHead")),
+            match_arm_decl("Socket", sub_member("head", "SocketHead")),
+        ],
+        span: cluster_span,
+        content_hash: ContentHash(0),
+    });
+
+    let bolt = Declaration::Structure(StructureDef {
+        name: "Bolt".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            first_sub,
+            second_sub,
+            param_member("head_type", "HeadType"),
+            match_group,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_duplicate_outside_sub_anchors_to_first"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "HeadType".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["Hex".to_string(), "Socket".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_structure("DefaultHead"),
+            empty_structure("HexHead"),
+            empty_structure("SocketHead"),
+            bolt,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let collision_diag = compiled
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("match-arm cluster 'head'")
+                && d.message.contains("outside the match block")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a collision diagnostic for 'head' (duplicate outside Sub), got: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert_eq!(
+        collision_diag.labels.len(),
+        2,
+        "collision diagnostic must have exactly two labels"
+    );
+    assert_eq!(
+        collision_diag.labels[0].span, cluster_span,
+        "first label must point to the cluster declaration"
+    );
+    assert_eq!(
+        collision_diag.labels[1].span, first_sub_span,
+        "second label must point to the FIRST outside-sub declaration (not the second)"
+    );
+}
