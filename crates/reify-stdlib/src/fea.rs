@@ -2066,4 +2066,71 @@ mod tests {
             other => panic!("expected Value::Real for max_von_mises, got {:?}", other),
         }
     }
+
+    #[test]
+    fn linear_combine_negative_weight_produces_signed_difference() {
+        // Negative weights are valid (e.g. 1.4D - 0.7L LRFD code combination).
+        // Pins IEEE-754 multiply-and-add behaviour for negative weight values.
+        // A = [10.0, 20.0], B = [4.0, 8.0], weights {A: 1.4, B: -0.7}
+        // expected = [1.4*10 - 0.7*4, 1.4*20 - 0.7*8] = [14.0-2.8, 28.0-5.6] = [11.2, 22.4]
+        let axis = vec![0.0, 1.0];
+        let a_disp = wrap_sampled_field(
+            make_sampled_1d("da", axis.clone(), vec![10.0, 20.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_stress = wrap_sampled_field(
+            make_sampled_1d("sa", axis.clone(), vec![100.0, 200.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_disp = wrap_sampled_field(
+            make_sampled_1d("db", axis.clone(), vec![4.0, 8.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_stress = wrap_sampled_field(
+            make_sampled_1d("sb", axis.clone(), vec![40.0, 80.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(b_disp, b_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("A".to_string()), Value::Real(1.4));
+        weights_map.insert(Value::String("B".to_string()), Value::Real(-0.7));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(weights_map)]).unwrap();
+        assert!(!result.is_undef());
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        let disp = result_map
+            .get(&Value::String("displacement".to_string()))
+            .expect("result must have 'displacement' key");
+        let disp_sf = extract_sampled(disp);
+        assert!(
+            approx_eq_slice(&disp_sf.data, &[11.2, 22.4], 1e-9),
+            "displacement data mismatch with negative weight: {:?}",
+            disp_sf.data
+        );
+        // stress = [1.4*100 - 0.7*40, 1.4*200 - 0.7*80] = [140-28, 280-56] = [112, 224]
+        let stress = result_map
+            .get(&Value::String("stress".to_string()))
+            .expect("result must have 'stress' key");
+        let stress_sf = extract_sampled(stress);
+        assert!(
+            approx_eq_slice(&stress_sf.data, &[112.0, 224.0], 1e-9),
+            "stress data mismatch with negative weight: {:?}",
+            stress_sf.data
+        );
+        // max_von_mises = max(|[112, 224]|) = 224.0
+        match result_map.get(&Value::String("max_von_mises".to_string())).unwrap() {
+            Value::Real(v) => assert!((v - 224.0).abs() <= 1e-9, "max_von_mises: {}", v),
+            other => panic!("expected Real, got {:?}", other),
+        }
+    }
 }
