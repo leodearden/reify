@@ -2359,4 +2359,49 @@ mod tests {
             other => panic!("expected Real, got {:?}", other),
         }
     }
+
+    // ── linear_combine NaN safety ────────────────────────────────────────────
+
+    #[test]
+    fn linear_combine_combined_stress_with_nan_yields_finite_max_von_mises() {
+        // If one stress data element propagates to NaN (e.g. from a NaN input),
+        // max_von_mises should be the max of the *finite* values, not NaN.
+        // Consistent with envelope_reduce's is_finite discipline.
+        let axis = vec![0.0, 1.0, 2.0];
+
+        let a_disp = wrap_sampled_field(
+            make_sampled_1d("da", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        // Stress data with NaN at index 1.
+        let a_stress = wrap_sampled_field(
+            make_sampled_1d("sa", axis.clone(), vec![100.0, f64::NAN, 300.0]),
+            Type::Real,
+            Type::Real,
+        );
+
+        let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap();
+        assert!(!result.is_undef());
+
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        // max_von_mises must be finite — NaN at index 1 is skipped.
+        // Finite values: |100.0|=100.0, |300.0|=300.0 → max = 300.0.
+        match result_map.get(&Value::String("max_von_mises".to_string())).unwrap() {
+            Value::Real(v) => {
+                assert!(v.is_finite(), "max_von_mises must be finite, got {}", v);
+                assert!((*v - 300.0).abs() <= 1e-9, "max_von_mises must be 300.0, got {}", v);
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
 }
