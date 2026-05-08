@@ -23,3 +23,61 @@
 //!   pct-below-025 checks still run on the morphed mesh.
 //! - **Valid vertex indices.** Elements referencing out-of-range vertex indices
 //!   are silently skipped (same defensive discipline as `laplacian.rs`).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::options::MorphOptions;
+    use reify_types::{ElementOrderTag, VolumeMesh};
+
+    fn empty_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: Vec::new(),
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
+    // ── Smoke test: empty mesh → Pass ─────────────────────────────────────────
+
+    #[test]
+    fn quality_check_with_empty_mesh_returns_pass() {
+        let m = empty_mesh();
+        let opts = MorphOptions::default();
+        assert_eq!(
+            quality_check(&m, &m, &opts),
+            QualityVerdict::Pass,
+            "empty mesh should always return Pass"
+        );
+    }
+
+    // ── Compile fence: exhaustive variant match (no wildcard arm) ─────────────
+    //
+    // Adding, removing, or renaming any QualityVerdict variant breaks
+    // compilation here — same discipline as LaplacianFailure (laplacian.rs:659)
+    // and MorphFailure (options.rs:144).
+    #[test]
+    fn quality_verdict_exhaustive_variant_fence() {
+        use crate::types::{InversionDetails, MetricsBreached};
+        let variants: &[QualityVerdict] = &[
+            QualityVerdict::Pass,
+            QualityVerdict::HardFail(InversionDetails {
+                element_index: 0,
+                jacobian: -0.5,
+            }),
+            QualityVerdict::SoftFail(MetricsBreached {
+                min_scaled_jacobian: Some(0.1),
+                pct_below_025: None,
+                max_aspect_ratio_increase: None,
+            }),
+        ];
+        for v in variants {
+            match v {
+                QualityVerdict::Pass => {}
+                QualityVerdict::HardFail(InversionDetails { .. }) => {}
+                QualityVerdict::SoftFail(MetricsBreached { .. }) => {}
+            }
+        }
+    }
+}
