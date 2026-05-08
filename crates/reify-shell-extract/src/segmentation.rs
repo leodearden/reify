@@ -902,6 +902,88 @@ mod tests {
         );
     }
 
+    // ── Task 3136: axis_floor_ceil_unique dedup ──────────────────────────────
+
+    /// `axis_floor_ceil_unique` must yield a single value for integer-aligned
+    /// coordinates and two distinct values for fractional coordinates.
+    #[test]
+    fn axis_floor_ceil_unique_dedups_integer_coords() {
+        use crate::segmentation::axis_floor_ceil_unique;
+        assert_eq!(
+            axis_floor_ceil_unique(0.0).collect::<Vec<_>>(),
+            vec![0],
+            "0.0 is integer-aligned → single yield"
+        );
+        assert_eq!(
+            axis_floor_ceil_unique(-3.0).collect::<Vec<_>>(),
+            vec![-3],
+            "-3.0 is integer-aligned → single yield"
+        );
+        assert_eq!(
+            axis_floor_ceil_unique(0.5).collect::<Vec<_>>(),
+            vec![0, 1],
+            "0.5 is fractional → floor=0, ceil=1"
+        );
+        assert_eq!(
+            axis_floor_ceil_unique(-1.5).collect::<Vec<_>>(),
+            vec![-2, -1],
+            "-1.5 is fractional → floor=-2, ceil=-1"
+        );
+    }
+
+    /// The triple-nested loop over `axis_floor_ceil_unique` must visit the
+    /// correct number of unique candidates: 1 for all-integer coords, up to
+    /// 8 for all-fractional coords.
+    #[test]
+    fn segment_regions_corner_enumeration_visits_each_unique_candidate_once() {
+        use crate::segmentation::axis_floor_ceil_unique;
+
+        fn count_candidates(f: [f64; 3]) -> usize {
+            let mut n = 0usize;
+            for _dz in axis_floor_ceil_unique(f[2]) {
+                for _dy in axis_floor_ceil_unique(f[1]) {
+                    for _dx in axis_floor_ceil_unique(f[0]) {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        }
+
+        assert_eq!(count_candidates([0.0, 0.0, 0.0]), 1, "all-integer → 1 candidate");
+        assert_eq!(count_candidates([0.5, 0.0, 0.0]), 2, "one-fractional → 2 candidates");
+        assert_eq!(count_candidates([0.5, 0.5, 0.0]), 4, "two-fractional → 4 candidates");
+        assert_eq!(count_candidates([0.5, 0.5, 0.5]), 8, "all-fractional → 8 candidates");
+    }
+
+    /// Regression: a vertex whose world position maps to an integer voxel index
+    /// (floor == ceil on every axis) must still be correctly labeled.
+    /// This exercises the dedup path's single-candidate case.
+    #[test]
+    fn segment_regions_correctly_labels_vertex_at_integer_voxel_position() {
+        // Single voxel at index [3, 4, 5].
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[3, 4, 5]],
+        };
+        // One vertex whose fractional index is exactly [3.0, 4.0, 5.0].
+        // With origin=[0,0,0] and spacing=[1,1,1]:
+        //   f[a] = (world[a] - origin[a]) / spacing[a] = world[a].
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[3.0, 4.0, 5.0]],
+            triangles: vec![],
+            thickness: vec![1.0],
+        };
+        let result = segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            .expect("single voxel + single vertex → Ok");
+        assert_eq!(
+            result.vertex_labels,
+            vec![0],
+            "vertex at integer voxel position must be labeled with the only region (0)"
+        );
+    }
+
     // ── Step 19: defaults pin ────────────────────────────────────────────────
 
     /// Pin SegmentationOptions default values against accidental drift.
