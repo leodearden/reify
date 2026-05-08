@@ -158,6 +158,17 @@ pub fn pick_lexmin_kernel() -> Option<&'static KernelRegistration> {
 /// the current `pick_lexmin_kernel` behaviour.  The fallback chain is:
 /// `find(brep) → values().next()`.
 ///
+/// # Performance
+///
+/// Each call invokes `(reg.descriptor)()` once per registered kernel until a
+/// BRep-capable entry is found — allocating a fresh `CapabilityDescriptor`
+/// (and its inner `Vec`) per iteration.  The `registry()` `OnceLock` does
+/// **not** cache these calls.  With v0.2's single OCCT adapter the cost is
+/// trivial (one allocation, found immediately), but as v0.3 adds 3–4 adapters
+/// the scan is O(N) descriptor allocations per call.  **Do not call this on a
+/// hot path.**  It is intended exclusively for one-shot engine construction
+/// inside [`crate::Engine::with_registered_kernel`].
+///
 /// # Consumer
 ///
 /// [`crate::Engine::with_registered_kernel`] uses this function (task 3224).
