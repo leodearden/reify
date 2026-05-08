@@ -28,7 +28,6 @@
 use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
-use bytemuck;
 
 /// On-disk-layout version for [`ElasticResult`]. Bump when the encoding
 /// format changes (separate from `engine_version_hash`, which invalidates
@@ -208,7 +207,8 @@ impl PersistentlyCacheable for ElasticResult {
         // zero-copy fast path. The on-disk format is unconditionally little-endian
         // for cross-host portability; on big-endian hosts we build a temporary
         // `Vec<u8>` via `to_le_bytes()` per element (per-element CPU swap, single
-        // bulk write to the encoder).
+        // bulk write to the encoder). The BE path uses `try_reserve_exact` +
+        // `checked_mul` for OOM-safe sizing (symmetric with the deserialize side).
         //
         // Empty-safety: `cast_slice::<f64, u8>(&[])` returns `&[]`;
         // `write_all(&[])` is a no-op — empty `Vec`s still emit zero slab bytes.
@@ -225,7 +225,11 @@ impl PersistentlyCacheable for ElasticResult {
         encoder.write_all(bytemuck::cast_slice::<f64, u8>(&self.displacement))?;
         #[cfg(target_endian = "big")]
         {
-            let mut buf: Vec<u8> = Vec::with_capacity(self.displacement.len() * 8);
+            let cap_bytes = self.displacement.len()
+                .checked_mul(8)
+                .ok_or_else(|| io::Error::other("BE write: displacement byte size overflow"))?;
+            let mut buf: Vec<u8> = Vec::new();
+            buf.try_reserve_exact(cap_bytes).map_err(io::Error::other)?;
             for v in &self.displacement {
                 buf.extend_from_slice(&v.to_le_bytes());
             }
@@ -235,7 +239,11 @@ impl PersistentlyCacheable for ElasticResult {
         encoder.write_all(bytemuck::cast_slice::<f64, u8>(&self.stress))?;
         #[cfg(target_endian = "big")]
         {
-            let mut buf: Vec<u8> = Vec::with_capacity(self.stress.len() * 8);
+            let cap_bytes = self.stress.len()
+                .checked_mul(8)
+                .ok_or_else(|| io::Error::other("BE write: stress byte size overflow"))?;
+            let mut buf: Vec<u8> = Vec::new();
+            buf.try_reserve_exact(cap_bytes).map_err(io::Error::other)?;
             for v in &self.stress {
                 buf.extend_from_slice(&v.to_le_bytes());
             }
@@ -252,13 +260,11 @@ impl PersistentlyCacheable for ElasticResult {
         //     surfaces frame-header faults as `io::Error` directly.
         //   * `.map_err(io::Error::other)` — `bincode::Error` does NOT
         //     implement `Into<io::Error>`, so it must be mapped explicitly.
-        //   * `read_exact` on the pre-sized byte buffer returns
-        //     `Err(io::ErrorKind::UnexpectedEof)` on a short slab read — pinned
-        //     by `elastic_result_deserialize_accepts_lengths_at_the_limit`, which
-        //     asserts the bound-check passes but the slab EOF still surfaces.
-        //   * `chunks_exact(8).map(f64::from_le_bytes)` only ever sees exactly-8-byte
-        //     sub-slices from `chunks_exact`, so there is no partial-read-mid-element
-        //     fault path to guard against.
+        //   * `read_exact` (on both the LE direct-cast path and the BE byte-buffer
+        //     path) returns `Err(io::ErrorKind::UnexpectedEof)` on a short slab
+        //     read — pinned by `elastic_result_deserialize_accepts_lengths_at_the_limit`.
+        //   * On BE: `chunks_exact(8)` only ever sees exactly-8-byte sub-slices,
+        //     eliminating any partial-read-mid-element fault path.
         let mut decoder = zstd::Decoder::new(r)?;
         let header: ElasticResultHeader =
             bincode::deserialize_from(&mut decoder).map_err(io::Error::other)?;
@@ -268,68 +274,86 @@ impl PersistentlyCacheable for ElasticResult {
         // `MAX_F64_ELEMENTS` for the rationale on the limit value.
         let displacement_cap = check_f64_vec_len("displacement", header.displacement_len)?;
         let stress_cap = check_f64_vec_len("stress", header.stress_len)?;
-        // Bulk slab read — allocate a byte buffer, single `read_exact` per slab,
-        // then convert LE bytes to f64 via `from_le_bytes` (identity on LE hosts,
-        // byte-swap on BE hosts — no cfg-gating needed on the read side).
+        // Bulk slab read — on little-endian hosts, `bytemuck::cast_slice_mut`
+        // reinterprets the resized `Vec<f64>` backing store as `&mut [u8]` and
+        // `read_exact` fills it in a single call — no intermediate byte buffer,
+        // keeping peak per-slab memory at 1× slab size (the `Vec<f64>` alone).
+        // On big-endian hosts a temporary `Vec<u8>` byte buffer is allocated,
+        // filled via a single `read_exact`, then converted element-by-element via
+        // `f64::from_le_bytes` (byte-swap on BE — no cfg-gating needed beyond
+        // the LE/BE allocation-strategy split).
         //
-        // Defence-in-depth: `try_reserve_exact` is applied to BOTH the byte
-        // buffer (allocated first, before `read_exact`) and the f64 result Vec.
-        // `MAX_F64_ELEMENTS = 1<<24` caps each allocation at 128 MiB, but an
-        // honest reservation may still fail on memory-constrained hosts (no
-        // overcommit, small CI sandbox). `try_reserve_exact` surfaces such a
-        // failure as `io::Error` rather than aborting via `Vec::with_capacity`'s
-        // panic-on-OOM path.
+        // Defence-in-depth: `try_reserve_exact` is used on every allocation to
+        // surface allocation failure as `io::Error` rather than aborting via
+        // `Vec::with_capacity`'s panic-on-OOM path. `MAX_F64_ELEMENTS = 1<<24`
+        // caps each slab at 128 MiB, but honest reservations may still fail on
+        // memory-constrained hosts (no overcommit, small CI sandbox).
         //
-        // `checked_mul(8)` is explicit defence-in-depth for `cap * 8`: though
-        // `MAX_F64_ELEMENTS = 1<<24` and `1<<24 * 8 = 1<<27` cannot overflow
-        // `usize` even on a 32-bit host, the checked path is documented so a
-        // future increase to `MAX_F64_ELEMENTS` does not silently overflow.
-        //
-        // `drop(byte_buf)` after converting releases the temporary u8 buffer
-        // before the next slab's allocation, bounding peak memory to ~1x slab
-        // size rather than 2x during steady-state.
+        // `checked_mul(8)` on the BE byte-buffer sizing is explicit
+        // defence-in-depth: `1<<24 * 8 = 1<<27` cannot overflow `usize` even
+        // on a 32-bit host, but the checked path ensures a future increase to
+        // `MAX_F64_ELEMENTS` does not silently overflow.
         //
         // Large-N: pinned by `elastic_result_round_trips_one_million_element_vectors`.
         // LE byte order: pinned by `elastic_result_serialized_slab_section_is_little_endian_bytewise`.
-        let displacement_bytes = displacement_cap
-            .checked_mul(8)
-            .ok_or_else(|| io::Error::other("displacement byte size overflow"))?;
-        let mut byte_buf: Vec<u8> = Vec::new();
-        byte_buf
-            .try_reserve_exact(displacement_bytes)
-            .map_err(io::Error::other)?;
-        byte_buf.resize(displacement_bytes, 0u8);
-        decoder.read_exact(&mut byte_buf)?;
         let mut displacement: Vec<f64> = Vec::new();
         displacement
             .try_reserve_exact(displacement_cap)
             .map_err(io::Error::other)?;
-        for chunk in byte_buf.chunks_exact(8) {
-            displacement.push(f64::from_le_bytes(
-                chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"),
-            ));
+        // LE: zero-init then overwrite via direct read into the f64 backing store.
+        // `bytemuck::cast_slice_mut::<f64, u8>` is safe: f64 is `Pod`, any
+        // alignment is valid for u8, and `resize` guarantees the slice length
+        // is `displacement_cap` before the cast.
+        #[cfg(target_endian = "little")]
+        {
+            displacement.resize(displacement_cap, 0.0_f64);
+            decoder.read_exact(bytemuck::cast_slice_mut::<f64, u8>(displacement.as_mut_slice()))?;
         }
-        drop(byte_buf);
+        // BE: byte buffer intermediate → from_le_bytes conversion (byte-swap).
+        #[cfg(target_endian = "big")]
+        {
+            let displacement_bytes = displacement_cap
+                .checked_mul(8)
+                .ok_or_else(|| io::Error::other("displacement byte size overflow"))?;
+            let mut byte_buf: Vec<u8> = Vec::new();
+            byte_buf
+                .try_reserve_exact(displacement_bytes)
+                .map_err(io::Error::other)?;
+            byte_buf.resize(displacement_bytes, 0u8);
+            decoder.read_exact(&mut byte_buf)?;
+            for chunk in byte_buf.chunks_exact(8) {
+                displacement.push(f64::from_le_bytes(
+                    chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"),
+                ));
+            }
+        }
 
-        let stress_bytes = stress_cap
-            .checked_mul(8)
-            .ok_or_else(|| io::Error::other("stress byte size overflow"))?;
-        let mut byte_buf: Vec<u8> = Vec::new();
-        byte_buf
-            .try_reserve_exact(stress_bytes)
-            .map_err(io::Error::other)?;
-        byte_buf.resize(stress_bytes, 0u8);
-        decoder.read_exact(&mut byte_buf)?;
         let mut stress: Vec<f64> = Vec::new();
         stress
             .try_reserve_exact(stress_cap)
             .map_err(io::Error::other)?;
-        for chunk in byte_buf.chunks_exact(8) {
-            stress.push(f64::from_le_bytes(
-                chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"),
-            ));
+        #[cfg(target_endian = "little")]
+        {
+            stress.resize(stress_cap, 0.0_f64);
+            decoder.read_exact(bytemuck::cast_slice_mut::<f64, u8>(stress.as_mut_slice()))?;
         }
-        drop(byte_buf);
+        #[cfg(target_endian = "big")]
+        {
+            let stress_bytes = stress_cap
+                .checked_mul(8)
+                .ok_or_else(|| io::Error::other("stress byte size overflow"))?;
+            let mut byte_buf: Vec<u8> = Vec::new();
+            byte_buf
+                .try_reserve_exact(stress_bytes)
+                .map_err(io::Error::other)?;
+            byte_buf.resize(stress_bytes, 0u8);
+            decoder.read_exact(&mut byte_buf)?;
+            for chunk in byte_buf.chunks_exact(8) {
+                stress.push(f64::from_le_bytes(
+                    chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"),
+                ));
+            }
+        }
 
         Ok(ElasticResult {
             displacement,
