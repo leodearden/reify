@@ -5202,4 +5202,396 @@ mod tests {
             diag.message
         );
     }
+
+    // ── try_eval_topology_selector unit tests (task 2324) ────────────────────
+    //
+    // These tests pin the contract of `try_eval_topology_selector`, the
+    // kernel-aware eval-time dispatch surface for the `closest_point`, `on`,
+    // and `angle_between_surfaces` stdlib helpers. Sibling to the
+    // `try_eval_conformance_query_*` and (integration-only) kinematic-query
+    // tests above. The function lives in this module (rather than
+    // `eval_expr`) because the build pipeline owns both the kernel and the
+    // per-realization name → handle map (`named_steps`).
+
+    /// Build a `CompiledExpr` for a stdlib call `helper(<entity>.<member_a>,
+    /// <entity>.<member_b>)` with two `ValueRef` args resolving to let-bound
+    /// cells. Mirrors `conformance_call` above.
+    fn topology_selector_call_two_value_refs(
+        helper_name: &str,
+        entity: &str,
+        member_a: &str,
+        type_a: reify_types::Type,
+        member_b: &str,
+        type_b: reify_types::Type,
+        result_type: reify_types::Type,
+    ) -> reify_types::CompiledExpr {
+        let arg_a = reify_types::CompiledExpr::value_ref(
+            reify_types::ValueCellId::new(entity, member_a),
+            type_a,
+        );
+        let arg_b = reify_types::CompiledExpr::value_ref(
+            reify_types::ValueCellId::new(entity, member_b),
+            type_b,
+        );
+        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
+            .combine(reify_types::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg_a.content_hash);
+        content_hash = content_hash.combine(arg_b.content_hash);
+        reify_types::CompiledExpr {
+            kind: reify_types::CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_a, arg_b],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Build a `CompiledExpr` for `helper(<literal_real>, <literal_real>)` —
+    /// used for the literal-arg fall-through defensive tests. Mirrors
+    /// `conformance_call_literal_arg` above.
+    fn topology_selector_call_literal_args(helper_name: &str) -> reify_types::CompiledExpr {
+        let arg_a = reify_types::CompiledExpr::literal(
+            reify_types::Value::Real(1.0),
+            reify_types::Type::Real,
+        );
+        let arg_b = reify_types::CompiledExpr::literal(
+            reify_types::Value::Real(2.0),
+            reify_types::Type::Real,
+        );
+        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
+            .combine(reify_types::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg_a.content_hash);
+        content_hash = content_hash.combine(arg_b.content_hash);
+        reify_types::CompiledExpr {
+            kind: reify_types::CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_a, arg_b],
+            },
+            // result_type is unused on the dispatch path — set to a
+            // representative value to keep the literal hand-built expression
+            // structurally well-formed.
+            result_type: reify_types::Type::Bool,
+            content_hash,
+        }
+    }
+
+    /// Build a Value::Point with three Length scalars, mirroring how a
+    /// let-bound `point3(x_mm, y_mm, z_mm)` realises in the `values` map.
+    fn point3_length_value(x_m: f64, y_m: f64, z_m: f64) -> reify_types::Value {
+        reify_types::Value::Point(vec![
+            reify_types::Value::length(x_m),
+            reify_types::Value::length(y_m),
+            reify_types::Value::length(z_m),
+        ])
+    }
+
+    #[test]
+    fn try_eval_topology_selector_closest_point_kernel_reply_parses_to_point3_length() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let body_handle = reify_types::GeometryHandleId(7);
+        // The kernel reply mirrors the `OcctKernel::query()` arm for
+        // `ClosestPointOnShape` (lib.rs JSON-Point3 encoding). The dispatcher
+        // is expected to parse it and produce a `Value::Point(vec![length(...),
+        // length(...), length(...)])`.
+        let kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+            body_handle,
+            [10.0, 0.0, 0.0],
+            reify_types::Value::String("{\"x\":5.0,\"y\":0.0,\"z\":0.0}".to_string()),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), body_handle);
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(10.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "closest_point",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::point3(reify_types::Type::length()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(point3_length_value(5.0, 0.0, 0.0)),
+            "closest_point(p, body) with kernel JSON-Point3 reply must \
+             produce Some(Value::Point(vec![length, length, length])) parsed \
+             from the JSON; got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_on_kernel_reply_returns_bool_with_default_tolerance() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let body_handle = reify_types::GeometryHandleId(11);
+        // The dispatcher must use the default `1e-7` tolerance for the 2-arg
+        // `on(point, geometry)` form per the kernel docstring's
+        // `Precision::Confusion()` recommendation. Recording the mock under
+        // exactly this tolerance pins the contract — if the dispatcher ever
+        // changes the default, the recorded reply would not be served and
+        // the test would fail with `None`.
+        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+            body_handle,
+            [5.0, 0.0, 0.0],
+            1e-7,
+            reify_types::Value::Bool(true),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), body_handle);
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(5.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "on",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Bool(true)),
+            "on(p, body) with kernel reply Bool(true) must produce \
+             Some(Value::Bool(true)) (default tolerance 1e-7); got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_returns_angle_scalar() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_a = reify_types::GeometryHandleId(31);
+        let face_b = reify_types::GeometryHandleId(37);
+        // Kernel returns a raw f64 (radians) — the dispatcher is expected to
+        // wrap as `Value::angle(rad)` to match the cell type
+        // `Type::angle()`.
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            reify_types::Value::Real(std::f64::consts::FRAC_PI_2),
+        );
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("face_a".to_string(), face_a);
+        named_steps.insert("face_b".to_string(), face_b);
+
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle_between_surfaces",
+            "Bracket",
+            "face_a",
+            reify_types::Type::Geometry,
+            "face_b",
+            reify_types::Type::Geometry,
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            "angle_between_surfaces(face_a, face_b) with kernel reply \
+             Real(PI/2) must produce Some(Value::angle(PI/2)); got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_closest_point_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // `closest_point(<literal>, <literal>)` — literal args, no `let`
+        // bindings to resolve. The dispatcher must return None *and* never
+        // consult the kernel, mirroring `try_eval_conformance_query`'s
+        // literal-arg-fall-through contract.
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("closest_point");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "closest_point(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_on_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("on");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "on(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_between_surfaces_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("angle_between_surfaces");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "angle_between_surfaces(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_non_helper_name_returns_none_no_kernel_call() {
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let kernel = CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), reify_types::GeometryHandleId(7));
+
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("Bracket", "p"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+
+        // `volume` is a real stdlib function name but NOT one of the three
+        // recognised topology-selector helpers. The dispatch must return
+        // None, mirroring the conformance-query contract.
+        let expr = topology_selector_call_two_value_refs(
+            "volume",
+            "Bracket",
+            "p",
+            reify_types::Type::point3(reify_types::Type::length()),
+            "body",
+            reify_types::Type::Geometry,
+            reify_types::Type::dimensionless_scalar(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "non-helper name 'volume' must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-helper names"
+        );
+    }
 }
