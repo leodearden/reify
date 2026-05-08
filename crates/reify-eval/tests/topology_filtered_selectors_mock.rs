@@ -249,21 +249,55 @@ fn faces_by_normal_nan_tol_returns_query_failed() {
 
 fn assert_faces_by_normal_tol_accepted_at_boundaries() {
     let parent = GeometryHandleId(1);
-    for tol in [0.0_f64, std::f64::consts::PI] {
-        let mut kernel = MockGeometryKernel::new().with_extracted_faces(parent, vec![]);
-        let faces =
-            topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], tol)
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "faces_by_normal should accept tol = {tol} (inclusive boundary), \
-                         got Err: {e:?}"
-                    )
-                });
-        assert!(
-            faces.is_empty(),
-            "expected empty result for tol = {tol}, got {faces:?}"
+    let face = GeometryHandleId(2);
+
+    // Lower bound — tol=0.0: a face whose normal is exactly aligned with the target has
+    // angle = acos(1) = 0, satisfying `angle <= 0` (tests `<=` not `<`).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![face])
+        .with_face_normal_result(
+            face,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()),
         );
-    }
+    let result =
+        topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], 0.0)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "faces_by_normal must accept tol=0.0 and include an exactly-aligned face, \
+                     got Err: {e:?}"
+                )
+            });
+    assert_eq!(
+        result,
+        vec![face],
+        "face at angle=0 must be included at tol=0 (inclusive lower bound)"
+    );
+
+    // Upper bound — tol=π: an anti-parallel face has angle = acos(-1) = π,
+    // satisfying `angle <= π` (tests the inclusive upper bound: `<=` not `<`).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![face])
+        .with_face_normal_result(
+            face,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":-1.0}".into()),
+        );
+    let result = topology_selectors::faces_by_normal(
+        &mut kernel,
+        parent,
+        [0.0, 0.0, 1.0],
+        std::f64::consts::PI,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "faces_by_normal must accept tol=π and include an anti-parallel face, \
+             got Err: {e:?}"
+        )
+    });
+    assert_eq!(
+        result,
+        vec![face],
+        "anti-parallel face (angle=π) must be included at tol=π (inclusive upper bound)"
+    );
 }
 
 #[test]
@@ -404,21 +438,41 @@ fn edges_parallel_to_nan_tol_returns_query_failed() {
 
 fn assert_edges_parallel_to_tol_accepted_at_boundaries() {
     let parent = GeometryHandleId(1);
-    for tol in [0.0_f64, std::f64::consts::FRAC_PI_2] {
-        let mut kernel = MockGeometryKernel::new().with_extracted_edges(parent, vec![]);
-        let edges =
-            topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol)
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "edges_parallel_to should accept tol = {tol} (inclusive boundary), \
-                         got Err: {e:?}"
-                    )
-                });
-        assert!(
-            edges.is_empty(),
-            "expected empty result for tol = {tol}, got {edges:?}"
+    let edge = GeometryHandleId(2);
+
+    // Lower bound — tol=0.0: a tangent exactly parallel to the axis has
+    // |dot(t, axis)| = 1 = cos(0), satisfying `|dot| >= 1` (tests `>=` not `>`).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![edge])
+        .with_edge_tangent_result(
+            edge,
+            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
         );
-    }
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.0)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "edges_parallel_to must accept tol=0.0 and include an exactly-parallel edge, \
+                     got Err: {e:?}"
+                )
+            });
+    assert_eq!(
+        result,
+        vec![edge],
+        "edge with tangent exactly parallel to axis must be included at tol=0 (inclusive lower bound)"
+    );
+
+    // Upper bound — tol=π/2: cos(π/2) is not exactly representable as 0.0 in f64
+    // (~6.12e-17), so no tangent sits exactly on this boundary without artificial
+    // construction. The empty-extraction call pins that validate_angular_tol accepts π/2.
+    let mut kernel = MockGeometryKernel::new().with_extracted_edges(parent, vec![]);
+    topology_selectors::edges_parallel_to(
+        &mut kernel,
+        parent,
+        [1.0, 0.0, 0.0],
+        std::f64::consts::FRAC_PI_2,
+    )
+    .unwrap_or_else(|e| panic!("edges_parallel_to must accept tol=π/2, got Err: {e:?}"));
 }
 
 #[test]

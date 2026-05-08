@@ -384,20 +384,55 @@ fn faces_perpendicular_to_nan_tol_returns_query_failed() {
 
 fn assert_faces_perpendicular_to_tol_accepted_at_boundaries() {
     let parent = GeometryHandleId(1);
-    for tol in [0.0_f64, std::f64::consts::FRAC_PI_2] {
-        let mut kernel = MockGeometryKernel::new().with_extracted_faces(parent, vec![]);
-        let faces = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "faces_perpendicular_to should accept tol = {tol} (inclusive boundary), \
-                     got Err: {e:?}"
-                )
-            });
-        assert!(
-            faces.is_empty(),
-            "expected empty result for tol = {tol}, got {faces:?}"
+    let face = GeometryHandleId(2);
+
+    // Lower bound — tol=0.0: a face with normal exactly perpendicular to the axis has
+    // |dot(n, axis)| = 0 = sin(0), satisfying `|dot| <= 0` (tests `<=` not `<`).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![face])
+        .with_face_normal_result(
+            face,
+            Value::String("{\"x\":0.0,\"y\":1.0,\"z\":0.0}".into()),
         );
-    }
+    let result = faces_perpendicular_to(&mut kernel, parent, [1.0, 0.0, 0.0], 0.0)
+        .unwrap_or_else(|e| {
+            panic!(
+                "faces_perpendicular_to must accept tol=0.0 and include an exactly-perpendicular \
+                 face, got Err: {e:?}"
+            )
+        });
+    assert_eq!(
+        result,
+        vec![face],
+        "face with |dot(n,axis)|=0=sin(0) must be included at tol=0 (inclusive lower bound)"
+    );
+
+    // Upper bound — tol=π/2: a face with normal exactly parallel to the axis has
+    // |dot(n, axis)| = 1 = sin(π/2), satisfying `|dot| <= 1` (tests the inclusive
+    // upper bound: `<=` not `<`; sin(π/2) = 1.0 exactly in f64).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![face])
+        .with_face_normal_result(
+            face,
+            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
+        );
+    let result = faces_perpendicular_to(
+        &mut kernel,
+        parent,
+        [1.0, 0.0, 0.0],
+        std::f64::consts::FRAC_PI_2,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "faces_perpendicular_to must accept tol=π/2 and include a face parallel to axis, \
+             got Err: {e:?}"
+        )
+    });
+    assert_eq!(
+        result,
+        vec![face],
+        "face with |dot(n,axis)|=1=sin(π/2) must be included at tol=π/2 (inclusive upper bound)"
+    );
 }
 
 #[test]
@@ -513,20 +548,55 @@ fn edges_perpendicular_to_nan_tol_returns_query_failed() {
 
 fn assert_edges_perpendicular_to_tol_accepted_at_boundaries() {
     let parent = GeometryHandleId(1);
-    for tol in [0.0_f64, std::f64::consts::FRAC_PI_2] {
-        let mut kernel = MockGeometryKernel::new().with_extracted_edges(parent, vec![]);
-        let edges = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], tol)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "edges_perpendicular_to should accept tol = {tol} (inclusive boundary), \
-                     got Err: {e:?}"
-                )
-            });
-        assert!(
-            edges.is_empty(),
-            "expected empty result for tol = {tol}, got {edges:?}"
+    let edge = GeometryHandleId(2);
+
+    // Lower bound — tol=0.0: a tangent exactly perpendicular to the axis has
+    // |dot(t, axis)| = 0 = sin(0), satisfying `|dot| <= 0` (tests `<=` not `<`).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![edge])
+        .with_edge_tangent_result(
+            edge,
+            Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".into()),
         );
-    }
+    let result = edges_perpendicular_to(&mut kernel, parent, [0.0, 0.0, 1.0], 0.0)
+        .unwrap_or_else(|e| {
+            panic!(
+                "edges_perpendicular_to must accept tol=0.0 and include an exactly-perpendicular \
+                 edge, got Err: {e:?}"
+            )
+        });
+    assert_eq!(
+        result,
+        vec![edge],
+        "edge with |dot(t,axis)|=0=sin(0) must be included at tol=0 (inclusive lower bound)"
+    );
+
+    // Upper bound — tol=π/2: a tangent exactly parallel to the axis has
+    // |dot(t, axis)| = 1 = sin(π/2), satisfying `|dot| <= 1` (tests the inclusive
+    // upper bound: `<=` not `<`; sin(π/2) = 1.0 exactly in f64).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![edge])
+        .with_edge_tangent_result(
+            edge,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".into()),
+        );
+    let result = edges_perpendicular_to(
+        &mut kernel,
+        parent,
+        [0.0, 0.0, 1.0],
+        std::f64::consts::FRAC_PI_2,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "edges_perpendicular_to must accept tol=π/2 and include an edge parallel to axis, \
+             got Err: {e:?}"
+        )
+    });
+    assert_eq!(
+        result,
+        vec![edge],
+        "edge with |dot(t,axis)|=1=sin(π/2) must be included at tol=π/2 (inclusive upper bound)"
+    );
 }
 
 #[test]
