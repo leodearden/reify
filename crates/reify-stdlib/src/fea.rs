@@ -106,7 +106,36 @@ fn linear_combine(args: &[Value]) -> Value {
         return Value::Undef;
     }
 
-    let _ = cases_map; // used in subsequent steps
+    // Validate weights iteration: collect (weight: f64, case_map: &BTreeMap)
+    // pairs. Each entry must have a String key, a numeric weight value, a
+    // known case name, and a Map-typed case entry.
+    let mut weighted_cases: Vec<(f64, &BTreeMap<Value, Value>)> =
+        Vec::with_capacity(weights_map.len());
+    for (name_val, weight_val) in weights_map {
+        // Key must be a string.
+        let case_name = match name_val {
+            Value::String(s) => s,
+            _ => return Value::Undef,
+        };
+        // Weight value must be numeric (Real or Int accepted; String/Bool/etc. rejected).
+        let weight = match weight_val.as_f64() {
+            Some(w) => w,
+            None => return Value::Undef,
+        };
+        // Case name must exist in base_results.cases.
+        let case_val = match cases_map.get(&Value::String(case_name.clone())) {
+            Some(v) => v,
+            None => return Value::Undef,
+        };
+        // Case value must be a Map (ElasticResult struct instance).
+        let case_map = match case_val {
+            Value::Map(m) => m,
+            _ => return Value::Undef,
+        };
+        weighted_cases.push((weight, case_map));
+    }
+
+    let _ = weighted_cases; // used in subsequent steps
     Value::Undef
 }
 
