@@ -166,7 +166,8 @@ fn emit_element_triplets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assembly::tet::element_stiffness_p1;
+    use crate::assembly::tet::{element_stiffness_p1, element_stiffness_p2};
+    use crate::assembly::test_support::scaled_p2_phys_nodes;
     use crate::constitutive::IsotropicElastic;
 
     /// Steel-like dimensionless material reused across the global-assembly
@@ -352,5 +353,61 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Mismatched `connectivity.len()` and `k_e.n_dofs` panics with a
+    /// descriptive message.
+    ///
+    /// 4-node connectivity paired with a 30-DOF P2 K_e — `4 * 3 = 12 ≠ 30`,
+    /// so the per-element contract `connectivity.len() * 3 == k_e.n_dofs`
+    /// is violated. The panic message must mention the offending element id
+    /// and both observed dimensions to make debugging single-element
+    /// failures in a 100K-element mesh tractable.
+    #[test]
+    #[should_panic(expected = "k_e.n_dofs")]
+    fn mismatched_connectivity_length_and_k_e_n_dofs_panics() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_p2_phys_nodes(1.0);
+        let k_e_p2 = element_stiffness_p2(&phys, &mat);
+        assert_eq!(k_e_p2.n_dofs, 30);
+
+        let conn = [0usize, 1, 2, 3]; // 4 nodes — incompatible with 30 DOFs.
+        let element = AssemblyElement {
+            id: 7,
+            connectivity: &conn,
+            k_e: &k_e_p2,
+        };
+        let _ = assemble_global_stiffness(10, &[element], AssemblyMode::Deterministic);
+    }
+
+    /// Out-of-range connectivity entry (`>= n_nodes`) panics with a
+    /// descriptive message naming the offending element id and node id.
+    #[test]
+    #[should_panic(expected = "AssemblyElement")]
+    fn out_of_range_connectivity_entry_panics() {
+        let mat = dimensionless_steel_like();
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
+
+        let conn = [0usize, 1, 2, 5]; // node 5 ≥ n_nodes = 4.
+        let element = AssemblyElement {
+            id: 42,
+            connectivity: &conn,
+            k_e: &k_e,
+        };
+        let _ = assemble_global_stiffness(4, &[element], AssemblyMode::Deterministic);
+    }
+
+    /// `AssemblyMode::Parallel { threads: 0 }` panics rather than
+    /// auto-falling-back to single-threaded.
+    ///
+    /// Per the design decision pinned in plan.json: auto-fallback masks
+    /// caller bugs (e.g. `ElasticOptions.threads` defaulting to 0 from a
+    /// misread config); the policy that "tiny problems run
+    /// single-threaded" lives in PRD task #16's `ElasticOptions`
+    /// resolution layer, not in this primitive.
+    #[test]
+    #[should_panic(expected = "AssemblyMode::Parallel")]
+    fn parallel_mode_with_zero_threads_panics() {
+        let _ = assemble_global_stiffness(4, &[], AssemblyMode::Parallel { threads: 0 });
     }
 }
