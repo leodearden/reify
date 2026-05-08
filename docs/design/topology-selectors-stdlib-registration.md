@@ -2,7 +2,20 @@
 
 **Status:** design reference — describes the existing wiring pattern in main as of 2026-05-08 (post task #2324 / #2696 / #2746). Source of truth for how to land the remaining 11 PRD §3.9 selectors under task #2699.
 
+**Revision history:**
+- **2026-05-08, original** — α/β/γ design pass after esc-2699-2; surfaced 8 open questions for the next planner.
+- **2026-05-08, post-design-call** — §4.2 reframed (3-arg `fillet` is a separate task), §4.3 collapsed to a single approach (existing `selector_vocabulary_v2::adjacent_to_face` pattern), mutability widening called out as a cluster-A prerequisite. See "Decisions made" panel near the top.
+
 **Companions:** `docs/prds/topology-selectors.md` §3.9; tasks #2696 (Tensor surface-syntax + named dimensions), #2698 (`single` / `flat_map` list helpers), #2691 (deepened smoke).
+
+## Decisions made (2026-05-08 post-design call)
+
+| Question | Resolution |
+|---|---|
+| Kernel mutability widening | **Widen** `try_eval_topology_selector` and `Engine::post_process_topology_selectors` to `&mut dyn GeometryKernel`. Required for cluster A onwards (every selector that calls `extract_*`). RefCell alternative rejected. |
+| `shared_edges` parent derivation | **Option A**: `kernel.query(OwnerBody(face_a))` + verify match against `OwnerBody(face_b)`. Warning + empty list on cross-solid input. No new trait method. |
+| 3-arg `fillet(solid, edges, radius)` | **Separate task**, not #2699's scope. The parse-only `fillet_top_edges.ri` fixture stays parse-only until that task lands. |
+| List element typing | `Type::List(Box::new(Type::Geometry))` for v0.1; defer Edge/Face/Vertex discrimination to #2691 or future PRD revision. |
 
 ---
 
@@ -39,6 +52,8 @@ The 14 selectors break into the buckets below. Each bucket inherits an existing 
 This is the canonical pattern. It covers nine of the 14 selectors:
 
 `closest_point` *(done — Task 2324)*, `on` *(done)*, `angle_between_surfaces` *(done)*, plus the ones still to wire: `edges_by_length`, `faces_by_area`, `faces_by_normal`, `edges_parallel_to`, `edges_at_height`, `adjacent_faces`, `shared_edges`, `center_of_mass`, `moment_of_inertia`.
+
+**Cluster-A prerequisite (one-time):** widen `try_eval_topology_selector` (`crates/reify-eval/src/geometry_ops.rs:1668`) and `Engine::post_process_topology_selectors` (`crates/reify-eval/src/engine_build.rs:1348`) from `kernel: &dyn GeometryKernel` to `kernel: &mut dyn GeometryKernel`, propagating through the three call sites at `engine_build.rs:519/662/879`. The three call sites already hold `&mut kernel` and downgrade self-imposedly. ~10 lines total. Required because every new selector calls `kernel.extract_edges(...)` / `kernel.extract_faces(...)`, both of which take `&mut self` (they populate the kernel's idempotent extract caches at `crates/reify-kernel-occt/src/lib.rs:495/499`). Sibling `try_eval_conformance_query` and `try_eval_kinematic_query` keep `&dyn` (they only call `kernel.query(...)`).
 
 **Four edits per name:**
 
@@ -226,18 +241,98 @@ These are honest unknowns; surfacing them up-front saves an implementer one roun
 
 **Recommendation:** ship 2699 with `Type::List(Box::new(Type::Geometry))` — it is the path of least resistance and matches what `fillet(b, edges, r)` already accepts. Tightening to a discriminated `Edge` / `Face` / `Vertex` follows in #2691 (deepened smoke) or a future PRD revision.
 
-### 4.2 `extract_*` returns `Vec<GeometryHandleId>` but the kernel queries return `Value::Int` indices
+### 4.2 [RESOLVED] `fillet` is currently 2-arg; the 3-arg form is a separate task
 
-The existing kernel-query results for topology (`AdjacentFaces`, `SharedEdges`) return `Value::List(Vec<Value::Int>)` of indices. `edges` / `faces` returning `Value::List(Vec<Value::Int>)` of `GeometryHandleId`s is *almost* the same shape but the consumer expectation differs: `fillet(b, edges, r)` needs the items to be sub-handles whose tags resolve in `feature_tag_table` / `topology_attribute_table`. The integration site to verify is the geometry-arg resolution in `compile_geometry_call` — does it accept `Value::List` of int handles for the edges/faces argument of `fillet`? If yes, this is uniform. If no, the dispatch must produce a different list-element shape (perhaps a tagged Map). **Verify before finalising the result-type decision** — read `crates/reify-compiler/src/geometry_modify.rs:115` and the modify-op argument-resolution path.
+The original draft of this section worried that `fillet(b, edges, r)` in `examples/topology_selectors/fillet_top_edges.ri` requires the result-type of `edges`/`faces` to compose with `fillet`'s edges-arg. Reading `crates/reify-compiler/src/geometry_modify.rs:115` resolves this: `fillet` today is **2-arg**: `fillet(target, radius)`. There is no edges-list parameter. The 3-arg form is aspirational PRD example syntax that doesn't exist yet, which is why `fillet_top_edges.ri` is parse-only.
 
-### 4.3 `adjacent_faces` / `shared_edges` need a face-index recovery path
+**Resolution:** `Type::List(Box::new(Type::Geometry))` is fine as the v0.1 placeholder for `edges`/`faces`/filtered-selector results — it does not need to compose with any current `fillet` signature. The 3-arg `fillet(solid, edges, radius)` lives in a sibling task (out of #2699's scope), and `fillet_top_edges.ri` stays parse-only until that task lands. PRD task-8 amendment should explicitly note this scope boundary.
 
-Sub-handles produced by `extract_faces` carry parent + index provenance internally to OCCT (per the kernel comment at `crates/reify-kernel-occt/src/lib.rs:677`), but I did not find a public `GeometryQuery::FaceIndexOf(sub_handle)` variant. The dispatch arm needs one of:
-- A new `GeometryQuery` variant returning the index.
-- A direct kernel method on the OCCT kernel impl, called from `try_eval_topology_selector` rather than via the `query()` interface (parallels `kernel.extract_edges` direct call in §3 above).
-- Storing the index alongside the handle in a parallel `topology_attribute_table` entry that the dispatch reads.
+### 4.3 [RESOLVED] `adjacent_faces` / `shared_edges` reuse the existing `selector_vocabulary_v2` pattern
 
-The orderly fix is a new query variant in `crates/reify-types/src/geometry.rs` plus its OCCT impl in `crates/reify-kernel-occt/src/lib.rs:2256`-ish (alongside the existing `AdjacentFaces` arm). **This is the largest unknown for #2699's scope** and is the one place where the work might genuinely need to split.
+The original draft listed three options for face-index recovery: new `GeometryQuery::FaceIndexOf` variant / direct kernel method / parallel attribute table. **All three were unnecessary** — `crates/reify-eval/src/selector_vocabulary_v2.rs:840` (`adjacent_to_face`) and `:918` (`ancestor_faces_of_edge`) already implement face-index recovery using a fourth, simpler approach:
+
+```rust
+let faces = kernel.extract_faces(parent)?;          // idempotent cached lookup
+let face_index = faces.iter().position(|id| *id == face_handle).ok_or_else(...)?;
+let value = kernel.query(&GeometryQuery::AdjacentFaces { shape: parent, face_index })?;
+```
+
+`extract_faces` is **idempotent and cached** in OcctKernel (`extracted_faces: HashMap<u64, Vec<...>>` at `lib.rs:496`). The linear `position()` scan is O(n_faces) on cache miss, O(1) on subsequent dispatches against the same parent. No new `GeometryQuery` variant, no new trait method, no parallel table.
+
+**`adjacent_faces(solid, face)` resolution.** PRD signature already takes the parent solid explicitly, so dispatch is direct:
+
+```rust
+"adjacent_faces" => {
+    let parent = resolve_geometry_handle_arg(&args[0], named_steps)?;
+    let face_handle = resolve_geometry_handle_arg(&args[1], named_steps)?;
+    match selector_vocabulary_v2::adjacent_to_face(kernel, parent, face_handle) {
+        Ok(handles) => Some(Value::List(handles.into_iter()
+            .map(|h| Value::Int(h.0 as i64)).collect())),
+        Err(QueryError::QueryFailed(msg)) => {
+            diagnostics.push(Diagnostic::warning(msg));
+            Some(Value::Undef)
+        }
+        Err(other) => { /* other error mapping */ }
+    }
+}
+```
+
+**`shared_edges(face_a, face_b)` resolution.** PRD signature does NOT include a parent — it must be derived from the face handles. Use `OwnerBody` query (already exists at `crates/reify-types/src/geometry.rs:800`):
+
+```rust
+"shared_edges" => {
+    let face_a = resolve_geometry_handle_arg(&args[0], named_steps)?;
+    let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
+
+    // Derive parent via OwnerBody; verify both faces share the same parent.
+    let parent_a = match kernel.query(&GeometryQuery::OwnerBody(face_a)) {
+        Ok(Value::Int(i)) => GeometryHandleId(i as u64),
+        _ => return Some(Value::Undef),
+    };
+    let parent_b = match kernel.query(&GeometryQuery::OwnerBody(face_b)) {
+        Ok(Value::Int(i)) => GeometryHandleId(i as u64),
+        _ => return Some(Value::Undef),
+    };
+    if parent_a != parent_b {
+        diagnostics.push(Diagnostic::warning(format!(
+            "shared_edges: faces have different parent solids ({:?} vs {:?})",
+            parent_a, parent_b
+        )));
+        return Some(Value::List(vec![]));
+    }
+
+    // Recover face indices and dispatch.
+    let faces = match kernel.extract_faces(parent_a) {
+        Ok(v) => v, Err(_) => return Some(Value::Undef),
+    };
+    let idx_a = faces.iter().position(|h| *h == face_a)?;
+    let idx_b = faces.iter().position(|h| *h == face_b)?;
+
+    let value = match kernel.query(&GeometryQuery::SharedEdges {
+        shape: parent_a, face_a: idx_a, face_b: idx_b,
+    }) {
+        Ok(v) => v, Err(_) => return Some(Value::Undef),
+    };
+
+    // Map result int-indices back to edge handles via extract_edges(parent).
+    let edges = match kernel.extract_edges(parent_a) {
+        Ok(v) => v, Err(_) => return Some(Value::Undef),
+    };
+    let indices = match &value { Value::List(items) => items, _ => return Some(Value::Undef) };
+    let out: Vec<Value> = indices.iter().filter_map(|item| {
+        if let Value::Int(i) = item {
+            edges.get(*i as usize).map(|h| Value::Int(h.0 as i64))
+        } else { None }
+    }).collect();
+    Some(Value::List(out))
+}
+```
+
+5 kernel ops on the hot path: 2× `OwnerBody`, `extract_faces`, `SharedEdges`, `extract_edges`. The `extract_*` cache makes repeat calls free.
+
+**Cross-solid behaviour decision:** warning + empty list, *not* hard error. Matches the silent-degraded contract used elsewhere in v0.1 selector code (e.g. `try_eval_topology_selector`'s existing fallthrough path returns `Value::Undef` for malformed kernel replies rather than diagnosing).
+
+**Net result for #2699's scope:** §4.3 was the largest open question in the original design pass; it now requires zero new infrastructure. The two topology-graph selectors fit comfortably in cluster C of the original sequencing recommendation and could even land alongside cluster A/B if the lock footprint is acceptable.
 
 ### 4.4 `faces_by_normal` / `edges_parallel_to` predicate-arg shape
 
@@ -263,15 +358,19 @@ The 2699 work touches the same files Task 2324 and the kernel-query work landed 
 
 ## 5. Concrete recommendation for sequencing
 
-After this design pass lands, #2699 can be re-filed with the investigation step removed and the body pointing here. If the implementer still finds the 14-selector scope too large in one task (the steward's primary concern), the natural split is:
+After this design pass lands, #2699 can be re-filed with the investigation step removed and the body pointing here. If the implementer still finds the 11-selector scope too large in one task (the steward's primary concern), the natural split is:
 
-1. **Cluster A — extension of Task 2324's pattern, no new query variants:** `edges`, `faces`, `closest_point` *(done)*, `on` *(done)*, `angle_between_surfaces` *(done)*, `center_of_mass`, `moment_of_inertia`. ~6 names, all four-edit template.
-2. **Cluster B — predicate-arg filtering:** `edges_by_length`, `faces_by_area`, `faces_by_normal`, `edges_parallel_to`, `edges_at_height`. 5 names. Exercises the predicate-arg shape and unit-aware tolerance handling.
-3. **Cluster C — topology-graph with face-index recovery:** `adjacent_faces`, `shared_edges`. 2 names. Lowest risk to land *last* because it depends on resolving §4.3 (and may pull in a new `GeometryQuery` variant).
+**Cluster A — kernel-mut widening + simplest selectors:** ~5 names plus the one-time mutability widening (see §2 cluster-A prerequisite). Covers `edges`, `faces`, `center_of_mass`, `moment_of_inertia`, plus the `try_eval_topology_selector` / `post_process_topology_selectors` signature change to `&mut dyn GeometryKernel`. Pure four-edit template per name. PRD task-8 amendment rides here (and notes the 3-arg-fillet scope boundary — see §4.2).
 
-Each cluster is one merge. The PRD amendment ("task 8: Stdlib language-level wiring") rides on Cluster A.
+**Cluster B — predicate-arg filtering:** `edges_by_length`, `faces_by_area`, `faces_by_normal`, `edges_parallel_to`, `edges_at_height`. 5 names. Exercises the predicate-arg shape (vector + tolerance angle) and the unit-aware coercion patterns. Builds directly on cluster A's mutability widening.
+
+**Cluster C — topology-graph queries:** `adjacent_faces`, `shared_edges`. 2 names. With §4.3 now resolved (reuse `selector_vocabulary_v2::adjacent_to_face` + `OwnerBody` for parent derivation), this cluster has no special blockers and can land in parallel with B if lock-footprint allows.
+
+Each cluster is one merge. All three clusters touch the same `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` const list and the same `try_eval_topology_selector` match — serialise the merges to avoid trivial conflicts.
 
 If the user instead wants 2699 to remain a single task, the implementer should:
 - Pre-seed `metadata.memory_hints` with this doc + the four wiring sites listed in §2.
 - Constrain the planner to "extend the Task 2324 pattern uniformly across N names" rather than re-deriving the dispatch.
 - Cap to ≤ 1 lock domain per merge by serialising; the 9-file-touch problem the steward called out is the main reason the 121-turn architect thrashed.
+
+**Out-of-scope sibling task to file:** 3-arg `fillet(solid, edges, radius)` — currently `fillet` is 2-arg `fillet(target, radius)` per `crates/reify-compiler/src/geometry_modify.rs:115`. The PRD example syntax that takes a curated edge list is aspirational and needs its own task, gated on #2699 (which produces the `edges`/`faces_by_normal`/`adjacent_faces`/`shared_edges` selectors that supply the edge list).
