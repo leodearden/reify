@@ -369,3 +369,46 @@ fn cylinder_curved_face_returns_finite_angle() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// query() round-trip — task 2324 stdlib wiring
+// ---------------------------------------------------------------------------
+
+/// Round-trip `GeometryQuery::SurfaceAngle` via the generic `kernel.query(...)`
+/// dispatch. Picks one perpendicular box-face pair via the existing adjacency
+/// helper and asserts the kernel emits `Value::Real(rad)` ≈ π/2.
+///
+/// Mirrors the structure of `box_adjacent_faces_yield_pi_over_two` but goes
+/// through the typed-query interface that the eval-side dispatcher uses.
+#[test]
+fn query_surface_angle_returns_pi_over_two_for_adjacent_faces() {
+    let (mut kernel, box_id) = box_kernel();
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces should succeed");
+    assert_eq!(faces.len(), 6, "expected 6 faces for a box");
+
+    // Pick face[0] and one of its 4 adjacent neighbours — perpendicular by
+    // construction in a box.
+    let neighbors = neighbors_of(&kernel, box_id, 0);
+    let &j = neighbors
+        .iter()
+        .next()
+        .expect("face 0 must have at least one adjacent face");
+
+    let value = kernel
+        .query(&GeometryQuery::SurfaceAngle {
+            face_a: faces[0],
+            face_b: faces[j],
+        })
+        .expect("query(SurfaceAngle) should succeed for valid face handles");
+    let rad = match value {
+        Value::Real(r) => r,
+        other => panic!("expected Value::Real from SurfaceAngle, got {other:?}"),
+    };
+    assert!(
+        (rad - PI / 2.0).abs() < 1e-9,
+        "adjacent box faces (0, {j}): expected π/2 ≈ {:.10}, got {rad:.10}",
+        PI / 2.0
+    );
+}
