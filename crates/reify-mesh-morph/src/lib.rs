@@ -16,11 +16,20 @@
 //! [`compute_dirichlet_bcs`]), interior nodes iteratively averaged with
 //! their topological neighbours via Jacobi iteration. Engine wiring (PRD
 //! task #10) selects between this smoother and the elasticity morph.
+//!
+//! ## PRD task #9 — quality check — quality module
+//!
+//! The [`quality`] module implements the two-tier quality-check pass that
+//! runs after the morph engine produces a deformed mesh. Returns
+//! [`QualityVerdict::Pass`], [`QualityVerdict::HardFail`] (element
+//! inversion), or [`QualityVerdict::SoftFail`] (metric threshold breach).
+//! Engine wiring (PRD task #10) maps hard/soft fail to remesh fallback.
 
 pub mod boundary;
 pub mod eligibility;
 pub mod laplacian;
 pub mod options;
+pub mod quality;
 pub mod types;
 
 pub use boundary::{
@@ -30,6 +39,7 @@ pub use boundary::{
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 pub use laplacian::{LaplacianFailure, laplacian_smooth};
 pub use options::{MorphFailure, MorphOptions};
+pub use quality::{QualityVerdict, quality_check};
 pub use types::{BRep, InversionDetails, MetricsBreached, SolverErrorPayload};
 
 /// Re-exported so consumers can pattern-match `Reason::BijectionFailure(_)`
@@ -274,5 +284,33 @@ mod tests {
         let _: LaplacianFailure = LaplacianFailure::InvalidNodeIndex(0u32);
         let _: LaplacianFailure =
             LaplacianFailure::UnsupportedElementOrder(reify_types::ElementOrderTag::P2);
+    };
+
+    // ── Step-12: lib re-exports make quality module public surface accessible ──
+
+    // Compile fence: verifies quality_check and QualityVerdict are accessible
+    // from the crate root, pins the quality_check signature, and exhaustively
+    // mentions all three QualityVerdict variant constructors.
+    // Same discipline as the boundary and laplacian fences above.
+    const _: fn() = || {
+        use crate::{QualityVerdict, quality_check};
+        let _fn_ref: fn(
+            &reify_types::VolumeMesh,
+            &reify_types::VolumeMesh,
+            &MorphOptions,
+        ) -> QualityVerdict = quality_check;
+        // Variant mentions — exhaustive constructor coverage:
+        let _: QualityVerdict = QualityVerdict::Pass;
+        let _: QualityVerdict =
+            QualityVerdict::HardFail(crate::types::InversionDetails {
+                element_index: 0,
+                jacobian: -0.5,
+            });
+        let _: QualityVerdict =
+            QualityVerdict::SoftFail(crate::types::MetricsBreached {
+                min_scaled_jacobian: None,
+                pct_below_025: None,
+                max_aspect_ratio_increase: None,
+            });
     };
 }
