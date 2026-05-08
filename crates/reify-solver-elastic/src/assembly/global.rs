@@ -870,6 +870,110 @@ mod tests {
         }
     }
 
+    /// Partition-edge correctness of `Parallel` across thread counts on a
+    /// 137-element chain mesh.
+    ///
+    /// # What this tests
+    ///
+    /// `assemble_global_stiffness` with `AssemblyMode::Parallel { threads }`
+    /// partitions the element slice into `ceil(N / threads)` chunks, assigns
+    /// one chunk per worker thread, and merges the local `Vec<Triplet>` in
+    /// handle-vector (== chunk-iteration == slice) order. The merge order is
+    /// deterministic for any fixed `threads`, but the per-thread accumulation
+    /// boundary shifts with `threads`, so shared-DOF sums may differ at the
+    /// LSB level across thread counts.
+    ///
+    /// This test asserts tolerance-equivalence (|K_par − K_det| < 1e-12 ·
+    /// |K_det|.max(1.0)) between every `Parallel { threads }` result and the
+    /// `Deterministic` baseline for `threads ∈ {1, 2, 3, 5, 7, 8}`.
+    ///
+    /// # Why N = 137 (prime)
+    ///
+    /// 137 is prime. For every thread count `t` in the sweep, `ceil(137 / t)`
+    /// produces a tail chunk strictly smaller than the leading chunks. This
+    /// means partition-edge effects (shared-DOF sums that land on a chunk
+    /// boundary) are exercised for every `t` — unlike with 4 elements, where
+    /// thread counts 1, 2, 4 all evenly tile the slice. Explicit chunk shapes:
+    ///
+    /// - threads=1 → 1 chunk of 137
+    /// - threads=2 → chunks (69, 68)
+    /// - threads=3 → chunks (46, 46, 45)
+    /// - threads=5 → chunks (28, 28, 28, 28, 25)
+    /// - threads=7 → chunks (20, 20, 20, 20, 20, 20, 17)
+    /// - threads=8 → chunks (18, 18, 18, 18, 18, 18, 18, 11)
+    ///
+    /// # Chain mesh shape and shared-DOF rationale
+    ///
+    /// Tet `i` has connectivity `[i, i+1, i+2, i+3]` (sliding-window).
+    /// Each tet shares a 3-node face with the previous tet, so shared-DOF
+    /// accumulation occurs at every interior face. FP non-associativity from
+    /// chunk reordering would surface in exactly these shared-DOF entries.
+    /// `n_nodes = 140`, `dim = 420`; total triplets per assembly ≈ 19 728.
+    ///
+    /// A single shared `k_e` (computed from `UNIT_TET_P1` and
+    /// `dimensionless_steel_like()`) is reused for all 137 elements.
+    /// The 137 distinct connectivities exercise all DOF-mapping paths; K_e
+    /// numerics stay in O(1) range for readable failure messages.
+    ///
+    /// # Complement to existing fan-mesh tests
+    ///
+    /// `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`
+    /// and `parallel_mode_cross_thread_count_tolerance_equivalent_on_shared_dof_mesh`
+    /// use a 4-element fan mesh with thread counts in {1, 2, 4}. For that mesh
+    /// size, `chunk_size = ceil(4 / t)` always evenly tiles the 4 elements —
+    /// no tail chunk exists — so those tests cannot surface partition-edge bugs.
+    /// This test fills that gap with a workload where uneven partitioning
+    /// actually occurs for every thread count in the sweep.
+    #[test]
+    fn parallel_mode_chain_mesh_tolerance_equivalent_across_thread_counts() {
+        const N_ELEMENTS: usize = 137;
+        let n_nodes = N_ELEMENTS + 3; // 140
+
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &dimensionless_steel_like());
+        assert_eq!(k_e.n_dofs, 12, "P1 tet must have 12 DOFs (4 nodes × 3 axes)");
+
+        // Sliding-window connectivity: tet i → [i, i+1, i+2, i+3].
+        // Each consecutive pair shares a 3-node face, so every interior face
+        // is a shared-DOF accumulation site.
+        let conns: Vec<[usize; 4]> = (0..N_ELEMENTS).map(|i| [i, i + 1, i + 2, i + 3]).collect();
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| AssemblyElement {
+                id: i,
+                connectivity: c,
+                k_e: &k_e,
+            })
+            .collect();
+
+        let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        assert_eq!(det.nrows(), 3 * n_nodes, "det rows must equal 3 * n_nodes");
+        assert_eq!(det.ncols(), 3 * n_nodes, "det cols must equal 3 * n_nodes");
+
+        let dim = 3 * n_nodes;
+
+        for threads in [1_usize, 2, 3, 5, 7, 8] {
+            let par = assemble_global_stiffness(
+                n_nodes,
+                &elements,
+                AssemblyMode::Parallel { threads },
+            );
+            for i in 0..dim {
+                for j in 0..dim {
+                    let d = read(&det, i, j);
+                    let p = read(&par, i, j);
+                    let tol = 1e-12 * d.abs().max(1.0);
+                    let delta = (p - d).abs();
+                    assert!(
+                        delta < tol,
+                        "threads={threads} K_par[{i}][{j}] = {p} but K_det[{i}][{j}] = {d}; \
+                         |Δ| = {delta} ≥ tol = {tol}",
+                    );
+                }
+            }
+        }
+    }
+
     /// Global K is symmetric within FP tolerance on the fan mesh from
     /// step-13.
     ///
