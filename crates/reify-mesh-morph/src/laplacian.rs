@@ -582,6 +582,57 @@ mod tests {
         assert_eq!(out.vertices[base + 2], 44.0);
     }
 
+    // ── Step-17: determinism across runs with same input ────────────────────
+    //
+    // Two `laplacian_smooth` calls on the same input must produce bit-equal
+    // outputs. Defends against a future refactor swapping the
+    // `Vec<BTreeSet<u32>>` adjacency for a `Vec<HashSet<u32>>` — HashSet would
+    // silently re-randomise iteration order across runs, perturbing
+    // floating-point sums and breaking the FEA warm-start cache stability the
+    // BoundaryAssociation BTreeMap discipline already protects (see boundary.rs).
+
+    /// Reuses the step-13 fixture so the test exercises both interior nodes
+    /// and multi-iteration accumulation — the regimes most sensitive to
+    /// non-deterministic neighbour iteration order.
+    #[test]
+    fn laplacian_smooth_is_deterministic_across_runs_with_same_input() {
+        let mesh = VolumeMesh {
+            vertices: vec![
+                10.0_f32, 0.0, 0.0, // 0: a
+                0.0, 10.0, 0.0, // 1: b
+                0.0, 0.0, 10.0, // 2: c
+                1.0, 1.0, 1.0, // 3: p (interior)
+                2.0, 2.0, 2.0, // 4: q (interior)
+                20.0, 0.0, 0.0, // 5: d
+                0.0, 20.0, 0.0, // 6: e
+                0.0, 0.0, 20.0, // 7: f
+            ],
+            tet_indices: vec![
+                0, 1, 2, 3, // a, b, c, p
+                3, 4, 5, 6, // p, q, d, e
+                4, 5, 6, 7, // q, d, e, f
+            ],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let prescribed = vec![
+            (0_u32, [10.0_f64, 0.0, 0.0]),
+            (1, [0.0, 10.0, 0.0]),
+            (2, [0.0, 0.0, 10.0]),
+            (5, [20.0, 0.0, 0.0]),
+            (6, [0.0, 20.0, 0.0]),
+            (7, [0.0, 0.0, 20.0]),
+        ];
+
+        let out_a = laplacian_smooth(&mesh, &prescribed, 8).unwrap();
+        let out_b = laplacian_smooth(&mesh, &prescribed, 8).unwrap();
+
+        assert_eq!(out_a.vertices, out_b.vertices);
+        assert_eq!(out_a.tet_indices, out_b.tet_indices);
+        assert_eq!(out_a.element_order, out_b.element_order);
+        assert_eq!(out_a.normals, out_b.normals);
+    }
+
     // ── Step-3: exhaustive variant fence for LaplacianFailure ─────────────────
     //
     // No-wildcard match guarantees that adding/removing/renaming a variant
