@@ -369,6 +369,61 @@ fn edges_parallel_to_nan_axis_returns_query_failed() {
     );
 }
 
+#[test]
+fn edges_parallel_to_negative_tol_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], -0.1);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for negative tol, got {:?}", other),
+    }
+}
+
+#[test]
+fn edges_parallel_to_tol_above_half_pi_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result = topology_selectors::edges_parallel_to(
+        &mut kernel,
+        parent,
+        [1.0, 0.0, 0.0],
+        std::f64::consts::FRAC_PI_2 + 1e-3,
+    );
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for tol > π/2, got {:?}", other),
+    }
+}
+
+#[test]
+fn edges_parallel_to_nan_tol_returns_query_failed() {
+    let parent = GeometryHandleId(1);
+    let mut kernel = MockGeometryKernel::new();
+    let result =
+        topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], f64::NAN);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("angular_tol_rad"),
+                "error should mention 'angular_tol_rad', got: {msg:?}"
+            );
+        }
+        other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
+    }
+}
+
 /// EdgeTangent contract requires Value::String. A Value::Real payload must
 /// produce QueryFailed — pins the non-string fall-through arm of
 /// `parse_xyz_value` for EdgeTangent.
