@@ -25,7 +25,7 @@ use reify_test_support::{
 #[allow(unused_imports)]
 use reify_types::{
     CapabilityDescriptor, CompiledExpr, DiagnosticCode, ExportFormat, ModulePath, Operation,
-    ReprKind, Severity, Type,
+    ReprKind, Severity, Type, Value, ValueCellId,
 };
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
@@ -764,6 +764,115 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
          at (\"MyDesign\", ReprKind::BRep, 1e-6) after a successful realization \
          (mirrors the build() population contract pinned by step-5). Cache \
          len={}, dump: {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+}
+
+/// Step-17 (failing initially; passes once step-18 wires the auto-invalidation
+/// hook into `Engine::edit_param`).
+///
+/// Pins the production-correctness fix for the reviewer's blocking issue
+/// (engine_build.rs:511-516 + engine_admin.rs:218-230 + the field docstring on
+/// `Engine::realization_cache` at lib.rs:490-535): the cache MUST be reset on
+/// `edit_param` so a subsequent `build_snapshot()` cannot silently return a
+/// stale `GeometryHandleId` pointing at the OLD geometry. The current field
+/// docstring promises "Production callers must therefore either (a) avoid
+/// `build_snapshot` after `edit_param`, or (b) clear `realization_cache`
+/// themselves between the edit and the snapshot rebuild" — but the public
+/// surface offers no clear-cache primitive (the only mutator is internal),
+/// so clause (b) is unreachable and clause (a) defeats `build_snapshot`'s
+/// incremental-rebuild contract. The fix is to auto-flush the cache at the
+/// `edit_param` hook point — mirroring the `feature_tag_table` /
+/// `topology_attribute_table` reset-at-hook-point pattern.
+///
+/// Setup mirrors step-5 / step-7 / step-15: `step_output_template(1µm)` plus
+/// `MyDesign` template with one Box realization plus
+/// `manufacturing_purpose("manufacturing", 1e-6)`. `MyDesign.thickness : Real`
+/// is the param cell we mutate — it does not need to drive the Box's args for
+/// this test, since the assertion is on cache-state immediately after
+/// `edit_param` returns (NOT on whether a subsequent build produces fresh
+/// geometry). Any `edit_param` invocation against any param cell in the
+/// graph must clear the cache, because the engine cannot know which cells
+/// participate in the realization's input cone without a cross-reference
+/// the current architecture does not maintain.
+///
+/// Sequence:
+///   (a) `engine.eval(&module)` → `engine.activate_purpose("manufacturing",
+///       "MyDesign")` → `engine.build(&module, ExportFormat::Step)` →
+///       assert `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
+///       1e-6).is_some()` (cache populated by step-6 wiring; pins the test
+///       premise).
+///   (b) `engine.edit_param(ValueCellId::new("MyDesign", "thickness"),
+///       Value::Real(<new>)).unwrap()`.
+///   (c) Without calling `build_snapshot` yet, assert
+///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
+///       1e-6).is_none()` — the entry was cleared on edit.
+///
+/// Today (pre step-18) `edit_param` does NOT touch `realization_cache`, so
+/// the cache entry persists across the edit and the next `build_snapshot()`
+/// would silently return the stale handle. Step-18 adds
+/// `self.realization_cache = RealizationCache::new();` near the top of
+/// `edit_param` (placed after the function-entry guards but before any state
+/// mutation that could fail), which makes this assertion pass.
+#[test]
+fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_edit_param_clears_realization_cache".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (a) Cold-start eval, activate purpose, build → cache populated by step-6.
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+    let _build = engine.build(&module, ExportFormat::Step);
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .is_some(),
+        "test premise: expected RealizationCache to contain an entry at \
+         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() (per step-5/step-6 \
+         wiring). Without this premise the post-edit assertion is vacuous. \
+         Cache len={}, dump: {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+
+    // (b) Edit any param cell — `MyDesign.thickness` is the param the
+    // template carries. We don't need the param to drive the Box's args for
+    // this test; the assertion below is on cache state immediately after
+    // `edit_param` returns. Auto-invalidation must fire regardless of
+    // whether the edited cell participates in the realization's input cone,
+    // because the engine cannot prove non-participation without per-cell
+    // dependency analysis we do not currently maintain.
+    let thickness_id = ValueCellId::new("MyDesign", "thickness");
+    let _result = engine
+        .edit_param(thickness_id, Value::Real(0.005))
+        .expect("edit_param must succeed against the MyDesign.thickness Real param");
+
+    // (c) Assert the cache was cleared by edit_param. This pins the
+    // auto-invalidation contract step-18 establishes — without it, the
+    // entry persists and a subsequent build_snapshot() would silently
+    // return a stale GeometryHandleId from the (entity, repr, tol) bucket.
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .is_none(),
+        "expected edit_param to auto-invalidate the RealizationCache so a \
+         subsequent build_snapshot() cannot return a stale GeometryHandleId. \
+         Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) returned Some(_) \
+         after edit_param — the entry survived the edit, breaking the \
+         auto-invalidation contract step-18 establishes. Cache len={}, dump: \
+         {:?}",
         engine.realization_cache().len(),
         engine.realization_cache(),
     );
