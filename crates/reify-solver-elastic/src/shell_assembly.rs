@@ -1047,4 +1047,12 @@ mod tests {
         // p0 == p1 → len01 = 0 → first degenerate-frame assert fires.
         build_shell_frame(&[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
     }
+
+    #[test]
+    #[should_panic(expected = "degenerate shell element: collinear nodes")]
+    fn build_shell_frame_panics_on_collinear_nodes() {
+        // Three collinear points on the x-axis: len01=1 (first assert passes),
+        // cross product = (1,0,0)×(2,0,0) = (0,0,0) → len_n = 0 → second assert fires.
+        build_shell_frame(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
+    }
 }
