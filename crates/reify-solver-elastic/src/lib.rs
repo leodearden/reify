@@ -35,6 +35,7 @@
 //!     ShellStress,
 //!     ShellElementStress, shell_element_frame, shell_element_stress,
 //!     DirichletBc, apply_dirichlet_row_elimination,
+//!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -101,6 +102,15 @@
 //! assert_eq!(bc.clone(), bc, "DirichletBc must round-trip through Clone");
 //! // Verify apply_dirichlet_row_elimination is callable (empty bcs = no-op).
 //! let _ = apply_dirichlet_row_elimination;
+//!
+//! // Neumann BC smoke tests (T2918): verify public surface is callable.
+//! let _ = FaceOrder::P1Tri;
+//! let _ = FaceOrder::P2Tri;
+//! let mut f_smoke = vec![0.0_f64; 12];
+//! apply_point_load(&mut f_smoke, 0, [1.0, 2.0, 3.0]);
+//! assert_eq!(f_smoke[0], 1.0, "apply_point_load smoke: f[0]");
+//! assert_eq!(f_smoke[1], 2.0, "apply_point_load smoke: f[1]");
+//! assert_eq!(f_smoke[2], 3.0, "apply_point_load smoke: f[2]");
 //! ```
 
 pub mod assembly;
@@ -114,7 +124,10 @@ pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
     element_stiffness,
 };
-pub use boundary::{DirichletBc, apply_dirichlet_row_elimination};
+pub use boundary::{
+    DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
+    apply_traction_load,
+};
 pub use constitutive::IsotropicElastic;
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
