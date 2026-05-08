@@ -29,11 +29,35 @@
 #[cfg(not(test))]
 pub const LINSPACE_MAX_INTERVALS: usize = 10_000_000;
 
-/// See the `cfg(not(test))` variant for documentation.
+/// # ⚠ WARNING — test-only shrunk cap
 ///
-/// Set to `8` for `reify-types`'s own test binary only; downstream
-/// crates always compile `reify-types` without `cfg(test)` and
-/// therefore see the production cap (`10_000_000`).
+/// This `cfg(test)` override sets `LINSPACE_MAX_INTERVALS` to `8` **only**
+/// inside `reify-types`'s own unit-test binary.  The value is intentionally
+/// small to keep the cap-boundary tests fast (< 1 µs instead of ~500 ms for
+/// the 10 M allocation).
+///
+/// The three tests that reference this constant legitimately are
+/// `cap_boundary_just_under`, `cap_boundary_just_over`, and
+/// `cap_excessive_n_intervals_is_finite_when_just_over_cap`.  All three
+/// treat `LINSPACE_MAX_INTERVALS` as a **symbolic boundary value** — they
+/// never compare it to the literal `10_000_000` or depend on its magnitude.
+///
+/// **If you add a new `reify-types` test that references `LINSPACE_MAX_INTERVALS`
+/// by name, you MUST follow one of these patterns:**
+///
+/// - **Hardcode** the expected value your test cares about (e.g. write
+///   `assert_eq!(result, 10_000_000)` rather than
+///   `assert_eq!(result, LINSPACE_MAX_INTERVALS)`), or
+/// - **Gate** on the production cap explicitly (e.g. declare a local
+///   `const PROD_CAP: usize = 10_000_000;` with an explanatory comment).
+///
+/// Do **not** compare `LINSPACE_MAX_INTERVALS` against the literal
+/// `10_000_000` inside a `#[cfg(test)]` context or otherwise rely on the
+/// production magnitude — the constant silently resolves to `8` there.
+///
+/// Downstream crates (`reify-eval`, `reify-kernel-openvdb`) compile
+/// `reify-types` without `cfg(test)`, so they always see the production
+/// cap (`10_000_000`).
 #[cfg(test)]
 pub const LINSPACE_MAX_INTERVALS: usize = 8;
 
