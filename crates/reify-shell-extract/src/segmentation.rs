@@ -7,6 +7,8 @@
 
 use crate::medial::MedialMask;
 use crate::mid_surface::MidSurfaceMesh;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::VecDeque;
 
 /// Tunable parameters for [`segment_regions`].
 ///
@@ -200,9 +202,6 @@ pub fn segment_regions(
             triangle_labels: vec![u32::MAX; mesh.triangles.len()],
         });
     }
-
-    use std::collections::VecDeque;
-    use rustc_hash::{FxHashMap, FxHashSet};
 
     // Build O(1) membership lookup.
     let mask_set: FxHashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
@@ -408,6 +407,7 @@ pub fn segment_regions(
 pub(crate) fn axis_floor_ceil_unique(
     coord: f64,
 ) -> impl Iterator<Item = i32> {
+    debug_assert!(coord.is_finite(), "axis_floor_ceil_unique: coord must be finite (got {coord})");
     let floor = coord.floor() as i32;
     let ceil = coord.ceil() as i32;
     std::iter::once(floor).chain((floor != ceil).then_some(ceil))
@@ -415,6 +415,7 @@ pub(crate) fn axis_floor_ceil_unique(
 
 #[cfg(test)]
 mod tests {
+    use super::axis_floor_ceil_unique;
     use std::collections::HashSet;
 
     use crate::mid_surface::{extract_mid_surface, MidSurfaceOptions};
@@ -917,7 +918,6 @@ mod tests {
     /// coordinates and two distinct values for fractional coordinates.
     #[test]
     fn axis_floor_ceil_unique_dedups_integer_coords() {
-        use crate::segmentation::axis_floor_ceil_unique;
         assert_eq!(
             axis_floor_ceil_unique(0.0).collect::<Vec<_>>(),
             vec![0],
@@ -945,8 +945,6 @@ mod tests {
     /// 8 for all-fractional coords.
     #[test]
     fn segment_regions_corner_enumeration_visits_each_unique_candidate_once() {
-        use crate::segmentation::axis_floor_ceil_unique;
-
         fn count_candidates(f: [f64; 3]) -> usize {
             let mut n = 0usize;
             for _dz in axis_floor_ceil_unique(f[2]) {
