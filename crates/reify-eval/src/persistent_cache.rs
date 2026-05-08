@@ -35,6 +35,16 @@ use serde::{Deserialize, Serialize};
 /// Reify convention that 0 means "uninitialised / unknown".
 const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
 
+// Compile-time assertion that `ElasticResult: PersistentlyCacheable`. Lives at
+// module scope (outside `#[cfg(test)]`) so the trait-bound is enforced on every
+// build, not only when `cargo test` links. Replaces a previous
+// `#[test] fn elastic_result_implements_persistently_cacheable()` that wrapped
+// the same compile-time check inside a runtime test wrapper.
+const _: fn() = || {
+    fn assert_impl<T: PersistentlyCacheable>() {}
+    assert_impl::<ElasticResult>();
+};
+
 /// Compact bincode-encoded prefix that precedes the raw f64 byte slabs in the
 /// zstd-wrapped body. `max_von_mises` is stored as its `u64` bit pattern
 /// (NOT as `f64`) so NaN payloads, signaling-NaN bits, and signed zeros
@@ -181,31 +191,12 @@ impl PersistentlyCacheable for ElasticResult {
 mod tests {
     use super::*;
 
-    /// Compile-time check that `T` implements `PersistentlyCacheable`.
-    fn assert_persistently_cacheable<T: PersistentlyCacheable>() {}
-
-    #[test]
-    fn elastic_result_implements_persistently_cacheable() {
-        assert_persistently_cacheable::<ElasticResult>();
-    }
-
-    #[test]
-    fn elastic_result_constructor_pins_six_field_shape() {
-        let er = ElasticResult {
-            displacement: vec![1.0, 2.0],
-            stress: vec![3.0],
-            max_von_mises: 42.0,
-            converged: true,
-            iterations: 17,
-            solve_time_ms: 250,
-        };
-        assert_eq!(er.displacement, vec![1.0, 2.0]);
-        assert_eq!(er.stress, vec![3.0]);
-        assert_eq!(er.max_von_mises, 42.0);
-        assert!(er.converged);
-        assert_eq!(er.iterations, 17);
-        assert_eq!(er.solve_time_ms, 250);
-    }
+    // Note: trait/impl link is enforced at module scope via a `const _: fn() = ...`
+    // assertion (see top of file). The previous `#[test]` wrapper around the
+    // same compile-time check, plus a separate `*_constructor_pins_six_field_shape`
+    // test that read back fields it had just constructed, were dropped — both
+    // are subsumed by the round-trip pin (`*_round_trips_all_six_fields`)
+    // and the static assertion.
 
     #[test]
     fn elastic_result_format_version_is_one() {
