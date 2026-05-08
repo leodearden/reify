@@ -4106,7 +4106,6 @@ version = "0.1.0"
 dependencies = [
  "reify-compiler",
  "reify-eval",
- "reify-solver-elastic",
  "reify-types",
 ]
 
