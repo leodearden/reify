@@ -261,8 +261,8 @@ pub fn assemble_global_stiffness(
                     // Per the Task-2544 contract-explicitness
                     // convention: make the contract explicit in
                     // production code rather than relying on test
-                    // coverage. Mirrors `run_with_deadlock_timeout` in
-                    // `crates/reify-test-support/src/mocks.rs:1452-1474`.
+                    // coverage. Mirrors the `run_with_deadlock_timeout`
+                    // pattern in `reify-test-support::mocks`.
                     match h.join() {
                         Ok(local) => acc.extend(local),
                         Err(payload) => std::panic::resume_unwind(payload),
@@ -933,51 +933,16 @@ mod tests {
         }
     }
 
-    /// Worker-thread panic payloads propagate to the caller with the original
-    /// message intact.
-    ///
-    /// # Fixture
-    ///
-    /// `ElementStiffness { n_dofs: 12, data: vec![] }` is a deliberately
-    /// malformed matrix: `n_dofs = 12` satisfies the upfront contract check
-    /// `connectivity.len() * 3 == k_e.n_dofs` (4 nodes × 3 = 12), so the
-    /// function reaches the parallel dispatch path without panicking at entry.
-    /// Inside the worker thread `emit_element_triplets` calls
-    /// `k_e.get(0, 0)`, which indexes into `data[0 * 12 + 0] = data[0]` on
-    /// an empty Vec — triggering the standard Rust "index out of bounds: the
-    /// len is 0 but the index is 0" panic.
-    ///
-    /// # Before / after the `resume_unwind` fix
-    ///
-    /// Before the fix: `h.join().expect("global-assembly worker thread panicked")`
-    /// converts the boxed `Any` payload to the generic Debug representation
-    /// `Any { .. }`, so the propagated panic message is
-    /// "global-assembly worker thread panicked: Any { .. }". The substring
-    /// "out of bounds" is absent, so `#[should_panic(expected = "out of bounds")]`
-    /// finds no match — the test **FAILS** (wrong panic message).
-    ///
-    /// After the fix: `Err(payload) => std::panic::resume_unwind(payload)`
-    /// forwards the original boxed `String`/`&str` payload directly to the
-    /// caller, so the propagated message is "index out of bounds: the len is 0
-    /// but the index is 0". The substring "out of bounds" is present — the
-    /// test **PASSES**.
-    ///
-    /// # What this pins
-    ///
-    /// This test is a regression guard for the panic-propagation contract:
-    /// any future change that re-substitutes the worker's message (e.g.
-    /// reverting `.expect(...)`, wrapping with a custom error type, or
-    /// `unwrap_or_else(|_| panic!("..."))`) will cause the "out of bounds"
-    /// substring to disappear and this test to fail — surfacing the regression
-    /// immediately rather than silently burying it.
+    /// Regression guard for the panic-propagation contract: any change that
+    /// re-substitutes the worker's message (e.g. reverting to `.expect(...)`,
+    /// wrapping with a custom error type, or `unwrap_or_else(|_| panic!("..."))`)
+    /// will cause the "out of bounds" substring to disappear and this test to
+    /// fail — surfacing the regression immediately rather than silently burying
+    /// it.
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn worker_thread_panic_payload_propagates_to_caller() {
         use crate::assembly::ElementStiffness;
-        // Malformed fixture: n_dofs = 12 matches connectivity.len() * 3 (passes
-        // the upfront contract check), but data is empty — k_e.get(0, 0) will
-        // panic with "index out of bounds: the len is 0 but the index is 0"
-        // from inside the worker thread.
         let k_e = ElementStiffness {
             n_dofs: 12,
             data: vec![],
