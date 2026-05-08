@@ -363,18 +363,28 @@ mod tests {
     /// Pins the empty-input contract: the function returns a matrix whose
     /// dimensions match `3 * n_nodes`, and whose stored-entry count is zero
     /// (faer's CSR builder must accept a zero-triplet input cleanly).
+    ///
+    /// Exercised through every `AssemblyMode` variant. The parallel arm's
+    /// `chunks(chunk_size)` over an empty slice yields zero chunks, so zero
+    /// worker threads spawn — but the dim/nnz contract still holds. A
+    /// regression that, say, panics on `elements.len().div_ceil(threads)` for
+    /// `threads > 0` and `elements.len() == 0` would surface here.
     #[test]
     fn empty_elements_returns_zero_3n_by_3n_sparse_matrix() {
-        // Compile-only construction of both `AssemblyMode` variants so a
-        // future regression that drops one of the variants surfaces here.
-        let _det = AssemblyMode::Deterministic;
-        let _par = AssemblyMode::Parallel { threads: 1 };
-
         let n_nodes = 4;
-        let k = assemble_global_stiffness(n_nodes, &[], AssemblyMode::Deterministic);
-        assert_eq!(k.nrows(), 3 * n_nodes);
-        assert_eq!(k.ncols(), 3 * n_nodes);
-        assert_eq!(k.compute_nnz(), 0, "no triplets ⇒ zero stored entries");
+        for mode in [
+            AssemblyMode::Deterministic,
+            AssemblyMode::Parallel { threads: 1 },
+        ] {
+            let k = assemble_global_stiffness(n_nodes, &[], mode);
+            assert_eq!(k.nrows(), 3 * n_nodes, "mode = {mode:?}");
+            assert_eq!(k.ncols(), 3 * n_nodes, "mode = {mode:?}");
+            assert_eq!(
+                k.compute_nnz(),
+                0,
+                "no triplets ⇒ zero stored entries (mode = {mode:?})",
+            );
+        }
     }
 
     /// Build a P1 K_e at the unit reference tet for a stiffer-or-softer
@@ -795,8 +805,11 @@ mod tests {
 
         let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
         let dim = 3 * n_nodes;
+        // Iterate the upper triangle only — `(i, j)` and `(j, i)` describe
+        // the same unordered pair, so checking `j in i..dim` halves the loop
+        // count from `dim²` to `dim·(dim+1)/2` without any coverage loss.
         for i in 0..dim {
-            for j in 0..dim {
+            for j in i..dim {
                 let kij = read(&k, i, j);
                 let kji = read(&k, j, i);
                 let tol = 1e-9 * kij.abs().max(kji.abs()).max(1.0);
