@@ -13,6 +13,7 @@ pub mod expr;
 pub mod geometry;
 pub mod hash;
 pub mod identity;
+pub mod kernel_validation;
 pub mod node_traits;
 pub mod persistent;
 pub mod provenance;
@@ -60,6 +61,7 @@ pub use geometry::{
 };
 pub use hash::ContentHash;
 pub use identity::*;
+pub use kernel_validation::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE};
 pub use node_traits::{NodeArchKind, NodeTraits};
 pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
