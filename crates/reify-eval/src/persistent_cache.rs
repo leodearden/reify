@@ -675,6 +675,64 @@ mod tests {
     }
 
     #[test]
+    fn elastic_result_serialized_slab_section_is_little_endian_bytewise() {
+        // Cross-host portability pin: verifies that the slab section of the
+        // on-disk format is byte-for-byte little-endian regardless of host
+        // endianness. The existing `elastic_result_serialization_is_byte_deterministic`
+        // only asserts same-host run-to-run equality — a future regression to
+        // native-byte encoding on a hypothetical big-endian host (or accidental
+        // misuse of bytemuck::cast_slice on a non-LE host) would still pass
+        // that test but would break this one. Also catches accidental `to_ne_bytes()`
+        // (which would pass on LE but emit BE bytes on a BE host).
+        //
+        // Reuses `ElasticResultHeader` (in scope inside `mod tests` via `super::*`)
+        // and the `bincode::deserialize_from` reader-advancing idiom from the
+        // oversize-len tests to consume past the header and expose the raw slab bytes.
+        let original = ElasticResult {
+            displacement: vec![1.0_f64, -2.5_f64, 3.14159_f64],
+            stress: vec![100e6_f64, -50e6_f64],
+            max_von_mises: 100e6,
+            converged: true,
+            iterations: 7,
+            solve_time_ms: 999,
+        };
+        let mut compressed: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut compressed).unwrap();
+
+        // Decompress the zstd frame to recover the inner bincode+slab stream.
+        let mut zstd_dec = zstd::Decoder::new(&compressed[..]).unwrap();
+        let mut decompressed: Vec<u8> = Vec::new();
+        io::Read::read_to_end(&mut zstd_dec, &mut decompressed).unwrap();
+
+        // Consume the bincode-encoded header via a mutable slice reference.
+        // `bincode::deserialize_from` advances the `&mut &[u8]` reader by
+        // exactly as many bytes as the header occupies, leaving `slice`
+        // pointing at the first byte of the slab section.
+        let mut slice: &[u8] = &decompressed;
+        let _header: ElasticResultHeader = bincode::deserialize_from(&mut slice)
+            .expect("header must deserialize cleanly");
+
+        // Build expected slab: displacement bytes then stress bytes, each
+        // value as 8-byte little-endian (unconditionally, regardless of host
+        // endianness — this is the cross-host portability contract).
+        let mut expected: Vec<u8> = Vec::new();
+        for v in &original.displacement {
+            expected.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &original.stress {
+            expected.extend_from_slice(&v.to_le_bytes());
+        }
+
+        assert_eq!(
+            slice,
+            expected.as_slice(),
+            "slab section must be unconditionally little-endian on disk; \
+             any regression to native-byte encoding on a big-endian host \
+             or accidental to_ne_bytes() usage will fail this assertion"
+        );
+    }
+
+    #[test]
     fn check_f64_vec_len_rejects_value_above_workload_limit() {
         // Portable boundary pin: exercises the bound check without any Vec
         // allocation, so it remains stable on memory-constrained CI runners.
