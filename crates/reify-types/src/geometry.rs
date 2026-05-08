@@ -798,6 +798,65 @@ pub enum GeometryQuery {
     /// Powers PRD line 81's `owner_body(sub)` topological walk via
     /// `selector_vocabulary_v2::owner_body_of`.
     OwnerBody(GeometryHandleId),
+    /// Project an arbitrary world-space point onto a shape and return the
+    /// closest surface (or curve / vertex) point.
+    ///
+    /// Backed by `BRepExtrema_DistShapeShape` between the geometry handle and
+    /// a `Vertex`-shape constructed from `(px, py, pz)`. Returns
+    /// `Value::String` with JSON encoding `{"x":_,"y":_,"z":_}`, identical to
+    /// the `Centroid` / `FaceNormal` / `EdgeTangent` wire format. The
+    /// dispatcher decodes back into `Value::Point(vec![length(x), length(y),
+    /// length(z)])` via the existing
+    /// `reify_eval::topology_selectors::parse_xyz_value` helper.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `closest_point<G: Geometry>(point: Point3<Length>, geometry: G) ->
+    /// Point3<Length>` (PRD §3.9). Eval-time wiring lives in
+    /// `reify_eval::geometry_ops::try_eval_topology_selector`.
+    ClosestPointOnShape {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    },
+    /// Test whether a world-space point lies on (or inside) a shape, within a
+    /// kernel-supplied tolerance.
+    ///
+    /// Backed by `BRepExtrema_DistShapeShape` between the handle and a
+    /// `Vertex` built from `(px, py, pz)`; "on" is `distance ≤ tolerance`.
+    /// Returns `Value::Bool`. The OCCT `Precision::Confusion()` (~1e-7) is
+    /// the recommended default, supplied by the dispatcher; an explicit
+    /// `on(point, geometry, tol: Length)` overload is deferred per PRD §3.9.
+    ///
+    /// Note: the underlying primitive returns `true` for any interior solid
+    /// point at any positive tolerance (because the closest point on a
+    /// closed solid is the point itself once it's inside) — this is the v0.1
+    /// contract and is documented at the kernel-side `point_on_shape`
+    /// rustdoc.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool`.
+    PointOnShape {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        tolerance: f64,
+    },
+    /// Compute the unsigned dihedral angle between two surfaces (faces) of a
+    /// solid (or two distinct solids) in radians ∈ `[0, π]`.
+    ///
+    /// Backed by `BRepAdaptor_Surface::D1` evaluated at each face's centroid,
+    /// taking `acos(|n_a · n_b|)`-style absolute-cos to keep the result
+    /// orientation-agnostic. Returns `Value::Real(rad)`; the eval-side
+    /// dispatcher wraps as `Value::angle(rad)`.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `angle_between_surfaces(a: Surface, b: Surface) -> Angle` (PRD §3.9).
+    SurfaceAngle {
+        face_a: GeometryHandleId,
+        face_b: GeometryHandleId,
+    },
 }
 
 /// Geometric kind of a face's underlying surface, matching OCCT's
