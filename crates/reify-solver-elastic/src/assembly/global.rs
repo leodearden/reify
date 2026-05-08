@@ -84,15 +84,67 @@ pub fn assemble_global_stiffness(
     elements: &[AssemblyElement<'_>],
     mode: AssemblyMode,
 ) -> SparseRowMat<usize, f64> {
-    // Empty-input fast path: faer accepts a zero-triplet input cleanly and
-    // returns the all-zero sparse matrix of the requested shape. Wiring the
-    // mode and element-slice contract checks (steps 7/8) in this skeleton
-    // would force step-1's empty-input test to over-specify; those checks
-    // land in their own RED/GREEN cycle.
-    let _ = (elements, mode);
-    let triplets: Vec<Triplet<usize, usize, f64>> = Vec::new();
+    // Mode-specific dispatch: per-element contract checks (connectivity
+    // length, node-ID range) and `Parallel { threads: 0 }` validation
+    // land in step-8's GREEN. The deterministic arm here exercises the
+    // shared `emit_element_triplets` scatter primitive in slice order.
+    let triplets: Vec<Triplet<usize, usize, f64>> = match mode {
+        AssemblyMode::Deterministic => {
+            let mut acc = Vec::new();
+            for element in elements {
+                emit_element_triplets(element, &mut acc);
+            }
+            acc
+        }
+        AssemblyMode::Parallel { threads: _ } => {
+            // Parallel partitioning + merge lands in step-12. For now
+            // route through deterministic to keep the public surface
+            // honest; tests touching the parallel arm specifically are
+            // gated on step-11.
+            let mut acc = Vec::new();
+            for element in elements {
+                emit_element_triplets(element, &mut acc);
+            }
+            acc
+        }
+    };
     SparseRowMat::try_new_from_triplets(3 * n_nodes, 3 * n_nodes, &triplets)
-        .expect("zero-triplet build cannot fail")
+        .expect("triplets within declared 3*n_nodes dims (per-element bounds enforced upstream)")
+}
+
+/// Emit one dense `9 · n_local²` block of triplets for `element` and append
+/// to `out`. The emission order is the C-style row-major nesting
+/// `for a in 0..n_local { for α in 0..3 { for b in 0..n_local { for β in 0..3 } } }` —
+/// chosen so the within-block `(row, col)` sequence is monotonic, which
+/// gives faer's duplicate-summation step a stable input ordering and
+/// matches the row-major layout of [`ElementStiffness::data`] (one
+/// sequential read per output triplet).
+fn emit_element_triplets(
+    element: &AssemblyElement<'_>,
+    out: &mut Vec<Triplet<usize, usize, f64>>,
+) {
+    let n_local = element.connectivity.len();
+    // Iteration order is `(a, α, b, β)` so row = 3*conn[a]+α stays fixed
+    // for the inner `(b, β)` sweep — that's the row-major traversal of
+    // both the local k_e block and the global K row, minimizing cache
+    // pressure and giving faer monotonically non-decreasing rows for
+    // duplicate-summation stability.
+    for a in 0..n_local {
+        let row_node = element.connectivity[a];
+        for alpha in 0..3 {
+            let row = 3 * row_node + alpha;
+            let local_row = 3 * a + alpha;
+            for b in 0..n_local {
+                let col_node = element.connectivity[b];
+                for beta in 0..3 {
+                    let col = 3 * col_node + beta;
+                    let local_col = 3 * b + beta;
+                    let val = element.k_e.get(local_row, local_col);
+                    out.push(Triplet::new(row, col, val));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
