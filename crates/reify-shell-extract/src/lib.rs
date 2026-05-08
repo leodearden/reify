@@ -33,6 +33,17 @@
 //! OpenVDB FFI lands, the storage backing can be swapped behind the same
 //! public API without changing T2/T3/T4 callers.
 //!
+//! # Branch-pruning smoke test (T3)
+//!
+//! ```
+//! use reify_shell_extract::{prune_branches, PruneOptions, PruneResult, MidSurfaceMesh};
+//!
+//! let mesh = MidSurfaceMesh { vertices: vec![], triangles: vec![], thickness: vec![] };
+//! let result: PruneResult =
+//!     prune_branches(&mesh, &PruneOptions::default()).unwrap();
+//! assert!(result.mesh.vertices.is_empty() && result.metrics.output_triangle_count == 0);
+//! ```
+//!
 //! # Mid-surface mesher smoke test (T9)
 //!
 //! ```
@@ -131,6 +142,7 @@ pub use mesher::{
 pub use mid_surface::{
     MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extract_mid_surface,
 };
+pub use pruning::{prune_branches, PruneError, PruneMetrics, PruneOptions, PruneResult};
 pub use segmentation::{
     segment_regions, RegionClassification, RegionInfo, SegmentationError, SegmentationOptions,
     SegmentationResult,
