@@ -909,6 +909,44 @@ pub enum GeometryQuery {
     },
 }
 
+impl GeometryQuery {
+    /// Stable static label for this variant — used in error messages so format
+    /// strings interpolate a stable token rather than the full `Debug` print.
+    ///
+    /// Returning `&'static str` makes the method zero-allocation. The
+    /// exhaustive `match` means adding a new `GeometryQuery` variant requires
+    /// adding an arm here at the same diff site; the compiler enforces
+    /// this — eliminating the cross-crate drift surface where downstream
+    /// kernels previously had to maintain their own copy of this table.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            GeometryQuery::Volume(_) => "Volume",
+            GeometryQuery::SurfaceArea(_) => "SurfaceArea",
+            GeometryQuery::Centroid(_) => "Centroid",
+            GeometryQuery::BoundingBox(_) => "BoundingBox",
+            GeometryQuery::Distance { .. } => "Distance",
+            GeometryQuery::MomentOfInertia { .. } => "MomentOfInertia",
+            GeometryQuery::AdjacentFaces { .. } => "AdjacentFaces",
+            GeometryQuery::AncestorFacesOfEdge { .. } => "AncestorFacesOfEdge",
+            GeometryQuery::SharedEdges { .. } => "SharedEdges",
+            GeometryQuery::IsWatertight(_) => "IsWatertight",
+            GeometryQuery::IsManifold(_) => "IsManifold",
+            GeometryQuery::IsOrientable(_) => "IsOrientable",
+            GeometryQuery::CenterOfMass { .. } => "CenterOfMass",
+            GeometryQuery::InertiaTensor { .. } => "InertiaTensor",
+            GeometryQuery::EdgeLength(_) => "EdgeLength",
+            GeometryQuery::EdgeTangent(_) => "EdgeTangent",
+            GeometryQuery::FaceNormal(_) => "FaceNormal",
+            GeometryQuery::FaceSurfaceKind(_) => "FaceSurfaceKind",
+            GeometryQuery::EdgeCurveKind(_) => "EdgeCurveKind",
+            GeometryQuery::OwnerBody(_) => "OwnerBody",
+            GeometryQuery::ClosestPointOnShape { .. } => "ClosestPointOnShape",
+            GeometryQuery::PointOnShape { .. } => "PointOnShape",
+            GeometryQuery::SurfaceAngle { .. } => "SurfaceAngle",
+        }
+    }
+}
+
 /// Geometric kind of a face's underlying surface, matching OCCT's
 /// `GeomAbs_*` taxonomy via `BRepAdaptor_Surface::GetType()`.
 ///
