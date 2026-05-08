@@ -351,3 +351,98 @@ fn vdb_round_trip_data_layout_skipped_without_cfg() {
     println!("grid_io_tests: has_openvdb cfg not set — skipping data-layout test");
     assert!(true);
 }
+
+// ---------------------------------------------------------------------------
+// `&self` no-mutation invariant for `write_vdb_grid`.
+//
+// `OpenVdbKernel` declares `unsafe impl Sync` (see kernel_real.rs:220-260).
+// Sync soundness requires that every `&self` method is genuinely read-only
+// against the shared FloatGrid tree — otherwise concurrent threads holding
+// `&OpenVdbKernel` could observe a mid-mutation grid.
+//
+// `write_vdb_grid`'s signature is `&self`, so it MUST NOT mutate the
+// registered handle's grid. Earlier revisions called
+// `h.grid->setName(grid_name)` directly on the registered FloatGrid, which
+// silently flipped the in-memory grid name on every export — a behavioral
+// surprise even for sequential callers, and a Sync soundness violation
+// the moment any reader started observing names.
+//
+// This test pins the contract: writing through `write_vdb_grid` must NOT
+// change the registered handle's grid name. The fix (step-14) is to
+// deep-copy the FloatGrid on the C++ side before mutating its metadata,
+// so the on-disk file gets the requested name while the in-memory grid
+// keeps whatever name it had at registration.
+// ---------------------------------------------------------------------------
+
+/// Pin the `&self` no-mutation invariant for `write_vdb_grid`.
+///
+/// Realize a small sphere via `realize_voxel_from_mesh` (which produces an
+/// unnamed FloatGrid → default name `""`), capture the grid name, write the
+/// grid to a tempfile under a DIFFERENT name (`"renamed_for_export"`),
+/// then re-read the registered handle's grid name and assert it is
+/// unchanged.
+///
+/// Regression guard: any future revision that re-introduces an in-place
+/// `setName` (or any other mutation) on the registered grid inside
+/// `write_vdb_grid_ffi` will flip the assertion.
+#[cfg(has_openvdb)]
+#[test]
+fn write_vdb_grid_does_not_mutate_registered_handle_grid_name() {
+    use reify_kernel_openvdb::OpenVdbKernel;
+
+    // Reuse the octahedron unit-sphere mesh fixture from
+    // vdb_grid_round_trip_preserves_metadata_and_active_count (6 verts,
+    // 8 tris). Kept inline so this test is self-contained and the fixture
+    // does not get coupled across test functions.
+    let verts: Vec<[f32; 3]> = vec![
+        [1.0, 0.0, 0.0],   // 0 +X
+        [-1.0, 0.0, 0.0],  // 1 -X
+        [0.0, 1.0, 0.0],   // 2 +Y
+        [0.0, -1.0, 0.0],  // 3 -Y
+        [0.0, 0.0, 1.0],   // 4 +Z
+        [0.0, 0.0, -1.0],  // 5 -Z
+    ];
+    let tris: Vec<[u32; 3]> = vec![
+        // Top hemisphere
+        [0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4],
+        // Bottom hemisphere
+        [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5],
+    ];
+
+    let mut kernel = OpenVdbKernel::new();
+    let handle = kernel
+        .realize_voxel_from_mesh(&verts, &tris, 0.05, 4.0)
+        .expect("realize_voxel_from_mesh should succeed for the octahedron");
+
+    // meshToVolume / meshToLevelSet produces an unnamed FloatGrid →
+    // default name is "" (per the OpenVDB Grid::getName() contract for a
+    // grid that has not had setName called).
+    let original_name = kernel
+        .grid_name_for_test(handle)
+        .expect("grid_name_for_test should succeed for the registered handle");
+
+    let tmp = tempfile::NamedTempFile::new()
+        .expect("tempfile creation should succeed");
+    kernel
+        .write_vdb_grid(handle, tmp.path(), "renamed_for_export")
+        .expect("write_vdb_grid should succeed for the realized grid");
+
+    let post_write_name = kernel
+        .grid_name_for_test(handle)
+        .expect("grid_name_for_test should succeed after write");
+
+    assert_eq!(
+        post_write_name, original_name,
+        "write_vdb_grid must not mutate the registered handle's grid name \
+         (Sync soundness contract — see kernel_real.rs:220-260); \
+         original={original_name:?}, post_write={post_write_name:?}"
+    );
+}
+
+/// `cfg(not(has_openvdb))` skip-stub for the no-mutation test.
+#[cfg(not(has_openvdb))]
+#[test]
+fn write_vdb_grid_does_not_mutate_skipped_without_cfg() {
+    println!("grid_io_tests: has_openvdb cfg not set — skipping no-mutation test");
+    assert!(true);
+}
