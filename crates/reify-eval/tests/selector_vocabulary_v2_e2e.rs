@@ -23,6 +23,7 @@
 //! with FFI calls to OCCT's `BRepAdaptor_Surface::GetType()` and
 //! `BRepAdaptor_Curve::GetType()` and these tests must turn green.
 
+use reify_eval::selector_vocabulary_v2::adjacent_to_face;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
     GeometryKernel, GeometryOp, GeometryQuery, Value,
@@ -202,4 +203,101 @@ fn edge_curve_kind_classifies_box_edges_as_line() {
             "box edge {i} ({edge_id:?}) must classify as Line, got {name:?}"
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// adjacent_to_face on a 10mm box — every face is adjacent to exactly 4 others
+// (the four side faces of a cube). The union of all neighbours over all 6
+// faces must cover the full extracted face list (every face is adjacent to
+// every other face except its opposite).
+//
+// This e2e test proves the v0.1 `extract_faces` ↔ `AdjacentFaces` index
+// mapping (1-based `face_map.FindKey(i+1)` ↔ 0-based slot in the returned
+// Vec) is preserved for the v2 selector. No FFI changes are required for
+// step-26 — the test should pass on first run, validating that the v2
+// selector layers cleanly on the existing v0.1 OCCT primitives.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn adjacent_to_face_box_each_face_has_four_neighbours() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let box_id = kernel
+        .execute(&ten_mm_box_op())
+        .expect("10mm box should build via OCCT")
+        .id;
+    let face_handles = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces(box) should succeed");
+    assert_eq!(
+        face_handles.len(),
+        6,
+        "a 10mm box must have exactly 6 faces in TopExp order"
+    );
+
+    // For every face, adjacent_to_face must return exactly 4 face handles
+    // (the four side neighbours), all of which are in the canonical
+    // extract_faces output and none of which is the queried face itself.
+    for (i, face_id) in face_handles.iter().enumerate() {
+        let neighbours = adjacent_to_face(&mut kernel, box_id, *face_id).unwrap_or_else(|e| {
+            panic!(
+                "adjacent_to_face(box, face[{i}]={face_id:?}) should succeed, got {e:?}"
+            )
+        });
+        assert_eq!(
+            neighbours.len(),
+            4,
+            "box face {i} ({face_id:?}) should be adjacent to exactly 4 faces, got {neighbours:?}"
+        );
+        for n in &neighbours {
+            assert!(
+                face_handles.contains(n),
+                "neighbour {n:?} of box face {i} must be in extract_faces output"
+            );
+            assert!(
+                *n != *face_id,
+                "neighbour list must not include the queried face {face_id:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn adjacent_to_face_box_neighbours_cover_all_other_faces() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let box_id = kernel
+        .execute(&ten_mm_box_op())
+        .expect("10mm box should build via OCCT")
+        .id;
+    let face_handles = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces(box) should succeed");
+
+    // The union of neighbour-sets over all 6 faces must cover every face
+    // except (potentially) each face's own opposite — but since every
+    // face appears as a neighbour of 4 of the other 5, the *union* must
+    // cover all 6 faces. (Each face appears in 4 neighbour-sets.)
+    let mut seen = std::collections::HashSet::new();
+    for face_id in &face_handles {
+        let neighbours = adjacent_to_face(&mut kernel, box_id, *face_id)
+            .expect("adjacent_to_face on a box face should succeed");
+        for n in neighbours {
+            seen.insert(n);
+        }
+    }
+    assert_eq!(
+        seen.len(),
+        6,
+        "union of all neighbour-sets must cover every box face (got {} of 6)",
+        seen.len()
+    );
 }

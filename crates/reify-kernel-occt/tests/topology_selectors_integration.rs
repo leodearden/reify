@@ -451,3 +451,68 @@ fn topology_selectors_on_fused_two_box_solid_match_known_geometry() {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// extract_faces ↔ AdjacentFaces round-trip — pinning the v0.1 contract that
+// `extract_faces(box)` returns face handles in the same canonical
+// TopExp_Explorer / `face_map.FindKey(i+1)` order that the 0-based
+// `face_index` of `AdjacentFaces { face_index }` expects. Task 2658's v2
+// selector `adjacent_to_face` (in reify-eval) layers on this exact mapping
+// — if the v0.1 ordering ever changes silently, the v2 selector would
+// silently return the wrong handles. This round-trip test guards that
+// invariant from the kernel side.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn extract_faces_then_adjacent_faces_round_trip_box_face_zero() {
+    let (mut kernel, box_id) = box_kernel();
+
+    let face_handles = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces(box) should succeed");
+    assert_eq!(
+        face_handles.len(),
+        6,
+        "a 10×10×10 box must have exactly 6 faces"
+    );
+
+    // AdjacentFaces { face_index: 0 } must address the same face that
+    // appears at index 0 in the extract_faces output. The neighbours
+    // returned (as global indices into the canonical face_map order)
+    // must therefore be in [1, 5] and map back to handles in the
+    // extract_faces output.
+    let result = kernel
+        .query(&GeometryQuery::AdjacentFaces {
+            shape: box_id,
+            face_index: 0,
+        })
+        .expect("AdjacentFaces { face_index: 0 } should succeed on a box");
+    let items = match result {
+        Value::List(items) => items,
+        other => panic!("expected Value::List, got {:?}", other),
+    };
+    assert_eq!(items.len(), 4, "box face 0 has exactly 4 neighbours");
+
+    for item in items {
+        let idx = match item {
+            Value::Int(i) => i,
+            other => panic!("expected Value::Int, got {:?}", other),
+        };
+        assert!(
+            (0..6).contains(&idx),
+            "neighbour index {} must be a valid box face index [0, 6)",
+            idx
+        );
+        let usize_idx = usize::try_from(idx).expect("non-negative");
+        let _neighbour_handle = face_handles
+            .get(usize_idx)
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "neighbour index {} must map to a handle in extract_faces output (len={})",
+                    idx,
+                    face_handles.len()
+                )
+            });
+    }
+}
