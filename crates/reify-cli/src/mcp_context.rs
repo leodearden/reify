@@ -573,6 +573,8 @@ impl ReifyToolContext for CliToolContext {
         };
 
         let mut state = self.lock_state();
+        // Maintain state.files.keys() == {active_file} — see task 3183 audit.
+        state.files.retain(|key, _| key == &abs_path);
         state.files.insert(
             abs_path.clone(),
             FileEntry {
