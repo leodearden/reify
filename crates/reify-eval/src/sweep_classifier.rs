@@ -588,14 +588,14 @@ mod tests {
 
     #[test]
     fn classify_swept_body_revolve_just_above_tolerance_classifies() {
-        // Boundary regression guard: axis_dir = [tol*1.5, 0, 0] → norm_sq = 2.25·tol² > tol²,
-        // so the op must classify as Revolve with normalised axis [1, 0, 0].  `is_finite()`
-        // pins the "never sqrt(0)" invariant against refactors that move sqrt above the guard;
-        // FRAC_PI_2 isolates the axis-threshold check from the independent angle guard.
+        // Boundary regression guard: axis_dir = [tol*(1+1e-3), 0, 0] → norm_sq ≈ 1.002·tol²
+        // > tol², so the op must classify as Revolve with normalised axis [1, 0, 0].
+        // `is_finite()` pins the "never sqrt(0)" invariant against refactors that move sqrt
+        // above the guard; FRAC_PI_2 isolates the axis-threshold check from the angle guard.
         let ops = vec![GeometryOp::Revolve {
             profile: GeometryHandleId(0),
             axis_origin: [0.0, 0.0, 0.0],
-            axis_dir: [REVOLVE_DEGENERATE_TOLERANCE * 1.5, 0.0, 0.0],
+            axis_dir: [REVOLVE_DEGENERATE_TOLERANCE * (1.0 + 1e-3), 0.0, 0.0],
             angle_rad: std::f64::consts::FRAC_PI_2,
         }];
         let handles = vec![GeometryHandleId(1)];
@@ -650,15 +650,15 @@ mod tests {
 
     #[test]
     fn classify_swept_body_revolve_just_below_tolerance_returns_none() {
-        // Boundary complement: axis_dir = [tol*0.5, 0, 0] → norm_sq = 0.25·tol² < tol²,
+        // Boundary complement: axis_dir = [tol*(1-1e-3), 0, 0] → norm_sq ≈ 0.998·tol² < tol²,
         // so the degeneracy guard fires and classify_swept_body must return None.  Distinct
         // from the all-zero-axis test — pins the threshold edge against guard-loosening
-        // mutations (e.g. `<` → `<=`, dropped guard).  The just-above sibling disambiguates
-        // `< tol` vs `< tol²`; FRAC_PI_2 isolates the axis guard from the angle guard.
+        // mutations (e.g. `<` → `<=`, dropped guard).  FRAC_PI_2 isolates the axis guard from
+        // the angle guard.
         let ops = vec![GeometryOp::Revolve {
             profile: GeometryHandleId(0),
             axis_origin: [0.0, 0.0, 0.0],
-            axis_dir: [REVOLVE_DEGENERATE_TOLERANCE * 0.5, 0.0, 0.0],
+            axis_dir: [REVOLVE_DEGENERATE_TOLERANCE * (1.0 - 1e-3), 0.0, 0.0],
             angle_rad: std::f64::consts::FRAC_PI_2,
         }];
         let handles = vec![GeometryHandleId(1)];
