@@ -241,6 +241,9 @@ fn query_kind_name(q: &GeometryQuery) -> &'static str {
         GeometryQuery::FaceSurfaceKind(_) => "FaceSurfaceKind",
         GeometryQuery::EdgeCurveKind(_) => "EdgeCurveKind",
         GeometryQuery::OwnerBody(_) => "OwnerBody",
+        GeometryQuery::ClosestPointOnShape { .. } => "ClosestPointOnShape",
+        GeometryQuery::PointOnShape { .. } => "PointOnShape",
+        GeometryQuery::SurfaceAngle { .. } => "SurfaceAngle",
     }
 }
 
