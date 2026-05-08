@@ -143,42 +143,27 @@ mod tests {
         let solver_err =
             MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix"));
 
-        // Exhaustive compile-fence: no wildcard arm ensures that adding,
-        // removing, or renaming a variant in MorphFailure breaks compilation
-        // immediately — the contract the doc-comment on MorphFailure advertises.
-        // Arm bodies are empty; value checks below use assert_eq! on the whole
-        // variant via the derived PartialEq.
-        match MorphFailure::Ineligible(Reason::StructuralChange) {
-            MorphFailure::Ineligible(_) => {}
-            MorphFailure::QualityHardFail(_) => {}
-            MorphFailure::QualitySoftFail(_) => {}
-            MorphFailure::SolverError(_) => {}
+        // Exhaustive compile-fence: a no-wildcard match over each of the four
+        // locally-bound variants ensures that adding, removing, or renaming a
+        // variant in MorphFailure breaks compilation immediately — the contract
+        // the doc-comment on MorphFailure advertises. Each arm also probes the
+        // carried payload via a field accessor so a constructor that drops or
+        // swaps a field is caught (not merely PartialEq reflexivity).
+        for failure in [&ineligible, &hard_fail, &soft_fail, &solver_err] {
+            match failure {
+                MorphFailure::Ineligible(reason) => {
+                    assert_eq!(*reason, Reason::StructuralChange);
+                }
+                MorphFailure::QualityHardFail(d) => {
+                    assert_eq!(d.element_index, 7);
+                }
+                MorphFailure::QualitySoftFail(m) => {
+                    assert_eq!(m.min_scaled_jacobian, Some(0.10));
+                }
+                MorphFailure::SolverError(p) => {
+                    assert_eq!(p.message(), "singular stiffness matrix");
+                }
+            }
         }
-
-        // Value checks via assert_eq!. The derived PartialEq uses exact f64
-        // bit-equality. The same literal token appears on both sides of each
-        // assertion (no arithmetic, no rounding), so the comparison is
-        // deterministic for the finite f64 values used here (-1.0, 0.10, 0.02,
-        // 2.5 all represent exactly in IEEE 754 double).
-        assert_eq!(ineligible, MorphFailure::Ineligible(Reason::StructuralChange));
-        assert_eq!(
-            hard_fail,
-            MorphFailure::QualityHardFail(InversionDetails {
-                element_index: 7,
-                jacobian: -1.0,
-            })
-        );
-        assert_eq!(
-            soft_fail,
-            MorphFailure::QualitySoftFail(MetricsBreached {
-                min_scaled_jacobian: Some(0.10),
-                pct_below_025: Some(0.02),
-                max_aspect_ratio_increase: Some(2.5),
-            })
-        );
-        assert_eq!(
-            solver_err,
-            MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix"))
-        );
     }
 }
