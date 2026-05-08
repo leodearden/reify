@@ -34,15 +34,18 @@ use serde::{Deserialize, Serialize};
 /// result semantics rather than the wire format). Starting at 1 follows the
 /// Reify convention that 0 means "uninitialised / unknown".
 ///
-/// **Wire-format contract:** the `bincode` major version in use at serialise
-/// time is part of this contract. Bumping `bincode` past major 1 (for example
-/// the 1.x → 2.x transition, which changes default integer encoding) MUST be
-/// accompanied by a bump of this constant in the same commit; otherwise cache
-/// entries written under the previous `bincode` major will silently decode as
-/// garbage. The same logic applies to `zstd`'s frame-format major (currently
-/// the 0.13.x line). Cross-checked by `elastic_result_format_version_is_one`,
-/// which forces any FORMAT_VERSION bump to be deliberate; the bincode/zstd
-/// major is held by the `=1.3` / `0.13` pins in `Cargo.toml`.
+/// **Wire-format contract:** the `bincode` version in use at serialise time is
+/// part of this contract. Bumping `bincode` past the current `=1.3` pin — any
+/// release, whether minor (1.3 → 1.4) or major (1.x → 2.x), can alter default
+/// integer/varint encoding — MUST be accompanied by a deliberate audit of the
+/// new default encoding and, on any encoding-visible change, a bump of this
+/// constant in the same commit; otherwise cache entries written under the
+/// previous version will silently decode as garbage. The same logic applies to
+/// any bump of `zstd` past the `0.13` pin (e.g. 0.13 → 0.14 or 0.x → 1.x).
+/// Cross-checked by `elastic_result_format_version_is_one`, which forces any
+/// FORMAT_VERSION bump to be deliberate. The `=1.3` pin blocks even minor
+/// bumps to `bincode`; `0.13` pins `zstd`'s 0.x line — both held in
+/// `Cargo.toml`.
 const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
 
 // Compile-time sentinel: `bincode::ErrorKind` is part of the public bincode
@@ -115,11 +118,12 @@ pub trait PersistentlyCacheable: Sized {
     /// independently of any `engine_version_hash` (which invalidates result
     /// semantics rather than the wire format).
     ///
-    /// **Wire-format contract:** the major version of the underlying
-    /// byte-encoder library (e.g. `bincode`) is part of the wire-format
-    /// contract for any implementation of this trait. If an impl's encoder
-    /// library takes a major version bump that changes its default encoding,
-    /// `FORMAT_VERSION` MUST be bumped in the same commit. See
+    /// **Wire-format contract:** the version of the underlying byte-encoder
+    /// library (e.g. `bincode`) is part of the wire-format contract for any
+    /// implementation of this trait. Any release of the encoder library whose
+    /// default encoding could change — for `bincode`, that includes even a
+    /// minor bump past the current `=1.3` pin — MUST be accompanied by a
+    /// `FORMAT_VERSION` bump in the same commit. See
     /// `ELASTIC_RESULT_FORMAT_VERSION` for the bincode/zstd specifics.
     ///
     /// Associated const (no `&self`) so the cache layer can read the format
