@@ -282,6 +282,20 @@ rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h) {
     int64_t ny = static_cast<int64_t>(max.y()) - min.y() + 1;
     int64_t nz = static_cast<int64_t>(max.z()) - min.z() + 1;
 
+    // Defence-in-depth against a vendor-defined `bbox.empty()` heuristic
+    // that admits a per-axis `max < min` while still reporting non-empty.
+    // Without this guard, a non-positive `nx`/`ny`/`nz` would slip through
+    // the GRID_DENSIFY_MAX_VOXELS check (a positive budget divided by a
+    // non-positive divisor compares trivially) and lead to
+    // `buf.reserve(static_cast<size_t>(<negative>))` — a huge allocation
+    // on most platforms. See task 3095 review esc-3095-97 suggestion 4.
+    if (nx <= 0 || ny <= 0 || nz <= 0) {
+        throw std::runtime_error(
+            std::string("grid_densify_to_buffer: malformed bbox: nx=") +
+            std::to_string(nx) + ", ny=" + std::to_string(ny) +
+            ", nz=" + std::to_string(nz) + " (each must be > 0)");
+    }
+
     // Cap densified-buffer size to GRID_DENSIFY_MAX_VOXELS to prevent OOM
     // on oversized .vdb files. The check is performed in int64 arithmetic
     // so a multiplication overflow on a malformed bbox cannot bypass the

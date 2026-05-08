@@ -201,19 +201,34 @@ fn vdb_grid_round_trip_skipped_without_cfg() {
 
 /// 10mm × 10mm × 1mm thin slab (8 verts, 12 tris). Outward normals.
 ///
-/// Identical fixture to `realize_voxel_tests::thin_slab_mesh` — duplicated
+/// Asymmetric 12×6×1mm slab — used by the data-layout test below to
+/// distinguish ALL three pairwise axis transpositions (X↔Y, X↔Z, Y↔Z).
+///
+/// A symmetric X≈Y fixture only catches X↔Z and Y↔Z swaps — see
+/// task 3095 review esc-3095-97 suggestion 1. The asymmetric extents
+/// (X=12, Y=6, Z=1) combined with the asymmetric probe at (8, 2.5, 0.5)
+/// in the layout test below ensure that an X↔Y swap places the probe
+/// outside the slab's Y extent, producing a saturated POSITIVE band-
+/// limit value that flips the negative-SDF assertion.
+///
+/// Distinct from `realize_voxel_tests::thin_slab_mesh` (10×10×1, used
+/// only for non-layout assertions where symmetry is harmless).
 /// here to keep test files self-contained without cross-test imports.
 #[cfg(has_openvdb)]
 fn slab_mesh() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
+    // Asymmetric extents — X=12, Y=6, Z=1 — chosen so an X↔Y transposition
+    // is detectable: a probe at (X=8, Y=2.5) lies inside the slab, but if
+    // X and Y are swapped the same buffer index is read as physical
+    // (X=2.5, Y=8) which is outside the Y extent (Y > 6).
     let verts: Vec<[f32; 3]> = vec![
-        [0.0, 0.0, 0.0],   // 0
-        [10.0, 0.0, 0.0],  // 1
-        [10.0, 10.0, 0.0], // 2
-        [0.0, 10.0, 0.0],  // 3
-        [0.0, 0.0, 1.0],   // 4
-        [10.0, 0.0, 1.0],  // 5
-        [10.0, 10.0, 1.0], // 6
-        [0.0, 10.0, 1.0],  // 7
+        [0.0, 0.0, 0.0],  // 0
+        [12.0, 0.0, 0.0], // 1
+        [12.0, 6.0, 0.0], // 2
+        [0.0, 6.0, 0.0],  // 3
+        [0.0, 0.0, 1.0],  // 4
+        [12.0, 0.0, 1.0], // 5
+        [12.0, 6.0, 1.0], // 6
+        [0.0, 6.0, 1.0],  // 7
     ];
     let tris: Vec<[u32; 3]> = vec![
         // Bottom face (z=0, normal -Z)
@@ -238,17 +253,24 @@ fn slab_mesh() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
     (verts, tris)
 }
 
-/// Round-trip a 10×10×1mm slab through write_vdb_grid → read_vdb_file and
-/// assert the densified buffer is laid out X-outermost (axis-0 = X), matching
-/// the workspace-wide row-major-axis-0-outermost convention used by
-/// `interp::interpolate_3d` and `engine_eval::build_sampled_field`.
+/// Round-trip an asymmetric 12×6×1mm slab through write_vdb_grid →
+/// read_vdb_file and assert the densified buffer is laid out X-outermost
+/// (axis-0 = X), matching the workspace-wide row-major-axis-0-outermost
+/// convention used by `interp::interpolate_3d` and
+/// `engine_eval::build_sampled_field`.
 ///
-/// Regression guard: if `grid_densify_to_buffer` ever reverts to Z-outermost
-/// (or any non-X-outermost ordering), the interior probe at (5, 5, 0.5) is
-/// read at the buffer position implied by (X=0.5, Y=5, Z=5), which is well
-/// outside the slab's actual Z extent (~[−1, 2]) and produces a saturated
-/// POSITIVE band-limit value — flipping the sign of `interior.value` and
-/// failing the negative-SDF assertion below.
+/// Regression guard for ALL three pairwise axis transpositions (X↔Y,
+/// X↔Z, Y↔Z). The asymmetric extents and the asymmetric probe at
+/// (8, 2.5, 0.5) make any swap fall outside the slab on at least one
+/// axis:
+///   - X↔Z swap: probe reads at physical (Z=0.5 voxels in X-extent → 0.5,
+///     Y=2.5, X=8 voxels in Z-extent → 8) — Z=8 is far past the band.
+///   - Y↔Z swap: probe reads at (8, Z=0.5 voxels in Y-extent → 0.5,
+///     Y=2.5 voxels in Z-extent → 2.5) — Z=2.5 is past the +Z band edge.
+///   - X↔Y swap: probe reads at (Y=2.5, X=8, 0.5) — Y=8 is past the +Y
+///     face (slab Y extent 0..6).
+/// Any of these saturate to the POSITIVE band-limit value, flipping the
+/// negative-SDF assertion below.
 #[cfg(has_openvdb)]
 #[test]
 fn vdb_round_trip_data_layout_is_axis0_x_outermost() {
@@ -294,18 +316,17 @@ fn vdb_round_trip_data_layout_is_axis0_x_outermost() {
     );
 
     // ---------------------------------------------------------------------
-    // Interior probe: (5, 5, 0.5) — center of the slab, well inside in X/Y/Z.
+    // Asymmetric interior probe: (8, 2.5, 0.5) — well inside the asymmetric
+    // 12×6×1mm slab on every axis, but at coordinates that distinguish
+    // X from Y and X from Z (8 ≠ 2.5 ≠ 0.5).
     //
     // Correct X-outermost layout: the buffer is interpreted with axis-0 = X
     // and the SDF at this point is negative (interior).
     //
-    // Bug layout (Z-outermost buffer read X-outermost): `interpolate_3d`
-    // looks up `data[ix * ny * nz + iy * nz + iz]`, but the buffer was
-    // populated with `data[iz * ny * nx + iy * nx + ix]`. So a query at
-    // physical (5, 5, 0.5) reads the value that the C++ side stored at
-    // index (X=0.5 voxel, Y=5 voxel, Z=5 voxel) — which is OUTSIDE the slab
-    // in Z (slab Z extent is ~[−1, 2] but Z=5 is far past +Z) → saturated
-    // POSITIVE band-limit value.
+    // Any axis-pair transposition (see the regression-guard table in the
+    // doc comment above) reads the value at a buffer index that maps to a
+    // physical coordinate outside the slab on at least one axis,
+    // producing a saturated POSITIVE band-limit value.
     // ---------------------------------------------------------------------
     let interior = interpolate_3d(
         InterpolationMethod::Linear,
@@ -313,20 +334,20 @@ fn vdb_round_trip_data_layout_is_axis0_x_outermost() {
         &field.axis_grids[1],
         &field.axis_grids[2],
         &field.data,
-        (5.0, 5.0, 0.5),
+        (8.0, 2.5, 0.5),
     );
     assert!(
         interior.value < 0.0,
-        "interior SDF at (5, 5, 0.5) must be NEGATIVE (inside the slab); \
-         got {value} — buffer layout is likely Z-outermost (bug) instead of \
-         X-outermost (axis-0) row-major",
+        "interior SDF at (8, 2.5, 0.5) must be NEGATIVE (inside the slab); \
+         got {value} — buffer layout is likely transposed (axis-pair swap) \
+         instead of X-outermost (axis-0) row-major",
         value = interior.value
     );
 
     // ---------------------------------------------------------------------
-    // Exterior probe: (5, 5, 1.5) — just past the +Z face (Z=1mm) but still
-    // inside the narrow band (band = ±1mm around the surface, so Z ≤ 2mm
-    // remains banded). Must be POSITIVE (outside the slab).
+    // Exterior probe: (8, 2.5, 1.5) — just past the +Z face (Z=1mm) but
+    // still inside the narrow band (band = ±1mm around the surface, so
+    // Z ≤ 2mm remains banded). Must be POSITIVE (outside the slab).
     // ---------------------------------------------------------------------
     let exterior = interpolate_3d(
         InterpolationMethod::Linear,
@@ -334,11 +355,11 @@ fn vdb_round_trip_data_layout_is_axis0_x_outermost() {
         &field.axis_grids[1],
         &field.axis_grids[2],
         &field.data,
-        (5.0, 5.0, 1.5),
+        (8.0, 2.5, 1.5),
     );
     assert!(
         exterior.value > 0.0,
-        "exterior SDF at (5, 5, 1.5) must be POSITIVE (outside the slab); \
+        "exterior SDF at (8, 2.5, 1.5) must be POSITIVE (outside the slab); \
          got {value}",
         value = exterior.value
     );

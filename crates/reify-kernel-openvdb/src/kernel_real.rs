@@ -181,9 +181,12 @@ impl OpenVdbKernel {
             .handles
             .get(&handle)
             .ok_or(ExportError::InvalidHandle(handle))?;
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| ExportError::IoError("path is not valid UTF-8".into()))?;
+        let path_str = path.to_str().ok_or_else(|| {
+            ExportError::IoError(format!(
+                "path is not valid UTF-8: {} (cxx requires &str; lossy display shown)",
+                path.display()
+            ))
+        })?;
         openvdb_ffi::write_vdb_grid_ffi(grid, path_str, grid_name)
             .map_err(|e| ExportError::IoError(format!("write_vdb_grid_ffi: {e}")))?;
         Ok(())
@@ -203,15 +206,18 @@ impl OpenVdbKernel {
     ///
     /// Returns `Err(GeometryError::OperationFailed)` if the file can't be
     /// opened, the grid is absent, or the grid isn't a `FloatGrid`.
-    #[cfg(any(test, feature = "test-fixtures"))]
+    #[cfg(feature = "test-fixtures")]
     pub fn open_vdb_grid_for_test(
         &mut self,
         path: &Path,
         grid_name: &str,
     ) -> Result<GeometryHandleId, GeometryError> {
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| GeometryError::OperationFailed("path is not valid UTF-8".into()))?;
+        let path_str = path.to_str().ok_or_else(|| {
+            GeometryError::OperationFailed(format!(
+                "path is not valid UTF-8: {} (cxx requires &str; lossy display shown)",
+                path.display()
+            ))
+        })?;
         let grid_ptr = openvdb_ffi::read_vdb_grid_ffi(path_str, grid_name)
             .map_err(|e| GeometryError::OperationFailed(format!("read_vdb_grid_ffi: {e}")))?;
         let id = self.alloc_id();
@@ -235,7 +241,7 @@ impl OpenVdbKernel {
     /// Sound under the [`Sync`] audit list at the bottom of this file:
     /// `Grid::getName()` is a pure read of the cached `MetaMap` entry
     /// — no lazy init, no tree walk.
-    #[cfg(any(test, feature = "test-fixtures"))]
+    #[cfg(feature = "test-fixtures")]
     pub fn grid_name_for_test(
         &self,
         handle: GeometryHandleId,

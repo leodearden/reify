@@ -607,7 +607,13 @@ pub fn read_vdb_file(
             path: path.to_string(),
             detail: e.to_string(),
         })?;
-    let data: Vec<f64> = raw_buffer.iter().map(|&v| v as f64).collect();
+    // `into_iter()` (consuming) — not `iter()` (borrowing) — so the f32
+    // buffer is freed as soon as the f64 collect finishes.  At the C++-side
+    // cap (~256M voxels = 1 GiB f32) the long-lived storage paid by
+    // `SampledField` is ~2 GiB f64; consuming the f32 keeps the transient
+    // peak at ~3 GiB instead of holding both buffers live afterwards.
+    // See task 3095 review esc-3095-97 suggestion 2.
+    let data: Vec<f64> = raw_buffer.into_iter().map(|v| v as f64).collect();
 
     // Build the in-memory source model.  Axis-0 = X, Axis-1 = Y, Axis-2 = Z.
     // bounds_min/max come from the world-space voxel-center coordinates of the
