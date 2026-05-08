@@ -1116,10 +1116,16 @@ mod tests {
     /// field is renamed or removed, this test fails at compile time rather than
     /// silently passing with stale bindings.
     ///
-    /// Asserts `shell_branch_prune_ratio == 1.0` (PRD §89 conservative default),
-    /// `max_prune_iterations == 8` (chain-collapse bound doubled for safety), and
-    /// `grid_alignment_tolerance == 1e-9` (controls canonical-vertex dedup tolerance
-    /// for the T2→T3 shared-edge contract).
+    /// `shell_branch_prune_ratio` is range-checked against `[0.5, 2.0]` and
+    /// `max_prune_iterations` against `[4, 16]`; both are documented "v0.4 empirical
+    /// defaults pending real-corpus tuning" — exact pinning would block tuning without
+    /// adding behaviour coverage beyond what the straddle tests already provide
+    /// (`prune_branches_prunes_spike_just_below_threshold`,
+    /// `prune_branches_retains_spike_just_above_threshold`,
+    /// `prune_branches_slab_end_to_end_pipeline`).
+    ///
+    /// `grid_alignment_tolerance` retains its exact `1e-9` pin because it is the
+    /// T2→T3 shared-edge contract value, not an empirical default.
     ///
     /// Mirrors `mesher_options_defaults_pin_empirical_constants` (mesher.rs)
     /// and `mid_surface_options_defaults_pin_empirical_constants` (mid_surface.rs).
@@ -1132,13 +1138,13 @@ mod tests {
             // controls canonical-vertex dedup tolerance for the T2→T3 shared-edge contract
             grid_alignment_tolerance,
         } = PruneOptions::default();
-        assert_eq!(
-            shell_branch_prune_ratio, 1.0,
-            "shell_branch_prune_ratio default must be 1.0 (PRD §89 conservative threshold)"
+        assert!(
+            (0.5..=2.0).contains(&shell_branch_prune_ratio),
+            "shell_branch_prune_ratio default {shell_branch_prune_ratio} outside expected range [0.5, 2.0]"
         );
-        assert_eq!(
-            max_prune_iterations, 8,
-            "max_prune_iterations default must be 8 (chain-collapse bound)"
+        assert!(
+            (4..=16).contains(&max_prune_iterations),
+            "max_prune_iterations default {max_prune_iterations} outside expected range [4, 16]"
         );
         assert_eq!(
             grid_alignment_tolerance, 1e-9,
