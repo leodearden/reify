@@ -204,9 +204,20 @@ pub enum IngestError {
     ExcessiveAxisLength {
         /// Index of the offending axis (0 = outermost).
         axis: usize,
-        /// Computed interval count that exceeded the cap (may be saturated
-        /// if the span/spacing ratio overflows `usize`).
+        /// Computed interval count that exceeded the cap.  Always a finite,
+        /// representable `usize` — when the ratio overflows `usize`, the
+        /// `OverflowingAxisLength` variant is used instead.
         n_intervals: usize,
+    },
+    /// An axis interval count exceeds `usize::MAX` (i.e. `(span/spacing) > usize::MAX as f64`).
+    ///
+    /// Distinct from [`IngestError::ExcessiveAxisLength`]: this variant indicates
+    /// the count cannot be meaningfully represented in `usize`, so no `n_intervals`
+    /// payload is carried — embedding the saturated `usize::MAX` value in a
+    /// user-facing message would falsely imply a precise (though absurd) count.
+    OverflowingAxisLength {
+        /// Index of the offending axis (0 = outermost).
+        axis: usize,
     },
     /// Returned by [`read_vdb_file`] (cfg(has_openvdb) mode) when the
     /// underlying `openvdb::io::File` layer fails — file not found, wrong
@@ -364,7 +375,7 @@ pub fn lower_to_sampled(
                 return Err(IngestError::ExcessiveAxisLength { axis: i, n_intervals });
             }
             Err(LinspaceError::Overflow) => {
-                return Err(IngestError::ExcessiveAxisLength { axis: i, n_intervals: usize::MAX });
+                return Err(IngestError::OverflowingAxisLength { axis: i });
             }
         }
     }
@@ -717,6 +728,11 @@ impl std::fmt::Display for IngestError {
                 f,
                 "OpenVDB grid axis {axis} requires {n_intervals} intervals, which exceeds the \
                  maximum of {LINSPACE_MAX_INTERVALS}; reduce the axis span or increase the spacing"
+            ),
+            IngestError::OverflowingAxisLength { axis } => write!(
+                f,
+                "OpenVDB grid axis {axis} requires more intervals than usize can represent; \
+                 reduce the axis span or increase the spacing"
             ),
             IngestError::FileReadError { path, detail } => write!(
                 f,
