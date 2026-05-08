@@ -408,6 +408,11 @@ pub fn compute_medial_mask(
     let walk_step = 0.25 * min_spacing;
     let max_steps = ((max_walk_dist / walk_step).ceil() as usize).max(2);
 
+    // Pre-compute the per-voxel gradient once before the main loop.
+    // Avoids repeating the 6-sample central-difference stencil inside
+    // the hot path; the lookup is O(1) via i*ny*nz + j*nz + k.
+    let gradient_grid = precompute_gradient_grid(sdf);
+
     let mut voxels: Vec<[i32; 3]> = Vec::new();
 
     for i in 0..nx {
@@ -421,7 +426,7 @@ pub fn compute_medial_mask(
                 }
 
                 // (b) gradient at the voxel; reject degenerate
-                let grad = gradient_at_index(sdf, [i, j, k]);
+                let grad = gradient_grid[i * ny * nz + j * nz + k];
                 let gnorm = (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt();
                 if gnorm < GRADIENT_EPSILON {
                     continue;
