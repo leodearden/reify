@@ -799,6 +799,30 @@ pub enum FaceSurfaceKind {
     Other,
 }
 
+impl FaceSurfaceKind {
+    /// Decode a canonical surface-kind name into a [`FaceSurfaceKind`].
+    ///
+    /// Mirrors the wire format produced by
+    /// [`GeometryQuery::FaceSurfaceKind`] and consumed by
+    /// `selector_vocabulary_v2::faces_by_surface_kind`. Returns the
+    /// originating string (so callers can embed it in error diagnostics)
+    /// when the name is not one of the documented canonical strings.
+    pub fn try_from_str(s: &str) -> Result<Self, &str> {
+        match s {
+            "Plane" => Ok(FaceSurfaceKind::Plane),
+            "Cylinder" => Ok(FaceSurfaceKind::Cylinder),
+            "Cone" => Ok(FaceSurfaceKind::Cone),
+            "Sphere" => Ok(FaceSurfaceKind::Sphere),
+            "Torus" => Ok(FaceSurfaceKind::Torus),
+            "BezierSurface" => Ok(FaceSurfaceKind::BezierSurface),
+            "BSplineSurface" => Ok(FaceSurfaceKind::BSplineSurface),
+            "OffsetSurface" => Ok(FaceSurfaceKind::OffsetSurface),
+            "Other" => Ok(FaceSurfaceKind::Other),
+            _ => Err(s),
+        }
+    }
+}
+
 /// Geometric kind of an edge's underlying curve, matching OCCT's
 /// `GeomAbs_*` taxonomy via `BRepAdaptor_Curve::GetType()`.
 ///
@@ -820,6 +844,30 @@ pub enum EdgeCurveKind {
     BSplineCurve,
     OffsetCurve,
     Other,
+}
+
+impl EdgeCurveKind {
+    /// Decode a canonical curve-kind name into an [`EdgeCurveKind`].
+    ///
+    /// Mirrors the wire format produced by
+    /// [`GeometryQuery::EdgeCurveKind`] and consumed by
+    /// `selector_vocabulary_v2::edges_by_curve_kind`. Returns the
+    /// originating string (so callers can embed it in error diagnostics)
+    /// when the name is not one of the documented canonical strings.
+    pub fn try_from_str(s: &str) -> Result<Self, &str> {
+        match s {
+            "Line" => Ok(EdgeCurveKind::Line),
+            "Circle" => Ok(EdgeCurveKind::Circle),
+            "Ellipse" => Ok(EdgeCurveKind::Ellipse),
+            "Hyperbola" => Ok(EdgeCurveKind::Hyperbola),
+            "Parabola" => Ok(EdgeCurveKind::Parabola),
+            "BezierCurve" => Ok(EdgeCurveKind::BezierCurve),
+            "BSplineCurve" => Ok(EdgeCurveKind::BSplineCurve),
+            "OffsetCurve" => Ok(EdgeCurveKind::OffsetCurve),
+            "Other" => Ok(EdgeCurveKind::Other),
+            _ => Err(s),
+        }
+    }
 }
 
 /// Export formats for geometry.

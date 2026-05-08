@@ -846,6 +846,44 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a `FaceSurfaceKind` query result for a specific face handle.
+    ///
+    /// The `value` should be a `Value::String` whose payload is one of the
+    /// canonical surface-kind names (`"Plane"`, `"Cylinder"`, `"Cone"`,
+    /// `"Sphere"`, `"Torus"`, `"BezierSurface"`, `"BSplineSurface"`,
+    /// `"OffsetSurface"`, `"Other"`) as documented on
+    /// [`GeometryQuery::FaceSurfaceKind`]. Decoded by the
+    /// `selector_vocabulary_v2::faces_by_surface_kind` selector via
+    /// [`reify_types::FaceSurfaceKind`]'s `TryFrom<&str>` impl.
+    pub fn with_face_surface_kind_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::FaceSurfaceKind(handle), value);
+        self
+    }
+
+    /// Configure an `EdgeCurveKind` query result for a specific edge handle.
+    ///
+    /// The `value` should be a `Value::String` whose payload is one of the
+    /// canonical curve-kind names (`"Line"`, `"Circle"`, `"Ellipse"`,
+    /// `"Hyperbola"`, `"Parabola"`, `"BezierCurve"`, `"BSplineCurve"`,
+    /// `"OffsetCurve"`, `"Other"`) as documented on
+    /// [`GeometryQuery::EdgeCurveKind`]. Decoded by the
+    /// `selector_vocabulary_v2::edges_by_curve_kind` selector via
+    /// [`reify_types::EdgeCurveKind`]'s `TryFrom<&str>` impl.
+    pub fn with_edge_curve_kind_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::EdgeCurveKind(handle), value);
+        self
+    }
+
     /// Get the operations received so far.
     pub fn operations(&self) -> Vec<GeometryOpRecord> {
         self.operations.lock().unwrap().clone()

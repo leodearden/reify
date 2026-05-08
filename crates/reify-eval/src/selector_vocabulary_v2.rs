@@ -31,7 +31,10 @@
 
 use std::collections::HashSet;
 
-use reify_types::{GeometryHandleId, GeometryKernel, GeometryQuery, QueryError};
+use reify_types::{
+    EdgeCurveKind, FaceSurfaceKind, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError,
+    Value,
+};
 
 use crate::topology_selectors::{
     dot3, filter_by_value, normalize3, parse_bbox_axis_extents, parse_xyz_value,
@@ -452,4 +455,135 @@ pub fn extremal_by_centroid<K: GeometryKernel + ?Sized>(
         }
     }
     Ok(out)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Geometry-type filters (PRD line 78)
+//
+// `%Plane` / `%Cylinder` / `%Cone` / `%Sphere` / `%Torus` for faces and
+// `%Line` / `%Circle` / `%Ellipse` / `%Hyperbola` / `%Parabola` for edges
+// dispatch the kernel's surface/curve classification (`GeomAbs_*` via
+// OCCT's `BRepAdaptor_Surface::GetType()` / `BRepAdaptor_Curve::GetType()`)
+// and retain the sub-shapes whose kind matches.
+//
+// `%Geom` is the universal no-op: every Geometry trivially satisfies it,
+// so the filter returns the input slice unchanged. It exists purely so
+// downstream chains can compose without a special-case "no kind filter"
+// branch.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Decode a `Value::String(name)` payload into the typed kind `T`,
+/// returning a `QueryError::QueryFailed` (with `query_label` and `id`
+/// embedded) on a non-string payload or an unknown canonical name.
+///
+/// `decode` is the kind-specific decoder
+/// ([`FaceSurfaceKind::try_from_str`] or
+/// [`EdgeCurveKind::try_from_str`]); both share identical control flow,
+/// so this helper centralises the diagnostic format and prevents the two
+/// selectors drifting in their error messages.
+fn parse_kind_string<T, F>(
+    value: &Value,
+    id: GeometryHandleId,
+    query_label: &'static str,
+    decode: F,
+) -> Result<T, QueryError>
+where
+    F: Fn(&str) -> Result<T, &str>,
+{
+    let s = match value {
+        Value::String(s) => s,
+        other => {
+            return Err(QueryError::QueryFailed(format!(
+                "{query_label}({id:?}) expected Value::String, got {other:?}"
+            )));
+        }
+    };
+    decode(s).map_err(|name| {
+        QueryError::QueryFailed(format!(
+            "{query_label}({id:?}) returned unknown kind name {name:?}"
+        ))
+    })
+}
+
+/// Return the subset of `extract_faces(handle)` whose underlying surface
+/// classifies as `kind` per [`GeometryQuery::FaceSurfaceKind`] (OCCT's
+/// `BRepAdaptor_Surface::GetType()`).
+///
+/// Implements PRD line 78's `%Plane`/`%Cylinder`/`%Cone`/`%Sphere`/`%Torus`
+/// filters. Issues a single batched `kernel.query_many` for the candidate
+/// slice (matching the v0.1 selector batching discipline), parses each
+/// `Value::String` reply via [`FaceSurfaceKind::try_from_str`], and
+/// retains faces whose decoded kind is exactly equal to `kind`.
+///
+/// # Errors
+///
+/// - Propagates any error from `extract_faces`.
+/// - Propagates any error from a per-face `FaceSurfaceKind` query.
+/// - Returns `QueryError::QueryFailed` on a non-string payload or an
+///   unknown canonical kind-name (defence-in-depth against a misbehaving
+///   kernel).
+pub fn faces_by_surface_kind<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    kind: FaceSurfaceKind,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let faces = kernel.extract_faces(handle)?;
+    filter_by_value(
+        kernel,
+        &faces,
+        "faces_by_surface_kind",
+        GeometryQuery::FaceSurfaceKind,
+        |id, value| {
+            let parsed =
+                parse_kind_string(value, id, "FaceSurfaceKind", FaceSurfaceKind::try_from_str)?;
+            Ok(parsed == kind)
+        },
+    )
+}
+
+/// Return the subset of `extract_edges(handle)` whose underlying curve
+/// classifies as `kind` per [`GeometryQuery::EdgeCurveKind`] (OCCT's
+/// `BRepAdaptor_Curve::GetType()`).
+///
+/// Implements PRD line 78's `%Line`/`%Circle`/`%Ellipse`/`%Hyperbola`/`%Parabola`
+/// filters. Symmetric to [`faces_by_surface_kind`] for edges — same
+/// batching, same error shape.
+///
+/// # Errors
+///
+/// - Propagates any error from `extract_edges`.
+/// - Propagates any error from a per-edge `EdgeCurveKind` query.
+/// - Returns `QueryError::QueryFailed` on a non-string payload or an
+///   unknown canonical kind-name.
+pub fn edges_by_curve_kind<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    kind: EdgeCurveKind,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let edges = kernel.extract_edges(handle)?;
+    filter_by_value(
+        kernel,
+        &edges,
+        "edges_by_curve_kind",
+        GeometryQuery::EdgeCurveKind,
+        |id, value| {
+            let parsed =
+                parse_kind_string(value, id, "EdgeCurveKind", EdgeCurveKind::try_from_str)?;
+            Ok(parsed == kind)
+        },
+    )
+}
+
+/// `%Geom` — the universal geometry-type filter (PRD line 78).
+///
+/// Every `GeometryHandleId` trivially satisfies the "is geometry"
+/// predicate, so this filter returns the input slice unchanged: same
+/// order, same length, same multiplicities (no dedup, in contrast to the
+/// combinators above). It exists so callers can compose chains uniformly
+/// — substituting `geom_universal` for a kind-specific filter is a
+/// syntactic identity at the chain level.
+///
+/// Pure-Rust, no kernel dependency — `O(n)` clone of the slice.
+pub fn geom_universal(handles: &[GeometryHandleId]) -> Vec<GeometryHandleId> {
+    handles.to_vec()
 }
