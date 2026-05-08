@@ -1176,6 +1176,31 @@ mod tests {
         );
     }
 
+    // ── Task 3137 step 3: segment_regions accepts &SingleBodyMask ────────────
+
+    /// `segment_regions` can be called with a `&SingleBodyMask` wrapper around
+    /// an empty mask; the empty-mask post-conditions still hold.
+    #[test]
+    fn segment_regions_accepts_single_body_mask_wrapper() {
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![],
+        };
+        let mesh = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        let single_body = SingleBodyMask::new(mask);
+        let result: SegmentationResult =
+            segment_regions(&single_body, &mesh, &SegmentationOptions::default())
+                .expect("empty SingleBodyMask + empty mesh should return Ok");
+        assert!(result.regions.is_empty(), "empty mask → no regions");
+        assert!(result.vertex_labels.is_empty(), "empty mesh → no vertex labels");
+        assert!(result.triangle_labels.is_empty(), "empty mesh → no triangle labels");
+    }
+
     // ── Task 3137 step 1: SingleBodyMask newtype wrapper ─────────────────────
 
     /// `SingleBodyMask::new` wraps a `MedialMask` by value; `inner()` returns
