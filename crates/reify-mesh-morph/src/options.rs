@@ -130,51 +130,55 @@ mod tests {
 
     #[test]
     fn morph_failure_four_variants_construct_and_pattern_match_exhaustively() {
-        let variants = [
-            MorphFailure::Ineligible(Reason::StructuralChange),
+        let ineligible = MorphFailure::Ineligible(Reason::StructuralChange);
+        let hard_fail = MorphFailure::QualityHardFail(InversionDetails {
+            element_index: 7,
+            jacobian: -1.0,
+        });
+        let soft_fail = MorphFailure::QualitySoftFail(MetricsBreached {
+            min_scaled_jacobian: Some(0.10),
+            pct_below_025: Some(0.02),
+            max_aspect_ratio_increase: Some(2.5),
+        });
+        let solver_err =
+            MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix"));
+
+        // Exhaustive compile-fence: no wildcard arm ensures that adding,
+        // removing, or renaming a variant in MorphFailure breaks compilation
+        // immediately — the contract the doc-comment on MorphFailure advertises.
+        // Arm bodies are empty; value checks below use assert_eq! on the whole
+        // variant via the derived PartialEq.
+        match MorphFailure::Ineligible(Reason::StructuralChange) {
+            MorphFailure::Ineligible(_) => {}
+            MorphFailure::QualityHardFail(_) => {}
+            MorphFailure::QualitySoftFail(_) => {}
+            MorphFailure::SolverError(_) => {}
+        }
+
+        // Value checks via assert_eq!. The derived PartialEq uses exact f64
+        // bit-equality. The same literal token appears on both sides of each
+        // assertion (no arithmetic, no rounding), so the comparison is
+        // deterministic for the finite f64 values used here (-1.0, 0.10, 0.02,
+        // 2.5 all represent exactly in IEEE 754 double).
+        assert_eq!(ineligible, MorphFailure::Ineligible(Reason::StructuralChange));
+        assert_eq!(
+            hard_fail,
             MorphFailure::QualityHardFail(InversionDetails {
                 element_index: 7,
                 jacobian: -1.0,
-            }),
+            })
+        );
+        assert_eq!(
+            soft_fail,
             MorphFailure::QualitySoftFail(MetricsBreached {
                 min_scaled_jacobian: Some(0.10),
                 pct_below_025: Some(0.02),
                 max_aspect_ratio_increase: Some(2.5),
-            }),
-            MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix")),
-        ];
-
-        for failure in variants {
-            // Exhaustive match — no wildcard arm. Adding or renaming a variant
-            // in MorphFailure breaks this test, which is the intended contract lock.
-            // Each arm asserts on the carried payload.
-            match failure {
-                MorphFailure::Ineligible(reason) => {
-                    assert!(
-                        matches!(reason, Reason::StructuralChange),
-                        "unexpected reason: {reason:?}"
-                    );
-                }
-                MorphFailure::QualityHardFail(InversionDetails {
-                    element_index: idx,
-                    jacobian: j,
-                }) => {
-                    assert_eq!(idx, 7);
-                    assert!((j - -1.0).abs() < 1e-12);
-                }
-                MorphFailure::QualitySoftFail(MetricsBreached {
-                    min_scaled_jacobian,
-                    pct_below_025,
-                    max_aspect_ratio_increase,
-                }) => {
-                    assert!((min_scaled_jacobian.unwrap() - 0.10).abs() < 1e-12);
-                    assert!((pct_below_025.unwrap() - 0.02).abs() < 1e-12);
-                    assert!((max_aspect_ratio_increase.unwrap() - 2.5).abs() < 1e-12);
-                }
-                MorphFailure::SolverError(payload) => {
-                    assert_eq!(payload.message(), "singular stiffness matrix");
-                }
-            }
-        }
+            })
+        );
+        assert_eq!(
+            solver_err,
+            MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix"))
+        );
     }
 }
