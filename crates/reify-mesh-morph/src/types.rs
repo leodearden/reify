@@ -64,7 +64,7 @@ pub struct MetricsBreached {
 /// construct via `new(...)`. When PRD task #7 lands a structured kernel-error
 /// type, additional fields (e.g. `source: reify_solver_elastic::SolverError`)
 /// can be added without breaking existing `SolverError(payload)` match arms.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolverErrorPayload {
     message: String,
 }

@@ -23,7 +23,7 @@ use crate::types::{InversionDetails, MetricsBreached, SolverErrorPayload};
 ///
 /// The exhaustive contract test in `options::tests` acts as a compile-fence:
 /// adding, removing, or renaming a variant breaks the test immediately.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MorphFailure {
     /// The edit was rejected by the eligibility predicate (task #3).
     ///
