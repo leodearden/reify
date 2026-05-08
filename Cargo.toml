@@ -61,7 +61,7 @@ reify-test-support = { path = "crates/reify-test-support" }
 
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
-bincode = "1"
+bincode = "=1.3"
 
 im = "15"
 indexmap = "2"
