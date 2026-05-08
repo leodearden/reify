@@ -36,7 +36,7 @@ fn extract_number_literal(source: &str) -> f64 {
         other => panic!("expected Let, got {:?}", other),
     };
     match let_decl.value.kind {
-        ExprKind::NumberLiteral(v) => v,
+        ExprKind::NumberLiteral { value, .. } => value,
         ref other => panic!("expected NumberLiteral, got {:?}", other),
     }
 }
@@ -189,6 +189,78 @@ fn sign_no_digits_1e_plus_produces_parse_error() {
         !errors.is_empty(),
         "1e+ (sign with no exponent digits) should produce parse errors; got empty error list"
     );
+}
+
+// ── AST records int-vs-real distinction ──────────────────────────────────────
+
+/// Helper: extract both the `value` and `is_real` flag from a number-literal
+/// member, asserting no parse errors.
+fn extract_number_literal_with_flag(source: &str) -> (f64, bool) {
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+    let let_decl = match &members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+    match let_decl.value.kind {
+        ExprKind::NumberLiteral { value, is_real } => (value, is_real),
+        ref other => panic!("expected NumberLiteral {{ value, is_real }}, got {:?}", other),
+    }
+}
+
+/// `42` (bare integer token, no decimal point, no exponent) must record
+/// `is_real = false`.  The `: Real` annotation is honored at compile time via
+/// Int→Real widening in `conformance/checker.rs`, not by tagging the literal
+/// as Real in the AST.
+#[test]
+fn int_literal_42_has_is_real_false() {
+    let (value, is_real) = extract_number_literal_with_flag(
+        "structure S {\n  let x: Real = 42\n}",
+    );
+    assert_eq!(value, 42.0_f64, "value should be 42.0");
+    assert!(!is_real, "42 (no decimal, no exponent) should have is_real = false");
+}
+
+/// `1.0` (whole-number decimal literal) must record `is_real = true`.
+///
+/// This is the core bug fix for task 3184: before this change, `1.0` was
+/// silently re-typed as `Int(1)` because the AST discarded the `.` token and
+/// the compiler applied a value-based heuristic (if f64 == i64, emit Int).
+/// After the fix, the `is_real` flag preserves the author's intent.
+#[test]
+fn whole_number_real_literal_1_0_has_is_real_true() {
+    let (value, is_real) = extract_number_literal_with_flag(
+        "structure S {\n  let x: Real = 1.0\n}",
+    );
+    assert_eq!(value, 1.0_f64, "value should be 1.0");
+    assert!(is_real, "1.0 (has decimal point) should have is_real = true");
+}
+
+/// `2.5` (fractional decimal literal) must record `is_real = true`.
+/// Regression check: fractional literals that were already Real continue to
+/// carry `is_real = true`.
+#[test]
+fn fractional_literal_2_5_has_is_real_true() {
+    let (value, is_real) = extract_number_literal_with_flag(
+        "structure S {\n  let x: Real = 2.5\n}",
+    );
+    assert_eq!(value, 2.5_f64, "value should be 2.5");
+    assert!(is_real, "2.5 (has decimal point) should have is_real = true");
+}
+
+/// `1e6` (scientific notation) must record `is_real = true`.
+///
+/// Scientific notation is canonically a real-number literal: the exponent
+/// suffix `e`/`E` signals a floating-point representation regardless of
+/// whether the resulting f64 is a whole number.  Before task 3184, `1e6`
+/// would silently emit `Int(1000000)` via the value-based heuristic.
+#[test]
+fn scientific_literal_1e6_has_is_real_true() {
+    let (value, is_real) = extract_number_literal_with_flag(
+        "structure S {\n  let x: Real = 1e6\n}",
+    );
+    assert_eq!(value, 1e6_f64, "value should be 1e6");
+    assert!(is_real, "1e6 (has exponent suffix) should have is_real = true");
 }
 
 // ── Unit-suffix fallback disambiguation ─────────────────────────────────────
