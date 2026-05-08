@@ -203,14 +203,12 @@ pub struct SegmentationResult {
 ///
 /// # Precondition — single body per call
 ///
-/// This function assumes `mask` represents a **single body**. The second-pass
-/// `MixedComponentOfBody` promotion (step 5) is body-scoped: if the mask
-/// spans multiple disconnected bodies (each potentially a multi-region body
-/// or a single-region body), every `ShellEligible` region in the entire mask
-/// will be promoted when *any* region is `TetEligible`, regardless of
-/// whether those regions belong to the same physical body. Callers must
-/// split the mask per body before invoking `segment_regions`, or accept
-/// that the promotion is applied at the whole-mask level.
+/// The `&SingleBodyMask` parameter encodes the single-body precondition at the
+/// type level. Construct a `SingleBodyMask` via `SingleBodyMask::new(mask)` as
+/// an explicit caller-side attestation that `mask` represents a single physical
+/// body (see [`SingleBodyMask`] for rationale). The second-pass
+/// `MixedComponentOfBody` promotion (step 5) is whole-mask body-scoped, so
+/// passing a multi-body mask produces incorrect tags without a diagnostic.
 ///
 /// # Non-finite vertex coordinates
 ///
@@ -235,10 +233,12 @@ pub struct SegmentationResult {
 /// Grid alignment between `mask` and `mesh` is **not** validated here; callers
 /// are expected to pass consistent T1 + T2 outputs.
 pub fn segment_regions(
-    mask: &MedialMask,
+    mask: &SingleBodyMask,
     mesh: &MidSurfaceMesh,
     options: &SegmentationOptions,
 ) -> Result<SegmentationResult, SegmentationError> {
+    // Rebind to the inner MedialMask so the algorithm body is unchanged.
+    let mask = mask.inner();
     // (1a) Reject invalid threshold before any other work.
     if options.shell_threshold <= 0.0 {
         return Err(SegmentationError::InvalidThreshold {
@@ -571,7 +571,7 @@ mod tests {
             thickness: vec![],
         };
         let result: SegmentationResult =
-            segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
                 .expect("empty mask + empty mesh should return Ok");
         assert!(result.regions.is_empty(), "empty mask → no regions");
         assert!(result.vertex_labels.is_empty(), "empty mesh → no vertex labels");
@@ -599,7 +599,7 @@ mod tests {
         };
         assert_eq!(
             segment_regions(
-                &mask,
+                &SingleBodyMask::new(mask.clone()),
                 &mesh,
                 &SegmentationOptions { shell_threshold: 0.0 }
             ),
@@ -608,7 +608,7 @@ mod tests {
         );
         assert_eq!(
             segment_regions(
-                &mask,
+                &SingleBodyMask::new(mask.clone()),
                 &mesh,
                 &SegmentationOptions { shell_threshold: -0.1 }
             ),
@@ -633,7 +633,7 @@ mod tests {
             thickness: vec![1.0, 2.0], // length 2 ≠ vertices length 3
         };
         assert_eq!(
-            segment_regions(&mask, &mesh, &SegmentationOptions::default()),
+            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default()),
             Err(SegmentationError::MeshLengthMismatch {
                 vertices_len: 3,
                 thickness_len: 2
@@ -653,7 +653,7 @@ mod tests {
             .expect("T2 extraction should succeed");
 
         let result =
-            segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            segment_regions(&SingleBodyMask::new(mask.clone()), &mesh, &SegmentationOptions::default())
                 .expect("segment_regions should succeed on slab");
 
         assert_eq!(result.regions.len(), 1, "one connected component");
@@ -698,7 +698,7 @@ mod tests {
         };
 
         let result =
-            segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            segment_regions(&SingleBodyMask::new(mask.clone()), &mesh, &SegmentationOptions::default())
                 .expect("segment_regions should succeed");
 
         assert_eq!(result.regions.len(), 2, "two disjoint clusters → two regions");
@@ -757,7 +757,7 @@ mod tests {
             .expect("T2 extraction should succeed");
 
         let result =
-            segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
                 .expect("segment_regions should succeed");
 
         let region = &result.regions[0];
@@ -816,7 +816,7 @@ mod tests {
         };
 
         let result =
-            segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
                 .expect("segment_regions should succeed");
 
         assert_eq!(result.regions.len(), 1);
@@ -867,7 +867,7 @@ mod tests {
             thickness: vec![1.0, 2.0, 3.0],
         };
 
-        let result = segment_regions(&mask, &mesh, &SegmentationOptions::default())
+        let result = segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
             .expect("segment_regions should succeed");
 
         assert_eq!(result.regions.len(), 1, "collinear voxels → one component");
@@ -927,7 +927,7 @@ mod tests {
         };
 
         let result =
-            segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
                 .expect("segment_regions should succeed");
 
         assert_eq!(result.regions.len(), 2);
@@ -976,7 +976,7 @@ mod tests {
             .expect("T2 extraction should succeed");
 
         let result = segment_regions(
-            &mask,
+            &SingleBodyMask::new(mask),
             &mesh,
             &SegmentationOptions { shell_threshold: 0.001 },
         )
@@ -1060,7 +1060,7 @@ mod tests {
             triangles: vec![],
             thickness: vec![1.0],
         };
-        let result = segment_regions(&mask, &mesh, &SegmentationOptions::default())
+        let result = segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
             .expect("single voxel + single vertex → Ok");
         assert_eq!(
             result.vertex_labels,
@@ -1112,7 +1112,7 @@ mod tests {
             thickness: vec![1.0; 5],
         };
 
-        let result = segment_regions(&mask, &mesh, &SegmentationOptions::default())
+        let result = segment_regions(&SingleBodyMask::new(mask), &mesh, &SegmentationOptions::default())
             .expect("segment_regions must not error or panic on non-finite vertex coords");
 
         // ── vertex labels ────────────────────────────────────────────────────

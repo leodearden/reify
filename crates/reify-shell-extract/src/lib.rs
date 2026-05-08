@@ -60,13 +60,14 @@
 //! ```
 //! use reify_shell_extract::{
 //!     segment_regions, MedialMask, MidSurfaceMesh,
-//!     SegmentationError, SegmentationOptions, SegmentationResult,
+//!     SegmentationError, SegmentationOptions, SegmentationResult, SingleBodyMask,
 //! };
 //!
 //! let mask = MedialMask { spacing: [1.0, 1.0, 1.0], origin: [0.0, 0.0, 0.0], voxels: vec![] };
 //! let mesh = MidSurfaceMesh { vertices: vec![], triangles: vec![], thickness: vec![] };
+//! let single_body = SingleBodyMask::new(mask);
 //! let result: SegmentationResult =
-//!     segment_regions(&mask, &mesh, &SegmentationOptions::default()).unwrap();
+//!     segment_regions(&single_body, &mesh, &SegmentationOptions::default()).unwrap();
 //! assert!(result.regions.is_empty() && result.vertex_labels.is_empty()
 //!         && result.triangle_labels.is_empty());
 //! let _: SegmentationError = SegmentationError::InvalidThreshold { value: 0.0 };
