@@ -197,7 +197,7 @@ pub fn quality_check(
     // Single pass over morphed elements: track inversions and soft-fail metrics.
     let mut hard_fail: Option<InversionDetails> = None;
     let mut global_min_scaled_j = f64::INFINITY;
-    let mut total_well_formed: usize = 0;
+    let mut total_evaluated: usize = 0;
     let mut count_below_025: usize = 0;
     let mut max_ar_increase: f64 = 0.0;
 
@@ -240,7 +240,7 @@ pub fn quality_check(
 
         // Use element_scaled_jacobian (per-element min over 4 corners).
         let sj = element_scaled_jacobian(&p);
-        total_well_formed += 1;
+        total_evaluated += 1;
         if sj < global_min_scaled_j {
             global_min_scaled_j = sj;
         }
@@ -317,8 +317,8 @@ pub fn quality_check(
         None
     };
 
-    let pct = if total_well_formed > 0 {
-        count_below_025 as f64 / total_well_formed as f64
+    let pct = if total_evaluated > 0 {
+        count_below_025 as f64 / total_evaluated as f64
     } else {
         0.0
     };
