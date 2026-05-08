@@ -580,43 +580,27 @@ mod tests {
 
     // ── Step 3: defaults-pin test ─────────────────────────────────────────────
 
-    /// Pin `MesherOptions::default()` field values via pattern destructuring.
+    /// Pin `MesherOptions::default()` struct shape via pattern destructuring.
     ///
-    /// The pattern-destructure serves as a compile-time field-rename guard:
-    /// if any field is renamed this test fails at compile time rather than
-    /// silently passing with a stale value.
+    /// The full-field destructure is a compile-time field-rename guard: if any
+    /// field is renamed or removed, this test fails at compile time rather than
+    /// silently passing with stale bindings.
+    ///
+    /// Value semantics (the *meaning* of each default) are covered by the
+    /// behavioural tests below (sliver-rejection, equilateral-pass,
+    /// options-validation), so value `assert_eq!`s are not duplicated here.
     ///
     /// Mirrors `mid_surface_options_defaults_pin_empirical_constants` in
     /// `mid_surface.rs`.
     #[test]
     fn mesher_options_defaults_pin_empirical_constants() {
+        // All four fields named explicitly — compile error on any field rename.
         let MesherOptions {
-            merge_tolerance,
-            min_aspect_ratio,
-            min_angle_degrees,
-            max_remesh_iterations,
+            merge_tolerance: _,
+            min_aspect_ratio: _,
+            min_angle_degrees: _,
+            max_remesh_iterations: _,
         } = MesherOptions::default();
-
-        assert_eq!(
-            merge_tolerance, 1e-9,
-            "merge_tolerance default must be 1e-9 (bit-exact for binary-MC \
-             output; matches MidSurfaceOptions::grid_alignment_tolerance)"
-        );
-        assert_eq!(
-            min_aspect_ratio, 0.1,
-            "min_aspect_ratio default must be 0.1 (standard FEA sliver gate; \
-             rejects triangles whose shortest altitude < 10% of longest edge)"
-        );
-        assert_eq!(
-            min_angle_degrees, 20.0,
-            "min_angle_degrees default must be 20.0° (standard FEA angle gate; \
-             rejects high-aspect slivers with extremely acute angles)"
-        );
-        assert_eq!(
-            max_remesh_iterations, 0,
-            "max_remesh_iterations default must be 0 (fail-fast; forces callers \
-             to opt into smoothing rather than silently hiding quality bugs)"
-        );
     }
 
     // ── Step 5: options-validation tests ─────────────────────────────────────

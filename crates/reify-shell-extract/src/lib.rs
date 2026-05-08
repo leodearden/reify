@@ -36,16 +36,12 @@
 //! # Mid-surface mesher smoke test (T9)
 //!
 //! ```
-//! use reify_shell_extract::{
-//!     mesh_mid_surface, MesherError, MesherOptions, MesherResult, MidSurfaceMesh,
-//!     QualityMetrics,
-//! };
+//! use reify_shell_extract::{mesh_mid_surface, MesherOptions, MesherResult, MidSurfaceMesh};
 //!
 //! let mesh = MidSurfaceMesh { vertices: vec![], triangles: vec![], thickness: vec![] };
 //! let result: MesherResult =
 //!     mesh_mid_surface(&mesh, &MesherOptions::default()).unwrap();
 //! assert!(result.mesh.vertices.is_empty() && result.metrics.triangle_count == 0);
-//! let _: MesherError = MesherError::InvalidMergeTolerance { value: 0.0 };
 //! ```
 //!
 //! # Region-segmentation smoke test
