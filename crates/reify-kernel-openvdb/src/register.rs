@@ -73,7 +73,8 @@ use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Oper
 ///
 /// Must equal `KernelId::OpenVdb.to_string()` (`"openvdb"`) so the
 /// project-pin lookup in `reify-config` matches the registered adapter at
-/// runtime.
+/// runtime. Enforced by
+/// `crates/reify-config/tests/kernel_name_consistency.rs::openvdb_kernel_name_const_matches_kernel_id_display`.
 ///
 /// # Lex-min note
 ///
