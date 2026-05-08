@@ -973,6 +973,43 @@ mod tests {
         assert_emits_one_warn(&registered, "an intra-kernel duplicate (op, repr) pair");
     }
 
+    /// `pick_lexmin_brep_kernel()` must return the lex-smallest BRep-capable
+    /// entry from the global registry, NOT the lex-smaller `__0_mesh_kernel`
+    /// synthetic which is Mesh-only.
+    ///
+    /// Asserts:
+    /// (a) `registry().contains_key("__0_mesh_kernel")` — the Mesh-only
+    ///     synthetic is registered and visible in the global walk.
+    /// (b) `pick_lexmin_brep_kernel().name == NAME_A` — the BRep filter picks
+    ///     `__a_kernel` over the lex-smaller `__0_mesh_kernel`.
+    ///
+    /// This test is RED before step-8 impl: both `pick_lexmin_brep_kernel` and
+    /// `__0_mesh_kernel` synthetic do not yet exist in the global registry.
+    #[test]
+    fn pick_lexmin_brep_kernel_returns_lex_smallest_brep_capable_synthetic_when_lex_smaller_mesh_only_synthetic_present(
+    ) {
+        // (a) The Mesh-only synthetic must be visible in the global registry.
+        assert!(
+            registry().contains_key(test_synthetic_kernel::NAME_MESH_ONLY),
+            "registry must contain the Mesh-only synthetic {:?} (step-8 adds it); \
+             if absent, the BRep-preference test has no Mesh-only entry to filter",
+            test_synthetic_kernel::NAME_MESH_ONLY,
+        );
+        // (b) pick_lexmin_brep_kernel must return __a_kernel (BRep-capable),
+        //     not __0_mesh_kernel (Mesh-only, lex-smaller in ASCII order).
+        let picked = pick_lexmin_brep_kernel()
+            .expect("pick_lexmin_brep_kernel must return Some in a cfg(test) build");
+        assert_eq!(
+            picked.name,
+            test_synthetic_kernel::NAME_A,
+            "pick_lexmin_brep_kernel must return __a_kernel ({:?}), not the lex-smaller \
+             Mesh-only synthetic __0_mesh_kernel ({:?}); \
+             '0'=0x30 < 'a'=0x61 so __0_mesh_kernel < __a_kernel in ASCII order",
+            test_synthetic_kernel::NAME_A,
+            test_synthetic_kernel::NAME_MESH_ONLY,
+        );
+    }
+
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
     /// *smaller* kernel when multiple registrations are present.
     ///
