@@ -27,7 +27,7 @@ pub use reify_eval::{
 /// should call [`morph_eligible`] directly.
 pub fn eligible(old_brep: &BRep, new_brep: &BRep) -> bool {
     matches!(
-        eligibility::morph_eligible(old_brep, new_brep),
+        eligibility::morph_eligible(*old_brep, *new_brep),
         Eligibility::Eligible(_)
     )
 }
@@ -65,7 +65,7 @@ pub fn morph(
 ) -> Result<reify_types::VolumeMesh, MorphFailure> {
     let _ = old_mesh;
     let _ = options;
-    match eligibility::morph_eligible(old_brep, new_brep) {
+    match eligibility::morph_eligible(*old_brep, *new_brep) {
         Eligibility::Ineligible(reason) => Err(MorphFailure::Ineligible(reason)),
         Eligibility::Eligible(_correspondence_map) => Err(MorphFailure::SolverError(
             SolverErrorPayload::new(
