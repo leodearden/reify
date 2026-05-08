@@ -731,4 +731,23 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn kernel_id_all_covers_every_variant() {
+        // Exhaustive match: compile error if a future variant is added without
+        // being listed here, forcing the contributor to update KernelId::ALL too.
+        fn count(id: KernelId) -> u8 {
+            match id {
+                KernelId::Occt
+                | KernelId::Manifold
+                | KernelId::Fidget
+                | KernelId::OpenVdb
+                | KernelId::Gmsh => 1,
+            }
+        }
+        let _ = count; // silence unused-function warning
+        // Deliberately wrong constant — verify the runtime safeguard catches drift
+        // in KernelId::ALL. Step-2 corrects this to 5 (the true count).
+        assert_eq!(KernelId::ALL.len(), 99);
+    }
 }
