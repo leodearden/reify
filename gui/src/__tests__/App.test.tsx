@@ -132,7 +132,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App from '../App';
+import App, { NEW_FILE_TEMPLATE } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -2117,7 +2117,7 @@ describe('App Ctrl+O open file', () => {
 
 describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
   const newPath = '/user/chosen/new.ri';
-  const newContent = '// New design\n';
+  const newContent = NEW_FILE_TEMPLATE;
 
   function setupHappyPathMocks() {
     vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
