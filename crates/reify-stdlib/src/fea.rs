@@ -57,9 +57,14 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// - `args[0]`: A `MultiCaseResult` struct instance
 ///   (`Value::Map { "cases" -> Value::Map<Value::String, ElasticResult-Map> }`).
 /// - `args[1]`: A non-empty `Value::Map<Value::String, numeric>` of (case name,
-///   weight) pairs. Weights may be any numeric `Value` for which `as_f64()`
-///   returns `Some` (covers `Value::Real` and `Value::Int`; rejects
-///   `Value::String`, `Value::Bool`, `Value::Map`, `Value::List`, `Value::Undef`).
+///   weight) pairs. Weights may be any **finite** `Value` for which `as_f64()`
+///   returns `Some` (covers `Value::Real`, `Value::Int`, and `Value::Scalar`
+///   — note: `Value::Scalar` supplies its raw SI-numeric component, so a
+///   dimensionful scalar like `1.4 m` would be silently accepted as `1.4`;
+///   callers that require strictly unitless weights must validate dimension
+///   upstream. Non-finite values — NaN, ±Inf — and values for which
+///   `as_f64()` returns `None` (e.g. `Value::String`, `Value::Bool`,
+///   `Value::Map`, `Value::List`, `Value::Undef`) all reject to `Value::Undef`).
 ///
 /// # Output
 ///
@@ -78,7 +83,8 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   `cases` not a Map)
 /// - `args[1]` is not `Value::Map` or is empty
 /// - any weight key is not `Value::String`
-/// - any weight value has no finite f64 representation (`as_f64()` returns None)
+/// - any weight value has no f64 representation (`as_f64()` returns None), or
+///   has a non-finite representation (NaN, ±Inf)
 /// - a weight name is absent from `base_results.cases`
 /// - a case value is not `Value::Map`
 /// - a case Map is missing `displacement` or `stress` key
@@ -106,9 +112,9 @@ fn linear_combine(args: &[Value]) -> Value {
         return Value::Undef;
     }
 
-    // Validate weights iteration: collect (weight: f64, case_map: &BTreeMap)
-    // pairs. Each entry must have a String key, a numeric weight value, a
-    // known case name, and a Map-typed case entry.
+    // Validate weights: collect (weight: f64, case_map: &BTreeMap) pairs.
+    // Each entry must have a String key, a finite numeric weight, a known case
+    // name, and a Map-typed case entry.
     let mut weighted_cases: Vec<(f64, &BTreeMap<Value, Value>)> =
         Vec::with_capacity(weights_map.len());
     for (name_val, weight_val) in weights_map {
@@ -117,11 +123,15 @@ fn linear_combine(args: &[Value]) -> Value {
             Value::String(s) => s,
             _ => return Value::Undef,
         };
-        // Weight value must be numeric (Real or Int accepted; String/Bool/etc. rejected).
+        // Weight: as_f64() must return Some (covers Real, Int, Scalar SI-component).
         let weight = match weight_val.as_f64() {
             Some(w) => w,
             None => return Value::Undef,
         };
+        // Non-finite weights (NaN, ±Inf) would poison the accumulator — reject.
+        if !weight.is_finite() {
+            return Value::Undef;
+        }
         // Case name must exist in base_results.cases.
         let case_val = match cases_map.get(&Value::String(case_name.clone())) {
             Some(v) => v,
@@ -135,43 +145,25 @@ fn linear_combine(args: &[Value]) -> Value {
         weighted_cases.push((weight, case_map));
     }
 
-    // Extract Sampled Fields from the first weighted case as the reference.
-    // Helper closure: extracts (domain_type, codomain_type, &SampledField)
-    // from a case Map's field by name; returns None on any mismatch.
-    let extract_case_sampled_field = |case_map: &BTreeMap<Value, Value>,
-                                      key: &str|
-     -> Option<(Type, Type, SampledField)> {
-        let field_val = case_map.get(&Value::String(key.to_string()))?;
-        match field_val {
-            Value::Field {
-                source: FieldSourceKind::Sampled,
-                lambda,
-                domain_type,
-                codomain_type,
-            } => match lambda.as_ref() {
-                Value::SampledField(sf) => Some((
-                    domain_type.clone(),
-                    codomain_type.clone(),
-                    sf.clone(),
-                )),
-                _ => None,
-            },
-            _ => None,
-        }
+    // Borrow the first weighted case's sampled fields as the reference for
+    // metadata and types. Only lightweight metadata (kind, bounds, spacing,
+    // axis_grids, types) is cloned for the output; the data buffer is accessed
+    // via slice — no per-case Vec<f64> clone for large field buffers.
+    // Safety: weighted_cases is non-empty by the is_empty() guard above.
+    let ref_cm = weighted_cases[0].1;
+    let ref_disp_val = match ref_cm.get(&Value::String("displacement".to_string())) {
+        Some(v) => v,
+        None => return Value::Undef,
     };
-
-    // Use first weighted case as the reference for grid metadata and types.
-    let (ref_disp_dom, ref_disp_cod, ref_disp_sf) = match weighted_cases
-        .first()
-        .and_then(|(_, cm)| extract_case_sampled_field(cm, "displacement"))
-    {
+    let (ref_disp_dom, ref_disp_cod, ref_disp_sf) = match as_sampled_field(ref_disp_val) {
         Some(t) => t,
         None => return Value::Undef,
     };
-    let (ref_stress_dom, ref_stress_cod, ref_stress_sf) = match weighted_cases
-        .first()
-        .and_then(|(_, cm)| extract_case_sampled_field(cm, "stress"))
-    {
+    let ref_stress_val = match ref_cm.get(&Value::String("stress".to_string())) {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let (ref_stress_dom, ref_stress_cod, ref_stress_sf) = match as_sampled_field(ref_stress_val) {
         Some(t) => t,
         None => return Value::Undef,
     };
@@ -186,22 +178,31 @@ fn linear_combine(args: &[Value]) -> Value {
     // Outer loop over weighted cases; inner loop over indices.
     // Mirrors envelope_reduce's outer-cases / inner-indices nesting for
     // vectorisation and bounds-check-free iteration.
+    // Borrows each case's SampledField data slice — no per-case Vec clone.
     for (i, (weight, case_map)) in weighted_cases.iter().enumerate() {
-        let (dom_d, cod_d, sf_d) = match extract_case_sampled_field(case_map, "displacement") {
+        let disp_val = match case_map.get(&Value::String("displacement".to_string())) {
+            Some(v) => v,
+            None => return Value::Undef,
+        };
+        let (dom_d, cod_d, sf_d) = match as_sampled_field(disp_val) {
             Some(t) => t,
             None => return Value::Undef,
         };
-        let (dom_s, cod_s, sf_s) = match extract_case_sampled_field(case_map, "stress") {
+        let stress_val = match case_map.get(&Value::String("stress".to_string())) {
+            Some(v) => v,
+            None => return Value::Undef,
+        };
+        let (dom_s, cod_s, sf_s) = match as_sampled_field(stress_val) {
             Some(t) => t,
             None => return Value::Undef,
         };
 
         // Validate metadata against reference (skip first case — it IS the ref).
         if i > 0 {
-            if !metadata_matches(&ref_disp_sf, &sf_d, &ref_disp_dom, &ref_disp_cod, &dom_d, &cod_d) {
+            if !metadata_matches(ref_disp_sf, sf_d, ref_disp_dom, ref_disp_cod, dom_d, cod_d) {
                 return Value::Undef;
             }
-            if !metadata_matches(&ref_stress_sf, &sf_s, &ref_stress_dom, &ref_stress_cod, &dom_s, &cod_s) {
+            if !metadata_matches(ref_stress_sf, sf_s, ref_stress_dom, ref_stress_cod, dom_s, cod_s) {
                 return Value::Undef;
             }
         }
@@ -222,7 +223,8 @@ fn linear_combine(args: &[Value]) -> Value {
         .map(|v| v.abs())
         .fold(0.0_f64, f64::max);
 
-    // Build output Fields with name="linear_combine", types/grids from reference.
+    // Build output SampledFields: clone only lightweight metadata from reference;
+    // the accumulated data buffers are moved directly into the output.
     let out_disp_sf = SampledField {
         name: "linear_combine".to_string(),
         kind: ref_disp_sf.kind,
@@ -247,14 +249,14 @@ fn linear_combine(args: &[Value]) -> Value {
     };
 
     let out_disp_field = Value::Field {
-        domain_type: ref_disp_dom,
-        codomain_type: ref_disp_cod,
+        domain_type: ref_disp_dom.clone(),
+        codomain_type: ref_disp_cod.clone(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(out_disp_sf)),
     };
     let out_stress_field = Value::Field {
-        domain_type: ref_stress_dom,
-        codomain_type: ref_stress_cod,
+        domain_type: ref_stress_dom.clone(),
+        codomain_type: ref_stress_cod.clone(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(out_stress_sf)),
     };
@@ -476,20 +478,16 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
     // and per-case Sampled extraction.
     let mut iter = map.values();
     let first = iter.next();
+    // Use as_sampled_field to extract the reference case; avoids duplicating
+    // the three-level match pattern shared with linear_combine.
     let (ref_domain, ref_codomain, ref_sf): (&Type, &Type, &SampledField) = match first {
-        Some(Value::Field {
-            source: FieldSourceKind::Sampled,
-            lambda,
-            domain_type,
-            codomain_type,
-        }) => match lambda.as_ref() {
-            Value::SampledField(sf) => (domain_type, codomain_type, sf),
-            // Defensive: a Sampled source must carry a SampledField in
-            // its lambda slot (mirrors field_reductions.rs:96-99).
-            _ => return Value::Undef,
+        Some(v) => match as_sampled_field(v) {
+            Some(t) => t,
+            // Defensive: non-Sampled source or Sampled with non-SampledField lambda.
+            None => return Value::Undef,
         },
-        // Empty Map or non-Sampled / non-Field first value → Undef.
-        Some(_) | None => return Value::Undef,
+        // Empty Map (already guarded above, but kept for exhaustiveness).
+        None => return Value::Undef,
     };
 
     // Collect per-case data slices, validating metadata equality with
@@ -497,17 +495,9 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
     let mut cases_data: Vec<&[f64]> = Vec::with_capacity(map.len());
     cases_data.push(&ref_sf.data);
     for v in iter {
-        let (dom, cod, sf) = match v {
-            Value::Field {
-                source: FieldSourceKind::Sampled,
-                lambda,
-                domain_type,
-                codomain_type,
-            } => match lambda.as_ref() {
-                Value::SampledField(sf) => (domain_type, codomain_type, sf),
-                _ => return Value::Undef,
-            },
-            _ => return Value::Undef,
+        let (dom, cod, sf) = match as_sampled_field(v) {
+            Some(t) => t,
+            None => return Value::Undef,
         };
         if !metadata_matches(ref_sf, sf, ref_domain, ref_codomain, dom, cod) {
             return Value::Undef;
@@ -583,6 +573,32 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
         codomain_type: ref_codomain.clone(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(result_sf)),
+    }
+}
+
+/// Extract `(&domain_type, &codomain_type, &SampledField)` from a
+/// `Value::Field` whose `source` is `Sampled` and whose `lambda` slot holds
+/// a `Value::SampledField`. Returns `None` on any mismatch:
+///   - value is not `Value::Field`
+///   - `source` is not `FieldSourceKind::Sampled`
+///   - `lambda` does not hold a `Value::SampledField`
+///
+/// Used by both `envelope_reduce` and `linear_combine` to avoid duplicating
+/// the three-level match pattern. Returning borrows avoids cloning the
+/// (potentially large) data buffer — callers only clone lightweight metadata
+/// (`bounds_min/max`, `spacing`, `axis_grids`) when constructing output.
+fn as_sampled_field(v: &Value) -> Option<(&Type, &Type, &SampledField)> {
+    match v {
+        Value::Field {
+            source: FieldSourceKind::Sampled,
+            lambda,
+            domain_type,
+            codomain_type,
+        } => match lambda.as_ref() {
+            Value::SampledField(sf) => Some((domain_type, codomain_type, sf)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -2450,6 +2466,161 @@ mod tests {
         let mcr = make_multi_case_result_value(&[("A", partial_case)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    // ── linear_combine NaN/Inf weight rejection ──────────────────────────────
+
+    #[test]
+    fn linear_combine_nan_weight_returns_undef() {
+        // A NaN weight would poison the accumulator and cause max_von_mises to
+        // collapse to 0.0 (via the is_finite filter). Reject at the weight-
+        // validation stage instead — matching the silent-Undef discipline.
+        let axis = vec![0.0, 1.0, 2.0];
+        let disp_field = wrap_sampled_field(
+            make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let stress_field = wrap_sampled_field(
+            make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
+        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(f64::NAN));
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef(),
+            "NaN weight must reject to Undef"
+        );
+    }
+
+    // ── linear_combine stress-field source rejection (symmetric with disp) ───
+
+    #[test]
+    fn linear_combine_stress_non_sampled_source_returns_undef() {
+        // Case B's stress has FieldSourceKind::Analytical — non-Sampled → Undef.
+        // Symmetric to linear_combine_displacement_non_sampled_source_returns_undef.
+        let axis = vec![0.0, 1.0, 2.0];
+        let shared_disp = wrap_sampled_field(
+            make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_stress = wrap_sampled_field(
+            make_sampled_1d("sa", axis, vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_stress = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(Value::Undef),
+        };
+        let case_a = make_fixture_elastic_result_with_fields(shared_disp.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(shared_disp, b_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        wm.insert(Value::String("B".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn linear_combine_stress_sampled_with_non_sampledfield_lambda_returns_undef() {
+        // Case B's stress is Sampled-source but lambda is Value::Undef (degenerate).
+        // Symmetric to linear_combine_displacement_sampled_with_non_sampledfield_lambda_returns_undef.
+        let axis = vec![0.0, 1.0, 2.0];
+        let shared_disp = wrap_sampled_field(
+            make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_stress = wrap_sampled_field(
+            make_sampled_1d("sa", axis, vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_stress = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::Undef), // Sampled but non-SampledField lambda
+        };
+        let case_a = make_fixture_elastic_result_with_fields(shared_disp.clone(), a_stress);
+        let case_b = make_fixture_elastic_result_with_fields(shared_disp, b_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        wm.insert(Value::String("B".to_string()), Value::Real(1.0));
+        assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
+    }
+
+    // ── linear_combine Int weight accepted ───────────────────────────────────
+
+    #[test]
+    fn linear_combine_int_weight_accepted() {
+        // Value::Int is a valid weight (as_f64() returns Some and the result is
+        // finite). Pinned because the doc lists Int as accepted and a match that
+        // accidentally restricts to Real would silently break integer weights.
+        let axis = vec![0.0, 1.0, 2.0];
+        let disp_sf = make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]);
+        let disp_field = wrap_sampled_field(disp_sf, Type::Real, Type::Real);
+        let stress_sf = make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]);
+        let stress_field = wrap_sampled_field(stress_sf, Type::Real, Type::Real);
+        let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
+        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+
+        let mut wm = BTreeMap::new();
+        // Int weight 2 — must be treated identically to Real(2.0).
+        wm.insert(Value::String("A".to_string()), Value::Int(2));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap();
+        assert!(!result.is_undef(), "Int weight must be accepted");
+
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+        let disp = result_map.get(&Value::String("displacement".to_string())).unwrap();
+        let disp_sf = extract_sampled(disp);
+        assert_eq!(disp_sf.data, vec![2.0, 4.0, 6.0], "Int(2) weight must double displacement");
+    }
+
+    // ── linear_combine displacement codomain mismatch ────────────────────────
+
+    #[test]
+    fn linear_combine_displacement_codomain_type_mismatch_returns_undef() {
+        // Case A displacement has Real codomain, case B has Pressure codomain.
+        // Symmetric to linear_combine_codomain_type_mismatch_returns_undef
+        // (which only tests stress codomain mismatch).
+        let axis = vec![0.0, 1.0, 2.0];
+        let shared_stress = wrap_sampled_field(
+            make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let a_disp = wrap_sampled_field(
+            make_sampled_1d("da", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let b_disp = wrap_sampled_field(
+            make_sampled_1d("db", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Scalar { dimension: DimensionVector::PRESSURE }, // codomain mismatch
+        );
+        let case_a = make_fixture_elastic_result_with_fields(a_disp, shared_stress.clone());
+        let case_b = make_fixture_elastic_result_with_fields(b_disp, shared_stress);
+        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+        wm.insert(Value::String("B".to_string()), Value::Real(1.0));
         assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
     }
 }
