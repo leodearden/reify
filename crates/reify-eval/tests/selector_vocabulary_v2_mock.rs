@@ -10,11 +10,12 @@
 //! mirrors `topology_filtered_selectors_mock.rs`.
 
 use reify_eval::selector_vocabulary_v2::{
-    Axis, ExtremalSense, complement, edges_perpendicular_to, except, extremal_by_bbox,
-    extremal_by_centroid, faces_perpendicular_to, intersect, union,
+    Axis, ExtremalSense, complement, edges_by_curve_kind, edges_perpendicular_to, except,
+    extremal_by_bbox, extremal_by_centroid, faces_by_surface_kind, faces_perpendicular_to,
+    geom_universal, intersect, union,
 };
 use reify_test_support::MockGeometryKernel;
-use reify_types::{GeometryHandleId, QueryError, Value};
+use reify_types::{EdgeCurveKind, FaceSurfaceKind, GeometryHandleId, QueryError, Value};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // intersect — set intersection over Vec<GeometryHandleId>
@@ -693,4 +694,164 @@ fn extremal_by_centroid_empty_candidates_returns_empty() {
         result.is_empty(),
         "empty candidate slice yields empty cluster"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// faces_by_surface_kind / edges_by_curve_kind / geom_universal — geometry-type
+// filters (PRD line 78). The `%Plane`/`%Cylinder`/etc. slot is implemented by
+// dispatching the new GeometryQuery::FaceSurfaceKind / EdgeCurveKind variants
+// (added in step-14) and parsing the canonical name string back into the typed
+// enum. `%Geom` is the identity passthrough — any handle that is `Geometry` is
+// retained, so the function clones the input slice unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn faces_by_surface_kind_keeps_only_matching_kind() {
+    // Three faces classified as Plane / Cylinder / Sphere; filtering on
+    // Plane retains only the planar face (the canonical box top-face case).
+    let parent = GeometryHandleId(1);
+    let f_plane = GeometryHandleId(2);
+    let f_cyl = GeometryHandleId(3);
+    let f_sph = GeometryHandleId(4);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f_plane, f_cyl, f_sph])
+        .with_face_surface_kind_result(f_plane, Value::String("Plane".into()))
+        .with_face_surface_kind_result(f_cyl, Value::String("Cylinder".into()))
+        .with_face_surface_kind_result(f_sph, Value::String("Sphere".into()));
+
+    let result = faces_by_surface_kind(&mut kernel, parent, FaceSurfaceKind::Plane)
+        .expect("faces_by_surface_kind should succeed");
+    assert_eq!(
+        result,
+        vec![f_plane],
+        "Plane filter retains only the planar face"
+    );
+}
+
+#[test]
+fn faces_by_surface_kind_returns_all_when_all_match() {
+    // Two planar faces — both should survive the Plane filter, in
+    // input order.
+    let parent = GeometryHandleId(1);
+    let f1 = GeometryHandleId(2);
+    let f2 = GeometryHandleId(3);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f1, f2])
+        .with_face_surface_kind_result(f1, Value::String("Plane".into()))
+        .with_face_surface_kind_result(f2, Value::String("Plane".into()));
+
+    let result = faces_by_surface_kind(&mut kernel, parent, FaceSurfaceKind::Plane)
+        .expect("faces_by_surface_kind should succeed");
+    assert_eq!(result, vec![f1, f2]);
+}
+
+#[test]
+fn faces_by_surface_kind_returns_empty_when_no_match() {
+    // No planar face — the Plane filter returns an empty slice.
+    let parent = GeometryHandleId(1);
+    let f_cyl = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f_cyl])
+        .with_face_surface_kind_result(f_cyl, Value::String("Cylinder".into()));
+
+    let result = faces_by_surface_kind(&mut kernel, parent, FaceSurfaceKind::Plane)
+        .expect("faces_by_surface_kind should succeed");
+    assert!(result.is_empty());
+}
+
+#[test]
+fn faces_by_surface_kind_unknown_kind_string_returns_query_failed() {
+    // The canonical name list is bounded by OCCT's GeomAbs_* enum; an
+    // unrecognised string from a misbehaving kernel must surface as
+    // QueryFailed (decode-side defence-in-depth).
+    let parent = GeometryHandleId(1);
+    let f = GeometryHandleId(2);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, vec![f])
+        .with_face_surface_kind_result(f, Value::String("NotAKind".into()));
+
+    let result = faces_by_surface_kind(&mut kernel, parent, FaceSurfaceKind::Plane);
+    assert!(
+        matches!(result, Err(QueryError::QueryFailed(_))),
+        "unknown kind name must surface QueryFailed, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn edges_by_curve_kind_keeps_only_matching_kind() {
+    // Three edges classified as Line / Circle / BSplineCurve; filtering on
+    // Line retains only the linear edge.
+    let parent = GeometryHandleId(1);
+    let e_line = GeometryHandleId(2);
+    let e_circ = GeometryHandleId(3);
+    let e_bspl = GeometryHandleId(4);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e_line, e_circ, e_bspl])
+        .with_edge_curve_kind_result(e_line, Value::String("Line".into()))
+        .with_edge_curve_kind_result(e_circ, Value::String("Circle".into()))
+        .with_edge_curve_kind_result(e_bspl, Value::String("BSplineCurve".into()));
+
+    let result = edges_by_curve_kind(&mut kernel, parent, EdgeCurveKind::Line)
+        .expect("edges_by_curve_kind should succeed");
+    assert_eq!(
+        result,
+        vec![e_line],
+        "Line filter retains only the linear edge"
+    );
+}
+
+#[test]
+fn edges_by_curve_kind_handles_circle_filter() {
+    let parent = GeometryHandleId(1);
+    let e_line = GeometryHandleId(2);
+    let e_circ = GeometryHandleId(3);
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_edges(parent, vec![e_line, e_circ])
+        .with_edge_curve_kind_result(e_line, Value::String("Line".into()))
+        .with_edge_curve_kind_result(e_circ, Value::String("Circle".into()));
+
+    let result = edges_by_curve_kind(&mut kernel, parent, EdgeCurveKind::Circle)
+        .expect("edges_by_curve_kind should succeed");
+    assert_eq!(result, vec![e_circ]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// geom_universal — `%Geom` no-op identity (PRD line 78)
+//
+// The universal filter retains every handle (every Geometry trivially
+// satisfies the `kind == Geom` predicate). It must not call into the
+// kernel, must not dedupe, and must preserve input order verbatim — it's
+// a syntactic identity for chain composition.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn geom_universal_returns_input_slice_unchanged() {
+    // Universal filter is the identity — order, content, and length all
+    // preserved. The duplicates here exercise that geom_universal is NOT a
+    // dedup combinator (unlike intersect/union/complement).
+    let handles = vec![
+        GeometryHandleId(10),
+        GeometryHandleId(20),
+        GeometryHandleId(20), // duplicate is preserved
+        GeometryHandleId(30),
+    ];
+    let result = geom_universal(&handles);
+    assert_eq!(
+        result,
+        handles,
+        "geom_universal must return the input slice unchanged (no dedup, no reorder)"
+    );
+}
+
+#[test]
+fn geom_universal_empty_input_returns_empty() {
+    let handles: Vec<GeometryHandleId> = vec![];
+    assert!(geom_universal(&handles).is_empty());
 }
