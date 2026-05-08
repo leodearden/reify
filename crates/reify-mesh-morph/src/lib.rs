@@ -7,6 +7,7 @@ pub mod eligibility;
 pub mod options;
 
 pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
+pub use options::MorphOptions;
 
 /// Re-exported so consumers can pattern-match `Reason::BijectionFailure(_)`
 /// without depending on `reify-eval` directly.
