@@ -31,7 +31,9 @@
 
 use std::collections::HashSet;
 
-use reify_types::GeometryHandleId;
+use reify_types::{GeometryHandleId, GeometryKernel, GeometryQuery, QueryError};
+
+use crate::topology_selectors::{dot3, filter_by_value, normalize3, parse_xyz_value};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Boolean combinators (PRD line 79)
@@ -111,4 +113,67 @@ pub fn complement(
 /// LHS multiplicity if the API ever moves off dedup-on-first-seen).
 pub fn except(a: &[GeometryHandleId], b: &[GeometryHandleId]) -> Vec<GeometryHandleId> {
     complement(a, b)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Direction filters (PRD line 76)
+//
+// `+X` / `-X` (signed) are covered by v0.1 `faces_by_normal` already.
+// `|axis` (parallel-to-axis, sign-tolerant) is covered by v0.1
+// `edges_parallel_to`. The new variants below cover `#axis`
+// (perpendicular-to-axis) for both faces and edges.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Return the subset of `extract_faces(handle)` whose surface normal is
+/// **perpendicular** to `axis` within `angular_tol_rad`.
+///
+/// A face is retained iff its (unit) normal `n` satisfies
+/// `|n · axis| <= sin(angular_tol_rad)`. This is the small-angle linearisation
+/// of "the angle between n and the axis is within `(π/2 ± tol)`":
+/// when the angle is exactly π/2 the dot is 0; the projection grows as
+/// `sin(deviation)` for small deviations.
+///
+/// **Sign-tolerant**: a face whose normal is anti-parallel to the axis is
+/// considered as parallel (not perpendicular) — both `+axis` and `-axis`
+/// are equally "the axis direction" for the purposes of this filter.
+/// This matches PRD line 76's `#X` operator (direction-agnostic).
+///
+/// # Errors
+///
+/// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
+///   contains a non-finite component.
+/// - Propagates any error from `extract_faces`.
+/// - Propagates any error from a per-face `FaceNormal` query.
+/// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal` payload
+///   or a degenerate (near-zero magnitude) normal.
+pub fn faces_perpendicular_to<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    axis: [f64; 3],
+    angular_tol_rad: f64,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let axis = normalize3(axis).ok_or_else(|| {
+        QueryError::QueryFailed(
+            "faces_perpendicular_to: axis direction must be non-zero and finite".into(),
+        )
+    })?;
+    // |n · axis| <= sin(tol) means n is perpendicular to axis within `tol` of π/2.
+    let sin_tol = angular_tol_rad.sin();
+    let faces = kernel.extract_faces(handle)?;
+    filter_by_value(
+        kernel,
+        &faces,
+        "faces_perpendicular_to",
+        GeometryQuery::FaceNormal,
+        |id, value| {
+            let raw = parse_xyz_value(value, "FaceNormal")?;
+            let normal = normalize3(raw).ok_or_else(|| {
+                QueryError::QueryFailed(format!(
+                    "FaceNormal({:?}) returned a degenerate (near-zero) normal",
+                    id
+                ))
+            })?;
+            Ok(dot3(normal, axis).abs() <= sin_tol)
+        },
+    )
 }
