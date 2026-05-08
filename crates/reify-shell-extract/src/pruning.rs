@@ -249,13 +249,38 @@ pub fn prune_branches(
     let mut total_pruned: usize = 0;
     let mut iterations: u32 = 0;
 
+    // T2 (extract_mid_surface) emits duplicate vertex positions for shared
+    // edges (binary-MC midpoints are geometrically identical but stored at
+    // separate indices).  Building the edge-incidence map over raw indices
+    // would treat every edge as a boundary (incidence count 1), making every
+    // triangle a tip and pruning the entire mesh.
+    //
+    // Solution: build a coordinate → canonical index map keyed on f64 bit
+    // patterns (binary-MC midpoints are bit-exact duplicates).  Edge-incidence
+    // is computed over canonical indices; original indices are still used for
+    // vertex positions and thickness lookups.
+    let canonical: Vec<u32> = {
+        let mut coord_to_canon: FxHashMap<[u64; 3], u32> = FxHashMap::default();
+        vertices
+            .iter()
+            .map(|v| {
+                let key = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+                let next_id = coord_to_canon.len() as u32;
+                *coord_to_canon.entry(key).or_insert(next_id)
+            })
+            .collect()
+    };
+
     for _ in 0..options.max_prune_iterations {
-        // Build edge → incident-triangle count map.
-        // Key: sorted vertex pair [u32; 2]; value: count of incident triangles.
+        // Build edge → incident-triangle count map using canonical indices.
+        // Key: sorted canonical vertex pair [u32; 2]; value: incident count.
         let mut edge_counts: FxHashMap<[u32; 2], u32> = FxHashMap::default();
         for tri in &triangles {
             let [a, b, c] = *tri;
-            for edge in [[a, b], [b, c], [a, c]] {
+            let ca = canonical[a as usize];
+            let cb = canonical[b as usize];
+            let cc = canonical[c as usize];
+            for edge in [[ca, cb], [cb, cc], [ca, cc]] {
                 let key = if edge[0] < edge[1] {
                     edge
                 } else {
@@ -272,10 +297,14 @@ pub fn prune_branches(
 
         for (tri_idx, tri) in triangles.iter().enumerate() {
             let [a, b, c] = *tri;
+            // Canonical indices for boundary-edge detection.
+            let ca = canonical[a as usize];
+            let cb = canonical[b as usize];
+            let cc = canonical[c as usize];
             let edges = [
-                sorted_pair(a, b),
-                sorted_pair(b, c),
-                sorted_pair(a, c),
+                sorted_pair(ca, cb),
+                sorted_pair(cb, cc),
+                sorted_pair(ca, cc),
             ];
             let boundary_count = edges
                 .iter()
@@ -391,6 +420,123 @@ fn edge_length(a: [f64; 3], b: [f64; 3]) -> f64 {
 mod tests {
     use super::*;
     use crate::mid_surface::MidSurfaceMesh;
+
+    // ── Steps 15-16: slab end-to-end pipeline test ───────────────────────────
+    //
+    // Test helpers duplicated from mid_surface.rs / mesher.rs.
+    // Duplication is intentional: pruning.rs must be self-contained, mirroring
+    // the established pattern between mid_surface.rs, segmentation.rs, and
+    // mesher.rs (see mesher.rs:1121-1124 for the rationale comment).
+
+    use crate::medial::MedialMask;
+    use crate::mid_surface::{extract_mid_surface, MidSurfaceOptions};
+    use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+    use std::sync::atomic::AtomicBool;
+
+    /// Analytic-slab Regular3D SampledField: `φ(x,y,z) = |z| - half` on an
+    /// N×N×N grid centred at the origin with unit spacing.
+    fn slab_sdf_3d(half: f64, n: usize) -> SampledField {
+        let spacing = 1.0_f64;
+        let half_extent = (n as f64 - 1.0) / 2.0;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+        let axis_grid: Vec<f64> = (0..n)
+            .map(|i| bounds_min + (i as f64) * spacing)
+            .collect();
+        let mut data = Vec::with_capacity(n * n * n);
+        for &_x in &axis_grid {
+            for &_y in &axis_grid {
+                for &z in &axis_grid {
+                    data.push(z.abs() - half);
+                }
+            }
+        }
+        SampledField {
+            name: format!("slab-prune-h{half}-n{n}"),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![spacing, spacing, spacing],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Centerline MedialMask for a z-slab: every `(i, j, center_k)`.
+    fn centerline_mask(n: usize, sdf: &SampledField) -> MedialMask {
+        let center_k = (n as i32 - 1) / 2;
+        let voxels: Vec<[i32; 3]> = (0..n as i32)
+            .flat_map(|i| (0..n as i32).map(move |j| [i, j, center_k]))
+            .collect();
+        MedialMask {
+            spacing: [sdf.spacing[0], sdf.spacing[1], sdf.spacing[2]],
+            origin: [sdf.bounds_min[0], sdf.bounds_min[1], sdf.bounds_min[2]],
+            voxels,
+        }
+    }
+
+    /// Full T2 → T3 pipeline on a 17×17×17 slab.
+    ///
+    /// Validates that pruning returns `Ok(_)`, the slab body survives (triangles
+    /// remain), metrics are consistent, all indices are in-range, and the
+    /// parallel-array invariant `thickness.len() == vertices.len()` holds.
+    ///
+    /// Mirrors `mesh_mid_surface_slab_end_to_end_pipeline` (mesher.rs).
+    #[test]
+    fn prune_branches_slab_end_to_end_pipeline() {
+        let sdf = slab_sdf_3d(3.0, 17);
+        let mask = centerline_mask(17, &sdf);
+
+        // T2: raw mid-surface extraction.
+        let raw = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+            .expect("slab extract_mid_surface should succeed");
+        assert!(
+            !raw.triangles.is_empty(),
+            "17×17×17 slab must produce a non-empty raw mesh"
+        );
+
+        // T3: prune branches.
+        let result = prune_branches(&raw, &PruneOptions::default())
+            .expect("slab prune_branches should succeed");
+
+        assert!(
+            result.mesh.triangles.len() > 0,
+            "slab body must survive pruning"
+        );
+        assert_eq!(
+            result.metrics.input_triangle_count,
+            raw.triangles.len(),
+            "input_triangle_count must equal raw triangle count"
+        );
+        assert!(
+            result.metrics.output_triangle_count <= result.metrics.input_triangle_count,
+            "output_triangle_count must not exceed input"
+        );
+        assert!(
+            result.metrics.iterations <= PruneOptions::default().max_prune_iterations,
+            "iterations must be within the configured bound"
+        );
+
+        // Parallel-array invariant.
+        assert_eq!(
+            result.mesh.thickness.len(),
+            result.mesh.vertices.len(),
+            "thickness.len() must equal vertices.len() after pruning"
+        );
+
+        // All triangle indices in-range.
+        let vlen = result.mesh.vertices.len();
+        for tri in &result.mesh.triangles {
+            for &vi in tri.iter() {
+                assert!(
+                    (vi as usize) < vlen,
+                    "triangle index {vi} out of range for {vlen} vertices"
+                );
+            }
+        }
+    }
 
     // ── Step 13: vertex-compaction test ──────────────────────────────────────
 
