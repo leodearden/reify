@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn laplacian_smooth_with_empty_mesh_and_no_prescribed_positions_returns_empty_mesh() {
         let result = laplacian_smooth(&empty_mesh(), &[], 0);
-        assert!(matches!(result, Ok(_)), "got: {result:?}");
+        assert!(result.is_ok(), "got: {result:?}");
         let mesh = result.unwrap();
         assert!(mesh.vertices.is_empty());
         assert!(mesh.tet_indices.is_empty());
@@ -662,7 +662,9 @@ mod tests {
         assert_eq!(out_a.vertices, out_b.vertices);
         assert_eq!(out_a.tet_indices, out_b.tet_indices);
         assert_eq!(out_a.element_order, out_b.element_order);
-        assert_eq!(out_a.normals, out_b.normals);
+        // `normals` is unconditionally `None` after the step-20 contract change;
+        // asserting `out_a.normals == out_b.normals` would be a tautology (`None == None`),
+        // so we omit it here. The contract is pinned by `laplacian_smooth_drops_normals_on_output_even_when_input_has_some_normals`.
     }
 
     // ── Step-19: drops stale normals on output ──────────────────────────────
@@ -687,6 +689,39 @@ mod tests {
         assert!(
             out.normals.is_none(),
             "expected normals: None, got: {:?}",
+            out.normals
+        );
+    }
+
+    /// Path-independence variant: same contract holds when `iterations >= 1`
+    /// and the smoothing loop actually executes (not just the zero-iteration
+    /// short-circuit). Uses a single-tet mesh so the loop runs one real pass;
+    /// the `normals: None` result is independent of the smoothed vertex positions.
+    #[test]
+    fn laplacian_smooth_drops_normals_on_output_even_when_iterations_nonzero() {
+        // 4-vertex single-tet mesh: node 3 is free, nodes 0-2 are pinned.
+        // 4 f32x3 normals supplied on input (12 floats).
+        let mesh = VolumeMesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // 0
+                1.0, 0.0, 0.0, // 1
+                0.0, 1.0, 0.0, // 2
+                0.5, 0.5, 0.5, // 3 (interior, will be smoothed)
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: Some(vec![
+                1.0_f32, 0.0, 0.0, // normal for node 0
+                0.0, 1.0, 0.0, // normal for node 1
+                0.0, 0.0, 1.0, // normal for node 2
+                1.0, 1.0, 0.0, // normal for node 3
+            ]),
+        };
+        let prescribed = vec![(0_u32, [0.0_f64, 0.0, 0.0]), (1, [1.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0])];
+        let out = laplacian_smooth(&mesh, &prescribed, 1).unwrap();
+        assert!(
+            out.normals.is_none(),
+            "expected normals: None even after 1 iteration, got: {:?}",
             out.normals
         );
     }
