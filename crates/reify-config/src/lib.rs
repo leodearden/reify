@@ -233,6 +233,11 @@ impl Manifest {
 ///
 /// Truck is intentionally absent: the v0.2 PRD ("Truck dropped from v0.2")
 /// rejects truck as an unknown kernel id.
+///
+/// **Ordering:** Variant declaration order determines `BTreeMap<KernelId, _>`
+/// iteration order via the derived `Ord`; it is therefore a public API surface.
+/// Future variant additions must be deliberate about placement. See
+/// [`KernelId::ALL`] for the canonical ordered list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KernelId {
     Occt,
@@ -240,6 +245,22 @@ pub enum KernelId {
     Fidget,
     OpenVdb,
     Gmsh,
+}
+
+impl KernelId {
+    /// Every supported kernel id, in variant declaration order.
+    ///
+    /// Declaration order equals `BTreeMap<KernelId, _>` iteration order (the
+    /// derived `Ord` follows variant position). This slice is the single source
+    /// of truth for validation and error messages; adding a new `KernelId`
+    /// variant requires updating this slice to stay in sync.
+    pub const ALL: &'static [KernelId] = &[
+        KernelId::Occt,
+        KernelId::Manifold,
+        KernelId::Fidget,
+        KernelId::OpenVdb,
+        KernelId::Gmsh,
+    ];
 }
 
 /// A pinned kernel version.
@@ -299,10 +320,13 @@ impl fmt::Display for ManifestError {
                 write!(f, "failed to parse reify.toml: {}", msg)
             }
             ManifestError::UnknownKernel(key) => {
+                let expected: Vec<String> =
+                    KernelId::ALL.iter().map(|id| id.to_string()).collect();
                 write!(
                     f,
-                    "unknown kernel id '{}' in [kernels] (expected one of: occt, manifold, fidget, openvdb, gmsh)",
-                    key
+                    "unknown kernel id '{}' in [kernels] (expected one of: {})",
+                    key,
+                    expected.join(", ")
                 )
             }
             ManifestError::EmptyVersion(id) => {
@@ -689,21 +713,20 @@ mod tests {
     }
 
     #[test]
-    fn unknown_kernel_message_lists_gmsh() {
+    fn unknown_kernel_message_lists_all_supported_kernels() {
         let err = Manifest::from_toml_str("[kernels]\nfoobar = \"1.0\"\n")
             .expect_err("unknown kernel id should be rejected");
         let msg = format!("{}", err);
-        assert!(
-            msg.contains("gmsh"),
-            "error message must list 'gmsh' as an expected id; got: {}",
-            msg
-        );
-        // Defensively check the four existing ids are still listed.
-        for expected in &["occt", "manifold", "fidget", "openvdb"] {
+        // Every current KernelId must appear in the error message so users
+        // can identify the correct id without reading source. Driven by
+        // KernelId::ALL so the test stays in sync automatically when new
+        // variants are added.
+        for id in KernelId::ALL {
+            let name = id.to_string();
             assert!(
-                msg.contains(expected),
-                "error message must still list '{}' as an expected id; got: {}",
-                expected,
+                msg.contains(&name),
+                "error message must list '{}' as an expected id; got: {}",
+                name,
                 msg
             );
         }
