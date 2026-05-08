@@ -306,6 +306,18 @@ pub fn assemble_global_stiffness(
 /// matches the row-major layout of [`ElementStiffness::data`] (one
 /// sequential read per output triplet).
 ///
+/// # Sparsity contract
+///
+/// Explicit-zero entries (`K_e[i][j] == 0.0`) are emitted unconditionally —
+/// this helper does not zero-prune. For current dense isotropic-elastic K_e
+/// producers there are no structural zeros, so this is a no-op. Callers
+/// feeding K_e with structural zeros (e.g. anisotropic or shell-coupled
+/// stiffness blocks) and requiring sparse-storage savings must pre-prune K_e
+/// before calling; storing wasted explicit-zero entries downstream in CSR is
+/// the caller's responsibility, not this helper's. The current behavior is
+/// intentional — zero-pruning here would couple the helper to K_e's sparsity
+/// pattern without benefiting current consumers.
+///
 /// # N-agnostic contract
 ///
 /// The loop bounds derive from `n_local = element.connectivity.len()` and
