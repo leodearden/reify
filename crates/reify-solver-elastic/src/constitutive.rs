@@ -189,7 +189,11 @@ mod tests {
 
         // No shear response under hydrostatic strain.
         for k in 3..6 {
-            assert!(sigma[k].abs() < 1e-9 * scale, "shear leak at {k}: {}", sigma[k]);
+            assert!(
+                sigma[k].abs() < 1e-9 * scale,
+                "shear leak at {k}: {}",
+                sigma[k]
+            );
         }
     }
 
@@ -282,7 +286,11 @@ mod tests {
         );
         for k in 3..6 {
             let scale = sigma[0].abs().max(1.0);
-            assert!(sigma[k].abs() < 1e-9 * scale, "σ[{k}] should vanish, got {}", sigma[k]);
+            assert!(
+                sigma[k].abs() < 1e-9 * scale,
+                "σ[{k}] should vanish, got {}",
+                sigma[k]
+            );
         }
     }
 }

@@ -18,12 +18,7 @@ use crate::elements::tet_p2::EDGES;
 /// `s = 1.0` recovers the canonical unit reference tet; other scales are
 /// used by the volume-scaling tests.
 pub(crate) fn scaled_p2_phys_nodes(s: f64) -> [[f64; 3]; 10] {
-    let v: [[f64; 3]; 4] = [
-        [0.0, 0.0, 0.0],
-        [s, 0.0, 0.0],
-        [0.0, s, 0.0],
-        [0.0, 0.0, s],
-    ];
+    let v: [[f64; 3]; 4] = [[0.0, 0.0, 0.0], [s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]];
     let mid = |a: usize, b: usize| {
         [
             0.5 * (v[a][0] + v[b][0]),
