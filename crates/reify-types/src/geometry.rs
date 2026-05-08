@@ -4546,4 +4546,185 @@ mod tests {
             _ => panic!("expected EdgeCurveKind variant"),
         }
     }
+
+    #[test]
+    fn geometry_op_kind_name_returns_stable_token_per_variant() {
+        // Every GeometryOp variant must produce a stable token via kind_name().
+        // Tokens are the variant names verbatim — any rename breaks this test
+        // visibly (compile-time exhaustiveness + runtime string check).
+        let cases: &[(&str, GeometryOp)] = &[
+            ("Box", GeometryOp::Box {
+                width: Value::Real(1.0),
+                height: Value::Real(1.0),
+                depth: Value::Real(1.0),
+            }),
+            ("Cylinder", GeometryOp::Cylinder {
+                radius: Value::Real(1.0),
+                height: Value::Real(1.0),
+            }),
+            ("Sphere", GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            }),
+            ("Tube", GeometryOp::Tube {
+                outer_r: Value::Real(0.01),
+                inner_r: Value::Real(0.005),
+                height: Value::Real(0.02),
+            }),
+            ("Union", GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            ("Difference", GeometryOp::Difference {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            ("Intersection", GeometryOp::Intersection {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            ("Fillet", GeometryOp::Fillet {
+                target: GeometryHandleId(1),
+                radius: Value::Real(0.001),
+            }),
+            ("Chamfer", GeometryOp::Chamfer {
+                target: GeometryHandleId(1),
+                distance: Value::Real(0.001),
+            }),
+            ("Translate", GeometryOp::Translate {
+                target: GeometryHandleId(1),
+                dx: 1.0,
+                dy: 0.0,
+                dz: 0.0,
+            }),
+            ("Rotate", GeometryOp::Rotate {
+                target: GeometryHandleId(1),
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: 0.0,
+            }),
+            ("Scale", GeometryOp::Scale {
+                target: GeometryHandleId(1),
+                factor: 2.0,
+            }),
+            ("RotateAround", GeometryOp::RotateAround {
+                target: GeometryHandleId(1),
+                point: [0.0, 0.0, 0.0],
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: 0.0,
+            }),
+            ("LinearPattern", GeometryOp::LinearPattern {
+                target: GeometryHandleId(1),
+                direction: [1.0, 0.0, 0.0],
+                count: 3,
+                spacing: Value::Real(0.01),
+            }),
+            ("CircularPattern", GeometryOp::CircularPattern {
+                target: GeometryHandleId(1),
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                count: 4,
+                angle: Value::Real(std::f64::consts::TAU),
+            }),
+            ("Mirror", GeometryOp::Mirror {
+                target: GeometryHandleId(1),
+                plane_origin: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            }),
+            ("LinearPattern2D", GeometryOp::LinearPattern2D {
+                target: GeometryHandleId(1),
+                direction1: [1.0, 0.0, 0.0],
+                count1: 2,
+                spacing1: Value::Real(0.01),
+                direction2: [0.0, 1.0, 0.0],
+                count2: 2,
+                spacing2: Value::Real(0.01),
+            }),
+            ("ArbitraryPattern", GeometryOp::ArbitraryPattern {
+                target: GeometryHandleId(1),
+                transforms: vec![[0.0, 0.0, 0.0]],
+            }),
+            ("Loft", GeometryOp::Loft {
+                profiles: vec![GeometryHandleId(1), GeometryHandleId(2)],
+            }),
+            ("Extrude", GeometryOp::Extrude {
+                profile: GeometryHandleId(1),
+                distance: Value::Real(0.01),
+            }),
+            ("Revolve", GeometryOp::Revolve {
+                profile: GeometryHandleId(1),
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::TAU,
+            }),
+            ("Sweep", GeometryOp::Sweep {
+                profile: GeometryHandleId(1),
+                path: GeometryHandleId(2),
+            }),
+            ("Pipe", GeometryOp::Pipe {
+                path: GeometryHandleId(1),
+                radius: Value::Real(0.002),
+            }),
+            ("ExtrudeSymmetric", GeometryOp::ExtrudeSymmetric {
+                profile: GeometryHandleId(1),
+                distance: Value::Real(0.01),
+            }),
+            ("SweepGuided", GeometryOp::SweepGuided {
+                profile: GeometryHandleId(1),
+                path: GeometryHandleId(2),
+                guide: GeometryHandleId(3),
+            }),
+            ("LoftGuided", GeometryOp::LoftGuided {
+                profiles: vec![GeometryHandleId(1), GeometryHandleId(2)],
+                guides: vec![GeometryHandleId(3)],
+            }),
+            ("LineSegment", GeometryOp::LineSegment {
+                x1: 0.0, y1: 0.0, z1: 0.0,
+                x2: 1.0, y2: 0.0, z2: 0.0,
+            }),
+            ("Arc", GeometryOp::Arc {
+                center: [0.0, 0.0, 0.0],
+                radius: 1.0,
+                start_angle: 0.0,
+                end_angle: std::f64::consts::FRAC_PI_2,
+                axis: [0.0, 0.0, 1.0],
+            }),
+            ("Helix", GeometryOp::Helix {
+                radius: 0.01,
+                pitch: 0.002,
+                height: 0.02,
+            }),
+            ("InterpCurve", GeometryOp::InterpCurve {
+                points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]],
+            }),
+            ("BezierCurve", GeometryOp::BezierCurve {
+                control_points: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [2.0, 0.0, 0.0]],
+            }),
+            ("NurbsCurve", GeometryOp::NurbsCurve {
+                control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                weights: vec![1.0, 1.0],
+                knots: vec![0.0, 0.0, 1.0, 1.0],
+                degree: 1,
+            }),
+            ("Draft", GeometryOp::Draft {
+                target: GeometryHandleId(1),
+                angle: Value::Real(0.1),
+                plane: GeometryHandleId(2),
+            }),
+            ("Thicken", GeometryOp::Thicken {
+                target: GeometryHandleId(1),
+                offset: Value::Real(0.001),
+            }),
+            ("Shell", GeometryOp::Shell {
+                target: GeometryHandleId(1),
+                thickness: Value::Real(0.001),
+                faces_to_remove: vec![0],
+            }),
+        ];
+        for (expected, op) in cases {
+            assert_eq!(
+                op.kind_name(),
+                *expected,
+                "kind_name() mismatch for GeometryOp::{expected}"
+            );
+        }
+    }
 }
