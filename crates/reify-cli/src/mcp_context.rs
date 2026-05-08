@@ -1518,4 +1518,101 @@ mod tests {
             err3
         );
     }
+
+    /// Verify that `load_file` prunes `state.files` to a singleton on every call,
+    /// so that `get_open_files()` never advertises more than one file.
+    ///
+    /// Pre-fix, `load_file`'s `state.files.insert(...)` accumulates entries — calling
+    /// `load_file(a)` followed by `load_file(b)` left both `a` and `b` in `state.files`,
+    /// while `compiled` / `active_file` reflected only `b`.
+    ///
+    /// Mirrors the multi-phase structure of `update_source_drops_prior_files_map_entries`
+    /// (task 3100) for the `load_file` entry point.  Post-fix: all three state-mutating
+    /// entry points (`update_source`, `load_file`, `open_file`) maintain the invariant
+    /// `state.files.keys() == {active_file}` — see task 3183 multi-document consumer audit.
+    ///
+    /// Path assertions use `ends_with` rather than exact equality — same flake-avoidance
+    /// rationale as `update_source_after_load_file_switches_active_file`.
+    #[test]
+    fn load_file_drops_prior_files_map_entries() {
+        let ctx = fresh_ctx();
+
+        // --- Phase 1: load_file(a.ri) ---
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed for bracket.ri");
+
+        // Baseline: exactly one file open after first load_file.
+        assert_eq!(
+            ctx.get_open_files().unwrap().len(),
+            1,
+            "baseline: exactly one file open after first load_file"
+        );
+
+        // --- Phase 2: load_file(b.ri) — files-map must NOT grow to 2 ---
+        ctx.load_file(BRACKET_COMPILE_ERROR_PATH)
+            .expect("load_file should succeed for bracket_compile_error.ri");
+
+        // Core bound assertion: state.files must be pruned to a single entry.
+        assert_eq!(
+            ctx.get_open_files().unwrap().len(),
+            1,
+            "state.files must be pruned to a single entry after load_file(b); \
+             prior bracket.ri entry must be dropped (not 2)"
+        );
+
+        // Independent oracle: the surviving entry names b.ri.
+        let open_files = ctx.get_open_files().unwrap();
+        assert!(
+            open_files[0].path.ends_with("bracket_compile_error.ri"),
+            "surviving open file must be bracket_compile_error.ri after load_file(b); \
+             got {:?}",
+            open_files[0].path
+        );
+
+        // Prior path must no longer be reachable via get_source.
+        // ToolError::EngineError("file not open: …") formats as "engine error: file not open: …".
+        let err = ctx.get_source(Some(BRACKET_PATH)).unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("file not open"),
+            "get_source for the prior bracket.ri path must fail with 'file not open'; got: {:?}",
+            err
+        );
+        assert!(
+            err_str.contains("bracket.ri"),
+            "error message must mention the prior bracket.ri path; got: {:?}",
+            err
+        );
+
+        // --- Phase 3: loop guard — load_file back to a.ri ---
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file back to bracket.ri should succeed");
+
+        assert_eq!(
+            ctx.get_open_files().unwrap().len(),
+            1,
+            "state.files must remain bounded after load_file switch back to a.ri"
+        );
+
+        let open_files2 = ctx.get_open_files().unwrap();
+        assert!(
+            open_files2[0].path.ends_with("bracket.ri"),
+            "surviving open file must be bracket.ri after switching back; got {:?}",
+            open_files2[0].path
+        );
+
+        let err2 = ctx.get_source(Some(BRACKET_COMPILE_ERROR_PATH)).unwrap_err();
+        let err2_str = err2.to_string();
+        assert!(
+            err2_str.contains("file not open"),
+            "get_source for the prior bracket_compile_error.ri path must fail with 'file not open'; \
+             got: {:?}",
+            err2
+        );
+        assert!(
+            err2_str.contains("bracket_compile_error.ri"),
+            "error message must mention the prior bracket_compile_error.ri path; got: {:?}",
+            err2
+        );
+    }
 }
