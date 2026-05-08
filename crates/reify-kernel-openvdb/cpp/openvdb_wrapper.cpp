@@ -33,6 +33,24 @@ rust::String openvdb_version_string() {
     return rust::String(openvdb::getLibraryVersionString());
 }
 
+namespace {
+
+// Defensive initialise-once-on-first-call helper invoked at the head of every
+// public FFI entry point that touches the OpenVDB library state (mesh adapter,
+// I/O dispatch table, transform tables). External callers that reach the
+// `ffi::ffi::*` cxx-bridge functions WITHOUT first constructing an
+// `OpenVdbKernel` (which calls `crate::init::ensure_initialized`) would
+// otherwise hit OpenVDB's I/O dispatch table missing the FloatGrid
+// registration, producing a misleading "is not a FloatGrid" error from
+// `read_vdb_grid_ffi`'s `gridPtrCast`. `openvdb::initialize` is idempotent
+// per OpenVDB's documented contract so the cost of double-calling from
+// kernel-mediated paths is one atomic-flag check.
+void ensure_initialized_cpp_side() {
+    openvdb::initialize();
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // Mesh → Volume
 // ---------------------------------------------------------------------------
@@ -43,6 +61,12 @@ std::unique_ptr<OpenVdbGridHandle> mesh_to_volume_ffi(
     double voxel_size,
     double half_width_voxels)
 {
+    // Defensive: callers that reach this FFI entry point without going
+    // through `OpenVdbKernel::new()` (e.g. direct ffi::ffi::* bridge use
+    // from a test or external crate) still get a registered I/O dispatch
+    // table. Idempotent per OpenVDB's contract.
+    ensure_initialized_cpp_side();
+
     if (verts.empty() || tris.empty()) {
         throw std::runtime_error(
             "mesh_to_volume_ffi: mesh must have at least one vertex and one triangle");
@@ -146,6 +170,12 @@ void write_vdb_grid_ffi(
     rust::Str path,
     rust::Str grid_name)
 {
+    // Defensive: see comment on `ensure_initialized_cpp_side` near the top
+    // of this file. `openvdb::io::File::write` registers grid types lazily
+    // on the dispatch table so a never-initialised process can write to a
+    // file but readers will reject the result.
+    ensure_initialized_cpp_side();
+
     // Set the grid name in its metadata.
     h.grid->setName(std::string(grid_name));
 
@@ -163,6 +193,13 @@ std::unique_ptr<OpenVdbGridHandle> read_vdb_grid_ffi(
     rust::Str path,
     rust::Str grid_name)
 {
+    // Defensive: callers reaching this FFI entry directly bypass the
+    // `crate::init::ensure_initialized` OnceLock guard upstream. Without
+    // OpenVDB's I/O dispatch table populated, `gridPtrCast<FloatGrid>`
+    // returns null and the wrong-type branch below fires with a
+    // misleading message.
+    ensure_initialized_cpp_side();
+
     std::string path_str{path};
     std::string name_str{grid_name};
 
