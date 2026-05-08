@@ -338,6 +338,16 @@ mod tests {
             });
     };
 
+    // ── Step 1 (task 3153): pin the by-value `eligible` signature ────────────
+
+    // Compile fence: fails to compile until `eligible` takes `BRep` by value.
+    // Mirrors the boundary/laplacian/quality fence discipline above.
+    #[allow(unused)]
+    const _: fn() = || {
+        let _fn_ref: fn(BRep, BRep) -> bool = eligible;
+        let _ = _fn_ref;
+    };
+
     // ── Steps 1-2 (task 3142): Stage-B regression guards ─────────────────────
 
     #[test]
