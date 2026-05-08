@@ -465,4 +465,46 @@ mod tests {
     fn parallel_mode_with_zero_threads_panics() {
         let _ = assemble_global_stiffness(4, &[], AssemblyMode::Parallel { threads: 0 });
     }
+
+    /// Single P2 element with identity connectivity `[0..10]` → K_global
+    /// equals K_e bit-for-bit at every entry.
+    ///
+    /// Pins the contract that the scatter loop is generic on
+    /// `connectivity.len()`. `connectivity.len() = 10` and `k_e.n_dofs = 30`
+    /// are asserted explicitly so a future regression that special-cases
+    /// 4-node elements (e.g. hardcodes `n_local = 4` somewhere in the
+    /// emission loop) surfaces as a 30×30 mismatch here rather than being
+    /// silently ignored. Densification and bit-equality follow the same
+    /// approach as the P1 test (identity connectivity ⇒ no FP-summation
+    /// reordering ⇒ bit-equality is achievable, not just tolerance-equality).
+    #[test]
+    fn single_p2_element_identity_connectivity_matches_k_e_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_p2_phys_nodes(1.0);
+        let k_e = element_stiffness_p2(&phys, &mat);
+        assert_eq!(k_e.n_dofs, 30);
+
+        let connectivity: [usize; 10] = std::array::from_fn(|i| i);
+        assert_eq!(connectivity.len(), 10);
+        let element = AssemblyElement {
+            id: 0,
+            connectivity: &connectivity,
+            k_e: &k_e,
+        };
+        let k = assemble_global_stiffness(10, &[element], AssemblyMode::Deterministic);
+        assert_eq!(k.nrows(), 30);
+        assert_eq!(k.ncols(), 30);
+
+        for i in 0..30 {
+            for j in 0..30 {
+                let actual = read(&k, i, j);
+                let expected = k_e.get(i, j);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] = {actual} but K_e[{i}][{j}] = {expected}",
+                );
+            }
+        }
+    }
 }
