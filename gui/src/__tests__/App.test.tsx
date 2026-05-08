@@ -2163,6 +2163,26 @@ describe('App handleOpen dirty-check confirmation', () => {
     }
   });
 
+  it('Ctrl+O with dirty buffer, confirm accepted, and pickOpenPath returns null: openFile/openFileEngine not called', async () => {
+    setupHappyPathMocks();
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+      await flushMacrotasks();
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(bridge.pickOpenPath).toHaveBeenCalledTimes(1);
+      expect(bridge.openFile).not.toHaveBeenCalled();
+      expect(bridge.openFileEngine).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
   it('Ctrl+O with clean buffer: window.confirm not called, bridge sequence fires', async () => {
     setupHappyPathMocks();
     await renderAndWaitForReady();
