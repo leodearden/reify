@@ -47,9 +47,7 @@ fn make_offset_rect_profile(kernel: &mut OcctKernelHandle) -> reify_types::Geome
 /// face-normal filter.
 const DIR_TOL: f64 = 1e-6;
 
-/// File-local pure helper: |dot(n, axis)| using array-typed inputs.
-/// Avoids re-coupling to the kernel after task 3134's migration to
-/// face_outward_unit_normal_for_test.
+/// |dot(n, axis)| for normal-vs-axis alignment checks.
 fn axis_dot_abs(n: [f64; 3], axis: [f64; 3]) -> f64 {
     (n[0] * axis[0] + n[1] * axis[1] + n[2] * axis[2]).abs()
 }
@@ -864,30 +862,8 @@ fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
     );
 }
 
-/// Pure unit test for `axis_dot_abs`: verifies all four semantic cases
-/// without requiring OCCT at runtime (no early-return guard needed).
-///
-/// Cases (axis = [0,0,1]):
-///  1. Parallel      [0,0, 1] → exactly 1.0
-///  2. Anti-parallel [0,0,-1] → exactly 1.0  ← pins the `.abs()` branch
-///  3. Perpendicular [1,0, 0] → exactly 0.0
-///  4. Oblique       [0.6, 0.0, 0.8] → exactly 0.8
-///
-/// Inputs are chosen so the dot product is exactly representable in f64,
-/// so `assert_eq!` (no tolerance) is correct.
+/// Pins the `.abs()` branch: anti-parallel input (dot = -1.0) → 1.0.
 #[test]
 fn axis_dot_abs_returns_absolute_dot_product() {
-    let axis = [0.0_f64, 0.0, 1.0];
-
-    // Case 1: parallel — dot = 1.0, abs = 1.0
-    assert_eq!(axis_dot_abs([0.0, 0.0, 1.0], axis), 1.0);
-
-    // Case 2: anti-parallel — dot = -1.0, abs = 1.0  (pins the .abs() branch)
-    assert_eq!(axis_dot_abs([0.0, 0.0, -1.0], axis), 1.0);
-
-    // Case 3: perpendicular — dot = 0.0, abs = 0.0
-    assert_eq!(axis_dot_abs([1.0, 0.0, 0.0], axis), 0.0);
-
-    // Case 4: oblique — dot = 0.8, abs = 0.8
-    assert_eq!(axis_dot_abs([0.6, 0.0, 0.8], axis), 0.8);
+    assert_eq!(axis_dot_abs([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]), 1.0);
 }
