@@ -165,6 +165,35 @@ pub enum MedialError {
         /// Index of the offending axis (0/1/2 for x/y/z).
         axis: usize,
     },
+    /// A per-axis geometry invariant is violated. Covers two related
+    /// classes of caller-side construction error:
+    ///
+    /// - **Non-positive / non-finite spacing** (`!(spacing > 0.0 &&
+    ///   spacing.is_finite())`): zero → divide-by-zero in
+    ///   `sample_at_world`; negative → flipped index direction in
+    ///   trilinear interpolation; NaN or ±Inf → NaN propagation through
+    ///   fractional-index math. The `is_finite` guard in `sample_at_world`
+    ///   would silently discard all of these as OOB rather than surfacing
+    ///   them as a typed error.
+    /// - **Inverted bounds** (`bounds_min > bounds_max`): `world_at_index`
+    ///   and `sample_at_world` produce geometrically nonsensical results;
+    ///   the `is_finite` guard masks them as OOB. (Equal bounds —
+    ///   zero-extent axis — is allowed: a 1-voxel axis is a valid
+    ///   degenerate-but-legal configuration.)
+    ///
+    /// Carries all four per-axis data fields so callers (and the Display
+    /// impl) can determine which condition fired without sub-enum
+    /// scaffolding.
+    InvalidAxisGeometry {
+        /// Index of the offending axis (0/1/2 for x/y/z).
+        axis: usize,
+        /// The `spacing` value on the offending axis.
+        spacing: f64,
+        /// The `bounds_min` value on the offending axis.
+        bounds_min: f64,
+        /// The `bounds_max` value on the offending axis.
+        bounds_max: f64,
+    },
     /// The flat `data` vector length does not match `nx * ny * nz`
     /// (where `nx/ny/nz = axis_grids[i].len()`). Defends the inner
     /// triple-nested loop's `sample_at_index` (`data[i*nj*nk + j*nk + k]`)
@@ -204,6 +233,27 @@ impl std::fmt::Display for MedialError {
                 "Regular3D SampledField axis_grids[{axis}] is empty \
                  (a non-empty per-axis grid is required for narrow-band iteration)"
             ),
+            MedialError::InvalidAxisGeometry {
+                axis,
+                spacing,
+                bounds_min,
+                bounds_max,
+            } => {
+                if !(spacing.is_finite() && *spacing > 0.0) {
+                    write!(
+                        f,
+                        "Regular3D SampledField axis {axis} has invalid spacing {spacing}: \
+                         spacing must be finite and positive (got {spacing}); \
+                         bounds_min={bounds_min}, bounds_max={bounds_max}"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "Regular3D SampledField axis {axis} has inverted bounds: \
+                         bounds_min={bounds_min} > bounds_max={bounds_max} (spacing={spacing})"
+                    )
+                }
+            }
             MedialError::DataLengthMismatch { expected, found } => write!(
                 f,
                 "Regular3D SampledField data length mismatch: \
@@ -252,7 +302,40 @@ pub fn compute_medial_mask(
         });
     }
 
-    // (3) Each axis grid must be non-empty — a zero-extent axis
+    // (3) Geometry validity: spacing must be finite and positive, and
+    // bounds must not be inverted. Safe here because step 2 confirmed
+    // all axis vectors have length 3, so sdf.spacing[axis] /
+    // sdf.bounds_min[axis] / sdf.bounds_max[axis] are all in-bounds.
+    //
+    // Spacing rule — rejects zero (divide-by-zero in sample_at_world),
+    // negative (flipped index direction), NaN and +Inf (NaN propagation
+    // through fractional-index math). The single predicate
+    // `is_finite() && > 0.0` covers all four classes.
+    //
+    // Bound rule — rejects bounds_min > bounds_max (geometrically
+    // inverted grid); bounds_min == bounds_max (zero-extent, single-
+    // voxel axis) is explicitly allowed because the existing doctest
+    // and one_voxel_field fixture both use that configuration.
+    //
+    // Both failures produce the same variant because they arise from
+    // the same root cause (corrupt axis geometry) and both have the
+    // same symptom (sample_at_world's is_finite guard silently masking
+    // the corruption as OOB).
+    for axis in 0..3 {
+        let sp = sdf.spacing[axis];
+        let bmin = sdf.bounds_min[axis];
+        let bmax = sdf.bounds_max[axis];
+        if !(sp.is_finite() && sp > 0.0) || bmin > bmax {
+            return Err(MedialError::InvalidAxisGeometry {
+                axis,
+                spacing: sp,
+                bounds_min: bmin,
+                bounds_max: bmax,
+            });
+        }
+    }
+
+    // (4) Each axis grid must be non-empty — a zero-extent axis
     // collapses the iteration domain.
     for (axis, axis_grid) in sdf.axis_grids.iter().enumerate() {
         if axis_grid.is_empty() {
@@ -268,7 +351,7 @@ pub fn compute_medial_mask(
     let nz = sdf.axis_grids[2].len();
 
     // (5) Validate the flat data vector covers exactly nx*ny*nz voxels.
-    // Safe here because steps 3 and 4 confirmed nx, ny, nz ≥ 1.
+    // Safe here because step 4 (EmptyAxisGrid) confirmed nx, ny, nz ≥ 1.
     // Without this check a caller-side construction error (mismatched
     // data vs. axis grid extents) would produce an opaque OOB panic
     // inside the inner loop's `sample_at_index`.
