@@ -25,6 +25,16 @@
 //! Bottom face (ζ = −1) traversed counter-clockwise when viewed from +ζ;
 //! top face (ζ = +1) in the same cyclic order.  Right-handed orientation —
 //! the canonical ordering produces a positive `det J` for an unsheared cube.
+//!
+//! # API surface
+//!
+//! `VERTEX_SIGNS` is a crate-internal constant — it is **not** part of the
+//! published API:
+//!
+//! ```compile_fail,E0603
+//! use reify_solver_elastic::elements::hex_p1::VERTEX_SIGNS;
+//! let _ = VERTEX_SIGNS;
+//! ```
 
 use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 
@@ -62,7 +72,7 @@ pub struct HexP1;
 ///
 /// Single-source: used by both `shape_at` and `shape_grad_at` to prevent
 /// per-method ordering drift.
-pub const VERTEX_SIGNS: [[f64; 3]; 8] = [
+pub(crate) const VERTEX_SIGNS: [[f64; 3]; 8] = [
     [-1.0, -1.0, -1.0], // v_0
     [ 1.0, -1.0, -1.0], // v_1
     [ 1.0,  1.0, -1.0], // v_2
