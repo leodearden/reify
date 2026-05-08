@@ -653,6 +653,78 @@ mod tests {
         }
     }
 
+    // ── Step-11: HardFail preempts SoftFail (regression guard) ──────────────
+
+    /// Regression guard: when any element is inverted, `HardFail` is returned
+    /// even if soft-fail thresholds also trip on other elements.
+    ///
+    /// This test pins the ordering contract from the design decision:
+    /// "HardFail strictly preempts SoftFail."
+    #[test]
+    fn quality_check_returns_hard_fail_even_when_soft_thresholds_also_trip() {
+        // Tet 0: inverted (left-handed), element_index=0.
+        //   Vertices: (0,0,0),(1,0,0),(0,0,1),(0,1,0) — nodes 2 and 3 swapped
+        //   from canonical right-handed tet → corner-0 det = -1 < 0.
+        //   Scaled J < 0 → HardFail.
+        //
+        // Tet 1: mildly degraded but right-handed, min scaled J in (0.15, 0.25).
+        //   Uses the h=0.18 degraded tet from the pct_below_025 test.
+        //   min scaled J ≈ 0.177 — above 0.15 floor, below 0.25 split point.
+        //
+        // source: same connectivity, same vertices (identity morph so AR ratio = 1).
+        //
+        // Expected: HardFail(InversionDetails { element_index: 0, .. })
+        // because tet 0 is inverted. SoftFail from tet 1's scaled J is preempted.
+        #[rustfmt::skip]
+        let vertices: Vec<f32> = vec![
+            // Tet 0: inverted (nodes 0-3)
+            0.0, 0.0, 0.0,  // node 0
+            1.0, 0.0, 0.0,  // node 1
+            0.0, 0.0, 1.0,  // node 2  (swapped — inverted tet)
+            0.0, 1.0, 0.0,  // node 3  (swapped — inverted tet)
+            // Tet 1: degraded h=0.18, min scaled J ≈ 0.177 (nodes 4-7)
+            4.0, 0.0, 0.0,
+            5.0, 0.0, 0.0,
+            4.0, 1.0, 0.0,
+            4.0, 0.0, 0.18,
+        ];
+        #[rustfmt::skip]
+        let tet_indices: Vec<u32> = vec![
+            0, 1, 2, 3,  // inverted
+            4, 5, 6, 7,  // degraded
+        ];
+        let mesh = VolumeMesh {
+            vertices,
+            tet_indices,
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        let opts = MorphOptions::default();
+        let result = quality_check(&mesh, &mesh, &opts);
+
+        match result {
+            QualityVerdict::HardFail(details) => {
+                assert_eq!(
+                    details.element_index, 0,
+                    "expected element_index 0 (the inverted tet), got {}",
+                    details.element_index
+                );
+                assert!(
+                    details.jacobian < 0.0,
+                    "inverted tet jacobian must be negative, got {}",
+                    details.jacobian
+                );
+            }
+            QualityVerdict::SoftFail(_) => {
+                panic!("expected HardFail, got SoftFail — HardFail must preempt SoftFail");
+            }
+            QualityVerdict::Pass => {
+                panic!("expected HardFail, got Pass");
+            }
+        }
+    }
+
     // ── Compile fence: exhaustive variant match (no wildcard arm) ─────────────
     //
     // Adding, removing, or renaming any QualityVerdict variant breaks
