@@ -120,6 +120,31 @@ pub fn apply_dirichlet_row_elimination(
     f: &mut [f64],
     bcs: &[DirichletBc],
 ) {
+    // --- Contract checks (mirroring assemble_global_stiffness panic policy) ---
+    assert_eq!(
+        f.len(),
+        k.nrows(),
+        "f.len() = {} but k.nrows() = {}; expected f.len() == k.nrows()",
+        f.len(),
+        k.nrows(),
+    );
+    assert_eq!(
+        k.nrows(),
+        k.ncols(),
+        "k must be square: k.nrows() = {} but k.ncols() = {}",
+        k.nrows(),
+        k.ncols(),
+    );
+    for bc in bcs {
+        assert!(
+            bc.dof < k.nrows(),
+            "DirichletBc {{ dof: {} }} exceeds k.nrows() = {}; valid range is 0..{}",
+            bc.dof,
+            k.nrows(),
+            k.nrows(),
+        );
+    }
+
     if bcs.is_empty() {
         return;
     }
