@@ -726,14 +726,57 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField) -> Vec<[f64; 3]> {
     let nx = sdf.axis_grids[0].len();
     let ny = sdf.axis_grids[1].len();
     let nz = sdf.axis_grids[2].len();
-    let mut grid = Vec::with_capacity(nx * ny * nz);
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                grid.push(gradient_at_index(sdf, [i, j, k]));
-            }
+
+    // Parallel construction via std::thread::scope, chunk-by-i-axis.
+    //
+    // Each thread builds a local Vec for its i-chunk and returns
+    // `(start_i, local)`. The main thread (after joining in spawn order)
+    // copies each thread's result into the appropriate slice of `grid`
+    // via `copy_from_slice`. No unsafe: the main thread owns `grid`
+    // exclusively while the scope is active, and writes happen only
+    // after each handle is joined.
+    //
+    // Determinism: handles are joined in spawn order = chunk-iteration
+    // order = ascending i order; the copy writes to non-overlapping
+    // slices `start_i*ny*nz .. (start_i + chunk_len)*ny*nz`. Per
+    // Task-2544: panics are forwarded via `resume_unwind`.
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(nx.max(1));
+    let chunk_size = nx.div_ceil(threads).max(1);
+    let i_indices: Vec<usize> = (0..nx).collect();
+
+    let mut grid = vec![[0.0f64; 3]; nx * ny * nz];
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(threads);
+        for chunk in i_indices.chunks(chunk_size) {
+            let chunk_owned: Vec<usize> = chunk.to_vec();
+            handles.push(s.spawn(move || {
+                let mut local = Vec::with_capacity(chunk_owned.len() * ny * nz);
+                for &i in &chunk_owned {
+                    for j in 0..ny {
+                        for k in 0..nz {
+                            local.push(gradient_at_index(sdf, [i, j, k]));
+                        }
+                    }
+                }
+                // Return the start i-index so the caller can locate the
+                // correct slice of `grid` without recomputing the offset.
+                (chunk_owned[0], local)
+            }));
         }
-    }
+        for h in handles {
+            let (start_i, local) = match h.join() {
+                Ok(t) => t,
+                Err(p) => std::panic::resume_unwind(p),
+            };
+            let dst = &mut grid[start_i * ny * nz..start_i * ny * nz + local.len()];
+            dst.copy_from_slice(&local);
+        }
+    });
+
     grid
 }
 
