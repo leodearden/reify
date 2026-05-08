@@ -1305,4 +1305,58 @@ mod tests {
             );
         }
     }
+
+    /// Positive coverage test for `AxisLengthMismatch`: constructs a
+    /// Regular3D `SampledField` with `bounds_min.len() == 1` while
+    /// all other axis vectors have length 3. Verifies that
+    /// `compute_medial_mask` returns the correct error with exact
+    /// field values rather than panicking or silently succeeding.
+    #[test]
+    fn compute_medial_mask_rejects_axis_length_mismatch() {
+        let sdf = SampledField {
+            name: "test-axis-len-mismatch".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0],               // length 1 — mismatch
+            bounds_max: vec![0.0, 0.0, 0.0],     // length 3
+            spacing: vec![1.0, 1.0, 1.0],        // length 3
+            axis_grids: vec![vec![0.0], vec![0.0], vec![0.0]], // length 3
+            interpolation: InterpolationKind::Linear,
+            data: vec![1.0],
+            oob_emitted: AtomicBool::new(false),
+        };
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("axis-length-mismatch input must be rejected");
+        assert_eq!(
+            err,
+            MedialError::AxisLengthMismatch {
+                bounds_min_len: 1,
+                bounds_max_len: 3,
+                spacing_len: 3,
+                axis_grids_len: 3,
+            }
+        );
+    }
+
+    /// Positive coverage test for `EmptyAxisGrid`: constructs a
+    /// Regular3D `SampledField` whose axis-0 grid is empty (outer
+    /// length 3, inner length 0 on axis 0). Passes `AxisLengthMismatch`
+    /// because the outer vector has the required 3 entries; triggers
+    /// `EmptyAxisGrid` on the first per-axis liveness check.
+    #[test]
+    fn compute_medial_mask_rejects_empty_axis_grid() {
+        let sdf = SampledField {
+            name: "test-empty-axis-grid".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![0.0, 0.0, 0.0],
+            spacing: vec![1.0, 1.0, 1.0],
+            axis_grids: vec![vec![], vec![0.0], vec![0.0]], // axis-0 empty
+            interpolation: InterpolationKind::Linear,
+            data: vec![],
+            oob_emitted: AtomicBool::new(false),
+        };
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("empty-axis-grid input must be rejected");
+        assert_eq!(err, MedialError::EmptyAxisGrid { axis: 0 });
+    }
 }
