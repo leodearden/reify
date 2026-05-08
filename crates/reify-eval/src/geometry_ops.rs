@@ -1690,15 +1690,9 @@ pub(crate) fn try_eval_topology_selector(
     match helper {
         TopologySelectorHelper::ClosestPoint | TopologySelectorHelper::On => {
             // args[0]: point ValueRef → values map → Value::Point of three Length scalars.
-            let point = match resolve_point3_length_arg(&args[0], values) {
-                Some(p) => p,
-                None => return None,
-            };
+            let point = resolve_point3_length_arg(&args[0], values)?;
             // args[1]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = match resolve_geometry_handle_arg(&args[1], named_steps) {
-                Some(h) => h,
-                None => return None,
-            };
+            let handle = resolve_geometry_handle_arg(&args[1], named_steps)?;
 
             match helper {
                 TopologySelectorHelper::ClosestPoint => {
@@ -1735,14 +1729,8 @@ pub(crate) fn try_eval_topology_selector(
         }
         TopologySelectorHelper::AngleBetweenSurfaces => {
             // Both args: geometry ValueRefs → named_steps map → GeometryHandleId.
-            let face_a = match resolve_geometry_handle_arg(&args[0], named_steps) {
-                Some(h) => h,
-                None => return None,
-            };
-            let face_b = match resolve_geometry_handle_arg(&args[1], named_steps) {
-                Some(h) => h,
-                None => return None,
-            };
+            let face_a = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
             let query = reify_types::GeometryQuery::SurfaceAngle { face_a, face_b };
             dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
         }
