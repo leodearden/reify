@@ -413,100 +413,144 @@ pub fn compute_medial_mask(
     // the hot path; the lookup is O(1) via i*ny*nz + j*nz + k.
     let gradient_grid = precompute_gradient_grid(sdf);
 
-    let mut voxels: Vec<[i32; 3]> = Vec::new();
+    // Parallel outer (i-axis) loop.
+    //
+    // Determinism contract (mirrors global.rs:191-228):
+    // (a) `i_indices.chunks(chunk_size)` partitions indices in stable
+    //     ascending order (chunks() is a stable slice partition);
+    // (b) threads spawn in chunk-iteration order, so handle slot `t`
+    //     corresponds to chunk `t` regardless of OS thread assignment;
+    // (c) `for h in handles` joins in spawn order and appends in that
+    //     order — preserving spawn order in the merged Vec;
+    // (d) `sort_unstable()` normalises the merged Vec to strict lex
+    //     order, independent of future chunk-distribution changes.
+    //     Duplicates cannot appear: each (i,j,k) is visited by exactly
+    //     one thread's chunk.
+    // Per Task-2544: panics in workers are forwarded via `resume_unwind`
+    // so the original payload reaches the caller intact.
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(nx.max(1));
+    let chunk_size = nx.div_ceil(threads).max(1);
+    let i_indices: Vec<usize> = (0..nx).collect();
+    // Extract Copy scalars from `options` so closures capture by value
+    // (required for `Send` — closures cannot hold a `&MedialOptions`
+    // borrow across the scope boundary when `options` is not `Sync`-
+    // verified by the caller; extracting Copy fields is safer).
+    let dist_tol = options.distance_tolerance;
+    let antipar_thr = options.normal_antiparallel_threshold;
+    // Shared immutable borrow of gradient_grid across all threads.
+    // `&[[f64;3]]` is `Copy + Send` (since `[f64;3]: Sync`), so each
+    // `move` closure copies the fat-pointer rather than moving the Vec.
+    let gradient_grid_ref: &[[f64; 3]] = &gradient_grid;
 
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                let phi = sample_at_index(sdf, [i, j, k]);
+    let mut voxels: Vec<[i32; 3]> = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(threads);
+        for chunk in i_indices.chunks(chunk_size) {
+            let chunk_owned: Vec<usize> = chunk.to_vec();
+            handles.push(s.spawn(move || {
+                let mut local: Vec<[i32; 3]> = Vec::new();
+                for &i in &chunk_owned {
+                    for j in 0..ny {
+                        for k in 0..nz {
+                            let phi = sample_at_index(sdf, [i, j, k]);
 
-                // (a) narrow-band filter
-                if phi.abs() > band_width {
-                    continue;
+                            // (a) narrow-band filter
+                            if phi.abs() > band_width {
+                                continue;
+                            }
+
+                            // (b) gradient at the voxel; reject degenerate
+                            let grad = gradient_grid_ref[i * ny * nz + j * nz + k];
+                            let gnorm = (grad[0] * grad[0]
+                                + grad[1] * grad[1]
+                                + grad[2] * grad[2])
+                                .sqrt();
+                            if gnorm < GRADIENT_EPSILON {
+                                continue;
+                            }
+                            let g = [grad[0] / gnorm, grad[1] / gnorm, grad[2] / gnorm];
+
+                            // (c) bidirectional ray walk from the voxel's
+                            // world coordinate in ±g, with sub-voxel
+                            // zero-crossing refinement.
+                            let world = world_at_index(sdf, [i, j, k]);
+                            let Some((d_plus, d_minus, hit_plus, hit_minus)) =
+                                bidirectional_distances(sdf, world, g, max_steps, walk_step)
+                            else {
+                                continue;
+                            };
+
+                            // (d) gradient at each surface hit; reject if
+                            // either is degenerate (we cannot make a
+                            // distinctness call without two well-defined
+                            // normals).
+                            let gp_raw = gradient_at_world(sdf, hit_plus);
+                            let gm_raw = gradient_at_world(sdf, hit_minus);
+                            let Some(gp) = normalize3(gp_raw) else { continue };
+                            let Some(gm) = normalize3(gm_raw) else { continue };
+
+                            // (e) gradient-discontinuity test: opposing-face
+                            // hits have antiparallel normals (dot near -1).
+                            if !surface_patches_distinct(gp, gm, antipar_thr) {
+                                continue;
+                            }
+
+                            // (f) bidirectional-distance equality.
+                            let dmax = d_plus.max(d_minus);
+                            if dmax <= 0.0 {
+                                continue;
+                            }
+                            // Defends against a long-walk-on-one-side /
+                            // short-on-the-other ratio coincidence: if the
+                            // sum exceeds the configured maximum thickness,
+                            // treat the voxel as outside the band rather
+                            // than letting two non-comparable walks pass the
+                            // relative test.
+                            if d_plus + d_minus > 2.0 * max_walk_dist {
+                                continue;
+                            }
+                            // Equality threshold combines two terms:
+                            //  - relative `distance_tolerance × max(d⁺, d⁻)` —
+                            //    the PRD's "~5%" rule, sharply discriminates
+                            //    centerline voxels when the medial axis aligns
+                            //    with a voxel.
+                            //  - absolute one-voxel slack `min_spacing` —
+                            //    handles voxelized medial axes that fall
+                            //    *between* grid points (the analytic medial of
+                            //    an axis-aligned slab on an even-N grid lies on
+                            //    a half-voxel boundary, so the two closest
+                            //    voxels see a one-voxel asymmetry in d⁺/d⁻ —
+                            //    namely `min_spacing` — that the strict
+                            //    relative rule would reject). The slack is
+                            //    therefore exactly `min_spacing`, NOT
+                            //    `½·min_spacing`. See the doc comment on
+                            //    `MedialOptions::distance_tolerance` for the
+                            //    discriminative-regime caveat.
+                            let abs_diff = (d_plus - d_minus).abs();
+                            let equality_threshold = dist_tol * dmax + min_spacing;
+                            if abs_diff < equality_threshold {
+                                local.push([i as i32, j as i32, k as i32]);
+                            }
+                        }
+                    }
                 }
-
-                // (b) gradient at the voxel; reject degenerate
-                let grad = gradient_grid[i * ny * nz + j * nz + k];
-                let gnorm = (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt();
-                if gnorm < GRADIENT_EPSILON {
-                    continue;
-                }
-                let g = [grad[0] / gnorm, grad[1] / gnorm, grad[2] / gnorm];
-
-                // (c) bidirectional ray walk from the voxel's world
-                // coordinate in ±g, with sub-voxel zero-crossing
-                // refinement.
-                let world = world_at_index(sdf, [i, j, k]);
-                let Some((d_plus, d_minus, hit_plus, hit_minus)) =
-                    bidirectional_distances(sdf, world, g, max_steps, walk_step)
-                else {
-                    continue;
-                };
-
-                // (d) gradient at each surface hit; reject if either
-                // is degenerate (we cannot make a distinctness call
-                // without two well-defined normals).
-                let gp_raw = gradient_at_world(sdf, hit_plus);
-                let gm_raw = gradient_at_world(sdf, hit_minus);
-                let Some(gp) = normalize3(gp_raw) else { continue };
-                let Some(gm) = normalize3(gm_raw) else { continue };
-
-                // (e) gradient-discontinuity test: opposing-face
-                // hits have antiparallel normals (dot near -1).
-                if !surface_patches_distinct(gp, gm, options.normal_antiparallel_threshold) {
-                    continue;
-                }
-
-                // (f) bidirectional-distance equality.
-                let dmax = d_plus.max(d_minus);
-                if dmax <= 0.0 {
-                    continue;
-                }
-                // Defends against a long-walk-on-one-side / short-on-
-                // the-other ratio coincidence: if the sum exceeds the
-                // configured maximum thickness, treat the voxel as
-                // outside the band rather than letting two
-                // non-comparable walks pass the relative test.
-                if d_plus + d_minus > 2.0 * max_walk_dist {
-                    continue;
-                }
-                // Equality threshold combines two terms:
-                //  - relative `distance_tolerance × max(d⁺, d⁻)` — the
-                //    PRD's "~5%" rule, sharply discriminates centerline
-                //    voxels when the medial axis aligns with a voxel.
-                //  - absolute one-voxel slack `min_spacing` — handles
-                //    voxelized medial axes that fall *between* grid
-                //    points (the analytic medial of an axis-aligned
-                //    slab on an even-N grid lies on a half-voxel
-                //    boundary, so the two closest voxels see a
-                //    one-voxel asymmetry in d⁺/d⁻ — namely
-                //    `min_spacing` — that the strict relative rule
-                //    would reject). The slack is therefore exactly
-                //    `min_spacing`, NOT `½·min_spacing`: a half-voxel
-                //    *offset* of the voxel center from the analytic
-                //    medial produces a full-voxel asymmetry in
-                //    d⁺/d⁻ along the gradient direction. Equivalent
-                //    to requiring the bisecting midpoint of the two
-                //    surface hits to lie within `½(min_spacing +
-                //    distance_tolerance × max(d⁺, d⁻))` of the voxel
-                //    center along the gradient direction — i.e.
-                //    inside the voxel itself, with a small
-                //    relative-error cushion.
-                //
-                //  CONSEQUENCE: for thicknesses ≪ 20 voxels the
-                //  absolute slack dominates and `distance_tolerance`
-                //  is effectively inert at typical (≤ 0.05) values.
-                //  See the doc comment on
-                //  `MedialOptions::distance_tolerance` for the
-                //  discriminative-regime caveat.
-                let abs_diff = (d_plus - d_minus).abs();
-                let equality_threshold = options.distance_tolerance * dmax + min_spacing;
-                if abs_diff < equality_threshold {
-                    voxels.push([i as i32, j as i32, k as i32]);
-                }
+                local
+            }));
+        }
+        let mut acc: Vec<[i32; 3]> = Vec::new();
+        for h in handles {
+            match h.join() {
+                Ok(local) => acc.extend(local),
+                Err(payload) => std::panic::resume_unwind(payload),
             }
         }
-    }
+        acc
+    });
+    // Normalise to strict lex order regardless of chunk distribution.
+    // sort_unstable is safe: no duplicates (each voxel owned by one thread).
+    voxels.sort_unstable();
 
     Ok(MedialMask {
         spacing,
