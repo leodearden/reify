@@ -519,6 +519,10 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
 ///
 /// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
 ///   contains a non-finite component (an undefined direction).
+/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
+///   outside the valid range `[0, π/2]`. Values beyond π/2 cause `cos` to go
+///   negative, making the `|dot| >= cos(tol)` predicate trivially true for all
+///   edges (silent over-acceptance). Only `[0, π/2]` has well-defined semantics.
 /// - Propagates any error from `extract_edges`.
 /// - Propagates any error from a per-edge `EdgeTangent` query.
 /// - Returns `QueryError::QueryFailed` on a malformed tangent payload
@@ -529,6 +533,14 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     axis: [f64; 3],
     angular_tol_rad: f64,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    if !angular_tol_rad.is_finite()
+        || !(0.0..=std::f64::consts::FRAC_PI_2).contains(&angular_tol_rad)
+    {
+        return Err(QueryError::QueryFailed(format!(
+            "edges_parallel_to: angular_tol_rad must be finite and in [0, π/2] (got {})",
+            angular_tol_rad
+        )));
+    }
     let axis = normalize3(axis).ok_or_else(|| {
         QueryError::QueryFailed(
             "edges_parallel_to: axis direction must be non-zero and finite".into(),
