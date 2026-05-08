@@ -17,6 +17,21 @@ pub use reify_eval::{
     BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind, SubShapeSide,
 };
 
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Bool-only wrapper around [`morph_eligible`] per PRD task #4.
+///
+/// Returns `true` if both Stage A and Stage B pass (the edit is morphable),
+/// `false` otherwise. The structured rejection [`Reason`] is discarded;
+/// callers that need it for failure-mode visibility counters (PRD task #11)
+/// should call [`morph_eligible`] directly.
+pub fn eligible(old_brep: &BRep, new_brep: &BRep) -> bool {
+    matches!(
+        eligibility::morph_eligible(old_brep, new_brep),
+        Eligibility::Eligible(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
