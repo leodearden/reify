@@ -21,7 +21,9 @@ use reify_types::Value;
 /// # Convention
 ///
 /// The returned 3×3 matrix is the *local-to-global* rotation:
-/// - `result[i][j]` is the j-th global component of the i-th local basis vector.
+/// - `result[i][j]` is the *i-th global component of the j-th local basis vector*
+///   (equivalently: the j-th column of `result` is the j-th local basis vector expressed
+///   in global coordinates).
 /// - A local-frame displacement vector `v_local` maps to global via `v_global = frame · v_local`.
 /// - A local-frame rank-2 stress tensor maps to global via `σ_global = frame · σ_local · frameᵀ`.
 ///
