@@ -665,10 +665,11 @@ pub fn created_by_feature(
     let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
     let mut out: Vec<GeometryHandleId> = Vec::new();
     for id in candidates {
-        if let Some(attr) = table.lookup(*id) {
-            if &attr.feature_id == feature_id && seen.insert(*id) {
-                out.push(*id);
-            }
+        if let Some(attr) = table.lookup(*id)
+            && &attr.feature_id == feature_id
+            && seen.insert(*id)
+        {
+            out.push(*id);
         }
     }
     out
@@ -737,10 +738,11 @@ pub fn has_user_label(
     let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
     let mut out: Vec<GeometryHandleId> = Vec::new();
     for id in candidates {
-        if let Some(attr) = table.lookup(*id) {
-            if attr.user_label.is_some() && seen.insert(*id) {
-                out.push(*id);
-            }
+        if let Some(attr) = table.lookup(*id)
+            && attr.user_label.is_some()
+            && seen.insert(*id)
+        {
+            out.push(*id);
         }
     }
     out
@@ -762,10 +764,11 @@ pub fn user_label_eq(
     let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
     let mut out: Vec<GeometryHandleId> = Vec::new();
     for id in candidates {
-        if let Some(attr) = table.lookup(*id) {
-            if attr.user_label.as_deref() == Some(label) && seen.insert(*id) {
-                out.push(*id);
-            }
+        if let Some(attr) = table.lookup(*id)
+            && attr.user_label.as_deref() == Some(label)
+            && seen.insert(*id)
+        {
+            out.push(*id);
         }
     }
     out
@@ -954,7 +957,7 @@ pub fn siblings_of_face<K: GeometryKernel + ?Sized>(
     face_handle: GeometryHandleId,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let faces = kernel.extract_faces(parent)?;
-    if !faces.iter().any(|id| *id == face_handle) {
+    if !faces.contains(&face_handle) {
         return Err(QueryError::QueryFailed(format!(
             "siblings_of_face: face {face_handle:?} is not a child of parent {parent:?} (was extract_faces(parent) called?)"
         )));

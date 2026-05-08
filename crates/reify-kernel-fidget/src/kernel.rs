@@ -240,6 +240,7 @@ fn query_kind_name(q: &GeometryQuery) -> &'static str {
         GeometryQuery::FaceNormal(_) => "FaceNormal",
         GeometryQuery::FaceSurfaceKind(_) => "FaceSurfaceKind",
         GeometryQuery::EdgeCurveKind(_) => "EdgeCurveKind",
+        GeometryQuery::OwnerBody(_) => "OwnerBody",
     }
 }
 
