@@ -192,6 +192,109 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Step 2 — homogeneous BC zeros the constrained row/col and sets diagonal
+    // -----------------------------------------------------------------------
+
+    /// Homogeneous BC (`u = 0`) zeros row `i` and column `i` of K, sets
+    /// `K[i][i] = 1.0`, and sets `f[i] = 0.0`, while leaving all other
+    /// K entries and `f[j]` (j ≠ i) bit-for-bit identical.
+    ///
+    /// Pins the row/col-zeroing and diagonal-set arms of the algorithm
+    /// without exercising the column-into-RHS path (which contributes zero
+    /// when `u = 0`).  The non-trivial `f = [1.0, 2.0, …, 12.0]` ensures
+    /// any accidental f-mutation at j ≠ i would surface immediately.
+    #[test]
+    fn homogeneous_bc_zeros_row_col_and_sets_unit_diagonal() {
+        let mut k = single_p1_k();
+        let mut f: Vec<f64> = (1..=12).map(|i| i as f64).collect();
+
+        // Snapshot K and f before applying the BC.
+        let k_before: Vec<Vec<f64>> = (0..12)
+            .map(|i| (0..12).map(|j| read(&k, i, j)).collect())
+            .collect();
+        let f_before = f.clone();
+
+        let constrained_dof = 3usize;
+        apply_dirichlet_row_elimination(
+            &mut k,
+            &mut f,
+            &[DirichletBc { dof: constrained_dof, value: 0.0 }],
+        );
+
+        let d = constrained_dof;
+
+        // (a) Row d must be all zeros except the diagonal.
+        for j in 0..12 {
+            if j != d {
+                assert_eq!(
+                    read(&k, d, j),
+                    0.0,
+                    "K[{d}][{j}] should be 0.0 after homogeneous BC, got {}",
+                    read(&k, d, j),
+                );
+            }
+        }
+
+        // (b) Column d must be all zeros except the diagonal.
+        for i in 0..12 {
+            if i != d {
+                assert_eq!(
+                    read(&k, i, d),
+                    0.0,
+                    "K[{i}][{d}] should be 0.0 after homogeneous BC, got {}",
+                    read(&k, i, d),
+                );
+            }
+        }
+
+        // (c) Diagonal K[d][d] must be exactly 1.0.
+        assert_eq!(
+            read(&k, d, d).to_bits(),
+            1.0_f64.to_bits(),
+            "K[{d}][{d}] should be 1.0 after homogeneous BC, got {}",
+            read(&k, d, d),
+        );
+
+        // (d) Unconstrained block must be bit-for-bit identical.
+        for i in 0..12 {
+            for j in 0..12 {
+                if i != d && j != d {
+                    let after = read(&k, i, j);
+                    assert_eq!(
+                        after.to_bits(),
+                        k_before[i][j].to_bits(),
+                        "K[{i}][{j}] changed unexpectedly: was {}, now {}",
+                        k_before[i][j],
+                        after,
+                    );
+                }
+            }
+        }
+
+        // (e) f[d] must be 0.0; f[j] for j ≠ d must be bit-identical to before
+        //     (homogeneous BC subtracts K[j][d] * 0.0 = 0 from f[j]).
+        assert_eq!(
+            f[d],
+            0.0,
+            "f[{d}] should be 0.0 after homogeneous BC",
+        );
+        for j in 0..12 {
+            if j != d {
+                assert_eq!(
+                    f[j].to_bits(),
+                    f_before[j].to_bits(),
+                    "f[{j}] changed unexpectedly: was {}, now {}",
+                    f_before[j],
+                    f[j],
+                );
+            }
+        }
+
+        // suppress unused-variable warning from snapshot on the lines above
+        let _ = &k_before;
+    }
+
+    // -----------------------------------------------------------------------
     // Step 1 — empty BC list is a no-op
     // -----------------------------------------------------------------------
 
