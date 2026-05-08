@@ -13,7 +13,7 @@ use reify_eval::selector_vocabulary_v2::{
     Axis, ExtremalSense, adjacent_to_face, ancestor_faces_of_edge, complement, created_by_feature,
     edges_by_curve_kind, edges_perpendicular_to, except, extremal_by_bbox, extremal_by_centroid,
     faces_by_surface_kind, faces_perpendicular_to, geom_universal, has_user_label, intersect,
-    siblings_of_face, split_by_feature, union, user_label_eq,
+    owner_body_of, siblings_of_face, split_by_feature, union, user_label_eq,
 };
 use reify_test_support::MockGeometryKernel;
 use reify_types::{
@@ -1615,4 +1615,78 @@ fn siblings_of_face_with_single_face_parent_returns_empty() {
     let result = siblings_of_face(&mut kernel, parent, f0)
         .expect("siblings_of_face should succeed when the only face is the queried one");
     assert!(result.is_empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// owner_body_of — `owner_body(sub_handle)` topological walk (PRD line 81)
+//
+// Issues a single `GeometryQuery::OwnerBody(sub_handle)` query (a pure read —
+// the selector takes `&K`, not `&mut K`) and unwraps the `Value::Int(parent_id)`
+// reply into a typed `GeometryHandleId`. The kernel records parent provenance
+// on every `extract_edges` / `extract_faces` call so any sub-handle can answer
+// "what solid did I come from?" without re-extraction.
+//
+// `MockGeometryKernel::with_owner_body_result(child, parent)` stages the
+// mapping; an unstaged child surfaces as `QueryFailed` rather than a panic.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn owner_body_of_returns_recorded_parent_for_staged_handle() {
+    let parent = GeometryHandleId(1);
+    let child = GeometryHandleId(2);
+    let kernel = MockGeometryKernel::new().with_owner_body_result(child, parent);
+
+    let result = owner_body_of(&kernel, child)
+        .expect("owner_body_of should succeed for a staged child handle");
+    assert_eq!(result, parent, "child must resolve to its recorded parent");
+}
+
+#[test]
+fn owner_body_of_with_unstaged_handle_returns_query_failed() {
+    let foreign = GeometryHandleId(99);
+    let kernel = MockGeometryKernel::new();
+
+    let result = owner_body_of(&kernel, foreign);
+    match result {
+        Err(QueryError::QueryFailed(msg)) => {
+            assert!(
+                msg.contains("owner_body") && msg.contains("no recorded parent"),
+                "error must mention 'owner_body' and 'no recorded parent', got: {msg:?}"
+            );
+        }
+        other => panic!(
+            "expected Err(QueryFailed) for an unstaged handle, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn owner_body_of_returns_query_failed_on_non_int_payload() {
+    // Defence-in-depth: if a future kernel ever returns a non-Int payload
+    // for OwnerBody, the selector must surface it as QueryFailed rather
+    // than panicking on the type mismatch.
+    let parent = GeometryHandleId(1);
+    let child = GeometryHandleId(2);
+    let kernel = MockGeometryKernel::new()
+        .with_owner_body_value(child, Value::String("not an int".into()));
+
+    let result = owner_body_of(&kernel, child);
+    assert!(matches!(result, Err(QueryError::QueryFailed(_))));
+}
+
+#[test]
+fn owner_body_of_distinguishes_distinct_children_of_same_parent() {
+    // Two children of the same parent — the selector must return the
+    // same parent for both, demonstrating the recorded-parent lookup is
+    // per-child rather than per-shape.
+    let parent = GeometryHandleId(1);
+    let f0 = GeometryHandleId(2);
+    let f1 = GeometryHandleId(3);
+    let kernel = MockGeometryKernel::new()
+        .with_owner_body_result(f0, parent)
+        .with_owner_body_result(f1, parent);
+
+    assert_eq!(owner_body_of(&kernel, f0).expect("f0 should resolve"), parent);
+    assert_eq!(owner_body_of(&kernel, f1).expect("f1 should resolve"), parent);
 }

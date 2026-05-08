@@ -23,7 +23,7 @@
 //! with FFI calls to OCCT's `BRepAdaptor_Surface::GetType()` and
 //! `BRepAdaptor_Curve::GetType()` and these tests must turn green.
 
-use reify_eval::selector_vocabulary_v2::adjacent_to_face;
+use reify_eval::selector_vocabulary_v2::{adjacent_to_face, owner_body_of};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
     GeometryKernel, GeometryOp, GeometryQuery, Value,
@@ -300,4 +300,76 @@ fn adjacent_to_face_box_neighbours_cover_all_other_faces() {
         "union of all neighbour-sets must cover every box face (got {} of 6)",
         seen.len()
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// owner_body_of on a 10mm box — every face / edge sub-handle resolves to the
+// original box solid handle. Confirms the kernel records the parent on every
+// `extract_*` call (the provenance contract).
+//
+// This test will FAIL until step-30 lands the parent_handle map on
+// OcctKernel + the OwnerBody query routing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn owner_body_of_box_face_resolves_to_box() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let box_id = kernel
+        .execute(&ten_mm_box_op())
+        .expect("10mm box should build via OCCT")
+        .id;
+    let face_handles = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces(box) should succeed");
+
+    for (i, face_id) in face_handles.iter().enumerate() {
+        let parent = owner_body_of(&kernel, *face_id).unwrap_or_else(|e| {
+            panic!(
+                "owner_body_of(face[{i}]={face_id:?}) should succeed, got {e:?}"
+            )
+        });
+        assert_eq!(
+            parent, box_id,
+            "box face {i} ({face_id:?}) must resolve to box_id {box_id:?}, got {parent:?}"
+        );
+    }
+}
+
+#[test]
+fn owner_body_of_box_edge_resolves_to_box() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let box_id = kernel
+        .execute(&ten_mm_box_op())
+        .expect("10mm box should build via OCCT")
+        .id;
+    let edge_handles = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges(box) should succeed");
+    assert_eq!(
+        edge_handles.len(),
+        12,
+        "a 10mm box must have exactly 12 edges in TopExp order"
+    );
+
+    for (i, edge_id) in edge_handles.iter().enumerate() {
+        let parent = owner_body_of(&kernel, *edge_id).unwrap_or_else(|e| {
+            panic!(
+                "owner_body_of(edge[{i}]={edge_id:?}) should succeed, got {e:?}"
+            )
+        });
+        assert_eq!(
+            parent, box_id,
+            "box edge {i} ({edge_id:?}) must resolve to box_id {box_id:?}, got {parent:?}"
+        );
+    }
 }
