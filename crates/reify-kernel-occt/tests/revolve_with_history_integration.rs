@@ -856,3 +856,31 @@ fn revolve_synthesis_post_sort_drops_duplicate_parent_subshape_index() {
         "stable-sort must reorder by parent_subshape_index (0 < 1 < 2)"
     );
 }
+
+/// Pure unit test for `axis_dot_abs`: verifies all four semantic cases
+/// without requiring OCCT at runtime (no early-return guard needed).
+///
+/// Cases (axis = [0,0,1]):
+///  1. Parallel      [0,0, 1] → exactly 1.0
+///  2. Anti-parallel [0,0,-1] → exactly 1.0  ← pins the `.abs()` branch
+///  3. Perpendicular [1,0, 0] → exactly 0.0
+///  4. Oblique       [0.6, 0.0, 0.8] → exactly 0.8
+///
+/// Inputs are chosen so the dot product is exactly representable in f64,
+/// so `assert_eq!` (no tolerance) is correct.
+#[test]
+fn axis_dot_abs_returns_absolute_dot_product() {
+    let axis = [0.0_f64, 0.0, 1.0];
+
+    // Case 1: parallel — dot = 1.0, abs = 1.0
+    assert_eq!(axis_dot_abs([0.0, 0.0, 1.0], axis), 1.0);
+
+    // Case 2: anti-parallel — dot = -1.0, abs = 1.0  (pins the .abs() branch)
+    assert_eq!(axis_dot_abs([0.0, 0.0, -1.0], axis), 1.0);
+
+    // Case 3: perpendicular — dot = 0.0, abs = 0.0
+    assert_eq!(axis_dot_abs([1.0, 0.0, 0.0], axis), 0.0);
+
+    // Case 4: oblique — dot = 0.8, abs = 0.8
+    assert_eq!(axis_dot_abs([0.6, 0.0, 0.8], axis), 0.8);
+}
