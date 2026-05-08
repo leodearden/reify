@@ -147,8 +147,12 @@ pub fn laplacian_smooth(
             }
             let neighbours = &adjacency[i];
             if neighbours.is_empty() {
-                // No neighbours → orphan; carry forward unchanged so 0/0
-                // doesn't inject NaN. Test pinned in step-15.
+                // Design decision: "interior nodes with zero topological
+                // neighbours retain their original position across all
+                // iterations" — keeps the function total when the mesh
+                // contains an orphan node (no incident tet) without
+                // injecting NaN via 0/0. Pinned by
+                // laplacian_smooth_with_orphan_interior_node_leaves_position_unchanged.
                 next[i] = current[i];
                 continue;
             }
