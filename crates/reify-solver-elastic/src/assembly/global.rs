@@ -199,6 +199,19 @@ mod tests {
         assert_eq!(k.compute_nnz(), 0, "no triplets ⇒ zero stored entries");
     }
 
+    /// Build a P1 K_e at the unit reference tet for a stiffer-or-softer
+    /// material. We reuse the unit-tet geometry so the only difference
+    /// between two K_e instances is the linear `E` scaling — making the
+    /// per-element contributions visually distinguishable in failure
+    /// messages while keeping the geometry trivial.
+    fn k_e_p1_with_youngs_modulus(youngs_modulus: f64) -> ElementStiffness {
+        let mat = IsotropicElastic {
+            youngs_modulus,
+            poisson_ratio: 0.3,
+        };
+        element_stiffness_p1(&UNIT_TET_P1, &mat)
+    }
+
     /// Single P1 element with identity connectivity `[0,1,2,3]` → K_global
     /// equals K_e bit-for-bit at every entry.
     ///
@@ -234,6 +247,93 @@ mod tests {
                     expected.to_bits(),
                     "K_global[{i}][{j}] = {actual} but K_e[{i}][{j}] = {expected}",
                 );
+            }
+        }
+    }
+
+    /// Two adjacent P1 elements sharing the face {1, 2, 3}; shared-DOF
+    /// entries sum, exclusive-DOF entries pass through unchanged.
+    ///
+    /// Element 0 uses connectivity `[0,1,2,3]` (identity-mapped), element 1
+    /// uses `[1,2,3,4]` (shifted by +1 from local). Two distinguishable
+    /// materials (`E=1.0` vs `E=2.0`) keep K_e0 and K_e1 per-entry visually
+    /// distinct in failure messages — they differ by a strict `2.0` factor.
+    /// The mesh has `n_nodes = 5 ⇒ K_global is 15 × 15`.
+    ///
+    /// Three independent assertion blocks cover the three contribution
+    /// patterns:
+    /// - Both DOFs anchored to node 0 (or any pair where one node is 0):
+    ///   only element 0 contributes.
+    /// - Both DOFs anchored to node 4 (or any pair where one node is 4):
+    ///   only element 1 contributes.
+    /// - Both DOFs anchored to nodes {1, 2, 3}: both elements contribute,
+    ///   summed in element-iteration order.
+    ///
+    /// Pinning the per-element-mapping equation in three separate blocks —
+    /// rather than re-implementing the production scatter as a check —
+    /// catches a regression that, say, swaps the local-DOF index direction
+    /// for one element only.
+    #[test]
+    fn two_p1_elements_sharing_face_accumulate_at_shared_dofs() {
+        let k_e0 = k_e_p1_with_youngs_modulus(1.0);
+        let k_e1 = k_e_p1_with_youngs_modulus(2.0);
+        assert_eq!(k_e0.n_dofs, 12);
+        assert_eq!(k_e1.n_dofs, 12);
+
+        let conn0 = [0usize, 1, 2, 3];
+        let conn1 = [1usize, 2, 3, 4];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn0,
+                k_e: &k_e0,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn1,
+                k_e: &k_e1,
+            },
+        ];
+        let n_nodes = 5;
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        assert_eq!(k.nrows(), 15);
+        assert_eq!(k.ncols(), 15);
+
+        // Helper: K_e0 contributes at (i, j) iff both nodes are in conn0
+        // (nodes 0..=3); local index in element 0 = global node (identity).
+        // K_e1 contributes iff both nodes are in conn1 (nodes 1..=4); local
+        // index = global node - 1.
+        let in_e0 = |node: usize| node <= 3;
+        let in_e1 = |node: usize| (1..=4).contains(&node);
+
+        for node_a in 0..n_nodes {
+            for node_b in 0..n_nodes {
+                for alpha in 0..3 {
+                    for beta in 0..3 {
+                        let i = 3 * node_a + alpha;
+                        let j = 3 * node_b + beta;
+                        let mut expected = 0.0_f64;
+                        if in_e0(node_a) && in_e0(node_b) {
+                            expected += k_e0.get(3 * node_a + alpha, 3 * node_b + beta);
+                        }
+                        if in_e1(node_a) && in_e1(node_b) {
+                            // element 1's local indexing shifts by -1.
+                            expected += k_e1.get(3 * (node_a - 1) + alpha, 3 * (node_b - 1) + beta);
+                        }
+                        let actual = read(&k, i, j);
+                        // Two-summand FP add is order-independent in IEEE754
+                        // for a single (a+b) pairing — and faer iterates
+                        // duplicates in encounter order, which here is
+                        // element 0 then element 1 (matches our `expected`
+                        // construction). Bit-equality is achievable.
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "K_global[{i}][{j}] (node_a={node_a}, node_b={node_b}, \
+                             alpha={alpha}, beta={beta}): actual={actual}, expected={expected}",
+                        );
+                    }
+                }
             }
         }
     }
