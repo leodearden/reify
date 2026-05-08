@@ -138,6 +138,25 @@ impl OpenVdbKernel {
     ///
     /// Returns `Err(ExportError::IoError)` if the path is not writable or the
     /// underlying `openvdb::io::File::write` throws.
+    ///
+    /// # Metadata round-trip gap (units)
+    ///
+    /// This function writes only the grid name and the active-voxel data;
+    /// it does NOT propagate a caller-supplied `units` string into the
+    /// `StringMetadata("units")` slot that [`crate::ingest::read_vdb_file`]
+    /// reads via `grid_units`. Consequently, a grid that was loaded with
+    /// declared units, written via `write_vdb_grid`, and re-read will lose
+    /// the units metadata — `OpenVdbGridSource.units` will be `None` on the
+    /// second read and unit-validated workflows must re-supply the units
+    /// out-of-band.
+    ///
+    /// A follow-up extension can either accept an `Option<&str>` `units`
+    /// parameter and call `grid->insertMeta("units", openvdb::StringMetadata)`
+    /// before writing, or expose a separate `write_vdb_grid_with_metadata`
+    /// API that takes a richer metadata struct. The current signature
+    /// matches the v0.4 shells use-case (in-process realize → write → read
+    /// where the codomain dimension is the contract) and is preserved for
+    /// stability.
     pub fn write_vdb_grid(
         &self,
         handle: GeometryHandleId,
@@ -194,13 +213,29 @@ impl Default for OpenVdbKernel {
 // Safety: `cxx::UniquePtr<OpenVdbGridHandle>` is the sole owner of its
 // heap-allocated `openvdb::FloatGrid::Ptr`. OpenVDB grids are heap-allocated
 // objects with no thread-local storage; ownership (the UniquePtr) can be
-// safely transferred across thread boundaries. The kernel's `&self` methods
-// (`active_voxel_count`, `sample_sdf_at`) only access the FloatGrid through
-// const accessors, which are thread-safe for concurrent reads.
+// safely transferred across thread boundaries.
 //
-// This mirrors the reasoning for the OCCT kernel's `OcctKernelHandle` (which
-// enforces thread safety via a dedicated actor); here we use unsafe impls
-// directly because OpenVDB lacks OCCT's global-state thread-affinity concerns.
+// `Sync` claim narrowed to the FFI calls actually reached through `&self`:
+//   - `grid_active_voxel_count` — calls `FloatGrid::activeVoxelCount()` which
+//     walks the immutable tree topology read-only.
+//   - `grid_sample_sdf` — uses a `BoxSampler` over a `ConstAccessor` which is
+//     read-only for the underlying tree.
+//
+// Both are read-only on the tree and therefore safe under concurrent `&self`
+// callers. Mutating methods (`realize_voxel_from_mesh`, `write_vdb_grid`,
+// `open_vdb_grid_for_test`) are `&mut self` and rely on Rust's borrow checker
+// for exclusive access, not on `Sync`.
+//
+// NOT yet reached through `&self` but worth flagging: any future `&self`
+// query that calls `evalActiveVoxelBoundingBox` (e.g. exposing bbox via the
+// kernel API) would need re-evaluation — some OpenVDB versions cache
+// bounding-box state internally on first call, which would race under
+// concurrent readers. Today none of the `&self` methods touch that path; the
+// I/O accessors (`grid_bbox_*`, `grid_densify_to_buffer`, `grid_voxel_sizes`)
+// are only used from `read_vdb_file` against a freshly-constructed handle
+// not yet shared, so concurrency does not arise. If the bbox path is later
+// exposed through a `&self` query, this `unsafe impl Sync` should be replaced
+// with a `parking_lot::Mutex` mirroring the OCCT actor pattern.
 unsafe impl Send for OpenVdbKernel {}
 unsafe impl Sync for OpenVdbKernel {}
 

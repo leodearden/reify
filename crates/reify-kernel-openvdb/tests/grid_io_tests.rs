@@ -117,6 +117,45 @@ fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
     }
 
     // ---------------------------------------------------------------------------
+    // Step 8b: Assert per-axis spacing round-trips to the input voxel_size.
+    //
+    // The original grid was built isotropically via meshToLevelSet at
+    // voxel_size=0.05, so all three components of `spacing` must equal 0.05
+    // within FP tolerance. A bug that scaled the transform (e.g. by 10×) or
+    // dropped a per-axis component would silently pass the kind/active-count
+    // checks but fail this assertion. Pinning spacing here is what makes the
+    // test name's "preserves metadata" claim accurate.
+    // ---------------------------------------------------------------------------
+    assert_eq!(outcome.field.spacing.len(), 3, "3D grid must have 3 spacing elements");
+    for i in 0..3 {
+        let delta = (outcome.field.spacing[i] - voxel_size).abs();
+        assert!(
+            delta < 1e-9,
+            "spacing[{i}]={} must round-trip to voxel_size={voxel_size} within 1e-9 (Δ={delta})",
+            outcome.field.spacing[i]
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step 8c: Assert bounds span matches (n−1)·spacing within voxel_size
+    // tolerance — a structural sanity check that the bbox endpoints align
+    // with voxel-center spacing rather than e.g. half-shifted or scaled by
+    // some accidental factor. Mirrors the linspace_inclusive contract used
+    // by lower_to_sampled.
+    // ---------------------------------------------------------------------------
+    for i in 0..3 {
+        let span = outcome.field.bounds_max[i] - outcome.field.bounds_min[i];
+        let n = outcome.field.axis_grids[i].len();
+        assert!(n >= 2, "axis_grids[{i}] must have ≥ 2 nodes after lowering, got {n}");
+        let expected_span = (n - 1) as f64 * outcome.field.spacing[i];
+        let delta = (span - expected_span).abs();
+        assert!(
+            delta < voxel_size,
+            "axis {i} span={span} must equal (n-1)·spacing={expected_span} within voxel_size={voxel_size} (Δ={delta})"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Step 9: Re-open the file via open_vdb_grid_for_test; assert active count
     //         round-trips exactly.
     // ---------------------------------------------------------------------------
