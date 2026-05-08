@@ -64,6 +64,8 @@ export function createScene(
 
   // Helpers
   const grid = new GridHelper(20, 20, 0x444466, 0x333344);
+  // GridHelper lays in the XZ plane (Y-up default); rotate to lie on the XY plane (the floor under Z-up).
+  grid.rotation.x = Math.PI / 2;
   scene.add(grid);
 
   const axes = new AxesHelper(2);
