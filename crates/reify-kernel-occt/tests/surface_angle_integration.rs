@@ -327,23 +327,16 @@ fn cylinder_curved_face_returns_finite_angle() {
         }
     }
 
-    // FaceNormal returns Value::String (JSON), e.g. `{"x":0.0,"y":0.0,"z":1.0}`.
-    // Parse the z component to identify the two flat caps (|n_z| ≈ 1).
-    let parse_nz = |face_id| -> f64 {
-        match kernel.query(&GeometryQuery::FaceNormal(face_id)) {
-            Ok(Value::String(s)) => {
-                // Parse the JSON and extract the z component.
-                // Format is `{"x":<f>,"y":<f>,"z":<f>}`.
-                let parsed: serde_json::Value = serde_json::from_str(&s)
-                    .unwrap_or_else(|e| panic!("failed to parse FaceNormal JSON {s:?}: {e}"));
-                parsed["z"].as_f64().expect("FaceNormal JSON missing z component")
-            }
-            other => panic!("FaceNormal returned unexpected value: {other:?}"),
-        }
-    };
-
+    // Identify the two flat caps: their outward normals are (anti-)parallel to Z,
+    // so |n_z| ≈ 1. Use the typed helper to avoid hand-parsing FaceNormal JSON.
     let cap_indices: Vec<usize> = (0..3)
-        .filter(|&i| parse_nz(faces[i]).abs() > 0.99)
+        .filter(|&i| {
+            kernel
+                .face_outward_unit_normal_for_test(faces[i])
+                .expect("face_outward_unit_normal_for_test should succeed")[2]
+                .abs()
+                > 0.99
+        })
         .collect();
     assert_eq!(
         cap_indices.len(),
