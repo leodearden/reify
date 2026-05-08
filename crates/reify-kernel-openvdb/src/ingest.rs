@@ -580,7 +580,17 @@ pub fn read_vdb_file(
         })?;
 
     // Extract grid metadata via FFI accessors.
-    let voxel_size = openvdb_ffi::grid_voxel_size(&grid_handle);
+    //
+    // `grid_voxel_sizes` returns the per-axis diagonal of the grid's linear
+    // transform. For meshToVolume-built grids these are isotropic (all three
+    // equal) but external `.vdb` imports may carry an anisotropic transform;
+    // propagating the per-axis values into `SampledField.spacing` keeps the
+    // axis grids consistent with `bounds_min/max` regardless. (Earlier
+    // revisions called the FFI as `grid_voxel_size` returning a single
+    // scalar, which silently replaced Y/Z spacing with X spacing for any
+    // anisotropic grid — producing axis grids whose lengths did not match
+    // the densified buffer length and yielding `DataShapeMismatch`.)
+    let voxel_sizes = openvdb_ffi::grid_voxel_sizes(&grid_handle);
     let bbox_min_arr = openvdb_ffi::grid_bbox_min(&grid_handle);
     let bbox_max_arr = openvdb_ffi::grid_bbox_max(&grid_handle);
     let units_str = openvdb_ffi::grid_units(&grid_handle);
@@ -592,12 +602,12 @@ pub fn read_vdb_file(
 
     // Build the in-memory source model.  Axis-0 = X, Axis-1 = Y, Axis-2 = Z.
     // bounds_min/max come from the world-space voxel-center coordinates of the
-    // active bounding box; spacing = voxel_size (isotropic grid).
+    // active bounding box; spacing carries the per-axis voxel sizes.
     let source = OpenVdbGridSource {
         kind: OpenVdbGridKind::Regular3D,
         bounds_min: bbox_min_arr.to_vec(),
         bounds_max: bbox_max_arr.to_vec(),
-        spacing: vec![voxel_size; 3],
+        spacing: voxel_sizes.to_vec(),
         data,
         units: if units_str.is_empty() {
             None

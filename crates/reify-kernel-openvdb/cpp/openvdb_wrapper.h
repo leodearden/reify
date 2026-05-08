@@ -67,7 +67,11 @@ double grid_sample_sdf(const OpenVdbGridHandle& h, double x, double y, double z)
 
 std::array<double, 3> grid_bbox_min(const OpenVdbGridHandle& h);
 std::array<double, 3> grid_bbox_max(const OpenVdbGridHandle& h);
-double grid_voxel_size(const OpenVdbGridHandle& h);
+/// Per-axis voxel sizes (X, Y, Z) read from the grid's linear transform.
+/// Anisotropic transforms produce three distinct values; isotropic transforms
+/// produce three equal values. The Rust caller decides whether to enforce
+/// isotropy or accept the per-axis spacing as-is.
+std::array<double, 3> grid_voxel_sizes(const OpenVdbGridHandle& h);
 rust::String grid_units(const OpenVdbGridHandle& h);
 
 // ---------------------------------------------------------------------------

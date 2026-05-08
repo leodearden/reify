@@ -42,7 +42,10 @@ pub mod ffi {
         // Grid metadata accessors
         fn grid_bbox_min(h: &OpenVdbGridHandle) -> [f64; 3];
         fn grid_bbox_max(h: &OpenVdbGridHandle) -> [f64; 3];
-        fn grid_voxel_size(h: &OpenVdbGridHandle) -> f64;
+        // Per-axis voxel sizes (X, Y, Z) — returns the diagonal of the
+        // grid's linear transform. Anisotropic grids produce three distinct
+        // values; the Rust caller propagates them into `SampledField.spacing`.
+        fn grid_voxel_sizes(h: &OpenVdbGridHandle) -> [f64; 3];
         fn grid_units(h: &OpenVdbGridHandle) -> String;
 
         // File I/O — throw std::runtime_error on failure; cxx maps to Err.

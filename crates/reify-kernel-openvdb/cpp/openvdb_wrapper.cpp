@@ -117,9 +117,14 @@ std::array<double, 3> grid_bbox_max(const OpenVdbGridHandle& h) {
     return {ws.x(), ws.y(), ws.z()};
 }
 
-double grid_voxel_size(const OpenVdbGridHandle& h) {
-    // Return the first diagonal element of the linear map (isotropic grids only).
-    return h.grid->transform().voxelSize()[0];
+std::array<double, 3> grid_voxel_sizes(const OpenVdbGridHandle& h) {
+    // Returns the diagonal of the grid's linear transform (per-axis voxel
+    // size). For an isotropic grid (the meshToVolume default) all three are
+    // equal; for an external .vdb with an anisotropic transform they differ.
+    // The Rust caller is responsible for either enforcing isotropy or
+    // propagating per-axis spacing into the SampledField.
+    openvdb::Vec3d vs = h.grid->transform().voxelSize();
+    return {vs.x(), vs.y(), vs.z()};
 }
 
 rust::String grid_units(const OpenVdbGridHandle& h) {
@@ -171,22 +176,33 @@ std::unique_ptr<OpenVdbGridHandle> read_vdb_grid_ffi(
     }
 
     openvdb::FloatGrid::Ptr target;
+    bool found = false;
+    bool wrong_type = false;
 
     for (auto it = vdb_file.beginName(); it != vdb_file.endName(); ++it) {
         if (it.gridName() == name_str) {
+            found = true;
             openvdb::GridBase::Ptr base = vdb_file.readGrid(it.gridName());
             target = openvdb::gridPtrCast<openvdb::FloatGrid>(base);
             if (!target) {
-                throw std::runtime_error(
-                    std::string("read_vdb_grid_ffi: grid '") + name_str +
-                    "' in '" + path_str + "' is not a FloatGrid");
+                wrong_type = true;
             }
             break;
         }
     }
+    // Close on every exit path — whether the grid was found, missing, or had
+    // the wrong type. Earlier revisions threw inside the loop on the
+    // wrong-type path, leaving close() unreached (relying on the stack
+    // destructor instead). The unconditional close keeps the cleanup symmetric
+    // with the not-found path and makes future edits next to the file safer.
     vdb_file.close();
 
-    if (!target) {
+    if (wrong_type) {
+        throw std::runtime_error(
+            std::string("read_vdb_grid_ffi: grid '") + name_str +
+            "' in '" + path_str + "' is not a FloatGrid");
+    }
+    if (!found || !target) {
         throw std::runtime_error(
             std::string("read_vdb_grid_ffi: grid '") + name_str +
             "' not found in '" + path_str + "'");
