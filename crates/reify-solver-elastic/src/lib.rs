@@ -107,6 +107,7 @@ pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
     element_stiffness,
 };
+pub use boundary::{DirichletBc, apply_dirichlet_row_elimination};
 pub use constitutive::IsotropicElastic;
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
