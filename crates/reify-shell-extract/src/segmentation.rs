@@ -102,6 +102,11 @@ pub struct RegionInfo {
     /// Arithmetic mean of `mesh.thickness[v]` over all mid-surface vertices
     /// `v` whose associated mask voxel belongs to this region.  `0.0` if
     /// no vertices are associated (degenerate isolated-voxel case).
+    ///
+    /// **Classification note**: when no vertices are associated the region is
+    /// classified as [`RegionClassification::TetEligible`] regardless of the
+    /// ratio, because a `0.0` thickness would otherwise yield
+    /// `ratio = 0.0 < threshold` → spurious `ShellEligible`.
     pub mean_thickness: f64,
     /// Largest axis-aligned bounding-box span in world units:
     /// `max((idx_max[a] − idx_min[a]) × spacing[a])` over the three axes.
@@ -119,14 +124,17 @@ pub struct SegmentationResult {
     /// order.
     pub regions: Vec<RegionInfo>,
     /// Per-vertex region label, parallel to `mesh.vertices`.  Entry `i` is
-    /// the label of the region whose mask voxel is nearest to `mesh.vertices[i]`
-    /// (via the 8-corner candidate lookup).  `u32::MAX` is a sentinel for
-    /// vertices with no associated mask voxel (should not occur for
-    /// well-formed T2 outputs).
+    /// the label of the region whose mask voxel is associated with
+    /// `mesh.vertices[i]`, found by the 8-corner floor/ceil enumeration
+    /// (dz outer, dy middle, dx inner — first matching corner wins).
+    /// `u32::MAX` is a sentinel for vertices with no associated mask voxel
+    /// (should not occur for well-formed T2 outputs).
     pub vertex_labels: Vec<u32>,
     /// Per-triangle region label, parallel to `mesh.triangles`.  Derived
-    /// from `vertex_labels[triangle[0]]` (binary-MC guarantees all three
-    /// vertices of a triangle share the same region).
+    /// from the first non-sentinel entry in `vertex_labels` for the
+    /// triangle's three vertices (binary-MC guarantees all three share the
+    /// same region on a well-formed mesh; `u32::MAX` if all three are
+    /// sentinels).
     pub triangle_labels: Vec<u32>,
 }
 
@@ -144,6 +152,17 @@ pub struct SegmentationResult {
 /// 5. Second-pass promotion: if the result contains **both** `ShellEligible`
 ///    and `TetEligible` regions, every `ShellEligible` is re-tagged
 ///    `MixedComponentOfBody` (PRD §103).
+///
+/// # Precondition — single body per call
+///
+/// This function assumes `mask` represents a **single body**. The second-pass
+/// `MixedComponentOfBody` promotion (step 5) is body-scoped: if the mask
+/// spans multiple disconnected bodies (each potentially a multi-region body
+/// or a single-region body), every `ShellEligible` region in the entire mask
+/// will be promoted when *any* region is `TetEligible`, regardless of
+/// whether those regions belong to the same physical body. Callers must
+/// split the mask per body before invoking `segment_regions`, or accept
+/// that the promotion is applied at the whole-mask level.
 ///
 /// # Errors
 ///
@@ -183,6 +202,13 @@ pub fn segment_regions(
     }
 
     use std::collections::{HashMap, HashSet, VecDeque};
+
+    // PERF (deferred): uses the default SipHash hasher, which is correct but
+    // slower than necessary on 12-byte `[i32; 3]` keys.  For PRD-realistic
+    // 256³ grids (~16 M active voxels), switching to `FxHashMap`/`FxHashSet`
+    // (rustc-hash crate) or a dense index-based representation would be
+    // worthwhile.  Cross-reference: medial.rs carries the same note in its
+    // deferred-optimization list.
 
     // Build O(1) membership lookup.
     let mask_set: HashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
@@ -280,9 +306,14 @@ pub fn segment_regions(
         .enumerate()
         .map(|(label_idx, voxels)| {
             let label = label_idx as u32;
-            let mean_thickness = if thickness_count[label_idx] > 0 {
+            let has_vertex_data = thickness_count[label_idx] > 0;
+            let mean_thickness = if has_vertex_data {
                 thickness_sum[label_idx] / thickness_count[label_idx] as f64
             } else {
+                // No mid-surface vertices map into this region — degenerate case
+                // (isolated mask cluster with no MC-active cells).  Use 0.0 so
+                // `mean_thickness` is truthful, but do NOT classify as ShellEligible:
+                // a region with no thickness data is treated as TetEligible below.
                 0.0
             };
             let extent = extents[label_idx];
@@ -291,7 +322,11 @@ pub fn segment_regions(
             } else {
                 f64::INFINITY
             };
-            let classification = if thickness_extent_ratio < options.shell_threshold {
+            // Regions with no associated vertices (`has_vertex_data == false`) are
+            // conservatively classified as TetEligible: a 0.0 mean_thickness would
+            // otherwise produce ratio = 0.0 < threshold → ShellEligible, which is
+            // misleading when the classification is based on absent mesh data.
+            let classification = if has_vertex_data && thickness_extent_ratio < options.shell_threshold {
                 RegionClassification::ShellEligible
             } else {
                 RegionClassification::TetEligible
@@ -328,11 +363,38 @@ pub fn segment_regions(
         }
     }
 
-    // Build triangle labels from vertex labels (any vertex suffices).
+    // Build triangle labels: use the first non-sentinel vertex label.
+    // On a well-formed binary-MC mesh all three vertices share the same region,
+    // but if vertex 0 carries the sentinel (floating-point boundary edge case),
+    // falling back to vertex 1 or 2 produces a correct label rather than
+    // propagating a spurious u32::MAX sentinel to the triangle.
     let triangle_labels: Vec<u32> = mesh
         .triangles
         .iter()
-        .map(|tri| vertex_labels[tri[0] as usize])
+        .map(|tri| {
+            let lbl = tri
+                .iter()
+                .map(|&v| vertex_labels[v as usize])
+                .find(|&l| l != u32::MAX)
+                .unwrap_or(u32::MAX);
+            // In debug builds, assert all non-sentinel labels agree.
+            #[cfg(debug_assertions)]
+            {
+                let non_sentinel: Vec<u32> = tri
+                    .iter()
+                    .map(|&v| vertex_labels[v as usize])
+                    .filter(|&l| l != u32::MAX)
+                    .collect();
+                if non_sentinel.len() > 1 {
+                    debug_assert!(
+                        non_sentinel.iter().all(|&l| l == non_sentinel[0]),
+                        "triangle vertices have inconsistent region labels: {:?}",
+                        non_sentinel
+                    );
+                }
+            }
+            lbl
+        })
         .collect();
 
     Ok(SegmentationResult {
@@ -555,9 +617,40 @@ mod tests {
         // Labels are in {0, 1}.
         let labels: HashSet<u32> = result.regions.iter().map(|r| r.label).collect();
         assert_eq!(labels, HashSet::from([0, 1]));
+
+        // Identify regions by representative voxel (not by positional index) so
+        // the test is robust to BFS order.
+        let region_a = result
+            .regions
+            .iter()
+            .find(|r| r.voxels.iter().copied().collect::<HashSet<_>>().contains(&[0i32, 0, 4]))
+            .expect("region containing cluster-A representative voxel [0,0,4] must exist");
+        let region_b = result
+            .regions
+            .iter()
+            .find(|r| r.voxels.iter().copied().collect::<HashSet<_>>().contains(&[0i32, 0, 12]))
+            .expect("region containing cluster-B representative voxel [0,0,12] must exist");
+
+        // Each cluster is an 8×8 z-plane → 64 voxels.
+        assert_eq!(region_a.voxels.len(), 64, "cluster A must have 64 voxels (8×8 z-plane)");
+        assert_eq!(region_b.voxels.len(), 64, "cluster B must have 64 voxels (8×8 z-plane)");
+
+        // In-plane bounding-box extent = max(i-span, j-span, k-span).
+        // i-span = 7, j-span = 7, k-span = 0 (single z-plane) → extent = 7.0.
+        assert!(
+            (region_a.extent - 7.0).abs() < 0.01,
+            "cluster A extent ≈ 7.0 (got {})",
+            region_a.extent
+        );
+        assert!(
+            (region_b.extent - 7.0).abs() < 0.01,
+            "cluster B extent ≈ 7.0 (got {})",
+            region_b.extent
+        );
+
         // Voxel sets are disjoint and their union equals the mask.
-        let set_a: HashSet<[i32; 3]> = result.regions[0].voxels.iter().copied().collect();
-        let set_b: HashSet<[i32; 3]> = result.regions[1].voxels.iter().copied().collect();
+        let set_a: HashSet<[i32; 3]> = region_a.voxels.iter().copied().collect();
+        let set_b: HashSet<[i32; 3]> = region_b.voxels.iter().copied().collect();
         assert!(set_a.is_disjoint(&set_b), "regions must be disjoint");
         let union: HashSet<[i32; 3]> = set_a.union(&set_b).copied().collect();
         let mask_set: HashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
@@ -659,6 +752,54 @@ mod tests {
             region.classification,
             RegionClassification::TetEligible,
             "ratio 1.5 >> 0.2 threshold → TetEligible"
+        );
+    }
+
+    // ── Thickness averaging with multiple vertices per region ────────────────
+
+    /// Multiple mesh vertices mapping into the same region must be averaged
+    /// correctly.  Thicknesses (1.0, 2.0, 3.0) → mean 2.0.
+    ///
+    /// This guards against regressions where the accumulator divides by the
+    /// wrong denominator (e.g. `thickness_count.len()` instead of
+    /// `thickness_count[label_idx]`).
+    #[test]
+    fn segment_regions_averages_per_region_thickness_over_multiple_vertices() {
+        // Three collinear voxels at y=0, z=0 with x ∈ {0, 1, 2} → one connected
+        // component (face-adjacent along x).
+        let mask = MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[0, 0, 0], [1, 0, 0], [2, 0, 0]],
+        };
+        // Three mesh vertices, one per voxel centroid, with non-uniform thicknesses.
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            triangles: vec![],
+            thickness: vec![1.0, 2.0, 3.0],
+        };
+
+        let result = segment_regions(&mask, &mesh, &SegmentationOptions::default())
+            .expect("segment_regions should succeed");
+
+        assert_eq!(result.regions.len(), 1, "collinear voxels → one component");
+        let region = &result.regions[0];
+        assert!(
+            (region.mean_thickness - 2.0).abs() < 1e-10,
+            "mean of (1.0, 2.0, 3.0) = 2.0 (got {})",
+            region.mean_thickness
+        );
+        // extent = max(x-span=2, y-span=0, z-span=0) × spacing 1.0 = 2.0
+        assert!(
+            (region.extent - 2.0).abs() < 1e-10,
+            "extent ≈ 2.0 (got {})",
+            region.extent
+        );
+        // ratio = 2.0 / 2.0 = 1.0 > 0.2 → TetEligible
+        assert_eq!(
+            region.classification,
+            RegionClassification::TetEligible,
+            "ratio 1.0 > 0.2 → TetEligible"
         );
     }
 
