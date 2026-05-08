@@ -40,6 +40,10 @@ vi.mock('three', () => {
     near: number;
     far: number;
     position = makeMockPosition();
+    up = (() => {
+      const u = { x: 0, y: 1, z: 0, set: vi.fn((x: number, y: number, z: number) => { u.x = x; u.y = y; u.z = z; }) };
+      return u;
+    })();
     updateProjectionMatrix = vi.fn();
     add = mockCameraAdd;
     constructor(fov: number, aspect: number, near: number, far: number) {
@@ -271,6 +275,12 @@ describe('createScene', () => {
     const result = setup();
     expect(result.grid).toHaveProperty('visible');
     expect(result.axes).toHaveProperty('visible');
+  });
+
+  it('sets camera.up to (0, 0, 1) — Z-up convention to match reify kernel', () => {
+    const { camera } = setup();
+    expect((camera.up as any).set).toHaveBeenCalledWith(0, 0, 1);
+    expect((camera.up as any).z).toBe(1);
   });
 
   it('adjustClipping with empty bounds is a no-op (V-11)', () => {
