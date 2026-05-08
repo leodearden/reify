@@ -1040,4 +1040,11 @@ mod tests {
             frame.area,
         );
     }
+
+    #[test]
+    #[should_panic(expected = "degenerate shell element: p0 == p1")]
+    fn build_shell_frame_panics_on_zero_edge_p0_eq_p1() {
+        // p0 == p1 → len01 = 0 → first degenerate-frame assert fires.
+        build_shell_frame(&[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
+    }
 }
