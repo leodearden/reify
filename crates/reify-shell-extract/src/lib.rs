@@ -108,6 +108,7 @@
 //! ```
 
 pub mod medial;
+pub mod mesher;
 pub mod mid_surface;
 pub mod segmentation;
 
