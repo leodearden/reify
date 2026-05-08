@@ -80,3 +80,35 @@ pub fn union(a: &[GeometryHandleId], b: &[GeometryHandleId]) -> Vec<GeometryHand
     }
     out
 }
+
+/// Set difference: returns the elements of `universe` that do **not** appear
+/// in `exclude`, preserving `universe`'s encounter order with
+/// dedup-on-first-seen.
+///
+/// Equivalent to PRD's `not(universe, exclude)`. Walks `universe` once with
+/// a `HashSet` of `exclude` for membership testing — O(|universe| + |exclude|).
+pub fn complement(
+    universe: &[GeometryHandleId],
+    exclude: &[GeometryHandleId],
+) -> Vec<GeometryHandleId> {
+    let rhs: HashSet<GeometryHandleId> = exclude.iter().copied().collect();
+    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(universe.len());
+    let mut out: Vec<GeometryHandleId> = Vec::with_capacity(universe.len());
+    for id in universe {
+        if !rhs.contains(id) && seen.insert(*id) {
+            out.push(*id);
+        }
+    }
+    out
+}
+
+/// `except(a, b)` — alias for `complement(a, b)` from the LHS perspective.
+///
+/// Currently identical to `complement` but kept as a separately-named
+/// public symbol because the PRD vocabulary (line 79) names `not` and
+/// `except` distinctly: a future change might let `except` carry
+/// LHS-anchored semantics that differ from set difference (e.g. retaining
+/// LHS multiplicity if the API ever moves off dedup-on-first-seen).
+pub fn except(a: &[GeometryHandleId], b: &[GeometryHandleId]) -> Vec<GeometryHandleId> {
+    complement(a, b)
+}
