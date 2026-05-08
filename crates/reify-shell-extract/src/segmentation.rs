@@ -130,7 +130,9 @@ pub struct SegmentationResult {
     /// `mesh.vertices[i]`, found by the 8-corner floor/ceil enumeration
     /// (dz outer, dy middle, dx inner — first matching corner wins).
     /// `u32::MAX` is a sentinel for vertices with no associated mask voxel
-    /// (should not occur for well-formed T2 outputs).
+    /// (should not occur for well-formed T2 outputs) **and** for vertices
+    /// whose world coordinates contain at least one non-finite component
+    /// (NaN or ±Infinity); see [`segment_regions`] for the contract.
     pub vertex_labels: Vec<u32>,
     /// Per-triangle region label, parallel to `mesh.triangles`.  Derived
     /// from the first non-sentinel entry in `vertex_labels` for the
@@ -165,6 +167,20 @@ pub struct SegmentationResult {
 /// whether those regions belong to the same physical body. Callers must
 /// split the mask per body before invoking `segment_regions`, or accept
 /// that the promotion is applied at the whole-mask level.
+///
+/// # Non-finite vertex coordinates
+///
+/// Any `mesh.vertices[i]` component that is NaN or ±Infinity causes vertex `i`
+/// to be skipped entirely: `vertex_labels[i]` retains the `u32::MAX` sentinel
+/// without panicking in either build mode.  This is a deliberate contract — it
+/// is **not** an error.
+///
+/// Rationale: the internal helper [`axis_floor_ceil_unique`] applies a
+/// `debug_assert!` to reject non-finite inputs during development, but in
+/// release the NaN→0i32 and Inf→i32::MIN/MAX saturating casts produce absurd
+/// voxel keys that may accidentally match real mask voxels near the origin.
+/// The per-vertex guard upstream of the fractional-index computation eliminates
+/// both failure modes.
 ///
 /// # Errors
 ///
@@ -265,6 +281,15 @@ pub fn segment_regions(
     // (4) Per-vertex region label via 8-corner candidate lookup.
     let mut vertex_labels: Vec<u32> = vec![u32::MAX; mesh.vertices.len()];
     for (vi, &world) in mesh.vertices.iter().enumerate() {
+        // Guard: skip non-finite vertices — vertex_labels[vi] already holds
+        // u32::MAX from the initialiser above, so continue is sufficient.
+        // Without this guard, NaN casts to 0i32 (Rust 1.45+ saturating cast)
+        // and can silently match a real voxel near the origin in release builds;
+        // debug builds would instead panic via axis_floor_ceil_unique's
+        // debug_assert!.  Mirrors the !is_finite() pattern in medial.rs.
+        if !world[0].is_finite() || !world[1].is_finite() || !world[2].is_finite() {
+            continue;
+        }
         // Fractional voxel index along each axis.
         let f: [f64; 3] = std::array::from_fn(|a| {
             (world[a] - mask.origin[a]) / mask.spacing[a]
@@ -404,7 +429,16 @@ pub fn segment_regions(
 /// - If `coord` is fractional, yields `floor` then `ceil` (two distinct values).
 ///
 /// Allocation-free: returns a chained iterator of at most two elements.
-pub(crate) fn axis_floor_ceil_unique(
+///
+/// # Non-finite input
+///
+/// The production guard against non-finite input lives in [`segment_regions`],
+/// which skips any vertex with a NaN or ±Inf world component before this helper
+/// is ever called.  The `debug_assert!` below is an intentional
+/// **development-time backstop**: if a future refactor introduces a call path
+/// that bypasses the upstream guard, debug builds will panic loudly instead of
+/// silently casting NaN to 0 (Rust 1.45+ saturating semantics).
+fn axis_floor_ceil_unique(
     coord: f64,
 ) -> impl Iterator<Item = i32> {
     debug_assert!(coord.is_finite(), "axis_floor_ceil_unique: coord must be finite (got {coord})");
