@@ -335,7 +335,7 @@ mod tests {
             });
     };
 
-    // ── Step-1 (task 3142): Stage-B BijectionFailure regression guard ─────────
+    // ── Steps 1-2 (task 3142): Stage-B regression guards ─────────────────────
 
     #[test]
     fn morph_returns_ineligible_bijection_failure_on_stage_b_count_mismatch() {
@@ -380,6 +380,56 @@ mod tests {
         assert!(
             matches!(result, Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))),
             "Stage-B CountMismatch should project to MorphFailure::Ineligible(BijectionFailure), got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn morph_returns_ineligible_naming_layer_error_on_stage_b_imported_geometry() {
+        // Regression guard: morph() must project Stage-B NamingLayerError::Imported
+        // into MorphFailure::Ineligible(Reason::NamingLayerError {..}), not into
+        // Reason::BijectionFailure or SolverError.
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = old_graph.clone();
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+
+        // Empty tables + non-empty face slices → Stage B surfaces
+        // BijectionFailure::NamingLayerError { kind: Face, reason: Imported },
+        // which morph_eligible projects to top-level Reason::NamingLayerError.
+        let old_table = TopologyAttributeTable::default();
+        let new_table = TopologyAttributeTable::default();
+
+        let old_brep = BRep {
+            graph: &old_graph,
+            values: &values,
+            topology_attributes: &old_table,
+            faces: &[h(10)],
+            edges: &[],
+            vertices: &[],
+        };
+        let new_brep = BRep {
+            graph: &new_graph,
+            values: &values,
+            topology_attributes: &new_table,
+            faces: &[h(20)],
+            edges: &[],
+            vertices: &[],
+        };
+
+        let mesh = empty_mesh();
+        let options = MorphOptions::default();
+        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        assert!(
+            matches!(
+                result,
+                Err(MorphFailure::Ineligible(Reason::NamingLayerError {
+                    kind: SubShapeKind::Face,
+                    reason: NamingLayerErrorReason::Imported,
+                }))
+            ),
+            "Stage-B NamingLayerError::Imported should project to \
+             MorphFailure::Ineligible(Reason::NamingLayerError), got: {result:?}"
         );
     }
 }
