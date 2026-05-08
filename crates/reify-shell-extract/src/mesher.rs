@@ -440,21 +440,19 @@ fn triangle_min_angle_degrees(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3]) -> f64 {
 ///
 /// # Preconditions
 ///
-/// Vertex coordinates in `mesh.vertices` are assumed to be finite and of
-/// bounded magnitude. The vertex-dedup step computes bin keys via
+/// NaN and ±Inf vertex coordinates are actively rejected — see
+/// [`MesherError::NonFiniteVertex`]. The residual hazard is **large but finite**
+/// coordinates: the vertex-dedup step computes bin keys via
 /// `(coord * (1.0 / merge_tolerance)).round() as i64`; Rust's `as` cast
-/// saturates on overflow:
-///
-/// - `NaN` coordinates round to `NaN` and cast to `0` — all NaN vertices
-///   silently collapse into the origin bin.
-/// - Coordinates with `|coord / merge_tolerance| ≥ i64::MAX as f64` (~9.22e18)
-///   saturate to `i64::MIN` / `i64::MAX`, merging unrelated extreme-magnitude
-///   vertices with averaged thickness.
+/// saturates on overflow, so coordinates with
+/// `|coord / merge_tolerance| ≥ i64::MAX as f64` (~9.22e18) saturate to
+/// `i64::MIN` / `i64::MAX`, merging unrelated extreme-magnitude vertices with
+/// averaged thickness.
 ///
 /// At the default `merge_tolerance = 1e-9` the saturation threshold is
 /// `|coord| ≈ 9.2e9`, far outside any practical CAD coordinate range.
-/// Inputs from untrusted sources should validate coordinates (finite and
-/// within reasonable magnitude) before calling this function.
+/// Inputs from untrusted sources should validate that coordinates are within
+/// reasonable magnitude before calling this function.
 pub fn mesh_mid_surface(
     mesh: &MidSurfaceMesh,
     options: &MesherOptions,
@@ -490,10 +488,17 @@ pub fn mesh_mid_surface(
             thickness_len: mesh.thickness.len(),
         });
     }
-    // After confirming parallel-array lengths match, scan for non-finite vertex
-    // coordinates.  Non-finite coords would silently corrupt bin keys in
-    // `dedup_vertices` (NaN→0, ±Inf→i64 extremes) before any other check fires.
-    for (vi, v) in mesh.vertices.iter().enumerate() {
+    // Scan vertices and thickness in a single pass (lengths confirmed equal above).
+    // Non-finite coords would silently corrupt bin keys in `dedup_vertices`
+    // (NaN→0, ±Inf→i64 extremes); a NaN/±Inf thickness would poison the averaged
+    // thickness on duplicate-vertex merges and propagate to downstream FEA.
+    // Vertex-coordinate errors are reported before thickness errors at the same index.
+    for (vi, (v, &t)) in mesh
+        .vertices
+        .iter()
+        .zip(mesh.thickness.iter())
+        .enumerate()
+    {
         for &c in v.iter() {
             if !c.is_finite() {
                 return Err(MesherError::NonFiniteVertex {
@@ -502,11 +507,6 @@ pub fn mesh_mid_surface(
                 });
             }
         }
-    }
-    // Scan for non-finite thickness values.  A NaN/±Inf thickness would survive
-    // the dedup merge step (averaging propagates NaN), poisoning the output mesh
-    // and downstream FEA stiffness assembly without any diagnostic.
-    for (vi, &t) in mesh.thickness.iter().enumerate() {
         if !t.is_finite() {
             return Err(MesherError::NonFiniteThickness {
                 vertex_index: vi,
