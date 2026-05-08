@@ -529,6 +529,35 @@ enum QueryKey {
     /// product). The stored `Value` should be a `Value::Int` carrying the
     /// parent body's `GeometryHandleId.0`.
     OwnerBody(GeometryHandleId),
+    /// ClosestPointOnShape keys the geometry handle + query point (f64 bits
+    /// via `density_bits` so ±0.0 canonicalise and NaN debug-asserts).
+    /// Powers the v0.1 stdlib `closest_point` helper (task 2324).
+    ClosestPointOnShape {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+    },
+    /// PointOnShape keys the geometry handle + query point + tolerance.
+    /// Powers the v0.1 stdlib `on` helper (task 2324). Tolerance is bit-keyed
+    /// so a future explicit-tolerance overload can stage distinct results
+    /// without re-staging the same handle/point pair.
+    PointOnShape {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+        tol_bits: u64,
+    },
+    /// SurfaceAngle keys the two face handles. The angle is unsigned (the
+    /// kernel returns `acos(|n_a · n_b|)`-style absolute-cos), so face_a
+    /// and face_b are pair-canonicalised with `normalize_distance_pair` so
+    /// `(a, b)` and `(b, a)` map to the same key. Powers the v0.1 stdlib
+    /// `angle_between_surfaces` helper (task 2324).
+    SurfaceAngle {
+        face_a: GeometryHandleId,
+        face_b: GeometryHandleId,
+    },
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -629,6 +658,39 @@ impl QueryKey {
             // Owner-body provenance from task 2658 (PRD line 81); hashed by
             // the child sub-handle alone.
             GeometryQuery::OwnerBody(id) => QueryKey::OwnerBody(*id),
+            // Topology selectors from task 2324 (PRD §3.9). f64 fields hashed
+            // via density_bits for ±0.0 canonicalisation + NaN debug-assert.
+            GeometryQuery::ClosestPointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+            } => QueryKey::ClosestPointOnShape {
+                handle: *handle,
+                px_bits: density_bits(*px),
+                py_bits: density_bits(*py),
+                pz_bits: density_bits(*pz),
+            },
+            GeometryQuery::PointOnShape {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => QueryKey::PointOnShape {
+                handle: *handle,
+                px_bits: density_bits(*px),
+                py_bits: density_bits(*py),
+                pz_bits: density_bits(*pz),
+                tol_bits: density_bits(*tolerance),
+            },
+            GeometryQuery::SurfaceAngle { face_a, face_b } => {
+                let (lo, hi) = normalize_distance_pair(*face_a, *face_b);
+                QueryKey::SurfaceAngle {
+                    face_a: lo,
+                    face_b: hi,
+                }
+            }
         }
     }
 }
@@ -861,6 +923,88 @@ impl MockGeometryKernel {
     pub fn with_face_normal_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
         self.typed_queries
             .insert(QueryKey::FaceNormal(handle), value);
+        self
+    }
+
+    /// Configure a `ClosestPointOnShape` query result for a specific
+    /// (geometry handle, query point) pair.
+    ///
+    /// The `value` should be a `Value::String` containing a JSON-encoded
+    /// `{"x":..,"y":..,"z":..}` Point3, matching the OCCT kernel's wire
+    /// format and consumed by the eval-side dispatcher's
+    /// `parse_xyz_value` round-trip. The point coordinates `[px, py, pz]`
+    /// are routed through `density_bits` for stable hashing.
+    ///
+    /// Powers the v0.1 stdlib `closest_point` helper (task 2324).
+    pub fn with_closest_point_on_shape_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::ClosestPointOnShape {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `PointOnShape` query result for a specific
+    /// (geometry handle, query point, tolerance) triple.
+    ///
+    /// The `value` should be a `Value::Bool`. The `tolerance` is bit-keyed
+    /// (via `density_bits`) so the stub for `on(p, b)` (which the
+    /// dispatcher hard-codes to `1e-7`) is distinguishable from a future
+    /// explicit-tolerance `on(p, b, tol)` overload.
+    ///
+    /// Powers the v0.1 stdlib `on` helper (task 2324).
+    pub fn with_point_on_shape_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        tolerance: f64,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::PointOnShape {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+                tol_bits: density_bits(tolerance),
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `SurfaceAngle` query result for a specific face pair.
+    ///
+    /// The `value` should be a `Value::Real(rad)` where `rad ∈ [0, π]`.
+    /// The face pair `(face_a, face_b)` is canonicalised so
+    /// `(a, b)` and `(b, a)` map to the same key, matching the kernel's
+    /// orientation-agnostic absolute-cos convention.
+    ///
+    /// Powers the v0.1 stdlib `angle_between_surfaces` helper (task 2324).
+    pub fn with_surface_angle_result(
+        mut self,
+        face_a: GeometryHandleId,
+        face_b: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        let (lo, hi) = normalize_distance_pair(face_a, face_b);
+        self.typed_queries.insert(
+            QueryKey::SurfaceAngle {
+                face_a: lo,
+                face_b: hi,
+            },
+            value,
+        );
         self
     }
 
@@ -1104,6 +1248,11 @@ impl GeometryKernel for MockGeometryKernel {
             // exhaustiveness guard retains this arm so a future kernel
             // change is forced to revisit the dispatch table.
             GeometryQuery::OwnerBody(id) => id,
+            // Topology selectors (task 2324) — generic fallback returns the
+            // canonical first handle, parallel to the Distance arm.
+            GeometryQuery::ClosestPointOnShape { handle, .. } => handle,
+            GeometryQuery::PointOnShape { handle, .. } => handle,
+            GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
         };
 
         self.queries
@@ -3645,6 +3794,72 @@ mod tests {
             .with_face_normal_result(handle, normal.clone());
         let result = kernel.query(&GeometryQuery::FaceNormal(handle)).unwrap();
         assert_eq!(result, normal);
+    }
+
+    #[test]
+    fn mock_with_closest_point_on_shape_result_returns_for_query() {
+        let handle = GeometryHandleId(1);
+        let payload = Value::String("{\"x\":5,\"y\":0,\"z\":0}".into());
+        let kernel = MockGeometryKernel::new()
+            .with_closest_point_on_shape_result(handle, [10.0, 0.0, 0.0], payload.clone());
+        let result = kernel
+            .query(&GeometryQuery::ClosestPointOnShape {
+                handle,
+                px: 10.0,
+                py: 0.0,
+                pz: 0.0,
+            })
+            .unwrap();
+        assert_eq!(result, payload);
+    }
+
+    #[test]
+    fn mock_with_point_on_shape_result_returns_for_query() {
+        let handle = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+            handle,
+            [5.0, 0.0, 0.0],
+            1e-7,
+            Value::Bool(true),
+        );
+        let result = kernel
+            .query(&GeometryQuery::PointOnShape {
+                handle,
+                px: 5.0,
+                py: 0.0,
+                pz: 0.0,
+                tolerance: 1e-7,
+            })
+            .unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn mock_with_surface_angle_result_returns_for_query_with_canonical_face_pair() {
+        let face_a = GeometryHandleId(7);
+        let face_b = GeometryHandleId(11);
+        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+            face_a,
+            face_b,
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        );
+        // Forward order
+        let result = kernel
+            .query(&GeometryQuery::SurfaceAngle { face_a, face_b })
+            .unwrap();
+        assert_eq!(result, Value::Real(std::f64::consts::FRAC_PI_2));
+        // Reverse order — must hit the same key thanks to pair canonicalisation.
+        let result_rev = kernel
+            .query(&GeometryQuery::SurfaceAngle {
+                face_a: face_b,
+                face_b: face_a,
+            })
+            .unwrap();
+        assert_eq!(
+            result_rev,
+            Value::Real(std::f64::consts::FRAC_PI_2),
+            "SurfaceAngle keys must be face-pair-symmetric"
+        );
     }
 
     // ── CountingMockKernel tests ──────────────────────────────────────────────
