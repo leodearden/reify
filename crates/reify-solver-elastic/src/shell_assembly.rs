@@ -76,7 +76,7 @@ pub fn build_shell_frame(nodes: &[[f64; 3]; 3]) -> ShellFrame {
 
     // e1: normalize d01
     let len01 = (d01[0] * d01[0] + d01[1] * d01[1] + d01[2] * d01[2]).sqrt();
-    debug_assert!(len01 > 1e-30, "degenerate shell element: p0 == p1");
+    assert!(len01 > 1e-30, "degenerate shell element: p0 == p1");
     let e1 = [d01[0] / len01, d01[1] / len01, d01[2] / len01];
 
     // Normal (cross product d01 × d02)
