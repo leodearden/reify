@@ -33,7 +33,25 @@ use serde::{Deserialize, Serialize};
 /// format changes (separate from `engine_version_hash`, which invalidates
 /// result semantics rather than the wire format). Starting at 1 follows the
 /// Reify convention that 0 means "uninitialised / unknown".
+///
+/// **Wire-format contract:** the `bincode` major version in use at serialise
+/// time is part of this contract. Bumping `bincode` past major 1 (for example
+/// the 1.x → 2.x transition, which changes default integer encoding) MUST be
+/// accompanied by a bump of this constant in the same commit; otherwise cache
+/// entries written under the previous `bincode` major will silently decode as
+/// garbage. The same logic applies to `zstd`'s frame-format major (currently
+/// the 0.13.x line). Cross-checked by `elastic_result_format_version_is_one`,
+/// which forces any FORMAT_VERSION bump to be deliberate; the bincode/zstd
+/// major is held by the `=1.3` / `0.13` pins in `Cargo.toml`.
 const ELASTIC_RESULT_FORMAT_VERSION: u32 = 1;
+
+// Compile-time sentinel: `bincode::ErrorKind` is part of the public bincode
+// 1.x API but does not exist in bincode 2.x (which ships an entirely different
+// error model). If the `=1.3` pin in `Cargo.toml` is ever relaxed past the
+// 1.x major and the resolver picks up a 2.x release, this alias will fail to
+// compile — a secondary tripwire alongside the doc-level contract above.
+#[allow(dead_code)]
+type _BincodeV1Sentinel = bincode::ErrorKind;
 
 /// Upper bound on `Vec<f64>` length accepted from a serialized header during
 /// [`ElasticResult::deserialize_from_reader`]. A corrupted or tampered cache
@@ -96,6 +114,13 @@ pub trait PersistentlyCacheable: Sized {
     /// On-disk-layout version. Bumped when the encoding format changes,
     /// independently of any `engine_version_hash` (which invalidates result
     /// semantics rather than the wire format).
+    ///
+    /// **Wire-format contract:** the major version of the underlying
+    /// byte-encoder library (e.g. `bincode`) is part of the wire-format
+    /// contract for any implementation of this trait. If an impl's encoder
+    /// library takes a major version bump that changes its default encoding,
+    /// `FORMAT_VERSION` MUST be bumped in the same commit. See
+    /// `ELASTIC_RESULT_FORMAT_VERSION` for the bincode/zstd specifics.
     ///
     /// Associated const (no `&self`) so the cache layer can read the format
     /// version directly from the type — keying entries by `(TypeId, FORMAT_VERSION)`
