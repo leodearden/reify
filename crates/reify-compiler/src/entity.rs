@@ -497,7 +497,7 @@ pub(crate) fn compile_entity(
                     known_geometry_lets.insert(param.name.as_str());
                 }
                 scope.register(&param.name, ty);
-                outside_decl_spans.insert(param.name.clone(), param.span);
+                outside_decl_spans.entry(param.name.clone()).or_insert(param.span);
                 // Reverse-direction collision (task 2375): if this Param's name
                 // was already registered as a match-arm cluster, emit the collision
                 // diagnostic. The cluster is suppressed; the Param is kept.
