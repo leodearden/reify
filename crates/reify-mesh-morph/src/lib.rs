@@ -42,7 +42,7 @@ pub fn eligible(old_brep: &BRep, new_brep: &BRep) -> bool {
 /// | Path | Behaviour |
 /// |------|-----------|
 /// | Ineligible edit | Returns `Err(MorphFailure::Ineligible(reason))` immediately |
-/// | Eligible edit | **Panics** (`todo!`) until PRD tasks #5–#9 land the engine |
+/// | Eligible edit | Returns `Err(MorphFailure::SolverError(...))` until PRD tasks #5–#9 land the engine |
 ///
 /// ## Parameters
 ///
@@ -67,12 +67,11 @@ pub fn morph(
     let _ = options;
     match eligibility::morph_eligible(old_brep, new_brep) {
         Eligibility::Ineligible(reason) => Err(MorphFailure::Ineligible(reason)),
-        Eligibility::Eligible(_correspondence_map) => {
-            todo!(
-                "morph engine not yet implemented \
-                 (PRD docs/prds/v0_3/mesh-morphing.md tasks #5–#9)"
-            )
-        }
+        Eligibility::Eligible(_correspondence_map) => Err(MorphFailure::SolverError(
+            SolverErrorPayload::new(
+                "engine not yet implemented (PRD docs/prds/v0_3/mesh-morphing.md tasks #5-#9)",
+            ),
+        )),
     }
 }
 
@@ -168,7 +167,28 @@ mod tests {
         assert!(!eligible(&old_brep, &new_brep));
     }
 
-    // ── Step-7: morph() Ineligible path ──────────────────────────────────────
+    // ── Step-7/amendment: morph() Ineligible and Eligible paths ─────────────
+
+    #[test]
+    fn morph_returns_solver_error_on_eligible_path() {
+        // Verifies the Eligible arm of morph() returns SolverError (not panics)
+        // until the engine lands in PRD tasks #5–#9.
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = old_graph.clone();
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+        let table = TopologyAttributeTable::default();
+        let old_brep = make_brep(&old_graph, &values, &table);
+        let new_brep = make_brep(&new_graph, &values, &table);
+        let mesh = empty_mesh();
+        let options = MorphOptions::default();
+        let result = morph(&mesh, &old_brep, &new_brep, &options);
+        assert!(
+            matches!(result, Err(MorphFailure::SolverError(_))),
+            "eligible path should return SolverError (unimplemented), got: {result:?}"
+        );
+    }
 
     #[test]
     fn morph_returns_ineligible_failure_on_stage_a_structural_change() {
