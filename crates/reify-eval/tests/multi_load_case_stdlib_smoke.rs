@@ -17,7 +17,8 @@
 //! `MultiCaseResult` struct instances are `Value::Map{"cases" -> Value::Map}`
 //! at runtime — there is no `Value::StructureInstance` variant. Structure
 //! constructors (e.g. `ElasticResult(...)`) are not builtins and evaluate to
-//! `Value::Undef` (confirmed by `engine_eval.rs:114-125`). Therefore this
+//! `Value::Undef` (confirmed by `reify_stdlib::eval_builtin` falling through
+//! to Undef for unknown names). Therefore this
 //! smoke test constructs the runtime-shape Maps **directly via map literals**,
 //! bypassing the struct-constructor path that would Undef-out.
 //!
@@ -57,8 +58,8 @@ use reify_types::{Value, ValueCellId, ValueMap};
 /// these assertions flip RED, struct-constructor eval has landed and Stage 2
 /// becomes unblocked: swap the hand-built map literals (`cases`/`mcr`) for
 /// actual `LoadCase(...)` / `MultiCaseResult(...)` calls and assert against
-/// the resulting `Value::Map` shape. See `engine_eval.rs:114-125` for the
-/// Undef-fallthrough documentation.
+/// the resulting `Value::Map` shape. The Undef fallthrough is in
+/// `reify_stdlib::eval_builtin` (returns Undef for unrecognised names).
 ///
 /// Bindings:
 ///   `cases`       = `map{"operating" => 42, "overload" => 99}` (inner Map)
@@ -101,6 +102,11 @@ fn multi_load_case_stdlib_smoke_e2e() {
     let result = engine.eval(&compiled);
 
     // No Error-severity diagnostics from eval.
+    // (Note: if struct-constructor eval lands and emits Error-severity
+    // diagnostics for the Stage-1 tripwire bindings `lc_ctor`/`mcr_ctor`,
+    // this assertion will fire before the tripwire assertions below — that
+    // is also a Stage-2 signal; see the comment block near the tripwire
+    // assertions for the full migration guide.)
     let eval_errors = collect_errors(&result.diagnostics);
     assert!(
         eval_errors.is_empty(),
@@ -146,15 +152,21 @@ fn multi_load_case_stdlib_smoke_e2e() {
     // ── Stage 1 tracking assertion: struct ctor calls → Undef ─────────────────
     // `LoadCase(...)` and `MultiCaseResult(...)` are user-defined struct
     // constructors. In the current engine they are not builtins:
-    // `reify_stdlib::eval_builtin` returns `Value::Undef` for unknown names
-    // (see `crates/reify-eval/src/engine_eval.rs:114-125`). This assertion
-    // pins that contract as a tripwire.
+    // `reify_stdlib::eval_builtin` returns `Value::Undef` for unknown names.
+    // This assertion pins that contract as a tripwire.
     //
     // When struct-constructor eval lands and produces real `Value::Map`
     // instances, BOTH of these assertions will FAIL. That is the signal to
     // perform Stage 2: swap the hand-built map literals (`cases`/`mcr` above)
     // for actual `LoadCase(...)` / `MultiCaseResult(...)` calls and update the
     // assertions to inspect the resulting `Value::Map` shape.
+    //
+    // Note: a panic from `parse_and_compile_with_stdlib` above (i.e. an
+    // Error-severity compile diagnostic arising from the new ctor calls — for
+    // example a type-checker rejecting `loads: []` once empty-list inference
+    // tightens, or a real ctor evaluator rejecting missing fields) is also a
+    // Stage-2 signal. The tripwire may fire at the compile stage rather than
+    // here; both outcomes mean struct-ctor eval has changed.
     let lc_ctor = get_value(v, "lc_ctor");
     assert!(
         lc_ctor.is_undef(),
