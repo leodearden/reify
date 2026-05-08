@@ -270,6 +270,30 @@ fn faces_by_normal_nan_tol_returns_query_failed() {
     }
 }
 
+fn assert_faces_by_normal_tol_accepted_at_boundaries() {
+    let parent = GeometryHandleId(1);
+    for tol in [0.0_f64, std::f64::consts::PI] {
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(parent, vec![]);
+        let faces =
+            topology_selectors::faces_by_normal(&mut kernel, parent, [0.0, 0.0, 1.0], tol)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "faces_by_normal should accept tol = {tol} (inclusive boundary), \
+                         got Err: {e:?}"
+                    )
+                });
+        assert!(
+            faces.is_empty(),
+            "expected empty result for tol = {tol}, got {faces:?}"
+        );
+    }
+}
+
+#[test]
+fn faces_by_normal_inclusive_boundaries_zero_and_pi_are_accepted() {
+    assert_faces_by_normal_tol_accepted_at_boundaries();
+}
+
 #[test]
 fn faces_by_normal_nan_target_returns_query_failed() {
     // The !mag.is_finite() guard catches NaN before the mag < f64::EPSILON
@@ -422,6 +446,30 @@ fn edges_parallel_to_nan_tol_returns_query_failed() {
         }
         other => panic!("expected Err(QueryFailed) for NaN tol, got {:?}", other),
     }
+}
+
+fn assert_edges_parallel_to_tol_accepted_at_boundaries() {
+    let parent = GeometryHandleId(1);
+    for tol in [0.0_f64, std::f64::consts::FRAC_PI_2] {
+        let mut kernel = MockGeometryKernel::new().with_extracted_edges(parent, vec![]);
+        let edges =
+            topology_selectors::edges_parallel_to(&mut kernel, parent, [1.0, 0.0, 0.0], tol)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "edges_parallel_to should accept tol = {tol} (inclusive boundary), \
+                         got Err: {e:?}"
+                    )
+                });
+        assert!(
+            edges.is_empty(),
+            "expected empty result for tol = {tol}, got {edges:?}"
+        );
+    }
+}
+
+#[test]
+fn edges_parallel_to_inclusive_boundaries_zero_and_half_pi_are_accepted() {
+    assert_edges_parallel_to_tol_accepted_at_boundaries();
 }
 
 /// EdgeTangent contract requires Value::String. A Value::Real payload must
