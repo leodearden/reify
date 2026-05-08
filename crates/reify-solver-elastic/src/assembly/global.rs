@@ -46,8 +46,9 @@ pub struct AssemblyElement<'a> {
 /// Multi-threaded scatter via `std::thread::scope`. The element slice is
 /// partitioned into `threads` chunks; each thread accumulates a local
 /// `Vec<Triplet>` in slice order; after join the per-thread Vecs are
-/// concatenated in **thread-spawn order (0, 1, 2, …)** before being handed
-/// to faer. This gives bit-stability for any *fixed* thread count, but the
+/// concatenated in **`handles`-vector order (== chunk-iteration order ==
+/// slice order)** before being handed to faer. This gives bit-stability
+/// for any *fixed* thread count, but the
 /// summation order — and hence the LSB of shared-DOF sums — varies across
 /// thread counts. Cross-thread-count equivalence is bounded by
 /// `O(ulp · max|K_e[i][j]|)`, far below the FEA tolerance band.
@@ -61,7 +62,7 @@ pub struct AssemblyElement<'a> {
 pub enum AssemblyMode {
     /// Single-threaded, slice-order accumulation.
     Deterministic,
-    /// Multi-threaded scatter with fixed-thread-id-order merge. `threads`
+    /// Multi-threaded scatter with fixed-handle-order merge. `threads`
     /// must be `>= 1`; passing `0` panics.
     Parallel {
         /// Worker thread count.
@@ -201,15 +202,16 @@ pub fn assemble_global_stiffness(
             //
             // # Determinism contract
             //
-            // **The merge order is the thread spawn order, which is also
-            // the thread-id order.** Concretely:
+            // **The merge order is `handles` insertion order
+            // (== chunk-iteration order == slice order).** Concretely:
             //
             //   (a) `elements.chunks(chunk_size)` is called once with a
             //       stable chunk size, so the chunk-iteration order is
             //       deterministic and matches `elements`'s slice order.
             //   (b) Threads spawn sequentially in chunk-iteration order,
-            //       so the thread-id `t` for the worker handling chunk
-            //       `t` is fixed.
+            //       so handle slot `t` in the `handles` Vec always
+            //       corresponds to the worker for chunk `t` — regardless
+            //       of what OS thread id that worker was assigned.
             //   (c) `handles[t].join()` is called in `t`-ascending order,
             //       and `acc.extend(...)` appends each worker's local
             //       Vec in that order — preserving thread-spawn order
