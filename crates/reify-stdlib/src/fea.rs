@@ -1581,4 +1581,72 @@ mod tests {
         let c = Value::Int(3);
         assert!(eval_fea("linear_combine", &[a, b, c]).unwrap().is_undef());
     }
+
+    // ── linear_combine base/weights argument-shape rejection ────────────────
+
+    #[test]
+    fn linear_combine_non_map_base_returns_undef() {
+        // args[0] must be a Map — an Int rejects immediately.
+        let weights = Value::Map(BTreeMap::new());
+        assert!(
+            eval_fea("linear_combine", &[Value::Int(42), weights])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn linear_combine_base_without_cases_field_returns_undef() {
+        // A Map without a "cases" key is not a valid MultiCaseResult struct.
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("other_field".to_string()), Value::Int(1));
+        let base = Value::Map(m);
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("A".to_string()), Value::Real(1.0));
+        let weights = Value::Map(weights_map);
+        assert!(
+            eval_fea("linear_combine", &[base, weights])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn linear_combine_base_cases_field_non_map_returns_undef() {
+        // "cases" key present but value is not a Map.
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("cases".to_string()), Value::Int(99));
+        let base = Value::Map(m);
+        let mut weights_map = BTreeMap::new();
+        weights_map.insert(Value::String("A".to_string()), Value::Real(1.0));
+        let weights = Value::Map(weights_map);
+        assert!(
+            eval_fea("linear_combine", &[base, weights])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn linear_combine_non_map_weights_returns_undef() {
+        // args[1] must be a Map — a Real rejects immediately.
+        let mcr = make_multi_case_result_value(&[]);
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Real(1.0)])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn linear_combine_empty_weights_returns_undef() {
+        // weights map must be non-empty.
+        let mcr = make_multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
+        let empty_weights = Value::Map(BTreeMap::new());
+        assert!(
+            eval_fea("linear_combine", &[mcr, empty_weights])
+                .unwrap()
+                .is_undef()
+        );
+    }
 }
