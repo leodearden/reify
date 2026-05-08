@@ -856,4 +856,79 @@ mod tests {
             "expected OutOfRangeTriangleIndex {{ tri: 0, vi: 1, vlen: 1 }}, got {err:?}"
         );
     }
+
+    // ── Steps 9-10: vertex-deduplication test ─────────────────────────────────
+
+    /// Vertex de-duplication merges bit-exact duplicate vertices and averages
+    /// their thickness values.
+    ///
+    /// Fixture: 4 input vertices where vertices 1 and 2 are identical at
+    /// `(1, 0, 0)`. Two triangles share this edge; the duplicate should be
+    /// merged into one vertex with averaged thickness.
+    #[test]
+    fn mesh_mid_surface_deduplicates_duplicate_vertices() {
+        // Vertex layout:
+        //   0: (0,0,0)  thickness 1.0
+        //   1: (1,0,0)  thickness 2.0  ← duplicate
+        //   2: (1,0,0)  thickness 4.0  ← duplicate of vertex 1
+        //   3: (0,1,0)  thickness 1.0
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0], // bit-exact duplicate of vertex 1
+                [0.0, 1.0, 0.0],
+            ],
+            triangles: vec![[0, 1, 3], [3, 2, 0]],
+            thickness: vec![1.0, 2.0, 4.0, 1.0],
+        };
+
+        // Use very relaxed quality thresholds so the quality gate doesn't fire.
+        let opts = MesherOptions {
+            min_aspect_ratio: 1e-6,
+            min_angle_degrees: 0.001,
+            ..MesherOptions::default()
+        };
+
+        let result = mesh_mid_surface(&mesh, &opts)
+            .expect("two-triangle mesh with duplicate vertex should succeed");
+
+        // De-duplication: 4 input vertices → 3 unique vertices.
+        assert_eq!(
+            result.mesh.vertices.len(), 3,
+            "4 input vertices (one duplicate pair) → 3 unique vertices"
+        );
+        assert_eq!(
+            result.metrics.vertex_count, 3,
+            "metrics.vertex_count must equal de-duplicated vertex count"
+        );
+        // Triangle count preserves topology.
+        assert_eq!(
+            result.metrics.triangle_count, 2,
+            "de-duplication must not remove triangles"
+        );
+        // All remapped triangle indices are in-range.
+        for tri in &result.mesh.triangles {
+            for &vi in tri.iter() {
+                assert!(
+                    (vi as usize) < result.mesh.vertices.len(),
+                    "triangle index {vi} is out of range for {} vertices",
+                    result.mesh.vertices.len()
+                );
+            }
+        }
+        // Thickness for the merged (1,0,0) vertex = average of 2.0 and 4.0 = 3.0.
+        // Find the index of the (1,0,0) vertex in the de-duplicated set.
+        let merged_idx = result
+            .mesh
+            .vertices
+            .iter()
+            .position(|&v| (v[0] - 1.0).abs() < 1e-12 && v[1].abs() < 1e-12 && v[2].abs() < 1e-12)
+            .expect("de-duplicated mesh must contain the (1,0,0) vertex");
+        assert!(
+            (result.mesh.thickness[merged_idx] - 3.0).abs() < 1e-12,
+            "merged thickness must be average of 2.0 and 4.0 = 3.0, got {}",
+            result.mesh.thickness[merged_idx]
+        );
+    }
 }
