@@ -128,18 +128,30 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_types::Typ
 
 /// The complete set of stdlib **topology-selector** helper names recognised by
 /// the compiler. Sibling to [`GEOMETRY_KINEMATIC_QUERY_NAMES`] — these helpers
-/// produce a per-name typed result (`Point3<Length>` / `Bool` / `Angle`) and
-/// dispatch at eval-time via
-/// `reify_eval::geometry_ops::try_eval_topology_selector`, which routes to a
-/// `GeometryQuery::ClosestPointOnShape` / `PointOnShape` / `SurfaceAngle`
-/// against the kernel.
+/// produce a per-name typed result and dispatch at eval-time via
+/// `reify_eval::geometry_ops::try_eval_topology_selector`.
 ///
-/// Per `docs/prds/topology-selectors.md` §3.9 these are the v0.1 names:
+/// Per `docs/prds/topology-selectors.md` §3.9 these are the v0.1 names
+/// (3 wired by task 2324 + 11 wired by task 2699):
 ///
 /// ```text
+/// // Task 2324 — eval dispatch fully implemented
 /// fn closest_point<G: Geometry>(point: Point3<Length>, geometry: G) -> Point3<Length>
 /// fn on<G: Geometry>(point: Point3<Length>, geometry: G) -> Bool
 /// fn angle_between_surfaces(a: Surface, b: Surface) -> Angle
+///
+/// // Task 2699 — compile-time type wiring only; eval dispatch is task 2691
+/// fn edges(solid: Solid) -> List<Geometry>
+/// fn faces(solid: Solid) -> List<Geometry>
+/// fn edges_by_length(solid: Solid, range: Range<Length>) -> List<Geometry>
+/// fn faces_by_area(solid: Solid, range: Range<Area>) -> List<Geometry>
+/// fn faces_by_normal(solid: Solid, dir: Vec3, tol: Angle) -> List<Geometry>
+/// fn edges_parallel_to(solid: Solid, dir: Vec3, tol: Angle) -> List<Geometry>
+/// fn edges_at_height(solid: Solid, h: Length, tol: Length) -> List<Geometry>
+/// fn adjacent_faces(solid: Solid, face: Geometry) -> List<Geometry>
+/// fn shared_edges(face1: Geometry, face2: Geometry) -> List<Geometry>
+/// fn center_of_mass(solid: Solid, density: Real) -> Point3<Length>
+/// fn moment_of_inertia(solid: Solid, density: Real) -> Tensor<2, 3, MomentOfInertia>
 /// ```
 ///
 /// Like the kinematic-query helpers, these names share this list only for
@@ -147,29 +159,83 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_types::Typ
 /// [`topology_selector_result_type`] and the eval-side post-process
 /// [`reify_eval::engine_build::post_process_topology_selectors`].
 ///
+/// For the 11 task-2699 names, eval-side dispatch in
+/// `reify_eval::geometry_ops::try_eval_topology_selector` falls through to
+/// the `_ => return None` arm, leaving cells at `Value::Undef`.
+/// `value_type_kind_matches` accepts `Value::Undef` for any type
+/// (`reify_eval::lib:196`), so the cell typechecks at compile-time and stays
+/// `Undef` at runtime until task 2691 wires the dispatch arms.
+///
 /// Case-sensitive: Reify function names are snake_case.
-pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] =
-    &["closest_point", "on", "angle_between_surfaces"];
+pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
+    // Task 2324 — eval dispatch fully implemented
+    "closest_point",
+    "on",
+    "angle_between_surfaces",
+    // Task 2699 — compile-time type wiring; eval dispatch is task 2691
+    "edges",
+    "faces",
+    "edges_by_length",
+    "faces_by_area",
+    "faces_by_normal",
+    "edges_parallel_to",
+    "edges_at_height",
+    "adjacent_faces",
+    "shared_edges",
+    "center_of_mass",
+    "moment_of_inertia",
+];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
     GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name)
 }
 
-/// Result type per topology-selector helper. Matches the `Value` shape
-/// produced by `reify_eval::geometry_ops::try_eval_topology_selector`:
+/// Result type per topology-selector helper. Sets the cell's `result_type`
+/// so the post-processor does not fall back to the first-arg type (which
+/// would be `Type::Geometry` — rejected by `is_representable_cell_type`).
 ///
+/// Task 2324 names — `Value` shape matches eval dispatch:
 /// - `closest_point(point, geometry)`        → `Type::point3(Type::length())`
 /// - `on(point, geometry)`                   → `Type::Bool`
 /// - `angle_between_surfaces(a, b)`          → `Type::angle()`
+///
+/// Task 2699 names — compile-time type only; eval dispatch is task 2691.
+/// Until then, cells hold `Value::Undef`, which `value_type_kind_matches`
+/// accepts for any type (`reify_eval::lib:196`):
+/// - `edges(solid)`                          → `Type::List(Geometry)`
+/// - `faces(solid)`                          → `Type::List(Geometry)`
+/// - `edges_by_length(solid, range)`         → `Type::List(Geometry)`
+/// - `faces_by_area(solid, range)`           → `Type::List(Geometry)`
+/// - `faces_by_normal(solid, dir, tol)`      → `Type::List(Geometry)`
+/// - `edges_parallel_to(solid, dir, tol)`    → `Type::List(Geometry)`
+/// - `edges_at_height(solid, h, tol)`        → `Type::List(Geometry)`
+/// - `adjacent_faces(solid, face)`           → `Type::List(Geometry)`
+/// - `shared_edges(face1, face2)`            → `Type::List(Geometry)`
+/// - `center_of_mass(solid, density)`        → `Type::point3(Type::length())`
+/// - `moment_of_inertia(solid, density)`     → `Type::tensor(2, 3, MomentOfInertia)`
 ///
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path).
 pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_types::Type> {
     use reify_types::Type;
     Some(match name {
+        // Task 2324 — eval dispatch fully implemented
         "closest_point" => Type::point3(Type::length()),
         "on" => Type::Bool,
         "angle_between_surfaces" => Type::angle(),
+        // Task 2699 — compile-time type wiring; eval dispatch is task 2691
+        "edges" | "faces" | "edges_by_length" | "faces_by_area" | "faces_by_normal"
+        | "edges_parallel_to" | "edges_at_height" | "adjacent_faces" | "shared_edges" => {
+            Type::List(Box::new(Type::Geometry))
+        }
+        "center_of_mass" => Type::point3(Type::length()),
+        "moment_of_inertia" => Type::tensor(
+            2,
+            3,
+            Type::Scalar {
+                dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
+            },
+        ),
         _ => return None,
     })
 }
