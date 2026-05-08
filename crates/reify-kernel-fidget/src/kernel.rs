@@ -749,6 +749,71 @@ mod tests {
             .expect("execute(Sphere) with radius=1.0 must succeed");
     }
 
+    /// `execute(Box)` must reject every triple that contains a non-positive or
+    /// non-finite dimension with `GeometryError::OperationFailed` whose
+    /// message contains both `"box dimensions"` and `"finite positive"`.
+    ///
+    /// Each bad-axis case exercises a single invalid dimension while keeping
+    /// the other two valid, plus one all-bad case. A sanity triple
+    /// `(2.0, 2.0, 2.0)` at the end confirms the helper does not
+    /// over-reject.
+    #[test]
+    fn fidget_kernel_execute_box_rejects_invalid_dimensions() {
+        // (width, height, depth) triples — each has at least one bad axis.
+        let bad_triples: &[(Value, Value, Value)] = &[
+            // negative width
+            (Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)),
+            // zero height
+            (Value::Real(1.0), Value::Real(0.0), Value::Real(1.0)),
+            // NaN depth
+            (Value::Real(1.0), Value::Real(1.0), Value::Real(f64::NAN)),
+            // +Inf width
+            (Value::Real(f64::INFINITY), Value::Real(1.0), Value::Real(1.0)),
+            // -Inf height
+            (Value::Real(1.0), Value::Real(f64::NEG_INFINITY), Value::Real(1.0)),
+            // all bad
+            (Value::Real(-1.0), Value::Real(-2.0), Value::Real(-3.0)),
+        ];
+
+        for (width, height, depth) in bad_triples {
+            let mut kernel = FidgetKernel::new();
+            let result = kernel.execute(&GeometryOp::Box {
+                width: width.clone(),
+                height: height.clone(),
+                depth: depth.clone(),
+            });
+            match result {
+                Err(GeometryError::OperationFailed(msg)) => {
+                    assert!(
+                        msg.contains("box dimensions"),
+                        "message must name 'box dimensions'; triple=({width:?},{height:?},{depth:?}), got {msg:?}",
+                    );
+                    assert!(
+                        msg.contains("finite positive"),
+                        "message must contain 'finite positive'; triple=({width:?},{height:?},{depth:?}), got {msg:?}",
+                    );
+                }
+                Ok(handle) => panic!(
+                    "execute(Box) with ({width:?},{height:?},{depth:?}) must fail, but returned Ok({handle:?})",
+                ),
+                Err(other) => panic!(
+                    "execute(Box) with ({width:?},{height:?},{depth:?}) must return \
+                     OperationFailed, got {other:?}",
+                ),
+            }
+        }
+
+        // Sanity: valid dimensions must still succeed (regression guard).
+        let mut kernel = FidgetKernel::new();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(2.0),
+                height: Value::Real(2.0),
+                depth: Value::Real(2.0),
+            })
+            .expect("execute(Box) with valid dimensions must succeed");
+    }
+
     /// Pins the stable contract that the FIRST missing handle is the one
     /// named in `InvalidReference` — `left` is checked before `right`.
     #[test]
