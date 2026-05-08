@@ -88,6 +88,27 @@ mod tests {
         assert!(mesh.normals.is_none());
     }
 
+    // ── Step-5: P2 element order rejection ────────────────────────────────────
+
+    #[test]
+    fn laplacian_smooth_rejects_p2_element_order_with_unsupported_element_order_failure() {
+        let mesh = VolumeMesh {
+            vertices: Vec::new(),
+            tet_indices: Vec::new(),
+            element_order: ElementOrderTag::P2,
+            normals: None,
+        };
+        let result = laplacian_smooth(&mesh, &[], 1);
+        // VolumeMesh has no PartialEq, so destructure the Err arm rather than
+        // assert_eq! on the Result.
+        match result {
+            Err(LaplacianFailure::UnsupportedElementOrder(order)) => {
+                assert_eq!(order, ElementOrderTag::P2);
+            }
+            other => panic!("expected UnsupportedElementOrder(P2), got: {other:?}"),
+        }
+    }
+
     // ── Step-3: exhaustive variant fence for LaplacianFailure ─────────────────
     //
     // No-wildcard match guarantees that adding/removing/renaming a variant
