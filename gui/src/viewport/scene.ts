@@ -40,6 +40,9 @@ export function createScene(
   // Reify kernel is Z-up (XY ground plane, +Z extrusion direction). Set this BEFORE
   // OrbitControls is constructed in Viewport.tsx so its rotation basis is correct.
   camera.up.set(0, 0, 1);
+  // (5, 5, 5) is intentional under Z-up: z=5 places the camera above the XY ground plane
+  // and the position gives a usable iso-ish view. A strict CAD iso would be ~(1,-1,1)*d but
+  // the symmetric default is sufficient for first-launch framing.
   camera.position.set(5, 5, 5);
 
   // Renderer

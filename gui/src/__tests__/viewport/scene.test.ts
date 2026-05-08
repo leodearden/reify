@@ -280,7 +280,12 @@ describe('createScene', () => {
 
   it('sets camera.up to (0, 0, 1) — Z-up convention to match reify kernel', () => {
     const { camera } = setup();
-    expect((camera.up as any).set).toHaveBeenCalledWith(0, 0, 1);
+    // Use toHaveBeenLastCalledWith so the assertion pins the *final* call even
+    // if upstream code called set() more than once (guards against later overrides).
+    expect((camera.up as any).set).toHaveBeenLastCalledWith(0, 0, 1);
+    // Assert the full triple so a stray set(0,0,0) after the correct call cannot pass.
+    expect((camera.up as any).x).toBe(0);
+    expect((camera.up as any).y).toBe(0);
     expect((camera.up as any).z).toBe(1);
   });
 
