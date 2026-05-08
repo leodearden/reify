@@ -655,6 +655,46 @@ mod tests {
         );
     }
 
+    /// When the lex-smallest registered kernel is Mesh-only,
+    /// `pick_lexmin_brep_kernel_in` must return the lex-smallest BRep-capable
+    /// entry instead.
+    ///
+    /// Constructs a synthetic `BTreeMap` with `"__0_mesh"` (Mesh-only,
+    /// lex-smaller) and `"__a_brep"` (BRep-capable, lex-larger). The BTreeMap
+    /// minimum is `"__0_mesh"`, so a pure lex-min pick would return it.
+    /// `pick_lexmin_brep_kernel_in` must skip it and return `"__a_brep"`'s
+    /// descriptor instead.
+    ///
+    /// This test is RED before step-2 impl: `pick_lexmin_brep_kernel_in` does
+    /// not yet exist, so the test fails to compile.
+    #[test]
+    fn pick_lexmin_brep_kernel_in_returns_brep_capable_when_lex_smaller_kernel_is_mesh_only() {
+        let mut map: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        map.insert(
+            "__0_mesh".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+            },
+        );
+        map.insert(
+            "__a_brep".to_string(),
+            CapabilityDescriptor {
+                supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+            },
+        );
+
+        let result = pick_lexmin_brep_kernel_in(&map, |d| d.clone());
+
+        let brep_desc = map.get("__a_brep").expect("__a_brep must be in the map");
+        assert_eq!(
+            result.map(|d| &d.supports),
+            Some(&brep_desc.supports),
+            "pick_lexmin_brep_kernel_in must return the BRep-capable entry (__a_brep), \
+             not the lex-smaller Mesh-only entry (__0_mesh); \
+             a pure lex-min pick would wrongly select __0_mesh",
+        );
+    }
+
     /// The Operator-visibility contract table on `emit_kernel_selection`
     /// declares `total == 0` emits no event.
     /// The `debug_assert!(total >= 1, …)` enforces this structurally: callers
