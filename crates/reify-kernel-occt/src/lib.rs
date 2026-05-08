@@ -497,6 +497,17 @@ pub struct OcctKernel {
     /// previously-minted face handle list (canonical `TopExp::MapShapes`
     /// order). Sister to `extracted_edges`; same rationale.
     extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
+    /// Provenance map: child handle id → parent (body) handle id, populated
+    /// inside [`Self::extract_edges`] / [`Self::extract_faces`] so a later
+    /// `OwnerBody(child)` query can answer "what body did this sub-shape come
+    /// from?" without re-extraction.
+    ///
+    /// Required by the v0.2 selector vocabulary v2 (task 2658, step-30):
+    /// `selector_vocabulary_v2::owner_body_of` issues a single `OwnerBody`
+    /// query and unwraps the `Value::Int(parent.0 as i64)` reply. Handles
+    /// produced directly by `execute` (i.e. body handles themselves) have no
+    /// recorded parent and surface as `QueryError::QueryFailed`.
+    parent_handle: HashMap<u64, GeometryHandleId>,
     next_id: u64,
     /// Number of shapes that failed deserialization during the last `with_warm_state()` call.
     last_warm_start_failures: usize,
@@ -514,6 +525,7 @@ impl OcctKernel {
             reprs: HashMap::new(),
             extracted_edges: HashMap::new(),
             extracted_faces: HashMap::new(),
+            parent_handle: HashMap::new(),
             next_id: 1,
             last_warm_start_failures: 0,
         }
@@ -619,6 +631,9 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Edge);
+            // Record provenance so `OwnerBody(child)` can answer
+            // "what body did this edge come from?" without re-extraction.
+            self.parent_handle.insert(h.id.0, handle);
             ids.push(h.id);
         }
         self.extracted_edges.insert(handle.0, ids.clone());
@@ -659,6 +674,9 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Face);
+            // Record provenance — sister to `extract_edges`. See
+            // `parent_handle` field doc for the design contract.
+            self.parent_handle.insert(h.id.0, handle);
             ids.push(h.id);
         }
         self.extracted_faces.insert(handle.0, ids.clone());
@@ -2376,6 +2394,18 @@ impl OcctKernel {
                         .map(|i| Value::Int(i as i64))
                         .collect(),
                 ))
+            }
+            GeometryQuery::OwnerBody(id) => {
+                // Look up the recorded parent populated inside
+                // `extract_edges` / `extract_faces`. Handles produced
+                // directly by `execute` (i.e. body handles) have no
+                // recorded parent and surface as QueryFailed.
+                let parent = self.parent_handle.get(&id.0).copied().ok_or_else(|| {
+                    QueryError::QueryFailed(format!(
+                        "owner_body: handle {id:?} has no recorded parent (was extract_edges / extract_faces called?)"
+                    ))
+                })?;
+                Ok(Value::Int(parent.0 as i64))
             }
         }
     }

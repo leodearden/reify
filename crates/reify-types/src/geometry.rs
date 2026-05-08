@@ -785,6 +785,19 @@ pub enum GeometryQuery {
         shape: GeometryHandleId,
         edge_index: usize,
     },
+    /// Recover the parent body handle of a sub-shape produced by
+    /// [`GeometryKernel::extract_edges`] / [`GeometryKernel::extract_faces`].
+    ///
+    /// The kernel records the parent on every `extract_*` call so any
+    /// sub-handle can answer "what solid did I come from?" without
+    /// re-extraction. Returns a `Value::Int(parent_id.0 as i64)`; the
+    /// caller decodes back into a `GeometryHandleId`. A handle without a
+    /// recorded parent (e.g. one produced directly by `execute`) surfaces
+    /// as `QueryError::QueryFailed`.
+    ///
+    /// Powers PRD line 81's `owner_body(sub)` topological walk via
+    /// `selector_vocabulary_v2::owner_body_of`.
+    OwnerBody(GeometryHandleId),
 }
 
 /// Geometric kind of a face's underlying surface, matching OCCT's
