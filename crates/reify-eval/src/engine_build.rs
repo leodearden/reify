@@ -2431,32 +2431,6 @@ mod tests {
         );
     }
 
-    // ── RealizationOutputs::new constructor ──────────────────────────────────
-
-    /// Compile-time signature pin for `RealizationOutputs::new` (task 3133).
-    /// A reordering or arity regression in the `new` signature will cause
-    /// this test to fail to compile.  The happy-path Box realization is
-    /// already covered by `execute_realization_ops_happy_path_appends_handle`
-    /// and the 13 other call-site tests in this module.
-    #[test]
-    fn realization_outputs_new_constructs_usable_aggregate() {
-        // Construct the aggregate with positional args in struct-field order.
-        // Any change to argument order, count, types, or return type breaks
-        // this call at compile time without needing a full realization run.
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let _: RealizationOutputs<'_> = RealizationOutputs::new(
-            &mut step_handles,
-            &mut named_steps,
-            &mut feature_tag_table,
-            &mut topology_attribute_table,
-            &mut swept_kind_table,
-        );
-    }
-
     // ── End-to-end #precision threading: field → kernel.tessellate ───────────
     //
     // The unit tests above pin `effective_tessellation_tolerance` in isolation,
