@@ -37,6 +37,9 @@ export function createScene(
 
   // Camera
   const camera = new PerspectiveCamera(60, width / height, 0.1, 10000);
+  // Reify kernel is Z-up (XY ground plane, +Z extrusion direction). Set this BEFORE
+  // OrbitControls is constructed in Viewport.tsx so its rotation basis is correct.
+  camera.up.set(0, 0, 1);
   camera.position.set(5, 5, 5);
 
   // Renderer
