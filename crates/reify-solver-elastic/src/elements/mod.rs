@@ -162,8 +162,10 @@ pub trait ReferenceElement {
     /// - **`TetP2`** — same vertex order followed by the 6 edge midpoints
     ///   in canonical Hughes/Gmsh order `(0,1), (1,2), (2,0), (0,3),
     ///   (1,3), (2,3)`.
-    /// - **`HexP1`** — vertices in canonical Hughes/Gmsh hex8 order
-    ///   (see `hex_p1::VERTEX_SIGNS`).
+    /// - **`HexP1`** — 8 vertices at the corners `{±1}³` of the reference
+    ///   cube `[-1, 1]³` in canonical Hughes/Gmsh hex8 order: bottom face
+    ///   (ζ = −1) traversed counter-clockwise from `(-1,-1,-1)`, then top
+    ///   face (ζ = +1) in the same cyclic order.
     fn jacobian(&self, phys_nodes: &[[f64; 3]], ref_coord: ReferenceCoord) -> Jacobian {
         // Intentionally unconditional (`assert_eq!`, not `debug_assert_eq!`):
         // the public contract is explicit in every build profile per the
