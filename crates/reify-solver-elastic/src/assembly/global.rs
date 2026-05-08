@@ -78,6 +78,29 @@ pub enum AssemblyMode {
 /// dense `(a, b, α, β)` block of `9 · k_e.n_local²` triplets, and faer's
 /// CSR builder sums duplicates that share a `(row, col)` pair.
 ///
+/// # Symmetry
+///
+/// `K_global` inherits the symmetry of the per-element `K_e`. For
+/// `IsotropicElastic` materials `K_e = ∫ BᵀDB dV` is symmetric by
+/// construction (Task 2915 pins this via unit tests). The emission loop
+/// in `emit_element_triplets` emits the **full dense `(a, b, α, β)` block**
+/// — both `(a, b)` and `(b, a)` for every local pair — rather than just
+/// the upper triangle. Combined with faer's stable duplicate-summation
+/// order, this means `|K_global[i][j] − K_global[j][i]|` is bounded by
+/// `O(ulp · max|K_e[i][j]|)` for any input — far below
+/// `1e-9 · max(|K[i][j]|, |K[j][i]|, 1)`, the tolerance pinned by
+/// `global_k_is_symmetric_within_fp_tolerance`.
+///
+/// Why full-block instead of upper-triangle-only: emitting only the upper
+/// triangle would shift the mirror-and-sum bookkeeping onto callers (or
+/// onto a separate post-pass), and would couple `assemble_global_stiffness`
+/// to the property "`K_e` is symmetric" — a property of the constitutive
+/// law, not a hard contract on the input. The `9 · n_local²` triplet
+/// emission per element is dominated by the constitutive-tensor pre-pass
+/// (PRD task #8) anyway, so the 2× emission cost is invisible at the
+/// pipeline level. See `design_decisions[2]` in the plan for the full
+/// rationale.
+///
 /// # Panics
 ///
 /// - `AssemblyMode::Parallel { threads: 0 }` — auto-fallback to
