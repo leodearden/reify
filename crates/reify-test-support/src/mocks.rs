@@ -516,6 +516,10 @@ enum QueryKey {
     EdgeTangent(GeometryHandleId),
     /// FaceNormal keys the (single) face handle.
     FaceNormal(GeometryHandleId),
+    /// FaceSurfaceKind keys the (single) face handle.
+    FaceSurfaceKind(GeometryHandleId),
+    /// EdgeCurveKind keys the (single) edge handle.
+    EdgeCurveKind(GeometryHandleId),
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -603,6 +607,10 @@ impl QueryKey {
             GeometryQuery::EdgeLength(id) => QueryKey::EdgeLength(*id),
             GeometryQuery::EdgeTangent(id) => QueryKey::EdgeTangent(*id),
             GeometryQuery::FaceNormal(id) => QueryKey::FaceNormal(*id),
+            // Geometry-kind classification queries from task 2658 (PRD line 78);
+            // hashed by handle alone (no extra params).
+            GeometryQuery::FaceSurfaceKind(id) => QueryKey::FaceSurfaceKind(*id),
+            GeometryQuery::EdgeCurveKind(id) => QueryKey::EdgeCurveKind(*id),
         }
     }
 }
@@ -931,6 +939,8 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::EdgeLength(id) => id,
             GeometryQuery::EdgeTangent(id) => id,
             GeometryQuery::FaceNormal(id) => id,
+            GeometryQuery::FaceSurfaceKind(id) => id,
+            GeometryQuery::EdgeCurveKind(id) => id,
         };
 
         self.queries

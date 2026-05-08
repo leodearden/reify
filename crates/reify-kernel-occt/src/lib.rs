@@ -2293,6 +2293,18 @@ impl OcctKernel {
                     "{{\"x\":{x},\"y\":{y},\"z\":{z}}}"
                 )))
             }
+            // Step-14 stub: the FFI surface (`face_surface_kind`,
+            // `edge_curve_kind`) lands in step-18; this branch keeps the
+            // type-system addition compile-clean while a follow-up step
+            // wires the OCCT classification end-to-end. The
+            // `selector_vocabulary_v2_e2e` test in step-17 is RED against
+            // exactly this stub message.
+            GeometryQuery::FaceSurfaceKind(_id) => Err(QueryError::QueryFailed(
+                "face_surface_kind not yet wired".into(),
+            )),
+            GeometryQuery::EdgeCurveKind(_id) => Err(QueryError::QueryFailed(
+                "edge_curve_kind not yet wired".into(),
+            )),
         }
     }
 

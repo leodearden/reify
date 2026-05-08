@@ -49,8 +49,8 @@ pub use expr::{
 };
 pub use geometry::{
     AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, BooleanOpParentsError,
-    CapKind, CapabilityDescriptor, DeletedRecord, ElementOrderTag, ExportError, ExportFormat,
-    FeatureId,
+    CapKind, CapabilityDescriptor, DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError,
+    ExportFormat, FaceSurfaceKind, FeatureId,
     FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
     GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook, KernelAttributeOutcome,
     KernelRegistration, LoftOpHistoryRecords, Mesh,

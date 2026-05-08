@@ -742,6 +742,84 @@ pub enum GeometryQuery {
     /// surface's parametric +N — callers needing direction-agnostic
     /// comparisons should accept either sign).
     FaceNormal(GeometryHandleId),
+    /// Classify the underlying surface of a face by its OCCT
+    /// `BRepAdaptor_Surface::GetType()` (`GeomAbs_*`) result.
+    ///
+    /// Returns `Value::String` whose payload is the canonical surface-kind
+    /// name (`"Plane"`, `"Cylinder"`, `"Cone"`, `"Sphere"`, `"Torus"`,
+    /// `"BezierSurface"`, `"BSplineSurface"`, `"OffsetSurface"`, or
+    /// `"Other"`). Decoded by the Rust caller into [`FaceSurfaceKind`] via
+    /// `TryFrom<&str>`. The string-based wire format is intentional: cxx
+    /// bridge does not natively support shared enums with a fixed tag set,
+    /// and a canonical string is self-documenting and forward-compatible
+    /// with new OCCT GeomAbs variants.
+    ///
+    /// Powers PRD line 78's `%Plane`/`%Cylinder`/… geometry-type filters
+    /// via `selector_vocabulary_v2::faces_by_surface_kind`.
+    FaceSurfaceKind(GeometryHandleId),
+    /// Classify the underlying curve of an edge by its OCCT
+    /// `BRepAdaptor_Curve::GetType()` (`GeomAbs_*`) result.
+    ///
+    /// Returns `Value::String` whose payload is the canonical curve-kind
+    /// name (`"Line"`, `"Circle"`, `"Ellipse"`, `"Hyperbola"`, `"Parabola"`,
+    /// `"BezierCurve"`, `"BSplineCurve"`, `"OffsetCurve"`, or `"Other"`).
+    /// Decoded by the Rust caller into [`EdgeCurveKind`] via
+    /// `TryFrom<&str>`.
+    ///
+    /// Powers PRD line 78's `%Line`/`%Circle`/… geometry-type filters
+    /// via `selector_vocabulary_v2::edges_by_curve_kind`.
+    EdgeCurveKind(GeometryHandleId),
+}
+
+/// Geometric kind of a face's underlying surface, matching OCCT's
+/// `GeomAbs_*` taxonomy via `BRepAdaptor_Surface::GetType()`.
+///
+/// Returned (or implied via the `Value::String` wire format) by
+/// [`GeometryQuery::FaceSurfaceKind`]. Consumed by
+/// `selector_vocabulary_v2::faces_by_surface_kind` to implement PRD
+/// line 78's `%Plane`/`%Cylinder`/`%Cone`/`%Sphere`/`%Torus` slots.
+///
+/// The `BezierSurface`/`BSplineSurface` arms are kept distinct (rather
+/// than collapsed under a generic `Spline`) because OCCT's classification
+/// distinguishes them at the type level; the `OffsetSurface` arm is
+/// preserved for completeness against the OCCT taxonomy. `Other` is the
+/// safety-net arm for forward compatibility — a future OCCT version that
+/// adds a new GeomAbs variant will surface as `Other` here, not silently
+/// classify as one of the existing arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FaceSurfaceKind {
+    Plane,
+    Cylinder,
+    Cone,
+    Sphere,
+    Torus,
+    BezierSurface,
+    BSplineSurface,
+    OffsetSurface,
+    Other,
+}
+
+/// Geometric kind of an edge's underlying curve, matching OCCT's
+/// `GeomAbs_*` taxonomy via `BRepAdaptor_Curve::GetType()`.
+///
+/// Returned (or implied via the `Value::String` wire format) by
+/// [`GeometryQuery::EdgeCurveKind`]. Consumed by
+/// `selector_vocabulary_v2::edges_by_curve_kind` to implement PRD line
+/// 78's `%Line`/`%Circle`/`%Ellipse`/etc. slots.
+///
+/// `Other` is the safety-net arm for forward compatibility against new
+/// OCCT GeomAbs variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EdgeCurveKind {
+    Line,
+    Circle,
+    Ellipse,
+    Hyperbola,
+    Parabola,
+    BezierCurve,
+    BSplineCurve,
+    OffsetCurve,
+    Other,
 }
 
 /// Export formats for geometry.
