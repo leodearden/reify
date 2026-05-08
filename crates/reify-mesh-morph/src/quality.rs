@@ -199,7 +199,7 @@ pub fn quality_check(
     let mut global_min_scaled_j = f64::INFINITY;
     let mut total_evaluated: usize = 0;
     let mut count_below_025: usize = 0;
-    let mut max_ar_increase: f64 = 0.0;
+    let mut max_ar_ratio: f64 = 0.0;
 
     // Build a lazy source iterator when connectivity matches; None otherwise.
     // Using an iterator (rather than collecting a Vec) avoids an O(n) heap
@@ -297,8 +297,8 @@ pub fn quality_check(
                 && morphed_ar.is_finite()
             {
                 let ratio = morphed_ar / source_ar;
-                if ratio > max_ar_increase {
-                    max_ar_increase = ratio;
+                if ratio > max_ar_ratio {
+                    max_ar_ratio = ratio;
                 }
             }
         }
@@ -330,8 +330,8 @@ pub fn quality_check(
 
     // Aspect-ratio increase threshold (threshold 3).
     let max_aspect_ratio_increase =
-        if matched_connectivity && max_ar_increase > options.quality_aspect_ratio_increase_max {
-            Some(max_ar_increase)
+        if matched_connectivity && max_ar_ratio > options.quality_aspect_ratio_increase_max {
+            Some(max_ar_ratio)
         } else {
             None
         };
