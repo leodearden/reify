@@ -137,7 +137,13 @@ pub struct MesherResult {
 /// Errors returned by [`mesh_mid_surface`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum MesherError {
-    /// `merge_tolerance` must be finite and strictly positive.
+    /// `merge_tolerance` must be finite, strictly positive, AND its reciprocal
+    /// must be finite (i.e. the value must not be so small that
+    /// `1.0 / merge_tolerance` overflows to ±inf). Subnormal (denormal)
+    /// positive values that satisfy `> 0.0 && is_finite()` but have an
+    /// infinite reciprocal are rejected here, because they would cause
+    /// `inv_tol = +inf` in the dedup hash, silently collapsing every vertex
+    /// into the `i64::MIN` / `i64::MAX` boundary bins.
     InvalidMergeTolerance {
         /// The offending value supplied by the caller.
         value: f64,
@@ -189,7 +195,9 @@ impl std::fmt::Display for MesherError {
         match self {
             MesherError::InvalidMergeTolerance { value } => write!(
                 f,
-                "merge_tolerance must be finite and strictly positive (got {value}); \
+                "merge_tolerance must be finite, strictly positive, and its reciprocal \
+                 must also be finite (got {value}); subnormal values where \
+                 `1.0 / merge_tolerance` overflows to ±inf corrupt the dedup hash bins; \
                  use 1e-9 for bit-exact binary-MC output or a larger value for \
                  float-noisy producers"
             ),
@@ -382,7 +390,7 @@ fn triangle_min_angle_degrees(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3]) -> f64 {
 ///
 /// | Variant | Condition |
 /// |---------|-----------|
-/// | [`MesherError::InvalidMergeTolerance`] | `merge_tolerance ≤ 0` or non-finite |
+/// | [`MesherError::InvalidMergeTolerance`] | `merge_tolerance ≤ 0`, non-finite, or subnormal (where `1.0/x` would overflow to ±inf) |
 /// | [`MesherError::InvalidMinAspectRatio`] | `min_aspect_ratio ∉ (0, 1]` |
 /// | [`MesherError::InvalidMinAngleDegrees`] | `min_angle_degrees ∉ (0, 60)` |
 /// | [`MesherError::InconsistentInputMesh`] | `thickness.len() ≠ vertices.len()` |
@@ -411,7 +419,14 @@ pub fn mesh_mid_surface(
     options: &MesherOptions,
 ) -> Result<MesherResult, MesherError> {
     // ── 1. Validate options ───────────────────────────────────────────────────
-    if options.merge_tolerance <= 0.0 || !options.merge_tolerance.is_finite() {
+    // Reject merge_tolerance if it is ≤ 0, non-finite, OR subnormal — i.e.
+    // any value where `1.0 / merge_tolerance` would overflow to ±inf.  Such
+    // subnormals pass `> 0.0 && is_finite()` but produce `inv_tol = +inf` in
+    // `dedup_vertices`, silently collapsing all vertices into two boundary bins.
+    if options.merge_tolerance <= 0.0
+        || !options.merge_tolerance.is_finite()
+        || !(1.0_f64 / options.merge_tolerance).is_finite()
+    {
         return Err(MesherError::InvalidMergeTolerance {
             value: options.merge_tolerance,
         });
