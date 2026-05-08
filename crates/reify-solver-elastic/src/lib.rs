@@ -27,7 +27,7 @@
 //!
 //! ```
 //! use reify_solver_elastic::{
-//!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2,
+//!     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement, TetP1, TetP2, HexP1,
 //!     Mitc3Plus, ShellReferenceCoord, TyingPoint,
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
 //!     IsotropicElastic,
@@ -37,8 +37,11 @@
 //!
 //! let _: TetP1 = TetP1;
 //! let _: TetP2 = TetP2;
+//! let _: HexP1 = HexP1;
 //! assert_eq!(<TetP1 as ReferenceElement>::N_NODES, 4);
 //! assert_eq!(<TetP2 as ReferenceElement>::N_NODES, 10);
+//! assert_eq!(<HexP1 as ReferenceElement>::N_NODES, 8);
+//! assert_eq!(HexP1.quad_points().len(), 8);
 //! let _ = QuadraturePoint {
 //!     coord: ReferenceCoord::new(0.25, 0.25, 0.25),
 //!     weight: 1.0 / 6.0,
