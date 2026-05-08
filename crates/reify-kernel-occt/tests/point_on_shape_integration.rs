@@ -32,7 +32,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, QueryError, Value};
+use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -385,4 +385,51 @@ fn point_on_shape_non_solid_off_wire_returns_false() {
         ),
         Err(e) => panic!("expected Ok(false), got Err({e:?})"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// query() round-trip — task 2324 stdlib wiring
+// ---------------------------------------------------------------------------
+
+/// Round-trip `GeometryQuery::PointOnShape` via the generic `kernel.query(...)`
+/// dispatch and confirm the kernel emits a `Value::Bool`.
+///
+/// Face-center query (5,0,0) on the +X face → true.
+#[test]
+fn query_point_on_shape_returns_true_for_face_center_point() {
+    let (kernel, box_id) = box_kernel();
+    let value = kernel
+        .query(&GeometryQuery::PointOnShape {
+            handle: box_id,
+            px: 5.0,
+            py: 0.0,
+            pz: 0.0,
+            tolerance: 1e-7,
+        })
+        .expect("query(PointOnShape) should succeed for valid box handle");
+    assert_eq!(
+        value,
+        Value::Bool(true),
+        "expected Value::Bool(true) for on-face point (5,0,0)"
+    );
+}
+
+/// External point (10, 0, 0) is well outside the +X face → false.
+#[test]
+fn query_point_on_shape_returns_false_for_external_point() {
+    let (kernel, box_id) = box_kernel();
+    let value = kernel
+        .query(&GeometryQuery::PointOnShape {
+            handle: box_id,
+            px: 10.0,
+            py: 0.0,
+            pz: 0.0,
+            tolerance: 1e-7,
+        })
+        .expect("query(PointOnShape) should succeed for valid box handle");
+    assert_eq!(
+        value,
+        Value::Bool(false),
+        "expected Value::Bool(false) for external point (10,0,0)"
+    );
 }
