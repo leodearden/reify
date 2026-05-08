@@ -1,6 +1,7 @@
 //! v0.2 selector vocabulary v2 — combinators, direction/extremal/type
 //! filters, history/attribute selectors, and topological walks
-//! (task 2658, PRD `docs/prds/v0_2/persistent-naming-v2.md` task 10).
+//! (task 2658, PRD `docs/prds/v0_2/persistent-naming-v2.md` task 10,
+//! lines 74-82).
 //!
 //! This module is **additive** to `topology_selectors`: scalar/cone-window
 //! selectors (`edges_by_length`, `faces_by_normal`, …) live there, while
@@ -28,6 +29,44 @@
 //! `topology_selectors::resolve_unique_by_tag`. This keeps selector
 //! pipelines deterministic regardless of how downstream consumers
 //! traverse the result.
+//!
+//! # PRD vocabulary → Rust API mapping
+//!
+//! Cross-reference for the PRD vocabulary slots (PRD lines 74-82). The
+//! `+X` / `+vec` direction filter for *parallel-to-axis with sign* lives
+//! in `topology_selectors::faces_by_normal` / `edges_parallel_to`
+//! (v0.1, retained); everything else is in this module.
+//!
+//! - `+X` / `+Y` / `+Z` / `+vec(<vec3>)` — signed direction filter
+//!   → [`crate::topology_selectors::faces_by_normal`] (v0.1, retained).
+//! - `|X` / `|Y` / `|Z` — sign-tolerant parallel-to-axis filter for
+//!   edges → [`crate::topology_selectors::edges_parallel_to`] (v0.1,
+//!   retained); for faces "parallel to axis" means "normal perpendicular
+//!   to axis", i.e. → [`faces_perpendicular_to`].
+//! - `#X` / `#Y` / `#Z` — perpendicular-to-axis filter
+//!   → [`faces_perpendicular_to`] / [`edges_perpendicular_to`].
+//! - `>X` / `>Y` / `>Z` (and `<X` / `<Y` / `<Z`) — extremal-by-bounds
+//!   → [`extremal_by_bbox`] (sense via [`ExtremalSense::Max`] / `Min`).
+//! - `>>X` / `>>Y` / `>>Z` (and `<<X` / `<<Y` / `<<Z`) — extremal-by-center
+//!   → [`extremal_by_centroid`].
+//! - `%Plane` / `%Cylinder` / `%Cone` / `%Sphere` / `%Torus` — face
+//!   surface-kind filter → [`faces_by_surface_kind`].
+//! - `%Line` / `%Circle` / `%Ellipse` — edge curve-kind filter
+//!   → [`edges_by_curve_kind`].
+//! - `%Geom` — universal pass-through identity → [`geom_universal`].
+//! - `and` / `or` / `not` / `except` — Boolean combinators over handle
+//!   slices → [`intersect`] / [`union`] / [`complement`] / [`except`].
+//! - `adjacent_to(face)` — topological walk → [`adjacent_to_face`].
+//! - `owner_body(sub)` — provenance walk → [`owner_body_of`].
+//! - `ancestors(edge)` — topological walk → [`ancestor_faces_of_edge`].
+//! - `siblings(face)` — topological walk → [`siblings_of_face`].
+//! - `created_by(feature_id)` (`qCreatedBy`) — history-based selector
+//!   → [`created_by_feature`].
+//! - `split_by(feature_id)` (`qSplitBy`) — history-based selector,
+//!   any-position match in `mod_history` → [`split_by_feature`].
+//! - `has_attribute("user_label")` / `attribute_eq("user_label", v)` —
+//!   v0.2 attribute primitive → [`has_user_label`] / [`user_label_eq`].
+//!   (See the latter's rustdoc for the v0.3 generalisation path.)
 
 use std::collections::HashSet;
 

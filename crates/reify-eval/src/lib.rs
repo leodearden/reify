@@ -57,6 +57,13 @@ pub use structural_classifier::{
 pub mod sweep_classifier;
 pub use sweep_classifier::{classify_swept_body, SweptKind, SweptKindTable};
 pub mod selector_vocabulary_v2;
+pub use selector_vocabulary_v2::{
+    Axis, ExtremalSense, adjacent_to_face, ancestor_faces_of_edge, complement,
+    created_by_feature, edges_by_curve_kind, edges_perpendicular_to, except,
+    extremal_by_bbox, extremal_by_centroid, faces_by_surface_kind, faces_perpendicular_to,
+    geom_universal, has_user_label, intersect, owner_body_of, siblings_of_face,
+    split_by_feature, union, user_label_eq,
+};
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
