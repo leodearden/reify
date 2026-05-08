@@ -687,4 +687,25 @@ mod tests {
         assert_eq!(*id, KernelId::Gmsh);
         assert_eq!(pin.version, "4.15.2");
     }
+
+    #[test]
+    fn unknown_kernel_message_lists_gmsh() {
+        let err = Manifest::from_toml_str("[kernels]\nfoobar = \"1.0\"\n")
+            .expect_err("unknown kernel id should be rejected");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("gmsh"),
+            "error message must list 'gmsh' as an expected id; got: {}",
+            msg
+        );
+        // Defensively check the four existing ids are still listed.
+        for expected in &["occt", "manifold", "fidget", "openvdb"] {
+            assert!(
+                msg.contains(expected),
+                "error message must still list '{}' as an expected id; got: {}",
+                expected,
+                msg
+            );
+        }
+    }
 }
