@@ -347,6 +347,7 @@ pub fn quality_check(
         min_scaled_jacobian,
         pct_below_025,
         max_aspect_ratio_increase,
+        degenerate_morphed_element: None,
     };
 
     if metrics.min_scaled_jacobian.is_some()

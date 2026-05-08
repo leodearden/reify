@@ -151,6 +151,7 @@ mod tests {
             min_scaled_jacobian: Some(0.10),
             pct_below_025: Some(0.02),
             max_aspect_ratio_increase: Some(2.5),
+            degenerate_morphed_element: None,
         });
         let solver_err =
             MorphFailure::SolverError(SolverErrorPayload::new("singular stiffness matrix"));
