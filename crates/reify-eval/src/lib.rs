@@ -496,24 +496,39 @@ pub struct Engine {
     ///
     /// Cache lifetime is engine-scoped: entries persist across successive `build()`
     /// / `build_snapshot()` / `tessellate_realizations()` calls within a single
-    /// `Engine`. Initial wiring (task 2874) does NOT clear the cache on
-    /// `activate_purpose` / `deactivate_purpose` / `edit_param` / `edit_source`.
+    /// `Engine` *as long as the inputs are value-stable*.
+    ///
+    /// **Auto-invalidation hook points (task 2874, steps 17-20)**: `edit_param`
+    /// and `edit_source` reset the cache to a fresh `RealizationCache::new()`
+    /// near function entry, mirroring the established `feature_tag_table` /
+    /// `topology_attribute_table` reset-at-hook-point pattern
+    /// (engine_build.rs:531/406). After an edit, the next `build()` /
+    /// `build_snapshot()` cold-misses on every realization and re-populates
+    /// the cache from kernel execution. The reset is conservative — the
+    /// engine cannot prove which cached entries survive a given edit without
+    /// per-cell input-cone analysis we do not currently maintain — so the
+    /// entire cache is flushed on every edit regardless of whether the
+    /// edited cell participates in any realization's input cone.
+    ///
+    /// Pinned end-to-end by:
+    /// - `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+    ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_param`).
+    /// - `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
+    ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_source`).
     ///
     /// **Scope of the partial-order rule (amendment correction)**: the
     /// `cached_tol ≤ requested_tol` ordering ONLY mitigates *tolerance-driven*
     /// staleness — a tighter demand misses a looser cached entry. It does
     /// NOT cover parameter / source / purpose-binding edits that change the
     /// underlying geometry while keeping `(entity_id, BRep, demanded_tol)`
-    /// constant. Concretely: after `edit_param` followed by `build_snapshot`
-    /// (which preserves `active_purpose_bindings` because it does not call
-    /// `eval()`) the cache lookup will hit and short-circuit kernel
-    /// re-execution, returning a stale `GeometryHandleId` that points at
-    /// the OLD geometry. Production callers must therefore either
-    /// (a) avoid `build_snapshot` after `edit_param`, or
-    /// (b) clear `realization_cache` themselves between the edit and the
-    /// snapshot rebuild,
-    /// until a follow-up task lands granular invalidation. Finer-grained
-    /// invalidation is left for follow-up tasks.
+    /// constant. The auto-invalidation hooks above close that gap for
+    /// `edit_param` / `edit_source`. Purpose-binding edits via
+    /// `activate_purpose` / `deactivate_purpose` are covered by the
+    /// partial-order rule itself when they tighten the demanded tolerance
+    /// (a tighter cache lookup misses the looser entry); when they LOOSEN
+    /// the demand the cached entry is still valid because looser tolerance
+    /// requires looser-or-equal precision — exactly the win the cache exists
+    /// to deliver.
     ///
     /// **Partial-order miss verification (task 2874 step-14)**: a tighter
     /// demanded tolerance MUST NOT be served by a looser cached entry. The

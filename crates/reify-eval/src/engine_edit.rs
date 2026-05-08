@@ -830,6 +830,20 @@ impl Engine {
         let functions = Arc::clone(&self.functions);
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
+        // Auto-invalidate the realization cache: edit_param changes input
+        // parameter values, so any cached `GeometryHandleId` entries point at
+        // OLD geometry and would silently be served by a subsequent
+        // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
+        // `feature_tag_table` / `topology_attribute_table` reset-at-hook-point
+        // pattern (engine_build.rs:531/406): the engine cannot prove which
+        // cached entries survive a given edit without per-cell input-cone
+        // analysis we do not currently maintain, so we conservatively flush
+        // the entire cache on every edit. The next `build()` /
+        // `build_snapshot()` cold-misses on every realization and re-populates
+        // the cache from kernel execution. Pinned by
+        // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+        // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-17).
+        self.realization_cache = crate::realization_cache::RealizationCache::new();
         // Reset the test-instrumentation diff snapshot. The "most recent
         // edit_source call" invariant on `Engine::last_diff_value_cells()`
         // is enforced rather than documented — a subsequent edit_param
@@ -1899,6 +1913,18 @@ impl Engine {
         if self.eval_state.is_none() {
             return Err(EngineError::NotInitialized);
         }
+        // Auto-invalidate the realization cache: edit_source rebuilds the
+        // snapshot from a (potentially) different `CompiledModule`, so any
+        // cached `GeometryHandleId` entries are stale (the underlying
+        // geometry ops, parameter defaults, or template structure may have
+        // changed) and would silently be served by a subsequent `build()` /
+        // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
+        // `feature_tag_table` / `topology_attribute_table` reset-at-hook-point
+        // pattern (engine_build.rs:531/406) and the parallel reset in
+        // `edit_param`. Pinned by
+        // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
+        // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-19).
+        self.realization_cache = crate::realization_cache::RealizationCache::new();
         // Disjoint-field borrow: Rust's NLL tracks this borrow as touching only
         // the `eval_state` field (not all of `self`), so later mutable borrows
         // of sibling fields — `self.param_overrides.retain(...)` and
