@@ -5067,4 +5067,43 @@ mod tests {
         };
         assert_eq!(empty.vertex(0), None);
     }
+
+    /// Verify `VolumeMesh::vertex_f64` returns `Some([x, y, z])` with f32→f64
+    /// widening for valid indices and `None` for out-of-range or overflow inputs.
+    ///
+    /// Fixture: same 3-node mesh as the f32 variant.  The five sub-cases mirror
+    /// (a) first node, (b) last valid node, (c) one-past-end, (d) u32::MAX
+    /// overflow guard, and (e) empty mesh — but expectations are `Option<[f64; 3]>`.
+    #[test]
+    fn volume_mesh_vertex_f64_returns_some_widened_for_valid_indices_and_none_for_out_of_range_or_overflow(
+    ) {
+        let mesh = VolumeMesh {
+            vertices: vec![
+                1.0, 2.0, 3.0, // v0
+                4.0, 5.0, 6.0, // v1
+                7.0, 8.0, 9.0, // v2
+            ],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+
+        // (a) first node — widened to f64
+        assert_eq!(mesh.vertex_f64(0), Some([1.0_f64, 2.0, 3.0]));
+        // (b) last valid node — base = 6, end = 9 == vertices.len()
+        assert_eq!(mesh.vertex_f64(2), Some([7.0_f64, 8.0, 9.0]));
+        // (c) one past end — base = 9, end = 12 > 9
+        assert_eq!(mesh.vertex_f64(3), None);
+        // (d) large index — checked_mul(3) overflows or end > len → None
+        assert_eq!(mesh.vertex_f64(u32::MAX), None);
+
+        // (e) empty mesh — any index is out of range
+        let empty = VolumeMesh {
+            vertices: vec![],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        assert_eq!(empty.vertex_f64(0), None);
+    }
 }
