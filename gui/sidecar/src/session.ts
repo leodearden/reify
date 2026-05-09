@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import { createLineReader } from './ipc.js';
 import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
 import type { PermissionServer } from './permission-server.js';
-import { isLandlockAvailable, wrapClaudeArgs } from './sandbox.js';
+import { wrapClaudeArgs } from './sandbox.js';
 
 export interface SessionConfig {
   model: string;
@@ -37,6 +37,13 @@ export interface SessionConfig {
    * Set from the REIFY_LANDLOCK_EXEC env var by index.ts at startup.
    */
   landlockExec?: string;
+  /**
+   * Whether the kernel supports Landlock FS sandboxing.
+   * Resolved once at sidecar startup by `probeLandlockAsync()` in index.ts and passed
+   * here as an eagerly-settled boolean so invokeSdk can read it synchronously.
+   * Defaults to `false` when omitted (e.g. in unit tests that do not set it).
+   */
+  landlockAvailable?: boolean;
 }
 
 /**
@@ -89,13 +96,6 @@ export class SidecarSession {
    */
   private mcpConfigTmpDir: string | null = null;
   private mcpConfigTmpFile: string | null = null;
-
-  /**
-   * Cached landlock availability probe result.
-   * null = not yet probed; false = unavailable or no landlockExec configured; true = available.
-   * Set once on the first invokeSdk call and reused for subsequent turns.
-   */
-  private landlockOk: boolean | null = null;
 
   /**
    * Whether the one-shot sandbox_unavailable notice has already been emitted for this session.
@@ -337,18 +337,15 @@ export class SidecarSession {
     args.push('--permission-mode', 'bypassPermissions');
     args.push('--allowed-tools', ALLOWED_TOOLS);
 
-    // Probe landlock availability once per session (cached in this.landlockOk).
-    // When landlockExec is absent (e.g. unit-test invocation), skip the probe entirely.
-    if (this.landlockOk === null) {
-      this.landlockOk = this.config.landlockExec
-        ? isLandlockAvailable(this.config.landlockExec)
-        : false;
-    }
+    // Read the landlock probe result that was settled at sidecar startup by
+    // probeLandlockAsync() in index.ts. Defaults to false when the field is absent
+    // (e.g. unit-test invocations that do not set landlockAvailable in config).
+    const landlockOk = this.config.landlockAvailable ?? false;
 
     // When a sandbox was requested (landlockExec set) but the kernel can't deliver it,
     // emit a one-shot notice so the frontend can surface a toast. The !sandboxNoticeEmitted
     // guard prevents spamming the notice on every subsequent turn of the same session.
-    if (this.config.landlockExec && !this.landlockOk && !this.sandboxNoticeEmitted) {
+    if (this.config.landlockExec && !landlockOk && !this.sandboxNoticeEmitted) {
       this.sandboxNoticeEmitted = true;
       this.onOutput({
         type: 'notice',
@@ -362,7 +359,7 @@ export class SidecarSession {
     // Wrap the claude args with the landlock sandbox when available.
     // effectiveLandlockExec is set to undefined if the probe failed so wrapClaudeArgs
     // returns {cmd:'claude', args:[...args]} (passthrough, no python3 wrap).
-    const effectiveLandlockExec = this.landlockOk ? this.config.landlockExec : undefined;
+    const effectiveLandlockExec = landlockOk ? this.config.landlockExec : undefined;
     const workspaceDir = this.config.workspace ?? this.config.workingDirectory;
     const { cmd, args: wrappedArgs } = wrapClaudeArgs(args, workspaceDir, effectiveLandlockExec);
 
