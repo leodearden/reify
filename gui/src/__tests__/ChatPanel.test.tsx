@@ -430,4 +430,86 @@ describe('ChatPanel', () => {
       expect(decideSpy).toHaveBeenCalledWith('req-1', { behavior: 'deny' });
     });
   });
+
+  describe('DOM order (panel-level)', () => {
+    it('multiple messages render in store insertion order (user → assistant alternation)', () => {
+      const store = makeStore();
+
+      store.sendMessage('First user message', {});
+      const msgId1 = store.state.currentMessageId!;
+      store.handleOutboundMessage({ type: 'text_delta', id: msgId1, content: 'First reply' });
+      store.handleOutboundMessage({ type: 'done', id: msgId1 });
+
+      store.sendMessage('Second user message', {});
+      const msgId2 = store.state.currentMessageId!;
+      store.handleOutboundMessage({ type: 'text_delta', id: msgId2, content: 'Second reply' });
+      store.handleOutboundMessage({ type: 'done', id: msgId2 });
+
+      render(() => <ChatPanel store={store} />);
+
+      const userMsgs = screen.getAllByTestId('user-message');
+      const msgGroups = screen.getAllByTestId('message-group');
+      expect(userMsgs).toHaveLength(2);
+      expect(msgGroups).toHaveLength(2);
+
+      // user[0] → group[0] → user[1] → group[1] in document order
+      expect(userMsgs[0].compareDocumentPosition(msgGroups[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(msgGroups[0].compareDocumentPosition(userMsgs[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(userMsgs[1].compareDocumentPosition(msgGroups[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('message list appears before permission-prompts container in DOM', () => {
+      const store = makeStore();
+      store.sendMessage('hello', {});
+      const msgId = store.state.currentMessageId!;
+      store.handleOutboundMessage({
+        type: 'permission_request',
+        id: msgId,
+        request_id: 'req-dom-1',
+        tool_name: 'Write',
+        tool_input: {},
+      });
+
+      render(() => <ChatPanel store={store} />);
+
+      const userMsg = screen.getByTestId('user-message');
+      const permissionPrompts = screen.getByTestId('permission-prompts');
+      // DOCUMENT_POSITION_FOLLOWING (4) means permission-prompts comes after user-message in the DOM
+      expect(userMsg.compareDocumentPosition(permissionPrompts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('context-chips container appears between permission-prompts and chat-input in DOM', () => {
+      const store = makeStore();
+      store.sendMessage('hello', {});
+      const msgId = store.state.currentMessageId!;
+      store.handleOutboundMessage({
+        type: 'permission_request',
+        id: msgId,
+        request_id: 'req-dom-2',
+        tool_name: 'Write',
+        tool_input: {},
+      });
+
+      render(() => (
+        <ChatPanel
+          store={store}
+          selectedEntity="box1"
+          engineConstraints={[]}
+          diagnostics={[]}
+        />
+      ));
+
+      // Attach a context chip so context-chips container appears
+      fireEvent.click(screen.getByTestId('context-picker-btn'));
+      fireEvent.click(screen.getByText('Current selection'));
+
+      const permissionPrompts = screen.getByTestId('permission-prompts');
+      const contextChips = screen.getByTestId('context-chips');
+      const chatInput = screen.getByTestId('chat-input');
+
+      // permission-prompts → context-chips → chat-input in document order
+      expect(permissionPrompts.compareDocumentPosition(contextChips) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(contextChips.compareDocumentPosition(chatInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+  });
 });
