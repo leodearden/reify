@@ -3572,6 +3572,51 @@ mod tests {
         );
     }
 
+    // ── compute_tessellation_budgets unit tests ───────────────────────────────
+
+    /// Pins the return type of `compute_tessellation_budgets`:
+    /// `Vec<Vec<f64>>` indexed `[template_idx][realization_idx]`.
+    ///
+    /// Fixture: module with one template `A` carrying one realization, a
+    /// single-kernel registry `{occt: [(BooleanUnion, BRep)]}`. Since
+    /// `demanded_tols[0][0]` is `None` (no tolerance contributor), the helper
+    /// falls back to `effective_tessellation_tolerance(module)` (default
+    /// `1e-4`) and routes it through the v0.2 single-kernel registry which
+    /// yields a 0-conversion plan → budget equals the fallback value.
+    #[test]
+    fn compute_tessellation_budgets_returns_positionally_indexed_vec_of_vec() {
+        use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
+        use reify_types::ModulePath;
+
+        let checker = MockConstraintChecker::new();
+        let engine = crate::Engine::new(Box::new(checker), None);
+
+        let template_a = TopologyTemplateBuilder::new("EntityA")
+            .realization("EntityA", 0, vec![])
+            .build();
+        let module = CompiledModuleBuilder::new(ModulePath::single("test_budgets"))
+            .template(template_a)
+            .build();
+
+        let occt = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), occt);
+
+        let demanded = engine.compute_demanded_tols(&module);
+        let budgets: Vec<Vec<f64>> = engine.compute_tessellation_budgets(&module, &demanded, &registry);
+
+        assert_eq!(budgets.len(), 1, "outer Vec must have one entry per template");
+        assert_eq!(budgets[0].len(), 1, "template A has 1 realization");
+        assert_eq!(
+            budgets[0][0],
+            Engine::effective_tessellation_tolerance(&module),
+            "no demanded tol → falls back to module default; 0-conversion DispatchPlan \
+             passes it through bit-exactly",
+        );
+    }
+
     // ── compute_realization_tolerance_budget unit tests ───────────────────────
 
     /// Pins the new 3-arg signature of `compute_realization_tolerance_budget`:
