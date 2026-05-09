@@ -1037,6 +1037,14 @@ impl Engine {
     /// `compute_realization_tolerance_budget` docstring for the
     /// 0-conversion-plan pass-through behaviour this triple yields with the
     /// v0.2 single-kernel registry.
+    ///
+    /// **Post task 3227**: the `available` slice (`.2`) is consumed
+    /// **once per build** by [`Self::compute_tessellation_budgets`] to
+    /// construct a `HashSet<ReprKind>`, which is then passed by reference
+    /// to every `compute_realization_tolerance_budget` call in the
+    /// realization loop — rather than reconstructed per call inside the
+    /// helper. A single grep for `BUDGET_QUERY_TRIPLE_V02` still surfaces
+    /// every consumer.
     pub(crate) const BUDGET_QUERY_TRIPLE_V02: (Operation, ReprKind, &'static [ReprKind]) =
         (Operation::BooleanUnion, ReprKind::BRep, &[ReprKind::BRep]);
 
