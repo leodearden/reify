@@ -140,6 +140,18 @@
 //!     [0.0, 0.0, 1.0], 0.05,
 //! );
 //! assert_eq!(_rows.len(), 6, "shell_tet_tying must produce 6 constraint rows");
+//!
+//! // Task 2919: CG solver smoke test — exercises solve_cg, CgSolverOptions,
+//! // CgResult, and SolverMode from the crate root. A regression that renames
+//! // CgResult.u or removes Default from CgSolverOptions will trip this doctest.
+//! let cg_triplet = faer::sparse::Triplet::new(0_usize, 0_usize, 1.0_f64);
+//! let k_cg = faer::sparse::SparseRowMat::try_new_from_triplets(1, 1, &[cg_triplet]).unwrap();
+//! let f_cg = [3.0_f64];
+//! let cg_opts = CgSolverOptions::default();
+//! let cg_result: CgResult = solve_cg(&k_cg, &f_cg, cg_opts, SolverMode::Deterministic);
+//! assert!(cg_result.converged, "1×1 identity CG must converge");
+//! assert_eq!(cg_result.u.len(), 1, "CgResult.u must have length 1");
+//! assert!((cg_result.u[0] - 3.0).abs() < 1e-9, "u[0] = {}", cg_result.u[0]);
 //! ```
 
 pub mod assembly;
