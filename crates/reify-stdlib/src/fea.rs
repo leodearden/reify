@@ -71,7 +71,8 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 ///   - `displacement`: combined Sampled Field (weighted sum, name="linear_combine")
 ///   - `stress`:       combined Sampled Field (weighted sum, name="linear_combine")
 ///   - `frame`:        `Value::Undef` (tet-elastic convention per solver_elastic.ri:282-289)
-///   - `max_von_mises`: `Value::Real(max(|combined_stress.data|))` over finite data
+///   - `max_von_mises`: `Value::Real(max(|combined_stress.data|))` over finite data,
+///     or `Value::Undef` when the stress buffer is empty or contains no finite values
 ///   - `converged`:   `Value::Bool(true)`
 ///   - `iterations`:  `Value::Int(0)` (synthesised, not solved)
 ///
@@ -222,11 +223,19 @@ fn linear_combine(args: &[Value]) -> Value {
 
     // Compute max_von_mises: max(|combined_stress|) over finite values.
     // Scalar interpretation (pre-task-#3117); finite-only for NaN-safety.
-    let max_von_mises = combined_stress
+    // Uses reduce(f64::max) rather than fold(0.0, f64::max) so that an empty
+    // or all-non-finite filter yields None → Value::Undef, distinguishing
+    // "no finite data" from "genuine zero stress". Mirrors envelope_reduce's
+    // NaN-sentinel discipline at fea.rs:517-524.
+    let mvm: Option<f64> = combined_stress
         .iter()
         .filter(|v| v.is_finite())
         .map(|v| v.abs())
-        .fold(0.0_f64, f64::max);
+        .reduce(f64::max);
+    let mvm_value = match mvm {
+        Some(v) => Value::Real(v),
+        None => Value::Undef,
+    };
 
     // Build output SampledFields: clone only lightweight metadata from reference;
     // the accumulated data buffers are moved directly into the output.
@@ -271,10 +280,7 @@ fn linear_combine(args: &[Value]) -> Value {
     result_map.insert(Value::String("displacement".to_string()), out_disp_field);
     result_map.insert(Value::String("stress".to_string()), out_stress_field);
     result_map.insert(Value::String("frame".to_string()), Value::Undef);
-    result_map.insert(
-        Value::String("max_von_mises".to_string()),
-        Value::Real(max_von_mises),
-    );
+    result_map.insert(Value::String("max_von_mises".to_string()), mvm_value);
     result_map.insert(Value::String("converged".to_string()), Value::Bool(true));
     result_map.insert(Value::String("iterations".to_string()), Value::Int(0));
 
