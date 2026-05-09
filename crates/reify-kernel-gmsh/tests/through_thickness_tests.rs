@@ -376,32 +376,37 @@ fn empty_tet_indices_returns_empty_vec() {
     );
 }
 
-/// A volume mesh whose first vertex has NaN coordinates must not produce a
-/// spurious layer count — NaN poisons the centroid calculation and would
-/// silently corrupt the layer-counting walk. Instead the function must
-/// early-return `Vec::new()` and emit exactly one WARN-level event at the
-/// `reify_kernel_gmsh::through_thickness` target.
+// ---------------------------------------------------------------------------
+// Non-finite centroid tests: NaN, +Inf, −Inf.
+//
+// All three share the same assertion contract — non-finite centroid → empty
+// Vec + exactly one WARN at the target — so the scaffolding is factored into
+// a single private helper parameterised by the vertex coordinate value.
+// ---------------------------------------------------------------------------
+
+/// Shared scaffold for the three non-finite-centroid guard tests.
 ///
-/// RED contract (before fix): the current sort treats NaN as Equal against
-/// every other value, the layer-count walk runs to completion on a 1-tet
-/// input (layer_count=1 < threshold=2), and returns 1 spurious warning.
-/// Zero WARN events are emitted to the named target. After fix (step-6):
-/// early-return hits, Vec is empty, WARN counter == 1.
-#[test]
-fn nan_centroid_returns_empty_and_emits_warn() {
+/// Primes the tracing callsite cache, builds a single-P1-tet `VolumeMesh`
+/// whose first vertex has `coord` for all three coordinates (the remaining
+/// three vertices are the finite slab corners), runs `through_thickness_check`
+/// under a WARN-counting subscriber, and asserts:
+///
+/// - (a) the returned `Vec` is empty — a non-finite centroid signals upstream
+///       pathology, not an under-resolved region,
+/// - (b) exactly one WARN event is emitted at the
+///   `reify_kernel_gmsh::through_thickness` target.
+fn assert_non_finite_first_vertex_returns_empty(coord: f32) {
     // Prime the callsite cache so per-test with_default subscribers see events
     // even if a prior test thread hit the callsite with no subscriber active.
     reify_test_support::prime_tracing_callsite_cache();
 
     let surface = slab_surface_mesh();
 
-    // Single P1 tet whose first vertex is all-NaN: the projected centroid is
-    // sum(NaN + finite + finite + finite) * 0.25 = NaN.
+    // Single P1 tet whose first vertex uses `coord` for all three axes.
+    // Vertex 0 is the pathological one; vertices 1..3 are finite slab corners.
     let volume = VolumeMesh {
         vertices: vec![
-            // Vertex 0 — all-NaN (upstream pathology)
-            f32::NAN, f32::NAN, f32::NAN,
-            // Vertices 1..3 — finite slab corners
+            coord, coord, coord,
             10.0, 0.0, 0.0,
             10.0, 10.0, 0.5,
             0.0, 10.0, 0.5,
@@ -424,97 +429,54 @@ fn nan_centroid_returns_empty_and_emits_warn() {
         through_thickness_check(&volume, &surface, cfg)
     });
 
-    // (a) Must return empty Vec — a NaN centroid signals upstream pathology,
-    //     not an under-resolved region; no ThroughThicknessWarning should be
-    //     produced.
+    // (a) Must return empty Vec — non-finite centroid signals upstream pathology.
     assert!(
         warnings.is_empty(),
-        "nan centroid must produce empty Vec, not a spurious layer-count warning; \
-         got {} warning(s): {:?}",
+        "non-finite centroid (coord={coord}) must produce empty Vec, not a \
+         spurious layer-count warning; got {} warning(s): {:?}",
         warnings.len(),
         warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
     );
 
     // (b) No panic (implicit — reaching this point means the function returned).
 
-    // (c) Exactly one WARN event must be emitted at the
-    //     reify_kernel_gmsh::through_thickness target.
+    // (c) Exactly one WARN event must be emitted at the named target.
     let warn_count = warn_arc.load(Ordering::Acquire);
     assert_eq!(
         warn_count, 1,
-        "expected exactly 1 WARN event at reify_kernel_gmsh::through_thickness; got {}",
-        warn_count
+        "expected exactly 1 WARN event at reify_kernel_gmsh::through_thickness \
+         (coord={coord}); got {warn_count}"
     );
+}
+
+/// A volume mesh whose first vertex has NaN coordinates must not produce a
+/// spurious layer count — NaN poisons `partial_cmp` (treated as Equal against
+/// every value), silently scrambling the sort. Instead the function must
+/// early-return `Vec::new()` and emit exactly one WARN at the
+/// `reify_kernel_gmsh::through_thickness` target.
+#[test]
+fn nan_centroid_returns_empty_and_emits_warn() {
+    assert_non_finite_first_vertex_returns_empty(f32::NAN);
 }
 
 /// A volume mesh whose first vertex has +Inf coordinates must not produce a
 /// spurious layer count — Inf poisons `bin_width` (avg_tet_extent → Inf →
-/// half_bin → Inf → `(w[1] - w[0]).abs() > Inf` is always false → layer_count
-/// collapses to 1 regardless of geometry). Instead the function must
-/// early-return `Vec::new()` and emit exactly one WARN-level event at the
+/// half_bin → Inf → `(w[1] - w[0]).abs() > Inf` is always false →
+/// layer_count collapses to 1 regardless of geometry). The function must
+/// early-return `Vec::new()` and emit exactly one WARN at the
 /// `reify_kernel_gmsh::through_thickness` target.
-///
-/// RED contract (without fix): the existing `is_nan()` guard does not trip on
-/// Inf, the layer-count walk runs to completion on a 1-tet input
-/// (layer_count=1 < threshold=2), and returns 1 spurious warning. Zero WARN
-/// events are emitted to the named target. After the fix (`!is_finite()`
-/// predicate): early-return hits, Vec is empty, WARN counter == 1.
 #[test]
 fn inf_centroid_returns_empty_and_emits_warn() {
-    // Prime the callsite cache so per-test with_default subscribers see events
-    // even if a prior test thread hit the callsite with no subscriber active.
-    reify_test_support::prime_tracing_callsite_cache();
+    assert_non_finite_first_vertex_returns_empty(f32::INFINITY);
+}
 
-    let surface = slab_surface_mesh();
-
-    // Single P1 tet whose first vertex is all-Inf: the projected centroid is
-    // sum(Inf + finite + finite + finite) * 0.25 = Inf.
-    let volume = VolumeMesh {
-        vertices: vec![
-            // Vertex 0 — all-Inf (upstream pathology)
-            f32::INFINITY, f32::INFINITY, f32::INFINITY,
-            // Vertices 1..3 — finite slab corners
-            10.0, 0.0, 0.0,
-            10.0, 10.0, 0.5,
-            0.0, 10.0, 0.5,
-        ],
-        tet_indices: vec![0, 1, 2, 3],
-        element_order: ElementOrderTag::P1,
-        normals: None,
-    };
-    let cfg = ThroughThicknessConfig {
-        min_elements_through_thickness: 2,
-    };
-
-    let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
-        .count_level(tracing::Level::WARN)
-        .target_prefix("reify_kernel_gmsh::through_thickness")
-        .build();
-    let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
-
-    let warnings = tracing::subscriber::with_default(subscriber, || {
-        through_thickness_check(&volume, &surface, cfg)
-    });
-
-    // (a) Must return empty Vec — an Inf centroid signals upstream pathology,
-    //     not an under-resolved region; no ThroughThicknessWarning should be
-    //     produced.
-    assert!(
-        warnings.is_empty(),
-        "inf centroid must produce empty Vec, not a spurious layer-count warning; \
-         got {} warning(s): {:?}",
-        warnings.len(),
-        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
-    );
-
-    // (b) No panic (implicit — reaching this point means the function returned).
-
-    // (c) Exactly one WARN event must be emitted at the
-    //     reify_kernel_gmsh::through_thickness target.
-    let warn_count = warn_arc.load(Ordering::Acquire);
-    assert_eq!(
-        warn_count, 1,
-        "expected exactly 1 WARN event at reify_kernel_gmsh::through_thickness; got {}",
-        warn_count
-    );
+/// A volume mesh whose first vertex has −Inf coordinates must not produce a
+/// spurious layer count. −Inf takes a slightly different arithmetic path than
+/// +Inf (avoids any +Inf + −Inf = NaN interaction that could mask the failure
+/// mode), so it is tested separately to close the `!is_finite()` predicate's
+/// coverage. The expected contract is identical: early-return `Vec::new()` and
+/// emit exactly one WARN at the `reify_kernel_gmsh::through_thickness` target.
+#[test]
+fn neg_inf_centroid_returns_empty_and_emits_warn() {
+    assert_non_finite_first_vertex_returns_empty(f32::NEG_INFINITY);
 }
