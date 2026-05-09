@@ -48,6 +48,7 @@ import {
   focusEntity as bridgeFocusEntity,
   claudeSendMessage,
   claudeAbort,
+  claudePermissionDecision,
   subscribeToClaudeEvents,
   isDebugEnabled,
   getKernelStatus,
@@ -102,6 +103,11 @@ const App: Component = () => {
       claudeAbort().catch((err) => {
         console.error('[claude] abort failed:', err);
         showToast(`Abort failed: ${errorMessage(err)}`, 'error');
+      });
+    },
+    onPermissionDecision: ({ requestId, behavior, message, updatedInput, remember }) => {
+      claudePermissionDecision({ requestId, behavior, message, updatedInput, remember }).catch((err) => {
+        showToast(`Permission decision failed: ${errorMessage(err)}`, 'error');
       });
     },
   });

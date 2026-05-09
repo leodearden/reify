@@ -1,10 +1,11 @@
 import { type Component, createSignal, createEffect, For, Show } from 'solid-js';
-import type { ChatMessage, MessageContext, AssistantMessage, SystemMessage as SystemMessageType } from '../stores/claudeStore';
+import type { ChatMessage, MessageContext, AssistantMessage, SystemMessage as SystemMessageType, PendingPermissionRequest, PermissionDecision } from '../stores/claudeStore';
 import { MessageGroup } from './chat/MessageGroup';
 import { AbortButton } from './chat/AbortButton';
 import { SystemMessage } from './chat/SystemMessage';
 import { ContextPicker, type ContextType } from './chat/ContextPicker';
 import { ContextChip } from './chat/ContextChip';
+import { PermissionPrompt } from './chat/PermissionPrompt';
 import styles from './ChatPanel.module.css';
 
 export interface AttachedContext {
@@ -18,9 +19,11 @@ export interface ChatPanelProps {
       messages: ChatMessage[];
       sessionStatus: string;
       currentMessageId: string | null;
+      pendingPermissionRequests: PendingPermissionRequest[];
     };
     sendMessage: (text: string, context: MessageContext) => void;
     claudeAbort: () => void;
+    decidePermission: (requestId: string, decision: PermissionDecision) => void;
   };
   selectedEntity?: string;
   engineConstraints?: Array<{ expression?: string; status?: string }>;
@@ -167,6 +170,19 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
           )}
         </For>
       </div>
+      <Show when={props.store.state.pendingPermissionRequests.length > 0}>
+        <div data-testid="permission-prompts">
+          <For each={props.store.state.pendingPermissionRequests}>
+            {(req) => (
+              <PermissionPrompt
+                toolName={req.toolName}
+                toolInput={req.toolInput}
+                onDecide={(d) => props.store.decidePermission(req.requestId, d)}
+              />
+            )}
+          </For>
+        </div>
+      </Show>
       <Show when={attachedContexts().length > 0}>
         <div data-testid="context-chips" class={styles.contextChips}>
           <For each={attachedContexts()}>
