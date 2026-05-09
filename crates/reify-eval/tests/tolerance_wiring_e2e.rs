@@ -1352,3 +1352,109 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
         engine.realization_cache(),
     );
 }
+
+/// Task 3176, step-4 (GREEN-on-arrival) — end-to-end behavioral pin for the
+/// `edit_param → build_snapshot` freshness contract.
+///
+/// **What this pins**: the existing test
+/// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
+/// asserts the cache-clear *mechanism* fires (the cache is empty immediately
+/// after `edit_param` returns). This test asserts the user-visible *behavior*:
+/// that a subsequent `build_snapshot` actually invokes the kernel afresh
+/// (cold-misses on the cleared cache), so the resulting `GeometryHandleId` is
+/// NOT a stale cached one. The two tests are complementary — they guard against
+/// orthogonal regressions.
+///
+/// **No re-activation between calls**: `edit_param` does NOT call `eval()` —
+/// it does its own incremental re-evaluation via `reify_expr::eval_expr`.
+/// `build_snapshot` also does NOT call `eval()` (it builds from the existing
+/// snapshot). Additionally, task 3103 (commits cb5c58ff6a → c8e6fe56da) changed
+/// `Engine::eval()` to preserve `active_purpose_bindings` via `mem::take` +
+/// re-inject (engine_eval.rs:1162-1176), so bindings survive even when an
+/// internal eval round-trip fires. The lifecycle contract is "eval →
+/// activate_purpose → build requires no re-activation" (pinned by
+/// `eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_internal_eval`
+/// at tolerance_wiring_e2e.rs). No re-activation is needed at any point in this
+/// test.
+///
+/// Sequence:
+///   (a) eval → activate_purpose → build → capture `ops_after_first`.
+///   (b) Sanity check cache IS populated (proves cache-hit WOULD have fired
+///       without the edit_param invalidation — makes the final assertion
+///       non-vacuous).
+///   (c) `edit_param(thickness, 0.005)` — clears the cache.
+///   (d) `build_snapshot(...)` — must cold-miss → kernel re-executes.
+///   (e) Assert `ops_after_build_snapshot > ops_after_first` (kernel grew,
+///       proving cold-miss and fresh execution rather than stale cache-hit).
+#[test]
+fn edit_param_followed_by_build_snapshot_re_executes_kernel_so_geometry_handle_is_not_stale() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_edit_param_then_build_snapshot_kernel_reruns".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    // Grab the recorder BEFORE moving the kernel into the engine — the Arc
+    // keeps it alive across the ownership boundary (established pattern at
+    // tolerance_wiring_e2e.rs line ~307/475).
+    let ops_handle = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (a) Cold-start: eval → activate_purpose → build → cache populated.
+    engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+    engine.build(&module, ExportFormat::Step);
+    let ops_after_first = ops_handle.lock().unwrap().len();
+    assert!(
+        ops_after_first >= 1,
+        "test premise: expected first build() to invoke the kernel at least once \
+         (cache miss → realization ops dispatched); got ops_after_first={}",
+        ops_after_first,
+    );
+
+    // (b) Sanity: cache IS populated after first build — proves a cache-hit
+    // WOULD have fired on the next build WITHOUT the edit_param invalidation.
+    assert!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6)
+            .is_some(),
+        "sanity: expected RealizationCache to contain an entry at \
+         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() — without this the \
+         final assertion is vacuous. Cache len={}, dump: {:?}",
+        engine.realization_cache().len(),
+        engine.realization_cache(),
+    );
+
+    // (c) Edit a param — clears the realization cache (task 2874, step-18).
+    // No re-activation needed: edit_param does not call eval(), and
+    // build_snapshot does not call eval() either.
+    let thickness_id = ValueCellId::new("MyDesign", "thickness");
+    engine
+        .edit_param(thickness_id, Value::Real(0.005))
+        .expect("edit_param must succeed against the MyDesign.thickness Real param");
+
+    // (d) build_snapshot must cold-miss on the cleared cache and re-execute
+    // the kernel.
+    engine.build_snapshot(&module, ExportFormat::Step);
+    let ops_after_build_snapshot = ops_handle.lock().unwrap().len();
+
+    // (e) Core assertion: kernel grew — proves build_snapshot cold-missed on
+    // the cache (the edit_param invalidation fired correctly) and called the
+    // kernel again, producing a fresh GeometryHandleId rather than returning
+    // the stale cached one.
+    assert!(
+        ops_after_build_snapshot > ops_after_first,
+        "expected build_snapshot() after edit_param() to cold-miss the \
+         RealizationCache and re-invoke the kernel (ops must grow beyond the \
+         first-build count). ops_after_first={}, ops_after_build_snapshot={} \
+         — kernel op count did not increase, indicating build_snapshot served \
+         a stale cache-hit or never reached execute_realization_ops.",
+        ops_after_first,
+        ops_after_build_snapshot,
+    );
+}
