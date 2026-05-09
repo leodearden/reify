@@ -5726,10 +5726,6 @@ mod tests {
     #[test]
     fn try_eval_topology_selector_is_on_kernel_reply_returns_bool_with_default_tolerance() {
         use reify_test_support::mocks::MockGeometryKernel;
-        // Cheap numeric-drift insurance: pin the constant's value here so any
-        // silent change to `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` fails this test
-        // in addition to the dedicated pin in `reify-types`.
-        assert_eq!(reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, 1e-7);
         let body_handle = reify_types::GeometryHandleId(11);
         // The dispatcher must use `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (≈ OCCT's
         // `Precision::Confusion()`, ~1e-7) for the 2-arg `is_on(point, geometry)`
