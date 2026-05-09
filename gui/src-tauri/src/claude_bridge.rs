@@ -582,6 +582,8 @@ impl SidecarHandle {
     ///   pipe closure and state transition to `Crashed`), the resulting
     ///   `BrokenPipe` error is also silently converted to `Ok(())` — the
     ///   user-visible action ("stop the request") is already complete.
+    /// - When state is `Starting`, the call falls through to the stdin write —
+    ///   stdin is already open during boot, so the write is benign.
     pub async fn abort(&mut self) -> Result<(), String> {
         // State pre-check: end the lock-guard temporary before taking the stdin lock
         // to avoid holding two locks simultaneously (matches lock-ordering hygiene in
@@ -594,6 +596,8 @@ impl SidecarHandle {
             return Ok(());
         }
 
+        // Note: state may transition to Crashed between this check and the write below;
+        // that race is handled by the BrokenPipe arm.
         let mut writer = self.stdin.lock().await;
         match try_write_inbound(&mut *writer, &InboundMessage::Abort).await {
             Ok(()) => Ok(()),
