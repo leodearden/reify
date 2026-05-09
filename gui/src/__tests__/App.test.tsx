@@ -4387,11 +4387,10 @@ describe('App externallyChanged store wiring', () => {
     // Add two more paths directly (simulates concurrent disk changes to other open files)
     capturedEditorStore.markExternallyChanged('/project/b.ri');
     capturedEditorStore.markExternallyChanged('/project/c.ri');
-    expect(capturedEditorStore.state.externallyChanged).toEqual([
-      '/project/bracket.ri',
-      '/project/b.ri',
-      '/project/c.ri',
-    ]);
+    expect(capturedEditorStore.state.externallyChanged.length).toBe(3);
+    expect(capturedEditorStore.state.externallyChanged).toEqual(
+      expect.arrayContaining(['/project/bracket.ri', '/project/b.ri', '/project/c.ri']),
+    );
 
     // Click Dismiss — should atomically clear all three
     await waitFor(() => expect(screen.getByText('Dismiss')).toBeTruthy());

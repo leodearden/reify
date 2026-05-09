@@ -82,6 +82,7 @@ export function createEditorStore() {
   }
 
   function clearAllExternallyChanged() {
+    if (state.externallyChanged.length === 0) return;
     setState('externallyChanged', []);
   }
 
