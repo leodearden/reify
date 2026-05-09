@@ -4248,6 +4248,98 @@ describe('App MechanismPanel integration', () => {
   });
 });
 
+// ─── externallyChanged wiring in App.tsx ─────────────────────────────────────
+
+describe('App externallyChanged store wiring', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+    ],
+    tessellation_diagnostics: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    vi.mocked(bridge.openFile).mockImplementation(async (path: string) => ({
+      path,
+      content: `updated ${path}`,
+    }));
+  });
+
+  it('(a) onFileChanged for an open file adds it to externallyChanged', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: 'new' });
+
+    await waitFor(() => {
+      expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri');
+    });
+  });
+
+  it('(b) onFileChanged for a path NOT in openFiles does NOT add to externallyChanged', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // '/project/other.ri' is not in the initial state files
+    fileChangedCallback!({ path: '/project/other.ri', content: 'new' });
+
+    // Give reactivity a chance to settle
+    await new Promise((r) => setTimeout(r, 10));
+    expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/other.ri');
+  });
+
+  it('(c) after handleReload succeeds, path is removed from externallyChanged', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: 'new' });
+    await waitFor(() =>
+      expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri'),
+    );
+
+    // Click Reload — no dirty files, so proceeds immediately
+    await waitFor(() => expect(screen.getByText('Reload')).toBeTruthy());
+    fireEvent.click(screen.getByText('Reload'));
+
+    await waitFor(() => {
+      expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/bracket.ri');
+    });
+  });
+
+  it('(d) handleDismissReload clears all paths from externallyChanged', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    fileChangedCallback!({ path: '/project/bracket.ri', content: 'new' });
+    await waitFor(() =>
+      expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri'),
+    );
+
+    // Click Dismiss
+    await waitFor(() => expect(screen.getByText('Dismiss')).toBeTruthy());
+    fireEvent.click(screen.getByText('Dismiss'));
+
+    await waitFor(() => {
+      expect(capturedEditorStore.state.externallyChanged).toEqual([]);
+    });
+  });
+});
+
 // Counts CSS grid tracks in a `grid-template-rows` value.
 // Whitespace separates tracks at depth 0; parens (e.g. minmax(160px, 1fr))
 // keep their internal whitespace from being mistaken for a track boundary.
