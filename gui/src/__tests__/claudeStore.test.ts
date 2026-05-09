@@ -777,4 +777,66 @@ describe('claudeStore', () => {
       expect(state.pendingPermissionRequests).toHaveLength(0);
     });
   });
+
+  describe('handleSidecarCrashed', () => {
+    it('flips in-flight assistant message to complete=true, thinkingComplete=true, error="sidecar disconnected"', () => {
+      const { state, sendMessage, handleOutboundMessage, handleSidecarCrashed } = makeStore() as any;
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'thinking...' } as OutboundMessage);
+      handleSidecarCrashed('sidecar exited unexpectedly');
+      const assistantMsg = state.messages.find((m: any) => m.role === 'assistant') as any;
+      expect(assistantMsg.complete).toBe(true);
+      expect(assistantMsg.thinkingComplete).toBe(true);
+      expect(assistantMsg.error).toBe('sidecar disconnected');
+    });
+
+    it('adds a SystemMessage mentioning "Claude assistant disconnected"', () => {
+      const { state, sendMessage, handleSidecarCrashed } = makeStore() as any;
+      sendMessage('hello', {});
+      handleSidecarCrashed('sidecar exited unexpectedly');
+      const systemMsgs = state.messages.filter((m: any) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+      expect((systemMsgs[0] as any).text).toContain('Claude assistant disconnected');
+    });
+
+    it('sets sessionStatus to "idle"', () => {
+      const { state, sendMessage, handleOutboundMessage, handleSidecarCrashed } = makeStore() as any;
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'hmm' } as OutboundMessage);
+      handleSidecarCrashed('sidecar exited unexpectedly');
+      expect(state.sessionStatus).toBe('idle');
+    });
+
+    it('marks ALL incomplete assistant messages complete (multi-stuck scenario)', () => {
+      const { state, sendMessage, handleOutboundMessage, handleSidecarCrashed } = makeStore() as any;
+      // First turn — leave message incomplete by NOT sending done
+      sendMessage('first', {});
+      const msgId1 = state.currentMessageId!;
+      handleOutboundMessage({ type: 'thinking_delta', id: msgId1, content: 'a' } as OutboundMessage);
+
+      // Second turn (inject an incomplete assistant message directly via a second sendMessage)
+      sendMessage('second', {});
+      const msgId2 = state.currentMessageId!;
+      handleOutboundMessage({ type: 'thinking_delta', id: msgId2, content: 'b' } as OutboundMessage);
+
+      handleSidecarCrashed('crash');
+
+      const assistantMsgs = state.messages.filter((m: any) => m.role === 'assistant') as any[];
+      expect(assistantMsgs).toHaveLength(2);
+      for (const msg of assistantMsgs) {
+        expect(msg.complete).toBe(true);
+        expect(msg.thinkingComplete).toBe(true);
+        expect(msg.error).toBe('sidecar disconnected');
+      }
+    });
+
+    it('is a safe no-op (adds SystemMessage, does not throw) when no assistant message exists', () => {
+      const { state, handleSidecarCrashed } = makeStore() as any;
+      expect(() => handleSidecarCrashed('crash')).not.toThrow();
+      const systemMsgs = state.messages.filter((m: any) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+    });
+  });
 });
