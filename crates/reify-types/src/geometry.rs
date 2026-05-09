@@ -1143,6 +1143,35 @@ pub struct VolumeMesh {
     pub normals: Option<Vec<f32>>,
 }
 
+impl VolumeMesh {
+    /// Read the XYZ position of node `idx` from the flat `vertices` buffer
+    /// (layout: `[x0, y0, z0, x1, y1, z1, …]`, stride 3).
+    ///
+    /// Returns `None` if `idx * 3 + 3` would overflow `usize` or fall
+    /// outside `vertices.len()`.  Callers map `None` to whatever
+    /// crate-local error variant they prefer; e.g.
+    /// `reify-mesh-morph/src/boundary.rs` maps it to
+    /// `ProjectionFailure::InvalidNodeIndex(idx)`, centralising the
+    /// duplicated bounds-check that previously lived at boundary.rs:220-232.
+    ///
+    /// The raw `f32` representation is returned; widening to `f64` for FEA
+    /// arithmetic is the caller's responsibility (see boundary.rs:191
+    /// doc-comment "single boundary — all downstream FEA arithmetic is f64").
+    pub fn vertex(&self, idx: u32) -> Option<[f32; 3]> {
+        let i = idx as usize;
+        let base = i.checked_mul(3)?;
+        let end = base.checked_add(3)?;
+        if end > self.vertices.len() {
+            return None;
+        }
+        Some([
+            self.vertices[base],
+            self.vertices[base + 1],
+            self.vertices[base + 2],
+        ])
+    }
+}
+
 /// Errors from geometry operations.
 #[derive(Debug, Clone)]
 pub enum GeometryError {
