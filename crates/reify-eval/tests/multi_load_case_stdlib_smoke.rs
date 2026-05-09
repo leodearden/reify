@@ -192,36 +192,47 @@ fn multi_load_case_stdlib_smoke_e2e() {
 /// Reify source: a `WorstCaseFixture` structure that exercises `worst_case`
 /// (Lambda-aware accessor) through the full compile+eval pipeline.
 ///
-/// Each case is bound to an `ElasticResult`-shaped Map with a single
-/// `displacement` field (a Sampled `Length -> Real` field per the field-def
-/// pattern in `field_eval_tests.rs`). The lambda body uses `IndexAccess`
-/// (`e["displacement"]`) to extract the per-case Field; the worst_case
-/// dispatch arm in `reify-expr/src/lib.rs` collapses each Field via
-/// `field_reductions::compute_max` and returns the case name with the
-/// largest scalar.
+/// Each per-case value is bound directly to a Sampled `Length -> Real` field
+/// (per the field-def pattern in `field_eval_tests.rs`). The lambda body is
+/// the identity (`|f| f`) — at runtime the dispatch arm passes each per-case
+/// `Value::Field` to the lambda, which returns it unchanged; the dispatch arm
+/// then collapses each Field via `field_reductions::compute_max` and returns
+/// the case name with the largest scalar.
+///
+/// # Why identity-lambda (and not `|e| e["displacement"]`)?
+///
+/// The natural shape for a real worst_case call is
+/// `worst_case(mcr, |e| e["displacement"])` where each case is an
+/// `ElasticResult`-shaped Map. However, untyped lambda params default to
+/// `Type::Real` (per `compile_expr_guarded`'s Lambda arm at expr.rs:2092),
+/// and `IndexAccess` on `Real` is rejected by the type checker
+/// ("cannot index into non-collection type 'Real'"). The Reify lambda
+/// param-type syntax accepts only bare named types resolvable by
+/// `resolve_type_name` (Bool / Int / Real / String / named dimensions),
+/// so `|e: Map<String, Field<...>>|` cannot currently be expressed.
+///
+/// The identity-lambda variant pins the dispatch-arm contract end-to-end
+/// (lambda application → `compute_max` per case → strict `>` running-best
+/// → BTreeMap-lex iteration order) without requiring a richer lambda
+/// param-type syntax. The full `e["displacement"]` form will become
+/// expressible when richer lambda parameter types land (orthogonal work).
 ///
 /// Engineered max values: operating→50, overload→200, transport→100.
 /// Expected winner: `"overload"`.
 ///
 /// Bindings:
-///   `case_op`     = `map{"displacement" => disp_op}` (max=50)
-///   `case_ov`     = `map{"displacement" => disp_ov}` (max=200)
-///   `case_tr`     = `map{"displacement" => disp_tr}` (max=100)
-///   `cases`       = `map{"operating" => case_op, "overload" => case_ov, "transport" => case_tr}`
-///   `mcr`         = `map{"cases" => cases}`
-///   `worst`       = `worst_case(mcr, |e| e["displacement"])` → `"overload"`
+///   `cases`  = `map{"operating" => disp_op, "overload" => disp_ov, "transport" => disp_tr}`
+///   `mcr`    = `map{"cases" => cases}`
+///   `worst`  = `worst_case(mcr, |f| f)` → `"overload"`
 const WORST_CASE_SOURCE: &str = r#"
 field def disp_op : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
 field def disp_ov : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [100.0, 50.0, 200.0] } }
 field def disp_tr : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [30.0, 100.0, 60.0] } }
 
 structure def WorstCaseFixture {
-    let case_op = map{"displacement" => disp_op}
-    let case_ov = map{"displacement" => disp_ov}
-    let case_tr = map{"displacement" => disp_tr}
-    let cases = map{"operating" => case_op, "overload" => case_ov, "transport" => case_tr}
+    let cases = map{"operating" => disp_op, "overload" => disp_ov, "transport" => disp_tr}
     let mcr = map{"cases" => cases}
-    let worst = worst_case(mcr, |e| e["displacement"])
+    let worst = worst_case(mcr, |f| f)
 }
 "#;
 

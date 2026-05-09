@@ -416,6 +416,22 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         _ => Value::Undef,
                     }
                 }
+                // worst_case(mcr, lambda): dispatched here (not in
+                // `reify_stdlib::eval_builtin` → `eval_fea`) because applying
+                // the lambda requires `EvalContext`, mirroring `flat_map` /
+                // `flat_map_pairs` above. Body extracted into
+                // `eval_worst_case_dispatch` to keep this recursive frame
+                // small in debug builds — the per-iteration `String` and
+                // `Option<(String, f64)>` locals would otherwise sit on every
+                // `eval_expr` frame and risk overflowing the 2 MiB test-thread
+                // stack at `MAX_RECURSION_DEPTH` (cf. the existing
+                // `eval_user_fn_recursion_depth_exceeded` test and the
+                // matching extraction of `eval_quantifier`). See
+                // `eval_worst_case_dispatch` for the dispatch contract,
+                // tie-break invariant, and silent-Undef discipline.
+                "worst_case" if evaluated_args.len() == 2 => {
+                    eval_worst_case_dispatch(&evaluated_args, ctx)
+                }
                 _ => {
                     // Composed-field call dispatch: a name in a composed lambda
                     // body (e.g. `base(p)` inside `composed { |p| base(p) * 30 }`)
@@ -904,6 +920,78 @@ fn eval_quantifier(
                 Value::Bool(false)
             }
         }
+    }
+}
+
+/// Dispatch `worst_case(mcr, lambda)` — apply `lambda` to each per-case
+/// `ElasticResult` in `mcr.cases`, expect each call to return a `Field`,
+/// collapse via `field_reductions::compute_max`, and return the case name
+/// with the largest scalar.
+///
+/// Extracted from `eval_expr` to keep that recursive function's stack frame
+/// small (the per-iteration `String` and running-best `Option<(String, f64)>`
+/// locals would otherwise sit on every `eval_expr` frame and blow the 2 MiB
+/// test-thread stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
+/// evaluation — see the `eval_user_fn_recursion_depth_exceeded` test).
+/// Mirrors the same extraction of `eval_quantifier`.
+///
+/// Intercepted in `eval_expr` (rather than in `reify_stdlib::eval_builtin`
+/// → `eval_fea`) because applying the lambda requires `EvalContext` — the
+/// same constraint that places `flat_map` in `eval_expr`. The `eval_fea`
+/// arm for `"worst_case"` is a permanent `Value::Undef` stub that fires
+/// when this dispatch declines (wrong arg shape), preserving the
+/// "recognised name" contract.
+///
+/// Tie-break invariant: strict `>` on the running best ensures the
+/// first-seen finite-max wins on ties. Combined with `BTreeMap`'s
+/// lexicographic iteration over `Value::String` keys, this delivers
+/// deterministic lex-min tie-break for free — no separate sort. Mirrors
+/// the first-occurrence-wins discipline of `argmax_argmin_index` in
+/// `field_reductions.rs` (around line 198) and `envelope_reduce` in
+/// `crates/reify-stdlib/src/fea.rs`.
+///
+/// Convention: silent `Value::Undef` on any shape failure (non-Map first
+/// arg, non-Lambda second arg, missing `"cases"` key, non-Map `cases`
+/// value, non-String case key, lambda result with no finite max). Matches
+/// the silent-Undef discipline of `envelope_reduce` / `case_names` /
+/// `result_for`.
+fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
+    let outer = match &args[0] {
+        Value::Map(m) => m,
+        _ => return Value::Undef,
+    };
+    let lambda = match &args[1] {
+        Value::Lambda { .. } => &args[1],
+        _ => return Value::Undef,
+    };
+    let cases = match outer.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(c)) => c,
+        _ => return Value::Undef,
+    };
+    let mut best: Option<(String, f64)> = None;
+    for (case_key, elastic_result) in cases {
+        let name = match case_key {
+            Value::String(s) => s.clone(),
+            _ => return Value::Undef,
+        };
+        let field_val = apply_lambda(lambda, std::slice::from_ref(elastic_result), ctx);
+        let max_val = field_reductions::compute_max(&field_val);
+        let max_f = match max_val.as_f64() {
+            Some(f) if f.is_finite() => f,
+            _ => continue,
+        };
+        match &best {
+            None => best = Some((name, max_f)),
+            Some((_, b)) => {
+                if max_f.total_cmp(b).is_gt() {
+                    best = Some((name, max_f));
+                }
+            }
+        }
+    }
+    match best {
+        Some((name, _)) => Value::String(name),
+        None => Value::Undef,
     }
 }
 
