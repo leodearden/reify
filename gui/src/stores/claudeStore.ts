@@ -357,25 +357,22 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
   }
 
   function handleSidecarCrashed(reason: string): void {
-    cancelAndFlush();
-    setState('sessionStatus', 'idle');
     // Mark every incomplete assistant message complete so throbbers/cursors disappear.
     // Walk all messages rather than only currentMessageId — prior turns can also leak
     // incomplete state (e.g. pre-fix error-without-thinkingComplete commits).
     batch(() => {
-      state.messages.forEach((m, idx) => {
-        if (m.role !== 'assistant' || (m as AssistantMessage).complete) return;
-        setState(
-          'messages',
-          idx,
-          produce((msg: ChatMessage) => {
-            if (msg.role !== 'assistant') return;
-            msg.complete = true;
-            msg.thinkingComplete = true;
-            msg.error = 'sidecar disconnected';
-          }),
-        );
-      });
+      cancelAndFlush();
+      setState('sessionStatus', 'idle');
+      setState(
+        'messages',
+        (m: ChatMessage) => m.role === 'assistant' && !(m as AssistantMessage).complete,
+        produce((msg: ChatMessage) => {
+          if (msg.role !== 'assistant') return;
+          msg.complete = true;
+          msg.thinkingComplete = true;
+          msg.error = 'sidecar disconnected';
+        }),
+      );
       addSystemMessage('sidecar', `Claude assistant disconnected (${reason}) — restart in progress`);
     });
   }
