@@ -590,10 +590,20 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     // the call site.
     let single_borrow: BTreeMap<String, &CapabilityDescriptor> =
         single.iter().map(|(k, v)| (k.clone(), v)).collect();
+    // Amendment 3 (task 3227): `compute_realization_tolerance_budget` now
+    // takes the `available: &HashSet<ReprKind>` as a caller-supplied arg.
+    // Production callers hoist one HashSet per build in
+    // `compute_tessellation_budgets`. Direct test-seam callers build it at
+    // the call site, mirroring the borrowed-registry pattern.
+    //
+    // Derive `available` from `BUDGET_QUERY_TRIPLE_V02.2` — the same source
+    // production code uses — so a future change to the slice is caught here.
+    let available: HashSet<ReprKind> =
+        reify_eval::Engine::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
 
     let demand = 1e-6_f64;
     assert_eq!(
-        engine.compute_realization_tolerance_budget(&single_borrow, demand),
+        engine.compute_realization_tolerance_budget(&single_borrow, &available, demand),
         demand,
         "single-kernel registry yields a 0-conversion DispatchPlan under \
          dispatch(_, BooleanUnion, BRep, {{BRep}}); per_stage_tolerance_for_plan \
