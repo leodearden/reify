@@ -289,6 +289,16 @@ fn angle_between_surfaces_let_binding_compiles_with_angle_type() {
 // per-name `*_let_binding_compiles_with_*_type` tests, at ~1/11 the stdlib-
 // compile cost. Call shapes mirror PRD §3.9 (and the
 // `examples/topology_selectors/all_topology_selectors_wiring.ri` fixture).
+//
+// Diagnostic-locality tradeoff: this test compiles all 11 rows in a single
+// Bracket template (one stdlib-compile, ~1/11 the cost of 11 separate tests).
+// The cost is that if any single registry row regresses, only the first compile
+// error surfaces and the per-cell `assert_helper_cell_typed` loop never runs.
+// If a maintainer hits that case, the recovery is straightforward: split the
+// failing row into its own `compile_source_with_stdlib(...)` call (mirroring
+// the existing helpers `assert_topology_selector_let_compiles` /
+// `assert_helper_let_compiles`) to isolate. Adding a 12th task-2699 name
+// remains a one-line table edit.
 
 #[test]
 fn task_2699_topology_selector_cells_typed_per_registry() {
