@@ -210,14 +210,22 @@ structure def SmokeFixture {
         _ => panic!("mcr should be Value::Map, got: {mcr:?}"),
     }
 
-    // 3. `lc` is a `Value::Map` (LoadCase struct-instance shape).
-    //    Probed symmetrically with `mcr` so a partial Stage-2 landing (e.g.
-    //    MultiCaseResult ctor works but LoadCase doesn't) is caught.
+    // 3. `lc` is a `Value::Map` (LoadCase struct-instance shape) whose `"name"`
+    //    key maps to `Value::String("tracking")`. Probed symmetrically with `mcr`
+    //    so a partial Stage-2 landing (e.g. MultiCaseResult ctor works but
+    //    LoadCase doesn't) is caught. Pinning the `name` field distinguishes a
+    //    real LoadCase ctor result from any incidental empty-Map or wrong-named Map.
     let lc = get_value(v, "lc");
-    assert!(
-        matches!(lc, Value::Map(_)),
-        "lc (LoadCase ctor) should be Value::Map, got: {lc:?}"
-    );
+    match lc {
+        Value::Map(outer) => match outer.get(&Value::String("name".to_string())) {
+            Some(Value::String(name)) if name == "tracking" => {}
+            Some(other) => panic!(
+                "lc[\"name\"] should be Value::String(\"tracking\"), got: {other:?}"
+            ),
+            None => panic!("lc should have a \"name\" key, got: {lc:?}"),
+        },
+        _ => panic!("lc (LoadCase ctor) should be Value::Map, got: {lc:?}"),
+    }
 
     // 4. `case_names(mcr)` returns ["operating", "overload"] in lexicographic order.
     let names = get_value(v, "names");
