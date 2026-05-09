@@ -1029,3 +1029,57 @@ pub fn parse_with_prelude_enums(
 ) -> ParsedModule {
     ts_parser::parse_with_prelude_enums(source, module_path, prelude_enum_names)
 }
+
+#[cfg(test)]
+mod number_class_tests {
+    use super::{NumberClass, classify_number_literal};
+
+    #[test]
+    fn is_real_true_whole_number_stays_real() {
+        // Whole-number token written with `.` (e.g. `1.0`) must stay Real.
+        assert_eq!(classify_number_literal(1.0, true), NumberClass::Real(1.0));
+    }
+
+    #[test]
+    fn is_real_true_clean_i64_value_stays_real() {
+        // Even if the value would round-trip cleanly as i64, is_real=true wins.
+        assert_eq!(classify_number_literal(42.0, true), NumberClass::Real(42.0));
+    }
+
+    #[test]
+    fn is_real_false_clean_i64_becomes_int() {
+        // Bare integer token `42` → Int(42).
+        assert_eq!(classify_number_literal(42.0, false), NumberClass::Int(42));
+    }
+
+    #[test]
+    fn is_real_false_zero_becomes_int() {
+        // Zero edge case.
+        assert_eq!(classify_number_literal(0.0, false), NumberClass::Int(0));
+    }
+
+    #[test]
+    fn is_real_false_negative_clean_i64_becomes_int() {
+        // Sign-symmetric: negative clean i64 should also produce Int.
+        assert_eq!(classify_number_literal(-5.0, false), NumberClass::Int(-5));
+    }
+
+    #[test]
+    fn is_real_false_overflow_past_i64_max_falls_back_to_real() {
+        // 1e20 as i64 saturates; the round-trip check catches it.
+        assert_eq!(classify_number_literal(1e20, false), NumberClass::Real(1e20));
+    }
+
+    #[test]
+    fn is_real_false_nan_falls_back_to_real() {
+        // NaN is not finite → Real fallback.
+        let result = classify_number_literal(f64::NAN, false);
+        assert!(matches!(result, NumberClass::Real(v) if v.is_nan()));
+    }
+
+    #[test]
+    fn is_real_false_infinity_falls_back_to_real() {
+        // Inf is not finite → Real fallback.
+        assert_eq!(classify_number_literal(f64::INFINITY, false), NumberClass::Real(f64::INFINITY));
+    }
+}
