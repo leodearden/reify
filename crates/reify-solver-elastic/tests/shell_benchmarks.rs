@@ -642,6 +642,128 @@ fn scordelis_lo_roof_quadrant_vertical_deflection_at_free_edge_midpoint_matches_
     );
 }
 
+// ─── step-7: hemisphere with point loads (MacNeal-Harder §3.5) ──────────────
+
+/// MacNeal-Harder (1985) §3.5 hemisphere with alternating point loads.
+///
+/// A hemispherical shell (R=10, t=0.04, E=6.825×10⁷, ν=0.3) with an 18°
+/// polar cut-out, loaded by alternating ±P=±2 point loads along the x and y
+/// axes at the equator.
+///
+/// # Quadrant model: φ ∈ [18°,90°], θ ∈ [0°,90°]
+///
+/// Two symmetry planes eliminate 3/4 of the geometry:
+///
+/// | Plane | Physical role | Constrained DOFs |
+/// |-------|---------------|-----------------|
+/// | x=0 (θ=90°) | x-antisymmetry | u_x=0, θ_y=0, θ_z=0 |
+/// | y=0 (θ=0°)  | y-antisymmetry | u_y=0, θ_x=0, θ_z=0 |
+///
+/// The 18° polar cut-out edge and the equator edge (φ=90°) are both free.
+///
+/// # Loading
+///
+/// Full model: ±P=±2 alternating loads at the four equator points. In the 1/4
+/// quadrant model, the equator corner at (R,0,0) receives P/4 = 0.5 in the
+/// +x direction (outward radial load). The x=0 symmetry plane carries the
+/// equal-and-opposite −P contribution from the other half, so only a P/4 net
+/// load appears in the quadrant model.
+///
+/// # Reference solution
+///
+/// Published (MacNeal & Harder 1985): radial displacement at the loaded
+/// equator corner = 0.0940 (outward).
+///
+/// The initial tolerance band is [0.3, 1.5]×0.0940; step-8 refines this to
+/// the actually observed MITC3 coarse-mesh value once the mesh helper is
+/// implemented.
+#[test]
+fn hemisphere_with_point_loads_radial_displacement_at_load_matches_macneal_harder_within_coarse_mesh_tolerance(
+) {
+    const R: f64 = 10.0;
+    const T: f64 = 0.04;
+    const NX: usize = 4; // polar angle (φ) divisions
+    const NY: usize = 4; // azimuthal angle (θ) divisions
+    const P: f64 = 2.0; // full load magnitude per load point
+    const MACNEAL_HARDER_REF: f64 = 0.0940;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 6.825e7,
+        poisson_ratio: 0.3,
+    };
+
+    // RED: `hemisphere_quadrant_mesh` is not yet defined — compile error expected.
+    let (nodes, connectivity) = hemisphere_quadrant_mesh(NX, NY);
+    let n_nodes = nodes.len();
+
+    // Build per-element stiffness with drilling stabilization.
+    let stiffness: Vec<ElementStiffness> = connectivity
+        .iter()
+        .map(|conn| {
+            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+            shell_element_stiffness_drilling_stabilized(&elem_nodes, T, &mat, 1e-6)
+        })
+        .collect();
+
+    let elements: Vec<AssemblyElement<'_>> = connectivity
+        .iter()
+        .zip(stiffness.iter())
+        .enumerate()
+        .map(|(i, (conn, k_e))| AssemblyElement { id: i, connectivity: conn, k_e })
+        .collect();
+
+    // BCs: detect nodes by position.
+    // Mesh spacing: arc-length ≈ R·72°·π/180 / NX ≈ 3.1 in φ-direction;
+    // similar in θ-direction. tol=0.5 is well inside each spacing.
+    let tol = 0.5_f64;
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+
+    for (node, n) in nodes.iter().enumerate() {
+        let dof = |d: usize| node * 6 + d;
+        let is_x0 = n[0].abs() < tol; // x=0 symmetry plane (θ=90°)
+        let is_y0 = n[1].abs() < tol; // y=0 symmetry plane (θ=0°)
+
+        // x-antisymmetry at the x=0 plane (θ=90° meridian).
+        // u_x is antisymmetric under x-reflection ⇒ u_x=0 on this plane.
+        if is_x0 {
+            bcs.push(DirichletBc { dof: dof(0), value: 0.0 }); // u_x = 0
+            bcs.push(DirichletBc { dof: dof(4), value: 0.0 }); // θ_y = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+        }
+        // y-antisymmetry at the y=0 plane (θ=0° meridian).
+        // u_y is antisymmetric under y-reflection ⇒ u_y=0 on this plane.
+        if is_y0 {
+            bcs.push(DirichletBc { dof: dof(1), value: 0.0 }); // u_y = 0
+            bcs.push(DirichletBc { dof: dof(3), value: 0.0 }); // θ_x = 0
+            bcs.push(DirichletBc { dof: dof(5), value: 0.0 }); // θ_z = 0
+        }
+    }
+
+    // Load: P/4 in the +x direction at the equator corner (R, 0, 0).
+    // This is the node at φ=90° (equator), θ=0° (y=0 meridian).
+    // Radial direction at this point is +x, so F_x = +P/4 (outward).
+    let load_node = nodes
+        .iter()
+        .position(|n| (n[0] - R).abs() < tol && n[1].abs() < tol && n[2].abs() < tol)
+        .expect("load node (R, 0, 0) not found in hemisphere mesh");
+    let point_loads = vec![(load_node * 6 + 0, P / 4.0)]; // F_x = +P/4
+
+    let u = solve_shell_system(&elements, n_nodes, &bcs, &point_loads);
+
+    // Radial displacement at (R, 0, 0): the radial direction is +x at this
+    // equator point, so the radial displacement = u_x (positive = outward).
+    let radial_disp = u[load_node * 6 + 0];
+
+    // Initial tolerance band; step-8 refines to the observed MITC3 coarse-mesh value.
+    assert!(
+        radial_disp > 0.3 * MACNEAL_HARDER_REF && radial_disp < 1.5 * MACNEAL_HARDER_REF,
+        "hemisphere: radial displacement at loaded equator corner = {radial_disp:.4e}; \
+         expected [{:.4e}, {:.4e}] (MacNeal-Harder 1985 ref = {MACNEAL_HARDER_REF:.4e})",
+        0.3 * MACNEAL_HARDER_REF,
+        1.5 * MACNEAL_HARDER_REF,
+    );
+}
+
 // ─── step-1: sanity check ────────────────────────────────────────────────────
 
 /// Sanity check for the end-to-end shell pipeline.
