@@ -284,6 +284,11 @@ fn linear_combine(args: &[Value]) -> Value {
     result_map.insert(Value::String("converged".to_string()), Value::Bool(true));
     // iterations = Undef: synthesised result, not solved — same rationale as
     // frame: Value::Undef above. Distinguishes from solver-converged-on-iter-0.
+    // .ri audit (task 3246): fea_multi_case.ri:143 doc-comment is stale
+    // (says "0"; doc alignment deferred per FILES_TO_MODIFY scope).
+    // solver_elastic.ri's `iterations : Int` field belongs to the
+    // solver-produced ElasticResult, not to linear_combine's synthesised
+    // output — no runtime .ri code pattern-matches Int on this field.
     result_map.insert(Value::String("iterations".to_string()), Value::Undef);
 
     Value::Map(result_map)
@@ -2487,6 +2492,71 @@ mod tests {
             mvm.is_undef(),
             "max_von_mises must be Value::Undef when all stress is non-finite, \
              got {:?} — must be distinguishable from genuine zero stress",
+            mvm
+        );
+    }
+
+    #[test]
+    fn linear_combine_empty_stress_buffer_yields_undef_max_von_mises() {
+        // When the stress SampledField has zero data points (n_stress = 0),
+        // combined_stress is an empty Vec.  reduce(f64::max) on an empty
+        // iterator returns None → max_von_mises must be Value::Undef.
+        //
+        // This pins the second None-branch of the reduce logic: the
+        // all-non-finite test (above) exercises "non-empty but all-NaN";
+        // this test exercises "empty buffer" directly.  A future refactor
+        // reintroducing fold(0.0, f64::max) on an empty buffer would
+        // collapse this to Real(0.0) and be caught immediately.
+        let axis = vec![0.0];
+        let disp_field = wrap_sampled_field(
+            make_sampled_1d("d", axis, vec![1.0]),
+            Type::Real,
+            Type::Real,
+        );
+        // Stress field with zero data points — construct directly since
+        // make_sampled_1d panics on empty axis.
+        let empty_stress_sf = SampledField {
+            name: "s".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![0.0],
+            spacing: vec![1.0],
+            axis_grids: vec![vec![]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![],
+            oob_emitted: AtomicBool::new(false),
+        };
+        let stress_field = wrap_sampled_field(empty_stress_sf, Type::Real, Type::Real);
+        let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
+        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap();
+        assert!(
+            !result.is_undef(),
+            "linear_combine must return a Map even when stress buffer is empty"
+        );
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        // Displacement field must still be produced.
+        assert!(
+            result_map.contains_key(&Value::String("displacement".to_string())),
+            "result must contain displacement even when stress buffer is empty"
+        );
+
+        // max_von_mises must be Undef — empty buffer is distinct from genuine
+        // zero stress (which would have finite data summing to zero).
+        let mvm = result_map
+            .get(&Value::String("max_von_mises".to_string()))
+            .expect("result must have 'max_von_mises' key");
+        assert!(
+            mvm.is_undef(),
+            "max_von_mises must be Value::Undef when stress buffer is empty (n_stress=0), \
+             got {:?} — empty buffer is distinct from genuine zero stress",
             mvm
         );
     }
