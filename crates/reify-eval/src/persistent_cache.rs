@@ -279,13 +279,36 @@ fn read_f64_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<f64>> {
         byte_buf.try_reserve_exact(bytes).map_err(io::Error::other)?;
         byte_buf.resize(bytes, 0u8);
         r.read_exact(&mut byte_buf)?;
-        for chunk in byte_buf.chunks_exact(8) {
-            vec.push(f64::from_le_bytes(
-                chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"),
-            ));
-        }
+        vec.extend(decode_f64_slab_from_le_bytes(&byte_buf));
     }
     Ok(vec)
+}
+
+/// Conversion-only kernel of the BE `read_f64_slab` branch, extracted so the
+/// `chunks_exact(8) → f64::from_le_bytes` algorithm can be exercised on any host.
+///
+/// The BE branch of `read_f64_slab` is `#[cfg(target_endian = "big")]`-gated
+/// and unreachable on LE CI hosts; calling `read_f64_slab` from a test on a LE
+/// host exercises the LE `set_len` fast path — NOT the `chunks_exact(8) →
+/// f64::from_le_bytes` algorithm. Extracting the conversion-only logic here
+/// (without any `#[cfg]` gate) allows the test
+/// `decode_f64_slab_from_le_bytes_pins_chunks_exact_le_decode_algorithm` to run
+/// on every host and pin the BE algorithm against byte-layout regressions.
+///
+/// The LE branch of `read_f64_slab` deliberately does NOT call this helper
+/// because it uses zero-copy `read_exact` into `spare_capacity_mut` directly,
+/// avoiding an intermediate byte buffer entirely.
+///
+/// On BE hosts `read_f64_slab` delegates to this helper after `read_exact` so
+/// the algorithm is dogfooded on real BE hardware and not duplicated.
+fn decode_f64_slab_from_le_bytes(bytes: &[u8]) -> Vec<f64> {
+    let mut out: Vec<f64> = Vec::with_capacity(bytes.len() / 8);
+    for chunk in bytes.chunks_exact(8) {
+        out.push(f64::from_le_bytes(
+            chunk.try_into().expect("chunks_exact(8) yields exactly-8-byte slices"),
+        ));
+    }
+    out
 }
 
 impl PersistentlyCacheable for ElasticResult {
