@@ -344,6 +344,135 @@ impl MpcRow {
         );
         MpcRow { dofs, coeffs, rhs }
     }
+
+    /// Build the canonical 6 `MpcRow`s for a shell/tet junction constraint.
+    ///
+    /// Returns 6 rows:
+    ///
+    /// **Three displacement-matching rows** (mid-surface tying), one per axis `a`:
+    /// ```text
+    ///     u_shell_a − u_tet_mid_a = 0
+    /// ```
+    /// Pivot is `shell_disp_dofs[a]` with coefficient `+1.0`.
+    ///
+    /// **Three rotation/gradient rows**, derived from
+    /// `(u_tet_top − u_tet_bot) = (θ × n) · h`:
+    /// ```text
+    ///     −ε_abc · θ_b · n_c · h + (u_top_a − u_bot_a) = 0   for each axis a
+    /// ```
+    /// The pivot is the shell-rotation DOF with the largest-magnitude rotational
+    /// coefficient.  If both rotational coefficients for axis `a` are `< 1e-12`
+    /// in absolute value (the "drilling" axis — parallel to the normal), the
+    /// row degenerates to the tet-only constraint `u_top_a − u_bot_a = 0`
+    /// with pivot at `tet_top_dofs[a]`.
+    ///
+    /// # Panics
+    ///
+    /// - `thickness <= 0.0` — shell thickness must be positive.
+    /// - `normal` is not a unit vector (magnitude outside `1.0 ± 1e-9`).
+    pub fn shell_tet_tying(
+        shell_disp_dofs: [usize; 3],
+        shell_rot_dofs: [usize; 3],
+        tet_top_dofs: [usize; 3],
+        tet_mid_dofs: [usize; 3],
+        tet_bot_dofs: [usize; 3],
+        normal: [f64; 3],
+        thickness: f64,
+    ) -> Vec<MpcRow> {
+        assert!(
+            thickness > 0.0,
+            "MpcRow::shell_tet_tying: thickness must be positive; got {thickness}",
+        );
+        let norm_sq = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
+        let norm = norm_sq.sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-9,
+            "MpcRow::shell_tet_tying: normal must be a unit vector; |normal| = {norm} (expected 1.0 ± 1e-9)",
+        );
+
+        let h = thickness;
+        let mut rows = Vec::with_capacity(6);
+
+        // ── Three displacement-matching rows (mid-surface tying) ────────────
+        for a in 0..3 {
+            rows.push(MpcRow::new(
+                vec![shell_disp_dofs[a], tet_mid_dofs[a]],
+                vec![1.0, -1.0],
+                0.0,
+            ));
+        }
+
+        // ── Three rotation/gradient rows ────────────────────────────────────
+        // For each output axis a, compute the two rotational coefficients:
+        //   coeff_rot[b] = −ε_{a,b,c} · n_c · h   (c = remaining index from {0,1,2}\{a,b})
+        //
+        // Precomputed per-axis (b1, b2 are the two non-a rotation indices;
+        // sign1/sign2 are the Levi-Civita signs ε_{a,b1,c1} and ε_{a,b2,c2}):
+        //
+        //   a=0: b1=1,c1=2,ε_012=+1 → coeff_b1 = −n[2]·h
+        //        b2=2,c2=1,ε_021=−1 → coeff_b2 = +n[1]·h
+        //   a=1: b1=0,c1=2,ε_102=−1 → coeff_b1 = +n[2]·h
+        //        b2=2,c2=0,ε_120=+1 → coeff_b2 = −n[0]·h
+        //   a=2: b1=0,c1=1,ε_201=+1 → coeff_b1 = −n[1]·h
+        //        b2=1,c2=0,ε_210=−1 → coeff_b2 = +n[0]·h
+        //
+        // (sign: ε_012=+1, ε_102=−1, ε_120=+1, ε_201=+1, ε_021=−1, ε_210=−1)
+        let rot_data: [(usize, usize, f64, usize, usize, f64); 3] = [
+            // (b1, c1, sign1, b2, c2, sign2) — sign_i = ε_{a,bi,ci}
+            (1, 2,  1.0, 2, 1, -1.0), // a=0: ε_012=+1, ε_021=−1
+            (0, 2, -1.0, 2, 0,  1.0), // a=1: ε_102=−1, ε_120=+1
+            (0, 1,  1.0, 1, 0, -1.0), // a=2: ε_201=+1, ε_210=−1
+        ];
+
+        for (a, &(b1, c1, sign1, b2, c2, sign2)) in rot_data.iter().enumerate() {
+            let coeff_b1 = -sign1 * normal[c1] * h; // −ε_{a,b1,c1} · n_c1 · h
+            let coeff_b2 = -sign2 * normal[c2] * h; // −ε_{a,b2,c2} · n_c2 · h
+
+            const DRILLING_EPS: f64 = 1e-12;
+            let abs1 = coeff_b1.abs();
+            let abs2 = coeff_b2.abs();
+
+            if abs1 < DRILLING_EPS && abs2 < DRILLING_EPS {
+                // Drilling axis — both rotational coefficients vanish.
+                // Fallback: tet-only u_top_a - u_bot_a = 0.
+                rows.push(MpcRow::new(
+                    vec![tet_top_dofs[a], tet_bot_dofs[a]],
+                    vec![1.0, -1.0],
+                    0.0,
+                ));
+            } else {
+                // Pick the rotation DOF with the larger-magnitude coefficient as pivot.
+                let (pivot_b, pivot_coeff, other_b, other_coeff) = if abs1 >= abs2 {
+                    (b1, coeff_b1, b2, coeff_b2)
+                } else {
+                    (b2, coeff_b2, b1, coeff_b1)
+                };
+
+                if other_coeff.abs() < DRILLING_EPS {
+                    // One rotational DOF is essentially zero — two-term row.
+                    rows.push(MpcRow::new(
+                        vec![shell_rot_dofs[pivot_b], tet_top_dofs[a], tet_bot_dofs[a]],
+                        vec![pivot_coeff, 1.0, -1.0],
+                        0.0,
+                    ));
+                } else {
+                    // Both rotational DOFs contribute — four-term row.
+                    rows.push(MpcRow::new(
+                        vec![
+                            shell_rot_dofs[pivot_b],
+                            shell_rot_dofs[other_b],
+                            tet_top_dofs[a],
+                            tet_bot_dofs[a],
+                        ],
+                        vec![pivot_coeff, other_coeff, 1.0, -1.0],
+                        0.0,
+                    ));
+                }
+            }
+        }
+
+        rows
+    }
 }
 
 #[cfg(test)]
