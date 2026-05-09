@@ -424,7 +424,7 @@ fn solve_cg_parallel(
 
 #[cfg(test)]
 mod tests {
-    use super::{CgResult, CgSolverOptions, SolverMode, solve_cg};
+    use super::{CgResult, CgSolverOptions, SolverMode, norm2_squared, solve_cg, spmv_seq};
     use faer::sparse::{SparseRowMat, Triplet};
 
     /// Build a tiny 1×1 identity sparse matrix for contract-panic tests.
@@ -572,5 +572,150 @@ mod tests {
                 f[i]
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Step-5: general SPD correctness
+    // -----------------------------------------------------------------------
+
+    /// K = [[4, 1], [1, 3]], f = [1, 2]. Analytical: u = (1/11, 7/11).
+    /// CG on a 2×2 SPD converges in ≤ 2 iterations.
+    #[test]
+    fn hand_computed_2x2_spd_within_tolerance() {
+        // Build K via triplets: symmetric 2×2.
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 100,
+        };
+        let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+
+        assert!(result.converged, "2×2 SPD must converge");
+        assert!(
+            result.iterations <= 2,
+            "CG converges in ≤ n iterations for n×n SPD; got {}",
+            result.iterations
+        );
+
+        let u_expected = [1.0_f64 / 11.0, 7.0_f64 / 11.0];
+        for i in 0..2 {
+            let diff = (result.u[i] - u_expected[i]).abs();
+            assert!(
+                diff < 1e-9,
+                "u[{i}] = {} but expected {} (diff = {})",
+                result.u[i],
+                u_expected[i],
+                diff
+            );
+        }
+    }
+
+    // Fixture helpers shared by steps 5b, 11, 15.
+    fn dimensionless_steel_like() -> crate::constitutive::IsotropicElastic {
+        crate::constitutive::IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        }
+    }
+
+    const UNIT_TET_P1: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+
+    /// Build the 4-tet fan-around-central-node-0 assembled K with Dirichlet
+    /// pin on nodes 0 and 1 (DOFs 0..6), returning (K_spd, f) where f has
+    /// a single non-zero entry on a free DOF.
+    ///
+    /// Same fixture as `assembly/global.rs::parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`.
+    /// n_nodes = 13, connectivity [0,1,2,3], [0,4,5,6], [0,7,8,9], [0,10,11,12].
+    fn fan_mesh_k_spd_and_f() -> (faer::sparse::SparseRowMat<usize, f64>, Vec<f64>) {
+        use crate::assembly::{AssemblyElement, AssemblyMode, assemble_global_stiffness};
+        use crate::assembly::tet::element_stiffness_p1;
+        use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination};
+
+        let mat = dimensionless_steel_like();
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        assert_eq!(k_e.n_dofs, 12);
+
+        // 4 tets fanning around central node 0.
+        let conns: [[usize; 4]; 4] = [
+            [0, 1, 2, 3],
+            [0, 4, 5, 6],
+            [0, 7, 8, 9],
+            [0, 10, 11, 12],
+        ];
+        let n_nodes = 13;
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| AssemblyElement { id: i, connectivity: c, k_e: &k_e })
+            .collect();
+
+        let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+        // Pin DOFs 0..6 (nodes 0 and 1) to zero displacement. This removes
+        // the rigid-body modes from the central node and one outer node,
+        // making K SPD on the remaining free DOFs.
+        let dim = 3 * n_nodes; // = 39
+        let mut f = vec![0.0_f64; dim];
+        let bcs: Vec<DirichletBc> = (0..6)
+            .map(|dof| DirichletBc { dof, value: 0.0 })
+            .collect();
+        apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
+
+        // Apply a single non-zero load at a free DOF (DOF 6).
+        f[6] = 1.0;
+
+        (k, f)
+    }
+
+    /// Assembled fan-mesh K (after Dirichlet pin): solve_cg must converge and
+    /// the residual ‖r‖ = ‖f − Ku‖ must be below 1e-9 · max(‖f‖, 1).
+    #[test]
+    fn assembled_fan_mesh_residual_below_tolerance() {
+        let (k, f) = fan_mesh_k_spd_and_f();
+        let n = f.len();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+        let result = solve_cg(&k, &f, opts.clone(), SolverMode::Deterministic);
+
+        assert!(
+            result.converged,
+            "fan-mesh CG must converge in {} iterations; got converged={}, iterations={}",
+            opts.max_iter,
+            result.converged,
+            result.iterations
+        );
+
+        // Verify residual r = f − Ku using spmv_seq.
+        let mut ku = vec![0.0_f64; n];
+        spmv_seq(&k, &result.u, &mut ku);
+        let mut residual = vec![0.0_f64; n];
+        for i in 0..n {
+            residual[i] = f[i] - ku[i];
+        }
+        let r_norm = norm2_squared(&residual).sqrt();
+        let f_norm = norm2_squared(&f).sqrt();
+        let tol = 1e-9 * f_norm.max(1.0);
+        assert!(
+            r_norm < tol,
+            "residual ‖r‖ = {r_norm} ≥ tol = {tol} (‖f‖ = {f_norm})"
+        );
     }
 }
