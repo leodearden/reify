@@ -286,6 +286,101 @@ structure Bracket {
     );
 }
 
+/// Regression-pinning characterization test for the `any_injected == false`
+/// short-circuit branch introduced in task 3260 (engine_eval.rs:2045-2053).
+///
+/// **What task 3260 added:**
+/// ```text
+/// if !preserved_bindings.is_empty() {
+///     let mut any_injected = false;
+///     for (purpose_name, entity_ref) in &preserved_bindings {
+///         any_injected |= self.activate_purpose_constraints(purpose_name, entity_ref);
+///     }
+///     if any_injected {                           // ← new guard (task 3260)
+///         self.rebuild_purpose_infrastructure();
+///     }
+/// }
+/// ```
+/// `activate_purpose_constraints` early-returns `false` when the purpose name
+/// is absent from `compiled_purposes`. When *all* preserved bindings map to
+/// absent purposes, `any_injected` remains `false` and
+/// `rebuild_purpose_infrastructure()` is *skipped*.
+///
+/// **Why the sibling test is insufficient:**
+/// `eval_drops_stale_binding_when_purpose_removed_from_module` (above) exercises
+/// the same code path mechanically but pins the pre-3260 "stale binding dropped"
+/// contract. Its docstring does not mention the post-3260 short-circuit. A
+/// future reader grepping for "any_injected" / "skip rebuild" / "task 3260" must
+/// find a test whose name and assertions make the branch explicit — this is that
+/// test (per esc-3260-92, suggestion 1).
+///
+/// **What a future regression looks like:**
+/// Removing the `if any_injected` guard and unconditionally calling
+/// `rebuild_purpose_infrastructure()` would not be detected by the post-state
+/// assertions alone (because the observable post-state — purpose inactive,
+/// tolerance None — is the same whether or not an unnecessary rebuild runs).
+/// The value of this test is that it is authored to *exercise* the new branch
+/// with `any_injected == false`, complementing the sibling test which exercises
+/// the same code path but pins a different (pre-3260) contract.
+///
+/// This test passes immediately on the current code; it is a regression-pinning
+/// characterization test, not a RED→GREEN test. See commits `9c8ef5ad54` /
+/// `30fe42ff1b` (task 3260) and esc-3260-92 suggestion 1.
+#[test]
+fn eval_short_circuits_purpose_rebuild_when_no_preserved_binding_re_injects() {
+    // M1: defines Bracket + purpose mfg_ready — same fixture as the sibling test.
+    let module_with_purpose = parse_and_compile(SIMPLE_MFG_SRC);
+    // M2: same structure, NO purpose declaration — activate_purpose_constraints
+    //     will early-return false for "mfg_ready", keeping any_injected == false.
+    let module_without_purpose = parse_and_compile(
+        r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+"#,
+    );
+
+    let mut engine = make_engine();
+    engine.eval(&module_with_purpose);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    // Precondition: purpose is active before the second eval().
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "precondition: purpose must be active after activate_purpose"
+    );
+
+    // eval() on M2: preserved_bindings = [("mfg_ready", "Bracket")].
+    // activate_purpose_constraints("mfg_ready", "Bracket") → false (absent from
+    // compiled_purposes). any_injected stays false → rebuild_purpose_infrastructure()
+    // is SKIPPED (the new branch under test, engine_eval.rs:2045-2053).
+    engine.eval(&module_without_purpose);
+
+    // (a) Preserved binding was silently dropped — purpose no longer active.
+    assert!(
+        !engine.is_purpose_active("mfg_ready"),
+        "preserved binding for an absent purpose must be dropped: \
+         is_purpose_active must return false after eval() on a module \
+         without the purpose declaration (engine_eval.rs:2045-2053, task 3260)"
+    );
+
+    // (b) active_tolerance_scope matches the empty-preserved_bindings path:
+    //     active_tolerance_scope.clear() at engine_eval.rs:1176 is the only
+    //     mutation; no stale entry should survive via a skipped-then-partial rebuild.
+    //     SIMPLE_MFG_SRC declares no Within(...)/tolerance attributes, so the only
+    //     producer of an entry would be a stale rebuild against carry-over state —
+    //     this assertion is non-vacuous as a regression guard.
+    assert_eq!(
+        engine.active_tolerance_for("Bracket"),
+        None,
+        "active_tolerance_scope must be empty after eval() on a purpose-free module: \
+         active_tolerance_for(\"Bracket\") must return None (engine_eval.rs:2042-2044)"
+    );
+
+    // (c) Engine remains usable after the short-circuit path — no derived-state
+    //     corruption. eval_cached must not panic.
+    engine.eval_cached(&module_without_purpose, VersionId(0));
+}
+
 /// Regression-pinning characterization test for the eval_cached non-interference
 /// contract (task 3260).
 ///
