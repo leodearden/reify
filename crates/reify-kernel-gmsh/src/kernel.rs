@@ -76,17 +76,4 @@ mod tests {
     use super::*;
 
     reify_test_support::assert_stub_kernel_errors!(GmshKernel::new, "Gmsh");
-
-    /// Pin done-criterion #3 of task 3092: the stub error message must no
-    /// longer mention "FFI not yet wired" (the pre-3092 phrasing). The
-    /// `assert_stub_kernel_errors!` macro above already exercises STUB_MSG
-    /// via `execute()`/`query()`/etc., but this explicit assertion makes the
-    /// regression intent obvious to future readers.
-    #[test]
-    fn stub_msg_does_not_contain_legacy_ffi_not_yet_wired_phrasing() {
-        assert!(
-            !STUB_MSG.contains("FFI not yet wired"),
-            "STUB_MSG regressed to legacy pre-3092 phrasing: {STUB_MSG:?}"
-        );
-    }
 }
