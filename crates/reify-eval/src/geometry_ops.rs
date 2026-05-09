@@ -1640,7 +1640,7 @@ fn kernel_distance(
 //
 // Currently dispatched:
 //   `closest_point(point, geometry)` → `GeometryQuery::ClosestPointOnShape`
-//   `on(point, geometry)`            → `GeometryQuery::PointOnShape`
+//   `is_on(point, geometry)`         → `GeometryQuery::PointOnShape`
 //   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
 //
 // ── Which names are compile-time typed but NOT eval-dispatched (task 2699) ──
@@ -1666,7 +1666,7 @@ fn kernel_distance(
 //     (`Value::Undef`). Pinned by the
 //     `try_eval_topology_selector_*_literal_args_falls_through_to_none`
 //     unit tests.
-//   - For `closest_point` / `on`: args[0] must resolve in `values` to a
+//   - For `closest_point` / `is_on`: args[0] must resolve in `values` to a
 //     `Value::Point` of three Length-dimensioned scalars; args[1] must
 //     resolve in `named_steps` to a `GeometryHandleId` (let-bound geometry).
 //   - For `angle_between_surfaces`: both args must resolve in `named_steps`
@@ -1675,7 +1675,7 @@ fn kernel_distance(
 // Returns:
 //   `Some(Value::Point(vec![length, length, length]))` for `closest_point`
 //                          (parsed from the kernel's JSON-Point3 reply).
-//   `Some(Value::Bool(_))` for `on`.
+//   `Some(Value::Bool(_))` for `is_on`.
 //   `Some(Value::Scalar { dimension: ANGLE, .. })` for
 //                          `angle_between_surfaces`.
 //   `Some(Value::Undef)`   on a kernel error or a malformed kernel reply
@@ -1700,7 +1700,7 @@ pub(crate) fn try_eval_topology_selector(
     // (2) Must be one of the three recognised helper names.
     let helper = match function.name.as_str() {
         "closest_point" => TopologySelectorHelper::ClosestPoint,
-        "on" => TopologySelectorHelper::On,
+        "is_on" => TopologySelectorHelper::IsOn,
         "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
         _ => return None,
     };
@@ -1711,7 +1711,7 @@ pub(crate) fn try_eval_topology_selector(
     }
 
     match helper {
-        TopologySelectorHelper::ClosestPoint | TopologySelectorHelper::On => {
+        TopologySelectorHelper::ClosestPoint | TopologySelectorHelper::IsOn => {
             // args[0]: point ValueRef → values map → Value::Point of three Length scalars.
             let point = resolve_point3_length_arg(&args[0], values)?;
             // args[1]: geometry ValueRef → named_steps map → GeometryHandleId.
@@ -1727,13 +1727,13 @@ pub(crate) fn try_eval_topology_selector(
                     };
                     dispatch_closest_point(kernel, &query, &function.name, diagnostics)
                 }
-                TopologySelectorHelper::On => {
+                TopologySelectorHelper::IsOn => {
                     // Hard-code OCCT's `Precision::Confusion()` (~1e-7) as the
-                    // default tolerance for the v0.1 2-arg `on(point, geometry)`
+                    // default tolerance for the v0.1 2-arg `is_on(point, geometry)`
                     // surface. Kernel docstring at
                     // `crates/reify-kernel-occt/src/lib.rs` (`OcctKernel::point_on_shape`)
                     // recommends this value. A future explicit-tolerance
-                    // overload `on(point, geometry, tol)` will plumb the user-
+                    // overload `is_on(point, geometry, tol)` will plumb the user-
                     // supplied tolerance through here.
                     const DEFAULT_ON_TOLERANCE_M: f64 = 1e-7;
                     let query = reify_types::GeometryQuery::PointOnShape {
@@ -1763,7 +1763,7 @@ pub(crate) fn try_eval_topology_selector(
 #[derive(Clone, Copy)]
 enum TopologySelectorHelper {
     ClosestPoint,
-    On,
+    IsOn,
     AngleBetweenSurfaces,
 }
 
