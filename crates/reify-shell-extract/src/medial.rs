@@ -2026,6 +2026,43 @@ mod tests {
         );
     }
 
+    /// Characterization — asymmetric-extents DataLengthMismatch: 3×4×5 grid
+    /// (nx*ny*nz = 60) with only 59 data elements.
+    ///
+    /// Pins (a) the validator handles non-cubic grids (axis lengths differ on
+    /// each axis) and (b) `validate_flat_data_length`'s checked_mul math is
+    /// exercised on asymmetric extents through the public API, not just the
+    /// unit test from step-5. The existing test at line 1628 uses a 2×2×2
+    /// cube; this complements it with an asymmetric case.
+    #[test]
+    fn compute_medial_mask_rejects_data_length_mismatch_on_asymmetric_extents() {
+        let sdf = SampledField {
+            name: "test-asymmetric-3x4x5".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![2.0, 3.0, 4.0],
+            spacing: vec![1.0, 1.0, 1.0],
+            axis_grids: vec![
+                vec![0.0, 1.0, 2.0],           // nx = 3
+                vec![0.0, 1.0, 2.0, 3.0],      // ny = 4
+                vec![0.0, 1.0, 2.0, 3.0, 4.0], // nz = 5
+            ],
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.0; 59], // should be 60 (3*4*5)
+            oob_emitted: AtomicBool::new(false),
+        };
+        let err = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect_err("3×4×5 grid with 59 data elements must be rejected");
+        assert_eq!(
+            err,
+            MedialError::DataLengthMismatch {
+                expected: 60,
+                found: 59,
+            },
+            "validate_flat_data_length must compute 3*4*5=60 and report found=59"
+        );
+    }
+
     /// Characterization — +Inf spacing on axis 0 is rejected via `is_finite()`.
     ///
     /// Pins the implicit behavior that +Inf spacing (not just NaN/zero/negative)
