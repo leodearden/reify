@@ -127,9 +127,10 @@
 //!
 //! // MpcRow re-export smoke test (T11 / Task 3021): pin that the type is
 //! // discoverable from the crate root for downstream consumers (Task 3020 will
-//! // add construction methods on this type).
+//! // add construction methods on this type). The struct-literal init is the
+//! // surface check; the dofs/coeffs equal-length invariant is T10's
+//! // constructor's job, not a literal-vs-literal len comparison here.
 //! let _row = MpcRow { dofs: vec![0, 6], coeffs: vec![1.0, -1.0], rhs: 0.0 };
-//! assert_eq!(_row.dofs.len(), _row.coeffs.len(), "MpcRow: dofs/coeffs length must match");
 //! ```
 
 pub mod assembly;

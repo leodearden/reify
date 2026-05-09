@@ -74,26 +74,21 @@ pub struct MpcRow {
 mod tests {
     use super::*;
 
-    /// `MpcRow` round-trips its public fields without losing data.
+    /// Compile-only smoke that `MpcRow` is reachable and struct-literal
+    /// constructible with the documented field shape.
     ///
-    /// The struct is a **typed handoff** to Task 3020. Locking the
-    /// public-field shape here means T10's later edit can populate
-    /// construction methods (`MpcRow::shell_tet_tying`, ...) without
-    /// having to negotiate the field shape.
+    /// Once Task 3020 (T10) adds real constructors / validators (e.g.
+    /// `MpcRow::shell_tet_tying`, length-equality assertions), the
+    /// behavioural tests live alongside that logic. This test exists
+    /// solely to lock that the public-field shape is the one downstream
+    /// crates will compile against — no behaviour to assert until T10
+    /// owns it.
     #[test]
-    fn mpc_row_round_trips_dofs_coeffs_and_rhs_via_public_constructor() {
-        let row = MpcRow {
+    fn mpc_row_type_compiles_with_documented_field_shape() {
+        let _: MpcRow = MpcRow {
             dofs: vec![3, 7, 11],
             coeffs: vec![1.0, -0.5, 0.5],
             rhs: 0.0,
         };
-        assert_eq!(row.dofs, vec![3, 7, 11]);
-        assert_eq!(row.coeffs, vec![1.0, -0.5, 0.5]);
-        assert_eq!(row.rhs, 0.0);
-        assert_eq!(
-            row.dofs.len(),
-            row.coeffs.len(),
-            "MpcRow contract: dofs and coeffs must agree in length",
-        );
     }
 }
