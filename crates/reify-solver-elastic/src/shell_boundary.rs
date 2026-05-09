@@ -192,4 +192,40 @@ mod tests {
         assert!(empty_bcs.is_empty(), "empty nodes → empty BC list");
         assert_eq!(empty_compat, SupportCompatibility::Ok);
     }
+
+    // ------------------------------------------------------------------
+    // Step 5: build_support_bcs — (Shell, Pinned) returns 3 BCs/node
+    // ------------------------------------------------------------------
+
+    /// `build_support_bcs(&[0, 3], Pinned, Shell)` → 6 BCs at DOFs
+    /// `[0, 1, 2, 18, 19, 20]` (translational only; rotational 3..6 absent).
+    #[test]
+    fn build_support_bcs_shell_pinned_emits_three_translational_bcs_per_node() {
+        let (bcs, compat) =
+            build_support_bcs(&[0, 3], SupportKind::Pinned, SupportBodyKind::Shell);
+
+        // 2 nodes × 3 translational DOFs each
+        assert_eq!(bcs.len(), 6, "expected 6 BCs for 2 shell nodes (Pinned)");
+
+        // DOFs: 6*0 + {0,1,2}, then 6*3 + {0,1,2}
+        let expected_dofs: Vec<usize> = vec![0, 1, 2, 18, 19, 20];
+        for (i, (bc, &exp_dof)) in bcs.iter().zip(expected_dofs.iter()).enumerate() {
+            assert_eq!(bc.dof, exp_dof, "bcs[{i}].dof: expected {exp_dof}, got {}", bc.dof);
+            assert_eq!(
+                bc.value.to_bits(),
+                0.0_f64.to_bits(),
+                "bcs[{i}].value must be 0.0"
+            );
+        }
+        assert_eq!(compat, SupportCompatibility::Ok, "compat must be Ok");
+
+        // Rotational DOFs must NOT be in the list
+        let dofs: Vec<usize> = bcs.iter().map(|bc| bc.dof).collect();
+        for rot_off in [3, 4, 5] {
+            assert!(
+                !dofs.contains(&rot_off),
+                "rotational DOF {rot_off} must not appear in Pinned BC list"
+            );
+        }
+    }
 }
