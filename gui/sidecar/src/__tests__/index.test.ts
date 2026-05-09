@@ -23,10 +23,21 @@ vi.mock('../permission-server.js', () => ({
   createPermissionServer: vi.fn(),
 }));
 
+// Sandbox helpers are imported by session.ts; mock them so index.test.ts tests
+// never invoke real python3, and so we can inspect wrapClaudeArgs call args.
+vi.mock('../sandbox.js', () => ({
+  isLandlockAvailable: vi.fn().mockReturnValue(false),
+  wrapClaudeArgs: vi.fn((args: string[], _ws: string, le?: string) =>
+    le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
+  ),
+  _resetLandlockCache: vi.fn(),
+}));
+
 // --- Imports (after mocks) ---
 
 import { spawn } from 'node:child_process';
 import { createPermissionServer } from '../permission-server.js';
+import { wrapClaudeArgs, isLandlockAvailable } from '../sandbox.js';
 import { main } from '../index.js';
 
 // ---------------------------------------------------------------------------
@@ -289,5 +300,146 @@ describe('main() permission server lifecycle (step-5)', () => {
     }
 
     expect(serverMock.stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe('main() workspace + landlock env propagation (task 3210)', () => {
+  let serverMock: ReturnType<typeof makePermissionServerMock>;
+
+  beforeEach(() => {
+    serverMock = makePermissionServerMock();
+    vi.mocked(createPermissionServer).mockReturnValue(serverMock);
+    vi.mocked(spawn).mockReset();
+    vi.mocked(spawn).mockImplementation((() => makeIdleProcess()) as any);
+    vi.mocked(wrapClaudeArgs).mockReset();
+    vi.mocked(wrapClaudeArgs).mockImplementation((args, _ws, le) =>
+      le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
+    );
+    vi.mocked(isLandlockAvailable).mockReset();
+    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Trigger invokeSdk by sending a send_message, then wait for spawn() to be called.
+   * After this, wrapClaudeArgs.mock.calls[0] contains the workspace and landlockExec.
+   */
+  async function triggerInvokeSdk(input: PassThrough): Promise<void> {
+    input.write(JSON.stringify({ type: 'send_message', id: 'msg-ws', text: 'hello' }) + '\n');
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 2000;
+      const check = setInterval(() => {
+        if (vi.mocked(spawn).mock.calls.length > 0) {
+          clearInterval(check);
+          resolve();
+        } else if (Date.now() > deadline) {
+          clearInterval(check);
+          reject(new Error('spawn was never called'));
+        }
+      }, 10);
+    });
+  }
+
+  // (a) REIFY_WORKSPACE propagates to wrapClaudeArgs workspace arg
+  it('(a) REIFY_WORKSPACE env var → wrapClaudeArgs workspace arg matches', async () => {
+    const origWs = process.env.REIFY_WORKSPACE;
+    process.env.REIFY_WORKSPACE = '/foo/bar';
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      await waitForMessage(output, (m) => m.type === 'ready');
+
+      await triggerInvokeSdk(input);
+
+      // wrapClaudeArgs should have been called with workspace = '/foo/bar'
+      expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalled();
+      const wsArg = vi.mocked(wrapClaudeArgs).mock.calls[0][1];
+      expect(wsArg).toBe('/foo/bar');
+
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origWs === undefined) delete process.env.REIFY_WORKSPACE;
+      else process.env.REIFY_WORKSPACE = origWs;
+    }
+  });
+
+  // (b) REIFY_LANDLOCK_EXEC propagates — when probe succeeds, landlockExec reaches wrapClaudeArgs
+  it('(b) REIFY_LANDLOCK_EXEC env var → landlockExec passed to wrapClaudeArgs when probe succeeds', async () => {
+    const origLe = process.env.REIFY_LANDLOCK_EXEC;
+    process.env.REIFY_LANDLOCK_EXEC = '/sb/landlock_exec.py';
+    // Simulate probe succeeding so effectiveLandlockExec is not nulled out
+    vi.mocked(isLandlockAvailable).mockReturnValue(true);
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      await waitForMessage(output, (m) => m.type === 'ready');
+
+      await triggerInvokeSdk(input);
+
+      // wrapClaudeArgs should have been called with landlockExec = '/sb/landlock_exec.py'
+      expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalled();
+      const leArg = vi.mocked(wrapClaudeArgs).mock.calls[0][2];
+      expect(leArg).toBe('/sb/landlock_exec.py');
+
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
+      else process.env.REIFY_LANDLOCK_EXEC = origLe;
+    }
+  });
+
+  // (c) REIFY_WORKSPACE unset → workspace defaults to process.cwd()
+  it('(c) REIFY_WORKSPACE unset → wrapClaudeArgs workspace arg equals process.cwd()', async () => {
+    const origWs = process.env.REIFY_WORKSPACE;
+    delete process.env.REIFY_WORKSPACE;
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      await waitForMessage(output, (m) => m.type === 'ready');
+
+      await triggerInvokeSdk(input);
+
+      expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalled();
+      const wsArg = vi.mocked(wrapClaudeArgs).mock.calls[0][1];
+      expect(wsArg).toBe(process.cwd());
+
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origWs === undefined) delete process.env.REIFY_WORKSPACE;
+      else process.env.REIFY_WORKSPACE = origWs;
+    }
+  });
+
+  // (d) REIFY_LANDLOCK_EXEC unset → landlockExec is undefined in wrapClaudeArgs call
+  it('(d) REIFY_LANDLOCK_EXEC unset → wrapClaudeArgs called with undefined landlockExec', async () => {
+    const origLe = process.env.REIFY_LANDLOCK_EXEC;
+    delete process.env.REIFY_LANDLOCK_EXEC;
+    try {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      await waitForMessage(output, (m) => m.type === 'ready');
+
+      await triggerInvokeSdk(input);
+
+      expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalled();
+      const leArg = vi.mocked(wrapClaudeArgs).mock.calls[0][2];
+      expect(leArg).toBeUndefined();
+
+      input.end();
+      await mainPromise;
+    } finally {
+      if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
+      else process.env.REIFY_LANDLOCK_EXEC = origLe;
+    }
   });
 });
