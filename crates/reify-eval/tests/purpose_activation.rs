@@ -33,6 +33,7 @@ use reify_test_support::{
 };
 use reify_types::{
     CompiledExprKind, ModulePath, OptimizationObjective, Satisfaction, Severity, Type, ValueCellId,
+    VersionId,
 };
 
 const EXAMPLE_PATH: &str = concat!(
@@ -282,6 +283,64 @@ structure Bracket {
         "stale binding must be dropped when the purpose is absent from the new \
          module — activate_purpose_constraints() must early-return false for an \
          unknown purpose name rather than inserting stale graph nodes"
+    );
+}
+
+/// Regression-pinning characterization test for the eval_cached non-interference
+/// contract (task 3260).
+///
+/// `eval_cached` (engine_eval.rs:2066+) must NOT clear `active_purposes`
+/// (the constraint-IDs map) or `active_purpose_bindings` (the user-intent
+/// HashMap that the preserved-binding loop in `eval()` consumes via
+/// `mem::take`). A future change adding snapshot-rebuild behaviour to
+/// `eval_cached` could silently regress the post-3103 invariant — this test
+/// catches that.
+///
+/// This test passes immediately on the current code because eval_cached already
+/// upholds the invariant; it is a regression-pinning characterization test, not
+/// a RED→GREEN test.
+///
+/// Proof structure:
+///   (a) `is_purpose_active` after `eval_cached` → `active_purposes` survived.
+///   (b) `is_purpose_active` after a second `eval()` → `active_purpose_bindings`
+///       survived eval_cached (the second eval's preserved-binding loop
+///       consumes `active_purpose_bindings` via `mem::take`; if eval_cached
+///       had cleared the field the loop would have nothing to re-inject and
+///       `is_purpose_active` would return false).
+#[test]
+fn eval_cached_preserves_active_purpose_bindings_across_call() {
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+
+    // (1) Initial eval.
+    engine.eval(&compiled);
+    // (2) Activate purpose.
+    engine.activate_purpose("mfg_ready", "Bracket");
+    // (3) Precondition.
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "precondition: purpose must be active after activate_purpose"
+    );
+
+    // (4) eval_cached must not disturb active_purposes or active_purpose_bindings.
+    engine.eval_cached(&compiled, VersionId(1));
+
+    // (5) active_purposes survived.
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "eval_cached must not clear active_purposes — \
+         is_purpose_active must return true immediately after eval_cached \
+         (engine_eval.rs:2066+, task 3260)"
+    );
+
+    // (6) active_purpose_bindings survived: second eval() re-injects only if
+    //     active_purpose_bindings is intact.
+    engine.eval(&compiled);
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "active_purpose_bindings must survive eval_cached — \
+         a second eval() re-injects preserved bindings only if the field was not \
+         cleared by eval_cached; is_purpose_active must still be true (task 3260)"
     );
 }
 
