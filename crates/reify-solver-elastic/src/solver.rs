@@ -467,14 +467,14 @@ fn spmv_parallel(k: &SparseRowMat<usize, f64>, p: &[f64], out: &mut [f64], threa
             remaining_out = rest;
 
             handles.push(s.spawn(move || {
-                for i in 0..chunk_len {
+                for (i, out_elem) in out_chunk.iter_mut().enumerate() {
                     let global_row = row_start + i;
                     let start_idx = row_ptr[global_row];
                     let end_idx = row_ptr[global_row + 1];
                     let products: Vec<f64> = (start_idx..end_idx)
                         .map(|idx| vals[idx] * p[col_idx[idx]])
                         .collect();
-                    out_chunk[i] = pairwise_tree_sum(&products);
+                    *out_elem = pairwise_tree_sum(&products);
                 }
             }));
 
