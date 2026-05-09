@@ -591,4 +591,46 @@ mod tests {
             failures.join("\n")
         );
     }
+
+    /// Variant-specific dup-check panic test for (Shell, Fixed). The duplicate-index
+    /// `debug_assert!` in `build_support_bcs` fires before `(body, kind)` dispatch
+    /// today; pinning each variant explicitly preserves regression isolation if dup
+    /// detection is ever moved into per-variant arms.
+    ///
+    /// Gated by `#[cfg(debug_assertions)]` because `debug_assert!` is elided in
+    /// release builds — without the gate, `#[should_panic]` would falsely fail
+    /// under `cargo test --release` (same rationale as
+    /// `crates/reify-eval/src/kernel_registry.rs:915-933`).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "duplicate")]
+    fn build_support_bcs_panics_on_duplicate_node_indices_shell_fixed() {
+        // [0, 1, 0]: index 0 at positions 0 and 2 (non-adjacent) so detection
+        // is exercised mid-iteration rather than just on neighbours.
+        build_support_bcs(&[0, 1, 0], SupportKind::Fixed, SupportBodyKind::Shell);
+    }
+
+    /// (Shell, Pinned) variant — see sibling `_shell_fixed` for shared rationale.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "duplicate")]
+    fn build_support_bcs_panics_on_duplicate_node_indices_shell_pinned() {
+        build_support_bcs(&[0, 1, 0], SupportKind::Pinned, SupportBodyKind::Shell);
+    }
+
+    /// (Tet, Fixed) variant — see sibling `_shell_fixed` for shared rationale.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "duplicate")]
+    fn build_support_bcs_panics_on_duplicate_node_indices_tet_fixed() {
+        build_support_bcs(&[0, 1, 0], SupportKind::Fixed, SupportBodyKind::Tet);
+    }
+
+    /// (Tet, Pinned) variant — see sibling `_shell_fixed` for shared rationale.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "duplicate")]
+    fn build_support_bcs_panics_on_duplicate_node_indices_tet_pinned() {
+        build_support_bcs(&[0, 1, 0], SupportKind::Pinned, SupportBodyKind::Tet);
+    }
 }
