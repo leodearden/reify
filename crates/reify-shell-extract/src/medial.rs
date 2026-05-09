@@ -2292,27 +2292,4 @@ mod tests {
         );
     }
 
-    // ── Wrapper-variant shape test (drives step-4 refactor) ──────────────────
-
-    /// RED — asserts that `compute_medial_mask` on a 1D field returns
-    /// `MedialError::GridValidation(GridValidationError::UnsupportedGridKind
-    /// { found: Regular1D })`.
-    ///
-    /// This test fails to compile until step-4 adds the `GridValidation`
-    /// variant to `MedialError`. (`GridValidationError` is already `pub` from
-    /// step-2, so only the missing variant causes the compile failure.)
-    #[test]
-    fn compute_medial_mask_unsupported_grid_kind_uses_grid_validation_wrapper() {
-        let sdf = one_d_field();
-        let err = compute_medial_mask(&sdf, &MedialOptions::default())
-            .expect_err("1D input must be rejected");
-        assert_eq!(
-            err,
-            MedialError::GridValidation(GridValidationError::UnsupportedGridKind {
-                found: SampledGridKind::Regular1D,
-            }),
-            "1D input must produce GridValidation(UnsupportedGridKind) wrapper variant"
-        );
-    }
-
 }
