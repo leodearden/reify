@@ -2953,9 +2953,13 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
     const mcpIdx = callArgs.indexOf('--mcp-config');
     expect(mcpIdx).toBeGreaterThanOrEqual(0);
 
-    // (a3) The temp file contains the correct MCP server config
+    // (a3) The temp file contains both reify-debug and reify-permission entries
     expect(capturedMcpConfig).toEqual({
       mcpServers: {
+        'reify-debug': {
+          type: 'http',
+          url: 'http://127.0.0.1:3939/mcp',
+        },
         'reify-permission': {
           type: 'http',
           url: permUrl,
@@ -3141,5 +3145,76 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
     expect(errors).toHaveLength(1);
     expect((errors[0] as any).message).toMatch(/permission/i);
     // Should not crash or throw
+  });
+});
+
+describe('SidecarSession reify-debug MCP wiring (task 3210)', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('writes reify-debug MCP config unconditionally (no permissionMcp)', async () => {
+    let capturedMcpConfig: unknown = null;
+    let capturedArgs: string[] = [];
+
+    vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
+      capturedArgs = args;
+      const mcpConfigIdx = args.indexOf('--mcp-config');
+      if (mcpConfigIdx !== -1) {
+        const filePath = args[mcpConfigIdx + 1];
+        try {
+          capturedMcpConfig = JSON.parse(readFileSync(filePath, 'utf-8'));
+        } catch {}
+      }
+      return createMockProcess([{ type: 'result', session_id: 'sess-debug-mcp' }]);
+    }) as any));
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      // No permissionMcp — reify-debug should still be written
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-debug-mcp', text: 'Hello' });
+
+    // --mcp-config must be present even without permissionMcp
+    const mcpIdx = capturedArgs.indexOf('--mcp-config');
+    expect(mcpIdx).toBeGreaterThanOrEqual(0);
+    expect(capturedArgs[mcpIdx + 1]).toBeTruthy();
+
+    // MCP config contains reify-debug only (no reify-permission)
+    expect(capturedMcpConfig).toEqual({
+      mcpServers: {
+        'reify-debug': {
+          type: 'http',
+          url: 'http://127.0.0.1:3939/mcp',
+        },
+      },
+    });
+  });
+
+  it('does NOT include --permission-prompt-tool when permissionMcp is not configured', async () => {
+    let capturedArgs: string[] = [];
+
+    vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
+      capturedArgs = args;
+      return createMockProcess([{ type: 'result', session_id: 'sess-debug-nopp' }]);
+    }) as any));
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-debug-nopp', text: 'Hello' });
+
+    expect(capturedArgs).not.toContain('--permission-prompt-tool');
   });
 });
