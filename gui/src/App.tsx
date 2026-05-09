@@ -50,6 +50,7 @@ import {
   claudeAbort,
   claudePermissionDecision,
   subscribeToClaudeEvents,
+  subscribeToSidecarCrashed,
   isDebugEnabled,
   getKernelStatus,
   onKernelStatus,
@@ -626,6 +627,7 @@ const App: Component = () => {
   let focusEntityUnsub: (() => void) | undefined;
   let navigateToSourceUnsub: (() => void) | undefined;
   let claudeEventUnsub: (() => void) | undefined;
+  let sidecarCrashedUnsub: (() => void) | undefined;
   let debugBridgeUnsub: (() => void) | undefined;
   let kernelStatusUnsub: (() => void) | undefined;
 
@@ -644,6 +646,8 @@ const App: Component = () => {
     navigateToSourceUnsub = undefined;
     claudeEventUnsub?.();
     claudeEventUnsub = undefined;
+    sidecarCrashedUnsub?.();
+    sidecarCrashedUnsub = undefined;
     kernelStatusUnsub?.();
     kernelStatusUnsub = undefined;
 
@@ -797,6 +801,20 @@ const App: Component = () => {
       showToast('Claude assistant unavailable — chat features may not work', 'error');
     }
 
+    // Subscribe to sidecar-crashed events (unexpected process exit)
+    try {
+      const unlistenSidecarCrashed = await subscribeToSidecarCrashed((reason) =>
+        claudeStore.handleSidecarCrashed(reason),
+      );
+      if (!alive) {
+        unlistenSidecarCrashed();
+        return;
+      }
+      sidecarCrashedUnsub = unlistenSidecarCrashed;
+    } catch (err) {
+      console.error('[claude] subscribeToSidecarCrashed failed:', err);
+    }
+
     // Initialize debug bridge if REIFY_DEBUG=1 (dynamic import for tree-shaking)
     try {
       if (await isDebugEnabled()) {
@@ -849,6 +867,7 @@ const App: Component = () => {
     navigateToSourceUnsub?.();
     serializationErrorCoalescer.cleanup();
     claudeEventUnsub?.();
+    sidecarCrashedUnsub?.();
     debugBridgeUnsub?.();
     kernelStatusUnsub?.();
     sidePanelObserver?.disconnect();
