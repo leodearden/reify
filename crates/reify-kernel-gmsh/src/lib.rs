@@ -46,9 +46,12 @@ pub mod through_thickness;
 pub mod ffi;
 
 // Shared library-initialisation + process-global lock — only compiled when
-// has_gmsh is set.
+// has_gmsh is set. Exposed as `pub` (rather than `pub(crate)`) so the
+// integration test binaries in `tests/` can acquire `init::GMSH_LOCK` before
+// touching the gmsh library; tests/ are separate compilation units that
+// cannot reach `pub(crate)` symbols.
 #[cfg(has_gmsh)]
-mod init;
+pub mod init;
 
 // Real kernel (FFI-backed) — only compiled when has_gmsh is set.
 #[cfg(has_gmsh)]
