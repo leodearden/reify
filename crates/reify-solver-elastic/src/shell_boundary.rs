@@ -527,4 +527,20 @@ mod tests {
             );
         }
     }
+
+    /// `debug_assert!` is elided in release builds, so this test is gated by
+    /// `#[cfg(debug_assertions)]`. Without the gate, `#[should_panic]` would
+    /// incorrectly *fail* under `cargo test --release` because the expected
+    /// panic never fires (same rationale as
+    /// `crates/reify-eval/src/kernel_registry.rs:910-933`).
+    ///
+    /// RED before the `debug_assert!` exists; GREEN after.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "duplicate")]
+    fn build_support_bcs_panics_on_duplicate_node_indices_in_debug_builds() {
+        // [0, 1, 0]: index 0 appears at positions 0 and 2 (non-adjacent) so
+        // detection is exercised mid-iteration rather than just on neighbours.
+        build_support_bcs(&[0, 1, 0], SupportKind::Fixed, SupportBodyKind::Shell);
+    }
 }
