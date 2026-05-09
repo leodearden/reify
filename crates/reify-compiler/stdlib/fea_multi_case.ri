@@ -140,7 +140,7 @@ structure def LoadCase {
 //                        (scalar interpretation; tensor recomputation deferred
 //                        to task #3117 when stress becomes Tensor<2,3,Pressure>)
 //       `converged`    — `true` (synthesised, not solved)
-//       `iterations`   — `0`
+//       `iterations`   — `Undef` (synthesised, not solved)
 //
 //     Valid only for linear-elastic results from solve_elastic_static /
 //     solve_load_cases.  Non-linear analyses (plasticity, contact, large
