@@ -800,6 +800,16 @@ describe('claudeStore', () => {
       expect((systemMsgs[0] as any).text).toContain('Claude assistant disconnected');
     });
 
+    it('includes the reason string in the SystemMessage text', () => {
+      const { state, sendMessage, handleSidecarCrashed } = makeStore() as any;
+      sendMessage('hello', {});
+      handleSidecarCrashed('sidecar exited unexpectedly');
+      const systemMsgs = state.messages.filter((m: any) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+      expect((systemMsgs[0] as any).text).toContain('Claude assistant disconnected');
+      expect((systemMsgs[0] as any).text).toContain('sidecar exited unexpectedly');
+    });
+
     it('sets sessionStatus to "idle"', () => {
       const { state, sendMessage, handleOutboundMessage, handleSidecarCrashed } = makeStore() as any;
       sendMessage('hello', {});

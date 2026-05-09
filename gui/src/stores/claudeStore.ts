@@ -356,7 +356,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     });
   }
 
-  function handleSidecarCrashed(_reason: string): void {
+  function handleSidecarCrashed(reason: string): void {
     cancelAndFlush();
     setState('sessionStatus', 'idle');
     // Mark every incomplete assistant message complete so throbbers/cursors disappear.
@@ -376,7 +376,7 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
           }),
         );
       });
-      addSystemMessage('sidecar', 'Claude assistant disconnected — restart in progress');
+      addSystemMessage('sidecar', `Claude assistant disconnected (${reason}) — restart in progress`);
     });
   }
 
