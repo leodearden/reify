@@ -800,6 +800,119 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Step 13 (RED): MpcRow::shell_tet_tying canonical constraint rows
+    // -----------------------------------------------------------------------
+
+    /// `shell_tet_tying` with normal=[0,0,1] and h=1 produces exactly 6
+    /// canonical constraint rows.
+    ///
+    /// DOF layout:
+    ///   shell_disp = [0, 1, 2], shell_rot = [3, 4, 5]
+    ///   tet_top    = [6, 7, 8], tet_mid   = [9, 10, 11], tet_bot = [12, 13, 14]
+    ///
+    /// Expected rows:
+    ///   (0) disp x:  dofs=[0,  9], coeffs=[+1, -1], rhs=0
+    ///   (1) disp y:  dofs=[1, 10], coeffs=[+1, -1], rhs=0
+    ///   (2) disp z:  dofs=[2, 11], coeffs=[+1, -1], rhs=0
+    ///   (3) rot/grad x: dofs=[4,  6, 12], coeffs=[-1, +1, -1], rhs=0
+    ///       (pivot shell_rot[1]=4; constraint -θ_y·h + (u_top_x-u_bot_x)=0)
+    ///   (4) rot/grad y: dofs=[3,  7, 13], coeffs=[+1, +1, -1], rhs=0
+    ///       (pivot shell_rot[0]=3; constraint +θ_x·h + (u_top_y-u_bot_y)=0)
+    ///   (5) drilling z: dofs=[8, 14], coeffs=[+1, -1], rhs=0
+    ///       (tet-only fallback; both rotational coefficients zero for axis‖normal)
+    ///
+    /// RED: `MpcRow::shell_tet_tying` is not yet defined.
+    #[test]
+    fn shell_tet_tying_with_z_normal_produces_six_canonical_constraint_rows() {
+        let rows = MpcRow::shell_tet_tying(
+            [0, 1, 2],   // shell_disp
+            [3, 4, 5],   // shell_rot
+            [6, 7, 8],   // tet_top
+            [9, 10, 11], // tet_mid
+            [12, 13, 14],// tet_bot
+            [0.0, 0.0, 1.0], // normal = z
+            1.0,         // h = 1
+        );
+        assert_eq!(rows.len(), 6, "shell_tet_tying must produce 6 rows");
+
+        // (0) displacement x
+        assert_eq!(rows[0].dofs, vec![0, 9], "row 0 dofs");
+        assert_eq!(rows[0].coeffs, vec![1.0, -1.0], "row 0 coeffs");
+        assert_eq!(rows[0].rhs.to_bits(), 0.0_f64.to_bits(), "row 0 rhs");
+
+        // (1) displacement y
+        assert_eq!(rows[1].dofs, vec![1, 10], "row 1 dofs");
+        assert_eq!(rows[1].coeffs, vec![1.0, -1.0], "row 1 coeffs");
+        assert_eq!(rows[1].rhs.to_bits(), 0.0_f64.to_bits(), "row 1 rhs");
+
+        // (2) displacement z
+        assert_eq!(rows[2].dofs, vec![2, 11], "row 2 dofs");
+        assert_eq!(rows[2].coeffs, vec![1.0, -1.0], "row 2 coeffs");
+        assert_eq!(rows[2].rhs.to_bits(), 0.0_f64.to_bits(), "row 2 rhs");
+
+        // (3) rot/grad axis x: -θ_y·1 + (u_top_x - u_bot_x) = 0
+        // pivot is shell_rot[1]=4, coeff=-1
+        assert_eq!(rows[3].dofs, vec![4, 6, 12], "row 3 dofs");
+        assert_eq!(rows[3].coeffs, vec![-1.0, 1.0, -1.0], "row 3 coeffs");
+        assert_eq!(rows[3].rhs.to_bits(), 0.0_f64.to_bits(), "row 3 rhs");
+
+        // (4) rot/grad axis y: +θ_x·1 + (u_top_y - u_bot_y) = 0
+        // pivot is shell_rot[0]=3, coeff=+1
+        assert_eq!(rows[4].dofs, vec![3, 7, 13], "row 4 dofs");
+        assert_eq!(rows[4].coeffs, vec![1.0, 1.0, -1.0], "row 4 coeffs");
+        assert_eq!(rows[4].rhs.to_bits(), 0.0_f64.to_bits(), "row 4 rhs");
+
+        // (5) drilling z: tet-only u_top_z - u_bot_z = 0 (fallback)
+        assert_eq!(rows[5].dofs, vec![8, 14], "row 5 dofs");
+        assert_eq!(rows[5].coeffs, vec![1.0, -1.0], "row 5 coeffs");
+        assert_eq!(rows[5].rhs.to_bits(), 0.0_f64.to_bits(), "row 5 rhs");
+    }
+
+    /// With normal=[1,0,0] (x-normal), the drilling axis is x, and the
+    /// rotational constraint coefficients are different.
+    ///
+    /// For axis a=0 (x, parallel to normal): both rotational coefficients
+    /// are zero → tet-only fallback: u_top_x - u_bot_x = 0, pivot=tet_top[0]=6.
+    ///
+    /// For axis a=1 (y): cross-product formula gives coefficients for θ_z·n_x·h,
+    /// so the pivot is shell_rot[2] (the largest-magnitude rotational coeff).
+    /// ε_102 = -ε_012 = -1, so for output axis 1: c_for_θ_2 = -ε_120·n_0·h = +1·1·h = h
+    /// → coeff = +h for shell_rot[2].
+    ///
+    /// For axis a=2 (z): ε_201·n_1·h → c_for_θ_1 = -ε_210·n_0·h = +1·1·h = h
+    /// → pivot is shell_rot[1] with coeff +h... let's verify via the test.
+    #[test]
+    fn shell_tet_tying_with_x_normal_swaps_drilling_axis() {
+        let rows = MpcRow::shell_tet_tying(
+            [0, 1, 2],   // shell_disp
+            [3, 4, 5],   // shell_rot
+            [6, 7, 8],   // tet_top
+            [9, 10, 11], // tet_mid
+            [12, 13, 14],// tet_bot
+            [1.0, 0.0, 0.0], // normal = x
+            1.0,
+        );
+        assert_eq!(rows.len(), 6, "must produce 6 rows");
+
+        // Displacement rows unchanged regardless of normal
+        assert_eq!(rows[0].dofs, vec![0, 9]);
+        assert_eq!(rows[1].dofs, vec![1, 10]);
+        assert_eq!(rows[2].dofs, vec![2, 11]);
+
+        // Row 3 — axis 0 is the drilling axis (parallel to normal=[1,0,0]):
+        // tet-only fallback u_top_x - u_bot_x = 0, pivot = tet_top[0]=6
+        assert_eq!(rows[3].dofs, vec![6, 12], "row 3: drilling fallback for axis 0");
+        assert_eq!(rows[3].coeffs, vec![1.0, -1.0], "row 3: coeffs");
+
+        // Rows 4 and 5 have rotational coefficients (n_x=1 contributes)
+        // Each pivot coefficient must be non-zero
+        assert!(rows[4].coeffs[0] != 0.0, "row 4 pivot must be non-zero");
+        assert!(rows[5].coeffs[0] != 0.0, "row 5 pivot must be non-zero");
+        assert_eq!(rows[4].rhs.to_bits(), 0.0_f64.to_bits(), "row 4 rhs=0");
+        assert_eq!(rows[5].rhs.to_bits(), 0.0_f64.to_bits(), "row 5 rhs=0");
+    }
+
     /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>`, returning 0.0 if
     /// the entry is not explicitly stored.
     fn read_k(k: &faer::sparse::SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
