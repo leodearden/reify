@@ -2335,6 +2335,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_point_on_shape_tolerance_constant_pins_occt_precision_confusion() {
+        // (a) exact value matches OCCT Precision::Confusion() empirically
+        assert_eq!(super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, 1e-7);
+        // (b) must be a valid finite number
+        assert!(super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M.is_finite());
+        // (c) must be strictly positive (tolerance of 0 is degenerate)
+        assert!(super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M > 0.0);
+    }
+
+    #[test]
     fn geometry_handle_id_content_hash_deterministic() {
         let h1 = GeometryHandleId(42).content_hash();
         let h2 = GeometryHandleId(42).content_hash();
