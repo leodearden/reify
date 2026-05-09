@@ -276,3 +276,152 @@ describe('editorStore', () => {
     disposeRef();
   });
 });
+
+// ─── externallyChanged tracking ─────────────────────────────────────────────
+
+describe('editorStore externallyChanged', () => {
+  it('(a) initial state.externallyChanged is []', () => {
+    createRoot((dispose) => {
+      const { state } = createEditorStore();
+      expect(state.externallyChanged).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('(b) markExternallyChanged(path) adds the path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markExternallyChanged } = createEditorStore();
+      openFile(file1);
+      markExternallyChanged('bracket.ri');
+      expect(state.externallyChanged).toContain('bracket.ri');
+      dispose();
+    });
+  });
+
+  it('(c) markExternallyChanged is idempotent — duplicate call does not add a second entry', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markExternallyChanged } = createEditorStore();
+      openFile(file1);
+      markExternallyChanged('bracket.ri');
+      markExternallyChanged('bracket.ri');
+      expect(state.externallyChanged.filter((p) => p === 'bracket.ri')).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('(c) markExternallyChanged idempotency — 1000 calls cause no reactive re-emission', async () => {
+    let counter = 0;
+    let storeRef!: ReturnType<typeof createEditorStore>;
+    let disposeRef!: () => void;
+
+    createRoot((dispose) => {
+      disposeRef = dispose;
+      storeRef = createEditorStore();
+      storeRef.openFile(file1);
+
+      createEffect(() => {
+        void storeRef.state.externallyChanged.length;
+        counter++;
+      });
+    });
+
+    // Flush the initial effect subscription
+    await Promise.resolve();
+    expect(counter).toBe(1);
+
+    // First markExternallyChanged: new path → real setState → effect fires
+    storeRef.markExternallyChanged(file1.path);
+    await Promise.resolve();
+    expect(counter).toBe(2);
+
+    // 1000 more calls on the same already-external path — no setState
+    const refBefore = storeRef.state.externallyChanged;
+    for (let i = 0; i < 1000; i++) {
+      storeRef.markExternallyChanged(file1.path);
+    }
+    await Promise.resolve();
+    expect(counter).toBe(2); // no additional emissions
+    expect(storeRef.state.externallyChanged).toEqual([file1.path]);
+    expect(storeRef.state.externallyChanged).toBe(refBefore); // same proxy reference
+
+    disposeRef();
+  });
+
+  it('(d) clearExternallyChanged(path) removes only that path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markExternallyChanged, clearExternallyChanged } = createEditorStore();
+      openFile(file1);
+      openFile(file2);
+      markExternallyChanged('bracket.ri');
+      markExternallyChanged('mount.ri');
+      expect(state.externallyChanged).toContain('bracket.ri');
+      expect(state.externallyChanged).toContain('mount.ri');
+
+      clearExternallyChanged('bracket.ri');
+      expect(state.externallyChanged).not.toContain('bracket.ri');
+      expect(state.externallyChanged).toContain('mount.ri');
+      dispose();
+    });
+  });
+
+  it('(e) markClean(path) also clears externallyChanged for that path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markExternallyChanged, markClean } = createEditorStore();
+      openFile(file1);
+      markExternallyChanged('bracket.ri');
+      expect(state.externallyChanged).toContain('bracket.ri');
+
+      markClean('bracket.ri');
+      expect(state.externallyChanged).not.toContain('bracket.ri');
+      dispose();
+    });
+  });
+
+  it('(f) closeFile(path) also clears externallyChanged for that path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, closeFile, markExternallyChanged } = createEditorStore();
+      openFile(file1);
+      markExternallyChanged('bracket.ri');
+      expect(state.externallyChanged).toContain('bracket.ri');
+
+      closeFile('bracket.ri');
+      expect(state.externallyChanged).not.toContain('bracket.ri');
+      dispose();
+    });
+  });
+
+  it('(g) markDirty and markExternallyChanged are independent — both can be true simultaneously', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markDirty, markExternallyChanged } = createEditorStore();
+      openFile(file1);
+
+      markDirty('bracket.ri');
+      markExternallyChanged('bracket.ri');
+      expect(state.dirtyFiles).toContain('bracket.ri');
+      expect(state.externallyChanged).toContain('bracket.ri');
+      dispose();
+    });
+  });
+
+  it('(g) markDirty does not imply markExternallyChanged', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markDirty } = createEditorStore();
+      openFile(file1);
+      markDirty('bracket.ri');
+      expect(state.dirtyFiles).toContain('bracket.ri');
+      expect(state.externallyChanged).not.toContain('bracket.ri');
+      dispose();
+    });
+  });
+
+  it('(g) markExternallyChanged does not imply markDirty', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markExternallyChanged } = createEditorStore();
+      openFile(file1);
+      markExternallyChanged('bracket.ri');
+      expect(state.externallyChanged).toContain('bracket.ri');
+      expect(state.dirtyFiles).not.toContain('bracket.ri');
+      dispose();
+    });
+  });
+});
