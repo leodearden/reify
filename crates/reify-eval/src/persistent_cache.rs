@@ -948,6 +948,45 @@ mod tests {
         );
     }
 
+    /// Pins the LE on-disk contract for `read_f64_slab` — the public entry
+    /// point — using explicit LE byte-literal fixtures.
+    ///
+    /// This is the entry-point counterpart to
+    /// `decode_f64_slab_from_le_bytes_pins_chunks_exact_le_decode_algorithm`,
+    /// which exercises the BE conversion kernel in isolation. On LE CI hosts
+    /// `read_f64_slab` takes the zero-copy `spare_capacity_mut` + `set_len`
+    /// fast path and never calls the kernel; the kernel test therefore does
+    /// NOT cover that path. This test calls `read_f64_slab` directly with
+    /// known LE bytes and asserts the decoded `to_bits()` values, complementing
+    /// the existing `&buf[..8]` host-independent assertion in
+    /// `elastic_result_serialized_slab_section_is_little_endian_bytewise`.
+    ///
+    /// Fixed literals (`[00..F0 3F]` → `1.0`, `[00..04 C0]` → `-2.5`) catch a
+    /// `from_ne_bytes` / `from_be_bytes` regression more tightly than a
+    /// `write_f64_slab` → `read_f64_slab` round-trip (which would be a
+    /// tautology if both sides share the same bug).
+    #[test]
+    fn read_f64_slab_decodes_explicit_le_byte_fixture_pins_le_on_disk_contract() {
+        // 1.0_f64:  bits = 0x3FF0_0000_0000_0000, LE bytes = [00 00 00 00 00 00 F0 3F]
+        // -2.5_f64: bits = 0xC004_0000_0000_0000, LE bytes = [00 00 00 00 00 00 04 C0]
+        let bytes: &[u8] = &[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, // 1.0_f64
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xC0, // -2.5_f64
+        ];
+        let decoded = read_f64_slab(&mut &bytes[..], 2).unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(
+            decoded[0].to_bits(),
+            1.0_f64.to_bits(),
+            "1.0 fixture: LE bytes [00..F0 3F] must decode to 1.0, not from_be/ne_bytes"
+        );
+        assert_eq!(
+            decoded[1].to_bits(),
+            (-2.5_f64).to_bits(),
+            "-2.5 fixture: LE bytes [00..04 C0] must decode to -2.5, not from_be/ne_bytes"
+        );
+    }
+
     /// Anchors the bincode 1.3.x default-options encoding
     /// (`DefaultOptions::new().with_fixint_encoding()` per the `bincode::serialize`
     /// free-function impl). Catches encoder drift INSIDE the `=1.3` Cargo pin that
