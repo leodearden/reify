@@ -982,13 +982,13 @@ fn eval_quantifier(
 ///   returns `Value::Undef`.
 fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
     // Guard: first arg must be a Map (the MultiCaseResult shape). Pinned by
-    // the `non_map_first_arg`-style negative if/when added.
+    // `worst_case_argument_shape_negatives_return_undef`'s `non_map_first`.
     let outer = match &args[0] {
         Value::Map(m) => m,
         _ => return Value::Undef,
     };
-    // Guard: second arg must be a Lambda. Pinned by the
-    // `non_lambda_second_arg`-style negative if/when added.
+    // Guard: second arg must be a Lambda. Pinned by
+    // `worst_case_argument_shape_negatives_return_undef`'s `non_lambda_second`.
     let lambda = match &args[1] {
         Value::Lambda { .. } => &args[1],
         _ => return Value::Undef,
