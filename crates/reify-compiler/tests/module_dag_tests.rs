@@ -6,6 +6,7 @@ use std::fs;
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 use reify_compiler::stdlib_loader;
+use reify_types::Severity;
 
 // ── Step 19: Circular import detection ────────────────────────────
 
@@ -1797,4 +1798,48 @@ fn compile_project_with_entry_source_parity_with_compile_project_when_source_mat
             );
         }
     }
+}
+
+/// Closes the coverage gap at `module_dag.rs:619-625`.
+///
+/// When the in-memory `entry_source` string contains a parse error,
+/// `compile_project_with_entry_source` must return `Err(Vec<Diagnostic>)` where
+/// every diagnostic has `Severity::Error`.  This test pins that contract,
+/// catching regressions where the parser errors are silently dropped or where
+/// diagnostics are surfaced with the wrong severity.
+///
+/// `entry.ri` is intentionally NOT written to disk, which proves the error came
+/// from the in-memory string rather than from any disk file (the function's
+/// contract at `module_dag.rs:600-602` states `entry_path` need not exist on
+/// disk).
+#[test]
+fn compile_project_with_entry_source_returns_parse_errors_for_invalid_entry_source() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // entry.ri is deliberately NOT written to disk — the parse error must come
+    // from the in-memory source string, not from any disk file.
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project_with_entry_source(
+        &dir.join("entry.ri"),
+        "structure {",
+        &resolver,
+    );
+
+    assert!(
+        result.is_err(),
+        "expected Err for malformed entry source, got Ok({:?})",
+        result.ok()
+    );
+
+    let diagnostics = result.unwrap_err();
+    assert!(
+        !diagnostics.is_empty(),
+        "expected non-empty diagnostics for malformed entry source"
+    );
+    assert!(
+        diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "expected at least one Severity::Error diagnostic, got: {:?}",
+        diagnostics
+    );
 }
