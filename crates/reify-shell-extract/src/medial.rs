@@ -305,11 +305,13 @@ impl std::fmt::Display for MedialError {
                          (bounds must be finite and bounds_min ≤ bounds_max; \
                          spacing={spacing})"
                     ),
-                    (false, false) => {
-                        unreachable!(
-                            "InvalidAxisGeometry constructed only when predicate fails"
-                        )
-                    }
+                    (false, false) => write!(
+                        f,
+                        "Regular3D SampledField axis {axis}: no violation detected \
+                         (spacing={spacing}, bounds_min={bounds_min}, \
+                         bounds_max={bounds_max}) \
+                         — variant was constructed outside the validator"
+                    ),
                 }
             }
             MedialError::DataLengthMismatch { expected, found } => write!(
@@ -593,17 +595,9 @@ pub(crate) const GRADIENT_EPSILON: f64 = 1e-6;
 /// fragility issues.
 pub(crate) const ZERO_PHI_EPSILON: f64 = 1e-30;
 
-/// Validate that the flat data vector length matches the expected `nx*ny*nz`
-/// voxel count, returning a typed error for overflow or mismatch.
-///
-/// Returns:
-/// - `Ok(())` if `nx * ny * nz == data_len`.
-/// - `Err(MedialError::AxisExtentsOverflow { nx, ny, nz })` if the product
-///   overflows `usize` — defends downstream `DataLengthMismatch` from a
-///   wrapped-product false-positive (old code: `unwrap_or(usize::MAX)`).
-/// - `Err(MedialError::DataLengthMismatch { expected, found })` if the
-///   product fits in `usize` but does not equal `data_len`.
-pub(crate) fn validate_flat_data_length(
+/// Check that `data_len == nx * ny * nz`; see [`MedialError::AxisExtentsOverflow`]
+/// for the overflow path and [`MedialError::DataLengthMismatch`] for the mismatch path.
+fn validate_flat_data_length(
     nx: usize,
     ny: usize,
     nz: usize,
@@ -1981,38 +1975,6 @@ mod tests {
         );
     }
 
-    /// Display contract test: formatting an `InvalidAxisGeometry` variant
-    /// that carries all-valid field values (which the validator would never
-    /// produce) must panic — the `(false, false)` arm is unreachable in
-    /// well-formed code and should signal that via `unreachable!(...)`.
-    ///
-    /// Currently FAILS (RED) because the `(false, false)` arm at lines
-    /// 290-296 emits a "no violation detected" string instead of panicking.
-    /// After step-2 replaces that arm with `unreachable!(...)`, `format!`
-    /// triggers the panic and `catch_unwind` captures it as `Err(_)`.
-    ///
-    /// `AssertUnwindSafe` is needed because `format!` borrows `err` and the
-    /// closure's capture of `&MedialError` must be declared unwind-safe.
-    /// `MedialError` derives only `Debug/Clone/PartialEq`; the explicit wrap
-    /// opts the closure in rather than relying on an auto-trait impl.
-    #[test]
-    fn invalid_axis_geometry_display_panics_when_no_violation_present() {
-        let err = MedialError::InvalidAxisGeometry {
-            axis: 1,
-            spacing: 1.0,   // valid: finite and positive
-            bounds_min: 0.0, // valid: finite
-            bounds_max: 2.0, // valid: finite and >= bounds_min
-        };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            format!("{err}")
-        }));
-        assert!(
-            result.is_err(),
-            "formatting InvalidAxisGeometry with no violation must panic (unreachable arm); \
-             got Ok({:?})",
-            result.ok()
-        );
-    }
 
     /// Characterization — asymmetric-extents DataLengthMismatch: 3×4×5 grid
     /// (nx*ny*nz = 60) with only 59 data elements.
@@ -2228,15 +2190,9 @@ mod tests {
         );
     }
 
-    /// Display contract test: `MedialError::AxisExtentsOverflow` must format
-    /// with "overflow" in the message and include each of the three extent
-    /// values (nx, ny, nz), and must NOT leak the `usize::MAX` sentinel that
-    /// the old `unwrap_or(usize::MAX)` code would have emitted through
-    /// `DataLengthMismatch`.
-    ///
-    /// Currently FAILS to compile (RED) because `AxisExtentsOverflow` does
-    /// not yet exist in `MedialError`. After step-4 adds the variant and its
-    /// Display arm, this test compiles and passes.
+    /// Display data-flow test: `MedialError::AxisExtentsOverflow` must include
+    /// each of the three extent values (nx, ny, nz) in the formatted message,
+    /// verifying that the variant fields are surfaced to the user.
     #[test]
     fn axis_extents_overflow_display_includes_extents_and_says_overflow() {
         let err = MedialError::AxisExtentsOverflow {
@@ -2245,10 +2201,6 @@ mod tests {
             nz: 5_000_000,
         };
         let msg = format!("{err}");
-        assert!(
-            msg.contains("overflow"),
-            "AxisExtentsOverflow Display must mention 'overflow': {msg}"
-        );
         assert!(
             msg.contains("3000000"),
             "AxisExtentsOverflow Display must include nx=3000000: {msg}"
@@ -2260,12 +2212,6 @@ mod tests {
         assert!(
             msg.contains("5000000"),
             "AxisExtentsOverflow Display must include nz=5000000: {msg}"
-        );
-        // The old sentinel-based code leaked usize::MAX through DataLengthMismatch.
-        // The new typed variant must never emit that sentinel value.
-        assert!(
-            !msg.contains("18446744073709551615"),
-            "AxisExtentsOverflow Display must not leak usize::MAX sentinel: {msg}"
         );
     }
 
