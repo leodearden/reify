@@ -55,6 +55,10 @@ fn main() {
     // build. Mirrors crates/reify-kernel-openvdb/build.rs:61-62.
     println!("cargo:rerun-if-env-changed=GMSH_INCLUDE_DIR");
     println!("cargo:rerun-if-env-changed=GMSH_LIB_DIR");
+    // Re-run the build script when the FFI binding declarations change so
+    // updated extern "C" declarations trigger a re-link (mirrors
+    // crates/reify-kernel-openvdb/build.rs:65).
+    println!("cargo:rerun-if-changed=src/ffi.rs");
 
     // Auto-detect Gmsh availability. Same fail-soft posture as
     // `crates/reify-kernel-occt/build.rs`: if the system lacks libgmsh, the
@@ -62,7 +66,7 @@ fn main() {
     let include_dir = find_include_dir();
     let lib_dir = find_lib_dir();
 
-    let (_include_dir, _lib_dir) = match (include_dir, lib_dir) {
+    let (_include_dir, lib_dir) = match (include_dir, lib_dir) {
         (Some(inc), Some(lib)) => (inc, lib),
         _ => {
             // Gmsh not found — emit a warning and exit gracefully.
@@ -76,14 +80,19 @@ fn main() {
         }
     };
 
-    // Gmsh found — enable the has_gmsh cfg flag. The actual extern "C" call
-    // sequence (gmshInitialize, gmshModelMeshGenerate, …) is scaffolded as
-    // follow-up work; this prerequisite just lays the detection rails so the
-    // FFI lands as a contained patch later (see task 2925 analysis).
+    // Gmsh found — enable the has_gmsh cfg flag.
     println!("cargo:rustc-cfg=has_gmsh");
 
-    // Note: we deliberately do NOT emit `rustc-link-search` / `rustc-link-lib`
-    // here yet, because no Rust code currently links against libgmsh — the
-    // stub kernel does not call into it. Linking will be added in the
-    // follow-up FFI task alongside the extern "C" bindings.
+    // Link against libgmsh. The native search dir is the lib directory
+    // detected above; the dylib name is "gmsh" (libgmsh.so).
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    println!("cargo:rustc-link-lib=dylib=gmsh");
+
+    // Embed RPATH so test/release binaries resolve libgmsh at runtime
+    // without requiring `/etc/ld.so.conf.d/reify-deps.conf` (which would leak
+    // ALL conda-bundled runtime libs into the global linker cache and shadow
+    // system libs — see scripts/setup-dev.sh:252-254 + the OCCT precedent).
+    // Mirrors crates/reify-kernel-openvdb/build.rs:134 and
+    // crates/reify-kernel-occt/build.rs:158.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 }
