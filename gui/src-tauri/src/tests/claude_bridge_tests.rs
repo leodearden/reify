@@ -914,6 +914,74 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
     ));
 }
 
+// Wiring test: from_parts_with_mcp → EOF → on_sidecar_exit → emitter
+//
+// The three on_sidecar_exit_* unit tests verify the helper in isolation.
+// This test pins the production wiring so that a future refactor that forgets
+// to clone one of the three Arcs (state_for_crash, notify_for_crash,
+// event_emitter_for_exit) into the on_exit closure would be caught here.
+#[tokio::test]
+async fn from_parts_with_mcp_emits_sidecar_crashed_on_eof() {
+    use crate::engine::EngineSession;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
+
+    let events: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
+        Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+
+    let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+    let (data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+
+    let handle = SidecarHandle::from_parts_with_mcp(
+        stdin_writer,
+        reader,
+        state,
+        engine,
+        move |name: String, payload: serde_json::Value| {
+            events_clone.lock().unwrap().push((name, payload));
+        },
+        selection,
+    );
+
+    // Drop data_writer to simulate sidecar crash (EOF on reader).
+    drop(data_writer);
+
+    // Poll under timeout: the spawned on_exit task must acquire the state mutex
+    // and emit the event; a fixed yield count is flaky on loaded CI runners.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if matches!(*handle.state().lock().await, SidecarState::Crashed(_)) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Timed out waiting for SidecarState::Crashed after EOF");
+
+    let emitted = events.lock().unwrap();
+    let crashed = emitted
+        .iter()
+        .find(|(name, _)| name == "claude-sidecar-crashed")
+        .map(|(_, p)| p)
+        .expect("Expected claude-sidecar-crashed event in sink");
+    assert!(
+        crashed["reason"].is_string() && !crashed["reason"].as_str().unwrap().is_empty(),
+        "Expected non-empty 'reason' in claude-sidecar-crashed payload, got: {crashed:?}"
+    );
+}
+
 // --- SidecarHandle::abort and clear_session tests (step-17) ---
 
 #[tokio::test]
