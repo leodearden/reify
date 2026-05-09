@@ -3534,7 +3534,8 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
   beforeEach(() => {
     outputs = [];
     vi.mocked(spawn).mockReset();
-    vi.mocked(isLandlockAvailable).mockReset();
+    // NOTE: isLandlockAvailable is no longer set up here — landlock state is now
+    // passed via SessionConfig.landlockAvailable (set by index.ts after the async probe).
     // Restore wrapClaudeArgs default implementation: passthrough with/without landlockExec
     vi.mocked(wrapClaudeArgs).mockReset();
     vi.mocked(wrapClaudeArgs).mockImplementation((args: string[], _ws: string, le?: string) =>
@@ -3542,12 +3543,12 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
     );
   });
 
-  // (a) landlock available — spawn called with python3 wrap
-  it('(a) landlock_available=true: spawn uses python3 wrap, wrapClaudeArgs called with landlockExec', async () => {
+  // (a) landlockAvailable: true in config → spawn called with python3 wrap
+  it('(a) landlockAvailable=true in config: spawn uses python3 wrap, wrapClaudeArgs called with landlockExec', async () => {
     const le = '/path/landlock_exec.py';
     const ws = '/tmp/ws';
 
-    vi.mocked(isLandlockAvailable).mockReturnValue(true);
+    // landlockAvailable is supplied via config — no isLandlockAvailable mock needed
     vi.mocked(wrapClaudeArgs).mockImplementation((args: string[], workspace: string, landlockExec?: string) => ({
       cmd: 'python3',
       args: [landlockExec!, '--writable', workspace, '--writable', os.homedir() + '/.claude', '--writable', '/tmp', '--', 'claude', ...args],
@@ -3567,10 +3568,14 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
       systemPrompt: 'You are helpful.',
       workspace: ws,
       landlockExec: le,
+      landlockAvailable: true,
     } as any);
     session.onOutput = (msg) => outputs.push(msg);
 
     await session.handleMessage({ type: 'send_message', id: 'msg-sandbox-a', text: 'Hello' });
+
+    // The production path must NOT call isLandlockAvailable — state comes from config
+    expect(vi.mocked(isLandlockAvailable)).not.toHaveBeenCalled();
 
     // spawn called with python3 (not claude directly)
     expect(spawnCmd).toBe('python3');
@@ -3599,9 +3604,9 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
     expect(wrapArgs).toContain('--permission-mode');
   });
 
-  // (b) landlock unavailable (but landlockExec provided) — wrapClaudeArgs called with undefined
-  it('(b) landlock_available=false: wrapClaudeArgs called with undefined landlockExec, spawn uses claude', async () => {
-    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+  // (b) landlockAvailable: false in config (but landlockExec provided) — wrapClaudeArgs gets undefined
+  it('(b) landlockAvailable=false in config: wrapClaudeArgs called with undefined landlockExec, spawn uses claude', async () => {
+    // landlockAvailable: false → no wrap regardless of landlockExec being set
     // wrapClaudeArgs uses default mock (returns {cmd:'claude',...} when le is undefined)
 
     let spawnCmd = '';
@@ -3615,16 +3620,20 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
       workingDirectory: '/tmp/test-project',
       systemPrompt: 'You are helpful.',
       workspace: '/tmp/ws',
-      landlockExec: '/path/le.py',  // provided, but probe says unavailable
+      landlockExec: '/path/le.py',  // provided, but landlockAvailable=false → no wrap
+      landlockAvailable: false,
     } as any);
     session.onOutput = (msg) => outputs.push(msg);
 
     await session.handleMessage({ type: 'send_message', id: 'msg-sandbox-b', text: 'Hello' });
 
-    // spawn called with claude (no python3 wrap since probe failed)
+    // The production path must NOT call isLandlockAvailable — state comes from config
+    expect(vi.mocked(isLandlockAvailable)).not.toHaveBeenCalled();
+
+    // spawn called with claude (no python3 wrap since landlockAvailable=false)
     expect(spawnCmd).toBe('claude');
 
-    // wrapClaudeArgs was called with undefined landlockExec (probe failed → no wrap)
+    // wrapClaudeArgs was called with undefined landlockExec (landlockAvailable=false → no wrap)
     expect(vi.mocked(wrapClaudeArgs)).toHaveBeenCalledTimes(1);
     const [, , wrapLe] = vi.mocked(wrapClaudeArgs).mock.calls[0] as [string[], string, string | undefined];
     expect(wrapLe).toBeUndefined();
@@ -3648,16 +3657,15 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
 
     await session.handleMessage({ type: 'send_message', id: 'msg-sandbox-c', text: 'Hello' });
 
-    // isLandlockAvailable was NOT called (no sandbox configured)
+    // isLandlockAvailable must NOT be called regardless of mechanism
     expect(vi.mocked(isLandlockAvailable)).not.toHaveBeenCalled();
 
     // spawn called with claude (no python3 wrap)
     expect(spawnCmd).toBe('claude');
   });
 
-  // (notice-a) sandbox unavailable → emits one notice + console.warn
-  it('(notice-a) landlockExec provided but unavailable: emits sandbox_unavailable notice and console.warn', async () => {
-    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+  // (notice-a) landlockAvailable: false + landlockExec set → emits one notice + console.warn
+  it('(notice-a) landlockAvailable=false with landlockExec: emits sandbox_unavailable notice and console.warn', async () => {
     vi.mocked(spawn).mockImplementation((() =>
       createMockProcess([{ type: 'result', session_id: 'sess-notice-a' }])
     ) as any);
@@ -3670,10 +3678,14 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
       systemPrompt: 'You are helpful.',
       workspace: '/tmp/ws',
       landlockExec: '/path/le.py',
+      landlockAvailable: false,
     } as any);
     session.onOutput = (msg) => outputs.push(msg);
 
     await session.handleMessage({ type: 'send_message', id: 'msg-notice-a', text: 'Hello' });
+
+    // The production path must NOT call isLandlockAvailable — state comes from config
+    expect(vi.mocked(isLandlockAvailable)).not.toHaveBeenCalled();
 
     // exactly one notice with code 'sandbox_unavailable'
     const notices = outputs.filter((o) => o.type === 'notice') as Array<{ type: 'notice'; id: string; code: string; message: string }>;
@@ -3689,9 +3701,8 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
     warnSpy.mockRestore();
   });
 
-  // (notice-b) sandbox available → no notice, no console.warn
-  it('(notice-b) landlockExec provided and available: no sandbox_unavailable notice', async () => {
-    vi.mocked(isLandlockAvailable).mockReturnValue(true);
+  // (notice-b) landlockAvailable: true + landlockExec set → no notice, no console.warn
+  it('(notice-b) landlockAvailable=true with landlockExec: no sandbox_unavailable notice', async () => {
     vi.mocked(spawn).mockImplementation((() =>
       createMockProcess([{ type: 'result', session_id: 'sess-notice-b' }])
     ) as any);
@@ -3704,10 +3715,14 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
       systemPrompt: 'You are helpful.',
       workspace: '/tmp/ws',
       landlockExec: '/path/le.py',
+      landlockAvailable: true,
     } as any);
     session.onOutput = (msg) => outputs.push(msg);
 
     await session.handleMessage({ type: 'send_message', id: 'msg-notice-b', text: 'Hello' });
+
+    // The production path must NOT call isLandlockAvailable — state comes from config
+    expect(vi.mocked(isLandlockAvailable)).not.toHaveBeenCalled();
 
     // no sandbox_unavailable notice
     const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
@@ -3747,7 +3762,6 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
 
   // (notice-d) idempotency: notice emitted only once across multiple send_message calls
   it('(notice-d) sandbox_unavailable notice emitted exactly once per session', async () => {
-    vi.mocked(isLandlockAvailable).mockReturnValue(false);
     vi.mocked(spawn).mockImplementation((() =>
       createMockProcess([{ type: 'result', session_id: 'sess-notice-d' }])
     ) as any);
@@ -3760,6 +3774,7 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
       systemPrompt: 'You are helpful.',
       workspace: '/tmp/ws',
       landlockExec: '/path/le.py',
+      landlockAvailable: false,
     } as any);
     session.onOutput = (msg) => outputs.push(msg);
 
@@ -3771,6 +3786,9 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
     ) as any);
     // Second call
     await session.handleMessage({ type: 'send_message', id: 'msg-notice-d2', text: 'World' });
+
+    // The production path must NOT call isLandlockAvailable — state comes from config
+    expect(vi.mocked(isLandlockAvailable)).not.toHaveBeenCalled();
 
     // notice emitted exactly once (not twice)
     const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
