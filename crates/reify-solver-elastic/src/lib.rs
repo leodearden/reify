@@ -37,7 +37,7 @@
 //!     DirichletBc, apply_dirichlet_row_elimination,
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
-//!     MpcRow,
+//!     MpcRow, apply_mpc_row_elimination,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -134,7 +134,6 @@
 //!
 //! // T10 smoke tests (Task 3020): pin apply_mpc_row_elimination and
 //! // MpcRow::shell_tet_tying are discoverable from the crate root.
-//! use reify_solver_elastic::apply_mpc_row_elimination;
 //! let _ = apply_mpc_row_elimination;
 //! let _rows = MpcRow::shell_tet_tying(
 //!     [0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11], [12, 13, 14],
@@ -161,7 +160,7 @@ pub use boundary::{
     apply_traction_load,
 };
 pub use constitutive::IsotropicElastic;
-pub use mpc::MpcRow;
+pub use mpc::{MpcRow, apply_mpc_row_elimination};
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     hex_p1::HexP1,
