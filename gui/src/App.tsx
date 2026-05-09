@@ -979,9 +979,7 @@ const App: Component = () => {
 
   function handleDismissReload() {
     setChangedFiles(new Set<string>());
-    for (const path of editorStore.state.externallyChanged) {
-      editorStore.clearExternallyChanged(path);
-    }
+    editorStore.clearAllExternallyChanged();
     setConfirmReload(false);
   }
 
