@@ -2768,6 +2768,250 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
     }
 }
 
+// --- Permission-prompt wire types (task-3206/step-7) ---
+
+/// (a) OutboundMessage::PermissionRequest deserializes from wire JSON.
+#[test]
+fn outbound_permission_request_deserializes() {
+    let json_str = r#"{"type":"permission_request","id":"msg-1","request_id":"r1","tool_name":"Write","tool_input":{"path":"/tmp/x"}}"#;
+    let msg: OutboundMessage = serde_json::from_str(json_str).unwrap();
+    match msg {
+        OutboundMessage::PermissionRequest {
+            id,
+            request_id,
+            tool_name,
+            tool_input,
+        } => {
+            assert_eq!(id, "msg-1");
+            assert_eq!(request_id, "r1");
+            assert_eq!(tool_name, "Write");
+            assert_eq!(tool_input["path"], "/tmp/x");
+        }
+        _ => panic!("Expected PermissionRequest"),
+    }
+}
+
+/// (a) parse_outbound also handles permission_request lines correctly.
+#[test]
+fn parse_outbound_permission_request() {
+    let line = r#"{"type":"permission_request","id":"msg-1","request_id":"r1","tool_name":"Write","tool_input":{"path":"/tmp/x"}}"#;
+    let msg = parse_outbound(line).unwrap();
+    assert_eq!(
+        msg,
+        OutboundMessage::PermissionRequest {
+            id: "msg-1".to_string(),
+            request_id: "r1".to_string(),
+            tool_name: "Write".to_string(),
+            tool_input: json!({"path": "/tmp/x"}),
+        }
+    );
+}
+
+/// (b) InboundMessage::PermissionDecision serializes with snake_case keys and
+/// skips None optional fields (message, updated_input, remember).
+#[test]
+fn inbound_permission_decision_minimal_serializes() {
+    let msg = InboundMessage::PermissionDecision {
+        request_id: "r1".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: None,
+    };
+    let json_val: Value = serde_json::to_value(&msg).unwrap();
+    assert_eq!(json_val["type"], "permission_decision");
+    assert_eq!(json_val["request_id"], "r1");
+    assert_eq!(json_val["behavior"], "allow");
+    // None fields must be absent — skip_serializing_if = Option::is_none
+    assert!(json_val.get("message").is_none(), "None message should be absent");
+    assert!(json_val.get("updated_input").is_none(), "None updated_input should be absent");
+    assert!(json_val.get("remember").is_none(), "None remember should be absent");
+}
+
+/// (b) InboundMessage::PermissionDecision with all optional fields present serializes all.
+#[test]
+fn inbound_permission_decision_full_serializes() {
+    let msg = InboundMessage::PermissionDecision {
+        request_id: "r2".to_string(),
+        behavior: "deny".to_string(),
+        message: Some("no".to_string()),
+        updated_input: Some(json!({"path": "/safe/path"})),
+        remember: Some(true),
+    };
+    let json_val: Value = serde_json::to_value(&msg).unwrap();
+    assert_eq!(json_val["type"], "permission_decision");
+    assert_eq!(json_val["request_id"], "r2");
+    assert_eq!(json_val["behavior"], "deny");
+    assert_eq!(json_val["message"], "no");
+    assert_eq!(json_val["updated_input"]["path"], "/safe/path");
+    assert_eq!(json_val["remember"], true);
+}
+
+/// (b) format_inbound(PermissionDecision) round-trips through JSON as a line.
+#[test]
+fn format_inbound_permission_decision_produces_json_line() {
+    let msg = InboundMessage::PermissionDecision {
+        request_id: "r3".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: Some(false),
+    };
+    let line = format_inbound(&msg);
+    assert!(line.ends_with('\n'), "Should end with newline");
+    let json_val: Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "permission_decision");
+    assert_eq!(json_val["request_id"], "r3");
+    assert_eq!(json_val["behavior"], "allow");
+    assert_eq!(json_val["remember"], false);
+    assert!(json_val.get("message").is_none());
+    assert!(json_val.get("updated_input").is_none());
+}
+
+/// (c) outbound_to_event maps PermissionRequest to "claude-permission-request"
+/// with the full { id, request_id, tool_name, tool_input } payload.
+#[test]
+fn outbound_to_event_permission_request() {
+    let msg = OutboundMessage::PermissionRequest {
+        id: "msg-1".to_string(),
+        request_id: "r1".to_string(),
+        tool_name: "Write".to_string(),
+        tool_input: json!({"path": "/tmp/x"}),
+    };
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-permission-request");
+    assert_eq!(payload["id"], "msg-1");
+    assert_eq!(payload["request_id"], "r1");
+    assert_eq!(payload["tool_name"], "Write");
+    assert_eq!(payload["tool_input"]["path"], "/tmp/x");
+}
+
+/// (d) claude_permission_decision_impl returns Err when sidecar is None.
+#[tokio::test]
+async fn claude_permission_decision_impl_errors_when_sidecar_is_none() {
+    let sidecar: tokio::sync::Mutex<Option<SidecarHandle>> = tokio::sync::Mutex::new(None);
+    let decision = PermissionDecisionArgs {
+        request_id: "r1".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: None,
+    };
+    let result = claude_permission_decision_impl(&sidecar, decision).await;
+    assert!(
+        result.is_err(),
+        "Expected error when sidecar is None, got: {:?}",
+        result
+    );
+}
+
+/// (d) claude_permission_decision_impl writes the correct JSON line to sidecar stdin
+/// when the sidecar is Ready, with optional fields absent for None values.
+#[tokio::test]
+async fn claude_permission_decision_impl_writes_json_when_ready() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, BufReader};
+
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let decision = PermissionDecisionArgs {
+        request_id: "r1".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: None,
+    };
+    let result = claude_permission_decision_impl(&sidecar, decision).await;
+    assert!(
+        result.is_ok(),
+        "Expected success when sidecar is Ready: {:?}",
+        result
+    );
+
+    let mut buf = vec![0u8; 1024];
+    let n = reader_end.read(&mut buf).await.unwrap();
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    let json_val: Value = serde_json::from_str(written.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "permission_decision");
+    assert_eq!(json_val["request_id"], "r1");
+    assert_eq!(json_val["behavior"], "allow");
+    // None fields must be absent (skip_serializing_if = Option::is_none)
+    assert!(json_val.get("message").is_none(), "None message must be absent from wire");
+    assert!(json_val.get("updated_input").is_none(), "None updated_input must be absent from wire");
+    assert!(json_val.get("remember").is_none(), "None remember must be absent from wire");
+}
+
+/// (d) All optional fields present in the decision are forwarded to the wire.
+#[tokio::test]
+async fn claude_permission_decision_impl_writes_all_optional_fields() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, BufReader};
+
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let decision = PermissionDecisionArgs {
+        request_id: "r2".to_string(),
+        behavior: "deny".to_string(),
+        message: Some("not allowed".to_string()),
+        updated_input: None,
+        remember: Some(true),
+    };
+    let result = claude_permission_decision_impl(&sidecar, decision).await;
+    assert!(result.is_ok(), "Expected success: {:?}", result);
+
+    let mut buf = vec![0u8; 1024];
+    let n = reader_end.read(&mut buf).await.unwrap();
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    let json_val: Value = serde_json::from_str(written.trim_end()).unwrap();
+    assert_eq!(json_val["request_id"], "r2");
+    assert_eq!(json_val["behavior"], "deny");
+    assert_eq!(json_val["message"], "not allowed");
+    assert_eq!(json_val["remember"], true);
+    assert!(json_val.get("updated_input").is_none());
+}
+
+/// (d) claude_permission_decision_impl returns Err when sidecar is not in Ready state.
+#[tokio::test]
+async fn claude_permission_decision_impl_errors_when_sidecar_not_ready() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Starting));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let decision = PermissionDecisionArgs {
+        request_id: "r1".to_string(),
+        behavior: "allow".to_string(),
+        message: None,
+        updated_input: None,
+        remember: None,
+    };
+    let result = claude_permission_decision_impl(&sidecar, decision).await;
+    assert!(
+        result.is_err(),
+        "Expected error when sidecar is Starting: {:?}",
+        result
+    );
+}
+
+/// (e) PermissionDecisionArgs satisfies the full IPC contract (Serialize +
+/// DeserializeOwned + Clone + Debug + PartialEq). This is a compile-time assertion.
+#[test]
+fn permission_decision_args_satisfies_ipc_contract() {
+    super::assert_ipc_contract::<PermissionDecisionArgs>();
+}
+
 /// Regression test: make_ready_handle's empty b"" reader causes immediate EOF,
 /// which triggers the on_exit callback setting state to Crashed.  On a
 /// multi_thread runtime the spawned on_exit task can run between yield points,
