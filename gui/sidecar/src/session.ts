@@ -119,6 +119,7 @@ export class SidecarSession {
     // Register the permission-request handler immediately if a permission server is configured.
     // The handler reads currentInvocationId dynamically so it picks up the correct id for
     // whichever send_message invocation is in flight when the callback fires.
+    // The matching deregistration happens in destroy() via onRequest(null).
     if (config.permissionMcp) {
       config.permissionMcp.server.onRequest((req) => {
         const id = this.currentInvocationId ?? '';
@@ -149,6 +150,11 @@ export class SidecarSession {
     if (this.destroyed) return;
     this.destroyed = true;
     this.abortController?.abort();
+    // Deregister the permission-request handler before cancelling, so a shared
+    // PermissionServer (currently 1:1 in production index.ts, but defensible
+    // against future refactors) does not retain a closure over this destroyed
+    // session. The matching registration happens in the constructor.
+    this.config.permissionMcp?.server.onRequest(null);
     // Cancel any pending permission requests so suspended HTTP handlers are unblocked.
     this.config.permissionMcp?.server.cancelAll();
     this.sessionId = null;
