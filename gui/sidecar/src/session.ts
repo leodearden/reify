@@ -349,7 +349,7 @@ export class SidecarSession {
       this.sandboxNoticeEmitted = true;
       this.onOutput({
         type: 'notice',
-        id: '',
+        id,
         code: 'sandbox_unavailable',
         message: 'Sandbox unavailable; Claude will run unrestricted.',
       });

@@ -92,6 +92,11 @@ export interface ErrorMessage {
 
 export interface NoticeMessage {
   type: 'notice';
+  /** The in-flight `send_message` id when a turn is in flight at the time the notice
+   * is emitted — correlates the notice to that turn for host-side routing. The empty
+   * string is reserved for notices emitted outside any in-flight invocation (currently
+   * only `permission_request_orphaned`, which fires from a permission-server callback
+   * that races with destroy or occurs before the first send). */
   id: string;
   /** Stable, structured discriminator for the notice. e.g. 'degraded_turn_boundary'.
    * Hosts SHOULD route on `code` rather than substring-matching `message` prose. */
