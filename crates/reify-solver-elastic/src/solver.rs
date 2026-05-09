@@ -1091,6 +1091,72 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Step-15: parallel shared-DOF fan-mesh — tolerance-equivalence + back-to-back bit-stability
+    // -----------------------------------------------------------------------
+
+    /// Two assertions on the 4-tet fan-mesh assembled K with Dirichlet pin:
+    ///
+    /// (1) **Tolerance-equivalence**: `Parallel { threads: 4 }` vs `Deterministic`.
+    ///     |u_par[i] − u_det[i]| < 1e-9 · max(1, |u_det[i]|) for every i.
+    ///     The fan-mesh's central node 0 is shared by all 4 elements; rows 0–2
+    ///     of K have many cross-element entries, so the parallel and deterministic
+    ///     reductions use different tree shapes → slight FP delta is expected
+    ///     (hence tolerance-equivalence, not bit-equality).
+    ///
+    /// (2) **Fixed-thread back-to-back bit-stability**: two consecutive
+    ///     `Parallel { threads: 4 }` calls produce bit-identical `u`,
+    ///     `iterations`, `converged`. The chunk size `n.div_ceil(4)` is a
+    ///     deterministic function of `(n, threads)` only; spawn/join order is
+    ///     fixed; pairwise-tree shapes are fixed → no scheduling dependence.
+    #[test]
+    fn parallel_shared_dof_k_tolerance_equivalent_and_back_to_back_bit_stable() {
+        let (k, f) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        // (1) Tolerance-equivalence: Parallel { threads: 4 } vs Deterministic.
+        let det = solve_cg(&k, &f, opts.clone(), SolverMode::Deterministic);
+        assert!(det.converged, "deterministic must converge on fan-mesh");
+
+        let par4 = solve_cg(&k, &f, opts.clone(), SolverMode::Parallel { threads: 4 });
+        assert!(par4.converged, "Parallel {{ threads: 4 }} must converge on fan-mesh");
+
+        for i in 0..f.len() {
+            let tol = 1e-9 * det.u[i].abs().max(1.0);
+            let diff = (par4.u[i] - det.u[i]).abs();
+            assert!(
+                diff < tol,
+                "Tolerance-equivalence failure at i={i}: \
+                 u_par={}, u_det={}, |diff|={diff} ≥ tol={tol}",
+                par4.u[i],
+                det.u[i],
+            );
+        }
+
+        // (2) Back-to-back bit-stability for Parallel { threads: 4 }.
+        let par4b = solve_cg(&k, &f, opts, SolverMode::Parallel { threads: 4 });
+        assert_eq!(
+            par4.iterations, par4b.iterations,
+            "parallel back-to-back iterations must be bit-stable"
+        );
+        assert_eq!(
+            par4.converged, par4b.converged,
+            "parallel back-to-back converged flag must be bit-stable"
+        );
+        for i in 0..f.len() {
+            assert_eq!(
+                par4.u[i].to_bits(),
+                par4b.u[i].to_bits(),
+                "parallel back-to-back u[{i}] not bit-stable: a={} b={}",
+                par4.u[i],
+                par4b.u[i],
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Step-13: parallel disjoint-block-K bit-equal to deterministic
     // -----------------------------------------------------------------------
 
