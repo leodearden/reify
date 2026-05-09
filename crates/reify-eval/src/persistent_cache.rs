@@ -933,4 +933,51 @@ mod tests {
             );
         }
     }
+
+    /// Anchors the bincode 1.3.x default-options encoding
+    /// (`DefaultOptions::new().with_fixint_encoding()` per the `bincode::serialize`
+    /// free-function impl). Catches encoder drift INSIDE the `=1.3` Cargo pin that
+    /// the version pin alone cannot block — a hypothetical patch-level change within
+    /// the 1.3.x line would still be caught here because the byte sequence is pinned
+    /// explicitly. Bumping bincode past `=1.3` requires both updating this literal AND
+    /// bumping `ELASTIC_RESULT_FORMAT_VERSION` (cross-checked by
+    /// `elastic_result_format_version_is_one`).
+    ///
+    /// Fixture uses recognisable, non-zero field values so the LE byte order is
+    /// visually verifiable at the test site (e.g. `EF BE AD DE BE BA FE CA` for
+    /// `max_von_mises_bits = 0xCAFE_BABE_DEAD_BEEF` in LE order). Distinct values
+    /// per field defeat any accidental field-aliasing or field-duplication bug.
+    #[test]
+    fn elastic_result_header_bincode_encoding_matches_pinned_hex_literal() {
+        let header = ElasticResultHeader {
+            max_von_mises_bits: 0xCAFE_BABE_DEAD_BEEFu64,
+            converged: true,
+            iterations: 0x1234_5678u32,
+            solve_time_ms: 0xDEAD_BEEF_CAFE_BABEu64,
+            displacement_len: 5u64,
+            stress_len: 7u64,
+        };
+        let encoded: Vec<u8> =
+            bincode::serialize(&header).expect("bincode serialize must not fail for fixed-size header");
+        // Placeholder: deliberately wrong — replaced with the actual bytes in step-4 (GREEN).
+        let expected: [u8; 37] = [0xFF; 37];
+        assert_eq!(
+            encoded.as_slice(),
+            &expected[..],
+            "bincode 1.3 default-options encoding of ElasticResultHeader has drifted \
+             from the pinned wire-format fixture; if the change is intentional, bump \
+             ELASTIC_RESULT_FORMAT_VERSION in the SAME commit and update this literal"
+        );
+        // Round-trip: decode from the pinned literal back to the original struct.
+        // (Cannot use `assert_eq!(decoded, header)` because ElasticResultHeader does
+        // not derive PartialEq — six per-field asserts cover the full struct.)
+        let decoded: ElasticResultHeader = bincode::deserialize(&expected[..])
+            .expect("must decode pinned literal");
+        assert_eq!(decoded.max_von_mises_bits, header.max_von_mises_bits);
+        assert_eq!(decoded.converged, header.converged);
+        assert_eq!(decoded.iterations, header.iterations);
+        assert_eq!(decoded.solve_time_ms, header.solve_time_ms);
+        assert_eq!(decoded.displacement_len, header.displacement_len);
+        assert_eq!(decoded.stress_len, header.stress_len);
+    }
 }
