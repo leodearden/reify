@@ -5,7 +5,7 @@
 //! surface for the morph engine.
 
 use crate::eligibility::Reason;
-use crate::types::{InversionDetails, MetricsBreached, SolverErrorPayload};
+use crate::types::{InversionDetails, SoftFailDetails, SolverErrorPayload};
 
 // ── MorphFailure ──────────────────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ pub enum MorphFailure {
     /// independent of caller-configured thresholds — `degenerate_morphed_element`
     /// will be `Some(element_index)` in that case even when all threshold floors
     /// are set to zero.
-    QualitySoftFail(MetricsBreached),
+    QualitySoftFail(SoftFailDetails),
 
     /// The elastic-solve kernel failed (e.g. singular stiffness matrix).
     ///
@@ -129,7 +129,7 @@ impl Default for MorphOptions {
 mod tests {
     use super::*;
     use crate::eligibility::Reason;
-    use crate::types::{InversionDetails, MetricsBreached};
+    use crate::types::{InversionDetails, SoftFailDetails};
 
     #[test]
     fn morph_options_default_returns_prd_calibrated_quality_and_stiffness_values() {
@@ -151,7 +151,7 @@ mod tests {
             element_index: 7,
             jacobian: -1.0,
         });
-        let soft_fail = MorphFailure::QualitySoftFail(MetricsBreached {
+        let soft_fail = MorphFailure::QualitySoftFail(SoftFailDetails {
             min_scaled_jacobian: Some(0.10),
             pct_below_025: Some(0.02),
             max_aspect_ratio_increase: Some(2.5),

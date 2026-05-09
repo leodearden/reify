@@ -40,7 +40,7 @@ pub use eligibility::{Eligibility, MorphSnapshot, Reason, morph_eligible};
 pub use laplacian::{LaplacianFailure, laplacian_smooth};
 pub use options::{MorphFailure, MorphOptions};
 pub use quality::{QualityVerdict, quality_check};
-pub use types::{BRep, InversionDetails, MetricsBreached, SolverErrorPayload};
+pub use types::{BRep, InversionDetails, SoftFailDetails, SolverErrorPayload};
 
 /// Re-exported so consumers can pattern-match `Reason::BijectionFailure(_)`
 /// without depending on `reify-eval` directly.

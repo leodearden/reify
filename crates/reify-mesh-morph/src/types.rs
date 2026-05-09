@@ -37,15 +37,15 @@ pub struct InversionDetails {
 
 /// Payload for [`crate::MorphFailure::QualitySoftFail`].
 ///
-/// Carries quality breach information for the output mesh. Most fields reflect
-/// threshold breaches from [`crate::MorphOptions`] and are `None` when the
-/// corresponding check passed. The exception is `degenerate_morphed_element`:
-/// it is unconditional — populated whenever a morphed tet has zero scaled
-/// Jacobian (coplanar/zero-volume or coincident-edge degenerate), regardless
-/// of any configured [`crate::MorphOptions`] threshold. Populated by the
-/// quality-check pass in PRD task #9.
+/// Carries diagnostics for a soft-fail verdict — a mixture of
+/// threshold-conditioned fields (`min_scaled_jacobian`, `pct_below_025`,
+/// `max_aspect_ratio_increase` — all `None` when the corresponding
+/// [`crate::MorphOptions`] threshold passed) and one unconditional field
+/// (`degenerate_morphed_element`, `Some(idx)` whenever a morphed tet has
+/// scaled Jacobian == 0.0, regardless of any caller-configured threshold).
+/// Populated by the quality-check pass in PRD task #9.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MetricsBreached {
+pub struct SoftFailDetails {
     /// Observed minimum scaled Jacobian if it fell below
     /// [`crate::MorphOptions::quality_floor_min_scaled_jacobian`].
     pub min_scaled_jacobian: Option<f64>,

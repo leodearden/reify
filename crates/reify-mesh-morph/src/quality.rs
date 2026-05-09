@@ -25,7 +25,7 @@
 //!   are silently skipped (same defensive discipline as `laplacian.rs`).
 
 use crate::options::MorphOptions;
-use crate::types::{InversionDetails, MetricsBreached};
+use crate::types::{InversionDetails, SoftFailDetails};
 use reify_types::VolumeMesh;
 use std::f64::consts::SQRT_2;
 
@@ -168,7 +168,7 @@ pub enum QualityVerdict {
     HardFail(InversionDetails),
     /// No inversions, but one or more quality metrics breached their
     /// configured thresholds.
-    SoftFail(MetricsBreached),
+    SoftFail(SoftFailDetails),
 }
 
 /// Evaluate mesh quality after a morph operation.
@@ -301,10 +301,10 @@ pub fn quality_check(
             // Skip comparison when either AR is degenerate.
             // source degenerate: zero-volume source tet → undefined ratio baseline.
             // morphed degenerate: AR=INFINITY (zero-volume coplanar/collapsed tet).
-            //   Surfacing +inf in the public MetricsBreached.max_aspect_ratio_increase
+            //   Surfacing +inf in the public SoftFailDetails.max_aspect_ratio_increase
             //   field is awkward for serialization (JSON/MessagePack lack standard
             //   +inf encoding). The degenerate morphed tet itself is surfaced via
-            //   `MetricsBreached.degenerate_morphed_element` (populated unconditionally
+            //   `SoftFailDetails.degenerate_morphed_element` (populated unconditionally
             //   when sj == 0.0), making the AR signal redundant *for failure detection*
             //   regardless of caller-configured floors.
             // is_finite() already excludes NaN, so the redundant !is_nan() check
@@ -352,7 +352,7 @@ pub fn quality_check(
             None
         };
 
-    let metrics = MetricsBreached {
+    let metrics = SoftFailDetails {
         min_scaled_jacobian,
         pct_below_025,
         max_aspect_ratio_increase,
@@ -786,10 +786,10 @@ mod tests {
     //
     // task 3172 fix: AR comparison skipped when morphed_ar.is_infinite().
     // task 3196 fix: degenerate morphed tet surfaces in
-    //   MetricsBreached.degenerate_morphed_element regardless of caller floors.
+    //   SoftFailDetails.degenerate_morphed_element regardless of caller floors.
 
     /// Regression guard for task 3196 — a degenerate morphed tet must surface in
-    /// `MetricsBreached.degenerate_morphed_element` regardless of caller-configured
+    /// `SoftFailDetails.degenerate_morphed_element` regardless of caller-configured
     /// floors, not silently pass.
     ///
     /// Fixture: coplanar morphed tet (all z=0); source = regular unit tet.
