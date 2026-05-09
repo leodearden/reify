@@ -471,7 +471,22 @@ pub fn compute_medial_mask(
                                 continue;
                             }
 
-                            // (b) gradient at the voxel; reject degenerate
+                            // (b) gradient at the voxel; reject degenerate.
+                            //
+                            // Invariant: `precompute_gradient_grid` only computes
+                            // slots where |φ| ≤ band_width; out-of-band slots are
+                            // the [0.0; 3] sentinel and are structurally unreachable
+                            // here because the `continue` above gates on the SAME
+                            // `phi` computed from the SAME `sample_at_index` call.
+                            // The debug_assert enforces this coupling so that a
+                            // future refactor (e.g. different threshold in one side)
+                            // fails loudly in debug builds rather than silently
+                            // emitting a degenerate-gradient skip.
+                            debug_assert!(
+                                phi.abs() <= band_width,
+                                "gradient cache indexed for out-of-band voxel: \
+                                 |phi|={phi} > band_width={band_width}"
+                            );
                             let grad = gradient_grid_ref[i * ny * nz + j * nz + k];
                             let gnorm = (grad[0] * grad[0]
                                 + grad[1] * grad[1]
@@ -766,6 +781,15 @@ pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3]
 /// central-difference stencil (`gradient_at_index`). In typical fixtures
 /// ~95% of voxels are out-of-band, so the gate yields a substantial
 /// saving.
+///
+/// Note: the consumer (`compute_medial_mask`) also calls `sample_at_index`
+/// once per voxel to obtain φ for its own narrow-band filter — so the
+/// producer's gate call is duplicated work. The duplication is negligible
+/// while `sample_at_index` is a plain array index (O(1)); if
+/// `SampledField::data` were ever replaced with a non-trivial sampler
+/// (e.g. interpolated or coordinate-transformed), the producer should be
+/// refactored to return per-voxel `(phi, gradient)` pairs so the consumer
+/// can reuse φ without re-sampling.
 ///
 /// Pass `f64::INFINITY` to disable the gate and compute every slot
 /// (useful for testing the strict-equality contract on all voxels).
