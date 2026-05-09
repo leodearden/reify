@@ -1621,4 +1621,58 @@ mod tests {
             _ => panic!("expected Value::Tensor"),
         }
     }
+
+    // step-N: tests for multi_case_result_value
+
+    #[test]
+    fn multi_case_result_value_empty_yields_outer_map_with_empty_cases_inner() {
+        let v = multi_case_result_value(&[]);
+        match v {
+            Value::Map(outer) => {
+                assert_eq!(outer.len(), 1, "outer map should have exactly one key");
+                let cases_key = Value::String("cases".to_string());
+                match outer.get(&cases_key) {
+                    Some(Value::Map(inner)) => {
+                        assert_eq!(inner.len(), 0, "inner cases map should be empty");
+                    }
+                    Some(other) => panic!("expected Value::Map for 'cases', got {:?}", other),
+                    None => panic!("outer map missing 'cases' key"),
+                }
+            }
+            _ => panic!("expected Value::Map"),
+        }
+    }
+
+    #[test]
+    fn multi_case_result_value_inner_keyed_by_value_string_with_per_case_values() {
+        let v = multi_case_result_value(&[
+            ("operating", Value::Int(42)),
+            ("overload", Value::Int(99)),
+        ]);
+        match v {
+            Value::Map(outer) => {
+                let cases_key = Value::String("cases".to_string());
+                match outer.get(&cases_key) {
+                    Some(Value::Map(inner)) => {
+                        assert_eq!(inner.len(), 2, "inner map should have 2 entries");
+                        let op_key = Value::String("operating".to_string());
+                        assert_eq!(
+                            inner.get(&op_key),
+                            Some(&Value::Int(42)),
+                            "operating case should be Int(42)"
+                        );
+                        let ov_key = Value::String("overload".to_string());
+                        assert_eq!(
+                            inner.get(&ov_key),
+                            Some(&Value::Int(99)),
+                            "overload case should be Int(99)"
+                        );
+                    }
+                    Some(other) => panic!("expected Value::Map for 'cases', got {:?}", other),
+                    None => panic!("outer map missing 'cases' key"),
+                }
+            }
+            _ => panic!("expected Value::Map"),
+        }
+    }
 }
