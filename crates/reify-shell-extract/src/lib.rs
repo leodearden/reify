@@ -106,7 +106,9 @@
 //! # Medial-mask extraction smoke test
 //!
 //! ```
-//! use reify_shell_extract::{MedialError, MedialMask, MedialOptions, compute_medial_mask};
+//! use reify_shell_extract::{
+//!     GridValidationError, MedialError, MedialMask, MedialOptions, compute_medial_mask,
+//! };
 //! use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
 //! use std::sync::atomic::AtomicBool;
 //!
@@ -130,7 +132,8 @@
 //! };
 //! let mask: MedialMask = compute_medial_mask(&sdf, &MedialOptions::default()).unwrap();
 //! assert!(mask.voxels.is_empty());
-//! let _: MedialError = MedialError::EmptyAxisGrid { axis: 0 };
+//! let _: MedialError =
+//!     MedialError::GridValidation(GridValidationError::EmptyAxisGrid { axis: 0 });
 //! ```
 
 pub mod medial;
