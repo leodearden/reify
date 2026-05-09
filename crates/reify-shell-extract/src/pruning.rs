@@ -862,13 +862,18 @@ mod tests {
     //
     // These tests ensure the prune predicate `branch_length / local_thickness < ratio`
     // is correctly sensitive to the configured threshold.  The spike fixture has
-    // ratio exactly 1.0; testing at `default + 0.05` and `default − 0.05` straddles
-    // both the live threshold boundary AND the current default.  A regression that
-    // flipped `<` to `<=` or changed the metric definition (e.g. min vs max edge
-    // length) would cause at least one of these to fail.  Deriving from the default
-    // also ensures that if the default drifts significantly (e.g. above 1.05), the
-    // retention test will fail — alerting developers that the default and these
-    // straddle tests need joint re-evaluation.
+    // ratio exactly SPIKE_RATIO (1.0); testing at `SPIKE_RATIO + 0.05` and
+    // `SPIKE_RATIO − 0.05` directly straddles the fixture boundary.  A regression
+    // that flipped `<` to `<=` or changed the metric definition (e.g. min vs max
+    // edge length) would cause at least one of these to fail.  The range assertion
+    // in `prune_options_defaults_pin_empirical_constants` bounds the default to
+    // [0.9, 1.1], ensuring the default stays close enough to SPIKE_RATIO that the
+    // straddle tests remain well-calibrated.
+
+    // Anchor for straddle-test thresholds: the spike-fixture triangle has
+    // branch_length / local_thickness = 1.0.  Both straddle tests derive their
+    // threshold from this constant so the coupling to the fixture is explicit.
+    const SPIKE_RATIO: f64 = 1.0;
 
     /// Shared fixture for threshold-straddling tests.
     ///
@@ -888,18 +893,15 @@ mod tests {
         }
     }
 
-    /// With `shell_branch_prune_ratio = default + 0.05`, the spike (ratio 1.0 <
-    /// default + 0.05) is pruned; the body (ratio ≈ 10 ≫ threshold) survives.
+    /// With `shell_branch_prune_ratio = SPIKE_RATIO + 0.05` (= 1.05), the spike
+    /// (ratio 1.0 < 1.05) is pruned; the body (ratio ≈ 10 ≫ threshold) survives.
     ///
-    /// Derives the threshold from `PruneOptions::default().shell_branch_prune_ratio + 0.05`
-    /// so that this test always straddles the actual default — coupled with the
-    /// complementary retention test below, any significant drift of the default
-    /// above ~1.05 will cause that test to fail (spike ratio 1.0 would no longer
-    /// be ≥ default − 0.05).
+    /// The threshold is derived from `SPIKE_RATIO` (the fixture's actual ratio)
+    /// rather than from the current default, so the straddle semantics are anchored
+    /// to the fixture geometry, not to what the default happens to be right now.
     #[test]
     fn prune_branches_prunes_spike_just_below_threshold() {
-        let default_ratio = PruneOptions::default().shell_branch_prune_ratio;
-        let threshold = default_ratio + 0.05;
+        let threshold = SPIKE_RATIO + 0.05;
         let mesh = threshold_straddle_fixture();
         let opts = PruneOptions {
             shell_branch_prune_ratio: threshold,
@@ -908,7 +910,7 @@ mod tests {
         let result = prune_branches(&mesh, &opts).expect("valid mesh");
         assert_eq!(
             result.metrics.pruned_triangle_count, 1,
-            "spike (ratio=1.0) must be pruned when threshold={threshold} (default+0.05)"
+            "spike (ratio=1.0) must be pruned when threshold={threshold} (SPIKE_RATIO+0.05)"
         );
         assert_eq!(result.mesh.triangles.len(), 1, "body must survive");
         assert!(
@@ -917,17 +919,15 @@ mod tests {
         );
     }
 
-    /// With `shell_branch_prune_ratio = default − 0.05`, the spike (ratio 1.0 ≥
-    /// default − 0.05) survives; no triangles are pruned.
+    /// With `shell_branch_prune_ratio = SPIKE_RATIO - 0.05` (= 0.95), the spike
+    /// (ratio 1.0 ≥ 0.95) survives; no triangles are pruned.
     ///
-    /// Derives the threshold from `PruneOptions::default().shell_branch_prune_ratio − 0.05`
-    /// so that this test always straddles the actual default.  If the default were
-    /// to drift above ~1.05, this test would fail (spike ratio 1.0 < threshold),
-    /// signalling that the default and both straddle tests need joint re-evaluation.
+    /// The threshold is derived from `SPIKE_RATIO` (the fixture's actual ratio)
+    /// rather than from the current default, so the straddle semantics are anchored
+    /// to the fixture geometry, not to what the default happens to be right now.
     #[test]
     fn prune_branches_retains_spike_just_above_threshold() {
-        let default_ratio = PruneOptions::default().shell_branch_prune_ratio;
-        let threshold = default_ratio - 0.05;
+        let threshold = SPIKE_RATIO - 0.05;
         let mesh = threshold_straddle_fixture();
         let opts = PruneOptions {
             shell_branch_prune_ratio: threshold,
@@ -936,7 +936,7 @@ mod tests {
         let result = prune_branches(&mesh, &opts).expect("valid mesh");
         assert_eq!(
             result.metrics.pruned_triangle_count, 0,
-            "spike (ratio=1.0) must survive when threshold={threshold} (default-0.05)"
+            "spike (ratio=1.0) must survive when threshold={threshold} (SPIKE_RATIO-0.05)"
         );
         assert_eq!(result.mesh.triangles.len(), 2, "both triangles must survive");
         assert!(
@@ -1278,14 +1278,15 @@ mod tests {
     /// field is renamed or removed, this test fails at compile time rather than
     /// silently passing with stale bindings.
     ///
-    /// `shell_branch_prune_ratio` is range-checked against `[0.5, 2.0]`; it is a
-    /// documented "v0.4 empirical default pending real-corpus tuning" — exact pinning
-    /// would block tuning.  Behaviour coverage is provided by
+    /// `shell_branch_prune_ratio` is range-checked against `(0.9..=1.1)` rather
+    /// than pinned exactly; the effective straddle-test boundary is the
+    /// spike-fixture ratio (`SPIKE_RATIO` = 1.0) ± 0.05.  Any default outside
+    /// `[0.9, 1.1]` would cause the straddle tests to stop truly straddling the
+    /// fixture — this tighter range catches that drift at test time instead of
+    /// silently letting the straddle tests pass with a mis-calibrated default.
+    /// Behaviour coverage is provided by
     /// `prune_branches_prunes_spike_just_below_threshold` and
-    /// `prune_branches_retains_spike_just_above_threshold`, which derive their
-    /// thresholds from `default ± 0.05` so they always straddle the live default
-    /// (if the default drifts significantly above ~1.05, the retention test will
-    /// self-enforce a failure, prompting joint re-evaluation of default and tests).
+    /// `prune_branches_retains_spike_just_above_threshold`.
     ///
     /// `max_prune_iterations` is pinned exactly to 8: it is documented as twice the
     /// ⌊log₂ 17⌋ = 4 chain-collapse minimum — a deliberate structural constant,
@@ -1307,8 +1308,9 @@ mod tests {
             grid_alignment_tolerance,
         } = PruneOptions::default();
         assert!(
-            (0.5..=2.0).contains(&shell_branch_prune_ratio),
-            "shell_branch_prune_ratio default {shell_branch_prune_ratio} outside expected range [0.5, 2.0]"
+            (0.9..=1.1).contains(&shell_branch_prune_ratio),
+            "shell_branch_prune_ratio default {shell_branch_prune_ratio} outside expected range [0.9, 1.1]; \
+             effective straddle-test boundary is SPIKE_RATIO (1.0) ± 0.05 — update straddle tests if default changes"
         );
         assert_eq!(
             max_prune_iterations, 8,
