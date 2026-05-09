@@ -373,7 +373,8 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
           msg.error = 'sidecar disconnected';
         }),
       );
-      addSystemMessage('sidecar', `Claude assistant disconnected (${reason}) — restart in progress`);
+      const tail = reason ? ` (${reason})` : '';
+      addSystemMessage('sidecar', `Claude assistant disconnected${tail} — restart in progress`);
     });
   }
 

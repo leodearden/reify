@@ -15,6 +15,61 @@ describe('claudeStore', () => {
     return { ...createClaudeStore({ onSend, onAbort, onPermissionDecision } as any), onSend, onAbort, onPermissionDecision };
   }
 
+  // ─── rAF mock helpers ──────────────────────────────────────────────────────
+  // Install a synchronous rAF mock for the enclosing describe block.
+  // Each requestAnimationFrame call fires its callback immediately, then
+  // returns null so rafHandle stays null — allowing multiple consecutive
+  // scheduleFlush calls within the same test to each flush synchronously.
+  function withSynchronousRAF(): void {
+    let origRAF: typeof globalThis.requestAnimationFrame;
+    let origCancelRAF: typeof globalThis.cancelAnimationFrame;
+
+    beforeEach(() => {
+      origRAF = globalThis.requestAnimationFrame;
+      origCancelRAF = globalThis.cancelAnimationFrame;
+      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
+        cb(performance.now());
+        return null as unknown as number;
+      };
+      globalThis.cancelAnimationFrame = () => {};
+    });
+
+    afterEach(() => {
+      globalThis.requestAnimationFrame = origRAF;
+      globalThis.cancelAnimationFrame = origCancelRAF;
+    });
+  }
+
+  // Install a queued rAF mock for the enclosing describe block.
+  // Callbacks are stored; tests fire them manually via `raf.callbacks[i]()`.
+  function withQueuedRAF(): { readonly callbacks: Array<() => void> } {
+    let rafCallbacks: Array<() => void> = [];
+    let origRAF: typeof globalThis.requestAnimationFrame;
+    let origCancelRAF: typeof globalThis.cancelAnimationFrame;
+
+    beforeEach(() => {
+      rafCallbacks = [];
+      origRAF = globalThis.requestAnimationFrame;
+      origCancelRAF = globalThis.cancelAnimationFrame;
+      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
+        const id = rafCallbacks.length + 1;
+        rafCallbacks.push(() => cb(performance.now()));
+        return id;
+      };
+      globalThis.cancelAnimationFrame = (_id: number) => {
+        // no-op: cancelAndFlush handles buffer cleanup
+      };
+    });
+
+    afterEach(() => {
+      globalThis.requestAnimationFrame = origRAF;
+      globalThis.cancelAnimationFrame = origCancelRAF;
+    });
+
+    return { get callbacks() { return rafCallbacks; } };
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   describe('initial state', () => {
     it('has sessionStatus="idle"', () => {
       const { state } = makeStore();
@@ -407,28 +462,7 @@ describe('claudeStore', () => {
   });
 
   describe('rAF delta batching', () => {
-    let rafCallbacks: Array<() => void>;
-    let origRAF: typeof globalThis.requestAnimationFrame;
-    let origCancelRAF: typeof globalThis.cancelAnimationFrame;
-
-    beforeEach(() => {
-      rafCallbacks = [];
-      origRAF = globalThis.requestAnimationFrame;
-      origCancelRAF = globalThis.cancelAnimationFrame;
-      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
-        const id = rafCallbacks.length + 1;
-        rafCallbacks.push(() => cb(performance.now()));
-        return id;
-      };
-      globalThis.cancelAnimationFrame = (_id: number) => {
-        // For simplicity, we just let cancelAndFlush handle this
-      };
-    });
-
-    afterEach(() => {
-      globalThis.requestAnimationFrame = origRAF;
-      globalThis.cancelAnimationFrame = origCancelRAF;
-    });
+    const raf = withQueuedRAF();
 
     it('buffers multiple text_delta events and flushes on rAF', () => {
       const { state, sendMessage, handleOutboundMessage } = makeStore();
@@ -445,7 +479,7 @@ describe('claudeStore', () => {
       expect(assistantBefore!.responseText).toBe('');
 
       // Fire the rAF callback
-      rafCallbacks[0]();
+      raf.callbacks[0]();
 
       // Now all 10 deltas should be concatenated
       const assistantAfter = state.messages.find((m) => m.role === 'assistant');
@@ -475,7 +509,7 @@ describe('claudeStore', () => {
       claudeAbort();
 
       // Fire rAF — should not flush anything since buffer was cleared
-      if (rafCallbacks.length > 0) rafCallbacks[0]();
+      if (raf.callbacks.length > 0) raf.callbacks[0]();
 
       const assistant = state.messages.find((m) => m.role === 'assistant');
       expect(assistant!.responseText).toBe('');
@@ -497,8 +531,8 @@ describe('claudeStore', () => {
       expect(assistantBefore!.responseText).toBe('');
 
       // Fire a single rAF — all 200 deltas should be flushed in one update
-      expect(rafCallbacks).toHaveLength(1);
-      rafCallbacks[0]();
+      expect(raf.callbacks).toHaveLength(1);
+      raf.callbacks[0]();
 
       const assistantAfter = state.messages.find((m) => m.role === 'assistant');
       expect(assistantAfter!.responseText).toBe(expected);
@@ -574,24 +608,7 @@ describe('claudeStore', () => {
   });
 
   describe('stuck state recovery on unmatched message id', () => {
-    let origRAF: typeof globalThis.requestAnimationFrame;
-    let origCancelRAF: typeof globalThis.cancelAnimationFrame;
-
-    beforeEach(() => {
-      origRAF = globalThis.requestAnimationFrame;
-      origCancelRAF = globalThis.cancelAnimationFrame;
-      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
-        // Immediately invoke to flush buffers synchronously for test simplicity
-        cb(performance.now());
-        return 1;
-      };
-      globalThis.cancelAnimationFrame = () => {};
-    });
-
-    afterEach(() => {
-      globalThis.requestAnimationFrame = origRAF;
-      globalThis.cancelAnimationFrame = origCancelRAF;
-    });
+    withSynchronousRAF();
 
     it('done with unmatched id still sets sessionStatus to idle', () => {
       const { state, sendMessage, handleOutboundMessage } = makeStore();
@@ -779,26 +796,7 @@ describe('claudeStore', () => {
   });
 
   describe('handleSidecarCrashed', () => {
-    let origRAF: typeof globalThis.requestAnimationFrame;
-    let origCancelRAF: typeof globalThis.cancelAnimationFrame;
-
-    beforeEach(() => {
-      origRAF = globalThis.requestAnimationFrame;
-      origCancelRAF = globalThis.cancelAnimationFrame;
-      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
-        // Immediately invoke to flush buffers synchronously for test simplicity.
-        // Returns null (cast to number) so rafHandle stays null after assignment,
-        // allowing subsequent scheduleFlush calls to fire within the same test.
-        cb(performance.now());
-        return null as unknown as number;
-      };
-      globalThis.cancelAnimationFrame = () => {};
-    });
-
-    afterEach(() => {
-      globalThis.requestAnimationFrame = origRAF;
-      globalThis.cancelAnimationFrame = origCancelRAF;
-    });
+    withSynchronousRAF();
 
     it('flips in-flight assistant message to complete=true, thinkingComplete=true, error="sidecar disconnected"', () => {
       const { state, sendMessage, handleOutboundMessage, handleSidecarCrashed } = makeStore() as any;
@@ -875,6 +873,37 @@ describe('claudeStore', () => {
       expect(() => handleSidecarCrashed('crash')).not.toThrow();
       const systemMsgs = state.messages.filter((m: any) => m.role === 'system');
       expect(systemMsgs).toHaveLength(1);
+    });
+
+    describe('with pending rAF (buffers not yet flushed at crash time)', () => {
+      // Override the outer withSynchronousRAF with a queued mock so we can
+      // exercise cancelAndFlush draining non-empty buffers before they fire.
+      const raf = withQueuedRAF();
+
+      it('flushes stale buffers via cancelAndFlush, does not throw, and leaves state consistent', () => {
+        const { state, sendMessage, handleOutboundMessage, handleSidecarCrashed } = makeStore() as any;
+        sendMessage('hello', {});
+        const msgId = state.currentMessageId!;
+
+        // Accumulate a thinking delta without firing rAF — buffer is now non-empty
+        handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'stale chunk' } as OutboundMessage);
+        expect(raf.callbacks).toHaveLength(1); // rAF was scheduled but has not fired
+
+        // handleSidecarCrashed calls cancelAndFlush (inside batch) which drains the buffer
+        expect(() => handleSidecarCrashed('crash')).not.toThrow();
+
+        const assistantMsg = state.messages.find((m: any) => m.role === 'assistant') as any;
+        expect(assistantMsg.complete).toBe(true);
+        expect(assistantMsg.thinkingComplete).toBe(true);
+        expect(assistantMsg.error).toBe('sidecar disconnected');
+        // cancelAndFlush flushed the buffer: stale chunk landed on the assistant message
+        expect(assistantMsg.thinkingText).toBe('stale chunk');
+        expect(state.sessionStatus).toBe('idle');
+
+        const systemMsgs = state.messages.filter((m: any) => m.role === 'system');
+        expect(systemMsgs).toHaveLength(1);
+        expect((systemMsgs[0] as any).text).toContain('crash');
+      });
     });
   });
 });
