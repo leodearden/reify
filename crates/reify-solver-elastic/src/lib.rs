@@ -37,6 +37,7 @@
 //!     DirichletBc, apply_dirichlet_row_elimination,
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
+//!     MpcRow,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -123,6 +124,12 @@
 //! let (bcs_t8, compat_t8) = build_support_bcs(&[0], SupportKind::Fixed, SupportBodyKind::Shell);
 //! assert_eq!(bcs_t8.len(), 6, "FixedSupport on shell node 0 → 6 BCs");
 //! assert_eq!(compat_t8, SupportCompatibility::Ok, "Fixed on Shell → Ok compat");
+//!
+//! // MpcRow re-export smoke test (T11 / Task 3021): pin that the type is
+//! // discoverable from the crate root for downstream consumers (Task 3020 will
+//! // add construction methods on this type).
+//! let _row = MpcRow { dofs: vec![0, 6], coeffs: vec![1.0, -1.0], rhs: 0.0 };
+//! assert_eq!(_row.dofs.len(), _row.coeffs.len(), "MpcRow: dofs/coeffs length must match");
 //! ```
 
 pub mod assembly;
