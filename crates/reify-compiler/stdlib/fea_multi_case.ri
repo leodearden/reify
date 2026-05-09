@@ -223,6 +223,20 @@ structure def LoadCase {
 //     value, lambda result with no finite max) collapse to `Undef`
 //     (silent-Undef per PRD task #10 deferral).
 //
+//     Lambda-syntax caveat (task #3007): the documented signature accepts
+//     a lambda whose parameter is `ElasticResult` (a Map-shaped struct),
+//     but the current Reify lambda parameter-type syntax only accepts
+//     bare named types resolvable by `resolve_type_name` (Bool / Int /
+//     Real / String / named dimensions), and untyped lambda params
+//     default to `Type::Real` — so `|e| e["displacement"]` is rejected by
+//     the type checker ("cannot index into non-collection type 'Real'").
+//     Until richer lambda parameter-type syntax lands (orthogonal work),
+//     callers must bind each per-case value directly to the desired
+//     scalar Field and pass the identity lambda `|f| f`.  See the
+//     `WORST_CASE_SOURCE` docstring in
+//     `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs` for the
+//     full rationale and the worked-example identity-lambda fixture.
+//
 // Field rationale:
 //   `cases` — Map from case name to `ElasticResult`. Keys match the
 //             `LoadCase.name` values passed to `solve_load_cases`.

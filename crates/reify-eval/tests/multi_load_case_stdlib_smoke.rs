@@ -244,9 +244,16 @@ fn get_worst_case_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("WorstCaseFixture.{name} not found in eval result"))
 }
 
-/// Smoke test: `worst_case(mcr, |e| e["displacement"])` returns the case name
-/// with the largest per-case displacement-field max (engineered: operating=50,
+/// Smoke test: `worst_case(mcr, |f| f)` returns the case name with the
+/// largest per-case displacement-field max (engineered: operating=50,
 /// overload=200, transport=100 → winner = "overload").
+///
+/// The fixture binds each per-case value directly to a Sampled Field
+/// (rather than to an `ElasticResult`-shaped Map), so the identity lambda
+/// `|f| f` exercises the full dispatch contract — see
+/// `WORST_CASE_SOURCE`'s docstring for why the natural shape
+/// `worst_case(mcr, |e| e["displacement"])` is not yet expressible from
+/// Reify source.
 ///
 /// Pins the v0.3.x `worst_case` Lambda dispatch arm (in `reify-expr/src/lib.rs`,
 /// modeled on `flat_map`) end-to-end through compile + eval. This test fails
@@ -359,9 +366,11 @@ fn worst_case_tied_max_returns_lex_smaller_case_name() {
 /// - **wrong arity (1, 3)** — the `evaluated_args.len() == 2` guard in the
 ///   inline dispatch arm declines, falling through to
 ///   `reify_stdlib::eval_builtin` → `eval_fea` → permanent Undef stub.
-/// - **non-Map first arg** — outer `match (&args[0], &args[1])` falls into
-///   `_ => Value::Undef` in `eval_worst_case_dispatch`.
-/// - **non-Lambda second arg** — same outer-match fallthrough as above.
+/// - **non-Map first arg** — `match &args[0] { Value::Map(m) => m, _ =>
+///   return Value::Undef }` in `eval_worst_case_dispatch`. Pinned by
+///   `non_map_first`.
+/// - **non-Lambda second arg** — `match &args[1] { Value::Lambda { .. } =>
+///   …, _ => return Value::Undef }`. Pinned by `non_lambda_second`.
 /// - **Map without `"cases"` key** — `outer.get(&Value::String("cases"))`
 ///   yields `None`, hits `_ => return Value::Undef`.
 /// - **`"cases"` value not a Map** — same `outer.get` match arm requires
@@ -377,11 +386,13 @@ structure def WorstCaseNegativesFixture {
     let cases = map{"a" => disp_neg}
     let mcr = map{"cases" => cases}
 
-    let arity_one        = worst_case(mcr)
-    let arity_three      = worst_case(mcr, |f| f, |f| f)
-    let no_cases_key     = worst_case(map{"foo" => 1}, |f| f)
-    let cases_not_map    = worst_case(map{"cases" => 42}, |f| f)
-    let lambda_non_field = worst_case(mcr, |f| 42)
+    let arity_one         = worst_case(mcr)
+    let arity_three       = worst_case(mcr, |f| f, |f| f)
+    let non_map_first     = worst_case(42, |f| f)
+    let non_lambda_second = worst_case(mcr, 42)
+    let no_cases_key      = worst_case(map{"foo" => 1}, |f| f)
+    let cases_not_map     = worst_case(map{"cases" => 42}, |f| f)
+    let lambda_non_field  = worst_case(mcr, |f| 42)
 }
 "#;
 
@@ -416,6 +427,8 @@ fn worst_case_argument_shape_negatives_return_undef() {
     for binding in [
         "arity_one",
         "arity_three",
+        "non_map_first",
+        "non_lambda_second",
         "no_cases_key",
         "cases_not_map",
         "lambda_non_field",
