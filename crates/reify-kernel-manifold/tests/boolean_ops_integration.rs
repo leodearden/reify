@@ -121,4 +121,24 @@ fn boolean_ops_round_trip_via_factory_and_geometry_kernel_trait_object() {
         0,
         "tessellated mesh indices must come in triangle triplets",
     );
+
+    // Geometric sanity: result = u ∩ d where d = a - b = [0, 0.5] × [0,1]².
+    // The tessellated mesh's x-extent must be capped at ≈ 0.5 (d's slab),
+    // NOT at ≈ 1.5 (u's full x-extent). This pins that Intersection actually
+    // clipped to `d` — a silent bug that returned `u` instead would produce
+    // max_x ≈ 1.5 and fail here.
+    //
+    // Vertices are stored as a flat [x0,y0,z0, x1,y1,z1, ...] f32 array.
+    // Tolerance 1e-4 absorbs manifold-csg floating-point rounding at the
+    // shared x=0.5 face.
+    let max_x = mesh
+        .vertices
+        .chunks(3)
+        .map(|v| v[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        max_x <= 0.5 + 1e-4,
+        "max x-coordinate of u ∩ d must be ≤ 0.5 (d's x-slab bound); got {max_x:.6} — \
+         if this is ~1.5, Intersection returned u instead of d",
+    );
 }

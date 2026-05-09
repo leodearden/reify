@@ -781,7 +781,12 @@ mod tests {
         let result = kernel.store_mesh_for_test(&bad_mesh);
 
         match result {
-            Err(GeometryError::OperationFailed(_)) => {}
+            Err(GeometryError::OperationFailed(msg)) => assert!(
+                !msg.is_empty(),
+                "OperationFailed payload must surface the manifold3d error — an empty message \
+                 would hide the root cause from fixture authors debugging winding-order \
+                 regressions (doc comment promises the underlying manifold3d error is surfaced)",
+            ),
             other => panic!(
                 "store_mesh_for_test with a single-triangle (non-manifold) mesh must return \
                  Err(GeometryError::OperationFailed(_)); got {other:?}"
