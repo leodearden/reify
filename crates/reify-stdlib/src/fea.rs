@@ -2544,6 +2544,46 @@ mod tests {
         );
     }
 
+    // ── linear_combine dimensionful scalar weight rejection ──────────────────
+
+    #[test]
+    fn linear_combine_dimensionful_scalar_weight_returns_undef() {
+        // A Value::Scalar with a non-dimensionless dimension (e.g. 1.4 m) must
+        // reject to Undef. RED: current weight_val.as_f64() at fea.rs:127-130
+        // silently accepts the SI-numeric component (1.4) regardless of dimension,
+        // so the call succeeds and returns a Map. After step-3 lands the explicit
+        // pattern match rejects non-dimensionless Value::Scalar.
+        let axis = vec![0.0, 1.0, 2.0];
+        let disp_field = wrap_sampled_field(
+            make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let stress_field = wrap_sampled_field(
+            make_sampled_1d("s", axis, vec![10.0, 20.0, 30.0]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
+        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+
+        // Weight is 1.4 m — a dimensionful scalar (LENGTH dimension).
+        let mut wm = BTreeMap::new();
+        wm.insert(
+            Value::String("A".to_string()),
+            Value::Scalar {
+                si_value: 1.4,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        assert!(
+            eval_fea("linear_combine", &[mcr, Value::Map(wm)])
+                .unwrap()
+                .is_undef(),
+            "dimensionful scalar weight (1.4 m) must reject to Undef"
+        );
+    }
+
     // ── linear_combine stress-field source rejection (symmetric with disp) ───
 
     #[test]
