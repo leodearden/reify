@@ -5,6 +5,7 @@ export interface EditorState {
   openFiles: FileData[];
   activeFile: string | null;
   dirtyFiles: string[];
+  externallyChanged: string[];
   cursorPosition: { line: number; column: number } | null;
 }
 
@@ -13,6 +14,7 @@ export function createEditorStore() {
     openFiles: [],
     activeFile: null,
     dirtyFiles: [],
+    externallyChanged: [],
     cursorPosition: null,
   });
 
@@ -40,6 +42,7 @@ export function createEditorStore() {
     const remaining = state.openFiles.filter((f) => f.path !== path);
     setState('openFiles', remaining);
     setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== path));
+    setState('externallyChanged', (ec) => ec.filter((p) => p !== path));
     if (state.activeFile === path) {
       const next = remaining[closedIndex] ?? remaining[closedIndex - 1] ?? null;
       setState('activeFile', next ? next.path : null);
@@ -58,6 +61,17 @@ export function createEditorStore() {
 
   function markClean(path: string) {
     setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== path));
+    setState('externallyChanged', (ec) => ec.filter((p) => p !== path));
+  }
+
+  function markExternallyChanged(path: string) {
+    if (!state.externallyChanged.includes(path)) {
+      setState('externallyChanged', (ec) => [...ec, path]);
+    }
+  }
+
+  function clearExternallyChanged(path: string) {
+    setState('externallyChanged', (ec) => ec.filter((p) => p !== path));
   }
 
   function setCursorPosition(lineOrNull: number | null, column?: number) {
@@ -68,5 +82,5 @@ export function createEditorStore() {
     }
   }
 
-  return { state, openFile, updateFileContent, closeFile, setActiveFile, markDirty, markClean, setCursorPosition };
+  return { state, openFile, updateFileContent, closeFile, setActiveFile, markDirty, markClean, markExternallyChanged, clearExternallyChanged, setCursorPosition };
 }
