@@ -542,17 +542,14 @@ fn envelope_tensor_projection(
     // Build per-case Map<String, Value::Field> of projected scalar fields.
     let mut projected_map: BTreeMap<Value, Value> = BTreeMap::new();
     for (case_name, case_val) in cases_map {
-        // Validate case_val is Value::Map (ElasticResult struct shape).
-        let case_map = match case_val {
-            Value::Map(m) => m,
-            _ => return Value::Undef,
-        };
-        // Look up the per-case Sampled tensor/vector field.
-        let field_val = match case_map.get(&Value::String(field_name.to_string())) {
-            Some(v) => v,
-            None => return Value::Undef,
-        };
-        let (dom, cod, sf) = match as_sampled_field(field_val) {
+        // Per-case Sampled-field extraction: validates ElasticResult Map
+        // shape, field-name lookup, Sampled-source contract, SampledField-
+        // lambda invariant, and the stride contract (data.len() == grid_count
+        // * expected_stride). Codomain shape is intentionally NOT checked
+        // here — the projection-specific extract_quantity check (`Matrix3x3`
+        // vs `Vector3`) lives below so this helper stays projection-agnostic
+        // and can serve future per-case-Sampled-field accessors.
+        let (sf, dom, cod) = match extract_per_case_sampled_field(case_val, field_name, stride) {
             Some(t) => t,
             None => return Value::Undef,
         };
@@ -561,11 +558,7 @@ fn envelope_tensor_projection(
             Some(q) => q,
             None => return Value::Undef,
         };
-        // Stride validation: data.len() must equal grid_count * stride.
         let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
-        if sf.data.len() != grid_count * stride {
-            return Value::Undef;
-        }
 
         // Apply the per-grid-point projection to produce a scalar buffer.
         let mut scalar_data: Vec<f64> = Vec::with_capacity(grid_count);
@@ -601,6 +594,47 @@ fn envelope_tensor_projection(
     // envelope_reduce enforces grid-equality (`metadata_matches`) and the
     // NaN-skip + total_cmp + first-occurrence-wins reduction discipline.
     envelope_reduce(&[Value::Map(projected_map)], false)
+}
+
+/// Extract a per-case Sampled `Field` from an `ElasticResult` instance,
+/// validating the full silent-Undef contract for the three envelope helpers
+/// (`envelope_von_mises`, `envelope_max_principal`,
+/// `envelope_displacement_magnitude`).
+///
+/// Returns `Some((sf, domain, codomain))` when ALL of the following hold:
+///   - `elastic_result` is `Value::Map` (the ElasticResult struct shape)
+///   - the Map has the `field_name` key
+///   - the value at that key is `Value::Field { source: Sampled, .. }`
+///   - the Sampled lambda slot carries `Value::SampledField`
+///   - `sf.data.len() == axis_grids product * expected_stride`
+///     (the stride contract: stride 9 for 3×3 tensor codomain, stride 3
+///     for 3-vector codomain — see `TensorShape::stride()`)
+///
+/// Returns `None` on any failure. Codomain shape (e.g. `Matrix3x3` vs
+/// `Vector3`) is intentionally NOT checked here so the helper is reusable
+/// across projections; the projection-specific `TensorShape::extract_quantity`
+/// check happens at the call site.
+///
+/// The return tuple ordering `(sf, dom, cod)` mirrors the plan signature
+/// `Option<(&SampledField, &Type, &Type)>`. (Differs from `as_sampled_field`'s
+/// `(&Type, &Type, &SampledField)` ordering — the helper's primary product
+/// is the SampledField; the Type references are auxiliary.)
+fn extract_per_case_sampled_field<'a>(
+    elastic_result: &'a Value,
+    field_name: &str,
+    expected_stride: usize,
+) -> Option<(&'a SampledField, &'a Type, &'a Type)> {
+    let case_map = match elastic_result {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let field_val = case_map.get(&Value::String(field_name.to_string()))?;
+    let (dom, cod, sf) = as_sampled_field(field_val)?;
+    let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+    if sf.data.len() != grid_count * expected_stride {
+        return None;
+    }
+    Some((sf, dom, cod))
 }
 
 /// Extract the inner `cases` `BTreeMap` from a `MultiCaseResult` struct
