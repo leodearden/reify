@@ -290,16 +290,25 @@ impl std::error::Error for MesherError {}
 
 // ── Crate-visible quantization utility ───────────────────────────────────────
 
-/// Returns `true` if `value` is safe as an inverse-tolerance operand.
+/// Returns `true` if `value` is a valid inverse-tolerance operand: strictly
+/// positive, finite, and normal (not subnormal).
 ///
-/// A "safe" tolerance is strictly positive, finite, and normal (not subnormal).
-/// Subnormal values — even those whose reciprocal still fits in `f64` (e.g.
-/// `2^-1023 → 1/x ≈ 8.99e307`) — produce reciprocals large enough that
-/// `coord * (1.0 / value)` overflows to `±Inf` for any non-tiny coordinate,
-/// silently collapsing all vertices into the `±Inf` saturation buckets.
+/// **Structural boundary, not safety boundary.**  The gate rejects subnormals
+/// at the float type-system boundary.  This is *not* a magnitude-based safety
+/// check: the smallest accepted value, `f64::MIN_POSITIVE` (2^-1022 ≈ 2.2e-308),
+/// has a reciprocal of ~4.5e307 — large enough that
+/// `(coord * inv_tol).round() as i64` saturates to `i64::MIN` / `i64::MAX`
+/// for any coordinate with `|coord| ≥ 1.0`.  Very small *normal* tolerances
+/// therefore produce the same silent vertex-collapse pathology that this gate's
+/// previous docstring described as exclusive to subnormals.
+///
+/// **Residual hazard.**  For the full magnitude-based caller obligation —
+/// `coord_max / merge_tolerance < i64::MAX as f64` (~9.2e18) — see the
+/// **Preconditions** sections of [`mesh_mid_surface`] and
+/// [`crate::pruning::prune_branches`].
 ///
 /// Used by both [`mesh_mid_surface`] and [`crate::pruning::prune_branches`]
-/// to gate their respective tolerance parameters at the same rule.
+/// to gate their respective tolerance parameters at the same structural rule.
 #[inline]
 pub(crate) fn is_quantization_tolerance_valid(value: f64) -> bool {
     value > 0.0 && value.is_finite() && !value.is_subnormal()
@@ -476,8 +485,8 @@ pub fn mesh_mid_surface(
     // ── 1. Validate options ───────────────────────────────────────────────────
     // Reject merge_tolerance if it is ≤ 0, non-finite, or subnormal.
     // `is_quantization_tolerance_valid` centralises the rule shared with
-    // `prune_branches` (same `coord * inv_tol` overflow hazard).  See its
-    // doc for the subnormal-saturation rationale.
+    // `prune_branches`.  See its doc for the structural-boundary rationale
+    // and the residual saturation hazard for small-but-normal tolerances.
     if !is_quantization_tolerance_valid(options.merge_tolerance) {
         return Err(MesherError::InvalidMergeTolerance {
             value: options.merge_tolerance,
