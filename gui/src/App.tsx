@@ -92,6 +92,12 @@ const App: Component = () => {
   const selectionStore = createSelectionStore();
   const engineStore = createEngineStore({
     onEntityRemoved: (id) => selectionStore.clearIfRemoved(id),
+    onEngineReinitialized: () => {
+      refreshEntityTree();
+      mechanismStore.refresh().catch((err) =>
+        console.error('[mechanism] refresh failed:', err),
+      );
+    },
   });
   const claudeStore = createClaudeStore({
     onSend: (_id, text, context) => {
@@ -233,6 +239,12 @@ const App: Component = () => {
 
   const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
 
+  function refreshEntityTree(): void {
+    bridgeGetEntityTree()
+      .then((t) => { if (alive) setEntityTree(t); })
+      .catch((err) => console.error('[entity-tree] refresh failed:', err));
+  }
+
   // Reactive counter incremented each time viewStateStore.setTree is called.
   // This lets the effectiveVisibility memo re-evaluate AFTER nodeByPath is rebuilt,
   // avoiding a race where the memo re-runs before the createEffect below has executed.
@@ -346,9 +358,7 @@ const App: Component = () => {
     createEffect(() => {
       const phase = engineStore.state.evalStatus.phase;
       if (prevPhase !== undefined && phase === 'idle' && prevPhase !== 'idle') {
-        bridgeGetEntityTree()
-          .then((t) => { if (alive) setEntityTree(t); })
-          .catch((err) => console.error('[entity-tree] refresh failed:', err));
+        refreshEntityTree();
       }
       prevPhase = phase;
     });
@@ -666,20 +676,7 @@ const App: Component = () => {
       return;
     }
 
-    // Fetch the initial entity tree after the engine state is loaded.
-    try {
-      const tree = await bridgeGetEntityTree();
-      if (!alive) return;
-      setEntityTree(tree);
-    } catch (err) {
-      console.error('[entity-tree] initial fetch failed:', err);
-    }
-
     if (!alive) return;
-
-    // Fetch mechanism descriptors for the initial state (non-blocking: does
-    // not delay the subscribeToEvents chain).
-    mechanismStore.refresh().catch((err) => console.error('[mechanism] initial fetch failed:', err));
 
     // Subscribe to events before showing ready state — "ready" means
     // fully initialized including live update subscriptions
