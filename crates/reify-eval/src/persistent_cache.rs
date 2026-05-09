@@ -872,4 +872,42 @@ mod tests {
         let decoded = read_f64_slab(&mut &buf[..], 0).unwrap();
         assert!(decoded.is_empty(), "read of zero-length slab must return empty Vec");
     }
+
+    /// Pins the BE `chunks_exact(8) → f64::from_le_bytes` algorithm host-agnostically
+    /// by running the conversion-only logic on a non-cfg-gated helper. The BE branch of
+    /// `read_f64_slab` is `#[cfg(target_endian = "big")]`-gated and unreachable on LE CI
+    /// hosts — this test exercises the algorithm on any host by calling the helper directly
+    /// with a synthetic LE byte buffer constructed unconditionally via `to_le_bytes()` per
+    /// element (NOT `bytemuck::cast_slice`, which is host-byte-order and would emit BE bytes
+    /// on a BE host).
+    #[test]
+    fn decode_f64_slab_from_le_bytes_pins_chunks_exact_le_decode_algorithm() {
+        let input: Vec<f64> = vec![
+            1.0,
+            -2.5,
+            std::f64::consts::PI,
+            f64::from_bits(0xDEAD_BEEF_CAFE_BABE),
+            f64::from_bits(0x0000_0000_0000_0001), // smallest positive denormal
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -0.0_f64,
+            0.0_f64,
+        ];
+        // Build a synthetic LE byte buffer host-agnostically.
+        // NOT bytemuck::cast_slice (which would emit BE bytes on a BE host).
+        let mut bytes: Vec<u8> = Vec::new();
+        for v in &input {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let decoded = decode_f64_slab_from_le_bytes(&bytes);
+        assert_eq!(decoded.len(), input.len());
+        for (i, (d, o)) in decoded.iter().zip(input.iter()).enumerate() {
+            assert_eq!(
+                d.to_bits(),
+                o.to_bits(),
+                "bit pattern drift @ index {i}"
+            );
+        }
+    }
 }
