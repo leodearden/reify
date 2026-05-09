@@ -413,10 +413,165 @@ fn solve_cg_deterministic(
     }
 }
 
+/// Parallel row-partitioned SpMV: `out[i] = Σ_j K[i,j] · p[j]`.
+///
+/// Row range `0..n` is partitioned into `threads` contiguous chunks via
+/// `n.div_ceil(threads).max(1)`. Each thread owns a disjoint mutable slice
+/// of `out` (via `split_at_mut`). Per-row inner products use pairwise-tree
+/// reduction. Worker handles are joined in spawn order.
+///
+/// # Determinism contract
+///
+/// (a) Chunk size `n.div_ceil(threads).max(1)` is a deterministic function
+///     of `(n, threads)` only — no work-stealing or load-balancing.
+/// (b) Threads spawn sequentially in chunk-iteration order.
+/// (c) Each thread's per-row pairwise-tree uses the same fixed-shape
+///     recursion as `spmv_seq`, so the SpMV result is bit-stable per
+///     fixed thread count.
+fn spmv_parallel(k: &SparseRowMat<usize, f64>, p: &[f64], out: &mut [f64], threads: usize) {
+    let (sym, vals) = k.parts();
+    let row_ptr = sym.row_ptr();
+    let col_idx = sym.col_idx();
+    let n = sym.nrows();
+    let chunk_size = n.div_ceil(threads).max(1);
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        // Split `out` into disjoint mutable chunks in chunk order so that
+        // each worker writes into its own slice without any locking.
+        let mut remaining_out = &mut out[..];
+        let mut row_start = 0;
+
+        while row_start < n {
+            let row_end = (row_start + chunk_size).min(n);
+            let chunk_len = row_end - row_start;
+
+            // `split_at_mut` gives us a disjoint borrow; `remaining_out`
+            // now points to the tail for the next iteration.
+            let (out_chunk, rest) = remaining_out.split_at_mut(chunk_len);
+            remaining_out = rest;
+
+            handles.push(s.spawn(move || {
+                for i in 0..chunk_len {
+                    let global_row = row_start + i;
+                    let start_idx = row_ptr[global_row];
+                    let end_idx = row_ptr[global_row + 1];
+                    let products: Vec<f64> = (start_idx..end_idx)
+                        .map(|idx| vals[idx] * p[col_idx[idx]])
+                        .collect();
+                    out_chunk[i] = pairwise_tree_sum(&products);
+                }
+            }));
+
+            row_start = row_end;
+        }
+
+        for h in handles {
+            match h.join() {
+                Ok(()) => {}
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+    });
+}
+
+/// Parallel dot product `a · b` via chunk-partitioned pairwise-tree.
+///
+/// Each thread computes `pairwise_tree_sum` on its chunk's element-wise
+/// products; partial sums are collected in spawn order and combined via
+/// `pairwise_tree_sum`. Gives bit-stability per fixed thread count.
+fn dot_parallel(a: &[f64], b: &[f64], threads: usize) -> f64 {
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "dot_parallel: len mismatch {} vs {}",
+        a.len(),
+        b.len()
+    );
+    let n = a.len();
+    let chunk_size = n.div_ceil(threads).max(1);
+
+    let partials: Vec<f64> = std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        let mut start = 0;
+
+        while start < n {
+            let end = (start + chunk_size).min(n);
+            let a_chunk = &a[start..end];
+            let b_chunk = &b[start..end];
+
+            handles.push(s.spawn(move || {
+                let products: Vec<f64> = a_chunk
+                    .iter()
+                    .zip(b_chunk.iter())
+                    .map(|(ai, bi)| ai * bi)
+                    .collect();
+                pairwise_tree_sum(&products)
+            }));
+
+            start = end;
+        }
+
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(v) => v,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
+    });
+
+    pairwise_tree_sum(&partials)
+}
+
+/// Parallel squared Euclidean norm `‖v‖²` via chunk-partitioned pairwise-tree.
+fn norm2_squared_parallel(v: &[f64], threads: usize) -> f64 {
+    let n = v.len();
+    let chunk_size = n.div_ceil(threads).max(1);
+
+    let partials: Vec<f64> = std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        let mut start = 0;
+
+        while start < n {
+            let end = (start + chunk_size).min(n);
+            let chunk = &v[start..end];
+
+            handles.push(s.spawn(move || {
+                let squares: Vec<f64> = chunk.iter().map(|vi| vi * vi).collect();
+                pairwise_tree_sum(&squares)
+            }));
+
+            start = end;
+        }
+
+        handles
+            .into_iter()
+            .map(|h| match h.join() {
+                Ok(v) => v,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
+    });
+
+    pairwise_tree_sum(&partials)
+}
+
 /// Parallel CG inner loop (row-partitioned SpMV + parallel reductions).
 ///
-/// Placeholder until step-14; calls the deterministic path for now.
-/// This ensures step-4's tests pass while parallel mode is wired in later.
+/// Uses the same Jacobi-preconditioned CG algorithm as `solve_cg_deterministic`
+/// but dispatches SpMV and dot-product reductions to `spmv_parallel`,
+/// `dot_parallel`, and `norm2_squared_parallel`. Vector axpy ops
+/// (`u += α p`, `r -= α Kp`, `p = z + β p`) remain sequential — axpy is
+/// bit-stable under any partition and the sequential O(n) cost is
+/// dominated by the SpMV at realistic problem sizes.
+///
+/// # Determinism contract (per fixed thread count)
+///
+/// See [`SolverMode::Parallel`] doc for the three-clause contract. The
+/// `parallel_disjoint_block_k_bit_equal_to_deterministic` test pins the
+/// strongest form: on a block-diagonal K where no row crosses a chunk
+/// boundary, Parallel produces the bit-identical result as Deterministic.
 fn solve_cg_parallel(
     k: &SparseRowMat<usize, f64>,
     f: &[f64],
@@ -424,11 +579,80 @@ fn solve_cg_parallel(
     tol_sq: f64,
     max_iter: usize,
     n: usize,
-    _threads: usize,
+    threads: usize,
 ) -> CgResult {
-    // Parallel implementation landed in step-14.
-    // Delegating to deterministic keeps the API contract satisfied.
-    solve_cg_deterministic(k, f, inv_diag, tol_sq, max_iter, n)
+    // Allocate scratch vectors. All axpy ops iterate slot 0 → n−1 in slice order.
+    let mut u = vec![0.0_f64; n];
+    // r₀ = f − K·u₀ = f (since u₀ = 0)
+    let mut r: Vec<f64> = f.to_vec();
+    // z₀ = M⁻¹ r₀
+    let mut z: Vec<f64> = r
+        .iter()
+        .zip(inv_diag.iter())
+        .map(|(ri, di)| ri * di)
+        .collect();
+    // p₀ = z₀
+    let mut p: Vec<f64> = z.clone();
+    // rz = r₀ · z₀
+    let mut rz = dot_parallel(&r, &z, threads);
+
+    let mut kp = vec![0.0_f64; n];
+
+    for iter in 0..max_iter {
+        // Kp = K · p_k
+        spmv_parallel(k, &p, &mut kp, threads);
+
+        // α = (r_k · z_k) / (p_k · Kp)
+        let pkp = dot_parallel(&p, &kp, threads);
+        assert!(
+            pkp > 0.0,
+            "CG(parallel): p·Kp = {pkp} ≤ 0 at iteration {iter}; \
+             K must be positive-definite and p must be a non-zero direction. \
+             This indicates a degenerate system.",
+        );
+        let alpha = rz / pkp;
+
+        // u_{k+1} = u_k + α p_k  (sequential axpy — bit-stable under any partition)
+        for i in 0..n {
+            u[i] += alpha * p[i];
+        }
+        // r_{k+1} = r_k − α Kp
+        for i in 0..n {
+            r[i] -= alpha * kp[i];
+        }
+
+        // Convergence check: ‖r_{k+1}‖² < tol² · ‖f‖²
+        let r_norm_sq = norm2_squared_parallel(&r, threads);
+        if r_norm_sq < tol_sq {
+            return CgResult {
+                u,
+                iterations: iter + 1,
+                converged: true,
+            };
+        }
+
+        // z_{k+1} = M⁻¹ r_{k+1}  (sequential — 1 mul per slot, no reduction)
+        for i in 0..n {
+            z[i] = r[i] * inv_diag[i];
+        }
+
+        // β = (r_{k+1} · z_{k+1}) / (r_k · z_k)
+        let rz_new = dot_parallel(&r, &z, threads);
+        let beta = rz_new / rz;
+        rz = rz_new;
+
+        // p_{k+1} = z_{k+1} + β p_k
+        for i in 0..n {
+            p[i] = z[i] + beta * p[i];
+        }
+    }
+
+    // Cap-out without convergence.
+    CgResult {
+        u,
+        iterations: max_iter,
+        converged: false,
+    }
 }
 
 #[cfg(test)]
