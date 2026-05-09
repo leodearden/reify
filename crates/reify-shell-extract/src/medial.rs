@@ -1950,6 +1950,85 @@ mod tests {
         }
     }
 
+    /// Contract test: `precompute_gradient_grid` with a finite `band_width`
+    /// must only fill in the central-difference gradient for *in-band* voxels
+    /// (`|φ(v)| ≤ band_width`) and leave out-of-band slots at the `[0.0; 3]`
+    /// sentinel from the initial allocation.
+    ///
+    /// **Why both branches matter.**
+    /// *In-band correctness:* the producer-side gate and the consumer-side gate
+    /// in `compute_medial_mask` (line 470) both compare
+    /// `sample_at_index(sdf, [i, j, k]).abs() <= band_width`. Pinning that
+    /// in-band slots equal `gradient_at_index` exactly ensures there is no
+    /// FP-rounding skew: the producer never skips a voxel the consumer
+    /// would have read.
+    /// *Out-of-band sentinel:* the consumer rejects out-of-band voxels at
+    /// line 470 *before* indexing into the cache (line 475), so the `[0.0; 3]`
+    /// sentinel is structurally unreachable from downstream logic.  Pinning
+    /// the sentinel confirms that skipping the 6-sample stencil for out-of-band
+    /// voxels is safe.
+    ///
+    /// The fixture uses `slab_sdf_3d(3.0, 16)` (z ∈ −7.5..7.5, φ = |z| − 3)
+    /// with `band_width = 1.0` so voxels with |φ| ≤ 1.0 (z ≈ ±2.5, ±3.5)
+    /// form a non-empty in-band partition and the rest form a non-empty
+    /// out-of-band partition — both branches are exercised.
+    #[test]
+    fn precompute_gradient_grid_skips_out_of_band_voxels() {
+        let sdf = slab_sdf_3d(3.0, 16);
+        let ny = sdf.axis_grids[1].len();
+        let nz = sdf.axis_grids[2].len();
+        let nx = sdf.axis_grids[0].len();
+
+        let band_width = 1.0_f64;
+        let grid = precompute_gradient_grid(&sdf, band_width);
+
+        assert_eq!(
+            grid.len(),
+            nx * ny * nz,
+            "gradient grid length must be nx*ny*nz"
+        );
+
+        let mut in_band_count = 0usize;
+        let mut out_of_band_count = 0usize;
+
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let phi = sample_at_index(&sdf, [i, j, k]);
+                    let slot = grid[i * ny * nz + j * nz + k];
+                    if phi.abs() <= band_width {
+                        in_band_count += 1;
+                        let expected = gradient_at_index(&sdf, [i, j, k]);
+                        assert_eq!(
+                            slot, expected,
+                            "in-band gradient mismatch at ({i},{j},{k}): \
+                             cache={slot:?}, inline={expected:?}"
+                        );
+                    } else {
+                        out_of_band_count += 1;
+                        assert_eq!(
+                            slot,
+                            [0.0_f64; 3],
+                            "out-of-band slot at ({i},{j},{k}) should be \
+                             sentinel [0.0; 3], got {slot:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        assert!(
+            in_band_count > 0,
+            "fixture must have at least one in-band voxel \
+             (band_width={band_width})"
+        );
+        assert!(
+            out_of_band_count > 0,
+            "fixture must have at least one out-of-band voxel \
+             (band_width={band_width})"
+        );
+    }
+
     /// RED — inverted bounds on axis 0 (`bounds_min > bounds_max`)
     /// must return `InvalidAxisGeometry`. The `world_at_index` and
     /// `sample_at_world` helpers produce geometrically nonsensical
