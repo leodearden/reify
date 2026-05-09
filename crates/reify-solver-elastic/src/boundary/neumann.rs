@@ -303,7 +303,7 @@ const TRI_P1_GRADS: [[f64; 2]; 3] = [[-1.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
 /// - Vertex shapes: `λ_i (2 λ_i - 1)`
 /// - Edge-midpoint shapes: `4 λ_a λ_b`
 ///
-/// Follows the standard quadratic Lagrangian Serendipity ordering.
+/// Follows the standard 6-node quadratic Lagrange triangle ordering.
 fn tri_p2_shape(c: TriRefCoord) -> [f64; 6] {
     let xi = c.xi;
     let eta = c.eta;
@@ -326,6 +326,7 @@ fn tri_p2_grads(c: TriRefCoord) -> [[f64; 2]; 6] {
     let eta = c.eta;
     let l0 = 1.0 - xi - eta;
     [
+        // ∂l0/∂ξ = ∂l0/∂η = -1, so both partials of N_0 share the same expression.
         // ∂N_0/∂ξ = (2(1-ξ-η) - 1)(-1) + (1-ξ-η)(-2)(-1) — computed via product rule
         // N_0 = l0(2l0-1), ∂N_0/∂ξ = ∂l0/∂ξ(2l0-1) + l0·2·∂l0/∂ξ = (-1)(2l0-1) + l0·2·(-1)
         //      = -(2l0-1) - 2l0 = -4l0 + 1
