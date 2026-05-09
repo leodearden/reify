@@ -27,6 +27,7 @@ use reify_types::{
     GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VolumeMesh,
 };
 
+use crate::auto_size::{AutoSizeConfig, auto_mesh_size_from_features};
 use crate::ffi;
 use crate::init;
 
@@ -74,7 +75,7 @@ impl GmshKernel {
     pub fn mesh_to_volume(
         &self,
         surface: &Mesh,
-        _options: &crate::MeshingOptions,
+        options: &crate::MeshingOptions,
         element_order: ElementOrderTag,
     ) -> Result<VolumeMesh, GeometryError> {
         let _guard = init::GMSH_LOCK.lock().map_err(|e| {
@@ -84,6 +85,45 @@ impl GmshKernel {
         ffi::clear()?;
         // Silence gmsh's stdout chatter — keeps test output readable.
         ffi::option_set_number("General.Terminal", 0.0)?;
+
+        // Resolve mesh size: caller override > auto-derived from smallest
+        // triangle edge. `auto_mesh_size_from_features` returns 0.0 for
+        // empty meshes; we leave the gmsh defaults in place in that case
+        // (skip the SetNumber call).
+        let resolved_size = match options.mesh_size {
+            Some(s) => s,
+            None => auto_mesh_size_from_features(surface, AutoSizeConfig::default())
+                .map_err(|e| {
+                    GeometryError::OperationFailed(format!(
+                        "auto_mesh_size_from_features failed: {e}"
+                    ))
+                })?,
+        };
+        if resolved_size > 0.0 {
+            ffi::option_set_number("Mesh.MeshSizeMin", resolved_size)?;
+            ffi::option_set_number("Mesh.MeshSizeMax", resolved_size)?;
+        }
+
+        // HXT explicit: gmsh's Algorithm3D codes — 10 = HXT, the modern
+        // parallel tet-meshing kernel. Pinning the choice insulates us from
+        // gmsh's default-algorithm churn across point releases.
+        ffi::option_set_number("Mesh.Algorithm3D", 10.0)?;
+
+        // Thread count: deterministic mode forces 1; otherwise honour
+        // caller override; otherwise probe available parallelism. We avoid
+        // introducing `num_cpus` as a workspace dep — `available_parallelism`
+        // is the std-library equivalent landed in 1.59.
+        let num_threads: f64 = if options.deterministic {
+            1.0
+        } else {
+            match options.threads {
+                Some(t) => t as f64,
+                None => std::thread::available_parallelism()
+                    .map(|n| n.get() as f64)
+                    .unwrap_or(1.0),
+            }
+        };
+        ffi::option_set_number("General.NumThreads", num_threads)?;
 
         ffi::model_add("reify_volume_mesh")?;
         let surf_tag = ffi::add_discrete_entity(2, &[])?;
