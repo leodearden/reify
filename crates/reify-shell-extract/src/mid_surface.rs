@@ -1141,6 +1141,44 @@ mod tests {
         }
     }
 
+    // ── Per-axis MaskVoxelOutOfBounds characterization tests ─────────────────
+
+    /// Table-driven out-of-bounds test covering y and z axes (positive overflow
+    /// and negative), complementing the existing x-axis tests.
+    ///
+    /// Pins all six conditions of the bounds AND-chain at
+    /// `extract_mid_surface`'s voxel-validation loop. A regression dropping
+    /// `vk < 0` or `(vj as usize) >= ny` would trip a named failing case.
+    #[test]
+    fn extract_mid_surface_rejects_mask_voxel_out_of_bounds_per_axis_table_driven() {
+        // 3×3×3 grid → valid voxel indices are [0..3) on each axis.
+        // Each case below violates exactly one axis/sign condition.
+        let cases: &[([i32; 3], &str)] = &[
+            ([0, 10, 0], "y-axis positive overflow"),
+            ([0, -1, 0], "y-axis negative"),
+            ([0, 0, 10], "z-axis positive overflow"),
+            ([0, 0, -1], "z-axis negative"),
+        ];
+        for &(voxel, label) in cases {
+            let sdf = minimal_3d_field(); // 3×3×3
+            let mask = MedialMask {
+                spacing: [1.0, 1.0, 1.0],
+                origin: [0.0, 0.0, 0.0],
+                voxels: vec![voxel],
+            };
+            let err = extract_mid_surface(&sdf, &mask, &MidSurfaceOptions::default())
+                .expect_err(&format!("{label}: out-of-bounds voxel must be rejected"));
+            assert_eq!(
+                err,
+                MidSurfaceError::MaskVoxelOutOfBounds {
+                    voxel,
+                    grid_extent: [3, 3, 3],
+                },
+                "{label}: must produce MaskVoxelOutOfBounds"
+            );
+        }
+    }
+
     // ── Wrapper-variant shape test (drives step-2 refactor) ──────────────────
 
     /// RED — asserts that `extract_mid_surface` on a 1D field returns
