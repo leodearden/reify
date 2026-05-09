@@ -88,9 +88,10 @@ fn out_of_bounds_index_returns_err() {
 }
 
 /// When `mesh.indices` is empty (no triangles → no edges → no minimum), the
-/// function must return `Ok(0.0)` per the documented contract in
-/// `src/auto_size.rs:117-119`. Callers treat a zero return as "auto-size
-/// unavailable" and fall back to a configured default.
+/// function must return `Ok(0.0)` per the early-return guard at the top of
+/// `auto_mesh_size_from_features` that fires when `mesh.indices` is empty.
+/// Callers treat a zero return as "auto-size unavailable" and fall back to a
+/// configured default.
 #[test]
 fn empty_indices_returns_zero_fallback() {
     // Empty vertices is fine: the early-return fires on mesh.indices.is_empty()
