@@ -271,19 +271,27 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
     // (Flagged in esc-2691-81, reviewer_comprehensive suggestion 1 of 3.)
     //
     // The strengthened assertion suite below detects the exact regression the
-    // task names: if the topology walk silently short-circuits and only the
-    // box op is dispatched, either (a) the op count will be 1 (< 2) or (b)
-    // the last recorded op will not be a Fillet — both fire loudly.
+    // task names: if the topology walk silently short-circuits and no Fillet
+    // op fires, (a) the first op will not be a Box, or (b) the last op will
+    // not be a Fillet — the boundary assertions pin both ends of the expected
+    // box → ... → fillet sequence and fire loudly on either failure.
+    //
+    // ops_ref is the only surviving Arc clone for this kernel instance — the
+    // original Arc moved into Engine::new — so a poisoned mutex on assertion
+    // failure is locally contained and cannot affect other tests.
     let ops = ops_ref.lock().unwrap();
 
-    // (a) at least 2 ops recorded — box realization + at least one fillet op.
-    //     Catches the regression scenario where the topology walk silently
-    //     short-circuits and only the box op is dispatched.
+    // (a) the FIRST recorded op must be a Box realization, pinning the expected
+    //     box → ... → fillet execution sequence at both ends. This is a tighter
+    //     guard than a plain `ops.len() >= 2` lower bound: a stray intermediate
+    //     realization would still pass a count check even if no Fillet ever ran.
+    //     Assertion (b) is the primary correctness check; (a) makes the full
+    //     Box-then-Fillet structure explicit so both ends of the sequence are
+    //     asserted.
     assert!(
-        ops.len() >= 2,
-        "expected at least 2 recorded ops (box + fillet), got {}: {:?}",
-        ops.len(),
-        ops.iter().map(|r| r.op.kind_name()).collect::<Vec<_>>()
+        matches!(ops.first().map(|r| &r.op), Some(GeometryOp::Box { .. })),
+        "expected first recorded op to be GeometryOp::Box, got: {:?}",
+        ops.first().map(|r| r.op.kind_name())
     );
 
     // (b) the LAST recorded op must be a Fillet — confirms the topology
