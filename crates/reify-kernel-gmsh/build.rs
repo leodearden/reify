@@ -95,4 +95,13 @@ fn main() {
     // Mirrors crates/reify-kernel-openvdb/build.rs:134 and
     // crates/reify-kernel-occt/build.rs:158.
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+
+    // Expose the resolved lib_dir to tests via env! at compile time. The
+    // RPATH-pin smoke test (`tests/rpath_smoke.rs`) asserts that the
+    // embedded RPATH/RUNPATH entry references *this* exact lib_dir,
+    // which honours `GMSH_LIB_DIR` overrides and the non-canonical
+    // fallback paths (`/usr/lib/x86_64-linux-gnu`, `/usr/lib`, …).
+    // Hardcoding `/opt/reify-deps/lib` would make the test brittle to
+    // any non-conda install layout.
+    println!("cargo:rustc-env=REIFY_GMSH_LIB_DIR={}", lib_dir.display());
 }
