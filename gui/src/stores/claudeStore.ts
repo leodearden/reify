@@ -371,6 +371,10 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     // Walk all messages rather than only currentMessageId — prior turns can also leak
     // incomplete state (e.g. pre-fix error-without-thinkingComplete commits).
     batch(() => {
+      // cancelAndFlush MUST run first (and share this batch) so any pending thinking/text
+      // deltas land on the assistant message BEFORE the predicate-updater setState below
+      // seals it with error='sidecar disconnected'. Without this ordering, buffered
+      // content would be lost as the batch closes.
       cancelAndFlush();
       setState('sessionStatus', 'idle');
       setState(
