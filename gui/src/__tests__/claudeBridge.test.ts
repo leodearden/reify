@@ -15,6 +15,7 @@ import {
   claudeSendMessage,
   claudeAbort,
   claudeClearSession,
+  claudePermissionDecision,
   subscribeToClaudeEvents,
   MESSAGE_CONTEXT_FIELD_MAP,
   BUILD_CONTEXT_HANDLED_FIELDS,
@@ -192,6 +193,83 @@ describe('claude invoke wrappers', () => {
     await expect(claudeClearSession()).rejects.toThrow('IPC failed');
   });
 
+  it('claudePermissionDecision calls invoke with snake_case keys for minimal allow', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudePermissionDecision({ requestId: 'r1', behavior: 'allow' });
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_permission_decision', {
+      request_id: 'r1',
+      behavior: 'allow',
+    });
+  });
+
+  it('claudePermissionDecision calls invoke with snake_case keys for deny with message', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudePermissionDecision({ requestId: 'r2', behavior: 'deny', message: 'not allowed' });
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_permission_decision', {
+      request_id: 'r2',
+      behavior: 'deny',
+      message: 'not allowed',
+    });
+  });
+
+  it('claudePermissionDecision includes remember: true when set', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudePermissionDecision({ requestId: 'r3', behavior: 'allow', remember: true });
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_permission_decision', {
+      request_id: 'r3',
+      behavior: 'allow',
+      remember: true,
+    });
+  });
+
+  it('claudePermissionDecision includes updatedInput as updated_input in snake_case', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudePermissionDecision({
+      requestId: 'r4',
+      behavior: 'allow',
+      updatedInput: { path: '/safe/path' },
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_permission_decision', {
+      request_id: 'r4',
+      behavior: 'allow',
+      updated_input: { path: '/safe/path' },
+    });
+  });
+
+  it('claudePermissionDecision omits undefined optional fields from wire payload', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudePermissionDecision({
+      requestId: 'r5',
+      behavior: 'allow',
+      message: undefined,
+      updatedInput: undefined,
+      remember: undefined,
+    });
+
+    const payload = (mockInvoke.mock.calls[0] as [string, Record<string, unknown>])[1];
+    expect(Object.keys(payload).sort()).toEqual(['behavior', 'request_id']);
+    expect(payload).not.toHaveProperty('message');
+    expect(payload).not.toHaveProperty('updated_input');
+    expect(payload).not.toHaveProperty('remember');
+  });
+
+  it('claudePermissionDecision propagates invoke rejection', async () => {
+    mockInvoke.mockRejectedValue(new Error('sidecar not ready'));
+
+    await expect(
+      claudePermissionDecision({ requestId: 'r6', behavior: 'deny' }),
+    ).rejects.toThrow('sidecar not ready');
+  });
+
   it('MESSAGE_CONTEXT_FIELD_MAP covers every key of MessageContext', () => {
     // Build a fully-populated MessageContext to extract its keys at runtime
     const fullContext: Required<MessageContext> = {
@@ -290,9 +368,10 @@ describe('subscribeToClaudeEvents', () => {
     'claude-error',
     'claude-notice',
     'claude-ready',
+    'claude-permission-request',
   ];
 
-  it('calls listen() for all 8 claude event types', async () => {
+  it('calls listen() for all 9 claude event types', async () => {
     const unlisten = vi.fn();
     mockListen.mockResolvedValue(unlisten);
 
@@ -303,7 +382,7 @@ describe('subscribeToClaudeEvents', () => {
     for (const name of ALL_EVENT_NAMES) {
       expect(listenedEvents).toContain(name);
     }
-    expect(mockListen).toHaveBeenCalledTimes(8);
+    expect(mockListen).toHaveBeenCalledTimes(9);
   });
 
   it('returns a combined unlisten that calls all individual unlisteners', async () => {
@@ -605,20 +684,20 @@ describe('subscribeToClaudeEvents', () => {
       expect(mockListen).toHaveBeenCalledTimes(1);
     });
 
-    it('cleans up all 7 prior listeners when the last (8th) listen() fails', async () => {
-      const unlisteners = Array.from({ length: 7 }, () => vi.fn());
+    it('cleans up all 8 prior listeners when the last (9th) listen() fails', async () => {
+      const unlisteners = Array.from({ length: 8 }, () => vi.fn());
       let callIdx = 0;
       mockListen.mockImplementation(async () => {
-        if (callIdx < 7) {
+        if (callIdx < 8) {
           return unlisteners[callIdx++];
         }
-        throw new Error('listen failed on call 8');
+        throw new Error('listen failed on call 9');
       });
 
       const handler = vi.fn();
-      await expect(subscribeToClaudeEvents(handler)).rejects.toThrow('listen failed on call 8');
+      await expect(subscribeToClaudeEvents(handler)).rejects.toThrow('listen failed on call 9');
 
-      // All 7 previously-resolved unlisteners must be called
+      // All 8 previously-resolved unlisteners must be called
       for (const unsub of unlisteners) {
         expect(unsub).toHaveBeenCalledTimes(1);
       }
@@ -644,6 +723,7 @@ describe('subscribeToClaudeEvents', () => {
       'claude-done',
       'claude-error',
       'claude-notice',
+      'claude-permission-request',
     ] as const;
 
     const INVALID_PAYLOADS = [
@@ -889,6 +969,125 @@ describe('subscribeToClaudeEvents', () => {
         listener({ payload: null as unknown as Record<string, unknown> });
         expect(handler).toHaveBeenCalledWith({ type: 'ready' });
       });
+    });
+  });
+
+  describe('claude-permission-request mapping', () => {
+    it('maps claude-permission-request event to OutboundMessage { type: "permission_request" }', async () => {
+      const { setup } = captureListener('claude-permission-request');
+      const handler = vi.fn();
+      const listener = await setup(handler);
+
+      listener({
+        payload: {
+          id: 'msg-1',
+          request_id: 'r1',
+          tool_name: 'Write',
+          tool_input: { path: '/tmp/x' },
+        },
+      });
+
+      expect(handler).toHaveBeenCalledWith({
+        type: 'permission_request',
+        id: 'msg-1',
+        request_id: 'r1',
+        tool_name: 'Write',
+        tool_input: { path: '/tmp/x' },
+      });
+    });
+
+    it('normalizes tool_input=null to empty object for permission_request', async () => {
+      const { setup } = captureListener('claude-permission-request');
+      const handler = vi.fn();
+      const listener = await setup(handler);
+
+      listener({
+        payload: {
+          id: 'msg-2',
+          request_id: 'r2',
+          tool_name: 'Bash',
+          tool_input: null,
+        },
+      });
+
+      expect(handler).toHaveBeenCalledWith({
+        type: 'permission_request',
+        id: 'msg-2',
+        request_id: 'r2',
+        tool_name: 'Bash',
+        tool_input: {},
+      });
+    });
+
+    it('drops claude-permission-request when required field "request_id" is missing', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { setup } = captureListener('claude-permission-request');
+      const handler = vi.fn();
+      const listener = await setup(handler);
+
+      listener({ payload: { id: 'msg-1', tool_name: 'Write', tool_input: {} } });
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('claude-permission-request'),
+        { id: 'msg-1', tool_name: 'Write', tool_input: {} },
+      );
+      vi.restoreAllMocks();
+    });
+
+    it('drops claude-permission-request when required field "tool_name" is missing', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { setup } = captureListener('claude-permission-request');
+      const handler = vi.fn();
+      const listener = await setup(handler);
+
+      listener({ payload: { id: 'msg-1', request_id: 'r1', tool_input: {} } });
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledOnce();
+      vi.restoreAllMocks();
+    });
+
+    it('drops claude-permission-request when "id" is not a string', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { setup } = captureListener('claude-permission-request');
+      const handler = vi.fn();
+      const listener = await setup(handler);
+
+      listener({ payload: { id: 42, request_id: 'r1', tool_name: 'Write', tool_input: {} } });
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledOnce();
+      vi.restoreAllMocks();
+    });
+
+    it('extra unknown fields in permission_request payload are not forwarded to handler', async () => {
+      const { setup } = captureListener('claude-permission-request');
+      const handler = vi.fn();
+      const listener = await setup(handler);
+
+      listener({
+        payload: {
+          id: 'msg-1',
+          request_id: 'r1',
+          tool_name: 'Write',
+          tool_input: { path: '/tmp/x' },
+          _debug: true,
+          _timestamp: 12345,
+        },
+      });
+
+      expect(handler).toHaveBeenCalledWith({
+        type: 'permission_request',
+        id: 'msg-1',
+        request_id: 'r1',
+        tool_name: 'Write',
+        tool_input: { path: '/tmp/x' },
+      });
+      const received = handler.mock.calls[0][0] as Record<string, unknown>;
+      expect(received).not.toHaveProperty('_debug');
+      expect(received).not.toHaveProperty('_timestamp');
     });
   });
 });
