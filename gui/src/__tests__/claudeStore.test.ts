@@ -150,6 +150,22 @@ describe('claudeStore', () => {
       expect(assistantMsg!.error).toBe('Rate limit exceeded');
       expect(state.sessionStatus).toBe('idle');
     });
+
+    it('error while mid-thinking sets BOTH complete and thinkingComplete to true (regression: stuck throbber)', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      // Simulate being mid-thinking when error fires
+      handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'Let me think...' } as OutboundMessage);
+      handleOutboundMessage({
+        type: 'error',
+        id: msgId,
+        message: 'Something went wrong',
+      } as OutboundMessage);
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg.complete).toBe(true);
+      expect(assistantMsg.thinkingComplete).toBe(true);
+    });
   });
 
   describe('sendMessage', () => {
