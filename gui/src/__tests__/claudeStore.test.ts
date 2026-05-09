@@ -779,6 +779,27 @@ describe('claudeStore', () => {
   });
 
   describe('handleSidecarCrashed', () => {
+    let origRAF: typeof globalThis.requestAnimationFrame;
+    let origCancelRAF: typeof globalThis.cancelAnimationFrame;
+
+    beforeEach(() => {
+      origRAF = globalThis.requestAnimationFrame;
+      origCancelRAF = globalThis.cancelAnimationFrame;
+      globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
+        // Immediately invoke to flush buffers synchronously for test simplicity.
+        // Returns null (cast to number) so rafHandle stays null after assignment,
+        // allowing subsequent scheduleFlush calls to fire within the same test.
+        cb(performance.now());
+        return null as unknown as number;
+      };
+      globalThis.cancelAnimationFrame = () => {};
+    });
+
+    afterEach(() => {
+      globalThis.requestAnimationFrame = origRAF;
+      globalThis.cancelAnimationFrame = origCancelRAF;
+    });
+
     it('flips in-flight assistant message to complete=true, thinkingComplete=true, error="sidecar disconnected"', () => {
       const { state, sendMessage, handleOutboundMessage, handleSidecarCrashed } = makeStore() as any;
       sendMessage('hello', {});
@@ -825,11 +846,15 @@ describe('claudeStore', () => {
       sendMessage('first', {});
       const msgId1 = state.currentMessageId!;
       handleOutboundMessage({ type: 'thinking_delta', id: msgId1, content: 'a' } as OutboundMessage);
+      // Synchronous rAF mock flushes the delta immediately to msg1
+      expect(state.messages.find((m: any) => m.role === 'assistant' && m.id === msgId1).thinkingText).toBe('a');
 
-      // Second turn (inject an incomplete assistant message directly via a second sendMessage)
+      // Second turn — also left incomplete
       sendMessage('second', {});
       const msgId2 = state.currentMessageId!;
       handleOutboundMessage({ type: 'thinking_delta', id: msgId2, content: 'b' } as OutboundMessage);
+      // Synchronous rAF mock flushes the delta immediately to msg2
+      expect(state.messages.find((m: any) => m.role === 'assistant' && m.id === msgId2).thinkingText).toBe('b');
 
       handleSidecarCrashed('crash');
 
@@ -840,6 +865,9 @@ describe('claudeStore', () => {
         expect(msg.thinkingComplete).toBe(true);
         expect(msg.error).toBe('sidecar disconnected');
       }
+      // thinkingText is preserved through the crash handler (not wiped)
+      expect(assistantMsgs.find((m: any) => m.id === msgId1).thinkingText).toBe('a');
+      expect(assistantMsgs.find((m: any) => m.id === msgId2).thinkingText).toBe('b');
     });
 
     it('is a safe no-op (adds SystemMessage, does not throw) when no assistant message exists', () => {
