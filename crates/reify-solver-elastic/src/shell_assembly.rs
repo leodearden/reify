@@ -836,6 +836,44 @@ mod tests {
         }
     }
 
+    // --- Fixture invariants (step 1) ---
+
+    /// Verify that `tilted_q_for_shell_tests()` returns a proper rotation matrix:
+    /// each row is a unit vector, rows are mutually orthogonal, and det = +1.
+    #[test]
+    fn tilted_q_for_shell_tests_returns_orthonormal_rotation() {
+        let q = super::tilted_q_for_shell_tests();
+
+        // (a) Each row has unit Euclidean norm.
+        for (i, row) in q.iter().enumerate() {
+            let norm_sq: f64 = row.iter().map(|x| x * x).sum();
+            assert!(
+                (norm_sq - 1.0).abs() < 1e-12,
+                "row {i}: ||row||^2 = {norm_sq} (expected 1.0)"
+            );
+        }
+
+        // (b) All pairs of distinct rows are mutually orthogonal.
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                let dot: f64 = (0..3).map(|k| q[i][k] * q[j][k]).sum();
+                assert!(
+                    dot.abs() < 1e-12,
+                    "rows {i} and {j}: dot = {dot} (expected 0.0)"
+                );
+            }
+        }
+
+        // (c) det(Q) = +1 (right-handed / proper rotation).
+        let det = q[0][0] * (q[1][1] * q[2][2] - q[1][2] * q[2][1])
+            - q[0][1] * (q[1][0] * q[2][2] - q[1][2] * q[2][0])
+            + q[0][2] * (q[1][0] * q[2][1] - q[1][1] * q[2][0]);
+        assert!(
+            (det - 1.0).abs() < 1e-12,
+            "det(Q) = {det} (expected +1.0)"
+        );
+    }
+
     // --- Frame covariance (step 21) ---
 
     #[test]
