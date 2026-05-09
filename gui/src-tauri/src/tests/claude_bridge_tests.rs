@@ -3316,3 +3316,63 @@ async fn spawn_sidecar_impl_with_workspace_and_no_landlock_returns_error_for_mis
         err
     );
 }
+
+// --- on_sidecar_exit direct unit tests (task 3301) ---
+
+#[tokio::test]
+async fn on_sidecar_exit_emits_crashed_event_when_state_was_ready() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::{Mutex, Notify};
+
+    // Set up state = Ready
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+
+    // Set up notify — capture the Notified future BEFORE calling on_sidecar_exit
+    // so it stores the current epoch. When notify_waiters() fires inside the helper,
+    // polling the future will see the epoch change and return Ready immediately.
+    let notify = Arc::new(Notify::new());
+    let notified = notify.notified();
+
+    // Set up event sink
+    let events: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
+        Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+    let emitter = Arc::new(move |name: String, payload: serde_json::Value| {
+        events_clone.lock().unwrap().push((name, payload));
+    });
+
+    // Call the helper directly — RED until on_sidecar_exit is defined
+    on_sidecar_exit(state.clone(), Arc::clone(&notify), Some(emitter)).await;
+
+    // (a) State must be Crashed after the await
+    assert!(
+        matches!(*state.lock().await, SidecarState::Crashed(_)),
+        "Expected SidecarState::Crashed after on_sidecar_exit with Ready input"
+    );
+
+    // (b) Event sink must have exactly one claude-sidecar-crashed entry with non-empty reason
+    let emitted = events.lock().unwrap();
+    let crashed: Vec<_> = emitted
+        .iter()
+        .filter(|(name, _)| name == "claude-sidecar-crashed")
+        .collect();
+    assert_eq!(
+        crashed.len(),
+        1,
+        "Expected exactly one claude-sidecar-crashed event, got: {:?}",
+        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+    );
+    let payload = &crashed[0].1;
+    assert!(
+        payload["reason"].is_string() && !payload["reason"].as_str().unwrap().is_empty(),
+        "Expected non-empty string 'reason' in payload, got: {:?}",
+        payload
+    );
+    drop(emitted);
+
+    // (c) notify.notified() must resolve within 50 ms (notify_waiters was called inside helper)
+    tokio::time::timeout(Duration::from_millis(50), notified)
+        .await
+        .expect("notify_waiters should have been called inside on_sidecar_exit");
+}
