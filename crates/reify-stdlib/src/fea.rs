@@ -680,6 +680,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
+    use reify_test_support::multi_case_result_value;
     use reify_types::{
         DimensionVector, FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Type,
         Value,
@@ -1525,28 +1526,6 @@ mod tests {
 
     // ── case_names helpers and tests ────────────────────────────────────────
 
-    /// Build a `MultiCaseResult`-shaped `Value::Map` for unit tests.
-    ///
-    /// Runtime struct instances are `Value::Map<Value::String, Value>` keyed
-    /// by field names (no `Value::Structure` variant exists). A
-    /// `MultiCaseResult` has one field `cases` whose value is a
-    /// `Value::Map<Value::String, Value>` of per-case entries. This helper
-    /// constructs the outer struct-instance Map from a `(case_name, Value)`
-    /// slice, letting callers pass arbitrary Values as case entries (fixture
-    /// ElasticResult Maps, Value::Int sentinels, etc.).
-    fn make_multi_case_result_value(cases: &[(&str, Value)]) -> Value {
-        let mut inner = BTreeMap::new();
-        for (name, val) in cases {
-            inner.insert(Value::String((*name).to_string()), val.clone());
-        }
-        let mut outer = BTreeMap::new();
-        outer.insert(
-            Value::String("cases".to_string()),
-            Value::Map(inner),
-        );
-        Value::Map(outer)
-    }
-
     /// Build a minimal fixture `ElasticResult`-shaped Map for case values.
     ///
     /// Field values are placeholders (Int(0) / Bool / Real) sufficient to
@@ -1583,7 +1562,7 @@ mod tests {
         let er_op = make_fixture_elastic_result(10);
         let er_ov = make_fixture_elastic_result(20);
         let er_tr = make_fixture_elastic_result(30);
-        let mcr = make_multi_case_result_value(&[
+        let mcr = multi_case_result_value(&[
             ("transport", er_tr),
             ("operating", er_op),
             ("overload", er_ov),
@@ -1610,7 +1589,7 @@ mod tests {
 
     #[test]
     fn case_names_two_args_returns_undef() {
-        let mcr = make_multi_case_result_value(&[]);
+        let mcr = multi_case_result_value(&[]);
         assert!(
             eval_fea("case_names", &[mcr, Value::String("extra".to_string())])
                 .unwrap()
@@ -1667,7 +1646,7 @@ mod tests {
         // Fixture: MCR with one case "operating" whose ElasticResult has
         // iterations=42 as a recognisable distinguishing value.
         let er_op = make_fixture_elastic_result(42);
-        let mcr = make_multi_case_result_value(&[("operating", er_op.clone())]);
+        let mcr = multi_case_result_value(&[("operating", er_op.clone())]);
 
         let result = eval_fea(
             "result_for",
@@ -1684,7 +1663,7 @@ mod tests {
     #[test]
     fn result_for_missing_key_returns_undef() {
         let er_op = make_fixture_elastic_result(42);
-        let mcr = make_multi_case_result_value(&[("operating", er_op)]);
+        let mcr = multi_case_result_value(&[("operating", er_op)]);
 
         let result = eval_fea(
             "result_for",
@@ -1708,13 +1687,13 @@ mod tests {
     #[test]
     fn result_for_one_arg_returns_undef() {
         // arity must be exactly 2 (mcr, key)
-        let mcr = make_multi_case_result_value(&[]);
+        let mcr = multi_case_result_value(&[]);
         assert!(eval_fea("result_for", &[mcr]).unwrap().is_undef());
     }
 
     #[test]
     fn result_for_three_args_returns_undef() {
-        let mcr = make_multi_case_result_value(&[]);
+        let mcr = multi_case_result_value(&[]);
         assert!(
             eval_fea(
                 "result_for",
@@ -1737,7 +1716,7 @@ mod tests {
     #[test]
     fn result_for_non_string_key_returns_undef() {
         // Second arg must be Value::String — passing e.g. Value::Real rejects.
-        let mcr = make_multi_case_result_value(&[]);
+        let mcr = multi_case_result_value(&[]);
         assert!(
             eval_fea("result_for", &[mcr, Value::Real(1.0)])
                 .unwrap()
@@ -1846,7 +1825,7 @@ mod tests {
     #[test]
     fn linear_combine_non_map_weights_returns_undef() {
         // args[1] must be a Map — a Real rejects immediately.
-        let mcr = make_multi_case_result_value(&[]);
+        let mcr = multi_case_result_value(&[]);
         assert!(
             eval_fea("linear_combine", &[mcr, Value::Real(1.0)])
                 .unwrap()
@@ -1857,7 +1836,7 @@ mod tests {
     #[test]
     fn linear_combine_empty_weights_returns_undef() {
         // weights map must be non-empty.
-        let mcr = make_multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
+        let mcr = multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
         let empty_weights = Value::Map(BTreeMap::new());
         assert!(
             eval_fea("linear_combine", &[mcr, empty_weights])
@@ -1871,7 +1850,7 @@ mod tests {
     #[test]
     fn linear_combine_non_string_weight_key_returns_undef() {
         // Weight keys must be Value::String — Int key rejects.
-        let mcr = make_multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
+        let mcr = multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
         let mut weights_map = BTreeMap::new();
         weights_map.insert(Value::Int(7), Value::Real(1.0));
         assert!(
@@ -1884,7 +1863,7 @@ mod tests {
     #[test]
     fn linear_combine_non_numeric_weight_value_returns_undef() {
         // Weight values must be numeric (as_f64() returns Some) — String rejects.
-        let mcr = make_multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
+        let mcr = multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
         let mut weights_map = BTreeMap::new();
         weights_map.insert(
             Value::String("A".to_string()),
@@ -1900,7 +1879,7 @@ mod tests {
     #[test]
     fn linear_combine_unknown_case_name_returns_undef() {
         // Weight references a case name absent from base_results.cases.
-        let mcr = make_multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
+        let mcr = multi_case_result_value(&[("A", make_fixture_elastic_result(0))]);
         let mut weights_map = BTreeMap::new();
         weights_map.insert(Value::String("missing".to_string()), Value::Real(1.0));
         assert!(
@@ -1913,7 +1892,7 @@ mod tests {
     #[test]
     fn linear_combine_case_value_not_a_map_returns_undef() {
         // base_results.cases["A"] is Value::Int(123) — not a Map.
-        let mcr = make_multi_case_result_value(&[("A", Value::Int(123))]);
+        let mcr = multi_case_result_value(&[("A", Value::Int(123))]);
         let mut weights_map = BTreeMap::new();
         weights_map.insert(Value::String("A".to_string()), Value::Real(1.0));
         assert!(
@@ -1960,7 +1939,7 @@ mod tests {
         let stress_field = wrap_sampled_field(stress_sf, Type::Real, Type::Real);
 
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
-        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mcr = multi_case_result_value(&[("A", case_a)]);
 
         let mut weights_map = BTreeMap::new();
         weights_map.insert(Value::String("A".to_string()), Value::Real(2.0));
@@ -2055,7 +2034,7 @@ mod tests {
 
         let case_d = make_fixture_elastic_result_with_fields(d_disp, d_stress);
         let case_l = make_fixture_elastic_result_with_fields(l_disp, l_stress);
-        let mcr = make_multi_case_result_value(&[("D", case_d), ("L", case_l)]);
+        let mcr = multi_case_result_value(&[("D", case_d), ("L", case_l)]);
 
         let mut weights_map = BTreeMap::new();
         weights_map.insert(Value::String("D".to_string()), Value::Real(1.4));
@@ -2131,7 +2110,7 @@ mod tests {
         );
         let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
         let case_b = make_fixture_elastic_result_with_fields(b_disp, b_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
 
         let mut weights_map = BTreeMap::new();
         weights_map.insert(Value::String("A".to_string()), Value::Real(1.4));
@@ -2196,7 +2175,7 @@ mod tests {
         );
         let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
         let case_b = make_fixture_elastic_result_with_fields(b_disp, b_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
@@ -2225,7 +2204,7 @@ mod tests {
         );
         let case_a = make_fixture_elastic_result_with_fields(shared.clone(), a_stress);
         let case_b = make_fixture_elastic_result_with_fields(shared, b_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
@@ -2253,7 +2232,7 @@ mod tests {
         );
         let case_a = make_fixture_elastic_result_with_fields(shared_disp.clone(), a_stress);
         let case_b = make_fixture_elastic_result_with_fields(shared_disp, b_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
@@ -2282,7 +2261,7 @@ mod tests {
         };
         let case_a = make_fixture_elastic_result_with_fields(a_disp, shared_stress.clone());
         let case_b = make_fixture_elastic_result_with_fields(b_disp, shared_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
@@ -2311,7 +2290,7 @@ mod tests {
         };
         let case_a = make_fixture_elastic_result_with_fields(a_disp, shared_stress.clone());
         let case_b = make_fixture_elastic_result_with_fields(b_disp, shared_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
@@ -2355,7 +2334,7 @@ mod tests {
 
         let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
         let case_b = make_fixture_elastic_result_with_fields(b_disp, b_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
 
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
@@ -2417,7 +2396,7 @@ mod tests {
         );
 
         let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mcr = multi_case_result_value(&[("A", case_a)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
 
@@ -2463,7 +2442,7 @@ mod tests {
             Type::Real,
         );
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
-        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mcr = multi_case_result_value(&[("A", case_a)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
 
@@ -2529,7 +2508,7 @@ mod tests {
         };
         let stress_field = wrap_sampled_field(empty_stress_sf, Type::Real, Type::Real);
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
-        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mcr = multi_case_result_value(&[("A", case_a)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
 
@@ -2581,7 +2560,7 @@ mod tests {
         partial.insert(Value::String("iterations".to_string()), Value::Int(0));
         let partial_case = Value::Map(partial);
 
-        let mcr = make_multi_case_result_value(&[("A", partial_case)]);
+        let mcr = multi_case_result_value(&[("A", partial_case)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
@@ -2604,7 +2583,7 @@ mod tests {
         partial.insert(Value::String("iterations".to_string()), Value::Int(0));
         let partial_case = Value::Map(partial);
 
-        let mcr = make_multi_case_result_value(&[("A", partial_case)]);
+        let mcr = multi_case_result_value(&[("A", partial_case)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         assert!(eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap().is_undef());
@@ -2629,7 +2608,7 @@ mod tests {
             Type::Real,
         );
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
-        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mcr = multi_case_result_value(&[("A", case_a)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(f64::NAN));
         assert!(
@@ -2659,7 +2638,7 @@ mod tests {
             Type::Real,
         );
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
-        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mcr = multi_case_result_value(&[("A", case_a)]);
 
         // +Inf weight must reject to Undef.
         let mut wm_pos = BTreeMap::new();
@@ -2706,7 +2685,7 @@ mod tests {
             Type::Real,
         );
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
-        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mcr = multi_case_result_value(&[("A", case_a)]);
 
         // Weight is 1.4 m — a dimensionful scalar (LENGTH dimension).
         let mut wm = BTreeMap::new();
@@ -2750,7 +2729,7 @@ mod tests {
         };
         let case_a = make_fixture_elastic_result_with_fields(shared_disp.clone(), a_stress);
         let case_b = make_fixture_elastic_result_with_fields(shared_disp, b_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
@@ -2780,7 +2759,7 @@ mod tests {
         };
         let case_a = make_fixture_elastic_result_with_fields(shared_disp.clone(), a_stress);
         let case_b = make_fixture_elastic_result_with_fields(shared_disp, b_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
@@ -2800,7 +2779,7 @@ mod tests {
         let stress_sf = make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]);
         let stress_field = wrap_sampled_field(stress_sf, Type::Real, Type::Real);
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
-        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mcr = multi_case_result_value(&[("A", case_a)]);
 
         let mut wm = BTreeMap::new();
         // Int weight 2 — must be treated identically to Real(2.0).
@@ -2843,7 +2822,7 @@ mod tests {
         );
         let case_a = make_fixture_elastic_result_with_fields(a_disp, shared_stress.clone());
         let case_b = make_fixture_elastic_result_with_fields(b_disp, shared_stress);
-        let mcr = make_multi_case_result_value(&[("A", case_a), ("B", case_b)]);
+        let mcr = multi_case_result_value(&[("A", case_a), ("B", case_b)]);
         let mut wm = BTreeMap::new();
         wm.insert(Value::String("A".to_string()), Value::Real(1.0));
         wm.insert(Value::String("B".to_string()), Value::Real(1.0));
