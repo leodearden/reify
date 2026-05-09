@@ -482,4 +482,97 @@ mod tests {
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    // Step 13: end-to-end (Shell, Pinned) — rotational DOFs NOT clamped
+    // ------------------------------------------------------------------
+
+    /// Feed `build_support_bcs(&[0], Pinned, Shell)` into
+    /// `apply_dirichlet_row_elimination` on the same 18-DOF shell K.
+    ///
+    /// Key property: DOFs 3, 4, 5 (rotational DOFs of node 0) must NOT be
+    /// clamped — the K rows/cols and f entries for those DOFs must be
+    /// bit-identical to their pre-call snapshots.
+    #[test]
+    fn e2e_shell_pinned_node0_leaves_rotational_dofs_untouched() {
+        let nodes = tilted_tri();
+        let mut k = shell_k_sparse(&nodes);
+        let mut f: Vec<f64> = (1..=18).map(|i| i as f64).collect();
+
+        // Snapshot K and f before BC application.
+        let k_before: Vec<Vec<f64>> =
+            (0..18).map(|i| (0..18).map(|j| read(&k, i, j)).collect()).collect();
+        let f_before = f.clone();
+
+        // Build Pinned BCs for node 0 (DOFs 0..3 only) and apply.
+        let (bcs, compat) = build_support_bcs(&[0], SupportKind::Pinned, SupportBodyKind::Shell);
+        assert_eq!(compat, SupportCompatibility::Ok);
+        assert_eq!(bcs.len(), 3, "Pinned on shell emits 3 BCs per node");
+
+        apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
+
+        // (a) f[0..3] must be 0.0 (translational BCs prescribed to zero).
+        for i in 0..3 {
+            assert_eq!(
+                f[i].to_bits(),
+                0.0_f64.to_bits(),
+                "f[{i}] must be 0.0 after Pinned on node 0 (translational DOF)"
+            );
+        }
+
+        // (b) Row i in 0..3: diagonal = 1.0, all off-diagonals = 0.0.
+        for i in 0..3 {
+            assert_eq!(read(&k, i, i), 1.0, "K[{i}][{i}] must be 1.0 (translational row)");
+            for j in 0..18 {
+                if j != i {
+                    assert_eq!(
+                        read(&k, i, j),
+                        0.0,
+                        "K[{i}][{j}] must be 0.0 (translational row {i} zeroed)"
+                    );
+                }
+            }
+        }
+
+        // (c) Column i in 0..3: all off-diagonal entries zero.
+        for i in 0..3 {
+            for j in 0..18 {
+                if j != i {
+                    assert_eq!(
+                        read(&k, j, i),
+                        0.0,
+                        "K[{j}][{i}] must be 0.0 (translational col {i} zeroed)"
+                    );
+                }
+            }
+        }
+
+        // (d) Rotational rows 3..6 of K must be bit-identical to snapshot.
+        //     Regression guard: Pinned must NOT clamp θ_x, θ_y, θ_z.
+        for i in 3..6 {
+            for j in 3..18 {
+                assert_eq!(
+                    read(&k, i, j).to_bits(),
+                    k_before[i][j].to_bits(),
+                    "K[{i}][{j}] rotational row must be unchanged by Pinned BCs"
+                );
+            }
+            // Critical: diagonal must NOT be 1.0 (i.e. not clamped).
+            assert_ne!(
+                read(&k, i, i),
+                1.0,
+                "K[{i}][{i}] rotational diagonal must not be clobbered to 1.0"
+            );
+        }
+
+        // (e) f[3..18] bit-identical to snapshot (no BC at rotational DOFs and
+        //     homogeneous translational BCs → column-into-RHS contributes 0).
+        for j in 3..18 {
+            assert_eq!(
+                f[j].to_bits(),
+                f_before[j].to_bits(),
+                "f[{j}] must be bit-identical after Pinned (no BC here)"
+            );
+        }
+    }
 }
