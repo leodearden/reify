@@ -2779,7 +2779,7 @@ mod tests {
             &HashMap::new(),
             &mut Vec::new(),
         );
-        assert!(result.is_err(), "missing az should return None");
+        assert!(result.is_err(), "missing az should return Err");
     }
 
     #[test]

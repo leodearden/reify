@@ -209,3 +209,68 @@ fn rotate_around_with_explicit_deg_unit_realization_lands_in_kernel() {
         ),
     }
 }
+
+/// `rotate()` with a bare numeric angle (no unit suffix) should pass the value
+/// through unchanged as radians, **not** convert from degrees.
+///
+/// This locks in the current contract documented by the NOTE at
+/// `geometry_ops.rs:437`: "bare numeric angle is passed through as-is (radians)."
+/// `circular_pattern` treats bare numerics as degrees — this test guards against
+/// accidentally applying the same degree-conversion to `Rotate` when that
+/// follow-up alignment lands.
+///
+/// Input: `1.5707963267948966` (π/2 as a decimal literal).  Expected
+/// `angle_rad ≈ π/2` (pass-through, not `1.5707963267948966 * π/180 ≈ 0.0274`).
+#[test]
+fn rotate_with_bare_radian_literal_lands_in_kernel() {
+    // π/2 written as a bare decimal literal — no unit suffix.
+    // The Rotate eval arm passes bare numerics through as-is (radians).
+    let source = r#"
+        structure def S {
+            let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 1.5707963267948966)
+        }
+    "#;
+
+    let compiled = parse_and_compile(source);
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+
+    // Guard: no hard errors.
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build produced unexpected errors: {:?}",
+        errors
+    );
+
+    // Both Cylinder and Rotate must reach the kernel.
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 kernel ops (Cylinder + Rotate), got {}",
+        ops.len()
+    );
+
+    // Op 1 must be Rotate with angle_rad ≈ π/2 — the bare literal is passed
+    // through unchanged (not degree-converted).
+    match &ops[1].op {
+        GeometryOp::Rotate { angle_rad, .. } => {
+            assert!(
+                (angle_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+                "angle_rad should be π/2 ({:.9}) for bare radian input, got {:.9} \
+                 (if this is ~0.0274 the eval accidentally converted as degrees)",
+                std::f64::consts::FRAC_PI_2,
+                angle_rad
+            );
+        }
+        other => panic!("expected GeometryOp::Rotate at ops[1], got {:?}", other),
+    }
+}
