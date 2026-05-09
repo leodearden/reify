@@ -70,6 +70,49 @@ pub struct MpcRow {
     pub rhs: f64,
 }
 
+impl MpcRow {
+    /// Construct a validated `MpcRow` from DOF indices, coefficients, and RHS.
+    ///
+    /// # Panics
+    ///
+    /// - `dofs.len() != coeffs.len()` — lengths must match element-wise.
+    /// - `dofs.is_empty()` — at least one DOF is required.
+    /// - `coeffs[0] == 0.0` or `!coeffs[0].is_finite()` — the pivot coefficient
+    ///   (`coeffs[0]`) must be non-zero and finite so that
+    ///   `u[dofs[0]] = (rhs − Σᵢ>0 coeffs[i]·u[dofs[i]]) / coeffs[0]`
+    ///   is well-defined. See the module-level doc on the pivot convention.
+    /// - `rhs` is not finite — `rhs` must be a finite number.
+    pub fn new(dofs: Vec<usize>, coeffs: Vec<f64>, rhs: f64) -> Self {
+        assert_eq!(
+            dofs.len(),
+            coeffs.len(),
+            "MpcRow::new: dofs.len() = {} but coeffs.len() = {}; expected equal lengths",
+            dofs.len(),
+            coeffs.len(),
+        );
+        assert!(
+            !dofs.is_empty(),
+            "MpcRow::new: at least one DOF is required",
+        );
+        assert!(
+            coeffs[0] != 0.0,
+            "MpcRow::new: pivot coefficient coeffs[0] must be non-zero; got {}",
+            coeffs[0],
+        );
+        assert!(
+            coeffs[0].is_finite(),
+            "MpcRow::new: pivot coefficient coeffs[0] must be finite; got {}",
+            coeffs[0],
+        );
+        assert!(
+            rhs.is_finite(),
+            "MpcRow::new: rhs must be finite; got {}",
+            rhs,
+        );
+        MpcRow { dofs, coeffs, rhs }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
