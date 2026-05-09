@@ -11,7 +11,7 @@ use reify_types::value::{SampledField, SampledGridKind};
 /// Produced by [`validate_regular3d`]; converted to each algorithm's
 /// error enum via `From<GridValidationError>` impls.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum GridValidationError {
+pub enum GridValidationError {
     /// The input [`SampledField`] is not 3D — only
     /// [`SampledGridKind::Regular3D`] is supported by the 3D algorithms
     /// in this crate.
@@ -43,8 +43,7 @@ impl std::fmt::Display for GridValidationError {
         match self {
             GridValidationError::UnsupportedGridKind { found } => write!(
                 f,
-                "reify-shell-extract requires a Regular3D SampledField input \
-                 (the medial-axis test walks the SDF gradient in 3-space); \
+                "reify-shell-extract requires a Regular3D SampledField input; \
                  got {found:?}"
             ),
             GridValidationError::AxisLengthMismatch {
