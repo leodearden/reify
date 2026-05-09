@@ -32,6 +32,7 @@ import type {
   Done,
   ErrorMessage,
   NoticeMessage,
+  PermissionRequest,
 } from '../sidecar/src/types';
 
 // ── Commands (invoke wrappers) ──────────────────────────────────────
@@ -214,6 +215,35 @@ export async function claudeClearSession(): Promise<void> {
   return invoke('claude_clear_session');
 }
 
+/** Forward a permission decision to the Tauri backend.
+ *
+ * Translates camelCase arguments to snake_case for Rust serde deserialization,
+ * following the same omit-undefined discipline as mapContextToWire so that
+ * Rust's `skip_serializing_if = "Option::is_none"` round-trips correctly.
+ */
+export async function claudePermissionDecision({
+  requestId,
+  behavior,
+  message,
+  updatedInput,
+  remember,
+}: {
+  requestId: string;
+  behavior: string;
+  message?: string;
+  updatedInput?: unknown;
+  remember?: boolean;
+}): Promise<void> {
+  const payload: Record<string, unknown> = {
+    request_id: requestId,
+    behavior,
+  };
+  if (message !== undefined) payload.message = message;
+  if (updatedInput !== undefined) payload.updated_input = updatedInput;
+  if (remember !== undefined) payload.remember = remember;
+  return invoke('claude_permission_decision', payload);
+}
+
 // ── Debug ───────────────────────────────────────────────────────────
 
 /** Check if REIFY_DEBUG=1 is set (debug server and bridge enabled). */
@@ -254,6 +284,7 @@ const KEYS_ID_TOOL_NAME_TOOL_USE_ID: string[] = ['id', 'tool_name', 'tool_use_id
 const KEYS_ID: string[] = ['id'];
 const KEYS_ID_MESSAGE: string[] = ['id', 'message'];
 const KEYS_ID_CODE_MESSAGE: string[] = ['id', 'code', 'message'];
+const KEYS_ID_REQUEST_ID_TOOL_NAME: string[] = ['id', 'request_id', 'tool_name'];
 
 /**
  * Subscribe to all Claude sidecar events and map payloads to OutboundMessage.
@@ -307,6 +338,14 @@ export async function subscribeToClaudeEvents(
       handler({ type: 'notice', id: p.id as string, code: p.code as string, message: p.message as string });
     }],
     ['claude-ready', () => handler({ type: 'ready' })],
+    ['claude-permission-request', (event) => {
+      const p = validatePayload('claude-permission-request', event.payload, KEYS_ID_REQUEST_ID_TOOL_NAME);
+      if (!p) return;
+      const toolInput = (p.tool_input != null && typeof p.tool_input === 'object' && !Array.isArray(p.tool_input))
+        ? p.tool_input as Record<string, unknown>
+        : {};
+      handler({ type: 'permission_request', id: p.id as string, request_id: p.request_id as string, tool_name: p.tool_name as string, tool_input: toolInput });
+    }],
   ];
 
   const unlisteners: UnlistenFn[] = [];
