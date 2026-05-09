@@ -22,6 +22,7 @@ export interface DebugStores {
       openFiles: Array<{ path: string; content: string }>;
       activeFile: string | null;
       dirtyFiles: string[];
+      externallyChanged: string[];
       cursorPosition: { line: number; column: number } | null;
     };
     openFile: (file: FileData) => void;

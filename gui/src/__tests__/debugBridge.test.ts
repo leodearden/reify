@@ -39,6 +39,7 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         openFiles: [],
         activeFile: null,
         dirtyFiles: [],
+        externallyChanged: [],
         cursorPosition: null,
       },
       openFile: vi.fn(),
@@ -659,5 +660,102 @@ describe('debug bridge set_test_mode', () => {
     expect(result.ok).toBe(true);
     // Regression lock-in: set_test_mode is CSS-only; it must never trigger a WebGL re-render
     expect(rendererRender).not.toHaveBeenCalled();
+  });
+});
+
+describe('debug bridge editor_content', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchEditorContent(stores: DebugStores) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 600, command: 'editor_content', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) when no file is active, outOfSyncWithDisk is false', async () => {
+    const stores = makeStores();
+    // No active file, no open files
+    const result = await dispatchEditorContent(stores);
+    expect(result.outOfSyncWithDisk).toBe(false);
+  });
+
+  it('(b) when active file is in externallyChanged, outOfSyncWithDisk is true', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    stores.editor.state.externallyChanged = ['bracket.ri'];
+    const result = await dispatchEditorContent(stores);
+    expect(result.outOfSyncWithDisk).toBe(true);
+  });
+
+  it('(b) when active file is NOT in externallyChanged, outOfSyncWithDisk is false', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    stores.editor.state.externallyChanged = [];
+    const result = await dispatchEditorContent(stores);
+    expect(result.outOfSyncWithDisk).toBe(false);
+  });
+
+  it('(c) each openFiles[] entry gains externallyChanged boolean', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [
+      { path: 'a.ri', content: 'a' },
+      { path: 'b.ri', content: 'b' },
+    ];
+    stores.editor.state.activeFile = 'a.ri';
+    stores.editor.state.externallyChanged = ['b.ri'];
+    const result = await dispatchEditorContent(stores);
+    const fileA = result.openFiles.find((f: any) => f.path === 'a.ri');
+    const fileB = result.openFiles.find((f: any) => f.path === 'b.ri');
+    expect(fileA.externallyChanged).toBe(false);
+    expect(fileB.externallyChanged).toBe(true);
+  });
+
+  it('(d) dirty and outOfSyncWithDisk are independent — both true simultaneously', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    stores.editor.state.dirtyFiles = ['bracket.ri'];
+    stores.editor.state.externallyChanged = ['bracket.ri'];
+    const result = await dispatchEditorContent(stores);
+    // existing dirty field in openFiles[] should still be true
+    const file = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    expect(file.dirty).toBe(true);
+    expect(file.externallyChanged).toBe(true);
+    // top-level outOfSyncWithDisk true as well
+    expect(result.outOfSyncWithDisk).toBe(true);
+  });
+
+  it('(d) dirty true does not imply outOfSyncWithDisk true', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    stores.editor.state.dirtyFiles = ['bracket.ri'];
+    stores.editor.state.externallyChanged = [];
+    const result = await dispatchEditorContent(stores);
+    const file = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    expect(file.dirty).toBe(true);
+    expect(file.externallyChanged).toBe(false);
+    expect(result.outOfSyncWithDisk).toBe(false);
   });
 });
