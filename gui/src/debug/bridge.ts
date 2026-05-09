@@ -128,10 +128,14 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         activeFile,
         content: file?.content ?? null,
         cursorPosition: editor.state.cursorPosition,
+        outOfSyncWithDisk: activeFile !== null && activeFile !== undefined
+          ? editor.state.externallyChanged.includes(activeFile)
+          : false,
         openFiles: editor.state.openFiles.map((f) => ({
           path: f.path,
           length: f.content.length,
           dirty: editor.state.dirtyFiles.includes(f.path),
+          externallyChanged: editor.state.externallyChanged.includes(f.path),
         })),
       };
     },
