@@ -19,6 +19,51 @@
 //! The stdlib-side constructor (`FixedSupport`, `PinnedSupport`) is documented
 //! in `crates/reify-stdlib/src/supports.rs`.
 
+/// Whether all DOFs are clamped (`Fixed`) or only translational DOFs
+/// (`Pinned`, which leaves rotational DOFs free on a shell node).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportKind {
+    /// Clamp all DOFs (6 per shell node, 3 per tet node).
+    Fixed,
+    /// Clamp only the 3 translational DOFs; leave rotational DOFs free.
+    ///
+    /// On a tet body (which has no rotational DOFs), this produces the same
+    /// BCs as `Fixed` — see [`SupportCompatibility::PinnedOnTetEquivalentToFixed`].
+    Pinned,
+}
+
+/// The element body type carrying the constrained nodes.
+///
+/// The body kind determines the DOF stride and which DOFs are translational
+/// vs. rotational.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportBodyKind {
+    /// MITC3+ shell element: 6 DOFs per node `(u_x, u_y, u_z, θ_x, θ_y, θ_z)`.
+    Shell,
+    /// P1/P2 tetrahedral element: 3 DOFs per node `(u_x, u_y, u_z)`.
+    Tet,
+}
+
+/// Diagnostic tag returned alongside the BC list from [`build_support_bcs`].
+///
+/// `Ok` is the common case.  `PinnedOnTetEquivalentToFixed` surfaces a
+/// user-intent mismatch without changing the solver behaviour: tet nodes
+/// carry no rotational DOFs, so `PinnedSupport` and `FixedSupport` produce
+/// identical Dirichlet BCs on a tet body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportCompatibility {
+    /// No issue: the `(SupportKind, SupportBodyKind)` combination is
+    /// semantically unambiguous.
+    Ok,
+    /// [`SupportKind::Pinned`] was applied to a [`SupportBodyKind::Tet`] body.
+    ///
+    /// Tet elements have no rotational DOFs, so `PinnedSupport` on a tet is
+    /// bit-identical to `FixedSupport` on a tet. The BCs produced are valid;
+    /// this tag signals a likely copy-paste mismatch between shell and tet
+    /// bodies for downstream warning/logging.
+    PinnedOnTetEquivalentToFixed,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
