@@ -768,4 +768,51 @@ mod tests {
             "residual ‖r‖ = {r_norm} ≥ tol = {tol} (‖f‖ = {f_norm})"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Step-9: zero-diagonal Jacobi panics
+    // -----------------------------------------------------------------------
+
+    /// Sub-case (a): K has an explicit zero stored at K[1][1].
+    /// Both sub-cases share the "diagonal" substring in the panic message.
+    #[test]
+    #[should_panic(expected = "diagonal")]
+    fn zero_diagonal_entry_panics() {
+        // 3×3 matrix: K[0][0]=1, K[1][1]=0 (explicit zero), K[2][2]=1,
+        // plus an off-diagonal to make it non-trivial.
+        let k = SparseRowMat::try_new_from_triplets(
+            3,
+            3,
+            &[
+                Triplet::new(0_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 0.5_f64), // off-diagonal
+                Triplet::new(1_usize, 1_usize, 0.0_f64), // explicit zero diagonal
+                Triplet::new(2_usize, 2_usize, 1.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0, 3.0];
+        let opts = CgSolverOptions::default();
+        let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    }
+
+    /// Sub-case (b): K has no stored entry at K[1][1] at all (diagonal missing).
+    #[test]
+    #[should_panic(expected = "diagonal")]
+    fn missing_diagonal_entry_panics() {
+        // 3×3 matrix: K[0][0]=1, K[2][2]=1, K[1][1] not stored at all.
+        let k = SparseRowMat::try_new_from_triplets(
+            3,
+            3,
+            &[
+                Triplet::new(0_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 0.5_f64), // off-diagonal only for row 1
+                Triplet::new(2_usize, 2_usize, 1.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0, 3.0];
+        let opts = CgSolverOptions::default();
+        let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    }
 }
