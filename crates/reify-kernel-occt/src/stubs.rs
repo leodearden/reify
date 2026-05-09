@@ -612,7 +612,8 @@ mod tests {
     #[test]
     fn stub_kernel_point_on_shape_returns_error() {
         let kernel = OcctKernel::new();
-        let result = kernel.point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0, 1e-7);
+        let result =
+            kernel.point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0, crate::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M);
         let err = result.expect_err("stub point_on_shape should error");
         assert_stub_message(&format!("{err:?}"));
     }
