@@ -182,6 +182,7 @@ structure def SmokeFixture {
     let lc  = LoadCase(name: "tracking", loads: [], supports: [])
     let names      = case_names(mcr)
     let op_result  = result_for(mcr, "operating")
+    let miss_result = result_for(mcr, "missing")
 }
 "#;
 
@@ -239,7 +240,18 @@ structure def SmokeFixture {
          got: {names:?}"
     );
 
-    // 5. `result_for(mcr, "operating")` returns Value::Int(42).
+    // 5. `result_for(mcr, "missing")` returns Undef (silent-Undef contract per
+    //    PRD task #10 deferral, re-flowed through the ctor path so Stage-2 ctor-built
+    //    MCR values certify the missing-key behavior end-to-end — mirrors the
+    //    map-literal coverage in `multi_load_case_stdlib_smoke_e2e`).
+    let miss_result = get_value(v, "miss_result");
+    assert!(
+        miss_result.is_undef(),
+        "result_for(mcr, \"missing\") should return Undef for a missing key on a \
+         ctor-built MultiCaseResult, got: {miss_result:?}"
+    );
+
+    // 6. `result_for(mcr, "operating")` returns Value::Int(42).
     let op_result = get_value(v, "op_result");
     assert_eq!(
         op_result,
