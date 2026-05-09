@@ -3471,6 +3471,43 @@ mod tests {
         }
     }
 
+    // ── compute_realization_tolerance_budget unit tests ───────────────────────
+
+    /// Pins the new 3-arg signature of `compute_realization_tolerance_budget`:
+    /// the caller supplies the `&HashSet<ReprKind>` rather than the helper
+    /// synthesising it from `BUDGET_QUERY_TRIPLE_V02.2` on every call.
+    ///
+    /// Fixture: single-kernel registry with `{(BooleanUnion, BRep)}`, demand
+    /// `1e-6`, available `{BRep}`. The v0.2 single-kernel registry yields a
+    /// 0-conversion `DispatchPlan`, so `per_stage_tolerance_for_plan` returns
+    /// the demanded tolerance bit-exactly.
+    #[test]
+    fn compute_realization_tolerance_budget_accepts_caller_supplied_available_set() {
+        use reify_test_support::MockConstraintChecker;
+
+        let checker = MockConstraintChecker::new();
+        let engine = crate::Engine::new(Box::new(checker), None);
+
+        let occt = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+        };
+        let mut single: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+        single.insert("occt".to_string(), occt);
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            single.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+        let available: HashSet<ReprKind> = [ReprKind::BRep].into_iter().collect();
+        let demand = 1e-6_f64;
+
+        assert_eq!(
+            engine.compute_realization_tolerance_budget(&registry_borrowed, &available, demand),
+            demand,
+            "single-kernel registry yields a 0-conversion DispatchPlan; \
+             per_stage_tolerance_for_plan on an empty chain must return demanded_tol \
+             bit-exactly. Demand: {demand}",
+        );
+    }
+
     /// End-to-end fallback: when `module.default_tolerance == None`, the value
     /// passed to `kernel.tessellate(...)` must be exactly
     /// `Engine::DEFAULT_TESSELLATION_TOLERANCE`. Pins the same call site for
