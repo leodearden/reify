@@ -122,7 +122,24 @@ export class SidecarSession {
     // The matching deregistration happens in destroy() via onRequest(null).
     if (config.permissionMcp) {
       config.permissionMcp.server.onRequest((req) => {
-        const id = this.currentInvocationId ?? '';
+        // Guard: if no invocation is in-flight (e.g. a very late CLI request arriving
+        // after done/abort, or before the first send_message), there is no host UI to
+        // show the prompt and no message id to attach the permission_request to.
+        // Emitting with id:'' silently degrades to an unattached prompt — instead we
+        // deny immediately and emit a structured diagnostic notice so the host can log
+        // the race for diagnosability. Do NOT register in pendingPermissionRequests
+        // since there is no decision lifecycle to track.
+        if (this.currentInvocationId === null) {
+          config.permissionMcp!.server.decide(req.request_id, { behavior: 'deny' });
+          this.onOutput({
+            type: 'notice',
+            id: '',
+            code: 'permission_request_orphaned',
+            message: `Permission request for '${req.tool_name}' arrived outside an in-flight invocation and was automatically denied.`,
+          });
+          return;
+        }
+        const id = this.currentInvocationId;
         this.pendingPermissionRequests.set(req.request_id, req.tool_name);
         this.onOutput({
           type: 'permission_request',
