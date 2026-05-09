@@ -585,6 +585,22 @@ pub struct Engine {
     /// when the demanded tolerance tightens between builds. (Conversely, a
     /// loosening change between builds will hit the tighter cached entry —
     /// exactly the win the cache exists to deliver.)
+    ///
+    /// **Symmetric insert↔lookup gate (task 3176)**: both the cache-hit
+    /// short-circuit at the top of `Engine::execute_realization_ops` AND the
+    /// post-success insert at the bottom require the same
+    /// `(demanded_tol.is_some(), realization_name.is_some())` pair. The
+    /// lookup path requires a name because it also writes
+    /// `named_steps[name] = cached_handle`; the insert path requires a name
+    /// so that what we write is later retrievable (an anonymous slot can
+    /// never be served). The compiler always emits `Some(name)` for
+    /// production `RealizationDecl`s
+    /// (`crates/reify-compiler/src/types.rs:854-857`), so the name-guard is
+    /// a no-op for production builds — anonymous realizations can only
+    /// originate from `TopologyTemplateBuilder::realization(...)` test-support
+    /// code. Pinned by
+    /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
+    /// in `tests/tolerance_wiring_e2e.rs`.
     realization_cache: crate::realization_cache::RealizationCache<GeometryHandleId>,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
