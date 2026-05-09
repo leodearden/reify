@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use reify_types::value::{SampledField, SampledGridKind};
 
 use crate::grid_validation::{validate_regular3d, GridValidationError};
-use crate::medial::{sample_at_world, MedialMask};
+use crate::medial::{sample_at_index, MedialMask};
 
 /// Triangle mesh representing the mid-surface of a thin solid.
 ///
@@ -691,12 +691,29 @@ pub fn extract_mid_surface(
                         let ia = (i as i32) + (off_a[0] as i32);
                         let ja = (j as i32) + (off_a[1] as i32);
                         let ka = (k as i32) + (off_a[2] as i32);
-                        let mask_corner_world = if mask_set.contains(&[ia, ja, ka]) {
-                            wa
+                        // Direct integer-index lookup at the mask corner —
+                        // infallible by construction: corner indices lie in
+                        // [0, nx)×[0, ny)×[0, nz) because (a) mask voxels were
+                        // validated by MaskVoxelOutOfBounds above, so the in-mask
+                        // corner is guaranteed in-bounds, and (b) the per-cell loop
+                        // bounds (i < nx-1, off ∈ {0,1}) keep the out-of-mask
+                        // corner in [0, nx) too.  Skips the 8-corner trilinear
+                        // collapse that `sample_at_world` would perform at this
+                        // grid-aligned point.
+                        let mask_corner_idx = if mask_set.contains(&[ia, ja, ka]) {
+                            [
+                                i + off_a[0] as usize,
+                                j + off_a[1] as usize,
+                                k + off_a[2] as usize,
+                            ]
                         } else {
-                            wb
+                            [
+                                i + off_b[0] as usize,
+                                j + off_b[1] as usize,
+                                k + off_b[2] as usize,
+                            ]
                         };
-                        let phi = sample_at_world(sdf, mask_corner_world).unwrap_or(0.0);
+                        let phi = sample_at_index(sdf, mask_corner_idx);
                         thickness.push(2.0 * phi.abs());
                     }
 
