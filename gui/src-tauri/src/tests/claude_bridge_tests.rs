@@ -3335,3 +3335,36 @@ async fn on_sidecar_exit_does_not_emit_when_state_was_not_started() {
         .await
         .expect("notify_waiters should fire even when state was NotStarted (kill path)");
 }
+
+#[tokio::test]
+async fn on_sidecar_exit_handles_missing_emitter_gracefully() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::{Mutex, Notify};
+
+    // Set up state = Ready (so the crash branch is taken and state transitions)
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+
+    // Capture Notified before calling so it sees notify_waiters() epoch change.
+    let notify = Arc::new(Notify::new());
+    let notified = notify.notified();
+
+    // Pass None as the emitter — exercises the tracing::debug! fallback path.
+    // Use fn(String, Value) as the concrete type for the turbofish; bare fn pointers
+    // satisfy F: Fn(String, Value) + Send + Sync + 'static.
+    on_sidecar_exit::<fn(String, Value)>(state.clone(), Arc::clone(&notify), None).await;
+
+    // (a) Must not panic — if we reached this point the helper handled None gracefully.
+
+    // (b) State must still transition to Crashed even without an emitter — the should_emit
+    // flag drives only the emitter branch, not the state mutation.
+    assert!(
+        matches!(*state.lock().await, SidecarState::Crashed(_)),
+        "Expected SidecarState::Crashed even when emitter is None"
+    );
+
+    // (c) notify_waiters must fire (so wait_ready wakes up regardless of emitter presence).
+    tokio::time::timeout(Duration::from_millis(50), notified)
+        .await
+        .expect("notify_waiters should fire even when emitter is None");
+}
