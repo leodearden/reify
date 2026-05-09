@@ -2426,6 +2426,63 @@ mod tests {
         }
     }
 
+    // ── linear_combine all-non-finite stress → Undef max_von_mises ──────────
+
+    #[test]
+    fn linear_combine_all_nonfinite_stress_yields_undef_max_von_mises() {
+        // When all combined stress data is non-finite (e.g. all NaN), the
+        // max_von_mises slot must be Value::Undef — not Value::Real(0.0).
+        // RED: current fold(0.0, f64::max) at fea.rs:220-224 collapses the
+        // empty/all-non-finite filter result to Real(0.0), which is
+        // indistinguishable from genuine zero stress.
+        // After step-5 lands the reduce(f64::max) returns None → Undef.
+        let axis = vec![0.0, 1.0, 2.0];
+        let disp_field = wrap_sampled_field(
+            make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
+            Type::Real,
+            Type::Real,
+        );
+        // All stress data is NaN — no finite values.
+        let stress_field = wrap_sampled_field(
+            make_sampled_1d("s", axis, vec![f64::NAN, f64::NAN, f64::NAN]),
+            Type::Real,
+            Type::Real,
+        );
+        let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
+        let mcr = make_multi_case_result_value(&[("A", case_a)]);
+        let mut wm = BTreeMap::new();
+        wm.insert(Value::String("A".to_string()), Value::Real(1.0));
+
+        let result = eval_fea("linear_combine", &[mcr, Value::Map(wm)]).unwrap();
+        // The function should not return Undef wholesale — only the
+        // max_von_mises slot is Undef; the displacement field is still present.
+        assert!(
+            !result.is_undef(),
+            "linear_combine must return a Map even when all stress is NaN"
+        );
+        let result_map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Value::Map, got {:?}", other),
+        };
+
+        // Displacement must still be present.
+        assert!(
+            result_map.contains_key(&Value::String("displacement".to_string())),
+            "result must contain displacement even when stress is all-NaN"
+        );
+
+        // max_von_mises must be Undef — distinguishable from genuine zero stress.
+        let mvm = result_map
+            .get(&Value::String("max_von_mises".to_string()))
+            .expect("result must have 'max_von_mises' key");
+        assert!(
+            mvm.is_undef(),
+            "max_von_mises must be Value::Undef when all stress is non-finite, \
+             got {:?} — must be distinguishable from genuine zero stress",
+            mvm
+        );
+    }
+
     // ── linear_combine malformed ElasticResult Map rejection ─────────────────
 
     #[test]
