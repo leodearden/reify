@@ -167,13 +167,17 @@ pub enum PruneError {
         /// The offending value supplied by the caller.
         value: u32,
     },
-    /// `grid_alignment_tolerance` must be strictly positive and finite.
+    /// `grid_alignment_tolerance` must be strictly positive, finite, and normal
+    /// (not subnormal).
     ///
     /// A zero or negative tolerance produces `inv_tol = 1/tol = ±Inf`, which
     /// saturates all non-zero coordinates to `i64::MAX`/`i64::MIN` and
     /// collapses them into one or two canonical buckets — every edge appears
     /// shared and tip detection degrades silently.  A NaN tolerance collapses
     /// every vertex into a single canonical index for the same reason.
+    /// Subnormal values are also rejected: even the largest subnormals have
+    /// reciprocals large enough (~2^1022) that `coord * inv_tol` overflows to
+    /// ±Inf for any non-tiny coordinate, producing the same silent collapse.
     InvalidGridAlignmentTolerance {
         /// The offending value supplied by the caller.
         value: f64,
@@ -265,7 +269,10 @@ pub fn prune_branches(
             value: options.max_prune_iterations,
         });
     }
-    if options.grid_alignment_tolerance <= 0.0 || !options.grid_alignment_tolerance.is_finite() {
+    if options.grid_alignment_tolerance <= 0.0
+        || !options.grid_alignment_tolerance.is_finite()
+        || options.grid_alignment_tolerance.is_subnormal()
+    {
         return Err(PruneError::InvalidGridAlignmentTolerance {
             value: options.grid_alignment_tolerance,
         });
