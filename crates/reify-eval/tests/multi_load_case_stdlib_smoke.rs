@@ -189,6 +189,79 @@ fn multi_load_case_stdlib_smoke_e2e() {
     );
 }
 
+/// Reify source: a `WorstCaseFixture` structure that exercises `worst_case`
+/// (Lambda-aware accessor) through the full compile+eval pipeline.
+///
+/// Each case is bound to an `ElasticResult`-shaped Map with a single
+/// `displacement` field (a Sampled `Length -> Real` field per the field-def
+/// pattern in `field_eval_tests.rs`). The lambda body uses `IndexAccess`
+/// (`e["displacement"]`) to extract the per-case Field; the worst_case
+/// dispatch arm in `reify-expr/src/lib.rs` collapses each Field via
+/// `field_reductions::compute_max` and returns the case name with the
+/// largest scalar.
+///
+/// Engineered max values: operating→50, overload→200, transport→100.
+/// Expected winner: `"overload"`.
+///
+/// Bindings:
+///   `case_op`     = `map{"displacement" => disp_op}` (max=50)
+///   `case_ov`     = `map{"displacement" => disp_ov}` (max=200)
+///   `case_tr`     = `map{"displacement" => disp_tr}` (max=100)
+///   `cases`       = `map{"operating" => case_op, "overload" => case_ov, "transport" => case_tr}`
+///   `mcr`         = `map{"cases" => cases}`
+///   `worst`       = `worst_case(mcr, |e| e["displacement"])` → `"overload"`
+const WORST_CASE_SOURCE: &str = r#"
+field def disp_op : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [10.0, 20.0, 50.0] } }
+field def disp_ov : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [100.0, 50.0, 200.0] } }
+field def disp_tr : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(2.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [30.0, 100.0, 60.0] } }
+
+structure def WorstCaseFixture {
+    let case_op = map{"displacement" => disp_op}
+    let case_ov = map{"displacement" => disp_ov}
+    let case_tr = map{"displacement" => disp_tr}
+    let cases = map{"operating" => case_op, "overload" => case_ov, "transport" => case_tr}
+    let mcr = map{"cases" => cases}
+    let worst = worst_case(mcr, |e| e["displacement"])
+}
+"#;
+
+/// Look up a `WorstCaseFixture` binding from an eval result map by member name.
+fn get_worst_case_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
+    let id = ValueCellId::new("WorstCaseFixture", name);
+    values
+        .get(&id)
+        .unwrap_or_else(|| panic!("WorstCaseFixture.{name} not found in eval result"))
+}
+
+/// Smoke test: `worst_case(mcr, |e| e["displacement"])` returns the case name
+/// with the largest per-case displacement-field max (engineered: operating=50,
+/// overload=200, transport=100 → winner = "overload").
+///
+/// Pins the v0.3.x `worst_case` Lambda dispatch arm (in `reify-expr/src/lib.rs`,
+/// modeled on `flat_map`) end-to-end through compile + eval. This test fails
+/// until the dispatch arm is added — the call falls through `eval_builtin` →
+/// `eval_fea` → the `worst_case` Undef stub.
+#[test]
+fn worst_case_three_case_returns_dominant_case_name() {
+    let compiled = parse_and_compile_with_stdlib(WORST_CASE_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let worst = get_worst_case_value(&result.values, "worst");
+    assert_eq!(
+        worst,
+        &Value::String("overload".to_string()),
+        "worst_case should return \"overload\" (max=200, dominant over operating=50 and transport=100), \
+         got: {worst:?}"
+    );
+}
+
 /// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
 /// `LoadCase(...)` struct constructors produce the correct `Value::Map` shape,
 /// and that the accessors flowing from `MultiCaseResult` work end-to-end, once
