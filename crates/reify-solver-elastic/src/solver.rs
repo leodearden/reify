@@ -297,4 +297,50 @@ mod tests {
         let opts = CgSolverOptions::default();
         let _ = solve_cg(&k, &f, opts, SolverMode::Deterministic);
     }
+
+    // -----------------------------------------------------------------------
+    // Step-3: identity-K trivial convergence
+    // -----------------------------------------------------------------------
+
+    /// For K = I₃ (3×3 identity), f = [1.0, 2.0, 3.0]:
+    /// - Jacobi preconditioner M = diag(I) = I, so z₀ = f.
+    /// - After one CG step: α₀ = (f·f) / (f·I·f) = 1.0, u₁ = f,
+    ///   r₁ = f − I·f = 0. Convergence check trips at end of iter 0.
+    /// - result.iterations == 1 (one iteration executed).
+    /// - u == f bit-for-bit (identity Jacobi, no FP reordering).
+    #[test]
+    fn identity_k_converges_in_one_iter_deterministic() {
+        let k = SparseRowMat::try_new_from_triplets(
+            3,
+            3,
+            &[
+                Triplet::new(0_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 1.0_f64),
+                Triplet::new(2_usize, 2_usize, 1.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0, 3.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-12,
+            max_iter: 100,
+        };
+        let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+
+        assert!(result.converged, "identity K must converge");
+        assert_eq!(
+            result.iterations, 1,
+            "identity K with Jacobi precond converges in exactly 1 iteration, got {}",
+            result.iterations
+        );
+        for i in 0..3 {
+            assert_eq!(
+                result.u[i].to_bits(),
+                f[i].to_bits(),
+                "u[{i}] = {} should be bit-equal to f[{i}] = {}",
+                result.u[i],
+                f[i]
+            );
+        }
+    }
 }
