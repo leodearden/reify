@@ -3437,4 +3437,129 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
     // spawn called with claude (no python3 wrap)
     expect(spawnCmd).toBe('claude');
   });
+
+  // (notice-a) sandbox unavailable → emits one notice + console.warn
+  it('(notice-a) landlockExec provided but unavailable: emits sandbox_unavailable notice and console.warn', async () => {
+    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-a' }])
+    ) as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: '/tmp/ws',
+      landlockExec: '/path/le.py',
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-a', text: 'Hello' });
+
+    // exactly one notice with code 'sandbox_unavailable'
+    const notices = outputs.filter((o) => o.type === 'notice') as Array<{ type: 'notice'; id: string; code: string; message: string }>;
+    expect(notices).toHaveLength(1);
+    expect(notices[0].code).toBe('sandbox_unavailable');
+    expect(notices[0].id).toBe('');
+    expect(notices[0].message).toMatch(/unrestricted/i);
+
+    // console.warn called with a message mentioning sandbox
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toMatch(/sandbox unavailable/i);
+
+    warnSpy.mockRestore();
+  });
+
+  // (notice-b) sandbox available → no notice, no console.warn
+  it('(notice-b) landlockExec provided and available: no sandbox_unavailable notice', async () => {
+    vi.mocked(isLandlockAvailable).mockReturnValue(true);
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-b' }])
+    ) as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: '/tmp/ws',
+      landlockExec: '/path/le.py',
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-b', text: 'Hello' });
+
+    // no sandbox_unavailable notice
+    const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
+    expect(notices).toHaveLength(0);
+
+    // no console.warn
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
+
+  // (notice-c) no landlockExec → no notice, no console.warn
+  it('(notice-c) no landlockExec: no sandbox_unavailable notice emitted', async () => {
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-c' }])
+    ) as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      // No landlockExec — no sandbox was requested
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-c', text: 'Hello' });
+
+    // no notice of any kind for sandbox
+    const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
+    expect(notices).toHaveLength(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
+
+  // (notice-d) idempotency: notice emitted only once across multiple send_message calls
+  it('(notice-d) sandbox_unavailable notice emitted exactly once per session', async () => {
+    vi.mocked(isLandlockAvailable).mockReturnValue(false);
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-d' }])
+    ) as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      workspace: '/tmp/ws',
+      landlockExec: '/path/le.py',
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // First call
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-d1', text: 'Hello' });
+    // Reset spawn mock for the second call
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-notice-d2' }])
+    ) as any);
+    // Second call
+    await session.handleMessage({ type: 'send_message', id: 'msg-notice-d2', text: 'World' });
+
+    // notice emitted exactly once (not twice)
+    const notices = outputs.filter((o) => o.type === 'notice' && (o as any).code === 'sandbox_unavailable');
+    expect(notices).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    warnSpy.mockRestore();
+  });
 });
