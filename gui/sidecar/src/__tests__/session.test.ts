@@ -1460,6 +1460,54 @@ describe('SidecarSession destroy() lifecycle', () => {
     expect(() => session.destroy()).not.toThrow();
     expect(() => session.destroy()).not.toThrow();
   });
+
+  it('destroy() deregisters the permission handler by calling server.onRequest(null)', () => {
+    const { server } = makeMockPermissionServer();
+    const permUrl = 'http://127.0.0.1:29999/mcp';
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: permUrl, server },
+    } as any);
+
+    const onRequestMock = server.onRequest as ReturnType<typeof vi.fn>;
+
+    // Constructor should have registered a handler (first call with a function)
+    expect(onRequestMock).toHaveBeenCalledTimes(1);
+    expect(onRequestMock.mock.calls[0][0]).toEqual(expect.any(Function));
+
+    session.destroy();
+
+    // destroy() must deregister by calling onRequest(null)
+    expect(onRequestMock).toHaveBeenCalledTimes(2);
+    expect(onRequestMock.mock.calls[1][0]).toBeNull();
+  });
+
+  it('destroyed session: triggerRequest throws because onRequest(null) cleared the handler', () => {
+    const { server, triggerRequest } = makeMockPermissionServer();
+    const permUrl = 'http://127.0.0.1:29999/mcp';
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: permUrl, server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    session.destroy();
+
+    // After destroy(), onRequest(null) was called so capturedHandler is null.
+    // triggerRequest() checks capturedHandler and throws when it's null.
+    expect(() =>
+      triggerRequest({ request_id: 'req-1', tool_name: 'Write', tool_input: {} })
+    ).toThrow(/handler was never registered/);
+
+    // No permission_request should have been emitted during or after destroy()
+    expect(outputs.filter((o) => o.type === 'permission_request')).toHaveLength(0);
+  });
 });
 
 describe('SidecarSession timeout', () => {
@@ -2904,7 +2952,7 @@ function makeMockPermissionServer(): {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     url: vi.fn().mockReturnValue('http://127.0.0.1:29999/mcp'),
-    onRequest: vi.fn((handler: (req: any) => void) => {
+    onRequest: vi.fn((handler: ((req: any) => void) | null) => {
       capturedHandler = handler;
     }),
     decide: vi.fn(),
