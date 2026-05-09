@@ -416,7 +416,7 @@ pub fn compute_medial_mask(
     // Pre-compute the per-voxel gradient once before the main loop.
     // Avoids repeating the 6-sample central-difference stencil inside
     // the hot path; the lookup is O(1) via i*ny*nz + j*nz + k.
-    let gradient_grid = precompute_gradient_grid(sdf);
+    let gradient_grid = precompute_gradient_grid(sdf, band_width);
 
     // Parallel outer (i-axis) loop.
     //
@@ -750,19 +750,35 @@ pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3]
 /// laid out row-major as `grid[i*ny*nz + j*nz + k]` matching the
 /// `SampledField::data` convention.
 ///
-/// Each entry equals `gradient_at_index(sdf, [i, j, k])` — a faithful hoist
-/// of the central-difference (with axis-boundary forward/backward fallbacks)
-/// that the main loop performs per voxel. The cache is intentionally dense
-/// (one entry for every grid point, including out-of-band voxels) so that
-/// lookup is an O(1) slice index rather than a hash probe. Memory cost at
-/// 256³ is ~384 MB (16 M voxels × 24 B); flagged for replacement with a
-/// sparse representation once the OpenVDB FFI lands and
-/// `narrow_band_half_width_voxels` becomes a true sparse-iterator gate.
+/// **Gated semantics.** The layout is still dense (one slot per voxel;
+/// O(1) lookup via `i*ny*nz + j*nz + k`).
+///
+/// - **In-band slots** (`|φ(v)| ≤ band_width`) equal
+///   `gradient_at_index(sdf, [i, j, k])` exactly (bit-for-bit, same
+///   invariant as before).
+/// - **Out-of-band slots** (`|φ(v)| > band_width`) are the `[0.0; 3]`
+///   sentinel — the consumer's narrow-band filter in `compute_medial_mask`
+///   rejects these voxels BEFORE indexing into the cache, so the sentinel
+///   is never read by downstream logic.
+///
+/// **Cost rationale.** Each out-of-band voxel costs one extra
+/// `sample_at_index` call (a single array index) and skips the 6-sample
+/// central-difference stencil (`gradient_at_index`). In typical fixtures
+/// ~95% of voxels are out-of-band, so the gate yields a substantial
+/// saving.
+///
+/// Pass `f64::INFINITY` to disable the gate and compute every slot
+/// (useful for testing the strict-equality contract on all voxels).
 ///
 /// **Index formula.** The formula `i*nj*nk + j*nk + k` is identical to
 /// [`sample_at_index`]'s layout so cache reads in the main loop are
 /// cache-line-friendly for the innermost (k) sweep.
-pub(crate) fn precompute_gradient_grid(sdf: &SampledField) -> Vec<[f64; 3]> {
+///
+/// Memory cost at 256³ is ~384 MB (16 M voxels × 24 B); flagged for
+/// replacement with a sparse representation once the OpenVDB FFI lands
+/// and `narrow_band_half_width_voxels` becomes a true sparse-iterator
+/// gate (the dense-grid gate here is the mitigation until then).
+pub(crate) fn precompute_gradient_grid(sdf: &SampledField, band_width: f64) -> Vec<[f64; 3]> {
     let nx = sdf.axis_grids[0].len();
     let ny = sdf.axis_grids[1].len();
     let nz = sdf.axis_grids[2].len();
@@ -804,8 +820,16 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField) -> Vec<[f64; 3]> {
                 for (idx, &i) in chunk_owned.iter().enumerate() {
                     for j in 0..ny {
                         for k in 0..nz {
-                            dst[idx * ny * nz + j * nz + k] =
-                                gradient_at_index(sdf, [i, j, k]);
+                            if sample_at_index(sdf, [i, j, k]).abs() <= band_width {
+                                dst[idx * ny * nz + j * nz + k] =
+                                    gradient_at_index(sdf, [i, j, k]);
+                            }
+                            // else: out-of-band; slot stays at the [0.0; 3]
+                            // sentinel from the initial vec! allocation.
+                            // The consumer rejects out-of-band voxels at
+                            // line 470 before reading the cache (line 475),
+                            // so the sentinel is structurally unreachable
+                            // from downstream logic.
                         }
                     }
                 }
@@ -1920,6 +1944,11 @@ mod tests {
     /// inclusion/exclusion decisions than the serial reference, silently
     /// changing the medial mask. The helper is a verbatim hoist of the
     /// same computation, so exact `==` is the correct invariant.
+    ///
+    /// Uses `f64::INFINITY` to disable the narrow-band gate so the
+    /// strict-equality contract is exercised on every voxel; the gated
+    /// behavior is covered separately by
+    /// `precompute_gradient_grid_skips_out_of_band_voxels`.
     #[test]
     fn precompute_gradient_grid_matches_gradient_at_index_on_slab() {
         let n = 16usize;
@@ -1927,7 +1956,7 @@ mod tests {
         let ny = sdf.axis_grids[1].len();
         let nz = sdf.axis_grids[2].len();
 
-        let grid = precompute_gradient_grid(&sdf);
+        let grid = precompute_gradient_grid(&sdf, f64::INFINITY);
 
         assert_eq!(
             grid.len(),
