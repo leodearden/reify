@@ -276,4 +276,54 @@ mod tests {
         }
         assert_eq!(compat, SupportCompatibility::Ok, "compat must be Ok for (Tet, Fixed)");
     }
+
+    // ------------------------------------------------------------------
+    // Step 9: build_support_bcs — (Tet, Pinned) bit-identical BCs to (Tet, Fixed)
+    //         but compat = PinnedOnTetEquivalentToFixed
+    // ------------------------------------------------------------------
+
+    /// `build_support_bcs(nodes, Pinned, Tet)` produces a BC list
+    /// bit-identical to `build_support_bcs(nodes, Fixed, Tet)` for the same
+    /// `nodes`, but the compatibility tag is `PinnedOnTetEquivalentToFixed`.
+    ///
+    /// The empty-input case also returns that tag (the tag encodes the call
+    /// signature, not whether BCs were emitted).
+    #[test]
+    fn build_support_bcs_tet_pinned_bcs_identical_to_fixed_but_different_compat() {
+        let nodes = [0usize, 2, 7];
+
+        let (pinned_bcs, pinned_compat) =
+            build_support_bcs(&nodes, SupportKind::Pinned, SupportBodyKind::Tet);
+        let (fixed_bcs, fixed_compat) =
+            build_support_bcs(&nodes, SupportKind::Fixed, SupportBodyKind::Tet);
+
+        // BC lists must be bit-identical in length and content
+        assert_eq!(pinned_bcs.len(), fixed_bcs.len(), "BC count must match");
+        for (i, (pb, fb)) in pinned_bcs.iter().zip(fixed_bcs.iter()).enumerate() {
+            assert_eq!(pb.dof, fb.dof, "bcs[{i}].dof mismatch");
+            assert_eq!(
+                pb.value.to_bits(),
+                fb.value.to_bits(),
+                "bcs[{i}].value mismatch"
+            );
+        }
+
+        // Compat tags must differ
+        assert_eq!(
+            fixed_compat,
+            SupportCompatibility::Ok,
+            "(Tet, Fixed) compat must be Ok"
+        );
+        assert_eq!(
+            pinned_compat,
+            SupportCompatibility::PinnedOnTetEquivalentToFixed,
+            "(Tet, Pinned) compat must be PinnedOnTetEquivalentToFixed"
+        );
+
+        // Empty-input case: compat tag still applies
+        let (empty_bcs, empty_compat) =
+            build_support_bcs(&[], SupportKind::Pinned, SupportBodyKind::Tet);
+        assert!(empty_bcs.is_empty());
+        assert_eq!(empty_compat, SupportCompatibility::PinnedOnTetEquivalentToFixed);
+    }
 }
