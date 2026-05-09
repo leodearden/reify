@@ -215,6 +215,25 @@ describe('claudeStore', () => {
       claudeAbort();
       expect(state.sessionStatus).toBe('idle');
     });
+
+    it('marks in-flight assistant message complete and thinkingComplete on abort (regression: stuck throbber/cursor)', () => {
+      const { state, sendMessage, handleOutboundMessage, claudeAbort } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      // Simulate mid-thinking when abort fires
+      handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'thinking...' } as OutboundMessage);
+      claudeAbort();
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg.complete).toBe(true);
+      expect(assistantMsg.thinkingComplete).toBe(true);
+    });
+
+    it('claudeAbort with no in-flight message is a safe no-op (does not throw, leaves messages unchanged)', () => {
+      const { state, claudeAbort } = makeStore();
+      // No sendMessage called — currentMessageId is null
+      expect(() => claudeAbort()).not.toThrow();
+      expect(state.messages).toHaveLength(0);
+    });
   });
 
   describe('clearSession', () => {
