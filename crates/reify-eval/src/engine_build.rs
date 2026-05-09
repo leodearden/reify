@@ -472,13 +472,13 @@ impl Engine {
             self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
-            for template in &module.templates {
+            for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
                 // name → handle entries.  Cross-template GeomRef::Sub references
                 // are intentionally not supported.
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-                for realization in &template.realizations {
+                for (r_idx, realization) in template.realizations.iter().enumerate() {
                     // Task 2874, step-6 wiring: per-realization demanded
                     // tolerance for the cache-key triple `(entity_id,
                     // ReprKind::BRep, demanded_tol)`. Priority chain is
@@ -486,10 +486,12 @@ impl Engine {
                     // → active_tolerance_for(entity)`; when both return
                     // `None` no cache entry is written (the helper
                     // preserves historical "no tolerance contract → no
-                    // caching" semantics for that branch). The map is
+                    // caching" semantics for that branch). The Vec is
                     // precomputed above the kernel borrow.
+                    // Task 3227: positional lookup by [t_idx][r_idx].
                     let demanded_tol = demanded_tols
-                        .get(&(template.name.clone(), realization.id.entity.clone()))
+                        .get(t_idx)
+                        .and_then(|v| v.get(r_idx))
                         .copied()
                         .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
@@ -690,19 +692,21 @@ impl Engine {
             self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
-            for template in &module.templates {
+            for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
                 // name → handle entries.  Cross-template GeomRef::Sub references
                 // are intentionally not supported.
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-                for realization in &template.realizations {
+                for (r_idx, realization) in template.realizations.iter().enumerate() {
                     // Task 2874, step-6 wiring: per-realization demanded
                     // tolerance for the cache-key triple `(entity_id,
-                    // ReprKind::BRep, demanded_tol)`. The priority-chain
-                    // is precomputed above the kernel borrow.
+                    // ReprKind::BRep, demanded_tol)`. The Vec is precomputed
+                    // above the kernel borrow.
+                    // Task 3227: positional lookup by [t_idx][r_idx].
                     let demanded_tol = demanded_tols
-                        .get(&(template.name.clone(), realization.id.entity.clone()))
+                        .get(t_idx)
+                        .and_then(|v| v.get(r_idx))
                         .copied()
                         .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
@@ -1041,10 +1045,17 @@ impl Engine {
     /// fallback chain for callers that need the value as a non-`Option`
     /// (e.g. tessellation-budget computation).
     ///
-    /// Iterates `module.templates × realizations` and resolves each entry
-    /// via the priority chain
+    /// Returns a positionally-indexed `Vec<Vec<Option<f64>>>` aligned with
+    /// `module.templates × realizations` iteration order: the outer Vec has
+    /// one entry per template (same order as `module.templates`), each inner
+    /// Vec has one entry per realization (same order as
+    /// `template.realizations`). Consumers index by
+    /// `[template_idx][realization_idx]` — zero String clones, zero hashing,
+    /// O(1) lookup (task 3227).
+    ///
+    /// Resolves each entry via the priority chain
     /// [`Engine::demanded_tolerance_for_output`] →
-    /// [`Engine::active_tolerance_for`]; missing keys flatten to `None`.
+    /// [`Engine::active_tolerance_for`]; no contributor → `None`.
     /// Callers that need the f64 fallback (typically the tessellation-budget
     /// computation) chain through to `effective_tessellation_tolerance` at
     /// the consumption site.
@@ -1053,32 +1064,42 @@ impl Engine {
     /// across `build` / `build_snapshot` / `tessellate_realizations` /
     /// `tessellate_snapshot` so future invalidation / fallback-chain edits
     /// land in one place.
-    pub(crate) fn compute_demanded_tols(
-        &self,
-        module: &CompiledModule,
-    ) -> HashMap<(String, String), Option<f64>> {
-        let mut map: HashMap<(String, String), Option<f64>> = HashMap::new();
-        for t in &module.templates {
-            for r in &t.realizations {
-                let key = (t.name.clone(), r.id.entity.clone());
-                let val = self
-                    .demanded_tolerance_for_output(&t.name, &r.id.entity)
-                    .or_else(|| self.active_tolerance_for(&r.id.entity));
-                map.insert(key, val);
-            }
-        }
-        map
+    pub(crate) fn compute_demanded_tols(&self, module: &CompiledModule) -> Vec<Vec<Option<f64>>> {
+        module
+            .templates
+            .iter()
+            .map(|t| {
+                t.realizations
+                    .iter()
+                    .map(|r| {
+                        self.demanded_tolerance_for_output(&t.name, &r.id.entity)
+                            .or_else(|| self.active_tolerance_for(&r.id.entity))
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Precompute per-realization tessellation budgets for the
     /// `kernel.tessellate(handle, budget)` call site.
     ///
-    /// For each `(template_name, realization_entity)` key in
-    /// `module.templates × realizations`, applies the priority chain
-    /// `demanded_tols.get(&key).flatten()` → `effective_tessellation_tolerance(module)`
-    /// to obtain the requested tolerance, then routes that through
+    /// Returns a positionally-indexed `Vec<Vec<f64>>` aligned with
+    /// `module.templates × realizations` iteration order: the outer Vec has
+    /// one entry per template, each inner Vec has one entry per realization.
+    /// Consumers index by `[template_idx][realization_idx]` — zero String
+    /// clones, zero hashing, O(1) lookup (task 3227).
+    ///
+    /// For each `[template_idx][realization_idx]` cell, applies the priority
+    /// chain `demanded_tols[t_idx][r_idx].flatten()` →
+    /// `effective_tessellation_tolerance(module)` to obtain the requested
+    /// tolerance, then routes that through
     /// [`Engine::compute_realization_tolerance_budget`] against the supplied
     /// owned-value `registry` to obtain the budgeted tolerance.
+    ///
+    /// **Allocation budget per build (post task 3227)**: 1
+    /// `HashSet<ReprKind>` + 1 `BTreeMap<String, &CapabilityDescriptor>` +
+    /// 2 `Vec<Vec<…>>` per build — replacing the previous R per-call
+    /// `HashSet<ReprKind>` and 2 `HashMap<(String, String), …>` per build.
     ///
     /// **Borrow-map allocation cost** (amendment 2): the borrowed-value
     /// view `BTreeMap<String, &CapabilityDescriptor>` that
@@ -1095,9 +1116,9 @@ impl Engine {
     pub(crate) fn compute_tessellation_budgets(
         &self,
         module: &CompiledModule,
-        demanded_tols: &HashMap<(String, String), Option<f64>>,
+        demanded_tols: &[Vec<Option<f64>>],
         registry: &BTreeMap<String, CapabilityDescriptor>,
-    ) -> HashMap<(String, String), f64> {
+    ) -> Vec<Vec<f64>> {
         // Build the borrowed-value view that `dispatch` requires ONCE per
         // build — see the "Borrow-map allocation cost" note above.
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
@@ -1109,24 +1130,30 @@ impl Engine {
         // Cost drops from R allocations to 1 per build (task 3227).
         let available: HashSet<ReprKind> =
             Self::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
-        let mut map: HashMap<(String, String), f64> = HashMap::new();
-        for t in &module.templates {
-            for r in &t.realizations {
-                let key = (t.name.clone(), r.id.entity.clone());
-                let req_tol = demanded_tols
-                    .get(&key)
-                    .copied()
-                    .flatten()
-                    .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
-                let budget = self.compute_realization_tolerance_budget(
-                    &registry_borrowed,
-                    &available,
-                    req_tol,
-                );
-                map.insert(key, budget);
-            }
-        }
-        map
+        module
+            .templates
+            .iter()
+            .enumerate()
+            .map(|(t_idx, t)| {
+                t.realizations
+                    .iter()
+                    .enumerate()
+                    .map(|(r_idx, _r)| {
+                        let req_tol = demanded_tols
+                            .get(t_idx)
+                            .and_then(|v| v.get(r_idx))
+                            .copied()
+                            .flatten()
+                            .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
+                        self.compute_realization_tolerance_budget(
+                            &registry_borrowed,
+                            &available,
+                            req_tol,
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Shared helper: execute geometry operations and tessellate each realization.
@@ -1141,27 +1168,28 @@ impl Engine {
     /// runs, so the patch is observable only on the final `TessellateResult`
     /// surface — matching the build-pipeline semantics.
     ///
-    /// `demanded_tols` maps `(template_name, realization_entity)` →
-    /// `Option<f64>` and is precomputed by the caller via
-    /// [`Engine::demanded_tolerance_for_output`] (with fallback to
-    /// [`Engine::active_tolerance_for`]) — task 2874 step-6 wiring. The
-    /// precompute decouples the `&self`-needing query from the `&mut self.*`
-    /// borrows already split across this static helper's parameter list.
-    /// Missing keys are treated as `None` (no demand contributor).
+    /// `demanded_tols` is a positionally-indexed `&[Vec<Option<f64>>]`
+    /// (indexed `[template_idx][realization_idx]`, aligned with
+    /// `module.templates × realizations` iteration order) precomputed by
+    /// the caller via [`Engine::compute_demanded_tols`] — task 2874
+    /// step-6 / task 3227 refactor. The precompute decouples the
+    /// `&self`-needing query from the `&mut self.*` borrows already split
+    /// across this static helper's parameter list. Missing entries (caller-
+    /// side bug — should not happen since the producer iterates the same
+    /// product) fall back to `None`.
     /// `realization_cache` is the engine's per-build cache that
     /// `execute_realization_ops` populates on success and (post step-8) will
     /// consult on entry.
     ///
-    /// `tessellation_budgets` maps `(template_name, realization_entity)` → `f64`
-    /// and is precomputed by the caller via
-    /// [`Engine::compute_realization_tolerance_budget`] against the inventory-
-    /// collected kernel registry (task 2874 step-12). The map carries the
-    /// budgeted tolerance — the demanded tolerance routed through the
-    /// dispatcher's per-stage allocation primitive, with fallback to
+    /// `tessellation_budgets` is a positionally-indexed `&[Vec<f64>]`
+    /// (indexed `[template_idx][realization_idx]`, same alignment) precomputed
+    /// by the caller via [`Engine::compute_tessellation_budgets`] (task 2874
+    /// step-12 / task 3227 refactor). The slice carries the budgeted tolerance
+    /// — the demanded tolerance routed through the dispatcher's per-stage
+    /// allocation primitive, with fallback to
     /// [`Self::effective_tessellation_tolerance`] when no per-output demand
     /// exists — that this helper hands to `kernel.tessellate(handle, budget)`.
-    /// Missing keys (which should not happen because the caller iterates the
-    /// same `module.templates` × `realizations` product) fall back to the
+    /// Missing entries (caller-side bug — should not happen) fall back to the
     /// module-pragma default.
     #[allow(clippy::too_many_arguments)]
     fn tessellate_from_values(
@@ -1175,8 +1203,8 @@ impl Engine {
         topology_attribute_table: &mut TopologyAttributeTable,
         swept_kind_table: &mut SweptKindTable,
         realization_cache: &mut RealizationCache<GeometryHandleId>,
-        demanded_tols: &HashMap<(String, String), Option<f64>>,
-        tessellation_budgets: &HashMap<(String, String), f64>,
+        demanded_tols: &[Vec<Option<f64>>],
+        tessellation_budgets: &[Vec<f64>],
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
@@ -1187,13 +1215,13 @@ impl Engine {
 
         let mut step_handles: Vec<GeometryHandleId> = Vec::new();
 
-        for template in &module.templates {
+        for (t_idx, template) in module.templates.iter().enumerate() {
             // `named_steps` is scoped per-template so that two structures
             // that each declare `let body = …` cannot clobber each other's
             // name → handle entries.  Cross-template GeomRef::Sub references
             // are intentionally not supported.
             let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-            for realization in &template.realizations {
+            for (r_idx, realization) in template.realizations.iter().enumerate() {
                 let handle_start = step_handles.len();
                 // Tessellate paths do not propagate kernel errors into
                 // `Freshness::Failed` today (arch §9.1 wires that on the
@@ -1201,8 +1229,11 @@ impl Engine {
                 // Pass `&mut None` so `execute_realization_ops` collects the
                 // diagnostic but no caller acts on the kernel error here.
                 let mut kernel_error: Option<ErrorRef> = None;
+                // Task 3227: positional lookup by [t_idx][r_idx] — no String
+                // clones, no hashing. Missing entry (caller-side bug) → None.
                 let demanded_tol = demanded_tols
-                    .get(&(template.name.clone(), realization.id.entity.clone()))
+                    .get(t_idx)
+                    .and_then(|v| v.get(r_idx))
                     .copied()
                     .unwrap_or(None);
                 Engine::execute_realization_ops(
@@ -1235,13 +1266,13 @@ impl Engine {
                     // budget (precomputed by the caller via
                     // `Engine::compute_realization_tolerance_budget`) to the
                     // kernel instead of the unconditional module-pragma
-                    // default. The map key matches the same
-                    // (template_name, entity) coordinate as `demanded_tols`;
-                    // missing entries (caller-side bug — should not happen)
-                    // fall back to the module pragma so we still produce a
-                    // mesh rather than panicking.
+                    // default. Task 3227: positional lookup by [t_idx][r_idx]
+                    // — no String clones, no hashing. Missing entry (caller-
+                    // side bug — should not happen) falls back to the module
+                    // pragma so we still produce a mesh rather than panicking.
                     let budget = tessellation_budgets
-                        .get(&(template.name.clone(), realization.id.entity.clone()))
+                        .get(t_idx)
+                        .and_then(|v| v.get(r_idx))
                         .copied()
                         .unwrap_or_else(|| Self::effective_tessellation_tolerance(module));
                     match kernel.tessellate(last_handle, budget) {
