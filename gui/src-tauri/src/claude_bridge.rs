@@ -346,6 +346,10 @@ impl SidecarHandle {
         let notify_for_crash = Arc::clone(&ready_notify);
         let stdin_for_reader = Arc::clone(&stdin);
         let notify_for_reader = Arc::clone(&ready_notify);
+        // Capture event_emitter for the on_exit closure so we can emit
+        // claude-sidecar-crashed when an unexpected exit is detected.
+        let event_emitter_for_exit: Option<Arc<F>> =
+            mcp_config.as_ref().map(|m| Arc::clone(&m.event_emitter));
 
         let reader_handle = tokio::spawn(async move {
             read_sidecar_output(
@@ -431,12 +435,22 @@ impl SidecarHandle {
                     // on_exit: set state to Crashed unless we're already NotStarted (killed).
                     // Also notify waiters so anyone blocked in wait_ready wakes immediately
                     // instead of hanging for the full timeout.
+                    // If we detect a genuine unexpected exit (non-NotStarted), also emit
+                    // a claude-sidecar-crashed Tauri event so the frontend can clear stuck UI.
                     let state_inner = state_for_crash;
                     let notify_inner = notify_for_crash;
+                    let emitter = event_emitter_for_exit;
                     tokio::spawn(async move {
                         let mut s = state_inner.lock().await;
                         if !matches!(*s, SidecarState::NotStarted) {
-                            *s = SidecarState::Crashed("sidecar exited unexpectedly".to_string());
+                            let reason = "sidecar exited unexpectedly".to_string();
+                            *s = SidecarState::Crashed(reason.clone());
+                            if let Some(ref emit) = emitter {
+                                emit(
+                                    "claude-sidecar-crashed".to_string(),
+                                    serde_json::json!({ "reason": reason }),
+                                );
+                            }
                         }
                         notify_inner.notify_waiters();
                     });
