@@ -3376,3 +3376,49 @@ async fn on_sidecar_exit_emits_crashed_event_when_state_was_ready() {
         .await
         .expect("notify_waiters should have been called inside on_sidecar_exit");
 }
+
+#[tokio::test]
+async fn on_sidecar_exit_does_not_emit_when_state_was_not_started() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::{Mutex, Notify};
+
+    // Set up state = NotStarted (the "killed" case — sidecar was never running)
+    let state = Arc::new(Mutex::new(SidecarState::NotStarted));
+
+    // Capture the Notified future BEFORE calling on_sidecar_exit so it sees
+    // the epoch increment from notify_waiters() when polled.
+    let notify = Arc::new(Notify::new());
+    let notified = notify.notified();
+
+    // Set up event sink
+    let events: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
+        Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+    let emitter = Arc::new(move |name: String, payload: serde_json::Value| {
+        events_clone.lock().unwrap().push((name, payload));
+    });
+
+    on_sidecar_exit(state.clone(), Arc::clone(&notify), Some(emitter)).await;
+
+    // (a) State must remain NotStarted — the kill-suppression branch does NOT
+    // overwrite state when the input was NotStarted.
+    assert!(
+        matches!(*state.lock().await, SidecarState::NotStarted),
+        "Expected SidecarState::NotStarted to be preserved after on_sidecar_exit with NotStarted input"
+    );
+
+    // (b) Event sink must be empty — no claude-sidecar-crashed emitted for a killed sidecar.
+    let emitted = events.lock().unwrap();
+    assert!(
+        emitted.is_empty(),
+        "Expected no events emitted for NotStarted input, got: {:?}",
+        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+    );
+    drop(emitted);
+
+    // (c) notify_waiters must still fire so wait_ready callers wake up even on kill.
+    tokio::time::timeout(Duration::from_millis(50), notified)
+        .await
+        .expect("notify_waiters should fire even when state was NotStarted (kill path)");
+}
