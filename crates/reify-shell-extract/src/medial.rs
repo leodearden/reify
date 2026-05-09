@@ -287,13 +287,11 @@ impl std::fmt::Display for MedialError {
                          (bounds must be finite and bounds_min ≤ bounds_max; \
                          spacing={spacing})"
                     ),
-                    (false, false) => write!(
-                        f,
-                        "Regular3D SampledField axis {axis}: InvalidAxisGeometry \
-                         constructed with spacing={spacing}, \
-                         bounds_min={bounds_min}, bounds_max={bounds_max} \
-                         (no violation detected — variant was constructed outside the validator)"
-                    ),
+                    (false, false) => {
+                        unreachable!(
+                            "InvalidAxisGeometry constructed only when predicate fails"
+                        )
+                    }
                 }
             }
             MedialError::DataLengthMismatch { expected, found } => write!(
