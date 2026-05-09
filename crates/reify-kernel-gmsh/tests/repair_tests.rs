@@ -217,8 +217,9 @@ fn large_vertex_count_emits_warn_does_not_panic() {
 /// Numerical stability: vertex spacing 1e-9, epsilon 1.5e-9 →
 ///   eps_sq = 2.25e-18, |A-B|² = |B-C|² ≈ 1e-18 ≤ eps_sq (both merge),
 ///   |A-C|² ≈ 4e-18 > eps_sq (no direct merge).
-///   f32 round-trip noise near 1e-9 is ~1.2e-16 — five orders of magnitude
-///   below the 1.25e-18 gap between the merge and non-merge thresholds.
+///   f32-rounded literals give `(1e-9_f32 as f64).powi(2) ≈ 1.0e-18` and
+///   `(2e-9_f32 as f64).powi(2) ≈ 4.0e-18` — both safely on opposite sides
+///   of `eps_sq = 2.25e-18`.
 #[test]
 fn chain_merge_collapses_via_intermediate_vertex() {
     // A=(0,0,0), B=(1e-9,0,0), C=(2e-9,0,0): the three chain vertices.
@@ -260,6 +261,8 @@ fn chain_merge_collapses_via_intermediate_vertex() {
     // (2) All three triangles survive — none are degenerate after merging
     //     (each maps to distinct compacted indices A_slot, D_slot, E_slot)
     //     and none are slivers (~50 m² >> 1e-12 threshold).
+    //     Note: all three triangles map to the same (A,D,E) tuple post-merge;
+    //     this test relies on `repair_surface_mesh` NOT deduping identical triangle tuples.
     assert_eq!(
         repaired.indices.len(),
         9,
