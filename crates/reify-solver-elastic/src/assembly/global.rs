@@ -357,6 +357,7 @@ mod tests {
     use crate::assembly::test_support::scaled_p2_phys_nodes;
     use crate::assembly::tet::{element_stiffness_p1, element_stiffness_p2};
     use crate::constitutive::IsotropicElastic;
+    use crate::shell_assembly::shell_element_stiffness;
 
     /// Steel-like dimensionless material reused across the global-assembly
     /// tests. Mirrors the convention from `assembly::tests::dimensionless_steel_like`
@@ -376,6 +377,17 @@ mod tests {
         [0.0, 1.0, 0.0],
         [0.0, 0.0, 1.0],
     ];
+
+    /// Canonical 3-node phys layout (unit reference triangle in the xy-plane).
+    /// Mirrors the `UNIT_TRI` constant in `shell_assembly.rs::tests` so shell
+    /// K_e instances built here match those built there for the shell-assembly
+    /// regression tests.
+    const UNIT_TRI: [[f64; 3]; 3] =
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+
+    /// Canonical shell thickness for the mixed-element fixtures. 0.05 matches
+    /// the value used throughout `shell_assembly.rs::tests`.
+    const SHELL_T: f64 = 0.05;
 
     /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>` as a plain `f64`,
     /// returning `0.0` if the entry is not stored. Lets test code densify
@@ -1132,6 +1144,46 @@ mod tests {
 
         for i in 0..30 {
             for j in 0..30 {
+                let actual = read(&k, i, j);
+                let expected = k_e.get(i, j);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "K_global[{i}][{j}] = {actual} but K_e[{i}][{j}] = {expected}",
+                );
+            }
+        }
+    }
+
+    /// Single 18-DOF MITC3+ shell element with identity connectivity
+    /// `[0, 1, 2]` → `K_global` equals `K_e` bit-for-bit at every entry.
+    ///
+    /// Pins the D-agnostic generalisation of the scatter loop: the shell
+    /// element ships 6 DOFs per node (3 translations + 3 rotations) rather
+    /// than the 3 DOFs of a tet, so the per-element divisibility derivation
+    /// `dofs_per_node = k_e.n_dofs / connectivity.len()` must yield 6, and
+    /// the global matrix dim must be `6 * n_nodes = 18`. Identity
+    /// connectivity makes the DOF mapping degenerate to identity, so
+    /// bit-equality is achievable with no FP-summation reordering.
+    #[test]
+    fn single_shell_18dof_element_identity_connectivity_matches_k_e_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let k_e = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+        assert_eq!(k_e.n_dofs, 18);
+
+        let connectivity = [0usize, 1, 2];
+        let element = AssemblyElement {
+            id: 0,
+            connectivity: &connectivity,
+            k_e: &k_e,
+        };
+        let k = assemble_global_stiffness(3, &[element], AssemblyMode::Deterministic);
+        // 6 DOFs/node × 3 nodes = 18.
+        assert_eq!(k.nrows(), 18);
+        assert_eq!(k.ncols(), 18);
+
+        for i in 0..18 {
+            for j in 0..18 {
                 let actual = read(&k, i, j);
                 let expected = k_e.get(i, j);
                 assert_eq!(
