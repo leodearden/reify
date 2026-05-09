@@ -345,6 +345,7 @@ fn norm3(v: [f64; 3]) -> f64 {
 /// - `phys_nodes.len() != n_face_nodes`
 /// - `f.len() % 3 != 0`
 /// - Any entry in `connectivity` is `>= f.len() / 3` (out-of-range global node)
+#[allow(clippy::too_many_arguments)]
 fn integrate_face_generic(
     f: &mut [f64],
     connectivity: &[usize],
