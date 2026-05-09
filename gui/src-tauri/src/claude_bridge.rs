@@ -728,17 +728,16 @@ pub fn resolve_workspace_dir(
     fallback_cwd: &std::path::Path,
 ) -> std::path::PathBuf {
     // 1. current_file from message context
-    if let Some(ctx) = message_context {
-        if let Some(ref cf) = ctx.current_file
-            && !cf.is_empty()
+    if let Some(ctx) = message_context
+        && let Some(ref cf) = ctx.current_file
+        && !cf.is_empty()
+    {
+        let p = std::path::Path::new(cf);
+        // parent is empty ("") for bare filenames — filter that out
+        if let Some(parent) = p.parent()
+            && parent != std::path::Path::new("")
         {
-            let p = std::path::Path::new(cf);
-            // parent is empty ("") for bare filenames — filter that out
-            if let Some(parent) = p.parent()
-                && parent != std::path::Path::new("")
-            {
-                return parent.to_path_buf();
-            }
+            return parent.to_path_buf();
         }
     }
 
