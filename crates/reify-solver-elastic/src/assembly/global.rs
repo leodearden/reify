@@ -1412,6 +1412,86 @@ mod tests {
         }
     }
 
+    /// Parallel mode is tolerance-equivalent to deterministic mode on a
+    /// 4×-replicated mixed-element (tet + shell-sharing-node) mesh.
+    ///
+    /// Mesh: four disjoint copies of the step-3 fixture (one P1 tet
+    /// `[6k, 6k+1, 6k+2, 6k+3]` plus one MITC3+ shell `[6k, 6k+4, 6k+5]`,
+    /// for k ∈ {0, 1, 2, 3}). 8 elements total, 24 nodes, dim = `6 · 24
+    /// = 144`. The eight-element slice gives `Parallel { threads: 4 }`'s
+    /// `chunk_size = ceil(8 / 4) = 2` two elements per worker; each
+    /// worker handles one tet + one shell from its own disjoint copy.
+    ///
+    /// Pins three contracts that step-2's generalisation must preserve:
+    ///
+    /// 1. **Per-thread Vec capacity formula** uses
+    ///    `Σ d_e² · n_local²` (P1 tet: 144, MITC3+ shell: 324) — not the
+    ///    old hardcoded `9 · n_local²` (which would over-allocate
+    ///    by 3× for tets but under-allocate by 4× for shells, masking
+    ///    correctness via Vec growth but breaking the pre-sized invariant
+    ///    the docstring claims).
+    /// 2. **Mixed `d_e` slice in a single chunk** — when one chunk
+    ///    contains both a tet (`d_e = 3`) and a shell (`d_e = 6`),
+    ///    `emit_element_triplets` must derive `d_e` per-element rather
+    ///    than reading some chunk-level constant.
+    /// 3. **Slice-order merge survives mixed-element emission** —
+    ///    `K_par` matches `K_det` to 1e-12 relative+absolute, the same
+    ///    band the existing pure-tet shared-DOF tests pin.
+    #[test]
+    fn mixed_mesh_parallel_mode_tolerance_equivalent_to_deterministic() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+
+        // Four disjoint replicas: replica k owns nodes 6k..6k+6.
+        // Slice ordering interleaves tet, shell, tet, shell, ... so a
+        // chunk_size of 2 puts (tet_k, shell_k) into worker k.
+        let conns_tet: Vec<[usize; 4]> = (0..4)
+            .map(|k| [6 * k, 6 * k + 1, 6 * k + 2, 6 * k + 3])
+            .collect();
+        let conns_shell: Vec<[usize; 3]> =
+            (0..4).map(|k| [6 * k, 6 * k + 4, 6 * k + 5]).collect();
+
+        let mut elements: Vec<AssemblyElement<'_>> = Vec::with_capacity(8);
+        for k in 0..4usize {
+            elements.push(AssemblyElement {
+                id: 2 * k,
+                connectivity: &conns_tet[k],
+                k_e: &k_e_tet,
+            });
+            elements.push(AssemblyElement {
+                id: 2 * k + 1,
+                connectivity: &conns_shell[k],
+                k_e: &k_e_shell,
+            });
+        }
+        let n_nodes = 24;
+        let dim = 6 * n_nodes; // 144
+
+        let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        let par =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
+
+        assert_eq!(det.nrows(), dim);
+        assert_eq!(det.ncols(), dim);
+        assert_eq!(par.nrows(), dim);
+        assert_eq!(par.ncols(), dim);
+
+        for i in 0..dim {
+            for j in 0..dim {
+                let d = read(&det, i, j);
+                let p = read(&par, i, j);
+                let tol = 1e-12 * d.abs().max(1.0);
+                let delta = (p - d).abs();
+                assert!(
+                    delta < tol,
+                    "K_par[{i}][{j}] = {p} but K_det[{i}][{j}] = {d}; \
+                     |Δ| = {delta} ≥ tol = {tol}",
+                );
+            }
+        }
+    }
+
     /// Single 18-DOF MITC3+ shell element with identity connectivity
     /// `[0, 1, 2]` → `K_global` equals `K_e` bit-for-bit at every entry.
     ///
