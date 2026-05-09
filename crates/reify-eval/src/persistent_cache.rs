@@ -884,11 +884,11 @@ mod tests {
         }
     }
 
-    /// Pins that the LE `unsafe { set_len }` path does NOT silently return
-    /// uninitialised data on short reads: `read_exact` must fail loudly with
-    /// `UnexpectedEof` rather than returning a partially-initialised `Vec`.
-    /// This is a runtime verification of SAFETY-comment item (c) on the
-    /// `set_len` call in `read_f64_slab`.
+    /// Pins that `read_f64_slab` fails loudly with `UnexpectedEof` on short
+    /// input rather than reaching the unsafe `set_len` call. The post-condition
+    /// this test verifies is that `set_len` is gated on `read_exact`'s Ok
+    /// path — no partially-initialised `Vec` is ever exposed to the caller on
+    /// a short read.
     #[test]
     fn read_f64_slab_returns_unexpected_eof_on_short_input() {
         // 7-byte buffer — one byte short of one f64 (which needs 8 bytes).
