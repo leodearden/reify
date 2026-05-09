@@ -3208,6 +3208,46 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
     expect((errors[0] as any).message).toMatch(/permission/i);
     // Should not crash or throw
   });
+
+  // (f) onRequest arriving outside an in-flight invocation (currentInvocationId is null)
+  //     must deny immediately, emit a diagnostic notice, and NOT emit permission_request
+  it('(f) orphan permission request (no in-flight invocation) is denied and emits a notice', () => {
+    const { server, triggerRequest } = makeMockPermissionServer();
+
+    // Create the session but do NOT call handleMessage — currentInvocationId stays null
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: 'http://127.0.0.1:29999/mcp', server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // Simulate a late/orphan permission request arriving with no active invocation
+    triggerRequest({
+      request_id: 'req-orphan',
+      tool_name: 'Write',
+      tool_input: { path: '/tmp/x' },
+    });
+
+    // (f1) No permission_request outbound must have been emitted
+    const permReqs = outputs.filter((o) => o.type === 'permission_request');
+    expect(permReqs).toHaveLength(0);
+
+    // (f2) server.decide must have been called exactly once with deny
+    expect((server.decide as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    expect((server.decide as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('req-orphan', { behavior: 'deny' });
+
+    // (f3) Exactly one diagnostic notice with code 'permission_request_orphaned' must have been emitted
+    const notices = outputs.filter((o) => o.type === 'notice') as any[];
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      type: 'notice',
+      id: '',
+      code: 'permission_request_orphaned',
+      message: expect.any(String),
+    });
+  });
 });
 
 describe('SidecarSession reify-debug MCP wiring (task 3210)', () => {
