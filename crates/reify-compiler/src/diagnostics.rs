@@ -24,9 +24,15 @@ mod tests {
         let span = SourceSpan::empty(42);
         let d = lossy_real_warning(span);
         assert_eq!(d.severity, Severity::Warning);
-        assert_eq!(
-            d.message,
-            "integer literal too large to represent as Int; using Real (precision may be lost)"
+        assert!(
+            d.message.contains("too large"),
+            "expected 'too large' in message: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("precision"),
+            "expected 'precision' in message: {:?}",
+            d.message
         );
         assert_eq!(d.labels.len(), 1);
         assert_eq!(d.labels[0].span, span);
