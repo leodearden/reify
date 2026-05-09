@@ -44,6 +44,8 @@ pub enum SupportBodyKind {
     Tet,
 }
 
+use crate::boundary::DirichletBc;
+
 /// Diagnostic tag returned alongside the BC list from [`build_support_bcs`].
 ///
 /// `Ok` is the common case.  `PinnedOnTetEquivalentToFixed` surfaces a
@@ -64,11 +66,60 @@ pub enum SupportCompatibility {
     PinnedOnTetEquivalentToFixed,
 }
 
+/// Build the [`DirichletBc`] list for a set of support nodes.
+///
+/// # Parameters
+///
+/// - `nodes`: global node indices that are constrained.
+/// - `kind`: [`SupportKind::Fixed`] clamps all DOFs; [`SupportKind::Pinned`]
+///   clamps only the 3 translational DOFs (meaningful on shell bodies).
+/// - `body`: [`SupportBodyKind::Shell`] uses a 6-DOF/node stride;
+///   [`SupportBodyKind::Tet`] uses 3.
+///
+/// # Returns
+///
+/// A pair `(bcs, compat)` where:
+/// - `bcs` is the flat list of [`DirichletBc`] pairs in node-major, DOF-minor order.
+/// - `compat` is [`SupportCompatibility::Ok`] for all combinations except
+///   `(Pinned, Tet)`, which returns
+///   [`SupportCompatibility::PinnedOnTetEquivalentToFixed`].
+///
+/// All produced BCs have `value = 0.0` (homogeneous Dirichlet). Non-zero
+/// prescribed displacements are handled by `DisplacementSupport` (separate task).
+pub fn build_support_bcs(
+    nodes: &[usize],
+    kind: SupportKind,
+    body: SupportBodyKind,
+) -> (Vec<DirichletBc>, SupportCompatibility) {
+    match (body, kind) {
+        (SupportBodyKind::Shell, SupportKind::Fixed) => {
+            // 6 DOFs per node: u_x, u_y, u_z, θ_x, θ_y, θ_z  (offsets 0..6)
+            let bcs = nodes
+                .iter()
+                .flat_map(|&n| {
+                    (0..6).map(move |i| DirichletBc {
+                        dof: 6 * n + i,
+                        value: 0.0,
+                    })
+                })
+                .collect();
+            (bcs, SupportCompatibility::Ok)
+        }
+        (SupportBodyKind::Shell, SupportKind::Pinned) => {
+            unimplemented!("(Shell, Pinned) — step-6")
+        }
+        (SupportBodyKind::Tet, SupportKind::Fixed) => {
+            unimplemented!("(Tet, Fixed) — step-8")
+        }
+        (SupportBodyKind::Tet, SupportKind::Pinned) => {
+            unimplemented!("(Tet, Pinned) — step-10")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::boundary::DirichletBc;
 
     // ------------------------------------------------------------------
     // Step 1: enum smoke tests — all three types, all variants, all derives
