@@ -172,6 +172,13 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
       </div>
       <Show when={props.store.state.pendingPermissionRequests.length > 0}>
         <div data-testid="permission-prompts">
+          {/*
+           * Solid's <For> keys by object reference. The store appends entries via
+           *   setState('pendingPermissionRequests', (reqs) => [...reqs, newReq])
+           * and removes them via .filter(), both of which preserve the identity of
+           * existing entries. So unchanged prompts retain their DOM/focus state
+           * across re-renders without an explicit `key` prop.
+           */}
           <For each={props.store.state.pendingPermissionRequests}>
             {(req) => (
               <PermissionPrompt

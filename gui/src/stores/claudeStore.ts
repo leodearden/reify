@@ -212,6 +212,9 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
       case 'done': {
         cancelAndFlush();
         setState('sessionStatus', 'idle');
+        // Clear any permission prompts that were outstanding during this turn —
+        // their request_ids are now stale and showing them would be misleading.
+        setState('pendingPermissionRequests', []);
         const idx = findAssistantIdx(msg.id);
         if (idx === -1) break;
         setState(
@@ -242,6 +245,9 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
       case 'error': {
         cancelAndFlush();
         setState('sessionStatus', 'idle');
+        // Clear any permission prompts that were outstanding during this turn —
+        // their request_ids are now stale and showing them would be misleading.
+        setState('pendingPermissionRequests', []);
         // Auto-classify error and add system message
         const classified = classifyError(msg.message);
         addSystemMessage(classified.type, classified.userMessage);
@@ -309,6 +315,9 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
   function claudeAbort(): void {
     cancelAndClear();
     setState('sessionStatus', 'idle');
+    // Clear any pending permission prompts — after abort they are stale (the
+    // underlying request_ids are gone) and the UI would show non-functional controls.
+    setState('pendingPermissionRequests', []);
     options.onAbort();
   }
 
