@@ -147,11 +147,14 @@ export function createPermissionServer(): PermissionServer {
 
     try {
       await mcpServer.connect(transport);
-      await transport.handleRequest(req, res, parsedBody);
+      // Register the close listener BEFORE handleRequest so any close event fired
+      // during the await (e.g. client abort, mid-stream socket drop) still triggers
+      // cleanup. transport.close() and mcpServer.close() are idempotent.
       res.on('close', () => {
         transport.close();
         mcpServer.close();
       });
+      await transport.handleRequest(req, res, parsedBody);
     } catch (err) {
       console.error('[permission-server] Error handling MCP request:', err);
       if (!res.headersSent) {
