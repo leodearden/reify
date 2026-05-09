@@ -218,18 +218,11 @@ pub fn compute_dirichlet_bcs(
     let mut result = Vec::with_capacity(boundary.len());
 
     for (node_idx, attachment) in boundary.iter() {
-        let i = node_idx as usize;
-        let base = i.checked_mul(3).ok_or(ProjectionFailure::InvalidNodeIndex(node_idx))?;
-        // Uniform overflow discipline: check both mul and the end boundary.
-        let end = base.checked_add(3).ok_or(ProjectionFailure::InvalidNodeIndex(node_idx))?;
-        if end > old_mesh.vertices.len() {
-            return Err(ProjectionFailure::InvalidNodeIndex(node_idx));
-        }
-        let old_position = [
-            old_mesh.vertices[base] as f64,
-            old_mesh.vertices[base + 1] as f64,
-            old_mesh.vertices[base + 2] as f64,
-        ];
+        let [x, y, z] = old_mesh
+            .vertex(node_idx)
+            .ok_or(ProjectionFailure::InvalidNodeIndex(node_idx))?;
+        // Single boundary — all downstream FEA arithmetic is f64.
+        let old_position = [x as f64, y as f64, z as f64];
 
         match attachment {
             // PRD invariant: see test
