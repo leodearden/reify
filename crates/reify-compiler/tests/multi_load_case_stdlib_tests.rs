@@ -10,7 +10,7 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `solver_elastic_tests.rs`.
 //!
-//! Accessor argument contract (pinned in the companion smoke test):
+//! Accessor argument contract (pinned in `multi_load_case_stdlib_smoke_e2e`):
 //!   `result_for(mcr, key)` — `mcr` is `args[0]`, `key` is `args[1]`.
 
 use reify_compiler::*;

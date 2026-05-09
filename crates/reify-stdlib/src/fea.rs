@@ -385,6 +385,10 @@ fn result_for(args: &[Value]) -> Value {
     if args.len() != 2 {
         return Value::Undef;
     }
+    // Validation order mirrors `case_names`: extract cases-map (args[0]) first,
+    // then validate the scalar `key` (args[1]). Functionally equivalent under
+    // silent-Undef discipline (any bad-args combination → Value::Undef regardless
+    // of order); the shared shape keeps the two accessors visually parallel.
     let cases = match extract_cases_map(&args[0]) {
         Some(c) => c,
         None => return Value::Undef,
