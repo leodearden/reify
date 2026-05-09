@@ -447,16 +447,16 @@ impl TensorShape {
     fn extract_quantity(self, codomain: &Type) -> Option<Type> {
         match (self, codomain) {
             (TensorShape::Matrix3x3, Type::Matrix { m: 3, n: 3, quantity }) => {
-                Some(*quantity.clone())
+                Some((**quantity).clone())
             }
             (TensorShape::Matrix3x3, Type::Tensor { rank: 2, n: 3, quantity }) => {
-                Some(*quantity.clone())
+                Some((**quantity).clone())
             }
             (TensorShape::Vector3, Type::Vector { n: 3, quantity }) => {
-                Some(*quantity.clone())
+                Some((**quantity).clone())
             }
             (TensorShape::Vector3, Type::Tensor { rank: 1, n: 3, quantity }) => {
-                Some(*quantity.clone())
+                Some((**quantity).clone())
             }
             _ => None,
         }
@@ -549,7 +549,7 @@ fn envelope_tensor_projection(
         // here — the projection-specific extract_quantity check (`Matrix3x3`
         // vs `Vector3`) lives below so this helper stays projection-agnostic
         // and can serve future per-case-Sampled-field accessors.
-        let (sf, dom, cod) = match extract_per_case_sampled_field(case_val, field_name, stride) {
+        let (dom, cod, sf) = match extract_per_case_sampled_field(case_val, field_name, stride) {
             Some(t) => t,
             None => return Value::Undef,
         };
@@ -601,7 +601,7 @@ fn envelope_tensor_projection(
 /// (`envelope_von_mises`, `envelope_max_principal`,
 /// `envelope_displacement_magnitude`).
 ///
-/// Returns `Some((sf, domain, codomain))` when ALL of the following hold:
+/// Returns `Some((domain, codomain, sf))` when ALL of the following hold:
 ///   - `elastic_result` is `Value::Map` (the ElasticResult struct shape)
 ///   - the Map has the `field_name` key
 ///   - the value at that key is `Value::Field { source: Sampled, .. }`
@@ -615,15 +615,15 @@ fn envelope_tensor_projection(
 /// across projections; the projection-specific `TensorShape::extract_quantity`
 /// check happens at the call site.
 ///
-/// The return tuple ordering `(sf, dom, cod)` mirrors the plan signature
-/// `Option<(&SampledField, &Type, &Type)>`. (Differs from `as_sampled_field`'s
-/// `(&Type, &Type, &SampledField)` ordering — the helper's primary product
-/// is the SampledField; the Type references are auxiliary.)
+/// The return tuple ordering `(dom, cod, sf)` matches `as_sampled_field`'s
+/// `(&Type, &Type, &SampledField)` ordering, so callers that touch both
+/// helpers can use the same destructuring shape and avoid foot-gun
+/// reorderings.
 fn extract_per_case_sampled_field<'a>(
     elastic_result: &'a Value,
     field_name: &str,
     expected_stride: usize,
-) -> Option<(&'a SampledField, &'a Type, &'a Type)> {
+) -> Option<(&'a Type, &'a Type, &'a SampledField)> {
     let case_map = match elastic_result {
         Value::Map(m) => m,
         _ => return None,
@@ -634,7 +634,7 @@ fn extract_per_case_sampled_field<'a>(
     if sf.data.len() != grid_count * expected_stride {
         return None;
     }
-    Some((sf, dom, cod))
+    Some((dom, cod, sf))
 }
 
 /// Extract the inner `cases` `BTreeMap` from a `MultiCaseResult` struct
