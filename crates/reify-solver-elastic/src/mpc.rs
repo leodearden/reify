@@ -666,6 +666,95 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Step 9 (RED): contract violation panics
+    // -----------------------------------------------------------------------
+
+    /// Out-of-range DOF panics with a message naming the dof.
+    #[test]
+    #[should_panic(expected = "MpcRow")]
+    fn apply_mpc_panics_on_out_of_range_dof() {
+        use faer::sparse::{SparseRowMat, Triplet};
+        let n = 5usize;
+        let triplets: Vec<Triplet<usize, usize, f64>> = (0..n)
+            .flat_map(|i| (0..n).map(move |j| Triplet::new(i, j, 1.0_f64)))
+            .collect();
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
+        let mut f = vec![0.0_f64; n];
+        // DOF 99 is out of range for a 5-DOF system.
+        apply_mpc_row_elimination(
+            &mut k,
+            &mut f,
+            &[MpcRow::new(vec![0, 99], vec![1.0, -1.0], 0.0)],
+        );
+    }
+
+    /// f.len() != k.nrows() panics.
+    #[test]
+    #[should_panic(expected = "f.len()")]
+    fn apply_mpc_panics_on_f_length_mismatch() {
+        use faer::sparse::{SparseRowMat, Triplet};
+        let n = 5usize;
+        let triplets: Vec<Triplet<usize, usize, f64>> = (0..n)
+            .flat_map(|i| (0..n).map(move |j| Triplet::new(i, j, 1.0_f64)))
+            .collect();
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
+        let mut f = vec![0.0_f64; 3]; // wrong length
+        apply_mpc_row_elimination(
+            &mut k,
+            &mut f,
+            &[MpcRow::new(vec![0, 1], vec![1.0, -1.0], 0.0)],
+        );
+    }
+
+    /// Missing redistribution target entry panics naming the missing (row, col).
+    #[test]
+    #[should_panic(expected = "missing")]
+    fn apply_mpc_panics_on_missing_redistribution_target_entry() {
+        use faer::sparse::{SparseRowMat, Triplet};
+        // 3×3 sparse K: K[0][0]=1, K[0][1]=2, K[1][0]=3, K[1][1]=4, K[2][2]=5
+        // Deliberately missing K[0][2], K[2][0], K[2][1].
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 0, 1.0),
+            Triplet::new(0, 1, 2.0),
+            Triplet::new(1, 0, 3.0),
+            Triplet::new(1, 1, 4.0),
+            Triplet::new(2, 2, 5.0),
+        ];
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(3, 3, &triplets).unwrap();
+        let mut f = vec![0.0_f64; 3];
+        // Pivot=0, other DOF=2 — K[j][2] is missing for j in {0,1}
+        apply_mpc_row_elimination(
+            &mut k,
+            &mut f,
+            &[MpcRow::new(vec![0, 2], vec![1.0, 2.0], 0.0)],
+        );
+    }
+
+    /// Non-square K panics.
+    #[test]
+    #[should_panic(expected = "k must be square")]
+    fn apply_mpc_panics_on_non_square_k() {
+        use faer::sparse::{SparseRowMat, Triplet};
+        // 3×4 non-square
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 0, 1.0),
+            Triplet::new(1, 1, 1.0),
+            Triplet::new(2, 2, 1.0),
+        ];
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(3, 4, &triplets).unwrap();
+        let mut f = vec![0.0_f64; 3];
+        apply_mpc_row_elimination(
+            &mut k,
+            &mut f,
+            &[MpcRow::new(vec![0, 1], vec![1.0, -1.0], 0.0)],
+        );
+    }
+
     /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>`, returning 0.0 if
     /// the entry is not explicitly stored.
     fn read_k(k: &faer::sparse::SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
