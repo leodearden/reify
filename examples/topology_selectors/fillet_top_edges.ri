@@ -20,13 +20,23 @@
 // design vision (fillet only selected edges); switching to the 2-arg form
 // would fillet ALL edges and defeat the example's purpose.
 //
-// Smoke-test coverage tiers:
-//   parse              → active (fillet_top_edges_ri_parses_cleanly)
-//   compile-with-stdlib → #[ignore]-gated (fillet_top_edges_compiles_with_stdlib_no_errors)
-//   eval               → #[ignore]-gated (fillet_top_edges_evals_to_solid_via_topology_walk)
+// Eval-deepening status: gated on two prerequisites:
+//   (a) 3-arg fillet(solid, edges, radius) stdlib binding (same as compile gate)
+//   (b) eval-side dispatch for list helpers (single/flat_map) AND topology
+//       selectors (faces_by_normal/adjacent_faces/shared_edges) in
+//       crates/reify-eval/src/geometry_ops.rs::try_eval_topology_selector
+//       (currently falls through to `_ => return None` at lines 1646-1661,
+//       leaving all topology-derived cells at Value::Undef).
+//   Until both land, `top`, `top_edges`, and `result` all stay at Value::Undef.
 //
-// Both gated tests live in:
-//   crates/reify-eval/tests/topology_selector_smoke_tests.rs
+// Smoke-test coverage tiers in
+//   crates/reify-eval/tests/topology_selector_smoke_tests.rs:
+//
+//   parse               → active   (fillet_top_edges_ri_parses_cleanly)
+//   compile-with-stdlib → #[ignore] (fillet_top_edges_compiles_with_stdlib_no_errors)
+//                         unblocked by: (a) 3-arg fillet binding
+//   eval                → #[ignore] (fillet_top_edges_evals_to_solid_via_topology_walk)
+//                         unblocked by: (a) + (b) eval dispatch
 
 structure def FilletTopEdges {
     let b = box(50mm, 30mm, 10mm)
