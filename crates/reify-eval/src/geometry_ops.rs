@@ -5585,7 +5585,7 @@ mod tests {
     // ── try_eval_topology_selector unit tests (task 2324) ────────────────────
     //
     // These tests pin the contract of `try_eval_topology_selector`, the
-    // kernel-aware eval-time dispatch surface for the `closest_point`, `on`,
+    // kernel-aware eval-time dispatch surface for the `closest_point`, `is_on`,
     // and `angle_between_surfaces` stdlib helpers. Sibling to the
     // `try_eval_conformance_query_*` and (integration-only) kinematic-query
     // tests above. The function lives in this module (rather than
@@ -5724,11 +5724,11 @@ mod tests {
     }
 
     #[test]
-    fn try_eval_topology_selector_on_kernel_reply_returns_bool_with_default_tolerance() {
+    fn try_eval_topology_selector_is_on_kernel_reply_returns_bool_with_default_tolerance() {
         use reify_test_support::mocks::MockGeometryKernel;
         let body_handle = reify_types::GeometryHandleId(11);
         // The dispatcher must use the default `1e-7` tolerance for the 2-arg
-        // `on(point, geometry)` form per the kernel docstring's
+        // `is_on(point, geometry)` form per the kernel docstring's
         // `Precision::Confusion()` recommendation. Recording the mock under
         // exactly this tolerance pins the contract — if the dispatcher ever
         // changes the default, the recorded reply would not be served and
@@ -5750,7 +5750,7 @@ mod tests {
         );
 
         let expr = topology_selector_call_two_value_refs(
-            "on",
+            "is_on",
             "Bracket",
             "p",
             reify_types::Type::point3(reify_types::Type::length()),
@@ -5771,7 +5771,7 @@ mod tests {
         assert_eq!(
             result,
             Some(reify_types::Value::Bool(true)),
-            "on(p, body) with kernel reply Bool(true) must produce \
+            "is_on(p, body) with kernel reply Bool(true) must produce \
              Some(Value::Bool(true)) (default tolerance 1e-7); got {:?}",
             result
         );
@@ -5862,7 +5862,7 @@ mod tests {
     }
 
     #[test]
-    fn try_eval_topology_selector_on_literal_args_falls_through_to_none() {
+    fn try_eval_topology_selector_is_on_literal_args_falls_through_to_none() {
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let kernel = CountingMockKernel::new(inner);
@@ -5870,7 +5870,7 @@ mod tests {
         let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         let values = reify_types::ValueMap::new();
 
-        let expr = topology_selector_call_literal_args("on");
+        let expr = topology_selector_call_literal_args("is_on");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
@@ -5883,7 +5883,7 @@ mod tests {
 
         assert!(
             result.is_none(),
-            "on(<literal>, <literal>) must return None, got {:?}",
+            "is_on(<literal>, <literal>) must return None, got {:?}",
             result
         );
         assert_eq!(
@@ -6233,7 +6233,7 @@ mod tests {
     }
 
     #[test]
-    fn try_eval_topology_selector_on_non_bool_kernel_reply_emits_warning_and_returns_undef() {
+    fn try_eval_topology_selector_is_on_non_bool_kernel_reply_emits_warning_and_returns_undef() {
         use reify_test_support::mocks::MockGeometryKernel;
         // Pin the `Ok(other)` warning arm of `dispatch_point_on_shape`: a kernel
         // reply that is neither `Value::Bool(_)` nor an Err must produce
@@ -6259,7 +6259,7 @@ mod tests {
         );
 
         let expr = topology_selector_call_two_value_refs(
-            "on",
+            "is_on",
             "Bracket",
             "p",
             reify_types::Type::point3(reify_types::Type::length()),
@@ -6280,7 +6280,7 @@ mod tests {
         assert_eq!(
             result,
             Some(reify_types::Value::Undef),
-            "on(...) with non-Bool kernel reply must yield Some(Value::Undef); got {:?}",
+            "is_on(...) with non-Bool kernel reply must yield Some(Value::Undef); got {:?}",
             result
         );
         assert_eq!(
@@ -6298,8 +6298,8 @@ mod tests {
             diag.severity
         );
         assert!(
-            diag.message.contains("on"),
-            "diagnostic must mention the helper name 'on', got: {}",
+            diag.message.contains("is_on"),
+            "diagnostic must mention the helper name 'is_on', got: {}",
             diag.message
         );
         assert!(
