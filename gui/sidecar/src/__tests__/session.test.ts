@@ -3218,3 +3218,81 @@ describe('SidecarSession reify-debug MCP wiring (task 3210)', () => {
     expect(capturedArgs).not.toContain('--permission-prompt-tool');
   });
 });
+
+describe('SidecarSession permission-mode + allowed-tools (task 3210)', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  function captureSpawnArgs(): string[] {
+    let args: string[] = [];
+    vi.mocked(spawn).mockImplementation((((_cmd: string, a: string[]) => {
+      args = a;
+      return createMockProcess([{ type: 'result', session_id: 'sess-perm-mode' }]);
+    }) as any));
+    return args; // reference captured by closure
+  }
+
+  async function runSession(withPermissionMcp: boolean): Promise<string[]> {
+    let capturedArgs: string[] = [];
+    vi.mocked(spawn).mockImplementation((((_cmd: string, a: string[]) => {
+      capturedArgs = a;
+      return createMockProcess([{ type: 'result', session_id: 'sess-pm' }]);
+    }) as any));
+
+    const config: any = {
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+    };
+    if (withPermissionMcp) {
+      const { server } = makeMockPermissionServer();
+      config.permissionMcp = { url: 'http://127.0.0.1:29999/mcp', server };
+    }
+    const session = new SidecarSession(config);
+    session.onOutput = (msg) => outputs.push(msg);
+    await session.handleMessage({ type: 'send_message', id: 'msg-pm', text: 'Hello' });
+    return capturedArgs;
+  }
+
+  it('(a) args contain --permission-mode bypassPermissions (with permissionMcp)', async () => {
+    const args = await runSession(true);
+    const idx = args.indexOf('--permission-mode');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('bypassPermissions');
+  });
+
+  it('(b) args contain --allowed-tools with correct string (with permissionMcp)', async () => {
+    const args = await runSession(true);
+    const idx = args.indexOf('--allowed-tools');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('Read Edit Write Bash Glob Grep mcp__reify-debug__*');
+  });
+
+  it('(c) args do NOT contain --dangerously-skip-permissions (with permissionMcp)', async () => {
+    const args = await runSession(true);
+    expect(args).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('(a) args contain --permission-mode bypassPermissions (no permissionMcp)', async () => {
+    const args = await runSession(false);
+    const idx = args.indexOf('--permission-mode');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('bypassPermissions');
+  });
+
+  it('(b) args contain --allowed-tools with correct string (no permissionMcp)', async () => {
+    const args = await runSession(false);
+    const idx = args.indexOf('--allowed-tools');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('Read Edit Write Bash Glob Grep mcp__reify-debug__*');
+  });
+
+  it('(c) args do NOT contain --dangerously-skip-permissions (no permissionMcp)', async () => {
+    const args = await runSession(false);
+    expect(args).not.toContain('--dangerously-skip-permissions');
+  });
+});
