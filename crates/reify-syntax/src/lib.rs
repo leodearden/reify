@@ -768,6 +768,50 @@ pub struct Expr {
     pub span: SourceSpan,
 }
 
+/// Classification of a numeric literal as Int or Real.
+///
+/// Returned by [`classify_number_literal`] to centralize the Int/Real
+/// boundary so that compiler call sites (literal lowering in
+/// `reify-compiler/src/expr.rs` and annotation arg lowering in
+/// `reify-compiler/src/annotations.rs`) cannot drift from each other.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NumberClass {
+    Int(i64),
+    Real(f64),
+}
+
+/// Classify a parsed numeric literal as Int or Real, matching the AST's
+/// `is_real` flag and falling back to Real for integer-form tokens whose
+/// f64 value isn't a clean i64.
+///
+/// Branch semantics:
+///
+/// * `is_real == true` → always `Real(value)`. The parser sets `is_real`
+///   when the source token contains `.`, `e`, or `E`. A whole-number
+///   real literal like `1.0` stays Real (Int→Real widening at annotated-let
+///   injection sites covers `let x : Real = 42`).
+/// * `is_real == false` and the f64 round-trips cleanly through `i64`
+///   (i.e. `value.is_finite() && value == (value as i64) as f64`) →
+///   `Int(value as i64)`.
+/// * `is_real == false` otherwise → `Real(value)`. Reached when an
+///   integer-form token's f64 value isn't a clean i64 (overflow past
+///   2^63, e.g. `100000000000000000000`, or NaN/Inf from a hypothetical
+///   parser edge case). Falls back to Real to avoid a saturated `as i64`
+///   cast.
+///
+/// This is the single source of truth for the Int/Real boundary on
+/// `ExprKind::NumberLiteral`; both `compile_expr_guarded` and
+/// `lower_annotations` delegate here.
+pub fn classify_number_literal(value: f64, is_real: bool) -> NumberClass {
+    if is_real {
+        NumberClass::Real(value)
+    } else if value.is_finite() && value == (value as i64) as f64 {
+        NumberClass::Int(value as i64)
+    } else {
+        NumberClass::Real(value)
+    }
+}
+
 /// Expression kinds in the AST.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
