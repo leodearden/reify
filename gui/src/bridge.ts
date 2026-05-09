@@ -285,6 +285,7 @@ const KEYS_ID: string[] = ['id'];
 const KEYS_ID_MESSAGE: string[] = ['id', 'message'];
 const KEYS_ID_CODE_MESSAGE: string[] = ['id', 'code', 'message'];
 const KEYS_ID_REQUEST_ID_TOOL_NAME: string[] = ['id', 'request_id', 'tool_name'];
+const KEYS_REASON: string[] = ['reason'];
 
 /**
  * Subscribe to all Claude sidecar events and map payloads to OutboundMessage.
@@ -515,6 +516,22 @@ export async function onKernelStatus(
 ): Promise<UnlistenFn> {
   return listen<KernelStatus>('kernel-status', (event) => {
     callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to the `claude-sidecar-crashed` Tauri event synthesized by the Rust
+ * `on_exit` hook when the sidecar Node process exits unexpectedly.
+ * The callback receives the `reason` string from the event payload.
+ * Malformed payloads (missing `reason`, non-object) are dropped via validatePayload.
+ */
+export async function subscribeToSidecarCrashed(
+  callback: (reason: string) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>('claude-sidecar-crashed', (event) => {
+    const p = validatePayload('claude-sidecar-crashed', event.payload, KEYS_REASON);
+    if (!p) return;
+    callback(p.reason as string);
   });
 }
 
