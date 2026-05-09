@@ -129,6 +129,7 @@ pub mod assembly;
 pub mod boundary;
 pub mod constitutive;
 pub mod elements;
+pub mod mpc;
 pub mod shell_assembly;
 pub mod shell_boundary;
 pub mod shell_result;
@@ -142,6 +143,7 @@ pub use boundary::{
     apply_traction_load,
 };
 pub use constitutive::IsotropicElastic;
+pub use mpc::MpcRow;
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     hex_p1::HexP1,
