@@ -1609,4 +1609,68 @@ mod tests {
             }
         }
     }
+
+    /// Mixed-element global K is symmetric within the same FP tolerance
+    /// band the existing tet-only `global_k_is_symmetric_within_fp_tolerance`
+    /// pins.
+    ///
+    /// Mesh: a small fan rooted at node 0, mixing one P1 tet `[0,1,2,3]`
+    /// with two MITC3+ shells `[0,4,5]` and `[0,6,7]`. `n_nodes = 8`,
+    /// global dim = `6 · 8 = 48`. Node 0 is multi-coupled across all three
+    /// elements so the duplicate-triplet summation path runs on a node
+    /// where contributions from two different `dofs_per_node` (3 from
+    /// tet, 6 from each shell) overlap on displacement DOFs.
+    ///
+    /// Tolerance `1e-9 · max(|K[i][j]|, |K[j][i]|, 1)`, identical to the
+    /// pure-tet symmetry test. Iterates the upper triangle (`j in i..dim`)
+    /// — `(i, j)` and `(j, i)` describe the same unordered pair so the
+    /// halved loop loses no coverage.
+    #[test]
+    fn mixed_mesh_global_k_is_symmetric_within_fp_tolerance() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_shell_a = [0usize, 4, 5];
+        let conn_shell_b = [0usize, 6, 7];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_shell_a,
+                k_e: &k_e_shell,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_shell_b,
+                k_e: &k_e_shell,
+            },
+        ];
+        let n_nodes = 8;
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+        // Mixed mesh ⇒ max(d_e) = 6 ⇒ global dim = 6 · 8 = 48.
+        let dim = 6 * n_nodes;
+        assert_eq!(k.nrows(), dim);
+        assert_eq!(k.ncols(), dim);
+
+        for i in 0..dim {
+            for j in i..dim {
+                let kij = read(&k, i, j);
+                let kji = read(&k, j, i);
+                let tol = 1e-9 * kij.abs().max(kji.abs()).max(1.0);
+                let delta = (kij - kji).abs();
+                assert!(
+                    delta <= tol,
+                    "mixed-mesh K[{i}][{j}] = {kij}, K[{j}][{i}] = {kji}; \
+                     |Δ| = {delta} > tol = {tol}",
+                );
+            }
+        }
+    }
 }
