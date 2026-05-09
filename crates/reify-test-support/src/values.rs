@@ -622,6 +622,35 @@ pub fn common_type_aliases() -> HashMap<String, Type> {
         .build()
 }
 
+/// Build a `MultiCaseResult`-shaped `Value` from a slice of `(case_name, Value)` pairs.
+///
+/// The runtime shape is an outer `Value::Map` with a single key `"cases"` whose
+/// value is an inner `Value::Map<Value::String, Value>` of per-case entries:
+///
+/// ```text
+/// Value::Map {
+///   Value::String("cases") => Value::Map {
+///     Value::String("operating") => <case_value>,
+///     Value::String("overload")  => <case_value>,
+///     ...
+///   }
+/// }
+/// ```
+///
+/// This helper is the single construction site for the `MultiCaseResult` shape.
+/// Producers (`solve_load_cases` — PRD task 3005) emit this shape at runtime;
+/// consumers (`envelope_*`, `linear_combine`, GUI dropdown) read it — all should
+/// call this function to construct test fixtures rather than re-deriving the shape.
+pub fn multi_case_result_value(cases: &[(&str, Value)]) -> Value {
+    let mut inner = BTreeMap::new();
+    for (name, val) in cases {
+        inner.insert(Value::String((*name).to_string()), val.clone());
+    }
+    let mut outer = BTreeMap::new();
+    outer.insert(Value::String("cases".to_string()), Value::Map(inner));
+    Value::Map(outer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
