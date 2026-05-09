@@ -788,15 +788,15 @@ mod tests {
     // Step 7 (RED): multiple MPCs with disjoint pivots are order-independent
     // -----------------------------------------------------------------------
 
-    /// Applying two MPCs with disjoint pivot DOFs in either order produces
+    /// Applying two MPCs with fully-disjoint DOF sets in either order produces
     /// bit-identical K and tolerance-equal f.
     ///
-    /// mpc_a: pivot 0, others {2,4}, rhs=0.
-    /// mpc_b: pivot 1, others {3},   rhs=0.5.
-    /// Disjoint pivots — set operations commute; redistribution writes touch
-    /// disjoint pivot columns.
+    /// mpc_a: pivot 0, others {2,4}, rhs=0.   → DOF set {0,2,4}
+    /// mpc_b: pivot 1, others {3},   rhs=0.5. → DOF set {1,3}
+    /// {0,2,4} ∩ {1,3} = ∅ — the precondition for order-independence stated in
+    /// the module doc (see `apply_mpc_row_elimination` doc, lines 121-129).
     #[test]
-    fn multiple_mpcs_with_disjoint_pivots_are_order_independent_within_fp_tolerance() {
+    fn multiple_mpcs_with_disjoint_dof_sets_are_order_independent_within_fp_tolerance() {
         use faer::sparse::{SparseRowMat, Triplet};
 
         let n = 5usize;
@@ -808,6 +808,9 @@ mod tests {
         };
         let make_f = || -> Vec<f64> { (1..=5).map(|i| i as f64).collect() };
 
+        // Precondition: mpc_a.dofs ∩ mpc_b.dofs = {0,2,4} ∩ {1,3} = ∅.
+        // Fully-disjoint DOF sets (not merely disjoint pivots) are required for
+        // order-independence; see `apply_mpc_row_elimination` doc lines 121-129.
         let mpc_a = MpcRow::new(vec![0, 2, 4], vec![2.0, -1.0, 1.0], 0.0);
         let mpc_b = MpcRow::new(vec![1, 3], vec![3.0, -2.0], 0.5);
 
