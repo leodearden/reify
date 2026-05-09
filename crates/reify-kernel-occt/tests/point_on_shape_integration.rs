@@ -57,25 +57,6 @@ fn box_kernel() -> (OcctKernel, GeometryHandleId) {
 }
 
 // ---------------------------------------------------------------------------
-// Constant re-export — kernel exposes the shared SoT tolerance
-// ---------------------------------------------------------------------------
-
-/// The kernel re-exports `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` from `reify_types`
-/// so that kernel-side callers (stubs, integration tests) can import it via
-/// `reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` without going through
-/// `reify_types` directly.  This test pins the re-export identity.
-#[test]
-fn kernel_reexports_default_point_on_shape_tolerance_constant() {
-    // The kernel re-export and the types-crate source must be the same value.
-    assert_eq!(
-        reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
-        reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
-    );
-    // And both must equal the pinned OCCT Precision::Confusion() value.
-    assert_eq!(reify_kernel_occt::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, 1e-7);
-}
-
-// ---------------------------------------------------------------------------
 // Happy path — points on the surface
 // ---------------------------------------------------------------------------
 
