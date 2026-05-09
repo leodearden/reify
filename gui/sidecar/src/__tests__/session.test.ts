@@ -1562,6 +1562,40 @@ describe('SidecarSession destroy() lifecycle', () => {
     expect(onRequestMock).toHaveBeenCalledTimes(2);
     expect(onRequestMock.mock.calls[1][0]).toBeNull();
   });
+
+  // Pins the `if (this.destroyed) return;` guard at session.ts:127.
+  // We cannot use triggerRequest() here because destroy() calls onRequest(null), which sets
+  // capturedHandler = null inside the mock, so triggerRequest() would throw before the
+  // production callback runs. Instead we grab the original handler closure from mock.calls[0][0]
+  // (captured before destroy()) and invoke it directly — the closure still reads `this.destroyed`.
+  it('destroyed-guard at session.ts:127 short-circuits the constructor onRequest handler', () => {
+    const { server } = makeMockPermissionServer();
+    const permUrl = 'http://127.0.0.1:29999/mcp';
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: permUrl, server },
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    // Grab the constructor-registered handler BEFORE destroy() nulls it out
+    const originalHandler = (server.onRequest as ReturnType<typeof vi.fn>).mock.calls[0][0] as (
+      req: any,
+    ) => void;
+
+    session.destroy();
+
+    // Invoke the captured handler directly — the destroyed-guard at session.ts:127 must fire
+    originalHandler({ request_id: 'req-after-destroy', tool_name: 'Write', tool_input: { path: '/tmp/x' } });
+
+    // Guard short-circuited: no output was emitted (neither permission_request nor notice)
+    expect(outputs).toHaveLength(0);
+
+    // Guard short-circuited: the orphan-deny branch was bypassed, so decide was never called
+    expect(server.decide as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
 });
 
 describe('SidecarSession timeout', () => {
