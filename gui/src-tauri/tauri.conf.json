@@ -27,6 +27,7 @@
     "active": true,
     "targets": ["deb", "appimage", "dmg", "msi", "nsis"],
     "externalBin": ["sidecar/reify-sidecar"],
+    "resources": ["sandbox/landlock.py", "sandbox/landlock_exec.py"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
