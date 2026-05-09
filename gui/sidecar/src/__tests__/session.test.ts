@@ -3703,3 +3703,41 @@ describe('SidecarSession sandbox wrap (task 3210)', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('session.test.ts /tmp leak guard (task 3283)', () => {
+  it('does not create real /tmp/reify-mcp-* directories during session.handleMessage', async () => {
+    // Obtain handles to the REAL filesystem and os, bypassing any vi.mock('node:fs')
+    // that may be active. This lets the test observe actual on-disk state.
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const realOs = await vi.importActual<typeof import('node:os')>('node:os');
+
+    // Snapshot /tmp before the test
+    const tmpdir = realOs.tmpdir();
+    const before = new Set<string>(
+      realFs.readdirSync(tmpdir).filter((name: string) => name.startsWith('reify-mcp-'))
+    );
+
+    vi.mocked(spawn).mockReset();
+    vi.mocked(spawn).mockImplementation((() =>
+      createMockProcess([{ type: 'result', session_id: 'sess-leak' }])
+    ) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+    });
+    session.onOutput = () => {};
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-leak', text: 'Hello' });
+
+    // Snapshot /tmp after — the delta (new entries not in `before`) must be empty.
+    // If node:fs is NOT mocked, session.ts calls real mkdtempSync and this fails.
+    // Once vi.mock('node:fs', factory) is active, no real dirs are created.
+    const after = new Set<string>(
+      realFs.readdirSync(tmpdir).filter((name: string) => name.startsWith('reify-mcp-'))
+    );
+    const leaked = [...after].filter((d) => !before.has(d));
+    expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
+  });
+});
