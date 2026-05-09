@@ -244,7 +244,7 @@ fn cuboid_round_trip_within_5pct_count_variation() {
     assert!(n1 > 0, "first call produced no tets (n1 = {n1})");
     assert!(n2 > 0, "second call produced no tets (n2 = {n2})");
 
-    let abs_diff = if n1 > n2 { n1 - n2 } else { n2 - n1 };
+    let abs_diff = n1.abs_diff(n2);
     let max_n = n1.max(n2) as f64;
     let drift = abs_diff as f64 / max_n;
     let within_budget = drift <= 0.05 || abs_diff <= 1;
