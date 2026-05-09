@@ -1042,6 +1042,81 @@ mod tests {
         assert_eq!(rows[5].rhs.to_bits(), 0.0_f64.to_bits(), "row 5 rhs=0");
     }
 
+    // -----------------------------------------------------------------------
+    // Step 15 (RED): end-to-end shell_tet_tying + apply + solve
+    // -----------------------------------------------------------------------
+
+    /// Composing `shell_tet_tying` with `apply_mpc_row_elimination` and solving
+    /// the eliminated system must satisfy every MPC constraint to FP tolerance.
+    ///
+    /// Setup: 15×15 fully-dense K with SPD-like values, f = [1..15].
+    /// DOF layout: shell_disp=[0,1,2], shell_rot=[3,4,5], tet_top=[6,7,8],
+    ///   tet_mid=[9,10,11], tet_bot=[12,13,14]. Normal=[0,0,1], h=1.
+    ///
+    /// The 6 MPC pivots are {0,1,2,4,3,8} — all distinct.
+    /// After elimination and dense-LU solve, for each MpcRow:
+    ///   |Σᵢ row.coeffs[i] · u[row.dofs[i]] − row.rhs| < 1e-9.
+    #[test]
+    fn shell_tet_tying_constraints_compose_with_apply_mpc_row_elimination_to_satisfy_constraint_after_solve()
+    {
+        use faer::linalg::solvers::Solve;
+        use faer::sparse::{SparseRowMat, Triplet};
+
+        let n = 15usize;
+
+        // SPD-like K: K[i][j] = if i==j { 10.0 } else { 0.1 + 0.05*(i+j) as f64 }
+        // Fully dense so all redistribution targets are pre-allocated.
+        let triplets: Vec<Triplet<usize, usize, f64>> = (0..n)
+            .flat_map(|i| {
+                (0..n).map(move |j| {
+                    let v = if i == j {
+                        10.0
+                    } else {
+                        0.1 + 0.05 * (i + j) as f64
+                    };
+                    Triplet::new(i, j, v)
+                })
+            })
+            .collect();
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(n, n, &triplets).unwrap();
+        let mut f: Vec<f64> = (1..=n).map(|i| i as f64).collect();
+
+        // Build the 6 MPC rows for z-normal, h=1
+        let mpc_rows = MpcRow::shell_tet_tying(
+            [0, 1, 2],
+            [3, 4, 5],
+            [6, 7, 8],
+            [9, 10, 11],
+            [12, 13, 14],
+            [0.0, 0.0, 1.0],
+            1.0,
+        );
+        assert_eq!(mpc_rows.len(), 6);
+
+        apply_mpc_row_elimination(&mut k, &mut f, &mpc_rows);
+
+        // Dense LU solve: K_after · u = f_after
+        let k_dense = k.to_dense();
+        let plu = k_dense.partial_piv_lu();
+        let mut rhs = faer::Mat::<f64>::from_fn(n, 1, |i, _| f[i]);
+        plu.solve_in_place(&mut rhs);
+        let u = rhs.col_as_slice(0_usize);
+
+        // Verify each constraint Σ coeffs[i] · u[dofs[i]] = rhs
+        for (k_idx, row) in mpc_rows.iter().enumerate() {
+            let residual: f64 = row.coeffs.iter()
+                .zip(row.dofs.iter())
+                .map(|(&c, &d)| c * u[d])
+                .sum::<f64>()
+                - row.rhs;
+            assert!(
+                residual.abs() < 1e-9,
+                "MpcRow {k_idx} constraint not satisfied: residual = {residual:.2e}",
+            );
+        }
+    }
+
     /// Read entry `(i, j)` of a `SparseRowMat<usize, f64>`, returning 0.0 if
     /// the entry is not explicitly stored.
     fn read_k(k: &faer::sparse::SparseRowMat<usize, f64>, i: usize, j: usize) -> f64 {
