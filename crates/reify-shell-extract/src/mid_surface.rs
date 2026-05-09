@@ -17,6 +17,7 @@ use std::collections::HashSet;
 
 use reify_types::value::{SampledField, SampledGridKind};
 
+use crate::grid_validation::{validate_regular3d, GridValidationError};
 use crate::medial::{sample_at_world, MedialMask};
 
 /// Triangle mesh representing the mid-surface of a thin solid.
@@ -117,31 +118,51 @@ pub enum MidSurfaceError {
     },
 }
 
+impl From<GridValidationError> for MidSurfaceError {
+    fn from(e: GridValidationError) -> Self {
+        match e {
+            GridValidationError::UnsupportedGridKind { found } => {
+                MidSurfaceError::UnsupportedGridKind { found }
+            }
+            GridValidationError::AxisLengthMismatch {
+                bounds_min_len,
+                bounds_max_len,
+                spacing_len,
+                axis_grids_len,
+            } => MidSurfaceError::AxisLengthMismatch {
+                bounds_min_len,
+                bounds_max_len,
+                spacing_len,
+                axis_grids_len,
+            },
+            GridValidationError::EmptyAxisGrid { axis } => {
+                MidSurfaceError::EmptyAxisGrid { axis }
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for MidSurfaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MidSurfaceError::UnsupportedGridKind { found } => write!(
-                f,
-                "reify-shell-extract requires a Regular3D SampledField input \
-                 (mid-surface extraction is intrinsically 3D); got {found:?}"
-            ),
+            MidSurfaceError::UnsupportedGridKind { found } => {
+                GridValidationError::UnsupportedGridKind { found: *found }.fmt(f)
+            }
             MidSurfaceError::AxisLengthMismatch {
                 bounds_min_len,
                 bounds_max_len,
                 spacing_len,
                 axis_grids_len,
-            } => write!(
-                f,
-                "Regular3D SampledField axis-vector length mismatch: \
-                 bounds_min has {bounds_min_len}, bounds_max has {bounds_max_len}, \
-                 spacing has {spacing_len}, axis_grids has {axis_grids_len} \
-                 (all four must be 3)"
-            ),
-            MidSurfaceError::EmptyAxisGrid { axis } => write!(
-                f,
-                "Regular3D SampledField axis_grids[{axis}] is empty \
-                 (a non-empty per-axis grid is required for marching-cubes iteration)"
-            ),
+            } => GridValidationError::AxisLengthMismatch {
+                bounds_min_len: *bounds_min_len,
+                bounds_max_len: *bounds_max_len,
+                spacing_len: *spacing_len,
+                axis_grids_len: *axis_grids_len,
+            }
+            .fmt(f),
+            MidSurfaceError::EmptyAxisGrid { axis } => {
+                GridValidationError::EmptyAxisGrid { axis: *axis }.fmt(f)
+            }
             MidSurfaceError::MaskGridMismatch {
                 sdf_spacing,
                 mask_spacing,
@@ -516,33 +537,13 @@ pub fn extract_mid_surface(
     mask: &MedialMask,
     options: &MidSurfaceOptions,
 ) -> Result<MidSurfaceMesh, MidSurfaceError> {
-    // (1) Reject non-3D inputs up front.
-    if sdf.kind != SampledGridKind::Regular3D {
-        return Err(MidSurfaceError::UnsupportedGridKind { found: sdf.kind });
-    }
+    // (1) Structural Regular3D validation: kind, axis-vector lengths, non-empty
+    // axis grids. The `?` converts GridValidationError → MidSurfaceError via
+    // the From impl above, preserving the existing variant names and PartialEq
+    // contract for all callers.
+    validate_regular3d(sdf)?;
 
-    // (2) Defend downstream indexing: Regular3D requires length-3 axis vectors.
-    if sdf.bounds_min.len() != 3
-        || sdf.bounds_max.len() != 3
-        || sdf.spacing.len() != 3
-        || sdf.axis_grids.len() != 3
-    {
-        return Err(MidSurfaceError::AxisLengthMismatch {
-            bounds_min_len: sdf.bounds_min.len(),
-            bounds_max_len: sdf.bounds_max.len(),
-            spacing_len: sdf.spacing.len(),
-            axis_grids_len: sdf.axis_grids.len(),
-        });
-    }
-
-    // (3) Each axis grid must be non-empty.
-    for (axis, axis_grid) in sdf.axis_grids.iter().enumerate() {
-        if axis_grid.is_empty() {
-            return Err(MidSurfaceError::EmptyAxisGrid { axis });
-        }
-    }
-
-    // (4) Mask must be aligned with the SDF grid within tolerance.
+    // (2) Mask must be aligned with the SDF grid within tolerance.
     let sdf_spacing = [sdf.spacing[0], sdf.spacing[1], sdf.spacing[2]];
     let sdf_origin = [sdf.bounds_min[0], sdf.bounds_min[1], sdf.bounds_min[2]];
     let tol = options.grid_alignment_tolerance;
@@ -569,7 +570,7 @@ pub fn extract_mid_surface(
         });
     }
 
-    // (5) Build a HashSet for O(1) corner lookups.
+    // (3) Build a HashSet for O(1) corner lookups.
     let mask_set: HashSet<[i32; 3]> = mask.voxels.iter().copied().collect();
 
     let nx = sdf.axis_grids[0].len();
@@ -580,7 +581,7 @@ pub fn extract_mid_surface(
     let mut triangles: Vec<[u32; 3]> = Vec::new();
     let mut thickness: Vec<f64> = Vec::new();
 
-    // (6) Iterate over each cube cell (i,j,k) → (i+1,j+1,k+1).
+    // (4) Iterate over each cube cell (i,j,k) → (i+1,j+1,k+1).
     for i in 0..nx.saturating_sub(1) {
         for j in 0..ny.saturating_sub(1) {
             for k in 0..nz.saturating_sub(1) {

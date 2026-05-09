@@ -33,6 +33,8 @@
 
 use reify_types::value::{SampledField, SampledGridKind};
 
+use crate::grid_validation::{validate_regular3d, GridValidationError};
+
 /// Sparse voxel mask: indices `(i, j, k)` of every voxel tagged as medial
 /// by [`compute_medial_mask`].
 ///
@@ -207,32 +209,51 @@ pub enum MedialError {
     },
 }
 
+impl From<GridValidationError> for MedialError {
+    fn from(e: GridValidationError) -> Self {
+        match e {
+            GridValidationError::UnsupportedGridKind { found } => {
+                MedialError::UnsupportedGridKind { found }
+            }
+            GridValidationError::AxisLengthMismatch {
+                bounds_min_len,
+                bounds_max_len,
+                spacing_len,
+                axis_grids_len,
+            } => MedialError::AxisLengthMismatch {
+                bounds_min_len,
+                bounds_max_len,
+                spacing_len,
+                axis_grids_len,
+            },
+            GridValidationError::EmptyAxisGrid { axis } => {
+                MedialError::EmptyAxisGrid { axis }
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for MedialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MedialError::UnsupportedGridKind { found } => write!(
-                f,
-                "reify-shell-extract requires a Regular3D SampledField input \
-                 (the medial-axis test walks the SDF gradient in 3-space); \
-                 got {found:?}"
-            ),
+            MedialError::UnsupportedGridKind { found } => {
+                GridValidationError::UnsupportedGridKind { found: *found }.fmt(f)
+            }
             MedialError::AxisLengthMismatch {
                 bounds_min_len,
                 bounds_max_len,
                 spacing_len,
                 axis_grids_len,
-            } => write!(
-                f,
-                "Regular3D SampledField axis-vector length mismatch: \
-                 bounds_min has {bounds_min_len}, bounds_max has {bounds_max_len}, \
-                 spacing has {spacing_len}, axis_grids has {axis_grids_len} \
-                 (all four must be 3)"
-            ),
-            MedialError::EmptyAxisGrid { axis } => write!(
-                f,
-                "Regular3D SampledField axis_grids[{axis}] is empty \
-                 (a non-empty per-axis grid is required for narrow-band iteration)"
-            ),
+            } => GridValidationError::AxisLengthMismatch {
+                bounds_min_len: *bounds_min_len,
+                bounds_max_len: *bounds_max_len,
+                spacing_len: *spacing_len,
+                axis_grids_len: *axis_grids_len,
+            }
+            .fmt(f),
+            MedialError::EmptyAxisGrid { axis } => {
+                GridValidationError::EmptyAxisGrid { axis: *axis }.fmt(f)
+            }
             MedialError::InvalidAxisGeometry {
                 axis,
                 spacing,
@@ -298,32 +319,15 @@ pub fn compute_medial_mask(
     sdf: &SampledField,
     options: &MedialOptions,
 ) -> Result<MedialMask, MedialError> {
-    // (1) Reject non-3D inputs up front. The medial-axis test is
-    // intrinsically 3D (walks the SDF gradient in 3-space).
-    if sdf.kind != SampledGridKind::Regular3D {
-        return Err(MedialError::UnsupportedGridKind { found: sdf.kind });
-    }
+    // (1) Structural Regular3D validation: kind, axis-vector lengths, non-empty
+    // axis grids. The `?` converts GridValidationError → MedialError via the
+    // From impl above, preserving the existing variant names and PartialEq
+    // contract for all callers.
+    validate_regular3d(sdf)?;
 
-    // (2) Defend downstream indexing: `Regular3D` requires every axis
-    // vector to have length 3. A caller-side construction mistake
-    // (e.g. building a `Regular3D` SampledField with 1-element
-    // bounds_min) would otherwise panic on `bounds_min[i]` mid-loop.
-    if sdf.bounds_min.len() != 3
-        || sdf.bounds_max.len() != 3
-        || sdf.spacing.len() != 3
-        || sdf.axis_grids.len() != 3
-    {
-        return Err(MedialError::AxisLengthMismatch {
-            bounds_min_len: sdf.bounds_min.len(),
-            bounds_max_len: sdf.bounds_max.len(),
-            spacing_len: sdf.spacing.len(),
-            axis_grids_len: sdf.axis_grids.len(),
-        });
-    }
-
-    // (3) Geometry validity: spacing must be finite and positive, and
-    // bounds must not be inverted. Safe here because step 2 confirmed
-    // all axis vectors have length 3, so sdf.spacing[axis] /
+    // (2) Geometry validity: spacing must be finite and positive, and
+    // bounds must not be inverted. Safe here because validate_regular3d
+    // confirmed all axis vectors have length 3, so sdf.spacing[axis] /
     // sdf.bounds_min[axis] / sdf.bounds_max[axis] are all in-bounds.
     //
     // Spacing rule — rejects zero (divide-by-zero in sample_at_world),
@@ -355,14 +359,6 @@ pub fn compute_medial_mask(
         }
     }
 
-    // (4) Each axis grid must be non-empty — a zero-extent axis
-    // collapses the iteration domain.
-    for (axis, axis_grid) in sdf.axis_grids.iter().enumerate() {
-        if axis_grid.is_empty() {
-            return Err(MedialError::EmptyAxisGrid { axis });
-        }
-    }
-
     let spacing = [sdf.spacing[0], sdf.spacing[1], sdf.spacing[2]];
     let origin = [sdf.bounds_min[0], sdf.bounds_min[1], sdf.bounds_min[2]];
 
@@ -370,8 +366,9 @@ pub fn compute_medial_mask(
     let ny = sdf.axis_grids[1].len();
     let nz = sdf.axis_grids[2].len();
 
-    // (5) Validate the flat data vector covers exactly nx*ny*nz voxels.
-    // Safe here because step 4 (EmptyAxisGrid) confirmed nx, ny, nz ≥ 1.
+    // (3) Validate the flat data vector covers exactly nx*ny*nz voxels.
+    // Safe here because validate_regular3d (EmptyAxisGrid check) confirmed
+    // nx, ny, nz ≥ 1.
     // Without this check a caller-side construction error (mismatched
     // data vs. axis grid extents) would produce an opaque OOB panic
     // inside the inner loop's `sample_at_index`.
