@@ -77,11 +77,11 @@ pub struct MorphOptions {
     /// PRD §"Quality threshold for fallback": default 0.01 (1 %).
     pub quality_floor_pct_below_025: f64,
 
-    /// Maximum acceptable multiplicative increase in element aspect ratio
-    /// relative to the pre-morph mesh.
-    ///
-    /// PRD §"Quality threshold for fallback": default 2.0×.
-    pub quality_aspect_ratio_increase_max: f64,
+    /// Maximum acceptable multiplicative aspect-ratio factor (morphed_AR / source_AR)
+    /// relative to the pre-morph mesh. PRD §"Quality threshold for fallback": default
+    /// 2.0×. A value > 1 indicates worsening; the threshold trips when the observed
+    /// factor exceeds this maximum.
+    pub quality_aspect_ratio_factor_max: f64,
 
     /// Scaled-Jacobian delta below which the Laplacian quick-pass is
     /// considered converged and no elastic solve is triggered.
@@ -116,7 +116,7 @@ impl Default for MorphOptions {
         Self {
             quality_floor_min_scaled_jacobian: 0.15,
             quality_floor_pct_below_025: 0.01,
-            quality_aspect_ratio_increase_max: 2.0,
+            quality_aspect_ratio_factor_max: 2.0,
             laplacian_quickpass_threshold: 0.01,
             fictitious_youngs_modulus_base: 1.0,
             fictitious_poisson_ratio: 0.3,

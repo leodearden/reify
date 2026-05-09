@@ -39,7 +39,7 @@ pub struct InversionDetails {
 ///
 /// Carries diagnostics for a soft-fail verdict — a mixture of
 /// threshold-conditioned fields (`min_scaled_jacobian`, `pct_below_025`,
-/// `max_aspect_ratio_increase` — all `None` when the corresponding
+/// `max_aspect_ratio_factor` — all `None` when the corresponding
 /// [`crate::MorphOptions`] threshold passed) and one unconditional field
 /// (`degenerate_morphed_element`, `Some(idx)` whenever a morphed tet has
 /// scaled Jacobian == 0.0, regardless of any caller-configured threshold).
@@ -52,12 +52,12 @@ pub struct SoftFailDetails {
     /// Observed fraction of elements below 0.25 if it exceeded
     /// [`crate::MorphOptions::quality_floor_pct_below_025`].
     pub pct_below_025: Option<f64>,
-    /// Observed maximum multiplicative aspect-ratio ratio (morphed_AR / source_AR)
-    /// when it exceeds [`crate::MorphOptions::quality_aspect_ratio_increase_max`].
+    /// Observed maximum multiplicative aspect-ratio factor (morphed_AR / source_AR)
+    /// when it exceeds [`crate::MorphOptions::quality_aspect_ratio_factor_max`].
     /// A value > 1 means morphed AR worsened relative to source; only `Some` when
-    /// the ratio crosses the configured threshold. `None` when connectivity is
-    /// mismatched, either AR is non-finite, or the ratio is within threshold.
-    pub max_aspect_ratio_increase: Option<f64>,
+    /// the factor crosses the configured threshold. `None` when connectivity is
+    /// mismatched, either AR is non-finite, or the factor is within threshold.
+    pub max_aspect_ratio_factor: Option<f64>,
     /// Zero-based index of the first morphed element with zero scaled Jacobian
     /// (coplanar/zero-volume or coincident-edge degenerate tet).
     ///

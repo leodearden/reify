@@ -182,7 +182,7 @@ pub enum QualityVerdict {
 /// ## Connectivity mismatch
 ///
 /// When `morphed.tet_indices.len() != source.tet_indices.len()`, the
-/// aspect-ratio-increase comparison is skipped (`max_aspect_ratio_increase`
+/// aspect-ratio-increase comparison is skipped (`max_aspect_ratio_factor`
 /// stays `None`). The hard-fail, min-scaled-J / pct-below-025, and
 /// `degenerate_morphed_element` checks still run on the morphed mesh.
 pub fn quality_check(
@@ -301,7 +301,7 @@ pub fn quality_check(
             // Skip comparison when either AR is degenerate.
             // source degenerate: zero-volume source tet → undefined ratio baseline.
             // morphed degenerate: AR=INFINITY (zero-volume coplanar/collapsed tet).
-            //   Surfacing +inf in the public SoftFailDetails.max_aspect_ratio_increase
+            //   Surfacing +inf in the public SoftFailDetails.max_aspect_ratio_factor
             //   field is awkward for serialization (JSON/MessagePack lack standard
             //   +inf encoding). The degenerate morphed tet itself is surfaced via
             //   `SoftFailDetails.degenerate_morphed_element` (populated unconditionally
@@ -344,9 +344,9 @@ pub fn quality_check(
         None
     };
 
-    // Aspect-ratio increase threshold (threshold 3).
-    let max_aspect_ratio_increase =
-        if matched_connectivity && max_ar_ratio > options.quality_aspect_ratio_increase_max {
+    // Aspect-ratio factor threshold (threshold 3).
+    let max_aspect_ratio_factor =
+        if matched_connectivity && max_ar_ratio > options.quality_aspect_ratio_factor_max {
             Some(max_ar_ratio)
         } else {
             None
@@ -355,13 +355,13 @@ pub fn quality_check(
     let metrics = SoftFailDetails {
         min_scaled_jacobian,
         pct_below_025,
-        max_aspect_ratio_increase,
+        max_aspect_ratio_factor,
         degenerate_morphed_element: first_degenerate_morphed,
     };
 
     if metrics.min_scaled_jacobian.is_some()
         || metrics.pct_below_025.is_some()
-        || metrics.max_aspect_ratio_increase.is_some()
+        || metrics.max_aspect_ratio_factor.is_some()
         || metrics.degenerate_morphed_element.is_some()
     {
         QualityVerdict::SoftFail(metrics)
