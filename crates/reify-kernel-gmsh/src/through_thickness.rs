@@ -147,25 +147,28 @@ pub fn through_thickness_check(
         tet_extents_sum += max_axis - min_axis;
     }
 
-    // Fail-closed: NaN poisons the partial_cmp sort (NaN treated as Equal
-    // against every value), silently corrupting the layer-counting walk that
-    // follows. A NaN centroid signals upstream pathology in the volume mesh
-    // vertex data — a condition that must surface to operators rather than
-    // producing a meaningless layer count that the FEA pipeline trusts.
-    // Emit a WARN and early-return with no findings so the pipeline doesn't
-    // receive garbage results. Operators can filter via
+    // Fail-closed: non-finite centroids corrupt the layer-counting walk in two
+    // distinct ways. NaN poisons partial_cmp (NaN is treated as Equal against
+    // every value), silently scrambling the sort. Inf poisons bin_width:
+    // avg_tet_extent → Inf → half_bin → Inf → `(w[1] - w[0]).abs() > Inf` is
+    // always false → layer_count collapses to 1 regardless of geometry. Both
+    // are upstream pathology in the volume mesh vertex data — conditions that
+    // must surface to operators rather than producing a meaningless layer count
+    // that the FEA pipeline trusts. Emit a WARN and early-return with no
+    // findings. Operators can filter via
     // `RUST_LOG=reify_kernel_gmsh::through_thickness=warn`.
-    // Checking centroids is sufficient as a proxy for the entire NaN-poisoning
-    // class: a NaN centroid implies tet_extents_sum is also NaN, since both
-    // flow from the same per-vertex projected coordinates. A future refactor
-    // that decouples extent computation from centroid computation would need
-    // to extend this guard to cover tet_extents_sum independently.
-    if centroids.iter().any(|c| c.is_nan()) {
+    //
+    // Checking centroids is sufficient because the early-return below skips all
+    // downstream uses of tet_extents_sum; we do not rely on tet_extents_sum
+    // being non-finite itself (f64::min/max with one NaN operand returns the
+    // finite operand). A future refactor that uses tet_extents_sum on a
+    // different code path would need to extend this guard.
+    if centroids.iter().any(|c| !c.is_finite()) {
         tracing::warn!(
             target: "reify_kernel_gmsh::through_thickness",
-            reason = "nan_centroid",
+            reason = "non_finite_centroid",
             n_tets = n_tets,
-            "Through-thickness diagnostic skipped: encountered NaN centroid \
+            "Through-thickness diagnostic skipped: encountered non-finite centroid \
              (likely upstream pathology in volume mesh vertex data); returning \
              no warnings to avoid silently corrupting the layer-counting walk"
         );
