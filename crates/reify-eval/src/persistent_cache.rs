@@ -959,8 +959,23 @@ mod tests {
         };
         let encoded: Vec<u8> =
             bincode::serialize(&header).expect("bincode serialize must not fail for fixed-size header");
-        // Placeholder: deliberately wrong — replaced with the actual bytes in step-4 (GREEN).
-        let expected: [u8; 37] = [0xFF; 37];
+        // Pinned bincode 1.3 fixint-LE encoding of the fixture header.
+        // Layout (struct-declaration order, LE encoding):
+        //   max_von_mises_bits (u64 LE, 8 bytes): EF BE AD DE BE BA FE CA
+        //   converged (bool, 1 byte):              01
+        //   iterations (u32 LE, 4 bytes):          78 56 34 12
+        //   solve_time_ms (u64 LE, 8 bytes):       BE BA FE CA EF BE AD DE
+        //   displacement_len (u64 LE, 8 bytes):    05 00 00 00 00 00 00 00
+        //   stress_len (u64 LE, 8 bytes):          07 00 00 00 00 00 00 00
+        // Total: 37 bytes.
+        let expected: [u8; 37] = [
+            0xEF, 0xBE, 0xAD, 0xDE, 0xBE, 0xBA, 0xFE, 0xCA, // max_von_mises_bits LE
+            0x01,                                               // converged = true
+            0x78, 0x56, 0x34, 0x12,                            // iterations LE
+            0xBE, 0xBA, 0xFE, 0xCA, 0xEF, 0xBE, 0xAD, 0xDE, // solve_time_ms LE
+            0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // displacement_len = 5
+            0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // stress_len = 7
+        ];
         assert_eq!(
             encoded.as_slice(),
             &expected[..],
