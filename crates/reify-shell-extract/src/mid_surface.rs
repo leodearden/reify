@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use reify_types::value::{SampledField, SampledGridKind};
+use reify_types::value::SampledField;
 
 use crate::grid_validation::{validate_regular3d, GridValidationError};
 use crate::medial::{sample_at_index, MedialMask};

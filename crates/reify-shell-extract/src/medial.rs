@@ -31,7 +31,7 @@
 //! No bug today — just a flag for the perf-tuning pass that follows
 //! once the OpenVDB FFI is wired in.
 
-use reify_types::value::{SampledField, SampledGridKind};
+use reify_types::value::SampledField;
 
 use crate::grid_validation::{validate_regular3d, GridValidationError};
 
