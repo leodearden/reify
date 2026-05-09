@@ -424,4 +424,20 @@ describe('editorStore externallyChanged', () => {
       dispose();
     });
   });
+
+  it('(h) clearAllExternallyChanged() resets externallyChanged to []', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markExternallyChanged, clearAllExternallyChanged } = createEditorStore();
+      openFile(file1);
+      openFile(file2);
+      markExternallyChanged('bracket.ri');
+      markExternallyChanged('mount.ri');
+      expect(state.externallyChanged).toContain('bracket.ri');
+      expect(state.externallyChanged).toContain('mount.ri');
+
+      clearAllExternallyChanged();
+      expect(state.externallyChanged).toEqual([]);
+      dispose();
+    });
+  });
 });
