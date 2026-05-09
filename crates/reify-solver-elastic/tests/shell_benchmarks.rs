@@ -402,6 +402,57 @@ fn cylinder_octant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>
     (nodes, connectivity)
 }
 
+/// Mesh the 1/4 quadrant of the MacNeal-Harder Scordelis-Lo cylindrical roof.
+///
+/// # Geometry
+///
+/// Cylindrical mid-surface: θ ∈ [0°, 40°], x ∈ [0, L/2], R=25, L=50.
+///
+/// Node positions: `(x, R·sin θ, R·cos θ)` where:
+/// - x is the cylinder axis (horizontal)
+/// - z = R·cos θ is the vertical (upward) coordinate — gravity = −z
+/// - Crown (θ=0): `(x, 0, R)` — top of roof
+/// - Free edge (θ=40°): `(x, R·sin 40°, R·cos 40°)`
+///
+/// # Node ordering
+///
+/// Row-major (x varies slowly, θ varies fast):
+/// `node(i, j) = i*(nx+1) + j`, `i` = x-index ∈ [0, ny], `j` = θ-index ∈ [0, nx].
+///
+/// # Element count
+///
+/// `2·nx·ny` MITC3 triangles — each quad cell split along the A→D diagonal.
+fn roof_quadrant_mesh(nx: usize, ny: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+    const R: f64 = 25.0;
+    const L: f64 = 50.0;
+    let theta_max = 40.0_f64.to_radians();
+
+    // Nodes: i = axial (x) index, j = angular (θ) index.
+    let mut nodes = Vec::with_capacity((nx + 1) * (ny + 1));
+    for i in 0..=ny {
+        let x = i as f64 * (L / 2.0) / ny as f64;
+        for j in 0..=nx {
+            let theta = j as f64 * theta_max / nx as f64;
+            nodes.push([x, R * theta.sin(), R * theta.cos()]);
+        }
+    }
+
+    // Connectivity: split each quad cell into two CCW triangles.
+    let mut connectivity = Vec::with_capacity(2 * nx * ny);
+    for i in 0..ny {
+        for j in 0..nx {
+            let a = i * (nx + 1) + j;       // (i,   j)
+            let b = i * (nx + 1) + (j + 1); // (i,   j+1)
+            let c = (i + 1) * (nx + 1) + j; // (i+1, j)
+            let d = (i + 1) * (nx + 1) + (j + 1); // (i+1, j+1)
+            connectivity.push([a, b, d]);
+            connectivity.push([a, d, c]);
+        }
+    }
+
+    (nodes, connectivity)
+}
+
 // ─── step-3: Scordelis-Lo roof (MacNeal-Harder §3.4) ─────────────────────────
 
 /// MacNeal-Harder (1985) §3.4 Scordelis-Lo roof benchmark.
