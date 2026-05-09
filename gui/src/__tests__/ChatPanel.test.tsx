@@ -389,15 +389,16 @@ describe('ChatPanel', () => {
       expect(prompts[1].textContent).toContain('Bash');
     });
 
-    it('permission-prompts container appears before the input area in DOM', () => {
+    it('permission-prompts container appears after messages and before the input area in DOM', () => {
       const { store } = makePermissionStore();
       feedPermissionRequest(store, { requestId: 'req-1', toolName: 'Write' });
       render(() => <ChatPanel store={store} />);
+      const userMsg = screen.getByTestId('user-message');
       const prompts = screen.getByTestId('permission-prompts');
       const input = screen.getByTestId('chat-input');
-      // DOCUMENT_POSITION_FOLLOWING (4) means input comes after prompts in the DOM
-      const pos = prompts.compareDocumentPosition(input);
-      expect(pos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      // DOCUMENT_POSITION_FOLLOWING (4) means the second element follows the first
+      expect(userMsg.compareDocumentPosition(prompts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(prompts.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it('clicking Allow button calls store.decidePermission with { behavior: "allow" }', () => {
@@ -456,26 +457,6 @@ describe('ChatPanel', () => {
       expect(userMsgs[0].compareDocumentPosition(msgGroups[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(msgGroups[0].compareDocumentPosition(userMsgs[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(userMsgs[1].compareDocumentPosition(msgGroups[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-
-    it('message list appears before permission-prompts container in DOM', () => {
-      const store = makeStore();
-      store.sendMessage('hello', {});
-      const msgId = store.state.currentMessageId!;
-      store.handleOutboundMessage({
-        type: 'permission_request',
-        id: msgId,
-        request_id: 'req-dom-1',
-        tool_name: 'Write',
-        tool_input: {},
-      });
-
-      render(() => <ChatPanel store={store} />);
-
-      const userMsg = screen.getByTestId('user-message');
-      const permissionPrompts = screen.getByTestId('permission-prompts');
-      // DOCUMENT_POSITION_FOLLOWING (4) means permission-prompts comes after user-message in the DOM
-      expect(userMsg.compareDocumentPosition(permissionPrompts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it('context-chips container appears between permission-prompts and chat-input in DOM', () => {

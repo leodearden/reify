@@ -275,16 +275,11 @@ describe('createPermissionServer', () => {
       arguments: { tool_name: 'Bash', input: { command: 'ls' } },
     });
 
-    // Replace fixed 30ms delay with bounded polling on pendingCount() — deterministically
-    // detects when the request has reached the pending-await state without relying on
-    // wall-clock assumptions that are flaky on loaded CI.
-    const deadline = Date.now() + 2000;
-    while (server.pendingCount() < 1 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    if (server.pendingCount() < 1) {
-      throw new Error('Tool call never reached pending-await within 2s — onRequest(null) test setup is broken');
-    }
+    // Wait deterministically for the request to reach pending-await state.
+    // awaitPending(1) resolves as soon as pendingPromises.size >= 1, polling
+    // internally at 10ms intervals and rejecting after 2s on timeout — no
+    // fixed-delay assumptions.
+    await server.awaitPending(1, 2000);
 
     // The cleared handler must not have been invoked during the blocking wait.
     expect(handlerCalls).toBe(0);
