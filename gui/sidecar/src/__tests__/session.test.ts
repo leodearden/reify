@@ -34,15 +34,40 @@ vi.mock('node:fs', () => {
   let mkdtempCounter = 0;
 
   return {
+    // Reset helper — called in the top-level beforeEach to clear per-test state.
+    // Without this, a path written by test A is visible to test B, and mkdtempCounter
+    // grows across the file yielding non-deterministic synthetic paths.
+    __resetVirtualFs: (): void => {
+      virtualFiles.clear();
+      virtualDirs.clear();
+      mkdtempCounter = 0;
+    },
     mkdtempSync: vi.fn((prefix: string): string => {
       const dir = `${prefix}mock${++mkdtempCounter}`;
       virtualDirs.add(dir);
       return dir;
     }),
+    // Accepts string, Buffer (Uint8Array subclass), or any Uint8Array.
+    // Throws on other types so a future caller that passes an object gets a clear error
+    // rather than the silent '[object Object]' that String(data) would produce.
     writeFileSync: vi.fn((filePath: string, data: unknown): void => {
-      virtualFiles.set(filePath, String(data));
+      if (typeof data === 'string') {
+        virtualFiles.set(filePath, data);
+      } else if (data instanceof Uint8Array) {
+        // Buffer extends Uint8Array; both are handled here.
+        virtualFiles.set(filePath, Buffer.from(data).toString('utf-8'));
+      } else {
+        throw new TypeError(
+          `virtual fs writeFileSync: expected string/Buffer/Uint8Array, got ${Object.prototype.toString.call(data)}`
+        );
+      }
     }),
-    readFileSync: vi.fn((filePath: string, _enc?: unknown): string => {
+    // Honors the encoding argument to mirror real Node.js behavior:
+    //   readFileSync(path)          → Buffer
+    //   readFileSync(path, 'utf-8') → string
+    // This surfaces a divergence loudly if a future caller omits the encoding and
+    // expects a Buffer but receives a string (or vice versa).
+    readFileSync: vi.fn((filePath: string, enc?: unknown): string | Buffer => {
       if (!virtualFiles.has(filePath)) {
         const err = Object.assign(
           new Error(`ENOENT: no such file or directory, open '${filePath}'`),
@@ -50,7 +75,8 @@ vi.mock('node:fs', () => {
         );
         throw err;
       }
-      return virtualFiles.get(filePath)!;
+      const content = virtualFiles.get(filePath)!;
+      return enc != null ? content : Buffer.from(content);
     }),
     unlinkSync: vi.fn((filePath: string): void => {
       virtualFiles.delete(filePath);
@@ -66,6 +92,16 @@ import { SidecarSession, SPAWN_ERROR_LOG_PREFIX } from '../session.js';
 import { isLandlockAvailable, wrapClaudeArgs } from '../sandbox.js';
 import * as os from 'node:os';
 import { main } from '../index.js';
+import * as mockFs from 'node:fs';
+
+// Clear virtual filesystem state before every test.
+// The vi.mock('node:fs') factory above holds module-scoped state (virtualFiles,
+// virtualDirs, mkdtempCounter) that persists across tests by default. Without this
+// reset, a path written by test A is visible to test B, and mkdtempCounter yields
+// non-deterministic paths relative to each test's expectations.
+beforeEach(() => {
+  (mockFs as any).__resetVirtualFs();
+});
 
 /**
  * Extract the constructed prompt from the most recent spawn() call.
@@ -3752,10 +3788,13 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
     const realOs = await vi.importActual<typeof import('node:os')>('node:os');
 
-    // Snapshot /tmp before the test
+    // Snapshot /tmp before the test.
+    // Filter uses /^reify-/ rather than the specific 'reify-mcp-' prefix so that a
+    // future rename (e.g. CLAUDE.md's 'reify-agent-tmp-' suggestion) is also caught;
+    // the guard defends against /tmp leaks from this codebase regardless of prefix.
     const tmpdir = realOs.tmpdir();
     const before = new Set<string>(
-      realFs.readdirSync(tmpdir).filter((name: string) => name.startsWith('reify-mcp-'))
+      realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
     );
 
     vi.mocked(spawn).mockReset();
@@ -3776,9 +3815,13 @@ describe('session.test.ts /tmp leak guard (task 3283)', () => {
     // If node:fs is NOT mocked, session.ts calls real mkdtempSync and this fails.
     // Once vi.mock('node:fs', factory) is active, no real dirs are created.
     const after = new Set<string>(
-      realFs.readdirSync(tmpdir).filter((name: string) => name.startsWith('reify-mcp-'))
+      realFs.readdirSync(tmpdir).filter((name: string) => /^reify-/.test(name))
     );
+    // `leaked` = after \ before (set-difference): if empty, after ⊆ before and
+    // no new /tmp entries appeared. Using set-difference rather than set-equality
+    // is intentional: a concurrent process removing a pre-existing entry would
+    // shrink `after` relative to `before`, but the filter still yields [] (correct).
     const leaked = [...after].filter((d) => !before.has(d));
-    expect(leaked, 'leaked /tmp/reify-mcp-* dirs: ' + leaked.join(', ')).toHaveLength(0);
+    expect(leaked, 'leaked /tmp/reify-* dirs: ' + leaked.join(', ')).toHaveLength(0);
   });
 });
