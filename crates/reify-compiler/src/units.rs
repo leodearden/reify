@@ -551,7 +551,7 @@ mod tests {
     // Sibling list to `GEOMETRY_KINEMATIC_QUERY_NAMES` for the three
     // topology-selector helpers per `docs/prds/topology-selectors.md` §3.9:
     //   - `closest_point(point, geometry) -> Point3<Length>`
-    //   - `on(point, geometry) -> Bool`
+    //   - `is_on(point, geometry) -> Bool`
     //   - `angle_between_surfaces(a, b) -> Angle`
     // Eval-time dispatch is in
     // `reify_eval::geometry_ops::try_eval_topology_selector`, which routes to
@@ -563,8 +563,8 @@ mod tests {
     }
 
     #[test]
-    fn is_geometry_topology_selector_recognises_on() {
-        assert!(is_geometry_topology_selector("on"));
+    fn is_geometry_topology_selector_recognises_is_on() {
+        assert!(is_geometry_topology_selector("is_on"));
     }
 
     #[test]
@@ -614,9 +614,9 @@ mod tests {
     }
 
     #[test]
-    fn topology_selector_result_type_on_is_bool() {
+    fn topology_selector_result_type_is_on_is_bool() {
         assert_eq!(
-            topology_selector_result_type("on"),
+            topology_selector_result_type("is_on"),
             Some(reify_types::Type::Bool)
         );
     }
