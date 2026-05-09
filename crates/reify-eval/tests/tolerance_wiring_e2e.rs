@@ -24,8 +24,8 @@ use reify_test_support::{
 };
 #[allow(unused_imports)]
 use reify_types::{
-    CapabilityDescriptor, CompiledExpr, DiagnosticCode, ExportFormat, ModulePath, Operation,
-    ReprKind, Severity, Type, Value, ValueCellId,
+    CapabilityDescriptor, CompiledExpr, DiagnosticCode, ExportFormat, GeometryHandleId,
+    ModulePath, Operation, ReprKind, Severity, Type, Value, ValueCellId,
 };
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
@@ -1401,5 +1401,175 @@ fn edit_param_followed_by_build_snapshot_re_executes_kernel_so_geometry_handle_i
          a stale cache-hit or never reached execute_realization_ops.",
         ops_after_first,
         ops_after_build_snapshot,
+    );
+}
+
+/// Characterization test: regression pin for the cache-hit short-circuit's
+/// attribute-table behaviour.
+///
+/// **What this test pins:** after the second `build()` call is served from
+/// `RealizationCache` (the cache-hit short-circuit at
+/// `engine_build.rs::execute_realization_ops` fires), both
+/// `feature_tag_table` and `topology_attribute_table` are empty for the
+/// cached handle.  The root cause is documented in the "Known limitation"
+/// docstring on `execute_realization_ops`: the short-circuit returns early
+/// before the per-op `feature_tag_table.record(...)` call at line 1547, and
+/// both tables are reset to `default()` at the start of every `build()`.
+/// So the net effect is that a cache-served handle has zero attribute entries
+/// on the second build.
+///
+/// **Why MockGeometryKernel:** (1) The test runs unconditionally — no
+/// `OCCT_AVAILABLE` skip gate that could hide the regression in OCCT-less CI
+/// environments.  (2) `MockGeometryKernel::operations_ref()` exposes the ops
+/// counter needed to assert the cache-hit short-circuit actually fired, which
+/// is the non-vacuousness premise for the regression assertions.  (3) The
+/// regression pin targets the parent-solid-handle level
+/// (`feature_tag_table.record(handle.id, tag)` at engine_build.rs:1547),
+/// which is independent of the per-face/per-edge seeding that requires real
+/// OCCT extraction.
+///
+/// **This is a CHARACTERIZATION test** — it passes immediately on first run
+/// because it pins existing behaviour.  Flipping any assertion to FAIL is the
+/// regression signal: it means either the per-build reset stopped firing, or
+/// population moved outside the op-loop, or the cache short-circuit stopped
+/// firing.
+#[test]
+fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_cache_hit_leaves_feature_tag_table_empty".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_handle = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    // ── Build #1 ──────────────────────────────────────────────────────────────
+    let _build1 = engine.build(&module, ExportFormat::Step);
+    let ops_after_first = ops_handle.lock().unwrap().len();
+
+    // SANITY: kernel was invoked on build #1 (cache miss → op dispatched →
+    // cache populated). Without this precondition the regression assertions
+    // below could be trivially vacuous if the test fixture is broken.
+    assert!(
+        ops_after_first >= 1,
+        "sanity: expected first build() to invoke the kernel at least once \
+         (cache miss → realization ops dispatched, cache populated); got \
+         ops_after_first={}",
+        ops_after_first,
+    );
+
+    // Capture the handle that the first build stored in the RealizationCache.
+    let cached_handle: GeometryHandleId = *engine
+        .realization_cache()
+        .lookup("MyDesign", ReprKind::BRep, 1e-6)
+        .expect(
+            "sanity: first build() must populate the RealizationCache at \
+             (\"MyDesign\", ReprKind::BRep, 1e-6)",
+        );
+
+    // SANITY: the op-loop populated feature_tag_table for the parent-solid
+    // handle on build #1. This makes the PIN below non-vacuous — if the
+    // table were already empty after build #1, asserting it is empty after
+    // build #2 would prove nothing.
+    assert!(
+        engine.feature_tag_table().lookup(cached_handle).is_some(),
+        "sanity: expected feature_tag_table to contain an entry for \
+         cached_handle {:?} after build #1 — the op-loop at \
+         engine_build.rs:1547 must record the parent-solid handle. If this \
+         fires, the op-loop recording path has changed and the regression \
+         PIN assertions below may no longer be meaningful.",
+        cached_handle,
+    );
+
+    // Re-activate purpose: build() above called check() which called eval()
+    // which cleared `active_purpose_bindings` (engine_eval.rs:1149-1150).
+    // Without re-activation the second build's demanded_tol would be None,
+    // suppressing the cache lookup and defeating the test premise.
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    // ── Build #2 ──────────────────────────────────────────────────────────────
+    let _build2 = engine.build(&module, ExportFormat::Step);
+    let ops_after_second = ops_handle.lock().unwrap().len();
+
+    // SANITY: cache short-circuit fired on build #2 (kernel NOT re-invoked).
+    // Without this premise the regression assertions are vacuous: a non-firing
+    // short-circuit would let the op-loop run and re-populate the tables
+    // normally, so the PINs below would be testing the wrong code path.
+    assert_eq!(
+        ops_after_second,
+        ops_after_first,
+        "sanity: expected second build() to be served entirely from \
+         RealizationCache (cache-hit short-circuit); got \
+         ops_after_first={}, ops_after_second={} — kernel was invoked \
+         {} additional time(s), indicating the short-circuit did not fire.",
+        ops_after_first,
+        ops_after_second,
+        ops_after_second - ops_after_first,
+    );
+
+    // SANITY: cache entry survived the second build untouched.
+    assert_eq!(
+        engine
+            .realization_cache()
+            .lookup("MyDesign", ReprKind::BRep, 1e-6),
+        Some(&cached_handle),
+        "sanity: expected RealizationCache entry at \
+         (\"MyDesign\", ReprKind::BRep, 1e-6) to survive the second build; got \
+         None — cache was cleared or key was invalidated unexpectedly.",
+    );
+
+    // ── Regression PINs ───────────────────────────────────────────────────────
+
+    // PIN 1 (headline): the cache-hit short-circuit skips the per-op
+    // `feature_tag_table.record(handle.id, tag)` call at engine_build.rs:1547,
+    // and the per-build reset at the top of build() clears the table before the
+    // short-circuit fires. Net effect: the cached handle has no entry.
+    assert!(
+        engine.feature_tag_table().lookup(cached_handle).is_none(),
+        "regression PIN: expected feature_tag_table to have NO entry for \
+         cached_handle {:?} on the second build — the cache-hit short-circuit \
+         at engine_build.rs::execute_realization_ops deliberately skips per-op \
+         feature_tag_table.record(); if this fires, either the per-build reset \
+         stopped firing or population moved outside the op-loop.",
+        cached_handle,
+    );
+
+    // PIN 2 (stronger): the entire table is empty — no spurious population from
+    // any other source.
+    assert!(
+        engine.feature_tag_table().is_empty(),
+        "regression PIN: expected feature_tag_table to be completely empty \
+         after a cache-served build — only the op-loop at engine_build.rs:1547 \
+         populates this table, and the cache-hit short-circuit skips that loop \
+         entirely. If this fires, a new population path outside the op-loop \
+         has been introduced.",
+    );
+
+    // PIN 3 (companion table): topology_attribute_table likewise has no entry
+    // for the cached handle. Under MockGeometryKernel, face/edge seeding
+    // (`seed_primitive_attributes_for_handle`) silently no-ops because the
+    // mock's extract_faces/extract_edges returns Err without pre-registered
+    // fixtures — so this assertion is structurally true even on build #1.
+    // It is included as a guard: if a future refactor moves solid-handle
+    // attribute population OUTSIDE the op-loop (or wires a kernel-attribute
+    // hook that populates on cache hit), this assertion will catch it.
+    assert!(
+        engine
+            .topology_attribute_table()
+            .lookup(cached_handle)
+            .is_none(),
+        "regression PIN: expected topology_attribute_table to have NO entry \
+         for cached_handle {:?} on the second (cache-served) build — see the \
+         'Known limitation' docstring on execute_realization_ops in \
+         engine_build.rs for context.",
+        cached_handle,
     );
 }
