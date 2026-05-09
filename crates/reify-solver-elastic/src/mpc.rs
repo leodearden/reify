@@ -48,6 +48,228 @@
 //! are applied post-assembly. See the design decision in the task plan
 //! for the rationale.
 
+use faer::sparse::SparseRowMat;
+
+/// Apply multi-point constraints to the global stiffness matrix `K` and load
+/// vector `f` via row-elimination, in place.
+///
+/// For each `MpcRow` in `rows` (in slice order), the function substitutes the
+/// pivot DOF `p = dofs[0]` using:
+///
+/// ```text
+///     u[p] = (rhs − Σᵢ>0 coeffs[i] · u[dofs[i]]) / coeffs[0]
+/// ```
+///
+/// letting `c0 = coeffs[0]`, `αᵢ = −coeffs[i] / c0` for `i > 0`, and
+/// `β = rhs / c0`.  The four-step elimination is:
+///
+/// 1. **Column-into-RHS + redistribution** — for every row `j ≠ p`:
+///    - read original `K[j][p]` (before any zeroing);
+///    - `f[j] -= K[j][p] · β` (inhomogeneous RHS contribution);
+///    - for each `i > 0`: `K[j][dofs[i]] += K[j][p] · αᵢ` (redistribute the
+///      eliminated column into the other constraint DOFs);
+///    - zero the stored `K[j][p]` entry.
+/// 2. **Zero pivot row `p`** — set all stored values in row `p` to `0.0`.
+/// 3. **Set pivot equation in row `p`** — `K[p][p] = 1`; for each `i > 0`,
+///    `K[p][dofs[i]] = −αᵢ`; the rest of row `p` stays zero.
+/// 4. **Pin RHS** — `f[p] = β`.
+///
+/// The sparsity pattern of `K` is not changed — only stored values are
+/// overwritten.  Every `(j, dofs[i])` entry that step 1 writes, and every
+/// `(p, dofs[i])` entry that step 3 writes, **must already be stored** in K.
+/// Missing entries are detected and the function panics with a descriptive
+/// message naming the missing `(row, col)` pair.  Downstream MPC-aware
+/// assembly is responsible for pre-allocating these entries; test fixtures
+/// use `try_new_from_triplets` with explicit zero entries at each required
+/// position.
+///
+/// # Empty slice
+///
+/// An empty `rows` slice is a perfect identity operation — no stored value in
+/// K is touched, no `f[j]` changes.
+///
+/// # Order-independence
+///
+/// For MPC rows with **disjoint pivot DOFs**, applying them in any order
+/// produces bit-identical K and tolerance-equal f.  The mechanism mirrors
+/// Dirichlet: MPC₁'s row-zero on row `p₁` zeros `K[p₁][p₂]`, so when MPC₂
+/// later reads `K[p₂][p₁]` for its column-into-RHS step it reads the
+/// still-original value (MPC₁'s column zeroing happens row-by-row, not
+/// column-by-column, so `K[p₂][p₁]` is unaffected until MPC₂ touches it).
+///
+/// # Panics
+///
+/// - `f.len() != k.nrows()` — load vector and matrix dimension mismatch.
+/// - `k.nrows() != k.ncols()` — K must be square.
+/// - Any `dof` in any `MpcRow` is `>= k.nrows()` — DOF out of range.
+/// - Any redistribution target `K[j][dofs[i]]` or pivot-row target
+///   `K[p][dofs[i]]` has no stored entry in K — sparsity precondition
+///   violated (see above).
+pub fn apply_mpc_row_elimination(
+    k: &mut SparseRowMat<usize, f64>,
+    f: &mut [f64],
+    rows: &[MpcRow],
+) {
+    // --- Contract checks ---
+    assert_eq!(
+        f.len(),
+        k.nrows(),
+        "apply_mpc_row_elimination: f.len() = {} but k.nrows() = {}; expected f.len() == k.nrows()",
+        f.len(),
+        k.nrows(),
+    );
+    assert_eq!(
+        k.nrows(),
+        k.ncols(),
+        "apply_mpc_row_elimination: k must be square: k.nrows() = {} but k.ncols() = {}",
+        k.nrows(),
+        k.ncols(),
+    );
+    for row in rows {
+        for &dof in &row.dofs {
+            assert!(
+                dof < k.nrows(),
+                "MpcRow has dof = {} but k.nrows() = {}; DOF index out of range",
+                dof,
+                k.nrows(),
+            );
+        }
+    }
+
+    // Debug-only: duplicate pivot DOFs produce undefined output. Surface eagerly.
+    #[cfg(debug_assertions)]
+    {
+        let mut pivots: Vec<usize> = rows.iter().map(|r| r.dofs[0]).collect();
+        pivots.sort_unstable();
+        for w in pivots.windows(2) {
+            assert_ne!(
+                w[0], w[1],
+                "duplicate MpcRow pivot {} in rows slice; duplicate pivots produce \
+                 undefined output — deduplicate before calling apply_mpc_row_elimination",
+                w[0],
+            );
+        }
+    }
+
+    for mpc in rows {
+        let p = mpc.dofs[0];
+        let c0 = mpc.coeffs[0];
+        let beta = mpc.rhs / c0;
+        // αᵢ = −coeffs[i] / c0 for i > 0
+        let alphas: Vec<f64> = mpc.coeffs[1..].iter().map(|&c| -c / c0).collect();
+        let other_dofs = &mpc.dofs[1..];
+
+        let (sym, vals) = k.parts_mut();
+        let row_ptr = sym.row_ptr();
+        let col_idx = sym.col_idx();
+        let n = sym.nrows();
+
+        // Step 2: zero pivot row p entirely (before the fused loop so column
+        // entries in row p are zeroed; step 3 will write the pivot equation back).
+        vals[row_ptr[p]..row_ptr[p + 1]].fill(0.0);
+
+        // Fused steps 1 + partial 3: scan every row j.
+        //
+        // For j ≠ p:
+        //   - locate K[j][p] in CSR;
+        //   - read its value BEFORE zeroing (capture-then-update-then-zero);
+        //   - f[j] -= captured · β (step 1 RHS);
+        //   - for each i: locate K[j][dofs[i+1]] and add captured · αᵢ (step 1 redistribution);
+        //   - zero K[j][p] (column p elimination).
+        //
+        // For j == p: the row was already zeroed in step 2; step 3 fills it after
+        // this loop.  We skip the column-p scan for j == p since step 2 zeroed
+        // K[p][p] already.
+        for j in 0..n {
+            if j == p {
+                continue;
+            }
+            let start = row_ptr[j];
+            let end = row_ptr[j + 1];
+            // Find K[j][p].
+            let mut kjp = 0.0_f64;
+            let mut kjp_idx: Option<usize> = None;
+            for idx in start..end {
+                if col_idx[idx] == p {
+                    kjp = vals[idx];
+                    kjp_idx = Some(idx);
+                    break;
+                }
+            }
+            if kjp == 0.0 {
+                // Entry not stored or is structural zero — redistribution is zero, skip.
+                // (If the entry isn't stored at all, no write is needed.)
+                if let Some(idx) = kjp_idx {
+                    vals[idx] = 0.0;
+                }
+                continue;
+            }
+            // f[j] -= K[j][p] · β
+            f[j] -= kjp * beta;
+            // For each i > 0: K[j][dofs[i]] += K[j][p] · αᵢ
+            for (i, (&di, &ai)) in other_dofs.iter().zip(alphas.iter()).enumerate() {
+                let mut found = false;
+                for idx in start..end {
+                    if col_idx[idx] == di {
+                        vals[idx] += kjp * ai;
+                        found = true;
+                        break;
+                    }
+                }
+                assert!(
+                    found,
+                    "MpcRow apply: missing K[{}][{}] entry — required for redistribution \
+                     K[j][dofs[{}]] += K[j][p]·α; ensure assembly pre-allocates this entry",
+                    j, di, i + 1,
+                );
+            }
+            // Zero K[j][p] (column p eliminated for this row).
+            if let Some(idx) = kjp_idx {
+                vals[idx] = 0.0;
+            }
+        }
+
+        // Step 3: write pivot equation in row p.
+        // K[p][p] = 1; K[p][dofs[i]] = -αᵢ for i > 0.
+        let start_p = row_ptr[p];
+        let end_p = row_ptr[p + 1];
+        // Set diagonal K[p][p] = 1.
+        let mut diag_found = false;
+        for idx in start_p..end_p {
+            if col_idx[idx] == p {
+                vals[idx] = 1.0;
+                diag_found = true;
+                break;
+            }
+        }
+        assert!(
+            diag_found,
+            "MpcRow apply: missing K[{p}][{p}] diagonal entry — required to set pivot \
+             equation K[p][p] = 1; ensure assembly pre-allocates the diagonal",
+        );
+        // Set K[p][dofs[i]] = -αᵢ.
+        for (i, (&di, &ai)) in other_dofs.iter().zip(alphas.iter()).enumerate() {
+            let mut found = false;
+            for idx in start_p..end_p {
+                if col_idx[idx] == di {
+                    vals[idx] = -ai;
+                    found = true;
+                    break;
+                }
+            }
+            assert!(
+                found,
+                "MpcRow apply: missing K[{p}][{}] entry — required to set pivot equation \
+                 K[p][dofs[{}]] = -αᵢ; ensure assembly pre-allocates this entry",
+                di, i + 1,
+            );
+        }
+
+        // Step 4: pin RHS.
+        f[p] = beta;
+    }
+}
+
 /// One linear multi-point constraint row of the form
 /// `Σᵢ coeffs[i] · u[dofs[i]] = rhs`.
 ///
