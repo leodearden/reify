@@ -91,14 +91,6 @@ fn out_of_bounds_index_returns_err() {
 /// function must return `Ok(0.0)` per the documented contract in
 /// `src/auto_size.rs:117-119`. Callers treat a zero return as "auto-size
 /// unavailable" and fall back to a configured default.
-///
-/// This test pins the EARLY-RETURN short-circuit path, not the post-loop
-/// `is_infinite()` redundant fallback at lines 162-164. A regression that
-/// removes the early-return would let `min_edge` stay at `f64::INFINITY` and
-/// the `is_infinite()` guard would catch it — but only if BOTH fallbacks
-/// are present simultaneously. Pinning the contract here catches a regression
-/// that drops EITHER fallback, since the expected result is `Ok(0.0)` in both
-/// cases but the code path exercised differs.
 #[test]
 fn empty_indices_returns_zero_fallback() {
     // Empty vertices is fine: the early-return fires on mesh.indices.is_empty()

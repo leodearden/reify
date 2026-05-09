@@ -208,9 +208,11 @@ fn large_vertex_count_emits_warn_does_not_panic() {
 ///   i=2, j=1 hits  → merge_map[2] = merge_map[1] = 0   (transitive: A is C's survivor)
 ///
 /// Existing tests (`near_coincident_vertices_are_merged`) only cover the DIRECT
-/// pair case. A future refactor that switches the inner `break` to `continue`,
-/// or a spatial-hash refinement that drops chain semantics, would still pass the
-/// direct-pair test but would fail THIS test.
+/// pair case. A refactor that compares `dist(i, merge_map[j])` instead of
+/// `dist(i, j)` would break chain semantics and fail this test, since
+/// `|C - merge_map[B]| = |C - A| > epsilon` — whereas the direct-pair test
+/// would still pass. A spatial-hash refinement that drops chain semantics
+/// altogether would also fail this test.
 ///
 /// Numerical stability: vertex spacing 1e-9, epsilon 1.5e-9 →
 ///   eps_sq = 2.25e-18, |A-B|² = |B-C|² ≈ 1e-18 ≤ eps_sq (both merge),
@@ -269,9 +271,9 @@ fn chain_merge_collapses_via_intermediate_vertex() {
 
     // (3) All three triangles' first-corner indices must be EQUAL — proves that
     //     B chain-merged to A's survivor AND that C TRANSITIVELY chain-merged
-    //     through B to A's survivor. These are the key regression assertions:
-    //     a refactor that switches the inner `break` to `continue` would leave
-    //     B and C as separate survivors and fail these checks.
+    //     through B to A's survivor. A refactor comparing dist(i, merge_map[j])
+    //     instead of dist(i, j) would fail to chain C → A (|C - A| > epsilon)
+    //     and fail these checks.
     assert_eq!(
         repaired.indices[0], repaired.indices[3],
         "B should chain-merge to A's survivor \
