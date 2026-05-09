@@ -1535,6 +1535,10 @@ describe('SidecarSession destroy() lifecycle', () => {
     expect(() => session.destroy()).not.toThrow();
   });
 
+  // This test proves deregistration via mock.calls[1][0] === null. The former duplicate test
+  // `destroyed session: triggerRequest throws because onRequest(null) cleared the handler` was
+  // deleted: it pinned the mock-helper's internal error wording, not observable production
+  // behavior, and added no coverage beyond what mock.calls[1][0]).toBeNull() already asserts.
   it('destroy() deregisters the permission handler by calling server.onRequest(null)', () => {
     const { server } = makeMockPermissionServer();
     const permUrl = 'http://127.0.0.1:29999/mcp';
@@ -1557,30 +1561,6 @@ describe('SidecarSession destroy() lifecycle', () => {
     // destroy() must deregister by calling onRequest(null)
     expect(onRequestMock).toHaveBeenCalledTimes(2);
     expect(onRequestMock.mock.calls[1][0]).toBeNull();
-  });
-
-  it('destroyed session: triggerRequest throws because onRequest(null) cleared the handler', () => {
-    const { server, triggerRequest } = makeMockPermissionServer();
-    const permUrl = 'http://127.0.0.1:29999/mcp';
-
-    const session = new SidecarSession({
-      model: 'claude-opus-4-6',
-      workingDirectory: '/tmp/test-project',
-      systemPrompt: 'You are helpful.',
-      permissionMcp: { url: permUrl, server },
-    } as any);
-    session.onOutput = (msg) => outputs.push(msg);
-
-    session.destroy();
-
-    // After destroy(), onRequest(null) was called so capturedHandler is null.
-    // triggerRequest() checks capturedHandler and throws when it's null.
-    expect(() =>
-      triggerRequest({ request_id: 'req-1', tool_name: 'Write', tool_input: {} })
-    ).toThrow(/handler was never registered/);
-
-    // No permission_request should have been emitted during or after destroy()
-    expect(outputs.filter((o) => o.type === 'permission_request')).toHaveLength(0);
   });
 });
 
