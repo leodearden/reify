@@ -102,6 +102,8 @@ bwrap is **not** vendored — it is known broken on this kernel: Bun v1.3.13 + k
 
 Landlock is FS-only — it bounds **writes**, not reads. `/etc/passwd` and other read-only paths remain readable by sandboxed processes. The sandbox prevents Claude from writing outside the designated workspace, `~/.claude`, and `/tmp`; it does not prevent exfiltration via reads or network.
 
+**Known limitation:** `/tmp` write access is granted wholesale (`FS_V1_ALL`), which means a sandboxed Claude process can also write to other same-UID temp files under `/tmp` — including the sidecar's own MCP-config tmpdir (`reify-mcp-*`). This is an accepted v1 limitation; a future narrowing could grant writes only to a per-session tmp subdir (e.g. `mkdtempSync(…,'reify-agent-tmp-')`) but adds session-startup complexity with minimal practical security benefit given the existing trust model.
+
 ### Tauri bundling
 
 `gui/src-tauri/tauri.conf.json` includes `bundle.resources: ["sandbox/landlock.py", "sandbox/landlock_exec.py"]` so packaged builds ship the helpers. In dev, the helpers resolve via `app.path().resource_dir()` → `target/<profile>/sandbox/`. In bundled builds they go into the AppImage/AppDir resource directory.

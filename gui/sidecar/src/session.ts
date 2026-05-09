@@ -300,6 +300,14 @@ export class SidecarSession {
     // Always bypass per-call permission prompts using an explicit allowlist.
     // This prevents the GUI from silently stalling on missing permission-UI (see task #3206).
     // The allowlist is strictly tighter than --dangerously-skip-permissions (which allows all tools).
+    //
+    // Precedence note: --permission-mode bypassPermissions auto-approves ALL tool calls without
+    // asking — so --permission-prompt-tool (reify-permission) is NOT consulted for any tool in
+    // bypassPermissions mode. The two flags are complementary in purpose but operate on different
+    // axes: --allowed-tools restricts which tools Claude is permitted to invoke (anything outside
+    // the list is rejected outright); --permission-mode bypassPermissions means approved tool
+    // calls need no further confirmation prompt. The permission MCP (reify-permission) would only
+    // become active if a future configuration uses a non-bypass permission mode.
     args.push('--permission-mode', 'bypassPermissions');
     args.push('--allowed-tools', ALLOWED_TOOLS);
 
